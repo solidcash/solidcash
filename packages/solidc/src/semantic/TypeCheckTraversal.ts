@@ -169,6 +169,7 @@ import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { isNumericType, resultingTypeForBinaryOp } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
+import { generatedOriginOf } from '../ast/Location.js';
 
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
@@ -1697,6 +1698,9 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     // Handle overload resolution for user-defined functions
     const overloads = this.functionDefinitions.get(node.identifier.name);
+    if (overloads?.length === 1 && !node.resolvedFunction) {
+      [node.resolvedFunction] = overloads;
+    }
     if (overloads && overloads.length > 1 && !node.resolvedFunction) {
       const argTypes = node.parameters.map((p) => p.type!);
       const matches = applyFreeFunctionShadowing(overloads.filter((f) => {
@@ -1736,8 +1740,26 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.type = resolvedReturnType;
 
       // Validate parameter types against the resolved overload
+      const senderParamIndex = node.resolvedFunction.parameters
+        .findIndex((parameter) => parameter.name === '__internal__msgSenderCategory');
+      const visibleParamCount = node.resolvedFunction.parameters
+        .filter((parameter) => !parameter.name.startsWith('__internal__')).length;
+      if (senderParamIndex >= 0 && node.parameters.length > visibleParamCount
+        && node.parameters[senderParamIndex]?.type instanceof BytesType
+        && (node.parameters[senderParamIndex].type as BytesType).bound === 32) {
+        node.parameters.splice(senderParamIndex, 1);
+      }
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
-      const resolvedParamTypes = node.resolvedFunction.parameters.map((p) => p.type);
+      const resolvedParamTypes = node.resolvedFunction.parameters
+        .filter((p) => p.name !== '__internal__msgSenderCategory').map((p) => p.type);
+      stripGeneratedLogicalSenderArgument(
+        node, resolvedParamTypes,
+        this.currentFunction.messageBusRoute === true || this.currentFunction.graphEmissionHandler === true
+          || this.currentFunction.name.startsWith('__message_bus')
+          || node.resolvedFunction.name.startsWith('__message_bus')
+          || node.resolvedFunction.parameters.some((parameter) =>
+            parameter.name === '__internal__proxyMasterIndex'),
+      );
       node.parameters = this.coerceHexArgs(node.parameters, resolvedParamTypes);
       expectParameters(node, node.parameters.map((p) => p.type!), resolvedParamTypes);
 
@@ -1746,8 +1768,26 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     // Single overload resolved from SymbolTableTraversal - validate params
     if (node.resolvedFunction) {
+      const senderParamIndex = node.resolvedFunction.parameters
+        .findIndex((parameter) => parameter.name === '__internal__msgSenderCategory');
+      const visibleParamCount = node.resolvedFunction.parameters
+        .filter((parameter) => !parameter.name.startsWith('__internal__')).length;
+      if (senderParamIndex >= 0 && node.parameters.length > visibleParamCount
+        && node.parameters[senderParamIndex]?.type instanceof BytesType
+        && (node.parameters[senderParamIndex].type as BytesType).bound === 32) {
+        node.parameters.splice(senderParamIndex, 1);
+      }
       this.forwardInternalReturnOutputIdx(node, node.resolvedFunction);
-      const resolvedParamTypes = node.resolvedFunction.parameters.map((p) => p.type);
+      const resolvedParamTypes = node.resolvedFunction.parameters
+        .filter((p) => p.name !== '__internal__msgSenderCategory').map((p) => p.type);
+      stripGeneratedLogicalSenderArgument(
+        node, resolvedParamTypes,
+        this.currentFunction.messageBusRoute === true || this.currentFunction.graphEmissionHandler === true
+          || this.currentFunction.name.startsWith('__message_bus')
+          || node.resolvedFunction.name.startsWith('__message_bus')
+          || node.resolvedFunction.parameters.some((parameter) =>
+            parameter.name === '__internal__proxyMasterIndex'),
+      );
       node.parameters = this.coerceHexArgs(node.parameters, resolvedParamTypes);
       const argTypes = node.parameters.map((p) => p.type!);
       expectParameters(node, argTypes, resolvedParamTypes);
@@ -1764,9 +1804,14 @@ export default class TypeCheckTraversal extends AstTraversal {
     const { definition, type } = node.identifier;
     if (!definition || !definition.parameters) return node; // already checked in symbol table
 
-    node.parameters = this.coerceHexArgs(node.parameters, definition.parameters);
+
+    const symbolParameters = definition.parameterNames
+      ? definition.parameters.filter((_parameter, index) =>
+        !definition.parameterNames![index]?.startsWith('__internal__'))
+      : definition.parameters;
+    node.parameters = this.coerceHexArgs(node.parameters, symbolParameters);
     const parameterTypes = node.parameters.map((p) => p.type!);
-    expectParameters(node, parameterTypes, definition.parameters);
+    expectParameters(node, parameterTypes, symbolParameters);
 
     // Additional array length check for checkMultiSig
     if (node.identifier.name === GlobalFunction.CHECKMULTISIG) {
@@ -2261,7 +2306,9 @@ export default class TypeCheckTraversal extends AstTraversal {
   // stays on the stack). Only fires when the user passed exactly the user-visible args and returnOutputIdx is
   // the sole synthetic param; transitive cases (msg.sender / external-call params) are left to fail.
   private forwardInternalReturnOutputIdx(node: FunctionCallNode, fn: FunctionDefinitionNode): void {
-    const synthetic = fn.parameters.filter((p) => p.name.startsWith('__internal__'));
+    const effectiveParameters = fn.parameters
+      .filter((p) => p.name !== '__internal__msgSenderCategory');
+    const synthetic = effectiveParameters.filter((p) => p.name.startsWith('__internal__'));
     if (synthetic.length === 0) return;
     // Only auto-forward when the call site passed exactly the user-visible args (synthetic params are never
     // written at the call site).
@@ -2269,7 +2316,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // synthetics itself (it passes `__internal__msgSenderCategory` explicitly). Forward the ones it did NOT
     // write, identified BY NAME: counting positionally would double-forward when the route also omits a visible
     // argument, appending a synthetic the call already carries instead of surfacing the real defect.
-    const missing = fn.parameters.length - node.parameters.length;
+    const missing = effectiveParameters.length - node.parameters.length;
     if (missing <= 0 || missing > synthetic.length) return;
     // Forward exactly the trailing synthetics needed to reach the callee's arity. When the call site wrote none
     // of them this is the original all-synthetics case; when a generated route wrote a leading one itself, only
@@ -2288,12 +2335,14 @@ export default class TypeCheckTraversal extends AstTraversal {
     // master sits at a fixed input, so an internal callee reads the caller's own value. Without it, a generated
     // route cannot call a delegate-marked getter (`owner()`) at all.
     const FORWARDABLE = new Set([
-      '__internal__msgSenderCategory', '__internal__blockhashInputIndex', '__internal__proxyMasterOutputIndex',
+      '__internal__blockhashInputIndex', '__internal__proxyMasterOutputIndex',
       '__internal__proxyMasterIndex',
     ]);
     const callerParams = new Map(this.currentFunction.parameters.map((p) => [p.name, p]));
     const canForwardByName = (p: ParameterNode): boolean => {
       const callerParam = callerParams.get(p.name);
+      if (!callerParam && (p.name === '__internal__proxyMasterOutputIndex'
+        || p.name === '__internal__proxyMasterIndex')) return true;
       return !!callerParam && callerParam.type.toString() === p.type.toString()
         && (FORWARDABLE.has(p.name) || p.name.startsWith('__internal__valueWitness_'));
     };
@@ -3266,6 +3315,22 @@ function expectParameters(node: NodeWithParameters, actual: Type[], expected: Ty
   if (!implicitlyCastableSignature(actual, expected)) {
     throw new InvalidParameterTypeError(node, actual, expected);
   }
+}
+
+function stripGeneratedLogicalSenderArgument(
+  node: FunctionCallNode, expected: Type[], inMessageBusRoute: boolean,
+): void {
+  if ((!inMessageBusRoute && !generatedOriginOf(node.location) && !generatedOriginOf(node.identifier.location))
+    || node.parameters.length !== expected.length + 1) return;
+  const matches = node.parameters.flatMap((parameter, index) => {
+    const type = parameter.type;
+    const expectedAtIndex = expected[index];
+    if (!(type instanceof BytesType) || type.bound !== 32
+      || (expectedAtIndex instanceof BytesType && expectedAtIndex.bound === 32)) return [];
+    const candidate = node.parameters.filter((_value, candidateIndex) => candidateIndex !== index);
+    return implicitlyCastableSignature(candidate.map((value) => value.type!), expected) ? [index] : [];
+  });
+  if (matches.length === 1) node.parameters.splice(matches[0], 1);
 }
 
 // The parameter types a caller actually supplies, for overload matching. Excludes synthetic `__internal__*`

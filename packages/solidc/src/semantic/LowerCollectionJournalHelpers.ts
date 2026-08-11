@@ -285,7 +285,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           name: fn.name, arity: fn.parameters.length, returns: fn.returnTypes.map((type) => type.toString()),
           statements: fn.body?.statements?.map((statement) => statement.constructor.name),
         })),
-      }, null, 2));
+      }, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
     }
 
     // Rewrite call sites before changing arities.
@@ -716,7 +716,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
             keyIdentity: local.keyIdentity,
           })),
         })),
-      }, null, 2));
+      }, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
     }
     return caches;
   }

@@ -46,6 +46,20 @@ import {
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { createRelocatedDataNftUnlocker } from './covenant-helpers.js';
 
+const decodeVmScriptNumber = (bytes: Uint8Array): bigint => {
+  let value = 0n;
+  const negative = bytes.length > 0 && (bytes[bytes.length - 1] & 0x80) !== 0;
+  for (let index = bytes.length - 1; index >= 0; index--) {
+    const byte = index === bytes.length - 1 ? bytes[index] & 0x7f : bytes[index];
+    value = (value << 8n) | BigInt(byte);
+  }
+  return negative ? -value : value;
+};
+
+const cloneToken = <T extends Utxo['token']>(token: T): T => (token === undefined
+  ? token
+  : { ...token, nft: token.nft === undefined ? undefined : { ...token.nft } } as T);
+
 export interface EntryNftInfo {
   slotIndex: number;
   collection: string;
@@ -198,12 +212,16 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   entryAccesses?: readonly EntryAccessAbi[];
   entryNftLockingBytecodes?: Map<string, Uint8Array>; // collection name -> locking bytecode
   // Dynamic-storage vars (string / unbounded bytes): chunk NFTs created as trailing outputs.
-  dynamicChunkVars?: Array<{ name: string; type: string; lockingBytecode: Uint8Array }>;
+  dynamicChunkVars?: Array<{
+    name: string; type: string; lockingBytecode: Uint8Array; delegate?: boolean; delegateSuffix?: boolean;
+  }>;
   // Old chunk UTXOs co-spent (destroyed) on a dynamic-storage write; not recreated as outputs.
   dynamicChunkInputs?: UnlockableUtxo[];
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`): N new entry NFTs created as trailing
   // outputs (a runtime-variable count, like dynamicChunkVars). Commitments come from auto-derivation.
-  loopEntryVars?: Array<{ collection: string; lockingBytecode: Uint8Array; categoryId?: string }>;
+  loopEntryVars?: Array<{
+    collection: string; lockingBytecode: Uint8Array; categoryId?: string; delegate?: boolean; chunkable?: boolean;
+  }>;
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
   tokenContainers?: TokenContainerInfo[];
@@ -354,7 +372,9 @@ export class StatefulTransactionBuilder {
   private dynamicChunkInputs: UnlockableUtxo[] = [];
   // varName -> ordered chunk commitments (hex) from auto-derivation; length determines chunk output count.
   private chunkRawCommitments: Map<string, string[]> = new Map();
-  private loopEntryVars: Array<{ collection: string; lockingBytecode: Uint8Array; categoryId?: string }> = [];
+  private loopEntryVars: Array<{
+    collection: string; lockingBytecode: Uint8Array; categoryId?: string; delegate?: boolean; chunkable?: boolean;
+  }> = [];
   // collection -> ordered loop entry commitments (hex) from auto-derivation; length = entry output count.
   private loopEntryCommitments: Map<string, string[]> = new Map();
   private requiredLoopEntryCounts: Map<string, number> = new Map();
@@ -1236,7 +1256,9 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
-  getDynamicChunkVars(): Array<{ name: string; type: string; lockingBytecode: Uint8Array }> {
+  getDynamicChunkVars(): Array<{
+    name: string; type: string; lockingBytecode: Uint8Array; delegate?: boolean; delegateSuffix?: boolean;
+  }> {
     return this.dynamicChunkVars;
   }
 
@@ -1281,10 +1303,12 @@ export class StatefulTransactionBuilder {
     const trailingBase = base + externalCallOutputCount + externalReturnOutputCount
       + lowLevelCallOutputCount + this.iterationEntryInputs.length;
     if (this.delegateEntriesAfterLowLevel) {
-      return trailingBase + this._loopEntryOutputCount() + this._valueChunkOutputCount()
+      // Delegate-only loop entries are appended after the caller's reserved trailing block. They must not move
+      // the caller's dynamic-chunk base into that delegate suffix; only local loop entries precede local chunks.
+      return trailingBase + this._localLoopEntryOutputCount() + this._valueChunkOutputCount()
         + this.pendingOutputs.length;
     }
-    return trailingBase + (this.batchEntriesBeforeDynamicChunks ? this._loopEntryOutputCount() : 0);
+    return trailingBase + (this.batchEntriesBeforeDynamicChunks ? this._localLoopEntryOutputCount() : 0);
   }
 
   private _dynamicChunkOutputCount(): number {
@@ -1298,7 +1322,9 @@ export class StatefulTransactionBuilder {
       + [...this.valueChunkRawCommitments.values()].reduce((sum, commitments) => sum + commitments.length, 0);
   }
 
-  getLoopEntryVars(): Array<{ collection: string; lockingBytecode: Uint8Array; categoryId?: string }> {
+  getLoopEntryVars(): Array<{
+    collection: string; lockingBytecode: Uint8Array; categoryId?: string; delegate?: boolean; chunkable?: boolean;
+  }> {
     return this.loopEntryVars;
   }
 
@@ -1340,12 +1366,30 @@ export class StatefulTransactionBuilder {
     return n;
   }
 
+  private _localLoopEntryOutputCount(): number {
+    let n = 0;
+    for (const lv of this.loopEntryVars) {
+      if (lv.delegate === true) continue;
+      n += (this.loopEntryCommitments.get(lv.collection) ?? []).length;
+    }
+    return n;
+  }
+
+  private _delegateLoopEntryVars(): typeof this.loopEntryVars {
+    return this.loopEntryVars.filter((lv) => lv.delegate === true);
+  }
+
   /**
    * Output index where loop entry NFTs begin. They share the trailing region with dynamic chunks (mutually
    * exclusive in a given function by construction), placed after any chunk outputs.
    */
   getLoopEntryOutputBase(): number {
-    if (this.batchEntriesBeforeDynamicChunks) return this.getChunkOutputBase() - this._loopEntryOutputCount();
+    if (this._delegateLoopEntryVars().length === this.loopEntryVars.length
+      && this.loopEntryVars.length > 0 && (this.blockLayout?.trailingCapacity ?? 0) > 0) {
+      return this.getChunkOutputBase() + (this.blockLayout?.trailingCapacity ?? 0) + this.pendingOutputs.length
+        + this.externalIdentityAnchorUtxos.length;
+    }
+    if (this.batchEntriesBeforeDynamicChunks) return this.getChunkOutputBase() - this._localLoopEntryOutputCount();
     if (this.delegateEntriesAfterLowLevel) {
       return this.getChunkOutputBase() - this.pendingOutputs.length
         - this._valueChunkOutputCount() - this._loopEntryOutputCount();
@@ -1652,6 +1696,22 @@ export class StatefulTransactionBuilder {
       });
     }
     const builder = new CovenantTransactionBuilder(opts);
+    const debugOwnMutableOutputs = (stage: string): void => {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_FAILURE_RING !== '1') return;
+      console.error('builder-own-mutable-outputs', {
+        stage,
+        outputs: builder.outputs.map((output, index) => ({ output, index }))
+          .filter(({ output }) => (output.token?.category === this.categoryId
+            || this.loopEntryVars.some((value) => value.categoryId === output.token?.category))
+            && output.token?.nft?.capability === 'mutable')
+          .map(({ output, index }) => ({
+            index,
+            lockingBytecode: typeof output.to === 'string' ? output.to : binToHex(output.to),
+            commitment: output.token?.nft?.commitment,
+          })),
+      });
+    };
     // X56. Delegate return events held back until after the implementation's own event outputs. Empty unless
     // `delegateReturnEventAfterEvents` is set, i.e. unless the co-spent implementation emits AND returns.
     let deferredDelegateReturnEvents: Array<{ categoryId: string; commitment: Uint8Array }> = [];
@@ -1932,9 +1992,11 @@ export class StatefulTransactionBuilder {
     }
 
     // Create external call outputs (B's master preserved + B's data NFTs with updated state)
+    const embeddedEntrySlots = new Set<number>();
     for (let groupIndex = 0; groupIndex < this.externalCallUtxoGroups.length; groupIndex++) {
       const group = this.externalCallUtxoGroups[groupIndex];
       if (group.sharedGroupIndex !== undefined) continue;
+      const groupOutputStart = builder.outputs.length;
       // B's master output: preserved unchanged
       const bMaster = group.masterUtxo as UnlockableUtxo;
       if (group.compilerRoute && group.delegateCallGroupIndex !== undefined) {
@@ -2169,7 +2231,7 @@ export class StatefulTransactionBuilder {
               : {
                 to: input.unlocker.generateLockingBytecode(),
                 amount: input.satoshis,
-                token: input.token,
+                token: cloneToken(input.token),
               });
             continue;
           }
@@ -2189,7 +2251,7 @@ export class StatefulTransactionBuilder {
                   nft: { capability: input.token?.nft?.capability ?? 'mutable', commitment: commit },
                 },
               }
-              : { to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: input.token });
+              : { to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: cloneToken(input.token) });
             continue;
           }
 
@@ -2197,7 +2259,7 @@ export class StatefulTransactionBuilder {
           if (slot?.kind === 'keccakSideCar') {
             const rec = group.keccakRecreates?.[keccakIdx++];
             builder.addOutput(rec ?? {
-              to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: input.token,
+              to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: cloneToken(input.token),
             });
             continue;
           }
@@ -2207,14 +2269,47 @@ export class StatefulTransactionBuilder {
           // read-only entry (or an absent-key funder placeholder) has no stored commitment -> mirror the input.
           if (slot?.kind === 'entry') {
             const bEntryOut = this.externalCallEntryOutputs.get(group.categoryId)?.get(si);
+            const embeddedEntry = this.entryNfts.find((entry) => entry.utxo !== undefined
+              && entry.utxo.txid.toLowerCase() === input.txid.toLowerCase()
+              && entry.utxo.vout === input.vout);
+            const embeddedCommitment = embeddedEntry === undefined
+              ? undefined : this.entryRawCommitments.get(embeddedEntry.slotIndex);
             const entryLockingBytecode = group.batchEntryLockingBytecodes?.get(si)
               ?? input.unlocker.generateLockingBytecode();
-            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-              ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' && group.compilerRoute && si < 12) {
+            if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_FAILURE_RING'].some((name) =>
+              (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')
+              && group.compilerRoute && si < 12) {
               console.error('builder-route-entry-output', {
-                groupIndex, si, callMode: group.callMode, hasCommitment: bEntryOut !== undefined,
+                groupIndex, si, absoluteOutput: builder.outputs.length,
+                callMode: group.callMode, hasCommitment: bEntryOut !== undefined,
                 hasLockingBytecode: group.batchEntryLockingBytecodes?.has(si) ?? false,
+                embeddedEntrySlot: embeddedEntry?.slotIndex,
+                hasEmbeddedCommitment: embeddedCommitment !== undefined,
+                inputOutpoint: `${input.txid}:${input.vout}`,
+                inputCommitment: input.token?.nft?.commitment,
+                localEntries: this.entryNfts.map((entry) => ({
+                  slot: entry.slotIndex,
+                  outpoint: entry.utxo ? `${entry.utxo.txid}:${entry.utxo.vout}` : undefined,
+                })),
+                insertPredecessors: this.insertLoopPredecessorInputs.map((entry) =>
+                  `${entry.txid}:${entry.vout}`),
               });
+            }
+            if (embeddedEntry !== undefined && embeddedCommitment !== undefined) {
+              embeddedEntrySlots.add(embeddedEntry.slotIndex);
+              builder.addOutput({
+                to: entryLockingBytecode,
+                amount: input.satoshis,
+                token: {
+                  amount: input.token?.amount ?? 0n,
+                  category: this.categoryId,
+                  nft: {
+                    capability: input.token?.nft?.capability ?? 'mutable',
+                    commitment: embeddedCommitment,
+                  },
+                },
+              });
+              continue;
             }
             builder.addOutput(bEntryOut !== undefined
               ? {
@@ -2226,7 +2321,7 @@ export class StatefulTransactionBuilder {
                   nft: { capability: input.token?.nft?.capability ?? 'mutable', commitment: bEntryOut },
                 },
               }
-              : { to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: input.token });
+              : { to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: cloneToken(input.token) });
             continue;
           }
 
@@ -2290,7 +2385,7 @@ export class StatefulTransactionBuilder {
               builder.addOutput({
                 to: input.unlocker.generateLockingBytecode(),
                 amount: input.satoshis,
-                token: input.token,
+                token: cloneToken(input.token),
               });
             } else {
               // Placeholder: create event NFT with empty commitment so B's VM can
@@ -2321,7 +2416,7 @@ export class StatefulTransactionBuilder {
                 builder.addOutput({
                   to: input.unlocker.generateLockingBytecode(),
                   amount: input.satoshis,
-                  token: input.token,
+                  token: cloneToken(input.token),
                 });
               }
             }
@@ -2331,7 +2426,7 @@ export class StatefulTransactionBuilder {
             builder.addOutput({
               to: input.unlocker.generateLockingBytecode(),
               amount: input.satoshis,
-              token: input.token,
+              token: cloneToken(input.token),
             });
           }
         }
@@ -2363,7 +2458,19 @@ export class StatefulTransactionBuilder {
           for (const stateOutput of displacedRouteStateOutputs) builder.addOutput(stateOutput);
         }
       }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_FAILURE_RING === '1') {
+        console.error('builder-route-group-output-range', {
+          groupIndex,
+          functionName: group.functionName,
+          contract: group.externalContract?.inner?.artifact.contractName,
+          categoryId: group.categoryId,
+          start: groupOutputStart,
+          end: builder.outputs.length,
+        });
+      }
     }
+    debugOwnMutableOutputs('after-external-groups');
 
     // A delegate facet is preserved at its absolute input index, and the block layout now reserves that index
     // immediately after the proxy's master/data-NFT region - the position the delegate covenant derives with
@@ -2402,6 +2509,7 @@ export class StatefulTransactionBuilder {
     const sortedEntries = [...this.entryNfts].sort((a, b) => a.slotIndex - b.slotIndex);
     const fillThreshold = this.entryPlaceholderFillThreshold();
     for (const entry of sortedEntries) {
+      if (embeddedEntrySlots.has(entry.slotIndex)) continue;
       if (this.entryDeletes.has(entry.slotIndex)) {
         if (entry.slotIndex < fillThreshold) {
           // Position-holding placeholder: neutral OP_TRUE, outside the collection address namespace. The covenant
@@ -2809,6 +2917,25 @@ export class StatefulTransactionBuilder {
     // region, preserved at their input index [blockSize, blockSize+count) (the chunk covenant pins
     // output==input). New chunk outputs follow, after getChunkOutputBase() (which includes this count).
     // Skipped when already emitted before the callee outputs (loop external-call case).
+    // A balanced block can reserve fixed slots that are absent from this concrete call. Runtime trailing
+    // resources still begin at the compiler-owned trailingBase; pad those unused fixed slots BEFORE emitting
+    // iteration entries/chunks/loop entries. Padding after the resources shifts every physical output below the
+    // index verified by the covenant (for example, computed base 228 while chunks were emitted at 204).
+    if (this.blockLayout) {
+      const resourceBases: number[] = [];
+      if (this.iterationEntryInputs.length > 0 || this.dynamicChunkVars.length > 0) {
+        resourceBases.push(this.getChunkOutputBase() - this.iterationEntryInputs.length
+          - (this.batchEntriesBeforeDynamicChunks ? this._localLoopEntryOutputCount() : 0));
+      }
+      if (this.loopEntryVars.length > 0) resourceBases.push(this.getLoopEntryOutputBase());
+      if (this.valueChunkOutputs.length > 0 || this.valueChunkVars.size > 0) {
+        resourceBases.push(this.getValueChunkOutputBase());
+      }
+      const firstResourceBase = resourceBases.length > 0 ? Math.min(...resourceBases) : undefined;
+      while (firstResourceBase !== undefined && builder.outputs.length < firstResourceBase) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
+    }
     for (const iterUtxo of (loopChunkBeforeCallees ? [] : this.iterationEntryInputs)) {
       builder.addOutput({
         to: iterUtxo.unlocker.generateLockingBytecode(),
@@ -2825,7 +2952,9 @@ export class StatefulTransactionBuilder {
     }
 
     if (this.batchEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel) {
-      for (const lv of this.loopEntryVars) {
+      for (const lv of this.loopEntryVars.filter((value) =>
+        value.delegate !== true
+          && (value.categoryId === undefined || value.categoryId === this.categoryId))) {
         for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
           const entryOutput = {
             to: lv.lockingBytecode, amount: 1200n,
@@ -2908,8 +3037,19 @@ export class StatefulTransactionBuilder {
 
     // Loop mapping-write entry outputs (trailing, after any chunks). One new mutable entry NFT per loop iteration;
     // commitments (key_enc||value_enc) come from auto-derivation (the covenant builds them on-chain per iteration).
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_FAILURE_RING === '1') {
+      console.error('builder-loop-entry-vars', this.loopEntryVars.map((value) => ({
+        collection: value.collection,
+        categoryId: value.categoryId,
+        delegate: value.delegate,
+        commitments: this.loopEntryCommitments.get(value.collection),
+      })));
+    }
     for (const lv of (this.batchEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel
-      ? [] : this.loopEntryVars)) {
+      ? [] : this.loopEntryVars.filter((value) =>
+        value.delegate !== true
+          && (value.categoryId === undefined || value.categoryId === this.categoryId)))) {
       const commitments = this.loopEntryCommitments.get(lv.collection) ?? [];
       for (const commitment of commitments) {
         const entryOutput = {
@@ -2925,6 +3065,7 @@ export class StatefulTransactionBuilder {
         builder.addOutput(entryOutput);
       }
     }
+    debugOwnMutableOutputs('after-loop-entries');
 
     // P5b value chunks (Design D), placed AFTER every covenant-managed output (entries, dynamic chunks, loop-entry
     // NEW nodes). DIRECT values are injected exactly
@@ -2935,7 +3076,7 @@ export class StatefulTransactionBuilder {
     if (trailingCapacity > 0) {
       const trailingOutputCount = this.iterationEntryInputs.length
         + this._dynamicChunkOutputCount()
-        + this._loopEntryOutputCount()
+        + this._localLoopEntryOutputCount()
         + this.valueChunkOutputs.length
         + [...this.getValueChunkVars()].reduce(
           (sum, value) => sum + (this.valueChunkRawCommitments.get(value.collection) ?? []).length,
@@ -2956,6 +3097,7 @@ export class StatefulTransactionBuilder {
     for (const output of this.pendingOutputs) {
       builder.addOutput(output);
     }
+    debugOwnMutableOutputs('after-pending-outputs');
     // A callee's identity anchor is permissionless to spend, so consuming it without recreating it would destroy
     // that contract's logical identity. Recreate each one verbatim, mirroring the input ordering.
     for (const anchor of this.externalIdentityAnchorUtxos) {
@@ -2965,6 +3107,46 @@ export class StatefulTransactionBuilder {
         token: anchor.token,
       });
     }
+    // A compiler route can settle a nested delegate's runtime mapping loop alongside the root's own dynamic
+    // storage. Its covenant addresses NEW after callee identity preservation but before the caller's own logical
+    // identity anchor. The distinct token category is the ownership boundary that keeps these outputs out of the
+    // root's reserved trailing capacity.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_CHUNK_SCAN === '1'
+      && this._delegateLoopEntryVars().length > 0) {
+      console.error('append-delegate-loop-entries', {
+        physicalBase: builder.outputs.length,
+        computedBase: this.getLoopEntryOutputBase(),
+        outputCountBefore: builder.outputs.length,
+        pendingOutputs: this.pendingOutputs.length,
+        externalIdentityAnchors: this.externalIdentityAnchorUtxos.length,
+        logicalIdentityAnchor: !!this.logicalIdentityUtxo,
+        chunkBase: this.getChunkOutputBase(),
+        trailingCapacity: this.blockLayout?.trailingCapacity,
+      });
+    }
+    for (const lv of this._delegateLoopEntryVars()) {
+      const emittedByExternalInsert = this.externalCallEntryInserts.some((insert) => (
+        insert.commitment !== ''
+        && insert.categoryId === lv.categoryId
+        && insert.to.length === lv.lockingBytecode.length
+        && insert.to.every((byte, index) => byte === lv.lockingBytecode[index])
+      ));
+      if (emittedByExternalInsert) continue;
+      for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
+        const entryOutput = {
+          to: lv.lockingBytecode,
+          amount: 1200n,
+          token: {
+            amount: 0n,
+            category: lv.categoryId!,
+            nft: { capability: 'mutable' as const, commitment },
+          },
+        };
+        entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
+        builder.addOutput(entryOutput);
+      }
+    }
+
     if (this.logicalIdentityUtxo) {
       builder.addOutput({
         to: this.logicalIdentityUtxo.unlocker.generateLockingBytecode(),
@@ -2972,6 +3154,7 @@ export class StatefulTransactionBuilder {
         token: this.logicalIdentityUtxo.token,
       });
     }
+
     if (this.delegateEntriesAfterLowLevel || this.delegateDynamicChunksAtSuffix) appendDynamicChunks();
 
     for (const vco of this.lateValueChunkOutputs) {
@@ -3436,6 +3619,10 @@ export class StatefulTransactionBuilder {
         let helper54: Array<{ opcode: number; data?: Uint8Array }> | undefined;
         let pendingInvokeId: string | undefined;
         const invokedBodies = new Map<number, Set<string>>();
+        let pendingOutputBytecodeIndex: number | undefined;
+        const outputBytecodeMatches: Array<{
+          body: number; index: number; matches: boolean; countBefore?: string;
+        }> = [];
         const ring: Array<{
           ip: number; opcode: number; depth: number; top: string[]; data?: string; bodyLen: number;
         }> = [];
@@ -3446,6 +3633,24 @@ export class StatefulTransactionBuilder {
               ip: number; instructions: Array<{ opcode: number; data?: Uint8Array }>; stack: Uint8Array[];
             };
             const instruction = state.instructions[state.ip];
+            if (instruction?.opcode === 0xcd) {
+              const encodedIndex = state.stack[state.stack.length - 1];
+              pendingOutputBytecodeIndex = encodedIndex === undefined ? undefined : encodedIndex.reduce(
+                (value, byte, byteIndex) => value + byte * (256 ** byteIndex), 0,
+              );
+            } else if (instruction?.opcode === 0x87 && pendingOutputBytecodeIndex !== undefined) {
+              const left = state.stack[state.stack.length - 2];
+              const right = state.stack[state.stack.length - 1];
+              outputBytecodeMatches.push({
+                body: state.instructions.length,
+                index: pendingOutputBytecodeIndex,
+                matches: left !== undefined && right !== undefined && left.length === right.length
+                  && left.every((byte, byteIndex) => byte === right[byteIndex]),
+                countBefore: state.stack[state.stack.length - 4] === undefined
+                  ? undefined : binToHex(state.stack[state.stack.length - 4]),
+              });
+              pendingOutputBytecodeIndex = undefined;
+            }
             if (state.ip === 0 && pendingInvokeId !== undefined) {
               const ids = invokedBodies.get(state.instructions.length) ?? new Set<string>();
               ids.add(pendingInvokeId);
@@ -3490,7 +3695,7 @@ export class StatefulTransactionBuilder {
           return `    [${itemIndex}] ${hex.length > 80 ? `${hex.slice(0, 80)}..(${item.length}B)` : hex}`;
         }).join('\n');
         // eslint-disable-next-line no-console
-        console.error(`[covenant VM trace] input ${idx}: ${finalState.error}\nunlocking=${binToHex(transaction.inputs[idx].unlockingBytecode)}\nprobeUnlocking105=${binToHex(transaction.inputs[105]?.unlockingBytecode ?? new Uint8Array())}\nprobeUnlocking106=${binToHex(transaction.inputs[106]?.unlockingBytecode ?? new Uint8Array())}\ninvokedBodies=${JSON.stringify([...invokedBodies].map(([length, ids]) => [length, [...ids]]))}\nhelper54=${helper54?.map((instruction) => instruction.data === undefined ? instruction.opcode.toString(16).padStart(2, '0') : `${instruction.opcode.toString(16).padStart(2, '0')}(${binToHex(instruction.data)})`).join(' ')}\n${ring.map((step, stepIndex) => (
+        console.error(`[covenant VM trace] input ${idx}: ${finalState.error}\nunlocking=${binToHex(transaction.inputs[idx].unlockingBytecode)}\nprobeUnlocking105=${binToHex(transaction.inputs[105]?.unlockingBytecode ?? new Uint8Array())}\nprobeUnlocking106=${binToHex(transaction.inputs[106]?.unlockingBytecode ?? new Uint8Array())}\ninvokedBodies=${JSON.stringify([...invokedBodies].map(([length, ids]) => [length, [...ids]]))}\noutputBytecodeMatches=${JSON.stringify(outputBytecodeMatches.filter((entry) => entry.matches))}\nhelper54=${helper54?.map((instruction) => instruction.data === undefined ? instruction.opcode.toString(16).padStart(2, '0') : `${instruction.opcode.toString(16).padStart(2, '0')}(${binToHex(instruction.data)})`).join(' ')}\n${ring.map((step, stepIndex) => (
           `  ip=${step.ip} op=0x${step.opcode.toString(16).padStart(2, '0')}`
           + `${step.data === undefined ? '' : `(${step.data})`} body=${step.bodyLen} depth=${step.depth} top=[${step.top.join(' ')}]`
           + (stepIndex === ring.length - 1 ? '  <-- FAILS HERE' : '')
@@ -3561,6 +3766,61 @@ export class StatefulTransactionBuilder {
       console.error(lines.join('\n'));
       return;
     }
+  }
+
+  /**
+   * Recover a computed C2 value-chunk output from the failing covenant itself. Transitive routed calls can be
+   * represented only as low-level groups, so their masters are not visited by StatefulContract's external-call
+   * derivation loop. The chunk verifier nevertheless has the complete authenticated output on its stack before
+   * OP_OUTPUTBYTECODE: [.., commitment, outputIndex, lockingBytecode, outputIndex].
+   */
+  private _repairComputedChunkOutput(builder: TransactionBuilder, inputIndex: number): boolean {
+    const transaction = builder.buildLibauthTransaction(true);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    let repair: { outputIndex: number; lockingBytecode?: Uint8Array; commitment: Uint8Array } | undefined;
+    const vm = createVirtualMachineBch2026ForProvider(this.builderOptions.provider, {
+      opcodes: new Set(Array.from({ length: 256 }, (_unused, opcode) => opcode)),
+      beforeOperation: (unknownState) => {
+        const state = unknownState as {
+          ip: number; instructions: Array<{ opcode: number; data?: Uint8Array }>; stack: Uint8Array[];
+        };
+        if (state.instructions[state.ip]?.opcode === 0xd2 && state.stack.length >= 2) {
+          const outputIndex = Number(decodeVmScriptNumber(state.stack[state.stack.length - 1]));
+          const commitment = state.stack[state.stack.length - 2];
+          if (commitment.length <= 128 && outputIndex >= 0 && outputIndex < builder.outputs.length) {
+            repair = { outputIndex, commitment };
+          }
+          return;
+        }
+        if (state.instructions[state.ip]?.opcode !== 0xcd || state.stack.length < 4) return;
+        const chunkShaped = state.instructions.some((instruction, at) => instruction.data?.length === 1
+          && instruction.data[0] === 126 && state.instructions[at + 1]?.opcode === 0x95
+          && state.instructions[at + 2]?.data?.length === 1
+          && state.instructions[at + 2]?.data?.[0] === 28
+          && state.instructions[at + 3]?.opcode === 0x93);
+        if (!chunkShaped) return;
+        const lockingBytecode = state.stack[state.stack.length - 2];
+        const commitment = state.stack[state.stack.length - 4];
+        const outputIndex = Number(decodeVmScriptNumber(state.stack[state.stack.length - 1]));
+        if (lockingBytecode.length !== 35 || lockingBytecode[0] !== 0xaa || lockingBytecode[1] !== 0x20
+          || lockingBytecode[34] !== 0x87 || commitment.length < 3 || commitment.length > 128
+          || outputIndex < 0 || outputIndex >= builder.outputs.length) return;
+        repair = { outputIndex, lockingBytecode, commitment };
+      },
+    });
+    vm.evaluate({ inputIndex, sourceOutputs, transaction });
+    if (!repair) return false;
+    const found = repair as { outputIndex: number; lockingBytecode?: Uint8Array; commitment: Uint8Array };
+    const output = builder.outputs[found.outputIndex];
+    if (!output?.token?.nft || output.token.nft.capability !== 'mutable') return false;
+    const unchanged = (found.lockingBytecode === undefined
+      || binToHex(typeof output.to === 'string' ? addressToLockScript(output.to) : output.to)
+        === binToHex(found.lockingBytecode))
+      && output.token.nft.commitment === binToHex(found.commitment);
+    if (unchanged) return false;
+    if (found.lockingBytecode !== undefined) output.to = found.lockingBytecode;
+    output.token.nft.commitment = binToHex(found.commitment);
+    return true;
   }
 
   private _strictRecursiveVmPreflight(builder: TransactionBuilder): void {
@@ -3775,9 +4035,33 @@ export class StatefulTransactionBuilder {
     // evaluation. This gate is deliberately non-absorbing: unlike debug(), it never catches an objection, and
     // `stateSuccess` includes completed scripts with a falsy top item as well as raised VM errors.
     if (!this.strictVmPreflight) {
-      try {
-        assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
-      } catch (error) {
+      let preflightError: unknown;
+      for (let pass = 0; pass <= 32; pass++) {
+        try {
+          assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
+          preflightError = undefined;
+          break;
+        } catch (error) {
+          preflightError = error;
+          const reason = error instanceof Error ? error.message : String(error);
+          const failedInput = reason.match(/input(?: index)? (\d+)/)?.[1];
+          if (failedInput === undefined
+            || !this._repairComputedChunkOutput(finalBuilder, Number(failedInput))) break;
+        }
+      }
+      if (preflightError !== undefined) {
+        const error = preflightError;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_PREFLIGHT === '1') {
+          console.error('final-preflight-inputs', finalBuilder.inputs.map((input, index) => ({
+            index,
+            name: (input.unlocker as { abiFunction?: { name?: string } } | undefined)?.abiFunction?.name,
+            selector: (input.unlocker as { abiFunction?: { selector?: string } } | undefined)?.abiFunction?.selector,
+            unlockingBytes: finalBuilder.buildLibauthTransaction(true).inputs[index]?.unlockingBytecode.length,
+            lockingBytes: input.unlocker?.generateLockingBytecode().length,
+            category: input.token?.category,
+          })));
+        }
         this._logCovenantFailureTrace(finalBuilder, error instanceof Error ? error.message : String(error));
         // Attribution only. The refusal stands and is re-raised UNCHANGED: callers match this message exactly,
         // including anchored patterns, so the explanation rides on `cause` rather than being appended to it.

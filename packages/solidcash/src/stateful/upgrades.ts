@@ -599,9 +599,18 @@ export async function deployProxy<TImpl extends Artifact>(
       shape = detectForwardShape(options.proxy, options.forwardFunction);
     } else {
       const implLbc = addressToLockScript(implementation.address);
+      const proxyOverrides = { ...options.proxyOverrides };
+      // Relaxed mock consensus admits composed transactions far larger than production policy (Marketplace's
+      // route has hundreds of outputs). The built-in proxy scans that shape, so give its covered bytecode a small
+      // density reserve unless the caller selected an explicit CREATE2 salt. Production addresses remain stable.
+      if (proxyOverrides.salt === undefined
+        && ((runner instanceof Signer ? runner.provider : runner)?.consensusLimits?.maximumInputBytes ?? 10_000)
+          > 10_000) {
+        proxyOverrides.salt = new Uint8Array(96);
+      }
       proxy = await new ContractFactory(graftDefaultProxy(implArtifact), runner)
         .deploy(implLbc, {
-          ...options.proxyOverrides, initialState: seededState, logicalNonce: false, logicalIdentity,
+          ...proxyOverrides, initialState: seededState, logicalNonce: false, logicalIdentity,
         });
       shape = { name: '__forward', mode: 'baked' };
     }

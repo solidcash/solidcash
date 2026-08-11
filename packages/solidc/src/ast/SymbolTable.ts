@@ -16,6 +16,7 @@ export class Symbol {
     public symbolType: SymbolType,
     public definition?: Node,
     public parameters?: Type[],
+    public parameterNames?: string[],
   ) {}
 
   static variable(node: VariableDefinitionNode | ParameterNode): Symbol {
@@ -26,8 +27,8 @@ export class Symbol {
     return new Symbol(name, type, SymbolType.VARIABLE);
   }
 
-  static function(name: string, type: Type, parameters: Type[]): Symbol {
-    return new Symbol(name, type, SymbolType.FUNCTION, undefined, parameters);
+  static function(name: string, type: Type, parameters: Type[], parameterNames?: string[]): Symbol {
+    return new Symbol(name, type, SymbolType.FUNCTION, undefined, parameters, parameterNames);
   }
 
   static class(name: string, type: Type, parameters: Type[]): Symbol {

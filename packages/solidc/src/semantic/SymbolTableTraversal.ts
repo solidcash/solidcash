@@ -744,7 +744,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Pre-register free functions in global scope (so they can call each other and be called from contract)
     for (const func of node.freeFunctions) {
-      const paramTypes = func.parameters.map((p) => p.type);
+      const paramTypes = func.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type);
       if (this.compilerOptions.solidityImportCompat && !func.isLibraryFunction && fileErrorNames.has(func.name)) {
         throw new FunctionRedefinitionError(func, paramTypes.map((t) => t.toString()).join(', '));
       }
@@ -762,7 +762,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
       // Only register first overload of a name in the symbol table (for identifier resolution)
       if (!this.functionDefinitions.has(func.name)) {
-        this.symbolTables[0].set(Symbol.function(func.name, returnType, paramTypes));
+        this.symbolTables[0].set(Symbol.function(
+          func.name, returnType, paramTypes,
+          func.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.name),
+        ));
       }
 
       func.functionId = this.nextFunctionId++;
@@ -1160,7 +1163,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
 
-      const paramTypes = func.parameters.map((p) => p.type);
+      const paramTypes = func.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type);
       const sig = computeFunctionSignature(func.name, paramTypes.map((t) => t.toString()));
       // A contract function may shadow a same-signature FREE function under Solidity-compat (legal Solidity);
       // native solidcash keeps the strict check (the free/contract collision is an error there).
@@ -1182,7 +1185,10 @@ export default class SymbolTableTraversal extends AstTraversal {
             : func.returnTypes.length > 1
               ? new TupleType(func.returnTypes)
               : PrimitiveType.VOID;
-          this.symbolTables[0].set(Symbol.function(func.name, returnType, paramTypes));
+          this.symbolTables[0].set(Symbol.function(
+            func.name, returnType, paramTypes,
+            func.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.name),
+          ));
         }
 
         // Assign OP_DEFINE function ID
@@ -2021,7 +2027,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         // authenticated by the participant mutual verifier. Neither the cloned
         // handler nor its compiler-owned message-bus batch wrapper may acquire the
         // unrelated direct-route category witness.
-        if (!node.graphEmissionHandler && !node.messageBusRoute) {
+        // Entry points authenticate a transaction-level category witness. Internal/public subroutine bodies
+        // instead receive the already-resolved logical sender as hidden OP_INVOKE context; giving those helpers
+        // a second declared category parameter makes graph handlers call `_checkOwner(bytes32)` as `_checkOwner()`.
+        if (node.visibility !== 'internal' && node.visibility !== 'private'
+          && !node.graphEmissionHandler && !node.messageBusRoute) {
           const categoryParam = new ParameterNode(new BytesType(32), '__internal__msgSenderCategory');
           categoryParam.location = node.location;
           node.parameters.push(categoryParam);

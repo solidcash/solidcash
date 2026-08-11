@@ -902,6 +902,10 @@ const evaluateEveryInput = (
           lockingBytecode: binToHex(sourceOutputs[inputIndex].lockingBytecode),
           unlockingBytecode: binToHex(transaction.inputs[inputIndex].unlockingBytecode),
         });
+        console.error('message-bus-selected-source-commitments', sourceOutputs.slice(105, 114).map((output, offset) => ({
+          inputIndex: offset + 105,
+          commitment: output.token?.nft === undefined ? undefined : binToHex(output.token.nft.commitment),
+        })));
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_FAILURE_RING === '1') {
           console.error('message-bus-selected-outputs', [3, 35, 40, 42, 105, 106, 107, 108, 109].map((outputIndex) => ({
             outputIndex,

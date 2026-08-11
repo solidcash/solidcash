@@ -33,7 +33,7 @@ const OPEN_OPS = new Set<number>([Op.OP_IF, Op.OP_NOTIF, Op.OP_BEGIN]);
 const CLOSE_OPS = new Set<number>([Op.OP_ENDIF, Op.OP_UNTIL]);
 // Never relocate: see properties (2) and (3) above.
 const BARRIER_OPS = new Set<number>([
-  Op.OP_DEFINE, Op.OP_INVOKE, Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
+  Op.OP_DEFINE, Op.OP_INVOKE, Op.OP_BEGIN, Op.OP_UNTIL, Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
   Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
 ]);
 

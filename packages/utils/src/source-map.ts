@@ -58,34 +58,18 @@ export function generateSourceMap(locationData: FullLocationData): string {
     const prevHintString = prevHint === hint ? '' : String(hint);
     prevHint = hint;
 
-    let result = '';
-    if (prevStartLineString) {
-      result += prevStartLineString;
-    }
-
-    result += ':';
-    if (prevStartColumnString) {
-      result += prevStartColumnString;
-    }
-
-    result += ':';
-    if (prevEndLineString) {
-      result += prevEndLineString;
-    }
-
-    result += ':';
-    if (prevEndColumnString) {
-      result += prevEndColumnString;
-    }
-
-    result += ':';
     if (prevHintString) {
-      result += prevHintString;
+      entries[index] = `${prevStartLineString}:${prevStartColumnString}:${prevEndLineString}`
+        + `:${prevEndColumnString}:${prevHintString}`;
+    } else if (prevEndColumnString) {
+      entries[index] = `${prevStartLineString}:${prevStartColumnString}:${prevEndLineString}:${prevEndColumnString}`;
+    } else if (prevEndLineString) {
+      entries[index] = `${prevStartLineString}:${prevStartColumnString}:${prevEndLineString}`;
+    } else if (prevStartColumnString) {
+      entries[index] = `${prevStartLineString}:${prevStartColumnString}`;
+    } else {
+      entries[index] = prevStartLineString;
     }
-
-    let resultEnd = result.length;
-    while (resultEnd > 0 && result.charCodeAt(resultEnd - 1) === 58) resultEnd -= 1;
-    entries[index] = resultEnd === result.length ? result : result.slice(0, resultEnd);
   }
   return entries.join(';');
 }

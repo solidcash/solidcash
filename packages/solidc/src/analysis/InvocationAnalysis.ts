@@ -86,6 +86,7 @@ export function collectNamedFunctionClosure(
 interface FootprintAnalysisCache {
   directCalls: WeakMap<FunctionDefinitionNode, Set<string>>;
   bodyNodes: WeakMap<FunctionDefinitionNode, { locallyBound: Set<string>; nodes: Node[] }>;
+  directFootprints: WeakMap<FunctionDefinitionNode, SplitStateFootprint>;
 }
 
 export function analyseFunctionFootprint(
@@ -99,6 +100,18 @@ export function analyseFunctionFootprint(
   const result = { unknown: false };
   for (const name of collectNamedFunctionClosure(fn, byName, cache?.directCalls)) {
     for (const candidate of byName.get(name) ?? []) {
+      const cachedFootprint = cache?.directFootprints.get(candidate);
+      if (cachedFootprint) {
+        for (const read of cachedFootprint.reads) reads.add(read);
+        for (const write of cachedFootprint.writes) writes.add(write);
+        for (const effect of cachedFootprint.effects) effects.add(effect);
+        if (cachedFootprint.unknown) result.unknown = true;
+        continue;
+      }
+      const directReads = new Set<string>();
+      const directWrites = new Set<string>();
+      const directEffects = new Set<string>();
+      let directUnknown = false;
       let locallyBound: Set<string>;
       let nodes: Node[] | undefined;
       const cached = cache?.bodyNodes.get(candidate);
@@ -140,16 +153,16 @@ export function analyseFunctionFootprint(
           ? (node as unknown as { array?: Node }).array as unknown as { constructor: { name: string }; name?: string }
           : undefined;
         const bareReadName = bareRead?.constructor.name === 'IdentifierNode' ? bareRead.name : undefined;
-        if (kind === 'StateAccessNode' && resourceName) reads.add(`state:${resourceName}`);
+        if (kind === 'StateAccessNode' && resourceName) directReads.add(`state:${resourceName}`);
         else if (bareReadName !== undefined && !locallyBound.has(bareReadName)) {
-          reads.add(collectionResourceName(bareReadName, undefined));
+          directReads.add(collectionResourceName(bareReadName, undefined));
         } else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource) {
-          reads.add(collectionResource);
+          directReads.add(collectionResource);
         } else if (/^(StateAssign|DeleteState)/.test(kind) && resourceName) {
-          writes.add(`state:${resourceName}`);
+          directWrites.add(`state:${resourceName}`);
         } else if (/^(MappingAssign|MappingFieldAssign|MappingDelete|StateArray(Push|Pop|Assign|Delete))/
           .test(kind) && collectionResource) {
-          writes.add(collectionResource);
+          directWrites.add(collectionResource);
         // X19: a BARE element write `m[k] = v` / `delete m[k]` is an ArrayAssign/ArrayDelete until symbol
         // resolution decides state-vs-local (only the `this.`-prefixed spelling is a MappingAssign from the
         // parser). This analysis runs BOTH before and after that resolution, so omitting the bare forms made one
@@ -159,18 +172,29 @@ export function analyseFunctionFootprint(
         // the same test is what symbol resolution later applies to choose MappingAssign over ArrayAssign.
         } else if (/^(ArrayAssign|ArrayDelete)/.test(kind) && collectionResource
           && resourceName && !locallyBound.has(resourceName)) {
-          writes.add(collectionResource);
-        } else if (kind === 'EmitStatementNode') effects.add('events');
-        else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode') effects.add('value');
+          directWrites.add(collectionResource);
+        } else if (kind === 'EmitStatementNode') directEffects.add('events');
+        else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode') directEffects.add('value');
         else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {
-          effects.add('external-call');
-        } else if (node instanceof IndirectCallNode) result.unknown = true;
+          directEffects.add('external-call');
+        } else if (node instanceof IndirectCallNode) directUnknown = true;
       };
       if (nodes) {
         for (const node of nodes) analyseNode(node);
       } else {
         walkInvocationAst(candidate.body, analyseNode);
       }
+      const directFootprint: SplitStateFootprint = {
+        reads: [...directReads],
+        writes: [...directWrites],
+        effects: [...directEffects],
+        unknown: directUnknown,
+      };
+      cache?.directFootprints.set(candidate, directFootprint);
+      for (const read of directReads) reads.add(read);
+      for (const write of directWrites) writes.add(write);
+      for (const effect of directEffects) effects.add(effect);
+      if (directUnknown) result.unknown = true;
     }
   }
   return {
@@ -239,7 +263,9 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
     byName.set(fn.name, defs);
   }
   const calls = new Map<number, Set<number>>();
-  const footprintCache: FootprintAnalysisCache = { directCalls: new WeakMap(), bodyNodes: new WeakMap() };
+  const footprintCache: FootprintAnalysisCache = {
+    directCalls: new WeakMap(), bodyNodes: new WeakMap(), directFootprints: new WeakMap(),
+  };
   for (const fn of functions) {
     const out = new Set<number>();
     const directCalls = new Set<string>();

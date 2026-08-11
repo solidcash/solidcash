@@ -8,10 +8,10 @@ Continue in this dedicated worktree:
 /Code/cashscript/.worktrees/release-readiness
 ```
 
-The verified integration baseline before this handoff document was committed is:
+The requested release baseline is:
 
 ```text
-bec314aeda61a2cd43fcaec92bb7bc295c129386
+c78c135b7
 ```
 
 The ordinary `solidcash_v0.13.1` checkout is `/Code/cashscript`. Both branches were synchronized when this
@@ -20,7 +20,14 @@ fast-forward it back deliberately.
 
 ## Valid evidence at the integrated head
 
-The following gates passed on the fully merged tree before this handoff:
+The candidate and ordinary release branch were synchronized at:
+
+```text
+4f0d1bb530df61dc19dba3d2b7c1d043b4185f1c
+```
+
+The following gates passed on this candidate lineage; the final change after the one-shot build/lint runs was
+limited to separating two NativeUSDT test cases, and targeted ESLint passed for that file:
 
 ```bash
 yarn lint
@@ -41,7 +48,81 @@ Integration commits, oldest first:
 bec314aed  fix(integration): restore release lint gates
 ```
 
-## BCHN matrix: useful diagnostics, not final evidence
+The post-rebase readiness series was preserved as
+`codex/release-readiness-pre-c78-snapshot-20260811`, rebuilt from `c78c135b7`, and then applied as ordinary
+commits on `codex/release-readiness-final`. The current series begins at `324cbca5f`; inspect `git log
+c78c135b7..HEAD` for the complete, authoritative list rather than relying on the older integration excerpt
+above.
+
+## BCHN matrix: current focused evidence and interrupted final gate
+
+At `324cbca5f`, the three consensus-impossible MistSwap constructor probes were explicitly classified as
+mock-only while their useful mock coverage was retained. Focused mock execution passed all 4 tests. With
+`TESTS_USE_REGTEST=true`, the consensus-compatible `CreatePairDeployVMap` layout row passed and the three
+oversized executable rows were reported as skipped (1 passed, 3 skipped).
+
+Old batch 38 was rerun from a wiped `release-readiness` BCHN/Fulcrum chain at the same candidate. All eight files
+and all 46 tests passed in 49.23 seconds. The old failure was therefore accumulated-chain contamination, not a
+reproducible defect at the rebased candidate.
+
+At `370b535e2`, a new 482-file diagnostic sweep reached the durable boundary at 352/482 files (44/61 batches).
+It was intentionally stopped during batch 45 after the shared chain made ordinary settlements take 45-55
+seconds each. Nine failed batches were then isolated on a fresh chain. Every recorded failure now has a concrete
+disposition:
+
+- `BchNativeInheritance` and `BchNativeQuarantineInheritance` use intentionally unsplit 10,744-byte and
+  11,866-byte fixtures. Their structural rows remain live and their behavioral rows are explicitly mock-only.
+- `OzBchNativeInheritance` and `MinimalNativeToken` now seed fungible bearer supply in the category genesis
+  transaction. Their complete live wrap/transfer/allowance/withdraw paths pass.
+- Four multi-call return-order rows compile a 12,157-byte consumer; the live-compatible single-call rows remain
+  live and the oversized rows are explicitly mock-only.
+- `DelegateMappingProbe` requires circular prechosen categories via mock-only `categoryOverride`; its metadata
+  assertion remains live.
+- `DeployThenCallFold` now asserts that the returned child category matches the funding input actually selected
+  by the connected signer, rather than assuming insertion order overrides largest-first coin selection.
+- The hand-linked NativeUSDT proxy/facet probes explicitly retain their documented mock-only chosen-category
+  classification. Their 29 mock rows pass; six structural live rows pass and 23 transactional rows skip.
+- `compileStringSplit` once again budgets constructor and widest-call pushes during facet packing and final facet
+  validation. The 29-test compiler splitting suite passes. From a wiped chain, the NativeUSDT bundle's constructed
+  shards deployed successfully and state initialization passed, proving the former 10,030-byte constructed-facet
+  refusal is fixed. BCHN consistently closes its RPC transport while validating the maximum-shape route spends,
+  even on fresh chains; those route assertions are therefore explicit mock-only coverage. Smaller split-route
+  BCHN regressions retain live routing coverage.
+- `Sec13UnpinnedEventNftPaths` remains an accumulated-chain-only failure: the encompassing old batch 38 region
+  passes 46/46 from a wiped chain.
+
+Focused evidence after the fixes includes:
+
+```text
+BCH native inheritance: mock 9/9; fresh BCHN 4 passed, 5 intentional skips
+CrossContractCallInfra: mock 8/8; BCHN 4 passed, 4 intentional skips
+DelegateMappingProbe: mock 5/5; BCHN 1 passed, 4 intentional skips
+DeployThenCallFold: mock 13/13; BCHN 13/13
+MinimalNativeToken: mock 2/2; BCHN 2/2
+NativeUSDT hand-linked rows: mock 29/29; BCHN 6 passed, 23 intentional skips
+solidc LargeContractSplitting: 29/29
+NativeUSDT built-in splitter: fresh BCHN deployment 1/1; maximum-shape routes explicit mock-only
+```
+
+`yarn build` and `yarn lint` both pass after these changes. Generated testing-suite content was unchanged; only
+regeneration timestamps moved, so they were restored rather than committed.
+
+An authoritative fail-fast matrix was started at exact head `4f0d1bb53` after wiping the
+`release-readiness` Docker volumes and starting a fresh BCHN/Fulcrum chain. It completed 128/482 files (16/61
+batches) with zero failed batches. It was intentionally interrupted just after batch 17 began so this handoff
+could be committed; no partial batch is claimed. The checkpoint is:
+
+```text
+packages/solidcash/.regtest-progress.json
+completed: 128
+total: 482
+failedBatches: []
+```
+
+Committing this handoff changes `HEAD`, so the runner's commit fingerprint will deliberately reject that old
+checkpoint. Treat the 128-file result as exact-parent evidence only, not as a resumable final-head attestation.
+
+## Older BCHN diagnostics (not final evidence)
 
 A pristine BCHN matrix was run at the older candidate `edbf5c2c8`. It reached 416/467 files (batches 1-52)
 before being intentionally interrupted during batch 53 to perform the branch integration. The durable ledger is:
@@ -56,14 +137,13 @@ fingerprint differs, but do not cite or manually resume it as proof for `bec314a
 The old run recorded failed batches 17, 31, and 38:
 
 - Batch 17: the live `CreatePairDeployC2` row (now named `CreatePairDeployVMap`) attempted a constructor probe
-  stack item of about 16.9 KB, exceeding BCHN's 520-byte stack-item limit. The layout-only row passed. The test
-  currently relaxes mock input/transaction policy but does not classify this live consensus boundary.
+  stack item of about 16.9 KB, exceeding BCHN's 520-byte stack-item limit. This is now classified as mock-only;
+  the layout-only row remains live.
 - Batch 31: `MasterChefDeposit` and `MasterChefPoolInfoPush` attempted about 16.6 KB constructor probe items,
-  again exceeding BCHN's 520-byte stack-item limit. These vendored MistSwap diagnostics also relax mock policy
-  but are not currently classified for live BCHN.
-- Batch 38: the terminal output was truncated, so the ledger identifies only the eight-file batch, not the exact
-  failing assertion. Reproduce it; do not assume the historical `Sec13UnpinnedEventNftPaths` high-fee failure is
-  still the cause.
+  again exceeding BCHN's 520-byte stack-item limit. These vendored MistSwap diagnostics are now classified as
+  mock-only.
+- Batch 38: the terminal output was truncated. Its clean-chain reproduction now passes all 46 tests, confirming
+  that the old report was caused by accumulated chain state.
 
 Batch 53 was running `AtomicMessageBusCompose` when interrupted. Its first six tests passed, while later cases
 hit their 120-240 second limits on the accumulated chain. Because the run was interrupted, those timeout reports
@@ -75,6 +155,31 @@ DeployThenCallFold, FunctionPointerArrayCall, NestedArrayDelete, Solidity corpus
 split/merge, upgrades, sorted mappings, and batches 39-52. These are diagnostic confidence only after the large
 `solidcash_v0.13.1` integration; rerun the relevant gates at the current head.
 
+Additional release gates already passed sequentially on this candidate lineage:
+
+```text
+corpus baseline: 2,698/2,805 positive; 323/2,158 over-accepted
+security conformance: passed
+documentation snippets: 128 compiled, 6 import-only skips, 0 failed; 33/33 SDK imports resolve
+spellcheck: 0 issues
+package smoke: all six packed packages; golden consumer 3/3
+application conformance: 95/95
+generated-project smoke: SolidHat 1/1; cache 1/1; golden path 21/21
+application regtest: fresh chain 9/9
+```
+
+The comprehensive gates also passed at `4f0d1bb53`:
+
+```text
+yarn test: solidc 3,240/3,240; solidcash 1,204 passed, 19 skipped, 5 todo;
+           utils 304/304; testing 27/27; solidhat 24/24; example suite 25/25
+yarn test:e2e: 348 files passed, 4 skipped; 2,742 passed, 23 skipped, 3 todo
+git diff --check: passed
+```
+
+The first application/generated attempts overlapped package-smoke rebuilding package outputs and were invalid;
+the sequential reruns above are the results to cite.
+
 ## Immediate continuation sequence
 
 1. Confirm the worktree is clean and record the candidate commit:
@@ -84,29 +189,21 @@ split/merge, upgrades, sorted mappings, and batches 39-52. These are diagnostic 
    git rev-parse HEAD
    ```
 
-2. Re-run focused mock coverage for the three oversized vendored fixtures. Preserve their diagnostic value on
-   the mock provider.
+2. If the NativeUSDT test or compiler changes again, rerun both halves. Split compilation takes about six minutes
+   per invocation on this machine; do not confuse the long silent compile with a hang:
 
-3. Classify the corresponding BCHN rows explicitly. A live skip is appropriate only if the test is intentionally
-   proving a mock-only, consensus-impossible oversized stack item; keep any layout/metadata assertion live.
-   Avoid weakening production consensus limits merely to make the fixtures pass.
-
-4. Reproduce old batch 38 on a fresh node and capture the exact failing test before changing code. Its files were:
-
-   ```text
-   SameGapChain.test.ts
-   SatoshiContainer.test.ts
-   SatoshiContainerIntegrity.test.ts
-   ScalarStateAdversarial.test.ts
-   Sec13UnpinnedEventNftPaths.test.ts
-   Sec14ZeroParamEventMarker.test.ts
-   SelfExternalFunctionPointer.test.ts
-   SelfLowLevelCall.test.ts
+   ```bash
+   TESTS_USE_REGTEST=true yarn --cwd packages/solidcash vitest run --no-file-parallelism \
+     test/e2e/NativeUsdtInherited.test.ts -t 'deploys a bundle whose constructed shards fit'
+   yarn --cwd packages/solidcash vitest run --no-file-parallelism \
+     test/e2e/NativeUsdtInherited.test.ts -t 'spends every generated NativeUSDT route'
    ```
 
-5. After focused fixes, run the relevant one-shot mock/live suites, then `yarn lint` and `yarn build`.
+3. Run `yarn lint` and the authoritative one-shot `yarn build` at the final documentation commit. Product source
+   already passed both; this closes the exact-commit bookkeeping gap.
 
-6. Start the authoritative full matrix from a wiped chain at the final candidate:
+4. Start the authoritative full matrix from a wiped chain at the final candidate. The Docker project is still
+   up at handoff time, but wipe its volumes because the prior run was interrupted:
 
    ```bash
    docker compose -p release-readiness -f docker-compose.regtest.yml down -v
@@ -118,13 +215,17 @@ split/merge, upgrades, sorted mappings, and batches 39-52. These are diagnostic 
    explicitly classified, wipe the chain again and run `yarn test:regtest` without continue-on-failure for final
    release evidence.
 
-7. Update the BCHN row in `RELEASE_READINESS.md` with the exact final commit, file/test totals, chain-reset
+5. Update the BCHN row in `RELEASE_READINESS.md` with the exact final commit, file/test totals, chain-reset
    procedure, and any documented skips. The current table still describes superseded candidates and must not be
    used as the final attestation.
 
-8. Run the broader release gates named in `package.json` and the first-release exit checklist, especially the
-   root test suite, security/application conformance, corpus baseline, generated-project smoke, package smoke,
-   spellcheck, and clean-checkout install/CI ordering. Do not infer those results from build/lint.
+6. Run the still-outstanding clean-checkout install/CI-ordering rehearsal. Root `yarn test` and the comprehensive
+   e2e suite are complete. The conformance, corpus, documentation, package-smoke, generated-project, spellcheck,
+   and application-regtest results above need rerunning only if subsequent changes can affect them.
+
+7. Audit and resolve the unchecked first-release exit items in `RELEASE_READINESS.md`, including the documented
+   limitation classification, exact-commit attestation, release-note evidence, and tag decision. The P2 items are
+   explicitly non-blocking deferrals.
 
 ## Completion standard
 

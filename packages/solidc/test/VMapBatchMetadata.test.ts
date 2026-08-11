@@ -12,7 +12,7 @@ describe('vmap fixed-write batch metadata', () => {
       }
     }`, { forceStateful: true });
     const fn = artifact.abi.find((f) => f.name === 'f');
-    expect(fn?.sortedBatchInfo).toEqual([{ collection: 'm', slotIndices: [0, 1] }]);
+    expect(fn?.sortedBatchInfo).toEqual([{ collection: 'm', slotIndices: [0, 1], linear: true }]);
   });
 
   // A single fixed upsert IS batched now, deliberately. The old `> 1` gate left a lone vmap insert - ERC20Mock's
@@ -65,7 +65,7 @@ describe('vmap fixed-write batch metadata', () => {
     }`, { forceStateful: true });
     const fn = artifact.abi.find((entry) => entry.name === 'initialize');
     expect(fn?.modifiers).toContain('delegate');
-    expect(fn?.sortedBatchInfo).toEqual([{ collection: 'm', slotIndices: [0, 1] }]);
+    expect(fn?.sortedBatchInfo).toEqual([{ collection: 'm', slotIndices: [0, 1], linear: true }]);
   });
 
   it('marks only a computed write followed by an actual delete as an alias candidate', () => {

@@ -7,7 +7,7 @@ import {
 import {
   bigIntToVmNumber, binToHex, binToUtf8, hexToBin, utf8ToBin, vmNumberToBigInt, isVmNumberError,
 } from '@bitauth/libauth';
-import { sha256 } from './hash.js';
+import { hash256, sha256 } from './hash.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 
 /** A primitive pushdata value: integer, boolean, byte array, or string (UTF-8 encoded). */
@@ -1484,36 +1484,29 @@ export function buildEntryNftCovenantScript(categoryId: Uint8Array, collectionHa
   const catInternal = categoryId.slice().reverse();
   return [
     // Stack: <masterInputIndex | 0> <flag>
-    Op.OP_IF,
-    // === Write path (flag=1): verify minting NFT at masterInputIndex ===
-    Op.OP_UTXOTOKENCATEGORY,
-    encodeInt(32n),
-    Op.OP_SPLIT,
-    Op.OP_2,
-    Op.OP_EQUALVERIFY,
-    catInternal,
-    Op.OP_TUCK,
-    Op.OP_EQUALVERIFY,
-    // Verify this input has the expected category
-    Op.OP_INPUTINDEX,
-    Op.OP_UTXOTOKENCATEGORY,
-    encodeInt(32n),
-    Op.OP_SPLIT,
-    Op.OP_DROP,
-    Op.OP_EQUALVERIFY,
-    Op.OP_ELSE,
-    // === Read-only path (flag=0): no master needed ===
-    Op.OP_DROP, // discard unused placeholder
-    // Self-pin (Stage 2): require this input's live category == C with mutable capability, so a fabricated
-    // foreign-category UTXO at this entry address is unspendable - address-based entry reads sound w/o master.
+    // Authenticate this mutable entry once for both branches, retaining its category base for the write comparison.
     Op.OP_INPUTINDEX,
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
     Op.OP_SPLIT,
     Op.OP_1,
-    Op.OP_EQUALVERIFY, // mutable capability (0x01)
+    Op.OP_EQUALVERIFY,
+    Op.OP_DUP,
     catInternal,
-    Op.OP_EQUALVERIFY, // correct category
+    Op.OP_EQUALVERIFY,
+    Op.OP_SWAP, // <masterInputIndex | 0> <entryCategoryBase> <flag>
+    Op.OP_IF,
+    // === Write path (flag=1): verify minting NFT at masterInputIndex ===
+    Op.OP_SWAP,
+    Op.OP_UTXOTOKENCATEGORY,
+    encodeInt(32n),
+    Op.OP_SPLIT,
+    Op.OP_2,
+    Op.OP_EQUALVERIFY,
+    Op.OP_EQUALVERIFY,
+    Op.OP_ELSE,
+    // === Read-only path (flag=0): no master needed ===
+    Op.OP_2DROP, // discard unused placeholder and the retained, already-authenticated category base
     // Self-preservation (bytecode) - prevents readers from redirecting entries
     Op.OP_INPUTINDEX,
     Op.OP_UTXOBYTECODE,
@@ -1553,6 +1546,16 @@ export function buildEntryNftCovenantScript(categoryId: Uint8Array, collectionHa
   ];
 }
 
+export const VALUE_CHUNK_DOMAIN_TAG = utf8ToBin('value-chunk');
+
+/** Hash the unambiguous, domain-separated identity committed by a root-addressed value-chunk covenant. */
+export function computeValueChunkDomain(
+  collectionHash: Uint8Array, slot: Uint8Array, root: Uint8Array,
+): Uint8Array {
+  if (slot.length !== 32 || root.length !== 32) throw new RangeError('value chunk slot/root must be 32 bytes');
+  return hash256(Uint8Array.from([...VALUE_CHUNK_DOMAIN_TAG, ...collectionHash, ...slot, ...root]));
+}
+
 /**
  * Build the hex-encoded bytecode for the entry-NFT covenant seeded with a category and collection signature.
  */
@@ -1560,9 +1563,7 @@ export function buildEntryNftCovenantScript(categoryId: Uint8Array, collectionHa
 export function buildValueChunkCovenantScript(
   categoryId: Uint8Array, collectionHash: Uint8Array, slot: Uint8Array, root: Uint8Array,
 ): Script {
-  if (slot.length !== 32 || root.length !== 32) throw new RangeError('value chunk slot/root must be 32 bytes');
-  const base = buildEntryNftCovenantScript(categoryId, collectionHash);
-  return [...base.slice(0, -1), slot, Op.OP_DROP, root, Op.OP_DROP, Op.OP_1];
+  return buildEntryNftCovenantScript(categoryId, computeValueChunkDomain(collectionHash, slot, root));
 }
 
 export function buildEntryNftCovenantBytecode(categoryIdHex: string, collectionSignature: string): string {

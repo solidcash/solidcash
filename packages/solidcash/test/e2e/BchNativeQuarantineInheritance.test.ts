@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import {
+  beforeAll, describe, expect, it,
+} from 'vitest';
 import { compileFile } from 'solidc';
 import { URL } from 'url';
 import type { Utxo } from '../../src/interfaces.js';
@@ -11,19 +13,28 @@ import {
 } from '../test-util.js';
 import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import { alicePub, bobPriv } from '../fixture/vars.js';
+import type { Artifact } from '@solidcash/utils';
 
 const source = new URL('../fixture/bch_native_quarantine_token.scash', import.meta.url);
+let artifact: Artifact;
+
+beforeAll(() => {
+  artifact = compileFile(source, { messageBus: false }) as Artifact;
+});
 
 describe('BchNativeQuarantine inheritance', () => {
-  it('adds pending state and oracle timing only when explicitly inherited', async () => {
-    const artifact = compileFile(source, { messageBus: false });
+  it('adds pending state and oracle timing only when explicitly inherited', () => {
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of ['wrap', 'withdraw', 'deposit', 'claimDeposit', 'cancelDeposit', '__updateBlockOracle']) {
       expect(abi).toContain(name);
     }
     expect(artifact.stateLayout?.collections.map((entry) => entry.name)).toContain('pendingDeposits');
     expect(artifact.stateLayout?.variables.map((entry) => entry.name)).toContain('__block_number');
+  });
 
+  // QuarantineToken's 11,866-byte redeem script is consensus-impossible without splitting. Its structural
+  // inheritance contract remains live above; this intentionally unsplit behavioral fixture is mock-only.
+  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('executes the inherited deposit behavior', async () => {
     const provider = createTestProvider();
     const inner = new Contract(artifact, [], { provider });
     const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {

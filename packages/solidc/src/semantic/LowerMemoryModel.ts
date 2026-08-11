@@ -573,7 +573,8 @@ export default class LowerMemoryModel extends AstTraversal {
 
   private walkYul(node: YulNode, visit: (node: YulNode) => void): void {
     visit(node);
-    for (const value of Object.values(node)) {
+    for (const key in node) {
+      const value = node[key as keyof YulNode];
       if (value instanceof YulNode) this.walkYul(value, visit);
       else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof YulNode) this.walkYul(item, visit);
@@ -1818,7 +1819,7 @@ export default class LowerMemoryModel extends AstTraversal {
 
   private stampTree(node: Node, loc: Node['location']): void {
     if (!node.location) node.location = loc;
-    for (const key of Object.keys(node)) {
+    for (const key in node) {
       const val = (node as unknown as Record<string, unknown>)[key];
       if (val instanceof Node) this.stampTree(val, loc);
       else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) this.stampTree(v, loc);

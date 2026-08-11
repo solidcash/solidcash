@@ -268,6 +268,32 @@ function findCandidates(
     return assigned;
   };
   const bodyIds = bodies.map((body) => body.script.map(idOf));
+  // Candidate seeds at adjacent offsets often compare the same long equal runs again (particularly generated
+  // function bodies with a shared prologue/epilogue). Memoize exact suffix-prefix lengths by body pair and
+  // diagonal. Filling the run backwards makes every element on a diagonal participate in at most one scan.
+  const commonPrefixByDiagonal = new Map<string, Int32Array>();
+  const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
+    const left = bodyIds[leftBody];
+    const right = bodyIds[rightBody];
+    if (leftStart >= left.length || rightStart >= right.length) return 0;
+    const key = `${leftBody}:${rightBody}:${rightStart - leftStart}`;
+    let lengths = commonPrefixByDiagonal.get(key);
+    if (lengths === undefined) {
+      lengths = new Int32Array(left.length);
+      commonPrefixByDiagonal.set(key, lengths);
+    }
+    const rightOffset = rightStart - leftStart;
+    let cursor = leftStart;
+    while (cursor < left.length && cursor + rightOffset < right.length
+      && lengths[cursor] === 0 && left[cursor] === right[cursor + rightOffset]) cursor += 1;
+    let suffix = cursor < left.length && lengths[cursor] !== 0 ? lengths[cursor] - 1 : 0;
+    for (let i = cursor - 1; i >= leftStart; i -= 1) {
+      suffix += 1;
+      lengths[i] = suffix + 1;
+    }
+    if (lengths[leftStart] === 0) lengths[leftStart] = 1;
+    return lengths[leftStart] - 1;
+  };
   const bodyBytePrefixes = bodies.map((body) => {
     const prefix = new Uint32Array(body.script.length + 1);
     for (let i = 0; i < body.script.length; i += 1) {
@@ -374,10 +400,10 @@ function findCandidates(
       const occurrence = group[occurrenceIndex];
       const ids = bodyIds[occurrence.body];
       const limit = Math.min(length, ids.length - occurrence.start);
-      let matching = seed;
-      while (matching < limit && ids[occurrence.start + matching] === firstIds[first.start + matching]) {
-        matching += 1;
-      }
+      const matching = seed + Math.min(
+        limit - seed,
+        commonPrefixLength(first.body, first.start + seed, occurrence.body, occurrence.start + seed),
+      );
       length = matching;
     }
 

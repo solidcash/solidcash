@@ -3198,9 +3198,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Descend through expression wrappers such as casts and creation-option wrappers. Semantic back-references
     // are deliberately excluded: only operations structurally present at this call site belong in its layout.
     if (node instanceof ExpressionNode) {
-      for (const [key, value] of Object.entries(node)) {
+      for (const key in node) {
         if (key === 'referencedContract' || key === 'resolvedFunction' || key === 'definition'
           || key === 'symbolTable' || key === 'type' || key === 'location') continue;
+        const value = node[key as keyof ExpressionNode];
         if (value instanceof Node) this.collectTransferStatements(value, transferInfos, seen);
         else if (Array.isArray(value)) {
           for (const child of value) {

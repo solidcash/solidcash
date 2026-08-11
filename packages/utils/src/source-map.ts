@@ -74,6 +74,35 @@ export function generateSourceMap(locationData: FullLocationData): string {
   return entries.join(';');
 }
 
+/** Apply the same location defaults as an encode/decode source-map round trip, without serializing. */
+export function normaliseSourceMapLocationData(locationData: FullLocationData): FullLocationData {
+  let prevStartLine = 0;
+  let prevStartColumn = 0;
+  let prevEndLine = 0;
+  let prevEndColumn = 0;
+  const normalised = new Array<FullLocationData[number]>(locationData.length);
+  for (let index = 0; index < locationData.length; index += 1) {
+    const entry = locationData[index];
+    const startLine = entry.location?.start.line ?? prevStartLine;
+    const startColumn = entry.location?.start.column ?? prevStartColumn;
+    const endLine = entry.location?.end.line ?? prevEndLine;
+    const endColumn = entry.location?.end.column ?? prevEndColumn;
+    const hint = entry.positionHint ?? PositionHint.START;
+    prevStartLine = startLine;
+    prevStartColumn = startColumn;
+    prevEndLine = endLine;
+    prevEndColumn = endColumn;
+    normalised[index] = {
+      location: {
+        start: { line: startLine, column: startColumn },
+        end: { line: endLine, column: endColumn },
+      },
+      positionHint: hint,
+    };
+  }
+  return normalised;
+}
+
 export const sourceMapToLocationData = (sourceMap: string): FullLocationData => {
   let prevStartLine = 0;
   let prevStartColumn = 0;

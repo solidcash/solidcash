@@ -15,7 +15,7 @@ import {
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
-  sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
+  SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   messageBusVerifierLockingBytecode,
 } from '@solidcash/utils';
@@ -4901,7 +4901,7 @@ function compileResolvedAst(
   // scripts (e.g. big fixed-size arrays). Skip the cross-check above a size threshold - it never changes output.
   const optimisationResult = optimiseBytecode(
     traversal.output,
-    sourceMapToLocationData(traversal.sourceMap),
+    traversal.getLocationDataForOptimisation(),
     traversal.consoleLogs,
     traversal.requires,
     constructorParamLength,
@@ -6370,7 +6370,7 @@ function compileReferencedContracts(
 
     const optimisationResult = optimiseBytecode(
       traversal.output,
-      sourceMapToLocationData(traversal.sourceMap),
+      traversal.getLocationDataForOptimisation(),
       traversal.consoleLogs,
       traversal.requires,
       contract.parameters.length,

@@ -25,6 +25,7 @@ import {
   VALUE_CHUNK_SIZE,
   encodeNftIndexTag,
   generateSourceMap,
+  normaliseSourceMapLocationData,
   FullLocationData,
   LogEntry,
   RequireStatement,
@@ -712,12 +713,15 @@ const isAggregate = (type: unknown): boolean =>
 
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private locationData: FullLocationData = []; // detailed location data needed for sourcemap creation
-  sourceMap: string;
   output: Script = [];
   stack: string[] = [];
   consoleLogs: LogEntry[] = [];
   requires: RequireStatement[] = [];
   finalStackUsage: Record<string, StackItem> = {};
+
+  getLocationDataForOptimisation(): FullLocationData {
+    return normaliseSourceMapLocationData(this.locationData);
+  }
 
   private scopeDepth = 0;
   private currentFunction: FunctionDefinitionNode;
@@ -1720,8 +1724,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.requires = optimised.requires;
 
     this.poolTopLevelConstants(node);
-
-    this.sourceMap = generateSourceMap(this.locationData);
 
     return node;
   }

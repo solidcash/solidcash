@@ -283,9 +283,12 @@ function findCandidates(
     for (let i = 0; i + minimumWindowElements <= ids.length; i += 1) {
       let hash = 0;
       for (let j = 0; j < minimumWindowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
-      const group = windows.get(hash) ?? [];
+      let group = windows.get(hash);
+      if (group === undefined) {
+        group = [];
+        windows.set(hash, group);
+      }
       group.push({ body: bodyIndex, start: i });
-      windows.set(hash, group);
     }
   });
 
@@ -297,9 +300,12 @@ function findCandidates(
     for (const occurrence of bucket) {
       const ids = bodyIds[occurrence.body];
       const key = ids.slice(occurrence.start, occurrence.start + minimumWindowElements).join(',');
-      const group = exact.get(key) ?? [];
+      let group = exact.get(key);
+      if (group === undefined) {
+        group = [];
+        exact.set(key, group);
+      }
       group.push(occurrence);
-      exact.set(key, group);
     }
     for (const group of exact.values()) {
       if (group.length >= 2) groups.push({ occurrences: group, seed: minimumWindowElements });
@@ -331,9 +337,12 @@ function findCandidates(
       // `<body> <id> OP_DEFINE`: the first element is a function being defined, not a constant being used.
       if (body.script[i + 2] === Op.OP_DEFINE) continue;
       const key = elementKey(element);
-      const group = constants.get(key) ?? [];
+      let group = constants.get(key);
+      if (group === undefined) {
+        group = [];
+        constants.set(key, group);
+      }
       group.push({ body: bodyIndex, start: i });
-      constants.set(key, group);
     }
   });
   for (const group of constants.values()) if (group.length >= 2) groups.push({ occurrences: group, seed: 1 });

@@ -536,7 +536,7 @@ export function outlineSharedSpans(
     script: [...body.script],
     locationData: [...body.locationData],
     anchors: [...(body.anchors ?? [])],
-    origins: body.script.map((_element, index) => index),
+    origins: undefined as number[] | undefined,
   }));
   const functions: OutlinedFunction[] = [];
   let savedBytes = 0;
@@ -610,6 +610,12 @@ export function outlineSharedSpans(
     }
     if (applied.length === 0) break;
 
+    // Most strategy probes discover nothing worth applying. Allocate origin maps only once a rewrite will
+    // actually need them; a no-op result can return the identity map directly below.
+    for (const body of working) {
+      body.origins ??= body.script.map((_element, index) => index);
+    }
+
     // Snapshot every array the rewrite mutates, so a round that turns out not to pay can be undone. The corpus
     // entries for existing functions alias those functions' own arrays, so restoring the corpus restores both.
     const before = emittedBytes(working, functions);
@@ -669,6 +675,13 @@ export function outlineSharedSpans(
     // which is one past the last instruction, and that pointer has to move with the body too.
     const indexMap = new Array<number>(originalLength + 1).fill(body.script.length);
     let cursor = 0;
+    if (body.origins === undefined) {
+      return {
+        script: body.script,
+        locationData: body.locationData,
+        indexMap: Array.from({ length: originalLength + 1 }, (_unused, position) => position),
+      };
+    }
     body.origins.forEach((origin, position) => {
       while (cursor <= origin && cursor < originalLength) {
         indexMap[cursor] = position;

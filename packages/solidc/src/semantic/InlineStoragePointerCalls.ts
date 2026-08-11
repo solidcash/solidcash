@@ -916,7 +916,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         return rooted(path, index, node.location);
       }
     }
-    for (const key of Object.keys(node)) {
+    for (const key in node) {
       if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
       const value = (node as unknown as Record<string, unknown>)[key];
       if (value instanceof Node) {
@@ -1016,7 +1016,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private walk(node: Node | undefined, visit: (n: Node) => void): void {
     if (!node) return;
     visit(node);
-    for (const key of Object.keys(node)) {
+    for (const key in node) {
       if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       if (v instanceof Node) this.walk(v, visit);
@@ -1025,7 +1025,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       } else if (key === 'callOptions' && v && typeof v === 'object') {
         // Call/deploy options are a plain object rather than an AST Node. They can still refer to helper
         // parameters (`new D{value: amount}()`), so descend into each expression during alpha-renaming.
-        for (const opt of Object.values(v as unknown as Record<string, unknown>)) {
+        for (const optKey in v) {
+          const opt = (v as unknown as Record<string, unknown>)[optKey];
           if (opt instanceof Node) this.walk(opt, visit);
         }
       }

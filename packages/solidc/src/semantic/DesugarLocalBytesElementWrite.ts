@@ -48,7 +48,7 @@ export default class DesugarLocalBytesElementWrite extends AstTraversal {
   private collectBytesDecls(n: Node | undefined): void {
     if (!n) return;
     if (n instanceof VariableDefinitionNode && this.isDynBytes(n.type)) this.bytesLocals.add(n.name);
-    for (const key of Object.keys(n)) {
+    for (const key in n) {
       const val = (n as unknown as Record<string, unknown>)[key];
       if (val instanceof Node) this.collectBytesDecls(val);
       else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) this.collectBytesDecls(v);

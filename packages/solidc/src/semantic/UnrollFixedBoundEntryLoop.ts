@@ -194,7 +194,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       }
       if (n instanceof ArrayPushNode || n instanceof ArrayPopNode) names.add(n.name);
       if (n instanceof DeleteLocalNode) names.add(n.identifier.name);
-      for (const key of Object.keys(n)) {
+      for (const key in n) {
         if (key === 'location') continue;
         const v = (n as unknown as Record<string, unknown>)[key];
         if (v instanceof Node) walk(v);
@@ -381,7 +381,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const walk = (n: Node): void => {
       if (!n) return;
       if (pred(n)) found += 1;
-      for (const key of Object.keys(n)) {
+      for (const key in n) {
         if (key === 'location') continue;
         const v = (n as unknown as Record<string, unknown>)[key];
         if (v instanceof Node) walk(v);
@@ -405,7 +405,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       }
       return undefined;
     };
-    for (const key of Object.keys(node)) {
+    for (const key in node) {
       if (key === 'location') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       const rep = replace(v);

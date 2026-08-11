@@ -3943,7 +3943,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         if (nowKeccakInLoop && current instanceof FunctionCallNode
           && current.identifier.name === GlobalFunction.KECCAK256) result.keccakInLoop = true;
-        if (current instanceof FunctionCallNode) result.hasFunctionCall = true;
+        if (current instanceof FunctionCallNode
+          && (current.identifier.name in this.resolvedLibraries || current.resolvedFunction !== undefined)) {
+          result.hasFunctionCall = true;
+        }
         if (current instanceof TransferStatementNode || current instanceof AddressTransferStatementNode
           || current instanceof AddressSendExpressionNode
           || (current instanceof LowLevelCallStatementNode && current.callOptions?.value !== undefined)

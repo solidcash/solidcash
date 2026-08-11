@@ -241,12 +241,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       && candidate.returnTypes.length === 1
       && candidate.returnTypes[0] instanceof AddressType
       && candidate.returnTypes[0].interfaceName).map((candidate) => candidate.name));
-    let found = false;
-    this.walk(fn.body, (n) => {
+    for (const n of this.nodesOf(fn)) {
       if (n instanceof MethodCallNode && n.object instanceof FunctionCallNode
-        && pureIfaceHelpers.has(n.object.identifier.name)) found = true;
-    });
-    return found;
+        && pureIfaceHelpers.has(n.object.identifier.name)) return true;
+    }
+    return false;
   }
 
   visitContract(node: ContractNode): Node {
@@ -312,10 +311,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // code generation correctly refuses it. Inline it into the compiler-owned route just like a context-only
     // graph clone. A real emission handler retains its definition and graph frame exactly as before.
     for (const fn of node.functions) {
-      let appendsDynamicArray = false;
-      this.walk(fn.body, (candidate) => {
-        if (candidate instanceof StateArrayPushNode) appendsDynamicArray = true;
-      });
+      const appendsDynamicArray = this.nodesOf(fn).some((candidate) => candidate instanceof StateArrayPushNode);
       const compilerOwnedRouteClone = fn.name.startsWith('__message_bus_entry_')
         || fn.name.startsWith('__message_bus_resource_')
         || (fn.graphEmissionHandler && (fn.externalCalls?.length ?? 0) === 0);
@@ -346,7 +342,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of this.freeFns) {
       const dot = fn.name.lastIndexOf('.');
       const libPrefix = dot >= 0 ? fn.name.slice(0, dot + 1) : ''; // e.g. 'Address.'
-      this.walk(fn.body, (n) => {
+      for (const n of this.nodesOf(fn)) {
         if (n instanceof FunctionCallNode) {
           const called = n.identifier.name;
           this.freeFnRefs.add(called);
@@ -363,7 +359,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
           if (libPrefix) this.freeFnRefs.add(libPrefix + n.methodName);
           for (const library of this.usingForLibraryNames) this.freeFnRefs.add(`${library}.${n.methodName}`);
         }
-      });
+      }
     }
     // Library free-functions are inlined here as storage-pointer value helpers, or (like OZ Address's
     // `functionCall`) as single-tail-return helpers containing a low-level call; other library functions keep
@@ -622,12 +618,12 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const dot = fn.name.lastIndexOf('.');
       if (dot < 0 || !fn.body) continue;
       const prefix = fn.name.slice(0, dot + 1);
-      this.walk(fn.body, (n) => {
+      for (const n of this.nodesOf(fn)) {
         if (n instanceof FunctionCallNode && !n.identifier.name.includes('.')
           && this.funcByName.has(prefix + n.identifier.name)) {
           n.identifier.name = prefix + n.identifier.name;
         }
-      });
+      }
     }
   }
 
@@ -748,12 +744,12 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
     for (const fn of bodies) {
       if (!fn?.body) continue;
-      this.walk(fn.body, (n) => {
+      for (const n of this.nodesOf(fn)) {
         if (n instanceof FunctionCallNode && n.identifier) callIdentifiers.add(n.identifier);
-      });
-      this.walk(fn.body, (n) => {
+      }
+      for (const n of this.nodesOf(fn)) {
         if (n instanceof IdentifierNode && !callIdentifiers.has(n)) referenced.add(n.name);
-      });
+      }
     }
     return referenced;
   }

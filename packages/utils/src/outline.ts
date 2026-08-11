@@ -184,29 +184,31 @@ function longestBalancedSpan(
   elements: Script, anchored: (index: number) => boolean,
   regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
 ): { start: number; end: number; bytes: number } {
-  let best = { start: 0, end: 0, bytes: 0 };
+  let bestStart = 0;
+  let bestEnd = 0;
+  let bestBytes = 0;
   let depth = 0;
   const { firstIndexAtDepth, depthGeneration } = scratch;
   let generation = ++scratch.generation;
   depthGeneration[0] = generation;
   firstIndexAtDepth[0] = 0;
-  const reset = (start: number): void => {
-    depth = 0;
-    generation = ++scratch.generation;
-    depthGeneration[0] = generation;
-    firstIndexAtDepth[0] = start;
-  };
   for (let i = 0; i < regionLength; i += 1) {
     const element = elements[regionStart + i];
     if (isBarrier(element) || anchored(i)) {
-      reset(i + 1);
+      depth = 0;
+      generation = ++scratch.generation;
+      depthGeneration[0] = generation;
+      firstIndexAtDepth[0] = i + 1;
       continue;
     }
     if (element === Op.OP_ELSE) depthGeneration[depth] = 0;
     const previousDepth = depth;
     depth += controlDelta(element);
     if (depth < 0) {
-      reset(i + 1);
+      depth = 0;
+      generation = ++scratch.generation;
+      depthGeneration[0] = generation;
+      firstIndexAtDepth[0] = i + 1;
       continue;
     }
     if (depth < previousDepth) {
@@ -219,9 +221,13 @@ function longestBalancedSpan(
     }
     const start = firstIndexAtDepth[depth];
     const bytes = bytePrefix[regionStart + i + 1] - bytePrefix[regionStart + start];
-    if (bytes > best.bytes) best = { start, end: i + 1, bytes };
+    if (bytes > bestBytes) {
+      bestStart = start;
+      bestEnd = i + 1;
+      bestBytes = bytes;
+    }
   }
-  return best;
+  return { start: bestStart, end: bestEnd, bytes: bestBytes };
 }
 
 interface Occurrence { body: number; start: number }

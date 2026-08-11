@@ -167,24 +167,26 @@ const isBarrier = (element: Script[number]): boolean =>
  */
 function longestBalancedSpan(
   elements: Script, anchored: (index: number) => boolean,
+  regionStart = 0, regionLength = elements.length,
 ): { start: number; end: number; bytes: number } {
   // Prefix byte sizes make every candidate's encoded length an O(1) subtraction.
-  const prefixBytes = new Array<number>(elements.length + 1).fill(0);
-  for (let i = 0; i < elements.length; i += 1) {
-    prefixBytes[i + 1] = prefixBytes[i] + elementByteSize(elements[i]);
+  const prefixBytes = new Array<number>(regionLength + 1).fill(0);
+  for (let i = 0; i < regionLength; i += 1) {
+    prefixBytes[i + 1] = prefixBytes[i] + elementByteSize(elements[regionStart + i]);
   }
   let best = { start: 0, end: 0, bytes: 0 };
   let depth = 0;
   let firstIndexAtDepth = new Map<number, number>([[0, 0]]);
-  for (let i = 0; i < elements.length; i += 1) {
-    if (isBarrier(elements[i]) || anchored(i)) {
+  for (let i = 0; i < regionLength; i += 1) {
+    const element = elements[regionStart + i];
+    if (isBarrier(element) || anchored(i)) {
       depth = 0;
       firstIndexAtDepth = new Map<number, number>([[0, i + 1]]);
       continue;
     }
-    if (elements[i] === Op.OP_ELSE) firstIndexAtDepth.delete(depth);
+    if (element === Op.OP_ELSE) firstIndexAtDepth.delete(depth);
     const previousDepth = depth;
-    depth += controlDelta(elements[i]);
+    depth += controlDelta(element);
     if (depth < 0) {
       depth = 0;
       firstIndexAtDepth = new Map<number, number>([[0, i + 1]]);
@@ -382,7 +384,7 @@ function findCandidates(
     }
 
     const head = group[0];
-    const region = bodies[head.body].script.slice(head.start, head.start + length);
+    const headScript = bodies[head.body].script;
     // A span is only relocatable if it is anchor-free at *every* occurrence, so test them all against one
     // region-relative index space.
     const anchoredIndices = new Uint8Array(length);
@@ -395,7 +397,7 @@ function findCandidates(
       }
     }
     const anchored = (index: number): boolean => anchoredIndices[index] !== 0;
-    const balanced = longestBalancedSpan(region, anchored);
+    const balanced = longestBalancedSpan(headScript, anchored, head.start, length);
     if (balanced.bytes === 0) continue;
 
     // Overlapping copies cannot both be replaced; keep a maximal non-overlapping subset. `group` already follows
@@ -422,7 +424,7 @@ function findCandidates(
     const saved = savingsOf(balanced.bytes, occurrences.length, idPushBytes);
     if (saved <= 0) continue;
     candidates.push({
-      span: region.slice(balanced.start, balanced.end),
+      span: headScript.slice(head.start + balanced.start, head.start + balanced.end),
       bytes: balanced.bytes,
       occurrences,
       saved,

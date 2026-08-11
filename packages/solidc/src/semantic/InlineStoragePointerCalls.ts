@@ -129,6 +129,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    if (!this.inlineSolidityInitializers && node.collections.length === 0 && node.stateVariables.length === 0) {
+      return node;
+    }
     this.funcByName = new Map();
     this.funcByKey = new Map();
     for (const fn of [...node.functions, ...this.freeFns]) {

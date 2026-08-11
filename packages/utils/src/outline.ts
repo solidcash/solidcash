@@ -487,7 +487,9 @@ function findCandidates(
   let constantGroups = prepared.constantGroups;
   if (constantGroups === undefined) {
     const constants = new Map<number, Occurrence[]>();
-    bodies.forEach((body, bodyIndex) => {
+    for (let bodyIndex = 0; bodyIndex < bodies.length; bodyIndex += 1) {
+      const body = bodies[bodyIndex];
+      const ids = bodyIds[bodyIndex];
       for (let i = 0; i < body.script.length; i += 1) {
         const element = body.script[i];
         if (typeof element === 'number') continue;
@@ -498,7 +500,7 @@ function findCandidates(
         if (body.script[i + 2] === Op.OP_DEFINE) continue;
         // `bodyIds` already interns byte-identical elements for this discovery pass. Reuse that exact identity rather
         // than rebuilding the (potentially large) constant's string key a second time.
-        const key = bodyIds[bodyIndex][i];
+        const key = ids[i];
         let group = constants.get(key);
         if (group === undefined) {
           group = [];
@@ -506,8 +508,11 @@ function findCandidates(
         }
         group.push({ body: bodyIndex, start: i });
       }
-    });
-    constantGroups = [...constants.values()].filter((group) => group.length >= 2);
+    }
+    constantGroups = [];
+    for (const group of constants.values()) {
+      if (group.length >= 2) constantGroups.push(group);
+    }
     prepared.constantGroups = constantGroups;
   }
   for (const group of constantGroups) groups.push({ occurrences: group, seed: 1 });

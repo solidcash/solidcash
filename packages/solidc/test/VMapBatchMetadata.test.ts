@@ -55,6 +55,19 @@ describe('vmap fixed-write batch metadata', () => {
     expect(fn?.sortedBatchInfo).toBeUndefined();
   });
 
+  it('batches multiple delegate writes that would otherwise reuse one predecessor', () => {
+    const artifact = compileString(`library L {
+      mapping(string => string) m;
+      function initialize() public {
+        m["a"] = "A";
+        m["b"] = "B";
+      }
+    }`, { forceStateful: true });
+    const fn = artifact.abi.find((entry) => entry.name === 'initialize');
+    expect(fn?.modifiers).toContain('delegate');
+    expect(fn?.sortedBatchInfo).toEqual([{ collection: 'm', slotIndices: [0, 1] }]);
+  });
+
   it('marks only a computed write followed by an actual delete as an alias candidate', () => {
     const artifact = compileString(`contract C {
       address[] keys;

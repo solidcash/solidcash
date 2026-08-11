@@ -4789,11 +4789,70 @@ function compileResolvedAst(
     };
   }
   if (messageBusRoute?.blockLayout) {
+    const handlerManagedEntrySlots = new Set<number>();
     for (const fn of ast.contract.functions) {
-      if (fn.graphEmissionHandler || fn.name.startsWith('__message_bus_array_')) {
+      const routeClone = fn.graphEmissionHandler || fn.name.startsWith('__message_bus_array_')
+        || fn.name.startsWith('__message_bus_entry_');
+      if (routeClone) {
         fn.blockLayout = messageBusRoute.blockLayout;
       }
+      if ((routeClone || fn.messageBusEligible)
+        && fn.entryAccesses?.length && messageBusRoute.entryAccesses?.length) {
+        fn.messageBusPhysicalEntrySlots = fn.entryAccesses.map((entry) => {
+          const byShape = messageBusRoute.entryAccesses!.filter((routeEntry) =>
+            routeEntry.collection === entry.collection
+              && routeEntry.keyParams.length === entry.keyParams.length);
+          const keyBase = (key: string): string => {
+            const bare = key.startsWith('id:') ? key.slice(3) : key;
+            const unwrapped = bare.startsWith('__message_bus_ek_')
+              ? bare.slice('__message_bus_ek_'.length) : bare;
+            return unwrapped.replace(/_r\d+$/, '');
+          };
+          const byKeyName = byShape.filter((routeEntry) => routeEntry.keyParams
+            .every((key, index) => keyBase(key) === keyBase(entry.keyParams[index])));
+          const witnessKeys = entry.keySources?.map((source) => {
+            const witnessPrefix = `__message_bus_key_${entry.collection.replace(/[^A-Za-z0-9_]/g, '_')}_`;
+            if (source.kind === 'msgSender'
+              || (source.kind === 'expression' && source.canonical === 'nullop:msg.sender')) {
+              return fn.messageBusKeyWitnesses
+                ?.find((binding) => binding.source === 'msgSender'
+                  && binding.routeInput.startsWith(witnessPrefix))?.routeInput;
+            }
+            if (source.kind !== 'param') return undefined;
+            const inputIndex = fn.parameters
+              .filter((parameter) => !parameter.name.startsWith('__internal__'))
+              .findIndex((parameter) => parameter.name === source.paramName);
+            return fn.messageBusKeyWitnesses
+              ?.find((binding) => binding.inputIndex === inputIndex
+                && binding.routeInput.startsWith(witnessPrefix))?.routeInput;
+          });
+          const byWitness = witnessKeys?.every((key) => key !== undefined)
+            ? byShape.filter((routeEntry) => routeEntry.keyParams
+              .every((key, index) => keyBase(key) === keyBase(witnessKeys[index]!)))
+            : [];
+          const named = byWitness.length > 0 ? byWitness : byKeyName;
+          const canonical = named.length > 1
+            ? [named.reduce((lowest, candidate) =>
+              (candidate.slotIndex < lowest.slotIndex ? candidate : lowest))]
+            : named;
+          const candidates = canonical.length === 1 ? canonical : byShape;
+          if (candidates.length !== 1) {
+            throw new Error(
+              `Message-bus handler '${fn.name}' cannot uniquely map collection '${entry.collection}' `
+                + `to its physical route entry slot (${JSON.stringify({
+                  entry, candidates, parameters: fn.parameters.map((parameter) => parameter.name),
+                  witnesses: fn.messageBusKeyWitnesses, witnessKeys,
+                }, (_key, value) => typeof value === 'bigint' ? value.toString() : value)})`,
+            );
+          }
+          const physical = candidates[0];
+          physical.operations = [...new Set([...physical.operations, ...entry.operations])];
+          handlerManagedEntrySlots.add(physical.slotIndex);
+          return physical.slotIndex;
+        });
+      }
     }
+    messageBusRoute.messageBusHandlerManagedEntrySlots = [...handlerManagedEntrySlots];
   }
   // The bounded resource route canonicalizes a row-local mapping identity to the first equal earlier identity.
   // Record the corresponding physical-slot alternatives after entry slots have been assigned, but before

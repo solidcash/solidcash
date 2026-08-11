@@ -191,6 +191,7 @@ interface OptionalLoweringFeatures {
   needsSpecialMethodPruning: boolean;
   needsDynamicStateJournal: boolean;
   needsCollectionJournal: boolean;
+  needsExternalCallLowering: boolean;
 }
 
 function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
@@ -225,6 +226,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let needsSpecialMethodPruning = false;
   let needsDynamicStateJournal = false;
   let needsCollectionJournal = false;
+  let needsExternalCallLowering = false;
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
@@ -236,6 +238,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       needsSpecialMethodPruning = true;
       needsDynamicStateJournal = true;
       needsCollectionJournal = true;
+      needsExternalCallLowering = true;
     } else if ((node instanceof NullaryOpNode && String(node.operator).startsWith('block.'))
       || (node instanceof IdentifierNode && node.name === 'now')
       || (node instanceof FunctionCallNode
@@ -252,6 +255,12 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       || (node instanceof TypeIntrospectionNode
         && (node.property === 'creationCode' || node.property === 'runtimeCode'))) {
       needsSpecialMethodPruning = true;
+    }
+    if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
+      || node instanceof LowLevelCallStatementNode || node instanceof MethodCallNode
+      || node instanceof MethodCallStatementNode || node.constructor.name.startsWith('External')
+      || (node instanceof FunctionCallNode && node.identifier.name.includes('.'))) {
+      needsExternalCallLowering = true;
     }
     if (node instanceof ContractNode) {
       if (node.collections.length > 0) needsCollectionJournal = true;
@@ -277,6 +286,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
           needsSpecialMethodPruning: true,
           needsDynamicStateJournal: true,
           needsCollectionJournal: true,
+          needsExternalCallLowering: true,
         };
       }
       if ((value instanceof ArrayType || value instanceof MappingType
@@ -299,6 +309,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsSpecialMethodPruning,
     needsDynamicStateJournal,
     needsCollectionJournal,
+    needsExternalCallLowering,
   };
 }
 
@@ -4635,6 +4646,7 @@ function compileResolvedAst(
   const {
     hasFunctionPointers, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
     needsSpecialMethodPruning, needsDynamicStateJournal, needsCollectionJournal,
+    needsExternalCallLowering,
   } = surveyOptionalLowerings(ast);
   if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
@@ -4743,11 +4755,11 @@ function compileResolvedAst(
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
-  ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
 
   // `address(this).call(payload)` -> a plain internal call (+ constant true success). Before the inline
   // passes so a state-touching callee (incl. the fallback) is inlined into the entry point like any other.
-  ast = ast.accept(new LowerSelfLowLevelCalls()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new LowerSelfLowLevelCalls()) as Ast;
   // A high-level `this.f(args)` also creates fresh calldata. Reconstruct msg.data from f's selector + live
   // parameters so the direct OP_INVOKE lowering does not depend on OP_ACTIVEBYTECODE inside the subroutine.
   if (needsMsgDataContext) ast = ast.accept(new LowerSelfCallMsgData()) as Ast;
@@ -4762,7 +4774,7 @@ function compileResolvedAst(
 
   // `A.getter().m(args)` (getter returns a contract) -> `IReturn __chaincall_N = A.getter(); __chaincall_N.m(..)`,
   // so the chained call on the getter's (integrity-bound) return dispatches via the audited interface-local path.
-  ast = ast.accept(new HoistChainedContractCalls()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new HoistChainedContractCalls()) as Ast;
 
   // Lower eligible single-entry mapping helpers to value-threaded OP_INVOKE handlers before the legacy
   // entry-reading inline passes see them.
@@ -4813,22 +4825,22 @@ function compileResolvedAst(
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
   // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
-  ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
   // A guarded pointer-table row hoists its element + runtime-selector locals inside the branch; move only their
   // DECLARATIONS to the body top so the epilogue can read them while the reads stay conditional.
   if (messageBusGraphMode) ast = ast.accept(new HoistPointerTableBranchLocals()) as Ast;
   // A branch-local interface-cast external-call target variable -> hoist its DECLARATION to the body top so the
   // co-spend reads it at the epilogue (UniswapV2Pair mint's `migrator`); the external calls stay conditional.
-  ast = ast.accept(new HoistBranchLocalExtcallTargets()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new HoistBranchLocalExtcallTargets()) as Ast;
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
-  ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
   // A NON-LOOP param-rooted array-element target `IERC20(path[path.length-1]).m()` -> hoist to a function-top
   // address local so it is a fixed-slot co-spend (not mistaken for a per-iteration loop-array dispatch).
-  ast = ast.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
   // A contract/interface-typed external-call target LOCAL declared in a branch (e.g. a `restricted` modifier's
   // if-wrapper) is popped before the epilogue's co-spend verification -> capture it into a function-top local.
-  ast = ast.accept(new CaptureBranchExternalCallTargets()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new CaptureBranchExternalCallTargets()) as Ast;
   // `L.f()` calls to a state-touching (delegate) library -> a delegatecall against the caller's state (with a
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
   ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;

@@ -398,13 +398,13 @@ function findCandidates(
     const balanced = longestBalancedSpan(region, anchored);
     if (balanced.bytes === 0) continue;
 
-    // Overlapping copies cannot both be replaced; keep a maximal non-overlapping subset in body order.
+    // Overlapping copies cannot both be replaced; keep a maximal non-overlapping subset. `group` already follows
+    // body/start order: windows and constants are scanned in that order, and collision partitioning only filters
+    // those streams. Avoid sorting the same sequence again for every candidate.
     const spanLength = balanced.end - balanced.start;
-    const starts = group
-      .map((occurrence) => ({ body: occurrence.body, start: occurrence.start + balanced.start }))
-      .sort((left, right) => left.body - right.body || left.start - right.start);
     const occurrences: Occurrence[] = [];
-    for (const occurrence of starts) {
+    for (const source of group) {
+      const occurrence = { body: source.body, start: source.start + balanced.start };
       const previous = occurrences[occurrences.length - 1];
       if (previous && previous.body === occurrence.body && occurrence.start < previous.start + spanLength) continue;
       occurrences.push(occurrence);

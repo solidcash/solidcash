@@ -214,6 +214,12 @@ interface Candidate {
   saved: number;
 }
 
+function sortCandidates(candidates: Candidate[], ranking: 'savings' | 'density'): Candidate[] {
+  return candidates.sort((left, right) => (ranking === 'density'
+    ? (right.saved / right.bytes) - (left.saved / left.bytes) : right.saved - left.saved)
+    || right.saved - left.saved || right.bytes - left.bytes);
+}
+
 /** Net bytes saved by sharing `count` copies of a `bytes`-sized span behind `idPushBytes`-sized invocations. */
 function savingsOf(bytes: number, count: number, idPushBytes: number): number {
   const definitionOverhead = bytes < 76 ? 1 : bytes < 256 ? 2 : 3;
@@ -398,10 +404,7 @@ function findCandidates(
   // Ties broken toward the longer span. Claiming is first-come, and a short span applied first fragments every
   // longer span that contains it: the longer one survives the next round only as a shorter, less profitable
   // remainder. Preferring length on equal savings keeps the containing span whole.
-  candidates.sort((left, right) => (ranking === 'density'
-    ? (right.saved / right.bytes) - (left.saved / left.bytes) : right.saved - left.saved)
-    || right.saved - left.saved || right.bytes - left.bytes);
-  return candidates;
+  return sortCandidates(candidates, ranking);
 }
 
 /**
@@ -425,6 +428,8 @@ export function outlineSharedSpans(
   minimumWindowElements: number = MINIMUM_WINDOW_ELEMENTS,
   /** Maximum ranked candidate groups extended in each round; lower probes can change greedy claim order. */
   candidateGroupsPerRound: number = CANDIDATE_GROUPS_PER_ROUND,
+  /** Call-scoped cache shared only by attempts that start from the same bodies and anchors. */
+  initialCandidateCache?: Map<string, unknown>,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
@@ -449,9 +454,14 @@ export function outlineSharedSpans(
     // claim sites in, so the caller may legitimately quote a width wider than its next allocation to hold
     // marginal candidates back.
     const idPushBytes = peekIdPushBytes?.() ?? PROBE_IDENTIFIER_PUSH_BYTES;
-    const candidates = findCandidates(
-      corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound,
-    );
+    const initialCacheKey = `${idPushBytes}:${minimumWindowElements}:${candidateGroupsPerRound}`;
+    const cached = round === 0
+      ? initialCandidateCache?.get(initialCacheKey) as Candidate[] | undefined
+      : undefined;
+    const candidates = cached === undefined
+      ? findCandidates(corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound)
+      : sortCandidates([...cached], ranking);
+    if (round === 0 && cached === undefined) initialCandidateCache?.set(initialCacheKey, [...candidates]);
     if (candidates.length === 0) break;
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:

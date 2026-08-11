@@ -36,19 +36,21 @@ export function generateSourceMap(locationData: FullLocationData): string {
     // A compiler-generated instruction may carry no source location (like solc's empty source-map entries).
     // Fall back to the previous mapping's positions so the fields serialise as empty ("same as previous")
     // rather than crashing on a missing location.
-    const start = location?.start ?? { line: prevStartLine, column: prevStartColumn };
-    const end = location?.end ?? { line: prevEndLine, column: prevEndColumn };
-    const prevStartLineString = prevStartLine === start.line ? '' : String(start.line);
-    prevStartLine = start.line;
+    const startLine = location?.start.line ?? prevStartLine;
+    const startColumn = location?.start.column ?? prevStartColumn;
+    const endLine = location?.end.line ?? prevEndLine;
+    const endColumn = location?.end.column ?? prevEndColumn;
+    const prevStartLineString = prevStartLine === startLine ? '' : String(startLine);
+    prevStartLine = startLine;
 
-    const prevStartColumnString = prevStartColumn === start.column ? '' : String(start.column);
-    prevStartColumn = start.column;
+    const prevStartColumnString = prevStartColumn === startColumn ? '' : String(startColumn);
+    prevStartColumn = startColumn;
 
-    const prevEndLineString = prevEndLine === end.line ? '' : String(end.line);
-    prevEndLine = end.line;
+    const prevEndLineString = prevEndLine === endLine ? '' : String(endLine);
+    prevEndLine = endLine;
 
-    const prevEndColumnString = prevEndColumn === end.column ? '' : String(end.column);
-    prevEndColumn = end.column;
+    const prevEndColumnString = prevEndColumn === endColumn ? '' : String(endColumn);
+    prevEndColumn = endColumn;
 
     const hint = positionHint ?? PositionHint.START;
     const prevHintString = prevHint === hint ? '' : String(hint);
@@ -79,8 +81,9 @@ export function generateSourceMap(locationData: FullLocationData): string {
       result += prevHintString;
     }
 
-    result = result.replace(/:*$/, '');
-    return result;
+    let resultEnd = result.length;
+    while (resultEnd > 0 && result.charCodeAt(resultEnd - 1) === 58) resultEnd -= 1;
+    return resultEnd === result.length ? result : result.slice(0, resultEnd);
   }).join(';');
 }
 

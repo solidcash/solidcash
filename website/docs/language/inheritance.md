@@ -290,6 +290,7 @@ contract Calculator() {
     function compute(int x) {
         int sq = x.square();         // method syntax via using-for
         int clamped = MathLib.clamp(x, 0, 100);  // direct call
+        require(sq >= clamped);
     }
 }
 ```
@@ -310,6 +311,7 @@ contract Vault() {
     function deposit(int amount) {
         validateAmount(amount);
         // ...
+        require(true);
     }
 }
 ```

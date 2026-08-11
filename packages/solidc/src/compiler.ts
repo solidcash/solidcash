@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import {
-  CharStream, CommonTokenStream, ParserATNSimulator, PredictionContextCache,
+  BailErrorStrategy, CharStream, CommonTokenStream, ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
 import {
@@ -6998,28 +6998,38 @@ export function parseCode(
   // nested parse of compiler-generated route source cannot pick up an importing file's id; the generated mark
   // wins over any file label anyway (`importedFileCaveat`).
   return withSourceFile(importedFileId, () => {
-    const syntaxErrorListener = new ForwardingErrorListener(errorListener);
-
-    // Lexing (throwing on errors)
-    const inputStream = new CharStream(code);
-    const lexer = new SolidCashLexer(inputStream);
-    lexer.removeErrorListeners();
-    lexer.addErrorListener(syntaxErrorListener);
-    const tokenStream = new CommonTokenStream(lexer);
-
-    // Parsing (throwing on errors)
-    const parser = new SolidCashParser(tokenStream);
-    // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
-    // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
-    // across instances; do the same, so a process that parses many sources - a compile also parses the generated
-    // message-bus route - reuses that work instead of repaying it.
-    parser._interp = new ParserATNSimulator(
-      parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
-    );
-    parser.removeErrorListeners();
-    parser.addErrorListener(syntaxErrorListener);
-    const parseTree = parser.sourceFile();
-    syntaxErrorListener.throwFirstError();
+    const parse = (fast: boolean): ReturnType<SolidCashParser['sourceFile']> => {
+      const syntaxErrorListener = fast
+        ? ThrowingErrorListener.INSTANCE : new ForwardingErrorListener(errorListener);
+      const lexer = new SolidCashLexer(new CharStream(code));
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(syntaxErrorListener);
+      const parser = new SolidCashParser(new CommonTokenStream(lexer));
+      // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
+      // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
+      // across instances; do the same, so a process that parses many sources - a compile also parses the generated
+      // message-bus route - reuses that work instead of repaying it.
+      parser._interp = new ParserATNSimulator(
+        parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
+      );
+      if (fast) {
+        parser._interp.predictionMode = PredictionMode.SLL;
+        parser._errHandler = new BailErrorStrategy();
+      }
+      parser.removeErrorListeners();
+      parser.addErrorListener(syntaxErrorListener);
+      const tree = parser.sourceFile();
+      if (!fast) (syntaxErrorListener as ForwardingErrorListener).throwFirstError();
+      return tree;
+    };
+    let parseTree: ReturnType<SolidCashParser['sourceFile']>;
+    try {
+      parseTree = parse(true);
+    } catch {
+      // SLL cannot resolve every context-sensitive Solidity/SolidCash construct. Re-run those uncommon sources
+      // with the canonical full-context parser, which also owns user-facing syntax diagnostics.
+      parseTree = parse(false);
+    }
 
     // AST building
     const ast = new AstBuilder(

@@ -88,6 +88,22 @@ hasNestedTuplePatternAhead(): boolean {
   }
   return false;
 }
+
+// The expression grammar's `functionCall` alternative precedes the bare-identifier alternative. Full-context
+// prediction can distinguish them, but SLL otherwise commits a plain `x`, `x[k]`, or `x.member` expression to a
+// call and only discovers the missing `(` later. The complete call prefix is bounded to four tokens, so expose
+// that distinction directly and keep the fast prediction path equivalent to LL.
+hasFunctionCallAhead(): boolean {
+  const first = this._input.LT(1).text;
+  const second = this._input.LT(2).text;
+  if (first === '(') {
+    if (this._input.LT(3).text === ')') return this._input.LT(4).text === '(';
+    return this._input.LT(3).text === '.' && this._input.LT(5).text === ')'
+      && this._input.LT(6).text === '(';
+  }
+  return second === '(' || second === '{'
+    || (second === '.' && this._input.LT(4).text === '(');
+}
 }
 
 sourceFile
@@ -850,7 +866,8 @@ consoleParameterList
     ;
 
 functionCall
-    : Identifier expressionList
+    : {this.hasFunctionCallAhead()}? (
+      Identifier expressionList
     | 'unsafe' expressionList
     | Identifier callOptions expressionList // Function-pointer call with gas/value options
     | '_' expressionList // Solidity permits `_` as a function name; bare `_;` remains a modifier placeholder
@@ -862,6 +879,7 @@ functionCall
     | '(' Identifier ')' expressionList
     | '(' Identifier '.' Identifier ')' expressionList
     | '(' Identifier '.' Identifier ')' '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')'
+    )
     ;
 
 namedArg

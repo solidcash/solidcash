@@ -292,12 +292,18 @@ interface CandidateCorpus {
 /** Immutable element identities and encoded-byte offsets shared by first-round strategy probes. */
 function prepareCandidateCorpus(bodies: OutlineBody[]): CandidateCorpus {
   const keyIds = new Map<string, number>();
+  const opcodeIds = new Array<number>(256).fill(0);
   const idOf = (element: Script[number]): number => {
+    if (typeof element === 'number') {
+      const cached = opcodeIds[element];
+      if (cached !== 0) return cached;
+    }
     const key = elementKey(element);
     const existing = keyIds.get(key);
     if (existing !== undefined) return existing;
     const assigned = keyIds.size + 1;
     keyIds.set(key, assigned);
+    if (typeof element === 'number') opcodeIds[element] = assigned;
     return assigned;
   };
   const bodyIds = new Array<number[]>(bodies.length);

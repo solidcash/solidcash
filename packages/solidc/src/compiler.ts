@@ -183,9 +183,18 @@ type InternalCompilerOptions = CompilerOptions & {
   __messageBusMode?: MessageBusMode;
 };
 
-function surveyOptionalLowerings(root: Node): { hasFunctionPointers: boolean; needsBlockOracle: boolean } {
+interface OptionalLoweringFeatures {
+  hasFunctionPointers: boolean;
+  needsBlockOracle: boolean;
+  needsMsgDataContext: boolean;
+  needsMsgSigContext: boolean;
+  needsSpecialMethodPruning: boolean;
+}
+
+function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   const seenNodes = new Set<Node>();
   const seenTypes = new Set<object>();
+  const seenMappingTypes = new Set<object>();
   const typeContainsFunction = (type: Type): boolean => {
     if (type instanceof FunctionType) return true;
     if (seenTypes.has(type as object)) return false;
@@ -198,18 +207,45 @@ function surveyOptionalLowerings(root: Node): { hasFunctionPointers: boolean; ne
     if (type instanceof TupleType) return type.elements.some(typeContainsFunction);
     return false;
   };
+  const typeContainsMapping = (type: Type): boolean => {
+    if (type instanceof MappingType) return true;
+    if (seenMappingTypes.has(type as object)) return false;
+    seenMappingTypes.add(type as object);
+    if (type instanceof ArrayType) return typeContainsMapping(type.elementType);
+    if (type instanceof StructType) return type.fields.some((field) => typeContainsMapping(field.type));
+    if (type instanceof TupleType) return type.elements.some(typeContainsMapping);
+    return false;
+  };
   const pending = [root];
   let needsBlockOracle = false;
+  let needsMsgDataContext = false;
+  let needsMsgSigContext = false;
+  let needsSpecialMethodPruning = false;
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
     seenNodes.add(node);
-    if (node instanceof AssemblyStatementNode
-      || (node instanceof NullaryOpNode && String(node.operator).startsWith('block.'))
+    if (node instanceof AssemblyStatementNode) {
+      needsBlockOracle = true;
+      needsMsgDataContext = true;
+      needsMsgSigContext = true;
+      needsSpecialMethodPruning = true;
+    } else if ((node instanceof NullaryOpNode && String(node.operator).startsWith('block.'))
       || (node instanceof IdentifierNode && node.name === 'now')
       || (node instanceof FunctionCallNode
         && (node.identifier.name === 'gasleft' || node.identifier.name === GlobalFunction.BLOCKHASH))) {
       needsBlockOracle = true;
+    }
+    if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_DATA) {
+      needsMsgDataContext = true;
+      needsSpecialMethodPruning = true;
+    } else if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SIG) {
+      needsMsgSigContext = true;
+    }
+    if (node instanceof InstantiationNode || node instanceof ContractReferenceNode
+      || (node instanceof TypeIntrospectionNode
+        && (node.property === 'creationCode' || node.property === 'runtimeCode'))) {
+      needsSpecialMethodPruning = true;
     }
     for (const key in node) {
       const value = node[key as keyof Node] as unknown;
@@ -220,15 +256,30 @@ function surveyOptionalLowerings(root: Node): { hasFunctionPointers: boolean; ne
         // Pointer-specific passes remain enabled, and conservatively retain the oracle traversal too. This keeps
         // pointer-bearing contracts on their historical pipeline while pointer-free contracts get both gates
         // from one structural survey.
-        return { hasFunctionPointers: true, needsBlockOracle: true };
+        return {
+          hasFunctionPointers: true,
+          needsBlockOracle: true,
+          needsMsgDataContext: true,
+          needsMsgSigContext: true,
+          needsSpecialMethodPruning: true,
+        };
       }
+      if ((value instanceof ArrayType || value instanceof MappingType
+        || value instanceof StructType || value instanceof TupleType)
+        && typeContainsMapping(value)) needsSpecialMethodPruning = true;
       if (value instanceof Node) pending.push(value);
       else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node) pending.push(item);
       }
     }
   }
-  return { hasFunctionPointers: false, needsBlockOracle };
+  return {
+    hasFunctionPointers: false,
+    needsBlockOracle,
+    needsMsgDataContext,
+    needsMsgSigContext,
+    needsSpecialMethodPruning,
+  };
 }
 
 
@@ -4561,7 +4612,10 @@ function compileResolvedAst(
   // Preserve straight-line foreign function-pointer ternaries before control-flow normalization splits
   // their initialized declaration into a declaration plus branch assignments. The later invocation remains
   // for aliases introduced by the intervening contract-member/function-pointer passes.
-  const { hasFunctionPointers, needsBlockOracle } = surveyOptionalLowerings(ast);
+  const {
+    hasFunctionPointers, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
+    needsSpecialMethodPruning,
+  } = surveyOptionalLowerings(ast);
   if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
@@ -4676,11 +4730,11 @@ function compileResolvedAst(
   ast = ast.accept(new LowerSelfLowLevelCalls()) as Ast;
   // A high-level `this.f(args)` also creates fresh calldata. Reconstruct msg.data from f's selector + live
   // parameters so the direct OP_INVOKE lowering does not depend on OP_ACTIVEBYTECODE inside the subroutine.
-  ast = ast.accept(new LowerSelfCallMsgData()) as Ast;
+  if (needsMsgDataContext) ast = ast.accept(new LowerSelfCallMsgData()) as Ast;
   // Internal/private msg.data readers receive the originating entry calldata through a compiler-only parameter.
-  ast = ast.accept(new LowerInternalMsgDataContext()) as Ast;
+  if (needsMsgDataContext) ast = ast.accept(new LowerInternalMsgDataContext()) as Ast;
   // msg.sig retains the originating public/external selector across internal/private OP_INVOKE calls.
-  ast = ast.accept(new LowerInternalMsgSigContext()) as Ast;
+  if (needsMsgSigContext) ast = ast.accept(new LowerInternalMsgSigContext()) as Ast;
 
   // `(new C()).m(args)` -> `C __newcall_N = new C(); __newcall_N.m(args)`, so the deploy-then-call fold
   // machinery (which tracks named deploy locals) applies to inline deploy receivers too.
@@ -4769,7 +4823,7 @@ function compileResolvedAst(
   // Drop dead internal/private methods that read msg.data (e.g. inherited OZ `Context._msgData`, never called):
   // msg.data is only reconstructible at an entry point, so a dead one would fail the whole compile. Conservative
   // by name (every non-internal method is a root), so nothing live is dropped.
-  ast = ast.accept(new PruneUnreachableMsgDataMethods()) as Ast;
+  if (needsSpecialMethodPruning) ast = ast.accept(new PruneUnreachableMsgDataMethods()) as Ast;
 
   // Facets are deployed as branded delegate-only libraries and never execute the logical contract's constructor.
   // Several normalization passes can synthesize or reconstruct a constructor after inheritance flattening, so

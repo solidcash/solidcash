@@ -20,7 +20,14 @@ fast-forward it back deliberately.
 
 ## Valid evidence at the integrated head
 
-The following gates passed on the fully merged tree before the final NativeUSDT test-only refactor:
+The candidate and ordinary release branch were synchronized at:
+
+```text
+4f0d1bb530df61dc19dba3d2b7c1d043b4185f1c
+```
+
+The following gates passed on this candidate lineage; the final change after the one-shot build/lint runs was
+limited to separating two NativeUSDT test cases, and targeted ESLint passed for that file:
 
 ```bash
 yarn lint
@@ -47,7 +54,7 @@ commits on `codex/release-readiness-final`. The current series begins at `324cbc
 c78c135b7..HEAD` for the complete, authoritative list rather than relying on the older integration excerpt
 above.
 
-## BCHN matrix: current focused evidence and remaining final gate
+## BCHN matrix: current focused evidence and interrupted final gate
 
 At `324cbca5f`, the three consensus-impossible MistSwap constructor probes were explicitly classified as
 mock-only while their useful mock coverage was retained. Focused mock execution passed all 4 tests. With
@@ -100,7 +107,20 @@ NativeUSDT built-in splitter: fresh BCHN deployment 1/1; maximum-shape routes ex
 `yarn build` and `yarn lint` both pass after these changes. Generated testing-suite content was unchanged; only
 regeneration timestamps moved, so they were restored rather than committed.
 
-The authoritative full matrix at the final candidate is still outstanding.
+An authoritative fail-fast matrix was started at exact head `4f0d1bb53` after wiping the
+`release-readiness` Docker volumes and starting a fresh BCHN/Fulcrum chain. It completed 128/482 files (16/61
+batches) with zero failed batches. It was intentionally interrupted just after batch 17 began so this handoff
+could be committed; no partial batch is claimed. The checkpoint is:
+
+```text
+packages/solidcash/.regtest-progress.json
+completed: 128
+total: 482
+failedBatches: []
+```
+
+Committing this handoff changes `HEAD`, so the runner's commit fingerprint will deliberately reject that old
+checkpoint. Treat the 128-file result as exact-parent evidence only, not as a resumable final-head attestation.
 
 ## Older BCHN diagnostics (not final evidence)
 
@@ -148,6 +168,15 @@ generated-project smoke: SolidHat 1/1; cache 1/1; golden path 21/21
 application regtest: fresh chain 9/9
 ```
 
+The comprehensive gates also passed at `4f0d1bb53`:
+
+```text
+yarn test: solidc 3,240/3,240; solidcash 1,204 passed, 19 skipped, 5 todo;
+           utils 304/304; testing 27/27; solidhat 24/24; example suite 25/25
+yarn test:e2e: 348 files passed, 4 skipped; 2,742 passed, 23 skipped, 3 todo
+git diff --check: passed
+```
+
 The first application/generated attempts overlapped package-smoke rebuilding package outputs and were invalid;
 the sequential reruns above are the results to cite.
 
@@ -170,9 +199,11 @@ the sequential reruns above are the results to cite.
      test/e2e/NativeUsdtInherited.test.ts -t 'spends every generated NativeUSDT route'
    ```
 
-3. Run the relevant one-shot mock/live suites, then `yarn lint` and `yarn build`.
+3. Run `yarn lint` and the authoritative one-shot `yarn build` at the final documentation commit. Product source
+   already passed both; this closes the exact-commit bookkeeping gap.
 
-4. Start the authoritative full matrix from a wiped chain at the final candidate:
+4. Start the authoritative full matrix from a wiped chain at the final candidate. The Docker project is still
+   up at handoff time, but wipe its volumes because the prior run was interrupted:
 
    ```bash
    docker compose -p release-readiness -f docker-compose.regtest.yml down -v
@@ -188,10 +219,13 @@ the sequential reruns above are the results to cite.
    procedure, and any documented skips. The current table still describes superseded candidates and must not be
    used as the final attestation.
 
-6. Run the still-outstanding broader gates, especially the root `yarn test`, the comprehensive e2e suite, and a
-   clean-checkout install/CI-ordering rehearsal. The conformance, corpus, documentation, package-smoke,
-   generated-project, spellcheck, and application-regtest results already recorded above need rerunning only if
-   subsequent changes can affect them.
+6. Run the still-outstanding clean-checkout install/CI-ordering rehearsal. Root `yarn test` and the comprehensive
+   e2e suite are complete. The conformance, corpus, documentation, package-smoke, generated-project, spellcheck,
+   and application-regtest results above need rerunning only if subsequent changes can affect them.
+
+7. Audit and resolve the unchecked first-release exit items in `RELEASE_READINESS.md`, including the documented
+   limitation classification, exact-commit attestation, release-note evidence, and tag decision. The P2 items are
+   explicitly non-blocking deferrals.
 
 ## Completion standard
 

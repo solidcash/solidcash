@@ -102,6 +102,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private stateValueTypes: Map<string, Type> = new Map();
   private currentValueTypes: Map<string, Type> = new Map();
   private localBufferNames: Set<string> = new Set(); // memory locals a lowering may relocate out of the stack
+  private readonly analysisNodes = new Map<FunctionDefinitionNode, Node[]>();
 
 
   constructor(private solidityImportCompat = false) {
@@ -267,6 +268,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) {
         this.normalizeForwardedMultiReturn(fn);
         this.normalizeSimpleEarlyReturn(fn);
+        this.analysisNodes.delete(fn);
       }
     }
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
@@ -495,7 +497,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!(last instanceof ReturnNode)) return false;
     if (last.expressions.length !== fn.returnTypes.length) return false;
     let returns = 0;
-    this.walk(fn.body, (n) => { if (n instanceof ReturnNode) returns += 1; });
+    for (const n of this.nodesOf(fn)) if (n instanceof ReturnNode) returns += 1;
     return returns === 1;
   }
 
@@ -520,11 +522,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
    * `DOMAIN_SEPARATOR` and `setMasterContractApproval` - three callers with different keccak counts.
    */
   private containsKeccak(fn: FunctionDefinitionNode): boolean {
-    let found = false;
-    this.walk(fn.body, (node) => {
-      if (node instanceof FunctionCallNode && node.identifier.name === 'keccak256') found = true;
-    });
-    return found;
+    return this.nodesOf(fn).some(
+      (node) => node instanceof FunctionCallNode && node.identifier.name === 'keccak256',
+    );
   }
 
   // msg.sender is backed by a synthetic entry-point witness/category parameter. A returning helper compiled as
@@ -532,11 +532,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // on a deep caller stack it can therefore read an ordinary source argument (e.g. transferOwnership's `to_`).
   // Inline the standard ContextUpgradeable `_msgSender() returns (address)` shape into its caller.
   private containsMsgSender(fn: FunctionDefinitionNode): boolean {
-    let found = false;
-    this.walk(fn.body, (node) => {
-      if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SENDER) found = true;
-    });
-    return found;
+    return this.nodesOf(fn).some(
+      (node) => node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SENDER,
+    );
   }
 
   // Contains an EXTERNAL contract call (`unicrow.getEscrow(id)` / `token.balanceOf(a)` / `this.f(x)`): pre-semantic
@@ -548,19 +546,17 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // `IFoo(a).m()` parses to a MethodCall, caught too.
   private containsExternalCall(fn: FunctionDefinitionNode): boolean {
     const isLL = (m: string): boolean => m === 'call' || m === 'staticcall' || m === 'delegatecall';
-    let found = false;
-    this.walk(fn.body, (n) => {
-      if (found) return;
-      if (n instanceof MethodCallNode && !isLL(n.methodName)) { found = true; return; }
+    for (const n of this.nodesOf(fn)) {
+      if (n instanceof MethodCallNode && !isLL(n.methodName)) return true;
       if (n instanceof FunctionCallNode) {
         const name = n.identifier.name;
         const dot = name.lastIndexOf('.');
         if (dot > 0 && !isLL(name.slice(dot + 1)) && !name.startsWith('super.') && !this.funcByName.has(name)) {
-          found = true;
+          return true;
         }
       }
-    });
-    return found;
+    }
+    return false;
   }
 
   // Contains a low-level call (`a.call(d)`, `a.call{value:}(d)`, static/delegatecall). Such a call injects a
@@ -569,18 +565,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // SafeERC20 `functionCall` shape). Value-returning and single-tail-return, it inlines like a state helper.
   private containsLowLevelCall(fn: FunctionDefinitionNode): boolean {
     const isLL = (m: string): boolean => m === 'call' || m === 'staticcall' || m === 'delegatecall';
-    let found = false;
-    this.walk(fn.body, (n) => {
-      if (found) return;
-      if (n instanceof LowLevelCallNode || n instanceof LowLevelCallStatementNode) { found = true; return; }
+    for (const n of this.nodesOf(fn)) {
+      if (n instanceof LowLevelCallNode || n instanceof LowLevelCallStatementNode) return true;
       // Pre-semantic, `a.call(d)` is a namespaced FunctionCall (`a.call`) and `a.call{value:}(d)` a MethodCall;
       // the dedicated LowLevelCall nodes are synthesized later in SymbolTableTraversal.
       if (n instanceof FunctionCallNode) {
         const dot = n.identifier.name.lastIndexOf('.');
-        if (dot > 0 && isLL(n.identifier.name.slice(dot + 1))) found = true;
-      } else if (n instanceof MethodCallNode && isLL(n.methodName)) found = true;
-    });
-    return found;
+        if (dot > 0 && isLL(n.identifier.name.slice(dot + 1))) return true;
+      } else if (n instanceof MethodCallNode && isLL(n.methodName)) return true;
+    }
+    return false;
   }
 
   // True if a low-level-call helper is referenced from another free-function body (freeFnRefs already records
@@ -645,14 +639,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (this.containsLowLevelCall(fn)) return true;
     if (seen.has(fn.name)) return false;
     seen.add(fn.name);
-    let found = false;
-    this.walk(fn.body, (n) => {
-      if (found || !(n instanceof FunctionCallNode)) return;
+    for (const n of this.nodesOf(fn)) {
+      if (!(n instanceof FunctionCallNode)) continue;
       const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
       if (callee && callee !== fn && this.eligibleShape(callee)
-        && this.transitivelyContainsLowLevelCall(callee, seen)) found = true;
-    });
-    return found;
+        && this.transitivelyContainsLowLevelCall(callee, seen)) return true;
+    }
+    return false;
   }
 
   // Like transitivelyContainsLowLevelCall for EXTERNAL calls: fn contains one directly, or calls an inline-eligible
@@ -663,33 +656,27 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (this.containsExternalCall(fn)) return true;
     if (seen.has(fn.name)) return false;
     seen.add(fn.name);
-    let found = false;
-    this.walk(fn.body, (n) => {
-      if (found || !(n instanceof FunctionCallNode)) return;
+    for (const n of this.nodesOf(fn)) {
+      if (!(n instanceof FunctionCallNode)) continue;
       const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
       if (callee && callee !== fn && this.eligibleShape(callee)
-        && this.transitivelyContainsExternalCall(callee, seen)) found = true;
-    });
-    return found;
+        && this.transitivelyContainsExternalCall(callee, seen)) return true;
+    }
+    return false;
   }
 
   private transitivelyTouchesRawEvmStorage(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
-    let direct = false;
-    this.walk(fn.body, (n) => {
-      if (n instanceof MappingAccessNode && n.name === '__evm_storage') direct = true;
-    });
-    if (direct) return true;
+    if (this.nodesOf(fn).some((n) => n instanceof MappingAccessNode && n.name === '__evm_storage')) return true;
     const key = inlineKey(fn.name, fn.parameters.length);
     if (seen.has(key)) return false;
     seen.add(key);
-    let found = false;
-    this.walk(fn.body, (n) => {
-      if (found || !(n instanceof FunctionCallNode)) return;
+    for (const n of this.nodesOf(fn)) {
+      if (!(n instanceof FunctionCallNode)) continue;
       const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
       if (callee && callee !== fn && this.eligibleShape(callee)
-        && this.transitivelyTouchesRawEvmStorage(callee, seen)) found = true;
-    });
-    return found;
+        && this.transitivelyTouchesRawEvmStorage(callee, seen)) return true;
+    }
+    return false;
   }
 
   // Rewrite `address(EXPR).method(args)` -> `L.method(address(EXPR), args)` for `using L for address` where
@@ -779,24 +766,23 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // must inline.
   private touchesScalarState(fn: FunctionDefinitionNode): boolean {
     const shadowed = new Set(fn.parameters.map((p) => p.name));
-    this.walk(fn.body, (n) => { if (n instanceof VariableDefinitionNode) shadowed.add(n.name); });
-    let found = false;
-    this.walk(fn.body, (n) => {
-      if (found) return;
+    const nodes = this.nodesOf(fn);
+    for (const n of nodes) if (n instanceof VariableDefinitionNode) shadowed.add(n.name);
+    for (const n of nodes) {
       if ((n instanceof StateAccessNode || n instanceof StateAssignNode) && this.stateVarNames.has(n.name)) {
-        found = true;
+        return true;
       } else if ((n instanceof StateArrayPushNode || n instanceof StateArrayPopNode
         || n instanceof StateArrayAssignNode || n instanceof StateArrayDeleteNode)
         && this.stateVarNames.has(n.name)) {
-        found = true;
+        return true;
       } else if (n instanceof IdentifierNode && this.stateVarNames.has(n.name) && !shadowed.has(n.name)) {
-        found = true;
+        return true;
       } else if (n instanceof AssignNode && this.stateVarNames.has(n.identifier.name)
         && !shadowed.has(n.identifier.name)) {
-        found = true;
+        return true;
       }
-    });
-    return found;
+    }
+    return false;
   }
 
   // A single-tail-return value helper taking a struct, mapping, or array storage pointer. Struct pointers rewrite
@@ -820,21 +806,19 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!(last instanceof ReturnNode)) return false;
     if (last.expressions.length !== fn.returnTypes.length) return false;
     let returns = 0;
-    this.walk(fn.body, (n) => { if (n instanceof ReturnNode) returns += 1; });
+    for (const n of this.nodesOf(fn)) if (n instanceof ReturnNode) returns += 1;
     return returns === 1;
   }
 
   // Reads a mapping/collection element (incl. the read half of a compound write) - the access that needs an
   // entry-access input slot from the entry-point block layout.
   private readsEntry(fn: FunctionDefinitionNode): boolean {
-    let found = false;
-    this.walk(fn.body, (n) => {
-      if (found) return;
-      if (n instanceof MappingAccessNode && this.collectionNames.has(n.name)) found = true;
+    for (const n of this.nodesOf(fn)) {
+      if (n instanceof MappingAccessNode && this.collectionNames.has(n.name)) return true;
       else if (n instanceof ArrayAccessNode && n.array instanceof IdentifierNode
-        && this.collectionNames.has(n.array.name)) found = true;
-    });
-    return found;
+        && this.collectionNames.has(n.array.name)) return true;
+    }
+    return false;
   }
 
   // Per statement: visit it (replacing inlined calls with temps + filling this.hoists), then emit
@@ -1286,6 +1270,15 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // Pre-order walk over child Nodes (and Node arrays); skips Type/symbol-table/location fields. Also descends
   // into callOptions ({value, gas, salt} - a plain object holding ExpressionNodes) so a param referenced in a
   // low-level call's `{value: v}` gets visited (else applyRename misses it -> "Undefined reference to symbol v").
+  private nodesOf(fn: FunctionDefinitionNode): Node[] {
+    let nodes = this.analysisNodes.get(fn);
+    if (nodes) return nodes;
+    nodes = [];
+    this.walk(fn.body, (node) => nodes!.push(node));
+    this.analysisNodes.set(fn, nodes);
+    return nodes;
+  }
+
   private walk(node: Node | undefined, visit: (n: Node) => void): void {
     if (!node) return;
     visit(node);

@@ -1247,9 +1247,15 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // e.g. `map__values` -> `<arg>__values`) so the inlined body targets the caller's flattened collections.
     const rn = (name: string): string => {
       const dot = name.indexOf('.');
-      if (dot > 0 && map.has(name.slice(0, dot))) return map.get(name.slice(0, dot))! + name.slice(dot);
+      if (dot > 0) {
+        const renamed = map.get(name.slice(0, dot));
+        if (renamed !== undefined) return renamed + name.slice(dot);
+      }
       const us = name.indexOf('__');
-      if (us > 0 && map.has(name.slice(0, us))) return map.get(name.slice(0, us))! + name.slice(us);
+      if (us > 0) {
+        const renamed = map.get(name.slice(0, us));
+        if (renamed !== undefined) return renamed + name.slice(us);
+      }
       return map.get(name) ?? name;
     };
     this.walk(root, (n) => {

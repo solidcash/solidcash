@@ -168,14 +168,8 @@ const neverAnchored = (): boolean => false;
  */
 function longestBalancedSpan(
   elements: Script, anchored: (index: number) => boolean,
-  regionStart = 0, regionLength = elements.length,
+  regionStart: number, regionLength: number, bytePrefix: Uint32Array,
 ): { start: number; end: number; bytes: number } {
-  // Prefix byte sizes make every candidate's encoded length an O(1) subtraction.
-  const prefixBytes = new Array<number>(regionLength + 1);
-  prefixBytes[0] = 0;
-  for (let i = 0; i < regionLength; i += 1) {
-    prefixBytes[i + 1] = prefixBytes[i] + elementByteSize(elements[regionStart + i]);
-  }
   let best = { start: 0, end: 0, bytes: 0 };
   let depth = 0;
   let firstIndexAtDepth = new Map<number, number>([[0, 0]]);
@@ -204,7 +198,7 @@ function longestBalancedSpan(
       firstIndexAtDepth.set(depth, i + 1);
       continue;
     }
-    const bytes = prefixBytes[i + 1] - prefixBytes[start];
+    const bytes = bytePrefix[regionStart + i + 1] - bytePrefix[regionStart + start];
     if (bytes > best.bytes) best = { start, end: i + 1, bytes };
   }
   return best;
@@ -404,7 +398,9 @@ function findCandidates(
     const anchored = anchoredIndices === undefined
       ? neverAnchored
       : (index: number): boolean => anchoredIndices[index] !== 0;
-    const balanced = longestBalancedSpan(headScript, anchored, head.start, length);
+    const balanced = longestBalancedSpan(
+      headScript, anchored, head.start, length, bodyBytePrefixes[head.body],
+    );
     if (balanced.bytes === 0) continue;
 
     // Overlapping copies cannot both be replaced; keep a maximal non-overlapping subset. `group` already follows

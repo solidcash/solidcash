@@ -2281,7 +2281,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // External reads pre-scan: collect all external state/collection reads and assign slot indices
-    {
+    if (bodySurvey.hasExternalRead) {
       const externalReadMap = new Map<string, ExternalReadSlot>();
       this.collectExternalReads(node.body, externalReadMap);
 
@@ -2300,7 +2300,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // External calls pre-scan: collect all external function call results and assign slot indices
-    {
+    if (bodySurvey.hasExternalFunctionCall) {
       const externalCallSlots: ExternalCallSlot[] = [];
       // Reduce a multi-use interface-typed local (view calls + one mutate) to single-use by turning each VIEW call
       // into a caller-provided witness; must run BEFORE the receiver-count snapshot so the mutate reads as single-use.
@@ -2654,7 +2654,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // External outState reads pre-scan: collect all output state reads and assign slot indices
-    {
+    if (bodySurvey.hasExternalOutStateRead) {
       const externalOutStateMap = new Map<string, ExternalOutStateSlot>();
       this.collectExternalOutStateReads(node.body, externalOutStateMap);
 
@@ -3919,6 +3919,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     keccakInLoop: boolean;
     hasValueTransfer: boolean;
     hasFunctionCall: boolean;
+    hasExternalRead: boolean;
+    hasExternalOutStateRead: boolean;
+    hasExternalFunctionCall: boolean;
     recovery: { total: number; evm: number; inLoop: boolean };
   } {
     const result = {
@@ -3926,6 +3929,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       keccakInLoop: false,
       hasValueTransfer: false,
       hasFunctionCall: false,
+      hasExternalRead: false,
+      hasExternalOutStateRead: false,
+      hasExternalFunctionCall: false,
       recovery: { total: 0, evm: 0, inLoop: false },
     };
     const recoverySeen = new WeakMap<Node, boolean>();
@@ -3947,6 +3953,15 @@ export default class SymbolTableTraversal extends AstTraversal {
           && (current.identifier.name in this.resolvedLibraries || current.resolvedFunction !== undefined)) {
           result.hasFunctionCall = true;
         }
+        if ((current instanceof ExternalStateAccessNode && current.readInfo !== undefined)
+          || (current instanceof ExternalMappingAccessNode && current.readInfo !== undefined
+            && !current.readInfo.outputState)) result.hasExternalRead = true;
+        if ((current instanceof ExternalMappingAccessNode && current.readInfo?.outputState === true)
+          || (current instanceof ExternalOutputStateAccessNode && current.accessInfo !== undefined)) {
+          result.hasExternalOutStateRead = true;
+        }
+        if (current instanceof ExternalFunctionCallNode && current.callInfo !== undefined
+          && !current.foldedIntoDeploy) result.hasExternalFunctionCall = true;
         if (current instanceof TransferStatementNode || current instanceof AddressTransferStatementNode
           || current instanceof AddressSendExpressionNode
           || (current instanceof LowLevelCallStatementNode && current.callOptions?.value !== undefined)

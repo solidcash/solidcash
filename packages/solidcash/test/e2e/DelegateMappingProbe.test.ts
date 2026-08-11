@@ -74,20 +74,23 @@ describe('delegate facet: mapping write vs scalar write', () => {
     return { c, signer, read };
   };
 
-  it('scalar write through a facet works (control)', async () => {
+  // The branded-library consumer and library must each know the other's category before genesis. This probe
+  // therefore uses categoryOverride, which intentionally creates synthetic chosen-category UTXOs and is only
+  // supported by MockNetworkProvider. Keep the ABI/entry-access assertion below live on every provider.
+  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('scalar write through a facet works (control)', async () => {
     const { c, signer } = await setup();
     await c.connect(signer).call.bump().send();
     expect((await c.getState()).counter).toBe(1n);
   });
 
-  it('a delegated mapping INSERT is refused by the proxy', async () => {
+  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('a delegated mapping INSERT is refused by the proxy', async () => {
     const { c, signer, read } = await setup();
     await expect(c.connect(signer).call.setBal(KEY, 42n).send())
       .rejects.toThrow(/input 0|OP_VERIFY/);
     expect(await read(), 'nothing was written').toBeUndefined();
   });
 
-  it('a delegated mapping UPDATE settles and lands the value', async () => {
+  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('a delegated mapping UPDATE settles and lands the value', async () => {
     const { c, signer, read } = await setup();
     await c.connect(signer).call.seed(KEY, 7n).send(); // direct master write creates the key
     expect(await read()).toBe(7n);
@@ -97,13 +100,15 @@ describe('delegate facet: mapping write vs scalar write', () => {
 
   // The cheap general unblock for a facet-split contract: the master opens the
   // account at zero, and every facet write from then on is an UPDATE.
-  it('a direct zero-value register is enough to make later delegated writes settle', async () => {
-    const { c, signer, read } = await setup();
-    await c.connect(signer).call.register(KEY).send();
-    expect(await read(), 'the key exists at zero').toBe(0n);
-    await c.connect(signer).call.setBal(KEY, 42n).send();
-    expect(await read()).toBe(42n);
-  });
+  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))(
+    'a direct zero-value register is enough to make later delegated writes settle', async () => {
+      const { c, signer, read } = await setup();
+      await c.connect(signer).call.register(KEY).send();
+      expect(await read(), 'the key exists at zero').toBe(0n);
+      await c.connect(signer).call.setBal(KEY, 42n).send();
+      expect(await read()).toBe(42n);
+    },
+  );
 
   // The forwarder still publishes no entryAccesses of its own - X11 did not change
   // the ABI, it made the SDK read the routed (implementation) accesses instead.

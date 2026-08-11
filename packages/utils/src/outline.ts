@@ -361,7 +361,7 @@ function findCandidates(
   });
 
   // A hash bucket can mix distinct windows; split each bucket on the actual element ids before extending.
-  const groups: { occurrences: Occurrence[]; seed: number }[] = [];
+  const groups: { occurrences: Occurrence[]; seed: number; rank?: number }[] = [];
   for (const bucket of windows.values()) {
     if (bucket.length < 2) continue;
     const first = bucket[0];
@@ -399,12 +399,12 @@ function findCandidates(
   // Ranked by the gross bytes a group could share - occurrences times the encoded size of its seed - not by
   // occurrence count. Count alone treats a seed of eight one-byte opcodes as equal to one carrying a 32-byte
   // constant, so the truncation below could drop the more valuable group.
-  const seedBytes = (group: { occurrences: Occurrence[]; seed: number }): number => {
+  for (const group of groups) {
     const { body, start } = group.occurrences[0];
-    return bodyBytePrefixes[body][start + group.seed] - bodyBytePrefixes[body][start];
-  };
-  const rank = new Map(groups.map((group) => [group, group.occurrences.length * seedBytes(group)]));
-  groups.sort((left, right) => rank.get(right)! - rank.get(left)!);
+    const seedBytes = bodyBytePrefixes[body][start + group.seed] - bodyBytePrefixes[body][start];
+    group.rank = group.occurrences.length * seedBytes;
+  }
+  groups.sort((left, right) => right.rank! - left.rank!);
   groups.splice(candidateGroupsPerRound);
 
   // A large repeated constant never reaches the window length, however many times it appears and however big

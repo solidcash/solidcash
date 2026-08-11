@@ -263,6 +263,13 @@ function findCandidates(
     return assigned;
   };
   const bodyIds = bodies.map((body) => body.script.map(idOf));
+  const bodyBytePrefixes = bodies.map((body) => {
+    const prefix = new Uint32Array(body.script.length + 1);
+    for (let i = 0; i < body.script.length; i += 1) {
+      prefix[i + 1] = prefix[i] + elementByteSize(body.script[i]);
+    }
+    return prefix;
+  });
 
   const windows = new Map<number, Occurrence[]>();
   bodyIds.forEach((ids, bodyIndex) => {
@@ -296,9 +303,7 @@ function findCandidates(
   // constant, so the truncation below could drop the more valuable group.
   const seedBytes = (group: { occurrences: Occurrence[]; seed: number }): number => {
     const { body, start } = group.occurrences[0];
-    let total = 0;
-    for (let i = start; i < start + group.seed; i += 1) total += elementByteSize(bodies[body].script[i]);
-    return total;
+    return bodyBytePrefixes[body][start + group.seed] - bodyBytePrefixes[body][start];
   };
   const rank = new Map(groups.map((group) => [group, group.occurrences.length * seedBytes(group)]));
   groups.sort((left, right) => rank.get(right)! - rank.get(left)!);
@@ -329,30 +334,34 @@ function findCandidates(
   const candidates: Candidate[] = [];
   for (const { occurrences: group, seed } of groups) {
     // Grow the match while every occurrence still agrees, so the balance scan sees the full common region.
-    let length = seed;
-    for (;;) {
-      const first = group[0];
-      const at = length;
-      if (first.start + at >= bodyIds[first.body].length) break;
-      const id = bodyIds[first.body][first.start + at];
-      const agrees = group.every((occurrence) => {
-        const ids = bodyIds[occurrence.body];
-        return occurrence.start + at < ids.length && ids[occurrence.start + at] === id;
-      });
-      if (!agrees) break;
-      length += 1;
+    const first = group[0];
+    const firstIds = bodyIds[first.body];
+    let length = firstIds.length - first.start;
+    for (let occurrenceIndex = 1; occurrenceIndex < group.length && length > seed; occurrenceIndex += 1) {
+      const occurrence = group[occurrenceIndex];
+      const ids = bodyIds[occurrence.body];
+      const limit = Math.min(length, ids.length - occurrence.start);
+      let matching = seed;
+      while (matching < limit && ids[occurrence.start + matching] === firstIds[first.start + matching]) {
+        matching += 1;
+      }
+      length = matching;
     }
 
     const head = group[0];
     const region = bodies[head.body].script.slice(head.start, head.start + length);
     // A span is only relocatable if it is anchor-free at *every* occurrence, so test them all against one
     // region-relative index space.
-    const anchorSets = group.map((occurrence) => ({
-      offset: occurrence.start,
-      anchors: bodies[occurrence.body].anchors,
-    }));
-    const anchored = (index: number): boolean => anchorSets.some(({ offset, anchors }) =>
-      anchors !== undefined && anchors.includes(offset + index));
+    const anchoredIndices = new Uint8Array(length);
+    for (const occurrence of group) {
+      const anchors = bodies[occurrence.body].anchors;
+      if (anchors === undefined) continue;
+      for (const anchor of anchors) {
+        const relative = anchor - occurrence.start;
+        if (relative >= 0 && relative < length) anchoredIndices[relative] = 1;
+      }
+    }
+    const anchored = (index: number): boolean => anchoredIndices[index] !== 0;
     const balanced = longestBalancedSpan(region, anchored);
     if (balanced.bytes === 0) continue;
 
@@ -447,21 +456,21 @@ export function outlineSharedSpans(
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
     // a claimed range makes every overlapping candidate stale until the next round re-measures.
-    const claimed = corpus.map(() => new Set<number>());
+    const claimed = corpus.map((body) => new Uint8Array(body.script.length));
     const applied: { definition: OutlinedFunction; occurrences: Occurrence[]; saved: number }[] = [];
     for (const candidate of candidates) {
       if (functions.length + applied.length >= MAXIMUM_OUTLINED_FUNCTIONS) break;
       const spanLength = candidate.span.length;
       const free = candidate.occurrences.filter((occurrence) => {
         for (let i = 0; i < spanLength; i += 1) {
-          if (claimed[occurrence.body].has(occurrence.start + i)) return false;
+          if (claimed[occurrence.body][occurrence.start + i] !== 0) return false;
         }
         return true;
       });
       if (free.length < 2) continue;
       if (savingsOf(candidate.bytes, free.length, idPushBytes) <= 0) continue;
       for (const occurrence of free) {
-        for (let i = 0; i < spanLength; i += 1) claimed[occurrence.body].add(occurrence.start + i);
+        claimed[occurrence.body].fill(1, occurrence.start, occurrence.start + spanLength);
       }
       applied.push({
         definition: {

@@ -2883,11 +2883,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new InvalidModifierCombinationError(node, "'delegate' functions cannot contain delegatecall calls");
     }
 
+    // The security checks below ask these same whole-body questions several times. The body is not mutated
+    // throughout the block, so retain both results rather than repeating either recursive traversal.
+    const hasExplicitDelegatecall = this.hasExplicitDelegatecall(node.body);
+    const hasSynthesizedDelegatecall = this.hasSynthesizedDelegatecall(node.body);
+
     // C1/piece-3: a delegatecall FORCES + PINS its delegate co-spend. Inject a witness for the delegate's input
     // index; codegen verifies OP_UTXOBYTECODE[idx] == impl so the delegate is required, not optional. Emitted
     // only when impl is NOT the classic P2PKH-placeholder literal (a real delegate is a P2SH covenant); a P2PKH
     // impl keeps the C1 warning path (a P2PKH UTXO authorizes nothing, so pinning it would be unsound anyway).
-    if (this.hasExplicitDelegatecall(node.body) && !node.isEntryPoint) {
+    if (hasExplicitDelegatecall && !node.isEntryPoint) {
       throw new SolidcDiagnosticError(
         'MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE',
         `internal function '${node.name}' contains delegatecall, whose proxy input witness cannot be preserved `
@@ -2898,7 +2903,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         },
       );
     }
-    if (this.hasExplicitDelegatecall(node.body) && !this.delegatecallTargetsP2pkhLiteral(node.body)) {
+    if (hasExplicitDelegatecall && !this.delegatecallTargetsP2pkhLiteral(node.body)) {
       node.pinsDelegateCoSpend = true;
       if (!node.graphEmissionHandler && !node.messageBusRoute) {
         const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__delegateInputIndex');
@@ -2923,7 +2928,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // point. A synthesized delegatecall anywhere else has no reserved slot to pin to and is refused rather than
     // left silently unpinned.
     if (!node.pinsDelegateCoSpend && !node.graphEmissionHandler && !node.messageBusRoute
-      && this.hasSynthesizedDelegatecall(node.body)) {
+      && hasSynthesizedDelegatecall) {
       if (!this.isStatefulContract || !node.isEntryPoint) {
         throw new InvalidModifierCombinationError(
           node,
@@ -2941,7 +2946,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // !functionHasDelegatecall) and defers ALL state writes to the co-spent delegate, so any self state-write in
     // it is unauthorized. Reject it - the delegate must own every proxy write. Applies to the synthesized forms
     // too: `function f() { L.g(); this.x = 5; }` compiled clean and the write was never verified.
-    if ((this.hasExplicitDelegatecall(node.body) || this.hasSynthesizedDelegatecall(node.body))
+    if ((hasExplicitDelegatecall || hasSynthesizedDelegatecall)
       && this.hasStateWrite(node.body)) {
       throw new DelegatecallSelfMutationError(node, node.name);
     }
@@ -2957,7 +2962,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // shared slot, so neither the collapse nor the not-taken-path hole applies there. Same exclusion as the
     // witness injection above. `L.f()` sugar and split forwarders are NOT excluded: they use one reserved slot
     // per callsite exactly like a hand-written delegatecall, so both hazards apply verbatim (C1/piece-7).
-    if ((this.hasExplicitDelegatecall(node.body) || this.hasSynthesizedDelegatecall(node.body))
+    if ((hasExplicitDelegatecall || hasSynthesizedDelegatecall)
       && !node.graphEmissionHandler && !node.messageBusRoute) {
       const reach = this.delegatecallReachability(node.body);
       if (reach === 'loop') {
@@ -2979,7 +2984,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // unless genuine authorization protects the choice or an unconditional equality binds the target to trusted
     // constructor/state identity. A length/shape check is not an identity binding. The explicit unsafe compiler
     // option retains warning-only behavior for migration and adversarial tests.
-    const callerSuppliedImpl = this.delegatecallTargetsUnguardedParameter(node);
+    const callerSuppliedImpl = this.delegatecallTargetsUnguardedParameter(node, hasExplicitDelegatecall);
     if (callerSuppliedImpl) {
       if (!this.compilerOptions.allowUnsafeOperations) {
         throw new UntrustedDelegatecallTargetError(node, node.name, callerSuppliedImpl);
@@ -3001,7 +3006,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // proxy state arbitrarily. Reject unless the function is pinned (a covenant impl, where the co-spend is forced
     // - see piece 3) or gated by a signature against a key the caller does not choose (SEC-12: a checkSig against
     // a caller-supplied pubkey silenced this). Library-call sugar is excluded (its own layout/brand guards).
-    if (this.hasExplicitDelegatecall(node.body) && !node.pinsDelegateCoSpend
+    if (hasExplicitDelegatecall && !node.pinsDelegateCoSpend
       && !hasAuthorizingSignatureGuard(node)) {
       if (!this.compilerOptions.allowUnsafeOperations) {
         throw new UntrustedDelegatecallTargetError(node, node.name, 'an unpinned non-covenant implementation');
@@ -6469,8 +6474,11 @@ export default class SymbolTableTraversal extends AstTraversal {
    * the body binding it to trusted identity? Returns a description, or undefined. A constructor argument is
    * excluded (the contract's p2sh32 commits to it), as is a caller-authorized or trusted-equality-bound target.
    */
-  private delegatecallTargetsUnguardedParameter(node: FunctionDefinitionNode): string | undefined {
-    if (!this.hasExplicitDelegatecall(node.body)) return undefined;
+  private delegatecallTargetsUnguardedParameter(
+    node: FunctionDefinitionNode,
+    hasExplicitDelegatecall: boolean,
+  ): string | undefined {
+    if (!hasExplicitDelegatecall) return undefined;
     const call = this.findDelegatecallNode(node.body);
     if (!call) return undefined;
     const originalTarget = call.targetExpression;

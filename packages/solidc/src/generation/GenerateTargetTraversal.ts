@@ -2456,6 +2456,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private computeScalarJournalClosures(node: ContractNode): void {
     const functions = node.fallbackDef ? [...node.functions, node.fallbackDef] : [...node.functions];
+    // With no scalar slots and no event path, the journal is necessarily empty. Preserve the independently
+    // published recursion annotation, but avoid surveying every body for slots, writers, calls, and closures.
+    if (this.stateVariables.length === 0 && !node.emitsEvent) {
+      const invocationById = new Map(analyseContractInvocations(node).functions
+        .map((summary) => [summary.id, summary]));
+      for (const fn of functions) {
+        if (fn.functionId !== undefined && fn.isEntryPoint && invocationById.get(fn.functionId)?.recursive) {
+          fn.scalarJournalRecursive = true;
+        }
+      }
+      this.journalWriterFunctionIds = new Set();
+      this.journalSlotsByFunctionId = new Map();
+      return;
+    }
     const internallyInvoked = this.collectInvokedFunctionIds(node);
     const slotsById = new Map<number, Map<string, StateVariableNode>>();
     const callsById = new Map<number, Set<number>>();

@@ -285,6 +285,7 @@ interface CandidateCorpus {
   bodyBytePrefixes: Uint32Array[];
   maximumBodyLength: number;
   commonPrefixByDiagonal: Map<number, Int32Array>;
+  windowHashes: Map<number, Int32Array[]>;
 }
 
 /** Immutable element identities and encoded-byte offsets shared by first-round strategy probes. */
@@ -307,7 +308,66 @@ function prepareCandidateCorpus(bodies: OutlineBody[]): CandidateCorpus {
     }
     return prefix;
   });
-  return { bodyIds, bodyBytePrefixes, maximumBodyLength, commonPrefixByDiagonal: new Map() };
+  return {
+    bodyIds,
+    bodyBytePrefixes,
+    maximumBodyLength,
+    commonPrefixByDiagonal: new Map(),
+    windowHashes: new Map(),
+  };
+}
+
+// Multiplicative inverse of 31 modulo 2^32. The outlining hash wraps at 32 bits, so this reverses one appended
+// polynomial term exactly rather than merely producing an equivalent bucket distribution.
+const HASH_BASE_INVERSE = 3_186_588_639;
+
+function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[] {
+  const cached = prepared.windowHashes.get(width);
+  if (cached !== undefined) return cached;
+
+  let widerWidth = Number.POSITIVE_INFINITY;
+  for (const candidate of prepared.windowHashes.keys()) {
+    if (candidate > width && candidate < widerWidth) widerWidth = candidate;
+  }
+  if (widerWidth !== Number.POSITIVE_INFINITY) {
+    let wider = prepared.windowHashes.get(widerWidth)!;
+    for (let nextWidth = widerWidth - 1; nextWidth >= width; nextWidth -= 1) {
+      const widerAtPreviousWidth = wider;
+      const narrower = prepared.bodyIds.map((ids, bodyIndex) => {
+        const hashes = new Int32Array(Math.max(0, ids.length - nextWidth + 1));
+        const widerHashes = widerAtPreviousWidth[bodyIndex];
+        for (let i = 0; i < widerHashes.length; i += 1) {
+          hashes[i] = Math.imul(widerHashes[i] - ids[i + nextWidth], HASH_BASE_INVERSE);
+        }
+        if (hashes.length > widerHashes.length) {
+          const start = hashes.length - 1;
+          let hash = ids[start];
+          for (let offset = 1; offset < nextWidth; offset += 1) {
+            hash = (Math.imul(hash, 31) + ids[start + offset]) | 0;
+          }
+          hashes[start] = hash;
+        }
+        return hashes;
+      });
+      prepared.windowHashes.set(nextWidth, narrower);
+      wider = narrower;
+    }
+    return wider;
+  }
+
+  const hashes = prepared.bodyIds.map((ids) => {
+    const result = new Int32Array(Math.max(0, ids.length - width + 1));
+    for (let start = 0; start < result.length; start += 1) {
+      let hash = ids[start];
+      for (let offset = 1; offset < width; offset += 1) {
+        hash = (Math.imul(hash, 31) + ids[start + offset]) | 0;
+      }
+      result[start] = hash;
+    }
+    return result;
+  });
+  prepared.windowHashes.set(width, hashes);
+  return hashes;
 }
 
 /**
@@ -357,12 +417,10 @@ function findCandidates(
   };
 
   const windows = new Map<number, Occurrence[]>();
+  const windowHashes = hashesForWindow(prepared, minimumWindowElements);
   bodyIds.forEach((ids, bodyIndex) => {
     for (let i = 0; i + minimumWindowElements <= ids.length; i += 1) {
-      // The first polynomial term is the id itself (`imul(0, 31) + id`); seed it directly and save one multiply
-      // in this loop, which runs for every candidate window in every outlining round and strategy.
-      let hash = ids[i];
-      for (let j = 1; j < minimumWindowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
+      const hash = windowHashes[bodyIndex][i];
       let group = windows.get(hash);
       if (group === undefined) {
         group = [];

@@ -2379,42 +2379,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const cached = this.invokedFunctionIdsByNode.get(node);
       if (cached) return cached;
     }
-    if (visited.has(node)) return ids;
-    visited.add(node);
-    if (node instanceof FunctionCallNode && node.resolvedFunction?.functionId !== undefined) {
-      const statements = node.resolvedFunction.body?.statements;
-      const emptyBody = statements?.length === 0;
-      const noOpBody = statements?.length === 1 && statements[0] instanceof RequireNode
-        && statements[0].expression instanceof BoolLiteralNode && statements[0].expression.value;
-      const returned = statements?.length === 1 && statements[0] instanceof ReturnNode
-        && statements[0].expressions.length === 1
-        ? statements[0].expressions[0] : undefined;
-      const inertArgument = (argument: ExpressionNode): boolean => argument instanceof IdentifierNode
-        || argument instanceof BoolLiteralNode || argument instanceof IntLiteralNode
-        || argument instanceof DecimalLiteralNode || argument instanceof HexLiteralNode
-        || argument instanceof StringLiteralNode;
-      // visitUserFunctionCall folds this exact shape, so it has no physical invocation edge and its otherwise
-      // dead definition must not remain in the reachable OP_DEFINE closure.
-      const foldableReturn = returned instanceof BoolLiteralNode || returned instanceof IntLiteralNode
-        || returned instanceof DecimalLiteralNode || returned instanceof HexLiteralNode
-        || returned instanceof StringLiteralNode
-        || (returned instanceof IdentifierNode
-          && this.contractParameters.some((parameter) => parameter.name === returned.name));
-      if (!((emptyBody || noOpBody || foldableReturn) && node.parameters.every(inertArgument))) {
-        ids.add(node.resolvedFunction.functionId);
+    const pending = [node];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      if (current instanceof FunctionCallNode && current.resolvedFunction?.functionId !== undefined) {
+        const statements = current.resolvedFunction.body?.statements;
+        const emptyBody = statements?.length === 0;
+        const noOpBody = statements?.length === 1 && statements[0] instanceof RequireNode
+          && statements[0].expression instanceof BoolLiteralNode && statements[0].expression.value;
+        const returned = statements?.length === 1 && statements[0] instanceof ReturnNode
+          && statements[0].expressions.length === 1
+          ? statements[0].expressions[0] : undefined;
+        const inertArgument = (argument: ExpressionNode): boolean => argument instanceof IdentifierNode
+          || argument instanceof BoolLiteralNode || argument instanceof IntLiteralNode
+          || argument instanceof DecimalLiteralNode || argument instanceof HexLiteralNode
+          || argument instanceof StringLiteralNode;
+        // visitUserFunctionCall folds this exact shape, so it has no physical invocation edge and its otherwise
+        // dead definition must not remain in the reachable OP_DEFINE closure.
+        const foldableReturn = returned instanceof BoolLiteralNode || returned instanceof IntLiteralNode
+          || returned instanceof DecimalLiteralNode || returned instanceof HexLiteralNode
+          || returned instanceof StringLiteralNode
+          || (returned instanceof IdentifierNode
+            && this.contractParameters.some((parameter) => parameter.name === returned.name));
+        if (!((emptyBody || noOpBody || foldableReturn) && current.parameters.every(inertArgument))) {
+          ids.add(current.resolvedFunction.functionId);
+        }
       }
-    }
-    // A function used as a value (function pointer / `this.f` self-ref) is invoked indirectly via OP_INVOKE,
-    // so its internal subroutine must be OP_DEFINE'd too.
-    if (node instanceof IdentifierNode && node.functionReference?.functionId !== undefined) {
-      ids.add(node.functionReference.functionId);
-    }
-    for (const key in node) {
-      if (key === 'resolvedFunction' || key === 'functionReference') continue; // back-references
-      const value = node[key as keyof Node];
-      if (value instanceof Node) this.collectInvokedFunctionIds(value, ids, visited);
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) this.collectInvokedFunctionIds(item, ids, visited);
+      // A function used as a value (function pointer / `this.f` self-ref) is invoked indirectly via OP_INVOKE,
+      // so its internal subroutine must be OP_DEFINE'd too.
+      if (current instanceof IdentifierNode && current.functionReference?.functionId !== undefined) {
+        ids.add(current.functionReference.functionId);
+      }
+      for (const key in current) {
+        if (key === 'resolvedFunction' || key === 'functionReference') continue; // back-references
+        const value = current[key as keyof Node];
+        if (value instanceof Node) pending.push(value);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) pending.push(item);
+        }
       }
     }
     if (topLevel) this.invokedFunctionIdsByNode.set(node, ids);

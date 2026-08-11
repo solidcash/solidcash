@@ -29,13 +29,21 @@ import { FullLocationData } from './types.js';
  * span are the same wherever they appear.
  */
 
-const OPEN_OPS = new Set<number>([Op.OP_IF, Op.OP_NOTIF, Op.OP_BEGIN]);
-const CLOSE_OPS = new Set<number>([Op.OP_ENDIF, Op.OP_UNTIL]);
 // Never relocate: see properties (2) and (3) above.
-const BARRIER_OPS = new Set<number>([
+const BARRIER_OPS = [
   Op.OP_DEFINE, Op.OP_INVOKE, Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
   Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
-]);
+];
+// Candidate balancing scans the same elements across many overlapping regions and outlining strategies. Dense
+// opcode tables keep those inner-loop classifications at indexed reads rather than repeated Set lookups.
+const CONTROL_DELTAS = new Int8Array(256);
+CONTROL_DELTAS[Op.OP_IF] = 1;
+CONTROL_DELTAS[Op.OP_NOTIF] = 1;
+CONTROL_DELTAS[Op.OP_BEGIN] = 1;
+CONTROL_DELTAS[Op.OP_ENDIF] = -1;
+CONTROL_DELTAS[Op.OP_UNTIL] = -1;
+const BARRIER_FLAGS = new Uint8Array(256);
+for (const opcode of BARRIER_OPS) BARRIER_FLAGS[opcode] = 1;
 
 /**
  * Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
@@ -144,13 +152,11 @@ const elementByteSize = (element: Script[number]): number => {
 
 const controlDelta = (element: Script[number]): number => {
   if (typeof element !== 'number') return 0;
-  if (OPEN_OPS.has(element)) return 1;
-  if (CLOSE_OPS.has(element)) return -1;
-  return 0;
+  return CONTROL_DELTAS[element];
 };
 
 const isBarrier = (element: Script[number]): boolean =>
-  typeof element === 'number' && BARRIER_OPS.has(element);
+  typeof element === 'number' && BARRIER_FLAGS[element] !== 0;
 const neverAnchored = (): boolean => false;
 
 /**

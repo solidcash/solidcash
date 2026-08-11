@@ -5,6 +5,7 @@ import {
 import { compileString } from 'solidc';
 import {
   blockhashOracleLockingBytecode, buildBlockhashCommitment, buildChunkCommitment, scriptToBytecode, sha256,
+  MESSAGE_BUS_BINDING_DOMAIN,
   keccakComputeLockingBytecode,
   ecrecoverComputeLockingBytecode,
 } from '@solidcash/utils';
@@ -122,7 +123,8 @@ const mutateEveryEnvelopeAndRebind = (
     }
     if (!(batchBlob instanceof Uint8Array)) throw new Error('participant master has no batchBlob');
     const parts = [
-      sha256(changedCallManifest), uint16(Number(activeBase)), uint16(Number(expectedLocalRows)), sha256(batchBlob),
+      MESSAGE_BUS_BINDING_DOMAIN, sha256(changedCallManifest), uint16(Number(activeBase)), uint16(Number(expectedLocalRows)),
+      sha256(batchBlob), Uint8Array.of(1),
     ];
     for (const value of params.slice(4, 11)) {
       if (typeof value === 'bigint') parts.push(uint16(Number(value)));
@@ -131,8 +133,71 @@ const mutateEveryEnvelopeAndRebind = (
     }
     const output = builder.outputs[verifierIndices[participant]];
     output.token!.nft!.commitment = `${builder.inputs[verifierIndices[participant]].token!.nft!.commitment.slice(0, 12)}`
-      + binToHex(sha256(concatBytes(...parts)));
+      + binToHex(sha256(changedCallManifest)) + binToHex(sha256(concatBytes(...parts)));
   }
+};
+
+/**
+ * Give one non-canonical verifier a different, internally self-consistent manifest and commitment. The
+ * specialized program must still derive the expected envelope hash from the canonical final verifier, so a
+ * participant cannot form a private view of the atomic graph even if its own master binding is repaired.
+ */
+const divergeOneVerifierEnvelopeAndRebind = (builder: TransactionBuilder): void => {
+  const verifierIndices = builder.inputs
+    .map((input, index) => ({ input, index }))
+    .filter(({ input }) => input.token?.nft?.commitment.startsWith('4c335631'))
+    .map(({ index }) => index);
+  if (verifierIndices.length < 2) throw new Error('divergent-envelope mutation requires two verifiers');
+  const verifierIndex = verifierIndices[0];
+  const original = builder.inputs[verifierIndex].unlocker!;
+  const instructions = decodeAuthenticationInstructions(
+    original.generateUnlockingBytecode({
+      transaction: builder.buildLibauthTransaction(), inputIndex: verifierIndex,
+    }),
+  );
+  const envelope = instructions[0];
+  if (!envelope || !('data' in envelope)) throw new Error('verifier has no envelope push');
+  const manifest = decodeAtomicMessageEnvelope(envelope.data);
+  const invocation = manifest.rows.findIndex((row) => row.kind === 0 && row.parent !== 0xffff);
+  if (invocation < 0) throw new Error('manifest has no child invocation');
+  const changedArgs = hexToBin(manifest.rows[invocation].argsHex);
+  changedArgs[changedArgs.length - 1] ^= 1;
+  const changedEnvelope = encodeAtomicMessageEnvelope({
+    ...manifest,
+    rows: manifest.rows.map((row, index) => index === invocation
+      ? { ...row, argsHex: binToHex(changedArgs) } : row),
+  });
+  builder.inputs[verifierIndex] = {
+    ...builder.inputs[verifierIndex],
+    unlocker: {
+      generateLockingBytecode: () => original.generateLockingBytecode(),
+      generateUnlockingBytecode: (options) => {
+        const rewritten = decodeAuthenticationInstructions(original.generateUnlockingBytecode(options));
+        rewritten[0] = { ...rewritten[0], data: changedEnvelope };
+        return encodeAuthenticationInstructions(rewritten);
+      },
+    },
+  };
+
+  const params = original.params;
+  const activeBase = params[1];
+  const expectedLocalRows = params[2];
+  const batchBlob = params[3];
+  if (typeof activeBase !== 'bigint' || typeof expectedLocalRows !== 'bigint'
+    || !(batchBlob instanceof Uint8Array)) throw new Error('verifier has malformed binding arguments');
+  const changedCallManifest = changedEnvelope.slice(8);
+  const parts = [
+    MESSAGE_BUS_BINDING_DOMAIN, sha256(changedCallManifest), uint16(Number(activeBase)),
+    uint16(Number(expectedLocalRows)), sha256(batchBlob), Uint8Array.of(1),
+  ];
+  for (const value of params.slice(4, 11)) {
+    if (typeof value === 'bigint') parts.push(uint16(Number(value)));
+    else if (value instanceof Uint8Array) parts.push(sha256(value));
+    else throw new Error('verifier has an invalid graph argument');
+  }
+  builder.outputs[verifierIndex].token!.nft!.commitment = `${
+    builder.inputs[verifierIndex].token!.nft!.commitment.slice(0, 12)
+  }${binToHex(sha256(changedCallManifest))}${binToHex(sha256(concatBytes(...parts)))}`;
 };
 
 const mutateAuthenticatedFrame = (
@@ -633,6 +698,9 @@ describe('messageBus.compose atomic transaction', () => {
       (input) => input.token?.nft?.commitment.startsWith('4c335631'),
     );
     if (verifierIndex < 0) throw new Error('test could not locate a deployed message bus verifier input');
+    const recurrentVerifierCommitment = hexToBin(canonical.outputs[verifierIndex].token!.nft!.commitment);
+    expect(recurrentVerifierCommitment).toHaveLength(70);
+    expect(binToHex(recurrentVerifierCommitment.slice(0, 4))).toBe('4c335631');
     const messageEnvelopePush = decodeAuthenticationInstructions(
       canonical.inputs[verifierIndex].unlocker!.generateUnlockingBytecode({
         transaction: canonical.buildLibauthTransaction(), inputIndex: verifierIndex,
@@ -1056,6 +1124,10 @@ describe('messageBus.compose atomic transaction', () => {
     hostileVerifierCommitment.outputs[hostileVerifierIndex].token!.nft!.commitment = binToHex(verifierCommitment);
     expect(vmRejects(hostileVerifierCommitment)).toBe(true);
 
+    const divergentVerifierEnvelope = await composition.build();
+    divergeOneVerifierEnvelopeAndRebind(divergentVerifierEnvelope);
+    expect(vmRejects(divergentVerifierEnvelope)).toBe(true);
+
     const hostileVerifierLock = await composition.build();
     const lockVerifierIndex = hostileVerifierLock.inputs.findIndex(
       (input) => input.token?.nft?.commitment.startsWith('4c335631'),
@@ -1067,6 +1139,25 @@ describe('messageBus.compose atomic transaction', () => {
       generateLockingBytecode: () => Uint8Array.of(0x51),
     };
     expect(vmRejects(hostileVerifierLock)).toBe(true);
+
+    const verifierClone = await composition.build();
+    const cloneVerifierIndex = verifierClone.inputs.findIndex(
+      (input) => input.token?.nft?.commitment.startsWith('4c335631'),
+    );
+    if (cloneVerifierIndex < 0) throw new Error('test could not locate a deployed message bus verifier input');
+    const feeOutputIndex = verifierClone.outputs.length - 1;
+    verifierClone.outputs[feeOutputIndex] = {
+      ...verifierClone.outputs[cloneVerifierIndex],
+      amount: verifierClone.outputs[feeOutputIndex].amount,
+      token: {
+        ...verifierClone.outputs[cloneVerifierIndex].token!,
+        nft: {
+          ...verifierClone.outputs[cloneVerifierIndex].token!.nft!,
+          commitment: `4c335631ffff${'00'.repeat(64)}`,
+        },
+      },
+    };
+    expect(vmRejects(verifierClone)).toBe(true);
 
     for (const mutation of ['messageEnvelope', 'emissions'] as const) {
       const hostile = await composition.build();

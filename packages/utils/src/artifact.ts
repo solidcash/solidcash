@@ -13,6 +13,7 @@ export interface CompilerOptions {
     verifyFunctionId: number;
     inputCount: number;
     inputs: readonly AbiInput[];
+    results: readonly [AbiOutput, AbiOutput, AbiOutput];
     functions: readonly { id: number; name: string; bytecode: string }[];
   };
   enforceFunctionParameterTypes?: boolean;
@@ -731,20 +732,20 @@ export interface InvocationAnalysisArtifact {
 }
 
 /**
- * Largest message-bus batch message-bus blob any generated covenant admits, in bytes (X106).
+ * Largest one-item message-bus batch blob any generated covenant admits, in bytes (X106).
  *
  * ONE home for a value with two enforcers. The compiler compiles this bound into every message-bus route
  * (`require(batchBlob.length <= N)`) and republishes it as `Artifact.messageBus.maximumBlobBytes`; the SDK's
  * messageBus graph generator enforces the same bound while framing each participant's message-envelope rows. Both
- * carried a bare `223` and nothing made them move together. `@solidcash/utils` is the only package both the
+ * carried independent literals and nothing made them move together. `@solidcash/utils` is the only package both the
  * compiler and the SDK already depend on, so it is the only place the two can share a literal.
  *
  * The value is load-bearing rather than cosmetic: for a chunk-backed value crossing a handler boundary the
- * blob envelope, NOT the trailing region, is the binding constraint. The bound is the BCH maximum stack-item
- * size: the blob is one unlocking-bytecode push and can use the canonical PUSHDATA2 form through 520 bytes.
- * Silent drift between the copies would therefore move a real consensus-facing limit.
+ * blob envelope, NOT the trailing region, is the binding constraint. BCH2026 permits a 10,000-byte stack item;
+ * transaction/input-bytecode admission remains stricter where framing, redeem scripts, and other arguments require
+ * it. Silent drift between the copies would therefore move a real consensus-facing limit.
  */
-export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
+export const MAX_MESSAGE_BUS_BLOB_BYTES = 10_000;
 
 /** Shared wire constants for the atomic single-transaction message bus. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
@@ -789,7 +790,6 @@ export interface Artifact {
    * is implied by its presence. */
   invocationAnalysis?: InvocationAnalysisArtifact;
   messageBus?: {
-    version: 1;
     selector: '53434231';
     minimumRows?: number;
     maximumRows: number;
@@ -811,6 +811,8 @@ export interface Artifact {
       verifyFunctionId: number;
       inputCount: number;
       inputs: readonly AbiInput[];
+      /** Fixed generic-sidecar result framing: binding, manifest digest, envelope hash. */
+      results: readonly [AbiOutput, AbiOutput, AbiOutput];
       functions: readonly { id: number; name: string; bytecode: string }[];
     };
     route: AbiFunction;

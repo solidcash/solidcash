@@ -677,11 +677,12 @@ const MAX_GRAPH_DEPTH = 7;
  * NOT A SECOND COPY ANY MORE. This is the shared `MAX_MESSAGE_BUS_BLOB_BYTES` from `@solidcash/utils` under
  * the name the SDK's messageBus callers already use, so the messageEnvelope's per-participant frame check and the
  * compiler's route check (republished as `artifact.messageBus.maximumBlobBytes`) cannot drift apart. Both were
- * a bare `223`; `@solidcash/utils` is the only package the compiler and the SDK both depend on, so it is the
+ * a bare `520`; `@solidcash/utils` is the only package the compiler and the SDK both depend on, so it is the
  * only place they can share one literal.
  *
- * A re-export rather than a rename, because the value is load-bearing: the blob is one BCH stack item, and the
- * shared value is the consensus 520-byte maximum accepted by the compiler-generated PUSHDATA2 route.
+ * A re-export rather than a rename, because the value is load-bearing: the blob is one BCH2026 stack item. The
+ * compiler fixes the covenant maximum at 10,000 bytes while finalized-byte preflight applies the tighter encoded
+ * input and transaction limits.
  *
  * `assertGraphBatchBlobEnvelope` closes the loop the other way, from the artifact back to this bound.
  */

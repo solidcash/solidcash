@@ -104,6 +104,23 @@ describe('inferred message-bus batching for repeated external callees', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('emits canonical PUSHDATA2 framing for BCH2026-sized batch blobs', () => {
+    const artifact = compileString(`
+      interface IBytes { function accept(bytes value) external; }
+      contract Caller(address sink) {
+        function run(bytes first, bytes second) public {
+          IBytes(sink).accept(first);
+          IBytes(sink).accept(second);
+          require(first.length >= 0 && second.length >= 0);
+        }
+      }
+    `, { forceStateful: true, messageBus: true });
+
+    // OP_DUP 255 OP_LESSTHANOREQUAL OP_IF selects PUSHDATA1; its OP_ELSE uses
+    // OP_2 OP_NUM2BIN 0x4d OP_SWAP OP_CAT OP_SWAP OP_CAT for canonical uint16-le PUSHDATA2 framing.
+    expect(artifact.debug?.bytecode).toContain('7602ff00a163608a675280014d7c7e7c7e6868');
+  });
+
   it('reconstructs deterministic raw calldata from constructor and handler arguments', () => {
     const artifact = compileString(`
       interface IERC20 { function transfer(address to, uint amount) external returns (bool); }

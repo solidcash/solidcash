@@ -1,7 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, scriptToBytecode,
-  MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256,
+  MESSAGE_BUS_BINDING_DOMAIN, MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type {
@@ -11,7 +11,7 @@ import { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
 import {
-  createMessageBusVerifierUnlocker, getMessageBusVerifierLockingBytecode,
+  createMessageBusVerifierUnlocker, getMessageBusVerifierLockingBytecode, getMessageBusVerifierProgram,
 } from '../stateful/covenant-helpers.js';
 import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
 import { assertAtomicParticipantCapacity } from './capacity.js';
@@ -59,7 +59,12 @@ const concat = (...parts: readonly Uint8Array[]): Uint8Array => {
   return result;
 };
 
-const uint16 = (value: number): Uint8Array => Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
+const uint16 = (value: number): Uint8Array => {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff) {
+    throw new Error(`messageBus: value ${value} does not fit canonical uint16-le framing`);
+  }
+  return Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
+};
 const framed = (value: Uint8Array): Uint8Array => concat(uint16(value.length), value);
 const semanticJson = (value: unknown): string => JSON.stringify(
   value, (_key, field) => typeof field === 'bigint' ? field.toString() : field,
@@ -383,14 +388,17 @@ export class AtomicMessageBusComposition {
       const verifierDomain = binToHex(MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN);
       const messageEnvelope = encodeAtomicMessageEnvelope(graph.callManifest);
       const callManifest = encodeAtomicMessageBusCallManifest(graph.callManifest);
+      const selectedVerifierOutpoints = new Set<string>();
       for (const participant of plan.participants) {
         const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
         const verifierLock = getMessageBusVerifierLockingBytecode(
           contract.inner, categories[participant.participant], contract.inner.addressType,
         );
         const verifier = (await provider.getUtxosForLockingBytecode(verifierLock)).find((utxo) =>
-          utxo.token?.category.toLowerCase() === categories[participant.participant].toLowerCase()
+          !selectedVerifierOutpoints.has(`${utxo.txid}:${utxo.vout}`)
+          && utxo.token?.category.toLowerCase() === categories[participant.participant].toLowerCase()
           && utxo.token.nft?.capability === 'mutable'
+          && (utxo.token.nft.commitment.length === 12 || utxo.token.nft.commitment.length === 140)
           && utxo.token.nft.commitment.toLowerCase().startsWith(verifierDomain));
         if (!verifier) {
           throw new Error(
@@ -398,8 +406,9 @@ export class AtomicMessageBusComposition {
             + 'deploy with messageBusVerificationInputCount >= 1',
           );
         }
+        selectedVerifierOutpoints.add(`${verifier.txid}:${verifier.vout}`);
         const stateInputUnlocker = stateInputUnlockers[participant.participant];
-        const verifierProgram = contract.inner.artifact.messageBus!.verifierProgram!;
+        const verifierProgram = getMessageBusVerifierProgram(contract.inner);
         const batchBlob = stateInputUnlocker.params[0] as Uint8Array;
         const routeContext = graphRouteContext(graph, participant.participant);
         const verifierGraphArgumentNames = [
@@ -407,7 +416,7 @@ export class AtomicMessageBusComposition {
           '__internal__graphCallers', '__internal__graphSettlementBoundary',
           '__internal__graphCompletionPositions', '__internal__graphSettlementTable',
         ] as const;
-        const graphArguments = verifierProgram.inputs.slice(3).map((input, index) => {
+        const graphArguments = verifierProgram.inputs.slice(3).map((input: { name: string }, index: number) => {
           const argument = routeContext[verifierGraphArgumentNames[index]];
           if (argument === undefined) {
             throw new Error(`messageBus: verifier argument '${input.name}' has no compiler-authored value`);
@@ -421,10 +430,12 @@ export class AtomicMessageBusComposition {
           ...graphArguments,
         ];
         const bindingDigestParts = [
+          MESSAGE_BUS_BINDING_DOMAIN,
           sha256(callManifest),
           uint16(graph.layout.participantInputs[participant.participant]),
           uint16(batchBlob[6]),
           sha256(batchBlob),
+          Uint8Array.of(graphArguments.length === 0 ? 0 : 1),
         ];
         for (const argument of graphArguments) {
           bindingDigestParts.push(typeof argument === 'bigint'
@@ -444,7 +455,7 @@ export class AtomicMessageBusComposition {
             amount: verifier.token!.amount ?? 0n,
             nft: {
               ...verifier.token!.nft!,
-              commitment: `${verifier.token!.nft!.commitment.slice(0, 12)}${binToHex(bindingDigest)}`,
+              commitment: `${verifier.token!.nft!.commitment.slice(0, 12)}${binToHex(sha256(callManifest))}${binToHex(bindingDigest)}`,
             },
           },
         });

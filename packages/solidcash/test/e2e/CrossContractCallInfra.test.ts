@@ -91,7 +91,9 @@ describe('unbounded bytes return', () => {
   });
 });
 
-describe('return-event order', () => {
+// The multi-call B fixture below compiles to 12,157 bytes. It deliberately stresses return-event ordering in
+// one unsplit script, so it cannot be spent under BCH's 10,000-byte input-script limit and remains mock-only.
+describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('return-event order', () => {
   // Regression: a returning call FOLLOWED by another external call. The return-event commitment is
   // extracted from the dedicated return-event section (order-independent), so both orders thread the value.
   const SRC = `
@@ -166,7 +168,9 @@ describe('return-event order', () => {
   });
 });
 
-describe('under-declared interface offset', () => {
+// This variant has the same consensus-impossible 12,157-byte B shape; the live-compatible single-call return
+// coverage remains in the suite above.
+describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('under-declared interface offset', () => {
   // #17: an interface that UNDER-declares the callee's state shifts the next call's block offset; the
   // per-slot runtime master index keeps the co-spend correct without declaring the state.
   const SRC = `

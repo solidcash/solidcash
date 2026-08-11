@@ -1,4 +1,4 @@
-import { FullLocationData, PositionHint, SingleLocationData } from './types.js';
+import { FullLocationData, PositionHint } from './types.js';
 
 /*
  * The source mappings for the bytecode use the following notation (similar to Solidity):
@@ -32,7 +32,9 @@ export function generateSourceMap(locationData: FullLocationData): string {
   let prevEndColumn = 0;
   let prevHint = PositionHint.START;
 
-  return locationData.map(({ location, positionHint }: SingleLocationData) => {
+  const entries = new Array<string>(locationData.length);
+  for (let index = 0; index < locationData.length; index += 1) {
+    const { location, positionHint } = locationData[index];
     // A compiler-generated instruction may carry no source location (like solc's empty source-map entries).
     // Fall back to the previous mapping's positions so the fields serialise as empty ("same as previous")
     // rather than crashing on a missing location.
@@ -83,8 +85,9 @@ export function generateSourceMap(locationData: FullLocationData): string {
 
     let resultEnd = result.length;
     while (resultEnd > 0 && result.charCodeAt(resultEnd - 1) === 58) resultEnd -= 1;
-    return resultEnd === result.length ? result : result.slice(0, resultEnd);
-  }).join(';');
+    entries[index] = resultEnd === result.length ? result : result.slice(0, resultEnd);
+  }
+  return entries.join(';');
 }
 
 export const sourceMapToLocationData = (sourceMap: string): FullLocationData => {

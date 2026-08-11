@@ -437,6 +437,7 @@ export default class AstBuilder
   // as-is (it feeds the library's shared-state/delegate machinery); only CONTRACT-level `public constant` is
   // rerouted to a baked constant (see visitStateVariableDeclaration).
   private inLibraryDecl = false;
+  private readonly sourceContainsSelfdestruct: boolean;
 
   constructor(
     private tree: ParseTree,
@@ -446,6 +447,7 @@ export default class AstBuilder
     private importedFileId?: string,
   ) {
     super();
+    this.sourceContainsSelfdestruct = sourceCode.includes('selfdestruct');
   }
 
   /** ` at line N` for a parse-time diagnostic, naming the imported file when this is not the root file. */
@@ -2072,20 +2074,24 @@ export default class AstBuilder
     // `selfdestruct(addr)` in the body implies the selfdestruct modifier (collapse all state UTXOs, no
     // recreation). The destination is enforced in codegen (visitSelfdestructStatement pins tx.outputs[0] to
     // addr); the SDK's selfdestructTo() routes the freed balance to addr at output 0.
-    const directSelfdestruct = functionDefinition.body.statements!
-      .some((s) => s instanceof SelfdestructStatementNode);
-    const containsNestedSelfdestruct = (value: unknown, root = true): boolean => {
-      if (value instanceof SelfdestructStatementNode) return !root;
-      if (!(value instanceof Node)) return false;
-      return Object.entries(value).some(([key, child]) => {
-        if (key === 'location' || key === 'type' || key === 'symbolTable') return false;
-        if (child instanceof Node) return containsNestedSelfdestruct(child, false);
-        return Array.isArray(child) && child.some((entry) => containsNestedSelfdestruct(entry, false));
-      });
-    };
-    const nestedSelfdestruct = functionDefinition.body.statements!
-      .some((statement) => !(statement instanceof SelfdestructStatementNode)
-        && containsNestedSelfdestruct(statement));
+    let directSelfdestruct = false;
+    let nestedSelfdestruct = false;
+    if (this.sourceContainsSelfdestruct) {
+      directSelfdestruct = functionDefinition.body.statements!
+        .some((s) => s instanceof SelfdestructStatementNode);
+      const containsNestedSelfdestruct = (value: unknown, root = true): boolean => {
+        if (value instanceof SelfdestructStatementNode) return !root;
+        if (!(value instanceof Node)) return false;
+        return Object.entries(value).some(([key, child]) => {
+          if (key === 'location' || key === 'type' || key === 'symbolTable') return false;
+          if (child instanceof Node) return containsNestedSelfdestruct(child, false);
+          return Array.isArray(child) && child.some((entry) => containsNestedSelfdestruct(entry, false));
+        });
+      };
+      nestedSelfdestruct = functionDefinition.body.statements!
+        .some((statement) => !(statement instanceof SelfdestructStatementNode)
+          && containsNestedSelfdestruct(statement));
+    }
     if (nestedSelfdestruct) throw new NestedSelfdestructError(functionDefinition, functionDefinition.name);
     if (directSelfdestruct
       && !functionDefinition.modifiers.includes(FunctionModifier.SELFDESTRUCT)) {

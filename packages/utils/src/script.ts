@@ -483,7 +483,7 @@ function replaceOps(
     replacementTokens,
   }) => {
     if (!presentTokens.has(firstToken)) return;
-    for (const token of requiredTokens) if (!presentTokens.has(token)) return;
+    if (requiredTokens.length !== 0 && !presentTokens.has(requiredTokens[0])) return;
     let matchIndex = asm.search(regex);
     // Most of the ~100 rules match nothing, and for those the rebuild below is the identity (`asm` is already
     // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per

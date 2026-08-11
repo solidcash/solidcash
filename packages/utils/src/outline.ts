@@ -331,8 +331,10 @@ function findCandidates(
   const windows = new Map<number, Occurrence[]>();
   bodyIds.forEach((ids, bodyIndex) => {
     for (let i = 0; i + minimumWindowElements <= ids.length; i += 1) {
-      let hash = 0;
-      for (let j = 0; j < minimumWindowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
+      // The first polynomial term is the id itself (`imul(0, 31) + id`); seed it directly and save one multiply
+      // in this loop, which runs for every candidate window in every outlining round and strategy.
+      let hash = ids[i];
+      for (let j = 1; j < minimumWindowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
       let group = windows.get(hash);
       if (group === undefined) {
         group = [];

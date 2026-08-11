@@ -88,9 +88,11 @@ export class SymbolTable {
   }
 
   unusedSymbols(): Symbol[] {
-    return Array.from(this.symbols)
-      .map((e) => e[1])
-      .filter((s) => s.references.length === 0 && s.definition !== undefined
-        && !(s.definition as { syntheticallyUsed?: boolean }).syntheticallyUsed);
+    const unused: Symbol[] = [];
+    for (const symbol of this.symbols.values()) {
+      if (symbol.references.length === 0 && symbol.definition !== undefined
+        && !(symbol.definition as { syntheticallyUsed?: boolean }).syntheticallyUsed) unused.push(symbol);
+    }
+    return unused;
   }
 }

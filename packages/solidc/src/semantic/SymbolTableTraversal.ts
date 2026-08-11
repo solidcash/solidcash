@@ -341,6 +341,7 @@ const RESOLVED_BACKREF_KEYS = new Set([
 ]);
 
 export default class SymbolTableTraversal extends AstTraversal {
+  private readonly transferFreeFunctions = new WeakSet<FunctionDefinitionNode>();
   private symbolTables: SymbolTable[] = [new SymbolTable(GLOBAL_SYMBOL_TABLE)];
   private functionSignatures: Set<string> = new Set();
 
@@ -2000,6 +2001,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
     node.body = this.visit(node.body);
     const bodySurvey = this.surveyFunctionBody(node.body);
+    if (!bodySurvey.hasValueTransfer) this.transferFreeFunctions.add(node);
 
     // msg.sender pre-scan: inject synthetic _msgSenderCategory parameter
     {
@@ -2789,7 +2791,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Transfer statement pre-scan: collect all transfer statements and assign sequential indices
-    {
+    if (bodySurvey.hasValueTransfer) {
       const transferInfos: TransferInfo[] = [];
       this.collectTransferStatements(node.body, transferInfos);
 
@@ -3914,11 +3916,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   private surveyFunctionBody(node: Node): {
     usesMsgSender: boolean;
     keccakInLoop: boolean;
+    hasValueTransfer: boolean;
     recovery: { total: number; evm: number; inLoop: boolean };
   } {
     const result = {
       usesMsgSender: false,
       keccakInLoop: false,
+      hasValueTransfer: false,
       recovery: { total: 0, evm: 0, inLoop: false },
     };
     const recoverySeen = new WeakMap<Node, boolean>();
@@ -3936,6 +3940,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         if (nowKeccakInLoop && current instanceof FunctionCallNode
           && current.identifier.name === GlobalFunction.KECCAK256) result.keccakInLoop = true;
+        if (current instanceof TransferStatementNode || current instanceof AddressTransferStatementNode
+          || current instanceof AddressSendExpressionNode
+          || (current instanceof LowLevelCallStatementNode && current.callOptions?.value !== undefined)
+          || (current instanceof MethodCallStatementNode && current.call.callOptions?.value !== undefined)
+          || (current instanceof MethodCallNode && current.callOptions?.value !== undefined)
+          || (current instanceof ExternalFunctionCallNode && current.callOptions?.value !== undefined)
+          || (current instanceof InstantiationNode && current.callOptions?.value !== undefined)) {
+          result.hasValueTransfer = true;
+        }
       }
       const recoveryCall = current instanceof FunctionCallNode && (
         current.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
@@ -11642,7 +11655,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Value-bearing contract creations are lowered into transfer operations before codegen, but their transfer
     // metadata is otherwise collected after this layout is computed. Pre-scan here as well so the satoshi
     // container and output-only transfer slots are present in the authoritative 1:1 block layout.
-    if (!node.transferInfos) {
+    if (!node.transferInfos && !this.transferFreeFunctions.has(node)) {
       const transferInfos: TransferInfo[] = [];
       this.collectTransferStatements(node.body, transferInfos);
       if (transferInfos.length > 0) node.transferInfos = transferInfos;

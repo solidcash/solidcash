@@ -44,7 +44,26 @@ export type OpOrData = Op | Uint8Array;
 export type Script = OpOrData[];
 
 export function scriptToAsm(script: Script): string {
-  return bytecodeToAsm(scriptToBytecode(script));
+  const parts = new Array<string>(script.length);
+  for (let i = 0; i < script.length; i += 1) {
+    const element = script[i];
+    if (typeof element === 'number') {
+      // A bare push opcode consumes following bytecode rather than standing alone. Retain the decoder round trip
+      // for these uncommon fragments; every other opcode maps independently to its canonical ASM name.
+      if (element >= Op.OP_PUSHBYTES_1 && element <= Op.OP_PUSHDATA_4) {
+        return bytecodeToAsm(scriptToBytecode(script));
+      }
+      parts[i] = Op[element] as string;
+    } else if (element.length === 0) {
+      parts[i] = 'OP_0';
+    } else if (foldsToPushNumberOpcode(element)) {
+      const opcode = element[0] === NEGATIVE_ONE_BYTE ? Op.OP_1NEGATE : element[0] + PUSH_NUMBER_OPCODE_OFFSET;
+      parts[i] = Op[opcode] as string;
+    } else {
+      parts[i] = binToHex(element);
+    }
+  }
+  return parts.join(' ');
 }
 
 export function scriptToBitAuthAsm(script: Script): string {

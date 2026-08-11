@@ -183,7 +183,7 @@ type InternalCompilerOptions = CompilerOptions & {
   __messageBusMode?: MessageBusMode;
 };
 
-function containsFunctionType(root: Node): boolean {
+function surveyOptionalLowerings(root: Node): { hasFunctionPointers: boolean; needsBlockOracle: boolean } {
   const seenNodes = new Set<Node>();
   const seenTypes = new Set<object>();
   const typeContainsFunction = (type: Type): boolean => {
@@ -199,23 +199,36 @@ function containsFunctionType(root: Node): boolean {
     return false;
   };
   const pending = [root];
+  let needsBlockOracle = false;
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
     seenNodes.add(node);
+    if (node instanceof AssemblyStatementNode
+      || (node instanceof NullaryOpNode && String(node.operator).startsWith('block.'))
+      || (node instanceof IdentifierNode && node.name === 'now')
+      || (node instanceof FunctionCallNode
+        && (node.identifier.name === 'gasleft' || node.identifier.name === GlobalFunction.BLOCKHASH))) {
+      needsBlockOracle = true;
+    }
     for (const key in node) {
       const value = node[key as keyof Node] as unknown;
       if (value instanceof FunctionType
         || ((value instanceof ArrayType || value instanceof MappingType
           || value instanceof StructType || value instanceof TupleType)
-          && typeContainsFunction(value))) return true;
+          && typeContainsFunction(value))) {
+        // Pointer-specific passes remain enabled, and conservatively retain the oracle traversal too. This keeps
+        // pointer-bearing contracts on their historical pipeline while pointer-free contracts get both gates
+        // from one structural survey.
+        return { hasFunctionPointers: true, needsBlockOracle: true };
+      }
       if (value instanceof Node) pending.push(value);
       else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node) pending.push(item);
       }
     }
   }
-  return false;
+  return { hasFunctionPointers: false, needsBlockOracle };
 }
 
 
@@ -4548,7 +4561,7 @@ function compileResolvedAst(
   // Preserve straight-line foreign function-pointer ternaries before control-flow normalization splits
   // their initialized declaration into a declaration plus branch assignments. The later invocation remains
   // for aliases introduced by the intervening contract-member/function-pointer passes.
-  const hasFunctionPointers = containsFunctionType(ast);
+  const { hasFunctionPointers, needsBlockOracle } = surveyOptionalLowerings(ast);
   if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
@@ -4747,7 +4760,7 @@ function compileResolvedAst(
   ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
   const blockOracle = new SynthesizeBlockOracle(mergedCompilerOptions.solidityImportCompat ?? false);
-  ast = ast.accept(blockOracle) as Ast;
+  if (needsBlockOracle) ast = ast.accept(blockOracle) as Ast;
 
   // Drop free/library functions the contract never reaches (OZ libraries ship many unused helpers). Runs last,
   // after every synthesis pass, so no reachable call is missed; conservative by name so nothing live is dropped.

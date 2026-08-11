@@ -14,6 +14,26 @@ import { optimisationReplacements } from './optimisations.js';
 import { FullLocationData, PositionHint, SingleLocationData } from './types.js';
 import { LogEntry, RequireStatement } from './artifact.js';
 
+interface CompiledOptimisation {
+  pattern: string;
+  replacement: string;
+  regex: RegExp;
+  patternLength: number;
+  replacementLength: number;
+  patternTokens: string[];
+}
+
+const compiledOptimisationReplacements: CompiledOptimisation[] = optimisationReplacements.map(
+  ([pattern, replacement]) => ({
+    pattern,
+    replacement,
+    regex: new RegExp(`${pattern}(\\s|$)`, 'g'),
+    patternLength: [...pattern.matchAll(/\s+/g)].length + 1,
+    replacementLength: replacement === '' ? 0 : [...replacement.matchAll(/\s+/g)].length + 1,
+    patternTokens: pattern.split(/\s+/g),
+  }),
+);
+
 export const Op = OpcodesBch;
 export type Op = number;
 export type OpOrData = Op | Uint8Array;
@@ -292,7 +312,7 @@ export function optimiseBytecode(
   let rewritten = false;
   for (let i = 0; i < runs; i += 1) {
     const result = replaceOps(
-      asm, locationData, logs, requires, constructorParamLength, optimisationReplacements,
+      asm, locationData, logs, requires, constructorParamLength, compiledOptimisationReplacements,
     );
 
     // Break on fixed point: nothing matched, so every field is still the caller's own input.
@@ -411,17 +431,16 @@ function replaceOps(
   logs: LogEntry[],
   requires: RequireStatement[],
   constructorParamLength: number,
-  optimisations: string[][],
+  optimisations: CompiledOptimisation[],
 ): ReplaceOpsResult {
   let asm = originalAsm;
   let newLocationData = [...locationData];
   let newLogs = [...logs];
   let newRequires = [...requires];
 
-  optimisations.forEach(([pattern, replacement]) => {
-    // We add a space or end of string to the end of the pattern to ensure that we match the whole pattern
-    // (no partial matches)
-    const regex = new RegExp(`${pattern}(\\s|$)`, 'g');
+  optimisations.forEach(({
+    pattern, replacement, regex, patternLength, replacementLength, patternTokens,
+  }) => {
     let matchIndex = asm.search(regex);
     // Most of the ~100 rules match nothing, and for those the rebuild below is the identity (`asm` is already
     // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per
@@ -451,9 +470,6 @@ function replaceOps(
       // The script index is the opcode count of processedAsm (tracked incrementally above).
       // We count the opcodes in the pattern and replacement the same way.
       const scriptIndex = processedTokens;
-      const patternLength = [...pattern.matchAll(/\s+/g)].length + 1;
-      const replacementLength = replacement === '' ? 0 : [...replacement.matchAll(/\s+/g)].length + 1;
-
       // We get the locationData entries for every opcode in the pattern
       const patternLocations = newLocationData.slice(scriptIndex, scriptIndex + patternLength);
 
@@ -522,7 +538,7 @@ function replaceOps(
             }
 
             const addedTransformationsCount = data.ip - scriptIp;
-            const addedTransformations = [...pattern.split(/\s+/g)].slice(0, addedTransformationsCount).join(' ');
+            const addedTransformations = patternTokens.slice(0, addedTransformationsCount).join(' ');
             const newTransformations = data.transformations ? `${addedTransformations} ${data.transformations}` : addedTransformations;
 
             // Only include transformations property if non-empty to avoid adding spurious empty strings

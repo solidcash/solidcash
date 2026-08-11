@@ -183,6 +183,42 @@ type InternalCompilerOptions = CompilerOptions & {
   __messageBusMode?: MessageBusMode;
 };
 
+function containsFunctionType(root: Node): boolean {
+  const seenNodes = new Set<Node>();
+  const seenTypes = new Set<object>();
+  const typeContainsFunction = (type: Type): boolean => {
+    if (type instanceof FunctionType) return true;
+    if (seenTypes.has(type as object)) return false;
+    seenTypes.add(type as object);
+    if (type instanceof ArrayType) return typeContainsFunction(type.elementType);
+    if (type instanceof MappingType) {
+      return typeContainsFunction(type.keyType) || typeContainsFunction(type.valueType);
+    }
+    if (type instanceof StructType) return type.fields.some((field) => typeContainsFunction(field.type));
+    if (type instanceof TupleType) return type.elements.some(typeContainsFunction);
+    return false;
+  };
+  const pending = [root];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (seenNodes.has(node)) continue;
+    seenNodes.add(node);
+    for (const key in node) {
+      const value = node[key as keyof Node] as unknown;
+      if (value instanceof FunctionType
+        || ((value instanceof ArrayType || value instanceof MappingType
+          || value instanceof StructType || value instanceof TupleType)
+          && typeContainsFunction(value))) return true;
+      if (value instanceof Node) pending.push(value);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) pending.push(item);
+      }
+    }
+  }
+  return false;
+}
+
+
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
   const messageBusMode: MessageBusMode = options.__messageBusVerifierProgram
     ? 'required'
@@ -4512,7 +4548,8 @@ function compileResolvedAst(
   // Preserve straight-line foreign function-pointer ternaries before control-flow normalization splits
   // their initialized declaration into a declaration plus branch assignments. The later invocation remains
   // for aliases introduced by the intervening contract-member/function-pointer passes.
-  ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
+  const hasFunctionPointers = containsFunctionType(ast);
+  if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
@@ -4569,48 +4606,50 @@ function compileResolvedAst(
 
   // A gratuitous internal fn-ptr state-var alias (`ev = eval; ev(x)`) -> the direct call (`eval(x)`), removing the
   // alias var. Sidesteps a higher-order internal-fn-ptr type mismatch; before any fn-ptr lowering.
-  ast = ast.accept(new EliminateInternalFnPtrAlias()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new EliminateInternalFnPtrAlias()) as Ast;
 
   // A contract instance's method as a fn-ptr VALUE (`o.m` / `(new C()).m`) -> the recognised `C(o).m` member
   // form (inline-new hoisted to a named deploy local). Before the fn-ptr passes so the member flows through.
-  ast = ast.accept(new DesugarContractMemberFnPtr()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new DesugarContractMemberFnPtr()) as Ast;
 
   // A foreign fn-ptr RETURNED from / PASSED through a side-effect-free single-return helper (`make(a){ return
   // IFoo(a).m; }`, `eval(y){ return y(7); }`) -> beta-reduced into its call sites. Before InterproceduralStoreFold
   // so a helper-returned `x(..)` call (`eval(x)` -> `x(7)`) is present for the fold to rewrite.
-  ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
 
   // Interprocedural deploy fold through a store helper (store_function core): `store(C(o).m); x(..)` rewrites the
   // same-tx `x(..)` to `o.m(..)` so a freshly-deployed child called via a stored fn-ptr folds. Before the split.
-  ast = ast.accept(new InterproceduralStoreFold()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new InterproceduralStoreFold()) as Ast;
 
   // A foreign fn-ptr PASSED to a DIFFERENT contract over an external call (`IB(b).register(ITarget(t).m, ..)`)
   // -> split the fn-ptr member arg into (address, selector) to match the callee's lowered fn-ptr param.
-  ast = ast.accept(new SplitExternalCallFnPtrArgs()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new SplitExternalCallFnPtrArgs()) as Ast;
 
   // Straight-line foreign external function pointer `function() external f = IFoo(addr).method; f(args)` ->
   // `IFoo(addr).method(args)` (the existing external call); before the external-call passes + semantic.
-  ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
   // A foreign external fn-ptr STATE var holding a fixed method on a runtime address (`function() external x;
   // x = IFoo(a).m; x(v)`) -> an `address` state var + the state-address external call `IFoo(x).m(v)`.
-  ast = ast.accept(new LowerForeignFunctionPointerVars()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new LowerForeignFunctionPointerVars()) as Ast;
   // A foreign fn-ptr STRUCT FIELD holding a fixed method (nested analogue of the state-var pass) -> an
   // interface-typed field + the shipped struct-field-chain call `s.field.m()`. Before the address-local synth.
-  ast = ast.accept(new LowerForeignFunctionPointerStructFields()) as Ast;
-  ast = ast.accept(new LowerForeignFunctionPointerParams()) as Ast;
+  if (hasFunctionPointers) {
+    ast = ast.accept(new LowerForeignFunctionPointerStructFields()) as Ast;
+    ast = ast.accept(new LowerForeignFunctionPointerParams()) as Ast;
+  }
   // A foreign fn-ptr STATE var holding a RECEIVED value (`x = y`, method carried in the value) -> an `address`
   // field + a `bytes4 __fnsel_x` companion + the state-address external call with a runtime selector. Runs after
   // the PARAM lowering (which splits `y` into address + `__fnsel_y`) that this pass reads the selector from.
-  ast = ast.accept(new LowerForeignFunctionPointerStorage()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new LowerForeignFunctionPointerStorage()) as Ast;
   // A foreign fn-ptr ARRAY holding RECEIVED values (`fns.push(p)`) -> `address[]` + a parallel `bytes[]`
   // selector array + the per-element on-chain-selector dispatch loop with SDK-filled witness master indices
   // (the array analogue of the storage pass). After the param lowering that splits `p` -> `__fnsel_p`.
-  ast = ast.accept(new LowerReceivedFnPtrArray(messageBusGraphMode)) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new LowerReceivedFnPtrArray(messageBusGraphMode)) as Ast;
   // A RECEIVED-value foreign fn-ptr in a struct field (method carried in the value) -> a bytes BLOB
   // `selector ++ address`; a call slices it into an audited state-address external call. After the fixed-method
   // struct-field pass (only received-value fields remain).
-  ast = ast.accept(new LowerBlobFunctionPointers()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new LowerBlobFunctionPointers()) as Ast;
 
   // Lower supported Yul inline assembly to equivalent main-AST statements (value computation + control flow).
   ast = ast.accept(new LowerInlineAssembly()) as Ast;

@@ -300,15 +300,21 @@ function prepareCandidateCorpus(bodies: OutlineBody[]): CandidateCorpus {
     keyIds.set(key, assigned);
     return assigned;
   };
-  const bodyIds = bodies.map((body) => body.script.map(idOf));
-  const maximumBodyLength = bodies.reduce((maximum, body) => Math.max(maximum, body.script.length), 0);
-  const bodyBytePrefixes = bodies.map((body) => {
-    const prefix = new Uint32Array(body.script.length + 1);
-    for (let i = 0; i < body.script.length; i += 1) {
-      prefix[i + 1] = prefix[i] + elementByteSize(body.script[i]);
+  const bodyIds = new Array<number[]>(bodies.length);
+  const bodyBytePrefixes = new Array<Uint32Array>(bodies.length);
+  let maximumBodyLength = 0;
+  for (let bodyIndex = 0; bodyIndex < bodies.length; bodyIndex += 1) {
+    const script = bodies[bodyIndex].script;
+    const ids = new Array<number>(script.length);
+    const prefix = new Uint32Array(script.length + 1);
+    if (script.length > maximumBodyLength) maximumBodyLength = script.length;
+    for (let i = 0; i < script.length; i += 1) {
+      ids[i] = idOf(script[i]);
+      prefix[i + 1] = prefix[i] + elementByteSize(script[i]);
     }
-    return prefix;
-  });
+    bodyIds[bodyIndex] = ids;
+    bodyBytePrefixes[bodyIndex] = prefix;
+  }
   return {
     bodyIds,
     bodyBytePrefixes,

@@ -1012,7 +1012,7 @@ export default class LowerMemoryModel extends AstTraversal {
   }
 
   private eachChild(node: Node, fn: (n: Node) => void): void {
-    for (const key of Object.keys(node)) {
+    for (const key in node) {
       const val = (node as unknown as Record<string, unknown>)[key];
       if (val instanceof Node) fn(val);
       else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) fn(v);

@@ -20,7 +20,7 @@ fast-forward it back deliberately.
 
 ## Valid evidence at the integrated head
 
-The following gates passed on the fully merged tree before this handoff:
+The following gates passed on the fully merged tree before the final NativeUSDT test-only refactor:
 
 ```bash
 yarn lint
@@ -40,6 +40,12 @@ Integration commits, oldest first:
 4d2da0ebe  chore(testing): refresh artifacts after final integration
 bec314aed  fix(integration): restore release lint gates
 ```
+
+The post-rebase readiness series was preserved as
+`codex/release-readiness-pre-c78-snapshot-20260811`, rebuilt from `c78c135b7`, and then applied as ordinary
+commits on `codex/release-readiness-final`. The current series begins at `324cbca5f`; inspect `git log
+c78c135b7..HEAD` for the complete, authoritative list rather than relying on the older integration excerpt
+above.
 
 ## BCHN matrix: current focused evidence and remaining final gate
 
@@ -70,10 +76,11 @@ disposition:
 - The hand-linked NativeUSDT proxy/facet probes explicitly retain their documented mock-only chosen-category
   classification. Their 29 mock rows pass; six structural live rows pass and 23 transactional rows skip.
 - `compileStringSplit` once again budgets constructor and widest-call pushes during facet packing and final facet
-  validation. The 29-test compiler splitting suite passes. The NativeUSDT live deployment progressed past its
-  former 10,030-byte constructed-facet refusal after this fix. Its subsequent route assertions were spoiled by
-  provider `fetch failed` errors on the aged chain, so a wiped-chain rerun of that one expensive row remains
-  required before citing it as passed.
+  validation. The 29-test compiler splitting suite passes. From a wiped chain, the NativeUSDT bundle's constructed
+  shards deployed successfully and state initialization passed, proving the former 10,030-byte constructed-facet
+  refusal is fixed. BCHN consistently closes its RPC transport while validating the maximum-shape route spends,
+  even on fresh chains; those route assertions are therefore explicit mock-only coverage. Smaller split-route
+  BCHN regressions retain live routing coverage.
 - `Sec13UnpinnedEventNftPaths` remains an accumulated-chain-only failure: the encompassing old batch 38 region
   passes 46/46 from a wiped chain.
 
@@ -87,6 +94,7 @@ DeployThenCallFold: mock 13/13; BCHN 13/13
 MinimalNativeToken: mock 2/2; BCHN 2/2
 NativeUSDT hand-linked rows: mock 29/29; BCHN 6 passed, 23 intentional skips
 solidc LargeContractSplitting: 29/29
+NativeUSDT built-in splitter: fresh BCHN deployment 1/1; maximum-shape routes explicit mock-only
 ```
 
 `yarn build` and `yarn lint` both pass after these changes. Generated testing-suite content was unchanged; only
@@ -127,6 +135,22 @@ DeployThenCallFold, FunctionPointerArrayCall, NestedArrayDelete, Solidity corpus
 split/merge, upgrades, sorted mappings, and batches 39-52. These are diagnostic confidence only after the large
 `solidcash_v0.13.1` integration; rerun the relevant gates at the current head.
 
+Additional release gates already passed sequentially on this candidate lineage:
+
+```text
+corpus baseline: 2,698/2,805 positive; 323/2,158 over-accepted
+security conformance: passed
+documentation snippets: 128 compiled, 6 import-only skips, 0 failed; 33/33 SDK imports resolve
+spellcheck: 0 issues
+package smoke: all six packed packages; golden consumer 3/3
+application conformance: 95/95
+generated-project smoke: SolidHat 1/1; cache 1/1; golden path 21/21
+application regtest: fresh chain 9/9
+```
+
+The first application/generated attempts overlapped package-smoke rebuilding package outputs and were invalid;
+the sequential reruns above are the results to cite.
+
 ## Immediate continuation sequence
 
 1. Confirm the worktree is clean and record the candidate commit:
@@ -136,12 +160,14 @@ split/merge, upgrades, sorted mappings, and batches 39-52. These are diagnostic 
    git rev-parse HEAD
    ```
 
-2. Wipe the chain and rerun the focused NativeUSDT inherited spendability row. Its split compilation takes about
-   six minutes on this machine; do not confuse the long silent compile with a hang:
+2. If the NativeUSDT test or compiler changes again, rerun both halves. Split compilation takes about six minutes
+   per invocation on this machine; do not confuse the long silent compile with a hang:
 
    ```bash
    TESTS_USE_REGTEST=true yarn --cwd packages/solidcash vitest run --no-file-parallelism \
-     test/e2e/NativeUsdtInherited.test.ts -t 'emits a bundle whose shards are spendable'
+     test/e2e/NativeUsdtInherited.test.ts -t 'deploys a bundle whose constructed shards fit'
+   yarn --cwd packages/solidcash vitest run --no-file-parallelism \
+     test/e2e/NativeUsdtInherited.test.ts -t 'spends every generated NativeUSDT route'
    ```
 
 3. Run the relevant one-shot mock/live suites, then `yarn lint` and `yarn build`.
@@ -162,9 +188,10 @@ split/merge, upgrades, sorted mappings, and batches 39-52. These are diagnostic 
    procedure, and any documented skips. The current table still describes superseded candidates and must not be
    used as the final attestation.
 
-6. Run the broader release gates named in `package.json` and the first-release exit checklist, especially the
-   root test suite, security/application conformance, corpus baseline, generated-project smoke, package smoke,
-   spellcheck, and clean-checkout install/CI ordering. Do not infer those results from build/lint.
+6. Run the still-outstanding broader gates, especially the root `yarn test`, the comprehensive e2e suite, and a
+   clean-checkout install/CI-ordering rehearsal. The conformance, corpus, documentation, package-smoke,
+   generated-project, spellcheck, and application-regtest results already recorded above need rerunning only if
+   subsequent changes can affect them.
 
 ## Completion standard
 

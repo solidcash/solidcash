@@ -100,7 +100,7 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   // Record every local declaration's declared type so a nested write can be typed + recognised.
   private collectLocals(node: Node): void {
     if (node instanceof VariableDefinitionNode) this.locals.set(node.name, node.type);
-    for (const key of Object.keys(node)) {
+    for (const key in node) {
       const val = (node as any)[key];
       if (val instanceof Node) this.collectLocals(val);
       else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) this.collectLocals(v);

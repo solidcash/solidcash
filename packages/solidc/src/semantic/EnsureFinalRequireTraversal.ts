@@ -65,6 +65,8 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
   }
 
   visitContract(node: ContractNode): ContractNode {
+    const hasStatefulOperations = (node as ContractNode & { hasStatefulOperations?: boolean })
+      .hasStatefulOperations;
     this.isStatefulContract = node.stateVariables.length > 0
       || node.collections.length > 0
       || node.eventDefinitions.length > 0
@@ -74,7 +76,8 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       || node.functions.some((func) => func.modifiers.includes(FunctionModifier.DEPLOY))
       // Zero-storage routers are likewise stateful execution participants: typed calls, transfers, and other
       // transaction effects are verified by generated covenants even though no parent data NFT exists.
-      || node.functions.some((func) => containsStatefulOperation(func.body?.statements))
+      || (hasStatefulOperations
+        ?? node.functions.some((func) => containsStatefulOperation(func.body?.statements)))
       || node.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
@@ -491,8 +494,9 @@ function containsStatefulCall(
     seenFunctions.add(node.resolvedFunction);
     if (containsStatefulOperation(node.resolvedFunction.body?.statements, seenFunctions)) return true;
   }
-  for (const [key, value] of Object.entries(node)) {
+  for (const key in node) {
     if (STATEFUL_CALL_WALK_SKIP.has(key)) continue;
+    const value = node[key as keyof Node];
     if (value instanceof Node && containsStatefulCall(value, seenFunctions, seenNodes)) return true;
     if (Array.isArray(value)) {
       for (const child of value) {

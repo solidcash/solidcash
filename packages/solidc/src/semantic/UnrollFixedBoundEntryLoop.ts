@@ -152,12 +152,17 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const prevName = this.currentFunction;
     this.currentFunction = node.name;
+    const mutationScan = this.collectMutatedNames(node.body);
+    if (!mutationScan.hasCandidateLoop) {
+      this.currentFunction = prevName;
+      return node;
+    }
     const prev = this.varTypes;
     this.varTypes = new Map(prev);
     const prevNewArr = this.newArrayLocalSizes;
     this.newArrayLocalSizes = new Map();
     const prevMutated = this.mutatedNames;
-    this.mutatedNames = this.collectMutatedNames(node.body);
+    this.mutatedNames = mutationScan.names;
     for (const p of node.parameters) this.varTypes.set(p.name, p.type);
     node.body = this.visit(node.body) as BlockNode;
     this.varTypes = prev;
@@ -173,10 +178,14 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   // size can never be stale (sound regardless of control flow / scoping). Length-PRESERVING ops are deliberately
   // excluded so they don't over-block the fold: an element write `arr[i]=v` (ArrayAssignNode) and an element
   // delete `delete arr[i]` (ArrayDeleteNode) keep the length - e.g. EACC's `new address[](1); a[0]=w;` stays foldable.
-  private collectMutatedNames(body: Node | undefined): Set<string> {
+  private collectMutatedNames(body: Node | undefined): { names: Set<string>; hasCandidateLoop: boolean } {
     const names = new Set<string>();
+    let hasCandidateLoop = false;
     const walk = (n: Node | undefined): void => {
       if (!n) return;
+      if (n instanceof WhileNode || (this.fixedCollectionIterations && n instanceof CollectionIterationNode)) {
+        hasCandidateLoop = true;
+      }
       if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) names.add(n.identifier.name);
       // A tuple assignment rebinds every non-skip slot. `(a, b) = (b, a)` swaps whole array values, so a
       // `new T[](N)` size recorded for `a` would otherwise stay trusted while `a` now holds b's array.
@@ -185,7 +194,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       }
       if (n instanceof ArrayPushNode || n instanceof ArrayPopNode) names.add(n.name);
       if (n instanceof DeleteLocalNode) names.add(n.identifier.name);
-      for (const key of Object.keys(n)) {
+      for (const key in n) {
         if (key === 'location') continue;
         const v = (n as unknown as Record<string, unknown>)[key];
         if (v instanceof Node) walk(v);
@@ -193,7 +202,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       }
     };
     walk(body);
-    return names;
+    return { names, hasCandidateLoop };
   }
 
   visitBlock(node: BlockNode): Node {
@@ -372,7 +381,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const walk = (n: Node): void => {
       if (!n) return;
       if (pred(n)) found += 1;
-      for (const key of Object.keys(n)) {
+      for (const key in n) {
         if (key === 'location') continue;
         const v = (n as unknown as Record<string, unknown>)[key];
         if (v instanceof Node) walk(v);
@@ -396,7 +405,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       }
       return undefined;
     };
-    for (const key of Object.keys(node)) {
+    for (const key in node) {
       if (key === 'location') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       const rep = replace(v);

@@ -52,25 +52,21 @@ describe('MinimalNativeToken bytecode budget', () => {
   it('mints ledger units on wrap and burns them on withdrawal', async () => {
     const artifact = compileFile(source, { messageBus: false });
     const provider = createTestProvider();
+    const bob = new Signer(bobPriv, provider);
     const inner = new Contract(artifact, [], { provider });
     const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
       _totalSupply: 0n,
     }, {
       saltContract: true,
       extraOutputs: (category) => [{
-        address: getTokenContainerAddress(inner, category, category),
-        satoshis: 1_200n,
-        token: { amount: 1_000n },
+        address: getTokenContainerAddress(inner, category, category), satoshis: 1_200n, token: { amount: 1_000n },
+      }, {
+        address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
       }],
     });
     const token = StatefulContract.withCategory(inner, setup.categoryId);
-    const bob = new Signer(bobPriv, provider);
     const bobLedgerAddress = addressToLockScript(bob.getAddress());
-    const bearer = {
-      txid: 'e1'.repeat(32), vout: 0, satoshis: 100_000n,
-      token: { category: setup.categoryId, amount: 5n },
-    };
-    await provider.addUtxo(bob.getAddress(), bearer);
+    const bearer = setup.extraUtxos![1];
     await provider.addUtxo(bob.getAddress(), {
       txid: 'e2'.repeat(32), vout: 0, satoshis: 500_000n,
     });

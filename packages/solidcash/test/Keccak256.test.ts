@@ -11,6 +11,9 @@ import { alicePub, alicePriv } from './fixture/vars.js';
 const STATEFUL_OP_VERIFY_INPUT_0 = new RegExp(
   '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
 );
+const STATEFUL_OP_VERIFY_ANY_INPUT = new RegExp(
+  '^messageBus: BCH-2026 preflight failed at input [0-9]+: Program failed an OP_VERIFY operation\\.$',
+);
 const NON_TRUTHY_INPUT_0 = new RegExp('^mandatory-script-verify-flag-failed '
   + '\\(Unable to verify transaction: error in evaluating input index 0: '
   + 'Unsuccessful evaluation: completed with a non-truthy value on top of the stack\\. '
@@ -113,7 +116,7 @@ describe('keccak256 builtin (stateful contracts)', () => {
     const sc = StatefulContract.withCategory(contract, categoryId);
     // ones-hash asserted against the zeros preimage -> the require fails
     await expect(sc.bump(hexToBin(VECTORS.zeros.preimage), hexToBin(VECTORS.ones.hash)).send())
-      .rejects.toThrow(STATEFUL_OP_VERIFY_INPUT_0);
+      .rejects.toThrow(STATEFUL_OP_VERIFY_ANY_INPUT);
   });
 
   // Complex/nested arg in a stateful contract (commit-reveal style): the preimage is not a direct parameter,

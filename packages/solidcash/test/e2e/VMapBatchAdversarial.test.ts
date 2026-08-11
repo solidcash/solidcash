@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { compileString as compile } from '../direct-compile.js';
-import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
-import { Contract, getEntryNftAddress, StatefulContract } from '../../src/index.js';
+import {
+  bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+} from '@bitauth/libauth';
+import {
+  bytesToSlotValue, Contract, getEntryNftAddress, keyToSlotMulti, StatefulContract,
+} from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 const SOURCE = `contract C {
@@ -35,6 +39,43 @@ describe('vmap atomic batch adversarial soundness', () => {
     wrongPredOut._setRawVMapBatchWitness(0, { predOut: 1n }); // collides with a target output
     await expect(wrongPredOut.getFunction('batch')(1n, 2n).send())
       .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+
+    const invalidRank = await deploy();
+    invalidRank._setRawVMapBatchWitness(1, { rank: 2n });
+    await expect(invalidRank.getFunction('batch')(1n, 2n).send())
+      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+
+    const omittedRows = await deploy();
+    omittedRows._setRawVMapBatchWitness(0, { rows: new Uint8Array() });
+    await expect(omittedRows.getFunction('batch')(1n, 2n).send())
+      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+
+    const slots = [1n, 2n].map((key) => keyToSlotMulti([bigIntToVmNumber(key)]))
+      .sort((a, b) => bytesToSlotValue(a) < bytesToSlotValue(b) ? -1 : 1);
+    const rows = Uint8Array.from([...slots[0], ...slots[1], ...slots[1], ...new Uint8Array(32)]);
+
+    const reorderedRows = await deploy();
+    reorderedRows._setRawVMapBatchWitness(0, {
+      rows: Uint8Array.from([...rows.slice(64), ...rows.slice(0, 64)]),
+    });
+    await expect(reorderedRows.getFunction('batch')(1n, 2n).send())
+      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+
+    const duplicateRows = await deploy();
+    duplicateRows._setRawVMapBatchWitness(0, {
+      rows: Uint8Array.from([...rows.slice(0, 64), ...rows.slice(0, 64)]),
+    });
+    await expect(duplicateRows.getFunction('batch')(1n, 2n).send())
+      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+
+    const forgedRowLink = await deploy();
+    const badRows = rows.slice(); badRows[32] ^= 1;
+    forgedRowLink._setRawVMapBatchWitness(0, { rows: badRows });
+    await expect(forgedRowLink.getFunction('batch')(1n, 2n).send())
+      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+
+    const aliasedKeys = await deploy();
+    await expect(aliasedKeys.getFunction('batch')(1n, 1n).send()).rejects.toThrow(/duplicate slot/i);
   });
 
   it('rejects link, value, capability, and orphan-output tampering', async () => {
@@ -124,6 +165,11 @@ describe('vmap atomic batch adversarial soundness', () => {
 
     // Mutable capability and master-category checks.
     refusals.push(await rejectMutation((tx) => { tx.outputs[entryIndices[2]].token!.nft!.capability = 'none'; }));
+    refusals.push(await rejectMutation((tx) => {
+      const category = tx.outputs[entryIndices[2]].token!.category.slice();
+      category[0] ^= 1;
+      tx.outputs[entryIndices[2]].token!.category = category;
+    }));
 
     // Exact output topology: targets cannot be removed, reordered, or redirected away from the collection script.
     refusals.push(await rejectMutation((tx) => { tx.outputs.splice(entryIndices[0], 1); }));
@@ -147,7 +193,7 @@ describe('vmap atomic batch adversarial soundness', () => {
       tx.outputs[changeIndex].valueSatoshis -= o.valueSatoshis + 1_000n;
     }));
 
-    expect(refusals).toHaveLength(10);
+    expect(refusals).toHaveLength(11);
     for (const refusal of refusals) {
       // Every tamper must be REFUSED; which layer objects is backend-specific. The orphan-output variant steals
       // its value from the change output, and on BCHN that lands below the dust threshold, so relay policy

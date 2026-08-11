@@ -28,10 +28,7 @@ export interface InvocationAnalysis {
   components: readonly InvocationComponentSummary[];
 }
 
-const RESOLVED_BACKREF_KEYS = new Set([
-  'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
-  'referencedContract', 'stateVariable', 'collection',
-]);
+const contractInvocationAnalysisCache = new WeakMap<ContractNode, InvocationAnalysis>();
 
 export function walkInvocationAst(
   value: unknown,
@@ -41,8 +38,13 @@ export function walkInvocationAst(
   if (!(value instanceof Node) || seen.has(value)) return;
   seen.add(value);
   visit(value);
-  for (const [key, child] of Object.entries(value)) {
-    if (RESOLVED_BACKREF_KEYS.has(key)) continue;
+  // Node data fields are enumerable; class prototype methods are not. Iterate them directly to avoid allocating
+  // an Object.entries pair array for every node in every call-graph and footprint walk.
+  for (const key in value) {
+    if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+      || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
+      || key === 'collection') continue;
+    const child = value[key as keyof Node];
     if (child instanceof Node) walkInvocationAst(child, visit, seen);
     else if (Array.isArray(child)) {
       for (const item of child) walkInvocationAst(item, visit, seen);
@@ -90,6 +92,7 @@ export function collectNamedFunctionClosure(
 interface FootprintAnalysisCache {
   directCalls: WeakMap<FunctionDefinitionNode, Set<string>>;
   bodyNodes: WeakMap<FunctionDefinitionNode, { locallyBound: Set<string>; nodes: Node[] }>;
+  directFootprints: WeakMap<FunctionDefinitionNode, SplitStateFootprint>;
 }
 
 export function analyseFunctionFootprint(
@@ -103,6 +106,18 @@ export function analyseFunctionFootprint(
   const result = { unknown: false };
   for (const name of collectNamedFunctionClosure(fn, byName, cache?.directCalls)) {
     for (const candidate of byName.get(name) ?? []) {
+      const cachedFootprint = cache?.directFootprints.get(candidate);
+      if (cachedFootprint) {
+        for (const read of cachedFootprint.reads) reads.add(read);
+        for (const write of cachedFootprint.writes) writes.add(write);
+        for (const effect of cachedFootprint.effects) effects.add(effect);
+        if (cachedFootprint.unknown) result.unknown = true;
+        continue;
+      }
+      const directReads = new Set<string>();
+      const directWrites = new Set<string>();
+      const directEffects = new Set<string>();
+      let directUnknown = false;
       let locallyBound: Set<string>;
       let nodes: Node[] | undefined;
       const cached = cache?.bodyNodes.get(candidate);
@@ -144,16 +159,16 @@ export function analyseFunctionFootprint(
           ? (node as unknown as { array?: Node }).array as unknown as { constructor: { name: string }; name?: string }
           : undefined;
         const bareReadName = bareRead?.constructor.name === 'IdentifierNode' ? bareRead.name : undefined;
-        if (kind === 'StateAccessNode' && resourceName) reads.add(`state:${resourceName}`);
+        if (kind === 'StateAccessNode' && resourceName) directReads.add(`state:${resourceName}`);
         else if (bareReadName !== undefined && !locallyBound.has(bareReadName)) {
-          reads.add(collectionResourceName(bareReadName, undefined));
+          directReads.add(collectionResourceName(bareReadName, undefined));
         } else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource) {
-          reads.add(collectionResource);
+          directReads.add(collectionResource);
         } else if (/^(StateAssign|DeleteState)/.test(kind) && resourceName) {
-          writes.add(`state:${resourceName}`);
+          directWrites.add(`state:${resourceName}`);
         } else if (/^(MappingAssign|MappingFieldAssign|MappingDelete|StateArray(Push|Pop|Assign|Delete))/
           .test(kind) && collectionResource) {
-          writes.add(collectionResource);
+          directWrites.add(collectionResource);
         // X19: a BARE element write `m[k] = v` / `delete m[k]` is an ArrayAssign/ArrayDelete until symbol
         // resolution decides state-vs-local (only the `this.`-prefixed spelling is a MappingAssign from the
         // parser). This analysis runs BOTH before and after that resolution, so omitting the bare forms made one
@@ -163,18 +178,29 @@ export function analyseFunctionFootprint(
         // the same test is what symbol resolution later applies to choose MappingAssign over ArrayAssign.
         } else if (/^(ArrayAssign|ArrayDelete)/.test(kind) && collectionResource
           && resourceName && !locallyBound.has(resourceName)) {
-          writes.add(collectionResource);
-        } else if (kind === 'EmitStatementNode') effects.add('events');
-        else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode') effects.add('value');
+          directWrites.add(collectionResource);
+        } else if (kind === 'EmitStatementNode') directEffects.add('events');
+        else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode') directEffects.add('value');
         else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {
-          effects.add('external-call');
-        } else if (node instanceof IndirectCallNode) result.unknown = true;
+          directEffects.add('external-call');
+        } else if (node instanceof IndirectCallNode) directUnknown = true;
       };
       if (nodes) {
         for (const node of nodes) analyseNode(node);
       } else {
         walkInvocationAst(candidate.body, analyseNode);
       }
+      const directFootprint: SplitStateFootprint = {
+        reads: [...directReads],
+        writes: [...directWrites],
+        effects: [...directEffects],
+        unknown: directUnknown,
+      };
+      cache?.directFootprints.set(candidate, directFootprint);
+      for (const read of directReads) reads.add(read);
+      for (const write of directWrites) writes.add(write);
+      for (const effect of directEffects) effects.add(effect);
+      if (directUnknown) result.unknown = true;
     }
   }
   return {
@@ -228,6 +254,8 @@ export function collectionResourceName(name: string, keys: Node[] | undefined): 
 /** Build one deterministic resolved call graph for diagnostics, recursion
  * preflight, splitting, and later message-bus eligibility. */
 export function analyseContractInvocations(contract: ContractNode): InvocationAnalysis {
+  const cached = contractInvocationAnalysisCache.get(contract);
+  if (cached) return cached;
   const functions = [
     ...contract.functions,
     ...(contract.fallbackDef ? [contract.fallbackDef] : []),
@@ -241,14 +269,34 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
     byName.set(fn.name, defs);
   }
   const calls = new Map<number, Set<number>>();
+  const footprintCache: FootprintAnalysisCache = {
+    directCalls: new WeakMap(), bodyNodes: new WeakMap(), directFootprints: new WeakMap(),
+  };
   for (const fn of functions) {
     const out = new Set<number>();
+    const directCalls = new Set<string>();
+    const locallyBound = new Set([
+      ...fn.parameters.map((parameter) => parameter.name),
+      ...fn.returnNames,
+    ]);
+    const bodyNodes: Node[] = [];
     walkInvocationAst(fn.body, (node) => {
-      if (!(node instanceof FunctionCallNode)) return;
-      const id = node.resolvedFunction?.functionId;
-      if (id !== undefined && byId.has(id)) out.add(id);
+      bodyNodes.push(node);
+      if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
+      if (node instanceof TupleAssignmentNode) {
+        for (const element of node.elements) {
+          if (element.name !== undefined && element.type !== undefined) locallyBound.add(element.name);
+        }
+      }
+      if (node instanceof FunctionCallNode) {
+        if (!node.fromThisCall) directCalls.add(node.identifier.name);
+        const id = node.resolvedFunction?.functionId;
+        if (id !== undefined && byId.has(id)) out.add(id);
+      }
     });
     calls.set(fn.functionId!, out);
+    footprintCache.directCalls.set(fn, directCalls);
+    footprintCache.bodyNodes.set(fn, { locallyBound, nodes: bodyNodes });
   }
 
   let next = 0;
@@ -304,7 +352,6 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
     }
     return [...result].sort((a, b) => a - b);
   };
-  const footprintCache: FootprintAnalysisCache = { directCalls: new WeakMap(), bodyNodes: new WeakMap() };
   const summaries = functions.map((fn) => {
     const id = fn.functionId!;
     const closure = closureOf(id);
@@ -320,5 +367,7 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
       footprint: analyseFunctionFootprint(fn, byName, footprintCache),
     };
   }).sort((a, b) => a.id - b.id);
-  return { functions: summaries, components };
+  const analysis = { functions: summaries, components };
+  contractInvocationAnalysisCache.set(contract, analysis);
+  return analysis;
 }

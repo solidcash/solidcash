@@ -1,6 +1,7 @@
 # SolidCash 0.13.1 release-candidate notes
 
-Status: draft; the exact release commit and final clean-checkout/BCHN matrix are not yet recorded.
+Status: draft; the clean-checkout CI-ordering rehearsal passes, while the exact release commit and final BCHN
+matrix are not yet recorded.
 
 SolidCash 0.13.1 introduces a Solidity-compatible language and workflow layer for Bitcoin Cash contracts. The
 release claim is the documented subset in [`SOLIDITY_COMPATIBILITY_0.13.1.md`](SOLIDITY_COMPATIBILITY_0.13.1.md),
@@ -63,13 +64,14 @@ diagnostic when the required transaction shape cannot be produced.
 - Release source maps embed their referenced TypeScript source so installed tarballs remain debuggable without
   unpublished repository files.
 
-## Candidate evidence recorded on 2026-08-05
+## Candidate evidence recorded through 2026-08-11
 
-- Compiler suite: 3,146/3,146 across the complete run and isolated retries for three load-sensitive cases.
-- SDK unit/e2e/mock suite: 3,808 passed, 39 skipped, 9 todo in the recorded full run.
+- Compiler suite: 3,240/3,240 in the current comprehensive root run.
+- SDK non-e2e suite: 1,204 passed, 19 skipped, 5 todo. The comprehensive mock e2e run passed 348 files with
+  2,742 tests passing, 23 skipped, and 3 todo.
 - Generated-project gate: initialization 1/1, cache lifecycle 1/1, maintained harness 21/21.
 - Packed-package gate: six tarballs and maintained stateful golden path 3/3.
-- Application gates: mock-provider matrix 94/94 and serial BCHN v29 matrix 9/9.
+- Application gates: mock-provider matrix 95/95 and serial BCHN v29 matrix 9/9.
 - Additional BCHN candidate evidence: event-path, multi-slot, and delegated-vmap focused files pass 24/24 after
   accepting live-node rejection wording and making the fabricated multi-slot output relay-valid. The full serial
   candidate aggregate is still incomplete: it was stopped after a later file ran for more than 14 minutes without
@@ -78,6 +80,13 @@ diagnostic when the required transaction shape cannot be produced.
   external/delegate composition, and lifecycle elements. Experimental profiles remain outside the stable claim.
 - Solidity corpus: 2,698/2,805 retained positives and 1,835/2,158 rejected negatives, with no residual timeout;
   strictness work is deferred as stated above.
+- Clean-checkout CI ordering: at `9d37eae24`, a dependency-free detached worktree passed
+  `yarn --frozen-lockfile --ignore-scripts` and the authoritative root `yarn build`; only generated artifact
+  timestamps changed.
+- Fresh-chain full BCHN diagnostic at `4f0d1bb53`: 128/482 files (16/61 batches) passed with zero failed batches
+  before the run was intentionally stopped at a durable boundary to prepare the handoff. This partial result is
+  not the final matrix attestation.
 
-These are candidate-worktree results, not a final release attestation. Before publishing, record the exact tested
-commit and tag, rerun the clean-checkout aggregate gates, and replace this paragraph with the final results.
+These are candidate-worktree results, not a final release attestation. Before publishing, complete the
+fresh-chain BCHN matrix at the exact tested commit, record the tag, and replace this paragraph with the final
+results.

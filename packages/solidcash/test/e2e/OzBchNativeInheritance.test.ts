@@ -41,6 +41,8 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
 
   it('wraps, transfers, spends allowance, and unwraps through OZ storage', async () => {
     const provider = createTestProvider();
+    const alice = new Signer(alicePriv, provider);
+    const bob = new Signer(bobPriv, provider);
     const inner = new Contract(artifact, [], { provider });
     const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
       _totalSupply: 0n,
@@ -49,14 +51,12 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     }, {
       saltContract: true,
       extraOutputs: (category) => [{
-        address: getTokenContainerAddress(inner, category, category),
-        satoshis: 1_200n,
-        token: { amount: 1_000n },
+        address: getTokenContainerAddress(inner, category, category), satoshis: 1_200n, token: { amount: 1_000n },
+      }, {
+        address: bob.getAddress(), satoshis: 100_000n, token: { amount: 5n },
       }],
     });
     const token = StatefulContract.withCategory(inner, setup.categoryId);
-    const alice = new Signer(alicePriv, provider);
-    const bob = new Signer(bobPriv, provider);
     let nonce = 0xf0;
     const fund = async (signer: Signer): Promise<void> => {
       nonce += 1;
@@ -64,11 +64,7 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
         txid: nonce.toString(16).padStart(64, 'f'), vout: 0, satoshis: 500_000n,
       });
     };
-    const bearer: Utxo = {
-      txid: 'f1'.repeat(32), vout: 0, satoshis: 100_000n,
-      token: { category: setup.categoryId, amount: 5n },
-    };
-    await provider.addUtxo(bob.getAddress(), bearer);
+    const bearer = setup.extraUtxos![1] as Utxo;
     await fund(bob);
     await token.connect(bob).call.wrap(5n)
       .addInput(bearer, new SignatureTemplate(bobPriv).unlockP2PKH())

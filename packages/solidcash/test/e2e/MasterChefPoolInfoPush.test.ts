@@ -10,7 +10,9 @@ const limits = {
 };
 
 describe('ERC20Mock approve (mistswap artifact)', () => {
-  it('approve bob and chef after MasterChef.add', async () => {
+  // The vendored, unsplit MasterChef constructor probe pushes an approximately 16.6 KB stack item. Keep this
+  // relaxed-policy mock diagnostic, but do not present it as executable under BCH's 520-byte consensus limit.
+  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('approve bob and chef after MasterChef.add', async () => {
     const provider = createTestProvider();
     (provider as any).consensusLimits = { ...(provider as any).consensusLimits, ...limits };
     if ((provider as any).policy) (provider as any).policy.enforceProductionInputLimit = false;

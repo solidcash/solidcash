@@ -3706,6 +3706,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         })));
         const targetValues = new Set(writes.map((w) => bytesToSlotValue(w.slot).toString()));
         const predOutputs = plan.outputs.filter((o) => !targetValues.has(bytesToSlotValue(o.slot).toString()));
+        const linearRows = batch.linear ? batch.slotIndices.map((slotIndex) => {
+          const slot = entryInfos[slotIndex].slot;
+          const out = plan.outputs.find((candidate) => bytesToSlotValue(candidate.slot) === bytesToSlotValue(slot));
+          if (!out) throw new Error(`vmap batch '${batch.collection}' has no deploy linear row ${slotIndex}.`);
+          return { slotIndex, slot, next: decodeEntryCommitment(out.commitment).nextKey };
+        }).sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1) : [];
+        const linearRank = new Map(linearRows.map((row, rank) => [row.slotIndex, rank]));
+        const firstLinearPredSlot = new Map<string, number>();
+        for (const row of linearRows) {
+          const proof = list.find(row.slot) ?? list.predecessorOf(row.slot);
+          const proofSlot = bytesToSlotValue(proof.slot).toString();
+          if (!firstLinearPredSlot.has(proofSlot)) firstLinearPredSlot.set(proofSlot, row.slotIndex);
+        }
         const ownerByUtxo = new Map<string, number>();
         for (const slotIndex of batch.slotIndices) {
           const info = entryInfos[slotIndex];
@@ -3726,11 +3739,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             (o) => bytesToSlotValue(o.slot).toString() === proofSlot,
           );
           // INSERT: P' trails at batchPredOutputBase+predOrdinal; UPDATE / shared-owner alias: predOut=-1 or owner.
-          const predOut = info.present || predOrdinal < 0
+          const firstLinearPred = !batch.linear || firstLinearPredSlot.get(proofSlot) === slotIndex;
+          const predOut = info.present || predOrdinal < 0 || !firstLinearPred
             ? -1n
             : BigInt(batchPredOutputBase + predOrdinal);
-          finalArgs = [...finalArgs, slot, BigInt(offset), nextKey, predOut];
+          finalArgs = [...finalArgs, slot, BigInt(offset), nextKey, predOut,
+            ...(batch.linear ? [BigInt(linearRank.get(slotIndex)!)] : [])];
         }
+        if (batch.linear) finalArgs = [...finalArgs, Uint8Array.from(linearRows.flatMap(
+          (row) => [...row.slot, ...row.next],
+        ))];
         batchPredOutputBase += predOutputs.length;
         batchTrailingCount += predOutputs.length;
       }
@@ -4915,6 +4933,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       targetCommitment: Map<number, Uint8Array>;
       predecessorCommitment: string;
       trailingOutput: number;
+      targetRank: Map<number, bigint>;
+      rows: Uint8Array;
     }>();
     const constructorTargetSlots = new Map<number, Uint8Array>();
     const sortedCollections = [...new Set(entryAccesses.filter((access) => (
@@ -4958,6 +4978,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const predecessor = plan.outputs.find((output) => bytesToSlotValue(output.slot) === 0n);
       if (predecessor === undefined) throw new Error(`Missing constructor vmap HEAD plan for ${collectionName}.`);
+      const linearRows = accesses.map(({ index }) => ({
+        index, slot: constructorTargetSlots.get(index)!, next: targetNext.get(index)!,
+      })).sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1);
+      const targetRank = new Map(linearRows.map((row, rank) => [row.index, BigInt(rank)]));
       sortedPlans.set(collectionName, {
         proofOffset: constructorAbi?.blockLayout?.slots.find(
           (slot) => slot.kind === 'entry' && slot.slotIndex === accesses[0].index,
@@ -4967,13 +4991,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         trailingOutput: (constructorAbi?.blockLayout?.blockSize ?? (
           1 + stateLayout.dataNftCount + entryCount + emitCount + transferCount
         )) + collectionIndex,
+        targetRank,
+        rows: Uint8Array.from(linearRows.flatMap((row) => [...row.slot, ...row.next])),
       });
     }
     const internalInitArgs: FunctionArgument[] = [];
     for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
       if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
       else {
-        const match = input.name.match(/^__internal__vmapBatch(Slot|Proof|Next|PredOut)_(\d+)$/);
+        const match = input.name.match(/^__internal__vmapBatch(Slot|Proof|Next|PredOut|Rank)_(\d+)$/);
         if (match) {
           const slotIndex = Number(match[2]);
           const access = entryAccesses[slotIndex];
@@ -4983,7 +5009,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (match[1] === 'Slot') internalInitArgs.push(targetSlot);
           else if (match[1] === 'Proof') internalInitArgs.push(BigInt(plan.proofOffset));
           else if (match[1] === 'Next') internalInitArgs.push(plan.targetNext.get(slotIndex)!);
-          else internalInitArgs.push(BigInt(plan.trailingOutput));
+          else if (match[1] === 'Rank') internalInitArgs.push(plan.targetRank.get(slotIndex)!);
+          else {
+            const batch = constructorAbi?.sortedBatchInfo?.find((candidate) => candidate.collection === access.collection);
+            const first = plan.targetRank.get(slotIndex) === 0n;
+            internalInitArgs.push(BigInt(!batch?.linear || first ? plan.trailingOutput : -1));
+          }
+        } else if (input.name.startsWith('__internal__vmapBatchRows_')) {
+          const collection = input.name.slice('__internal__vmapBatchRows_'.length);
+          const plan = sortedPlans.get(collection);
+          if (plan === undefined) throw new Error(`Missing constructor vmap rows witness ${input.name}.`);
+          internalInitArgs.push(plan.rows);
         } else if (input.name === '__internal__vmapBatchTrailingCount') {
           internalInitArgs.push(BigInt(sortedCollections.length));
         } else {
@@ -9360,7 +9396,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // entry -> chain break).
   private _iterationKeys?: Map<string, Uint8Array[]>;
   private _rawIterationKeysBlob?: Map<string, Uint8Array>;
-  private _rawVMapBatchWitness?: Map<number, { slot?: Uint8Array; proof?: bigint; next?: Uint8Array; predOut?: bigint }>;
+  private _rawVMapBatchWitness?: Map<number, {
+    slot?: Uint8Array; proof?: bigint; next?: Uint8Array; predOut?: bigint; rank?: bigint; rows?: Uint8Array;
+  }>;
 
   /**
    * Supply the keys for a sorted `enumerable mapping` KEYS/ENTRIES iteration. Required for such iterations (the
@@ -9384,7 +9422,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /** @internal Test hook: override a derived atomic-batch witness to exercise covenant rejection paths. */
   _setRawVMapBatchWitness(
-    slotIndex: number, witness: { slot?: Uint8Array; proof?: bigint; next?: Uint8Array; predOut?: bigint },
+    slotIndex: number, witness: {
+      slot?: Uint8Array; proof?: bigint; next?: Uint8Array; predOut?: bigint; rank?: bigint; rows?: Uint8Array;
+    },
   ): this {
     (this._rawVMapBatchWitness ??= new Map()).set(slotIndex, witness);
     return this;
@@ -10176,13 +10216,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const collection = stateLayout.collections.find((c) => c.name === batch.collection);
         if (!collection) throw new Error(`Unknown vmap batch collection: ${batch.collection}`);
         if (batchNoOp) {
+          const noOpRows = batch.linear ? batch.slotIndices.map((slotIndex) => ({
+            slotIndex, slot: batchTargetSlots.get(slotIndex)!, next: new Uint8Array(32),
+          })).sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1) : [];
+          const noOpRanks = new Map(noOpRows.map((row, rank) => [row.slotIndex, rank]));
           for (const slotIndex of batch.slotIndices) {
             const offset = entryAbiFunction!.blockLayout?.slots.find(
               (slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex,
             )?.offset;
             if (offset === undefined) throw new Error(`vmap no-op slot has no block offset ${slotIndex}`);
-            batchWitnesses.push(batchTargetSlots.get(slotIndex)!, BigInt(offset), new Uint8Array(32), -3n);
+            batchWitnesses.push(batchTargetSlots.get(slotIndex)!, BigInt(offset), new Uint8Array(32), -3n,
+              ...(batch.linear ? [BigInt(noOpRanks.get(slotIndex)!)] : []));
           }
+          if (batch.linear) batchWitnesses.push(Uint8Array.from(noOpRows.flatMap(
+            (row) => [...row.slot, ...row.next],
+          )));
           continue;
         }
         const collectionEntries = await collectionEntriesFor(collection.signature);
@@ -10195,6 +10243,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const targetValues = new Set(writes.map((w) => bytesToSlotValue(w.slot).toString()));
         const predOutputs = plan.outputs.filter((o) => !targetValues.has(bytesToSlotValue(o.slot).toString()));
         batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
+        const linearRows = batch.linear ? batch.slotIndices
+          .filter((slotIndex) => !batchAliasSkips.has(slotIndex))
+          .map((slotIndex) => {
+            const slot = batchTargetSlots.get(slotIndex)!;
+            const out = plan.outputs.find((candidate) => bytesToSlotValue(candidate.slot) === bytesToSlotValue(slot));
+            if (!out) throw new Error(`vmap batch '${batch.collection}' has no linear row for slot ${slotIndex}`);
+            return { slotIndex, slot, next: decodeEntryCommitment(out.commitment).nextKey };
+          })
+          .sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1) : [];
+        const linearRank = new Map(linearRows.map((row, rank) => [row.slotIndex, rank]));
+        const firstLinearPredSlot = new Map<string, number>();
+        for (const row of linearRows) {
+          const proof = list.find(row.slot) ?? list.predecessorOf(row.slot);
+          const proofSlot = bytesToSlotValue(proof.slot).toString();
+          if (!firstLinearPredSlot.has(proofSlot)) firstLinearPredSlot.set(proofSlot, row.slotIndex);
+        }
         const ownerByUtxo = new Map<string, number>();
         for (const slotIndex of batch.slotIndices) {
           if (batchAliasSkips.has(slotIndex)) {
@@ -10253,11 +10317,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           const proofSlot = bytesToSlotValue(proof.slot).toString();
           const predOrdinal = predOutputs.findIndex((o) => bytesToSlotValue(o.slot).toString() === proofSlot);
-          const predOut = predOrdinal < 0 ? -1n : BigInt(batchPredOutputBase + predOrdinal);
+          const firstLinearPred = !batch.linear || firstLinearPredSlot.get(proofSlot) === slotIndex;
+          const predOut = predOrdinal < 0 || !firstLinearPred ? -1n : BigInt(batchPredOutputBase + predOrdinal);
           const raw = this._rawVMapBatchWitness?.get(slotIndex);
           batchWitnesses.push(raw?.slot ?? slot, raw?.proof ?? BigInt(offset),
-            raw?.next ?? decodeEntryCommitment(out.commitment).nextKey, raw?.predOut ?? predOut);
+            raw?.next ?? decodeEntryCommitment(out.commitment).nextKey, raw?.predOut ?? predOut,
+            ...(batch.linear ? [raw?.rank ?? BigInt(linearRank.get(slotIndex)!)] : []));
         }
+        if (batch.linear) batchWitnesses.push(
+          batch.slotIndices.map((slot) => this._rawVMapBatchWitness?.get(slot)?.rows)
+            .find((rows): rows is Uint8Array => rows !== undefined)
+          ?? Uint8Array.from(linearRows.flatMap((row) => [...row.slot, ...row.next])),
+        );
         batchPredOutputBase += predOutputs.length;
         batchTrailingCount += predOutputs.length;
       }
@@ -14959,16 +15030,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ?? entryAbiFunction?.entryLoopWriteSignatures?.[name]
         ?? collection?.signature;
       return {
-      collection: name,
-      chunkable: signature?.includes('[])') === true,
-      ...(delegateRouteAbi?.entryLoopWrites?.includes(name) && {
-        categoryId: localStateCollections.has(name) ? this.categoryId : delegateStateCategoryId,
-        delegate: true,
-      }),
-      // Prefer the locking bytecode resolved from the effective (possibly delegate-grafted) state layout above.
-      // `this.inner.artifact` is the proxy artifact and does not necessarily declare implementation collections;
-      // resolving only by name against it hashes the bare name and mints NEW at a different covenant address.
-      lockingBytecode: entryNftLockingBytecodes.get(name)
+        collection: name,
+        chunkable: signature?.includes('[])') === true,
+        ...(delegateRouteAbi?.entryLoopWrites?.includes(name) && {
+          categoryId: localStateCollections.has(name) ? this.categoryId : delegateStateCategoryId,
+          delegate: true,
+        }),
+        // Prefer the locking bytecode resolved from the effective (possibly delegate-grafted) state layout above.
+        // `this.inner.artifact` is the proxy artifact and does not necessarily declare implementation collections;
+        // resolving only by name against it hashes the bare name and mints NEW at a different covenant address.
+        lockingBytecode: entryNftLockingBytecodes.get(name)
         ?? (delegateRouteGroup
           ? getEntryNftLockingBytecode(
             delegateRouteGroup.externalContract.inner,

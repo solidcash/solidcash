@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import {
-  CharStream, CommonTokenStream, ParserATNSimulator, PredictionContextCache,
+  BailErrorStrategy, CharStream, CommonTokenStream, ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
 import {
@@ -182,6 +182,163 @@ type InternalCompilerOptions = CompilerOptions & {
   __messageBusExplicitlyDisabled?: boolean;
   __messageBusMode?: MessageBusMode;
 };
+
+interface OptionalLoweringFeatures {
+  hasFunctionPointers: boolean;
+  needsBlockOracle: boolean;
+  needsMsgDataContext: boolean;
+  needsMsgSigContext: boolean;
+  needsSpecialMethodPruning: boolean;
+  needsDynamicStateJournal: boolean;
+  needsCollectionJournal: boolean;
+  needsExternalCallLowering: boolean;
+  needsInlineAssembly: boolean;
+  statefulnessSurveyComplete: boolean;
+  hasContractInstantiation: boolean;
+  deploysWithValue: boolean;
+  emitsEvent: boolean;
+}
+
+function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
+  const seenNodes = new Set<Node>();
+  const seenTypes = new Set<object>();
+  const seenMappingTypes = new Set<object>();
+  const typeContainsFunction = (type: Type): boolean => {
+    if (type instanceof FunctionType) return true;
+    if (seenTypes.has(type as object)) return false;
+    seenTypes.add(type as object);
+    if (type instanceof ArrayType) return typeContainsFunction(type.elementType);
+    if (type instanceof MappingType) {
+      return typeContainsFunction(type.keyType) || typeContainsFunction(type.valueType);
+    }
+    if (type instanceof StructType) return type.fields.some((field) => typeContainsFunction(field.type));
+    if (type instanceof TupleType) return type.elements.some(typeContainsFunction);
+    return false;
+  };
+  const typeContainsMapping = (type: Type): boolean => {
+    if (type instanceof MappingType) return true;
+    if (seenMappingTypes.has(type as object)) return false;
+    seenMappingTypes.add(type as object);
+    if (type instanceof ArrayType) return typeContainsMapping(type.elementType);
+    if (type instanceof StructType) return type.fields.some((field) => typeContainsMapping(field.type));
+    if (type instanceof TupleType) return type.elements.some(typeContainsMapping);
+    return false;
+  };
+  const pending = [root];
+  let needsBlockOracle = false;
+  let needsMsgDataContext = false;
+  let needsMsgSigContext = false;
+  let needsSpecialMethodPruning = false;
+  let needsDynamicStateJournal = false;
+  let needsCollectionJournal = false;
+  let needsExternalCallLowering = false;
+  let needsInlineAssembly = false;
+  let hasContractInstantiation = false;
+  let deploysWithValue = false;
+  let emitsEvent = false;
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (seenNodes.has(node)) continue;
+    seenNodes.add(node);
+    if (node instanceof AssemblyStatementNode) {
+      needsInlineAssembly = true;
+      needsBlockOracle = true;
+      needsMsgDataContext = true;
+      needsMsgSigContext = true;
+      needsSpecialMethodPruning = true;
+      needsDynamicStateJournal = true;
+      needsCollectionJournal = true;
+      needsExternalCallLowering = true;
+    } else if ((node instanceof NullaryOpNode && String(node.operator).startsWith('block.'))
+      || (node instanceof IdentifierNode && node.name === 'now')
+      || (node instanceof FunctionCallNode
+        && (node.identifier.name === 'gasleft' || node.identifier.name === GlobalFunction.BLOCKHASH))) {
+      needsBlockOracle = true;
+    }
+    if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_DATA) {
+      needsMsgDataContext = true;
+      needsSpecialMethodPruning = true;
+    } else if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SIG) {
+      needsMsgSigContext = true;
+    }
+    if (node instanceof InstantiationNode) {
+      needsSpecialMethodPruning = true;
+      hasContractInstantiation = true;
+      if (node.callOptions?.value) deploysWithValue = true;
+    } else if (node instanceof ContractReferenceNode
+      || (node instanceof TypeIntrospectionNode
+        && (node.property === 'creationCode' || node.property === 'runtimeCode'))) {
+      needsSpecialMethodPruning = true;
+    } else if (node instanceof EmitStatementNode) {
+      emitsEvent = true;
+    }
+    if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
+      || node instanceof LowLevelCallStatementNode || node instanceof MethodCallNode
+      || node instanceof MethodCallStatementNode || node.constructor.name.startsWith('External')
+      || (node instanceof FunctionCallNode && node.identifier.name.includes('.'))) {
+      needsExternalCallLowering = true;
+    }
+    if (node instanceof ContractNode) {
+      if (node.collections.length > 0) needsCollectionJournal = true;
+      if (node.stateVariables.some((state) => state.isDynamic || state.type === PrimitiveType.STRING
+        || (state.type instanceof BytesType && state.type.bound === undefined))) {
+        needsDynamicStateJournal = true;
+      }
+    }
+    for (const key in node) {
+      const value = node[key as keyof Node] as unknown;
+      if (value instanceof FunctionType
+        || ((value instanceof ArrayType || value instanceof MappingType
+          || value instanceof StructType || value instanceof TupleType)
+          && typeContainsFunction(value))) {
+        // Pointer-specific passes remain enabled, and conservatively retain the oracle traversal too. This keeps
+        // pointer-bearing contracts on their historical pipeline while pointer-free contracts get both gates
+        // from one structural survey.
+        return {
+          hasFunctionPointers: true,
+          needsBlockOracle: true,
+          needsMsgDataContext: true,
+          needsMsgSigContext: true,
+          needsSpecialMethodPruning: true,
+          needsDynamicStateJournal: true,
+          needsCollectionJournal: true,
+          needsExternalCallLowering: true,
+          needsInlineAssembly: true,
+          statefulnessSurveyComplete: false,
+          hasContractInstantiation,
+          deploysWithValue,
+          emitsEvent,
+        };
+      }
+      if ((value instanceof ArrayType || value instanceof MappingType
+        || value instanceof StructType || value instanceof TupleType)
+        && typeContainsMapping(value)) {
+        needsSpecialMethodPruning = true;
+        needsCollectionJournal = true;
+      }
+      if (value instanceof Node) pending.push(value);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) pending.push(item);
+      }
+    }
+  }
+  return {
+    hasFunctionPointers: false,
+    needsBlockOracle,
+    needsMsgDataContext,
+    needsMsgSigContext,
+    needsSpecialMethodPruning,
+    needsDynamicStateJournal,
+    needsCollectionJournal,
+    needsExternalCallLowering,
+    needsInlineAssembly,
+    statefulnessSurveyComplete: true,
+    hasContractInstantiation,
+    deploysWithValue,
+    emitsEvent,
+  };
+}
+
 
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
   const messageBusMode: MessageBusMode = options.__messageBusVerifierProgram
@@ -4512,7 +4669,16 @@ function compileResolvedAst(
   // Preserve straight-line foreign function-pointer ternaries before control-flow normalization splits
   // their initialized declaration into a declaration plus branch assignments. The later invocation remains
   // for aliases introduced by the intervening contract-member/function-pointer passes.
-  ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
+  const {
+    hasFunctionPointers, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
+    needsSpecialMethodPruning, needsDynamicStateJournal, needsCollectionJournal,
+    needsExternalCallLowering, needsInlineAssembly,
+    statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
+  } = surveyOptionalLowerings(ast);
+  const contractStatefulnessHint = statefulnessSurveyComplete && ast.freeFunctions.length === 0
+    ? { hasContractInstantiation, deploysWithValue, emitsEvent }
+    : undefined;
+  if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
@@ -4569,66 +4735,68 @@ function compileResolvedAst(
 
   // A gratuitous internal fn-ptr state-var alias (`ev = eval; ev(x)`) -> the direct call (`eval(x)`), removing the
   // alias var. Sidesteps a higher-order internal-fn-ptr type mismatch; before any fn-ptr lowering.
-  ast = ast.accept(new EliminateInternalFnPtrAlias()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new EliminateInternalFnPtrAlias()) as Ast;
 
   // A contract instance's method as a fn-ptr VALUE (`o.m` / `(new C()).m`) -> the recognised `C(o).m` member
   // form (inline-new hoisted to a named deploy local). Before the fn-ptr passes so the member flows through.
-  ast = ast.accept(new DesugarContractMemberFnPtr()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new DesugarContractMemberFnPtr()) as Ast;
 
   // A foreign fn-ptr RETURNED from / PASSED through a side-effect-free single-return helper (`make(a){ return
   // IFoo(a).m; }`, `eval(y){ return y(7); }`) -> beta-reduced into its call sites. Before InterproceduralStoreFold
   // so a helper-returned `x(..)` call (`eval(x)` -> `x(7)`) is present for the fold to rewrite.
-  ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
 
   // Interprocedural deploy fold through a store helper (store_function core): `store(C(o).m); x(..)` rewrites the
   // same-tx `x(..)` to `o.m(..)` so a freshly-deployed child called via a stored fn-ptr folds. Before the split.
-  ast = ast.accept(new InterproceduralStoreFold()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new InterproceduralStoreFold()) as Ast;
 
   // A foreign fn-ptr PASSED to a DIFFERENT contract over an external call (`IB(b).register(ITarget(t).m, ..)`)
   // -> split the fn-ptr member arg into (address, selector) to match the callee's lowered fn-ptr param.
-  ast = ast.accept(new SplitExternalCallFnPtrArgs()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new SplitExternalCallFnPtrArgs()) as Ast;
 
   // Straight-line foreign external function pointer `function() external f = IFoo(addr).method; f(args)` ->
   // `IFoo(addr).method(args)` (the existing external call); before the external-call passes + semantic.
-  ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
   // A foreign external fn-ptr STATE var holding a fixed method on a runtime address (`function() external x;
   // x = IFoo(a).m; x(v)`) -> an `address` state var + the state-address external call `IFoo(x).m(v)`.
-  ast = ast.accept(new LowerForeignFunctionPointerVars()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new LowerForeignFunctionPointerVars()) as Ast;
   // A foreign fn-ptr STRUCT FIELD holding a fixed method (nested analogue of the state-var pass) -> an
   // interface-typed field + the shipped struct-field-chain call `s.field.m()`. Before the address-local synth.
-  ast = ast.accept(new LowerForeignFunctionPointerStructFields()) as Ast;
-  ast = ast.accept(new LowerForeignFunctionPointerParams()) as Ast;
+  if (hasFunctionPointers) {
+    ast = ast.accept(new LowerForeignFunctionPointerStructFields()) as Ast;
+    ast = ast.accept(new LowerForeignFunctionPointerParams()) as Ast;
+  }
   // A foreign fn-ptr STATE var holding a RECEIVED value (`x = y`, method carried in the value) -> an `address`
   // field + a `bytes4 __fnsel_x` companion + the state-address external call with a runtime selector. Runs after
   // the PARAM lowering (which splits `y` into address + `__fnsel_y`) that this pass reads the selector from.
-  ast = ast.accept(new LowerForeignFunctionPointerStorage()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new LowerForeignFunctionPointerStorage()) as Ast;
   // A foreign fn-ptr ARRAY holding RECEIVED values (`fns.push(p)`) -> `address[]` + a parallel `bytes[]`
   // selector array + the per-element on-chain-selector dispatch loop with SDK-filled witness master indices
   // (the array analogue of the storage pass). After the param lowering that splits `p` -> `__fnsel_p`.
-  ast = ast.accept(new LowerReceivedFnPtrArray(messageBusGraphMode)) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new LowerReceivedFnPtrArray(messageBusGraphMode)) as Ast;
   // A RECEIVED-value foreign fn-ptr in a struct field (method carried in the value) -> a bytes BLOB
   // `selector ++ address`; a call slices it into an audited state-address external call. After the fixed-method
   // struct-field pass (only received-value fields remain).
-  ast = ast.accept(new LowerBlobFunctionPointers()) as Ast;
+  if (hasFunctionPointers) ast = ast.accept(new LowerBlobFunctionPointers()) as Ast;
 
   // Lower supported Yul inline assembly to equivalent main-AST statements (value computation + control flow).
-  ast = ast.accept(new LowerInlineAssembly()) as Ast;
+  if (needsInlineAssembly) ast = ast.accept(new LowerInlineAssembly()) as Ast;
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
-  ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
 
   // `address(this).call(payload)` -> a plain internal call (+ constant true success). Before the inline
   // passes so a state-touching callee (incl. the fallback) is inlined into the entry point like any other.
-  ast = ast.accept(new LowerSelfLowLevelCalls()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new LowerSelfLowLevelCalls()) as Ast;
   // A high-level `this.f(args)` also creates fresh calldata. Reconstruct msg.data from f's selector + live
   // parameters so the direct OP_INVOKE lowering does not depend on OP_ACTIVEBYTECODE inside the subroutine.
-  ast = ast.accept(new LowerSelfCallMsgData()) as Ast;
+  if (needsMsgDataContext) ast = ast.accept(new LowerSelfCallMsgData()) as Ast;
   // Internal/private msg.data readers receive the originating entry calldata through a compiler-only parameter.
-  ast = ast.accept(new LowerInternalMsgDataContext()) as Ast;
+  if (needsMsgDataContext) ast = ast.accept(new LowerInternalMsgDataContext()) as Ast;
   // msg.sig retains the originating public/external selector across internal/private OP_INVOKE calls.
-  ast = ast.accept(new LowerInternalMsgSigContext()) as Ast;
+  if (needsMsgSigContext) ast = ast.accept(new LowerInternalMsgSigContext()) as Ast;
 
   // `(new C()).m(args)` -> `C __newcall_N = new C(); __newcall_N.m(args)`, so the deploy-then-call fold
   // machinery (which tracks named deploy locals) applies to inline deploy receivers too.
@@ -4636,12 +4804,12 @@ function compileResolvedAst(
 
   // `A.getter().m(args)` (getter returns a contract) -> `IReturn __chaincall_N = A.getter(); __chaincall_N.m(..)`,
   // so the chained call on the getter's (integrity-bound) return dispatches via the audited interface-local path.
-  ast = ast.accept(new HoistChainedContractCalls()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new HoistChainedContractCalls()) as Ast;
 
   // Lower eligible single-entry mapping helpers to value-threaded OP_INVOKE handlers before the legacy
   // entry-reading inline passes see them.
-  ast = ast.accept(new LowerDynamicStateJournalHelpers()) as Ast;
-  ast = ast.accept(new LowerCollectionJournalHelpers()) as Ast;
+  if (needsDynamicStateJournal) ast = ast.accept(new LowerDynamicStateJournalHelpers()) as Ast;
+  if (needsCollectionJournal) ast = ast.accept(new LowerCollectionJournalHelpers()) as Ast;
 
   // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
   // body, capture the return in a temp). Same block-layout reason as the void case below; run first so a void
@@ -4687,28 +4855,28 @@ function compileResolvedAst(
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
   // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
-  ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
   // A guarded pointer-table row hoists its element + runtime-selector locals inside the branch; move only their
   // DECLARATIONS to the body top so the epilogue can read them while the reads stay conditional.
   if (messageBusGraphMode) ast = ast.accept(new HoistPointerTableBranchLocals()) as Ast;
   // A branch-local interface-cast external-call target variable -> hoist its DECLARATION to the body top so the
   // co-spend reads it at the epilogue (UniswapV2Pair mint's `migrator`); the external calls stay conditional.
-  ast = ast.accept(new HoistBranchLocalExtcallTargets()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new HoistBranchLocalExtcallTargets()) as Ast;
   // Interface-typed state vars used as external-call targets -> synthesized address locals (reuses the
   // local-interface-var dispatch).
-  ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
   // A NON-LOOP param-rooted array-element target `IERC20(path[path.length-1]).m()` -> hoist to a function-top
   // address local so it is a fixed-slot co-spend (not mistaken for a per-iteration loop-array dispatch).
-  ast = ast.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
   // A contract/interface-typed external-call target LOCAL declared in a branch (e.g. a `restricted` modifier's
   // if-wrapper) is popped before the epilogue's co-spend verification -> capture it into a function-top local.
-  ast = ast.accept(new CaptureBranchExternalCallTargets()) as Ast;
+  if (needsExternalCallLowering) ast = ast.accept(new CaptureBranchExternalCallTargets()) as Ast;
   // `L.f()` calls to a state-touching (delegate) library -> a delegatecall against the caller's state (with a
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
   ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
   const blockOracle = new SynthesizeBlockOracle(mergedCompilerOptions.solidityImportCompat ?? false);
-  ast = ast.accept(blockOracle) as Ast;
+  if (needsBlockOracle) ast = ast.accept(blockOracle) as Ast;
 
   // Drop free/library functions the contract never reaches (OZ libraries ship many unused helpers). Runs last,
   // after every synthesis pass, so no reachable call is missed; conservative by name so nothing live is dropped.
@@ -4717,7 +4885,7 @@ function compileResolvedAst(
   // Drop dead internal/private methods that read msg.data (e.g. inherited OZ `Context._msgData`, never called):
   // msg.data is only reconstructible at an entry point, so a dead one would fail the whole compile. Conservative
   // by name (every non-internal method is a root), so nothing live is dropped.
-  ast = ast.accept(new PruneUnreachableMsgDataMethods()) as Ast;
+  if (needsSpecialMethodPruning) ast = ast.accept(new PruneUnreachableMsgDataMethods()) as Ast;
 
   // Facets are deployed as branded delegate-only libraries and never execute the logical contract's constructor.
   // Several normalization passes can synthesize or reconstruct a constructor after inheritance flattening, so
@@ -4746,7 +4914,7 @@ function compileResolvedAst(
   }
 
   // Semantic analysis
-  ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
+  ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
   // Bare msg.sender collection accesses are normalized to compiler-owned route parameters before semantic
   // analysis. Preserve their origin in the published entry metadata: treating that synthetic parameter as a
   // source ABI argument leaves the SDK trying to read an argument the user-visible handler does not have.
@@ -5662,7 +5830,7 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     const cached = measuredBytes.get(key);
     if (cached !== undefined) return cached;
     const artifact = compileFacet(probe, code, merged, group, 'ProbeFacet');
-    const bytes = byteSize(artifact);
+    const bytes = byteSize(artifact) + spendReserve(artifact, artifact.constructorInputs);
     measuredArtifacts.set(key, artifact);
     measuredBytes.set(key, bytes);
     return bytes;
@@ -5761,8 +5929,8 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     // The synthetic facet name is metadata only (the branded bytecode and constructor shape are identical), so a
     // measured ProbeFacet can be reused instead of recompiling the exact same AST solely to change this label.
     artifact.contractName = name;
-    if (byteSize(artifact) > maxShardBytes) {
-      const facetBytes = byteSize(artifact);
+    const facetBytes = byteSize(artifact) + spendReserve(artifact, artifact.constructorInputs);
+    if (facetBytes > maxShardBytes) {
       const handlers = group.map((plan) => plan.name);
       const callChain = group.flatMap((plan) => [plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name)]);
       throw new SolidcDiagnosticError(
@@ -6697,7 +6865,8 @@ function validateUnicodeDirectionMarkers(code: string): void {
  */
 function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   const functions = contract.fallbackDef ? [...contract.functions, contract.fallbackDef] : contract.functions;
-  const candidates = functions.filter((fn) => fn.body && fn.functionId !== undefined && fn.returnTypes.length > 0);
+  const candidates = functions.filter((fn) => fn.body && fn.functionId !== undefined && fn.returnTypes.length > 0
+    && (fn.emitInfos?.length ?? 0) > 0 && !fn.graphEmissionHandler);
   if (candidates.length === 0) return;
   const walk = (node: Node, visit: (n: Node) => void, seen = new Set<Node>()): void => {
     if (seen.has(node)) return;
@@ -6725,10 +6894,6 @@ function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   });
   for (const fn of candidates) {
     if (!invoked.has(fn.functionId!)) continue;
-    let emits = false;
-    walk(fn.body!, (node) => { if (node instanceof EmitStatementNode) emits = true; });
-    if (!emits) continue;
-    if (fn.graphEmissionHandler) continue;
     // Name the handler the user wrote, not the compiler's synthetic clone spelling of it.
     throw new EmittingStateHelperEventError(fn, fn.name.replace(/^__message_bus_[a-z]+_/, ''), fn.collectionJournal === true);
   }
@@ -6833,28 +6998,38 @@ export function parseCode(
   // nested parse of compiler-generated route source cannot pick up an importing file's id; the generated mark
   // wins over any file label anyway (`importedFileCaveat`).
   return withSourceFile(importedFileId, () => {
-    const syntaxErrorListener = new ForwardingErrorListener(errorListener);
-
-    // Lexing (throwing on errors)
-    const inputStream = new CharStream(code);
-    const lexer = new SolidCashLexer(inputStream);
-    lexer.removeErrorListeners();
-    lexer.addErrorListener(syntaxErrorListener);
-    const tokenStream = new CommonTokenStream(lexer);
-
-    // Parsing (throwing on errors)
-    const parser = new SolidCashParser(tokenStream);
-    // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
-    // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
-    // across instances; do the same, so a process that parses many sources - a compile also parses the generated
-    // message-bus route - reuses that work instead of repaying it.
-    parser._interp = new ParserATNSimulator(
-      parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
-    );
-    parser.removeErrorListeners();
-    parser.addErrorListener(syntaxErrorListener);
-    const parseTree = parser.sourceFile();
-    syntaxErrorListener.throwFirstError();
+    const parse = (fast: boolean): ReturnType<SolidCashParser['sourceFile']> => {
+      const syntaxErrorListener = fast
+        ? ThrowingErrorListener.INSTANCE : new ForwardingErrorListener(errorListener);
+      const lexer = new SolidCashLexer(new CharStream(code));
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(syntaxErrorListener);
+      const parser = new SolidCashParser(new CommonTokenStream(lexer));
+      // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
+      // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
+      // across instances; do the same, so a process that parses many sources - a compile also parses the generated
+      // message-bus route - reuses that work instead of repaying it.
+      parser._interp = new ParserATNSimulator(
+        parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
+      );
+      if (fast) {
+        parser._interp.predictionMode = PredictionMode.SLL;
+        parser._errHandler = new BailErrorStrategy();
+      }
+      parser.removeErrorListeners();
+      parser.addErrorListener(syntaxErrorListener);
+      const tree = parser.sourceFile();
+      if (!fast) (syntaxErrorListener as ForwardingErrorListener).throwFirstError();
+      return tree;
+    };
+    let parseTree: ReturnType<SolidCashParser['sourceFile']>;
+    try {
+      parseTree = parse(true);
+    } catch {
+      // SLL cannot resolve every context-sensitive Solidity/SolidCash construct. Re-run those uncommon sources
+      // with the canonical full-context parser, which also owns user-facing syntax diagnostics.
+      parseTree = parse(false);
+    }
 
     // AST building
     const ast = new AstBuilder(

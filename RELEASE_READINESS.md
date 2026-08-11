@@ -624,8 +624,12 @@ it must not silently compile to incorrect covenant behavior.
     resistance, so a second seed hashing alike would let an attacker present a different deployer/nonce for the
     same logical address. It is now p2sh32, matching the project rule that stateful features never take a p2sh20
     path.
-- [ ] If deferred, hide or reject every stable-API path that depends on the unfinished architecture and document
+- [-] If deferred, hide or reject every stable-API path that depends on the unfinished architecture and document
   the experimental boundary.
+  - The compatibility manifest and release notes classify composed message-bus and custom delegate-forwarding
+    profiles as experimental. Stable SDK construction rejects unauthenticated deploy artifacts and ineligible
+    delegate operations before broadcast; the integrity gate covers those refusal paths. The remaining
+    architecture is therefore explicitly outside the first-release stable API rather than silently promised.
 
 ### Proxy and delegate behavior
 
@@ -685,7 +689,11 @@ it must not silently compile to incorrect covenant behavior.
     short-circuiting later. The table now agrees with the compiler behavior and its regression coverage.
   - The corpus README's headline still described the July 2,349/4,876 exploratory denominator. It now names the
     retained release scope and the reviewed 2,698/2,805 positive and 323/2,158 over-accepted-negative baseline.
-- [ ] Give every documented limitation one of: supported, experimental, deferred, or permanent BCH difference.
+- [x] Give every documented limitation one of: supported, experimental, deferred, or permanent BCH difference.
+  - `SOLIDITY_COMPATIBILITY_0.13.1.md`, `RELEASE_NOTES_0.13.1.md`, `TEST_DEFERRALS_0.13.1.md`, and the compiler
+    deferral documents use those four release classes. Experimental composition is outside the stable promise;
+    P2 work is explicitly deferred; UTXO, CashToken, VM-limit, event, and revert-data differences are permanent
+    BCH-model differences rather than missing parity claims.
 - [x] Ensure public website examples compile against the exact release packages.
   - **Measured, and it was already healthy.** `yarn examples` only ever covered three hand-written files at the
     repo root; the 252 fenced SolidCash blocks under `website/docs` - the first thing a new user copies - were
@@ -908,6 +916,10 @@ it must not silently compile to incorrect covenant behavior.
     seven workspaces plus the root testing suite without a timeout; `yarn test:e2e` passed 334 files with 2,668
     tests passing, 23 skipped, and 3 todo; and `yarn test:package-smoke` packed and consumed all six packages with
     its maintained 3/3 stateful golden path.
+  - **Current-head CI-ordering rehearsal PASS at detached commit `9d37eae24` on 2026-08-11.** A new worktree with
+    no dependencies or ignored output passed `yarn --frozen-lockfile --ignore-scripts` followed by the root
+    project-reference `yarn build`. Install took 15.9 s and build took 19.6 s. Regeneration changed only the
+    expected `updatedAt` fields in tracked testing-suite artifacts; emitted contract content did not drift.
 - [x] Ensure CI runs for the actual release branch (`solidcash_v*`), not only pushes to `master`.
 - [x] Pin supported Node 22 and Yarn 1.22.22 in the root manifest and CI install behavior.
 - [x] Update checkout/setup-node to GitHub Actions v4; Codecov remains on v5.
@@ -1050,18 +1062,23 @@ rg -n --glob '*.{test,spec}.ts' \
 
 ## First-release exit checklist
 
-- [ ] No known silent miscompiles in the supported language subset.
-- [ ] All unsupported security-sensitive shapes fail at compile or transaction-construction time.
+- [x] No known silent miscompiles in the supported language subset.
+- [x] All unsupported security-sensitive shapes fail at compile or transaction-construction time.
 - [x] State-bus/Layer-3 scope is integrated and frozen, or clearly excluded.
-- [ ] Proxy/delegate scope is explicit and tested by the required integrity gate.
+- [x] Proxy/delegate scope is explicit and tested by the required integrity gate.
 - [x] Compatibility manifest is complete and published.
-- [ ] Corpus baseline is reproducible, crash-free, and non-regressing.
+- [x] Corpus baseline is reproducible, crash-free, and non-regressing.
 - [ ] Clean-checkout CI and BCHN regtest gates pass.
 - [x] The Hardhat-style golden path passes using packed release artifacts.
 - [x] Representative application suite passes with script-size measurements.
 - [x] Package versions and exports are consistent.
 - [x] Release documentation clearly separates parity from intentional BCH differences.
 - [ ] Exact release commit, test results, scorecard, and known deferrals are recorded.
+
+The checked soundness items are bounded by the published compatibility manifest, not a claim about arbitrary
+accepted Solidity. Their evidence is the crash-free named-diagnostic corpus baseline, compiler and VM regression
+suites, the 81-test integrity matrix across every stable physical backend, and construction-time refusal tests
+for unsupported deploy/delegate shapes. The remaining exact-head BCHN gate is tracked separately above.
 
 ## Audit snapshot and source index
 

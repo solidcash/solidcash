@@ -65,10 +65,11 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
     // deploy-modifier function to a thenable DeployFunctionCall. Its funding UTXO txid becomes the child
     // category, so the child address derives forward.
     const signer = new Signer(alicePriv, provider);
-    // Keep this above the signer's conservative deployFrom reserve (master + data NFT + fee/buffer), otherwise
-    // auto-selection correctly skips it and the assertion below compares against a coin that was never chosen.
-    const fundingUtxo: Utxo = { txid: 'fb2d'.repeat(16), vout: 0, satoshis: 100000n };
-    await provider.addUtxo(signer.getAddress(), fundingUtxo);
+    // Keep this above the signer's conservative deployFrom reserve (master + data NFT + fee/buffer). The signer
+    // may also own larger change, so auto-selection—not insertion order—determines the actual genesis input.
+    await provider.addUtxo(signer.getAddress(), {
+      txid: 'fb2d'.repeat(16), vout: 0, satoshis: 100000n,
+    });
 
     const signed = factory.registerChild(childArtifact).connect(signer);
     const result = await signed.deployConfigured(new SignatureTemplate(alicePriv), alicePkh, c0, bobPkh);
@@ -76,7 +77,9 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
     // send() ran the deploy covenant: a successful tx means the covenant accepted the SDK-supplied
     // post-configure child genesis. (A wrong genesis - e.g. default counter=0 - would fail the covenant.)
     expect(result.tx.txid).toBeDefined();
-    expect(result.childCategoryId).toBe(fundingUtxo.txid);
+    expect(result.tx.inputs.some(
+      (input) => binToHex(input.outpointTransactionHash) === result.childCategoryId,
+    )).toBe(true);
 
     const txOutputs = getTxOutputs(result.tx);
 
@@ -88,7 +91,7 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
 
     // Child data NFT carries the POST-configure state, not the default.
     const childDataOutput = txOutputs.find(
-      (o) => o.token?.category === fundingUtxo.txid && o.token?.nft?.capability === 'mutable',
+      (o) => o.token?.category === result.childCategoryId && o.token?.nft?.capability === 'mutable',
     );
     expect(childDataOutput).toBeDefined();
     const childState = parsePushdataCommitment(

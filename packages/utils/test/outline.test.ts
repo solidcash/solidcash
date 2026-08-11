@@ -64,6 +64,15 @@ describe('cross-function bytecode outlining', () => {
     expect(outlineSharedSpans(source, allocateId, () => 1, 'savings', 11).functions).toHaveLength(1);
   });
 
+  it('extends a repeated seed when another occurrence ends exactly at the seed boundary', () => {
+    const seed = REPEATED.slice(0, 12);
+    const result = outlineSharedSpans(
+      [body([...seed, ...FILLER]), body(seed)], allocateId, () => 1,
+    );
+    expect(result.functions).toHaveLength(1);
+    expect(result.functions[0].script).toEqual(seed);
+  });
+
   it('allows a bounded candidate-group probe without changing the default', () => {
     const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
     const bounded = outlineSharedSpans(source, allocateId, () => 1, 'savings', 12, 1);

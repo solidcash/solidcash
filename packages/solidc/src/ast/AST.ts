@@ -393,7 +393,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   }>;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
-  sortedBatchInfo?: Array<{ collection: string; slotIndices: number[] }>;
+  sortedBatchInfo?: Array<{ collection: string; slotIndices: number[]; linear?: boolean }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
   // addr(n) and co-spend the (n->hash) oracle UTXO as a trailing input (mirrors dynamicReads auto-injection).
   blockhashReads?: string[];

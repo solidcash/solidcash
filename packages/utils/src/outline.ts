@@ -29,13 +29,21 @@ import { FullLocationData } from './types.js';
  * span are the same wherever they appear.
  */
 
-const OPEN_OPS = new Set<number>([Op.OP_IF, Op.OP_NOTIF, Op.OP_BEGIN]);
-const CLOSE_OPS = new Set<number>([Op.OP_ENDIF, Op.OP_UNTIL]);
 // Never relocate: see properties (2) and (3) above.
-const BARRIER_OPS = new Set<number>([
+const BARRIER_OPS = [
   Op.OP_DEFINE, Op.OP_INVOKE, Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
   Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
-]);
+];
+// Candidate balancing scans the same elements across many overlapping regions and outlining strategies. Dense
+// opcode tables keep those inner-loop classifications at indexed reads rather than repeated Set lookups.
+const CONTROL_DELTAS = new Int8Array(256);
+CONTROL_DELTAS[Op.OP_IF] = 1;
+CONTROL_DELTAS[Op.OP_NOTIF] = 1;
+CONTROL_DELTAS[Op.OP_BEGIN] = 1;
+CONTROL_DELTAS[Op.OP_ENDIF] = -1;
+CONTROL_DELTAS[Op.OP_UNTIL] = -1;
+const BARRIER_FLAGS = new Uint8Array(256);
+for (const opcode of BARRIER_OPS) BARRIER_FLAGS[opcode] = 1;
 
 /**
  * Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
@@ -144,14 +152,20 @@ const elementByteSize = (element: Script[number]): number => {
 
 const controlDelta = (element: Script[number]): number => {
   if (typeof element !== 'number') return 0;
-  if (OPEN_OPS.has(element)) return 1;
-  if (CLOSE_OPS.has(element)) return -1;
-  return 0;
+  return CONTROL_DELTAS[element];
 };
 
 const isBarrier = (element: Script[number]): boolean =>
-  typeof element === 'number' && BARRIER_OPS.has(element);
+  typeof element === 'number' && BARRIER_FLAGS[element] !== 0;
 const neverAnchored = (): boolean => false;
+
+interface BalanceScratch {
+  // Candidate regions are scanned sequentially. Reusing these dense tables avoids constructing a Map (or fresh
+  // typed arrays) for every overlapping region; generation stamps reset the logical contents in constant time.
+  firstIndexAtDepth: Int32Array;
+  depthGeneration: Uint32Array;
+  generation: number;
+}
 
 /**
  * Longest balanced, barrier-free sub-span of `elements`, measured in encoded bytes.
@@ -168,36 +182,42 @@ const neverAnchored = (): boolean => false;
  */
 function longestBalancedSpan(
   elements: Script, anchored: (index: number) => boolean,
-  regionStart: number, regionLength: number, bytePrefix: Uint32Array,
+  regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
 ): { start: number; end: number; bytes: number } {
   let best = { start: 0, end: 0, bytes: 0 };
   let depth = 0;
-  let firstIndexAtDepth = new Map<number, number>([[0, 0]]);
+  const { firstIndexAtDepth, depthGeneration } = scratch;
+  let generation = ++scratch.generation;
+  depthGeneration[0] = generation;
+  firstIndexAtDepth[0] = 0;
+  const reset = (start: number): void => {
+    depth = 0;
+    generation = ++scratch.generation;
+    depthGeneration[0] = generation;
+    firstIndexAtDepth[0] = start;
+  };
   for (let i = 0; i < regionLength; i += 1) {
     const element = elements[regionStart + i];
     if (isBarrier(element) || anchored(i)) {
-      depth = 0;
-      firstIndexAtDepth = new Map<number, number>([[0, i + 1]]);
+      reset(i + 1);
       continue;
     }
-    if (element === Op.OP_ELSE) firstIndexAtDepth.delete(depth);
+    if (element === Op.OP_ELSE) depthGeneration[depth] = 0;
     const previousDepth = depth;
     depth += controlDelta(element);
     if (depth < 0) {
-      depth = 0;
-      firstIndexAtDepth = new Map<number, number>([[0, i + 1]]);
+      reset(i + 1);
       continue;
     }
     if (depth < previousDepth) {
-      for (const key of [...firstIndexAtDepth.keys()]) {
-        if (key > depth) firstIndexAtDepth.delete(key);
-      }
+      for (let key = depth + 1; key <= previousDepth; key += 1) depthGeneration[key] = 0;
     }
-    const start = firstIndexAtDepth.get(depth);
-    if (start === undefined) {
-      firstIndexAtDepth.set(depth, i + 1);
+    if (depthGeneration[depth] !== generation) {
+      depthGeneration[depth] = generation;
+      firstIndexAtDepth[depth] = i + 1;
       continue;
     }
+    const start = firstIndexAtDepth[depth];
     const bytes = bytePrefix[regionStart + i + 1] - bytePrefix[regionStart + start];
     if (bytes > best.bytes) best = { start, end: i + 1, bytes };
   }
@@ -268,6 +288,37 @@ function findCandidates(
     return assigned;
   };
   const bodyIds = bodies.map((body) => body.script.map(idOf));
+  const maximumBodyLength = bodies.reduce((maximum, body) => Math.max(maximum, body.script.length), 0);
+  // Pack (left body, right body, signed diagonal) into one collision-free numeric key. Body indices and offsets
+  // are bounded by these in-memory arrays, so this stays far below Number.MAX_SAFE_INTEGER for compilable input.
+  const diagonalSpan = maximumBodyLength * 2 + 1;
+  // Candidate seeds at adjacent offsets often compare the same long equal runs again (particularly generated
+  // function bodies with a shared prologue/epilogue). Memoize exact suffix-prefix lengths by body pair and
+  // diagonal. Filling the run backwards makes every element on a diagonal participate in at most one scan.
+  const commonPrefixByDiagonal = new Map<number, Int32Array>();
+  const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
+    const left = bodyIds[leftBody];
+    const right = bodyIds[rightBody];
+    if (leftStart >= left.length || rightStart >= right.length) return 0;
+    const key = (leftBody * bodies.length + rightBody) * diagonalSpan
+      + rightStart - leftStart + maximumBodyLength;
+    let lengths = commonPrefixByDiagonal.get(key);
+    if (lengths === undefined) {
+      lengths = new Int32Array(left.length);
+      commonPrefixByDiagonal.set(key, lengths);
+    }
+    const rightOffset = rightStart - leftStart;
+    let cursor = leftStart;
+    while (cursor < left.length && cursor + rightOffset < right.length
+      && lengths[cursor] === 0 && left[cursor] === right[cursor + rightOffset]) cursor += 1;
+    let suffix = cursor < left.length && lengths[cursor] !== 0 ? lengths[cursor] - 1 : 0;
+    for (let i = cursor - 1; i >= leftStart; i -= 1) {
+      suffix += 1;
+      lengths[i] = suffix + 1;
+    }
+    if (lengths[leftStart] === 0) lengths[leftStart] = 1;
+    return lengths[leftStart] - 1;
+  };
   const bodyBytePrefixes = bodies.map((body) => {
     const prefix = new Uint32Array(body.script.length + 1);
     for (let i = 0; i < body.script.length; i += 1) {
@@ -275,12 +326,19 @@ function findCandidates(
     }
     return prefix;
   });
+  const balanceScratch: BalanceScratch = {
+    firstIndexAtDepth: new Int32Array(maximumBodyLength + 1),
+    depthGeneration: new Uint32Array(maximumBodyLength + 1),
+    generation: 0,
+  };
 
   const windows = new Map<number, Occurrence[]>();
   bodyIds.forEach((ids, bodyIndex) => {
     for (let i = 0; i + minimumWindowElements <= ids.length; i += 1) {
-      let hash = 0;
-      for (let j = 0; j < minimumWindowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
+      // The first polynomial term is the id itself (`imul(0, 31) + id`); seed it directly and save one multiply
+      // in this loop, which runs for every candidate window in every outlining round and strategy.
+      let hash = ids[i];
+      for (let j = 1; j < minimumWindowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
       let group = windows.get(hash);
       if (group === undefined) {
         group = [];
@@ -374,10 +432,10 @@ function findCandidates(
       const occurrence = group[occurrenceIndex];
       const ids = bodyIds[occurrence.body];
       const limit = Math.min(length, ids.length - occurrence.start);
-      let matching = seed;
-      while (matching < limit && ids[occurrence.start + matching] === firstIds[first.start + matching]) {
-        matching += 1;
-      }
+      const matching = seed + Math.min(
+        limit - seed,
+        commonPrefixLength(first.body, first.start + seed, occurrence.body, occurrence.start + seed),
+      );
       length = matching;
     }
 
@@ -401,7 +459,7 @@ function findCandidates(
       ? neverAnchored
       : (index: number): boolean => anchoredIndices[index] !== 0;
     const balanced = longestBalancedSpan(
-      headScript, anchored, head.start, length, bodyBytePrefixes[head.body],
+      headScript, anchored, head.start, length, bodyBytePrefixes[head.body], balanceScratch,
     );
     if (balanced.bytes === 0) continue;
 

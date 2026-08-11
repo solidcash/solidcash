@@ -2173,7 +2173,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.sortedBatchInfo = ownsCollectionTopology ? undefined : [...batchByCollection]
           .filter(([collection]) => !loopWrittenCollections.has(collection)
             && (fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection)))
-          .map(([collection, slotIndices]) => ({ collection, slotIndices }));
+          .map(([collection, slotIndices]) => ({
+            collection,
+            slotIndices,
+            ...(slotIndices.length > 1 && slotIndices.every((batchSlot) => {
+              const info = ordered.find((candidate) => candidate.slotIndex === batchSlot);
+              return info?.aliasCondDeleteSlot === undefined && (info?.runtimeAliasPriorSlots?.length ?? 0) === 0;
+            }) && { linear: true }),
+          }));
 
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
         // and final successor slot for each logical target. The SDK derives them from the canonical batch plan.
@@ -2184,6 +2191,9 @@ export default class SymbolTableTraversal extends AstTraversal {
               new ParameterNode(PrimitiveType.BIGINT, `__internal__vmapBatchProof_${batchSlotIndex}`),
               new ParameterNode(new BytesType(32), `__internal__vmapBatchNext_${batchSlotIndex}`),
               new ParameterNode(PrimitiveType.BIGINT, `__internal__vmapBatchPredOut_${batchSlotIndex}`),
+              ...(batch.linear ? [new ParameterNode(
+                PrimitiveType.BIGINT, `__internal__vmapBatchRank_${batchSlotIndex}`,
+              )] : []),
             ]) {
               param.location = node.location;
               node.parameters.push(param);
@@ -2192,6 +2202,15 @@ export default class SymbolTableTraversal extends AstTraversal {
               if (sym) sym.references.push({ name: param.name } as IdentifierNode);
               this.pushToStack(param);
             }
+          }
+          if (batch.linear) {
+            const param = new ParameterNode(new BytesType(), `__internal__vmapBatchRows_${batch.collection}`);
+            param.location = node.location;
+            node.parameters.push(param);
+            this.symbolTables[0].set(Symbol.variable(param));
+            const sym = this.symbolTables[0].get(param.name);
+            if (sym) sym.references.push({ name: param.name } as IdentifierNode);
+            this.pushToStack(param);
           }
         }
         if ((node.sortedBatchInfo?.length ?? 0) > 0) {

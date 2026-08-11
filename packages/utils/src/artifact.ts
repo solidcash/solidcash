@@ -304,7 +304,7 @@ export interface AbiFunction {
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
   /** Fixed straight-line vmap writes sharing one atomic linked-list transition. */
-  sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[] }[];
+  sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[]; linear?: boolean }[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
   blockhashReads?: readonly string[];

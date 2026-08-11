@@ -1939,17 +1939,17 @@ export default class AstBuilder
   }
 
   visitFunctionDefinition(ctx: FunctionDefinitionContext): FunctionDefinitionNode {
-    this.selfExternalFunctionAliases = new Map();
-    this.indexedExternalFunctionAliases = new Map();
-    this.storageAliases = new Map();
-    this.storageReferenceTypes = new Map();
-    this.localStructTypes = new Map();
-    this.localBytesVars = new Set();
-    this.localSimpleTypeKeys = new Map();
-    this.localInterfaceReceivers = new Set();
-    this.localStructArrayTypes = new Map();
-    this.localArrayVarTypes = new Map();
-    this.expiredLoopVariableNames = new Set();
+    this.selfExternalFunctionAliases.clear();
+    this.indexedExternalFunctionAliases.clear();
+    this.storageAliases.clear();
+    this.storageReferenceTypes.clear();
+    this.localStructTypes.clear();
+    this.localBytesVars.clear();
+    this.localSimpleTypeKeys.clear();
+    this.localInterfaceReceivers.clear();
+    this.localStructArrayTypes.clear();
+    this.localArrayVarTypes.clear();
+    this.expiredLoopVariableNames.clear();
     const name = ctx.functionName().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring,

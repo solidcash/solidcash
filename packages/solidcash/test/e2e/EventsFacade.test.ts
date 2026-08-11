@@ -42,17 +42,20 @@ describe('StatefulContract events facade (ethers queryFilter / filters / getEven
 
   it('queryFilter returns events oldest-first when the provider returns newest-first', async () => {
     const { sc } = await deploy();
-    await sc.fire(1n, 2n, 100n).send();
-    await sc.fire(1n, 2n, 200n).send();
+    const first = await sc.fire(1n, 2n, 100n).send();
+    const second = await sc.fire(1n, 2n, 200n).send();
 
     const provider = sc.provider;
     const getUtxos = provider.getUtxos.bind(provider);
     provider.getUtxos = async (address) => {
-      const chronological = await getUtxos(address);
-      return chronological.map((utxo, index) => ({
-        ...utxo,
-        confirmations: chronological.length - index,
-      })).reverse();
+      const order = new Map([[first.txid, 0], [second.txid, 1]]);
+      return [...await getUtxos(address)]
+        .map((utxo) => ({
+          ...utxo,
+          blockHeight: undefined,
+          confirmations: utxo.txid === first.txid ? 2 : 1,
+        }))
+        .sort((a, b) => (order.get(b.txid) ?? -1) - (order.get(a.txid) ?? -1));
     };
 
     const logs = await sc.queryFilter('Transfer');

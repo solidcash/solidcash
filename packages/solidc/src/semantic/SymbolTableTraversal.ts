@@ -2020,10 +2020,11 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
     node.body = this.visit(node.body);
+    const bodySurvey = this.surveyFunctionBody(node.body);
 
     // msg.sender pre-scan: inject synthetic _msgSenderCategory parameter
     {
-      const usesMsgSender = this.collectMsgSenderUsage(node.body);
+      const usesMsgSender = bodySurvey.usesMsgSender;
       if (usesMsgSender) {
         node.usesMsgSender = true;
         // Graph handlers receive logical msg.sender from the caller vector
@@ -2091,18 +2092,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.keccakCompute = true;
       // A keccak256 call inside a loop runs a runtime-variable number of times, so the static call count is a
       // LOWER BOUND on the side-cars needed. Flag it so the SDK provisions extra instances (see artifact).
-      if (node.body && this.keccakCallInLoop(node.body)) node.keccakInLoop = true;
+      if (bodySurvey.keccakInLoop) node.keccakInLoop = true;
     }
 
     // ecrecoverPubKey (+ its p2pkh/evm projections) recovers a secp256k1 pubkey via a co-spent recovery side-car
     // PAIR (A checkpoints, B finishes -> pubkey) per call. Slot-per-call: N calls -> 2N side-cars. See docs/ecrecover.md.
-    if (node.body) {
-      const recovery = this.surveyEcrecoverCalls(node.body);
-      if (recovery.total >= 1) {
-        node.ecrecoverCompute = true; node.ecrecoverCallCount = recovery.total;
-        if (recovery.evm >= 1) node.ecrecoverEvmCallCount = recovery.evm;
-        if (recovery.inLoop) node.ecrecoverLoopReads = true;
-      }
+    const recovery = bodySurvey.recovery;
+    if (recovery.total >= 1) {
+      node.ecrecoverCompute = true; node.ecrecoverCallCount = recovery.total;
+      if (recovery.evm >= 1) node.ecrecoverEvmCallCount = recovery.evm;
+      if (recovery.inLoop) node.ecrecoverLoopReads = true;
     }
 
     // Entry slot pre-scan: collect unique (collection, keyParam) pairs and assign slot indices
@@ -3834,34 +3833,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node instanceof DeleteStateNode) return true;
 
     // Walk child nodes
-    for (const [key, value] of Object.entries(node)) {
+    for (const key in node) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle (SafeERC20 recursion)
+      const value = node[key as keyof Node];
       if (value instanceof Node) {
         if (this.bodyContainsStateWrites(value)) return true;
       } else if (Array.isArray(value)) {
         for (const item of value) {
           if (item instanceof Node && this.bodyContainsStateWrites(item)) return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  private collectMsgSenderUsage(node: Node, visited: Set<Node> = new Set()): boolean {
-    if (visited.has(node)) return false;
-    visited.add(node);
-
-    if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SENDER) {
-      return true;
-    }
-
-    // Walk all own properties and recurse into any Node or Node[] values
-    for (const value of Object.values(node)) {
-      if (value instanceof Node) {
-        if (this.collectMsgSenderUsage(value, visited)) return true;
-      } else if (Array.isArray(value)) {
-        for (const item of value) {
-          if (item instanceof Node && this.collectMsgSenderUsage(item, visited)) return true;
         }
       }
     }
@@ -3902,7 +3881,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       counts.set(node.identifier.name, (counts.get(node.identifier.name) ?? 0) + 1);
     }
 
-    for (const [key, value] of Object.entries(node)) {
+    for (const key in node) {
       // Skip only the edges that leave this CONTRACT. `referencedContract` reaches another contract, whose
       // library calls run in ITS block, not ours: counting them over-reserves this function's side-car slots
       // and shifts every later block-layout slot (MistSwap `createPair`: one keccak256, EIGHT slots reserved).
@@ -3912,6 +3891,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // be counted here - skipping it loses the entry point's side-car slot, `keccakPreimageParams` and
       // `keccakCompute` entirely (a constructor calling a private `keccak256` helper reserves nothing).
       if (CROSS_CONTRACT_BACKREF_KEYS.has(key)) continue;
+      const value = node[key as keyof Node];
       if (value instanceof Node) {
         this.countLibraryCalls(value, counts, visited);
       } else if (Array.isArray(value)) {
@@ -3948,59 +3928,59 @@ export default class SymbolTableTraversal extends AstTraversal {
     walk(node);
   }
 
-  // Count all recovery projections and detect dynamic-loop use in one body walk. These were previously three
-  // independent recursive surveys, even for the overwhelmingly common function with no recovery call.
-  private surveyEcrecoverCalls(
-    node: Node, inLoop = false,
-    result = { total: 0, evm: 0, inLoop: false },
-    seen = new WeakMap<Node, boolean>(),
-  ): { total: number; evm: number; inLoop: boolean } {
-    const nowInLoop = inLoop
-      || node instanceof WhileNode
-      || node instanceof DoWhileNode
-      || node instanceof CollectionIterationNode;
-    const previousLoopState = seen.get(node);
-    if (previousLoopState === true || previousLoopState === nowInLoop) return result;
-    seen.set(node, nowInLoop);
-    const recoveryCall = node instanceof FunctionCallNode && (
-      node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
-      || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
-      || node.identifier.name === GlobalFunction.ECRECOVER_EVM);
-    if (recoveryCall) {
-      if (previousLoopState === undefined) {
-        result.total += 1;
-        if (node.identifier.name === GlobalFunction.ECRECOVER_EVM) result.evm += 1;
+  // Survey the ordinary body graph once for the three independent annotations every function needs. Recovery
+  // nodes may be revisited when a shared subtree is reached first outside and then inside a loop; msg.sender and
+  // keccak preserve their former visit-once semantics with separate seen sets.
+  private surveyFunctionBody(node: Node): {
+    usesMsgSender: boolean;
+    keccakInLoop: boolean;
+    recovery: { total: number; evm: number; inLoop: boolean };
+  } {
+    const result = {
+      usesMsgSender: false,
+      keccakInLoop: false,
+      recovery: { total: 0, evm: 0, inLoop: false },
+    };
+    const recoverySeen = new WeakMap<Node, boolean>();
+    const walk = (current: Node, recoveryInLoop = false, keccakInLoop = false): void => {
+      const nowRecoveryInLoop = recoveryInLoop || current instanceof WhileNode
+        || current instanceof DoWhileNode || current instanceof CollectionIterationNode;
+      const nowKeccakInLoop = keccakInLoop || current instanceof WhileNode || current instanceof DoWhileNode;
+      const previousLoopState = recoverySeen.get(current);
+      if (previousLoopState === true || previousLoopState === nowRecoveryInLoop) return;
+      recoverySeen.set(current, nowRecoveryInLoop);
+      const firstOrdinaryVisit = previousLoopState === undefined;
+      if (firstOrdinaryVisit) {
+        if (current instanceof NullaryOpNode && current.operator === NullaryOperator.MSG_SENDER) {
+          result.usesMsgSender = true;
+        }
+        if (nowKeccakInLoop && current instanceof FunctionCallNode
+          && current.identifier.name === GlobalFunction.KECCAK256) result.keccakInLoop = true;
       }
-      if (nowInLoop) result.inLoop = true;
-    }
-    for (const [key, value] of Object.entries(node)) {
-      if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-      if (value instanceof Node) this.surveyEcrecoverCalls(value, nowInLoop, result, seen);
-      else if (Array.isArray(value)) {
-        for (const item of value) {
-          if (item instanceof Node) this.surveyEcrecoverCalls(item, nowInLoop, result, seen);
+      const recoveryCall = current instanceof FunctionCallNode && (
+        current.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
+        || current.identifier.name === GlobalFunction.ECRECOVER_P2PKH
+        || current.identifier.name === GlobalFunction.ECRECOVER_EVM);
+      if (recoveryCall) {
+        if (previousLoopState === undefined) {
+          result.recovery.total += 1;
+          if (current.identifier.name === GlobalFunction.ECRECOVER_EVM) result.recovery.evm += 1;
+        }
+        if (nowRecoveryInLoop) result.recovery.inLoop = true;
+      }
+      for (const key in current) {
+        if (RESOLVED_BACKREF_KEYS.has(key)) continue;
+        const value = current[key as keyof Node];
+        if (value instanceof Node) walk(value, nowRecoveryInLoop, nowKeccakInLoop);
+        else if (Array.isArray(value)) {
+          for (const item of value) {
+            if (item instanceof Node) walk(item, nowRecoveryInLoop, nowKeccakInLoop);
+          }
         }
       }
-    }
+    };
+    walk(node);
     return result;
-  }
-
-  private keccakCallInLoop(node: Node, inLoop = false, seen = new WeakSet<Node>()): boolean {
-    if (seen.has(node)) return false;
-    seen.add(node);
-    const nowInLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
-    if (nowInLoop && node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
-    for (const [key, value] of Object.entries(node)) {
-      if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle (SafeERC20 recursion)
-      if (value instanceof Node) {
-        if (this.keccakCallInLoop(value, nowInLoop, seen)) return true;
-      } else if (Array.isArray(value)) {
-        for (const item of value) {
-          if (item instanceof Node && this.keccakCallInLoop(item, nowInLoop, seen)) return true;
-        }
-      }
-    }
-    return false;
   }
 
   private collectCollectionIterations(node: Node, iterations: CollectionIterationInfo[]): void {

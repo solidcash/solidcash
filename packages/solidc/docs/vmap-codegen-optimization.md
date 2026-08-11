@@ -1,7 +1,13 @@
 # vmap codegen optimization research
 
-Status: research and implementation guidance. The normative storage and security specification is
+Status: historical research and implementation guidance. The factored entry/chunk covenants, stack micro-
+optimizations, and linear non-aliasing fixed-batch verifier described by the 2026-08 survey are implemented. The
+normative storage and security specification is
 `verified-mappings.md`.
+
+> **Current measurements:** this note predates later helper allocation, whole-script outlining, and routed-handler
+> safety work. See [`vmap-size-survey-2026-08.md`](vmap-size-survey-2026-08.md) for current-HEAD and
+> `codex/eacc-general-compile-perf` measurements, implemented-versus-open status, and the revised priority order.
 
 This note evaluates how to reduce vmap contract bytecode, runtime covenant work, and transaction size without
 weakening exclusion proofs or shortening the 32-byte `slot` and `nextSlot` links.
@@ -194,12 +200,18 @@ output, and permitted trailing output is included in the compiler's exact layout
 
 Old-chunk input counting can be fused with an existing input scan under the same constraints.
 
-## Priority 5: category-independent, collection-specific entry covenants
+## Priority 5: single-category-pinned, collection-specific entry covenants
 
-This is the largest individual saving but changes every entry and value-chunk address, so it is a versioned storage
-format change.
+This is the largest individual constant-factor saving. It changes every entry and value-chunk address, but no
+SolidCash storage format has been released, so the current format can be replaced outright without versioning.
 
-The category does not need to be embedded in the redeem script if it is authenticated at runtime:
+The category should remain embedded once. P2SH32 authenticates the redeem script, not the CashToken category, and
+the current read/absence path partly relies on the category-specialized address. Removing the category entirely is
+safe only after every read, write, iteration, `outState`, delegate, and SDK path independently pins the token
+category. It would also collapse equal collection layouts across contracts onto one provider-visible address.
+
+The duplicate category occurrence can be removed while retaining the category as the read-only branch's domain
+separator:
 
 ### Write path
 
@@ -209,10 +221,11 @@ The category does not need to be embedded in the redeem script if it is authenti
 4. Require mutable capability.
 5. Require entry category base equals master category base.
 
-### Read-only path
+### Read-only path and address domain
 
 1. Require the current input has mutable NFT capability.
-2. Preserve locking bytecode, exact category, commitment, FT amount, satoshis, and output position.
+2. Require its category base equals the single embedded category.
+3. Preserve locking bytecode, exact category, commitment, FT amount, satoshis, and output position.
 
 ### Calling contract
 
@@ -223,33 +236,31 @@ The collection hash must remain embedded. Removing it would give multiple mappin
 address and permit cross-collection entry substitution because ordinary node commitments do not contain a collection
 identifier.
 
-A prototype equivalent covenant is 75 bytes rather than 142 bytes:
+A factored prototype is 104 bytes rather than 142 bytes. Root-addressed chunks additionally digest their tagged,
+fixed-width `"value-chunk" || collectionHash || slot || root` domain to one HASH256 salt, retaining 256-bit binding while
+avoiding three separate executed-and-dropped pushes:
 
 | Component | Current | Proposed | Saving |
 |---|---:|---:|---:|
-| Entry redeem script | 142 B | 75 B | 67 B/input |
-| In-contract entry-address production | 97 B | 36 B constant push | 61 B/access |
-| Root-addressed chunk redeem script | 210 B | about 143 B | about 67 B/input |
+| Entry redeem script | 142 B | 104 B | 38 B/input |
+| Root-addressed chunk redeem script | 210 B | 116 B | 94 B/input |
 
-Estimated whole-contract reduction before other caching:
+Including redeem-script push framing, the exact transaction saving is 38 bytes per revealed entry and 94 bytes per
+revealed chunk. Static compiler savings require a code-generation prototype; the address remains
+category-specialized, but constructing its covenant loses one category occurrence and chunk construction handles
+one dynamic digest rather than three independent salts.
 
-- simple vmap read: about 61 bytes, roughly 13%;
-- simple vmap write: about 61 bytes, roughly 12%;
-- RMW with two current derivations: up to about 122 bytes, roughly 16%;
-- additional transaction saving: 67 bytes for every revealed entry/chunk redeem script.
+The address remains category- and collection-specific P2SH32. Category binding remains full-width and the exclusion
+proof retains its current domain separation.
 
-The address remains collection-specific P2SH32, and category binding remains full-width at runtime. This does not add
-a collision assumption or weaken the exclusion proof.
+Pre-release replacement requirements:
 
-Migration requirements:
+- replace the entry/chunk covenant builders and every compiler/SDK address derivation together;
+- regenerate artifacts and fixtures;
+- update deploy, upgrade, provider query, trace derivation, and adversarial tests;
+- remove the old format rather than adding dual-format compatibility.
 
-- version the entry/chunk covenant format;
-- move every HEAD and reachable mapping node to the new address;
-- move live chunk roots to new addresses or rewrite values through the normal update path;
-- update deploy, upgrade, provider query, and artifact compatibility handling;
-- reject mixed-format lists unless an explicit migration covenant authenticates both sides.
-
-This is best considered before the next storage-format release.
+No format marker, migration covenant, or mixed-list handling is needed because there are no released lists.
 
 ## Lower-priority improvements
 
@@ -287,8 +298,7 @@ Implementation order:
 2. Factor the common sorted-output verifier.
 3. Convert chunk verification to a rolling cursor.
 4. Fuse chunk-address counts with existing transaction scans.
-5. Before the next storage-format release, decide whether to migrate to category-independent, collection-specific
-   entry covenants.
+5. Replace the unreleased two-category-constant format with single-category-pinned, collection-specific covenants.
 
 Keep `slot` and `nextSlot` at 32 bytes. The optimizations above save more contract and transaction bytes without
 introducing a narrower-link collision bound or runtime truncation logic.

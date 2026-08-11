@@ -20,7 +20,7 @@ import {
   scriptToBytecode,
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
-  buildValueChunkCovenantScript,
+  VALUE_CHUNK_DOMAIN_TAG,
   VALUE_HEAD_SIZE,
   VALUE_CHUNK_SIZE,
   encodeNftIndexTag,
@@ -15042,13 +15042,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitSortedAbsenceBracketInline(loc: SingleLocationData, consumeFrame = false): void {
     this.emit(Op.OP_OVER, loc); this.emit(Op.OP_BIN2NUM, loc);
     this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);           // slot < H(k)
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TUCK, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // retain H(k)#
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);                   // +inf ok
+    this.emit(Op.OP_IF, loc); this.emit(Op.OP_2DROP, loc);                  // +inf ok; drop next# and H(k)#
     this.emit(Op.OP_ELSE, loc);
-    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < nextKey
+    this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);           // H(k) < nextKey
     this.emit(Op.OP_ENDIF, loc);
     if (consumeFrame) { this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); }
   }
@@ -15155,11 +15154,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitEntryInputIndex(prior, loc, 2);
       this.emit(Op.OP_ENDIF, loc);
     }
-    this.emit(Op.OP_DUP, loc);                        // [Hk32, entryAddr, idx, idx]
-    this.emit(Op.OP_UTXOBYTECODE, loc);               // [Hk32, entryAddr, idx, inbc]
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); // [Hk32, entryAddr, idx, inbc, entryAddr]
+    this.emit(Op.OP_2DUP, loc);                       // [Hk32, entryAddr, idx, entryAddr, idx]
+    this.emit(Op.OP_UTXOBYTECODE, loc);               // [Hk32, entryAddr, idx, entryAddr, inbc]
     this.emit(Op.OP_EQUALVERIFY, loc);                // [Hk32, entryAddr, idx]
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc); // [Hk32, idx]  (drop entryAddr)
+    this.emit(Op.OP_NIP, loc);                        // [Hk32, idx]  (drop entryAddr)
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);        // [Hk32, commit]
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);                       // [Hk32, slot32, rest]
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);                       // [Hk32, slot32, nextKey32, value]
@@ -15167,8 +15165,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 4. value read: present (slot32 == Hk32) -> the value tail (bool/int BIN2NUM-normalized, bytesN verbatim);
     // absent (bracket proven) -> the type default. A bool set is just a mapping(K=>int-bit) here: true=0x01 present,
     // false = an entry whose value tail is empty, absent = default false. stack: [Hk32, slot32, nextKey32, value]
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);   // copy slot32 (depth2)
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc);   // copy Hk32 (depth4 after slot copy)
+    this.emit(Op.OP_2OVER, loc);                               // copy Hk32, slot32
     this.emit(Op.OP_EQUAL, loc);                                 // [Hk32, slot32, nextKey32, value, isPresent]
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); // -> [value | tail]
@@ -15717,8 +15714,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The proof index may alias another logical slot's physical input. Authenticate its address and require it is
       // either the exact target node or the adjacent predecessor that brackets H(k).
       this.emitEntryInputIndex(slotIndex, loc, 2);
-      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
-      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
       this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [v,H,addr,coSlot,coNext,coValue]
@@ -15803,8 +15799,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 4. co-spent entry input[slot]: bytecode == entryAddr, read [coSlot|coNext|coValue]
     //    -> [v, Hk32, entryAddr, coSlot32, coNext32, coValue]
     this.emitEntryInputIndex(slotIndex, loc, 2);
-    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);       // [v, Hk32, entryAddr, coSlot32, coNext32, coValue]
@@ -16927,12 +16922,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emitSortedBatchTransitionVerification(node);
     if (guard?.slotIndex !== undefined) this.emit(Op.OP_ENDIF, loc);
-    const snapshots = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices.flatMap((slot) => [
-      `__vmap_snapshot___internal__vmapBatchSlot_${slot}`,
-      `__vmap_snapshot___internal__vmapBatchProof_${slot}`,
-      `__vmap_snapshot___internal__vmapBatchNext_${slot}`,
-      `__vmap_snapshot___internal__vmapBatchPredOut_${slot}`,
-    ]));
+    const snapshots = this.vmapBatchTopologyNames(node).map((name) => `__vmap_snapshot_${name}`);
     for (const name of snapshots.reverse()) {
       const depth = this.getStackIndex(name, true);
       if (depth < 0) continue;
@@ -16953,6 +16943,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * function frame. Each comparison is staged through the altstack so no deep PICK index depends on temporary
    * operands. Later settlement may safely use the physical-slot covenant as its active/inactive gate.
    */
+  private vmapBatchTopologyNames(node: FunctionDefinitionNode): string[] {
+    return (node.sortedBatchInfo ?? []).flatMap((batch) => [
+      ...batch.slotIndices.flatMap((slot) => [
+        `__internal__vmapBatchSlot_${slot}`,
+        `__internal__vmapBatchProof_${slot}`,
+        `__internal__vmapBatchNext_${slot}`,
+        `__internal__vmapBatchPredOut_${slot}`,
+        ...(batch.linear ? [`__internal__vmapBatchRank_${slot}`] : []),
+      ]),
+      ...(batch.linear ? [`__internal__vmapBatchRows_${batch.collection}`] : []),
+    ]);
+  }
+
   private emitRuntimeAliasWitnessPreflight(node: FunctionDefinitionNode): void {
     const loc = { location: node.location, positionHint: PositionHint.START } as SingleLocationData;
     const copy = (name: string): void => {
@@ -16980,12 +16983,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Keep an untouched copy of every topology witness above the mutable handler frame. Internal handler calls
     // may legally reorder the original parameter cells while preserving stack depth; all post-body vmap work reads
     // these snapshots instead. Freeze the name list here - restore MUST pop the same sequence.
-    const topologyNames = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices.flatMap((slot) => [
-      `__internal__vmapBatchSlot_${slot}`,
-      `__internal__vmapBatchProof_${slot}`,
-      `__internal__vmapBatchNext_${slot}`,
-      `__internal__vmapBatchPredOut_${slot}`,
-    ]));
+    const topologyNames = this.vmapBatchTopologyNames(node);
     const names = [
       ...topologyNames,
       ...[...new Set((node.entryAccesses ?? []).flatMap((entry) => entry.keyParams))]
@@ -17000,12 +16998,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private restoreVMapWitnessSnapshots(node: FunctionDefinitionNode, loc: SingleLocationData): void {
     if (this.vmapWitnessSnapshotsRestored) return;
-    const topologyNames = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices.flatMap((slot) => [
-      `__internal__vmapBatchSlot_${slot}`,
-      `__internal__vmapBatchProof_${slot}`,
-      `__internal__vmapBatchNext_${slot}`,
-      `__internal__vmapBatchPredOut_${slot}`,
-    ]));
+    const topologyNames = this.vmapBatchTopologyNames(node);
     // Prefer the frozen preflight list. Recomputing keyParams here is unsafe: a final-use OP_ROLL in the body
     // (emit args, later statements) removes those names from the tracked stack, so a re-filter would pop fewer
     // altstack items than preflight pushed and scramble every subsequent topology witness.
@@ -17117,6 +17110,99 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
         directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
         bin(Op.OP_ENDIF);
+      } else if (batch.linear) {
+        const rowsName = `__internal__vmapBatchRows_${batch.collection}`;
+        const rankName = (slot: number): string => `__internal__vmapBatchRank_${slot}`;
+        if (this.getStackIndex(rowsName, true) < 0
+          || targets.some((slot) => this.getStackIndex(rankName(slot), true) < 0)) {
+          throw new Error(`Linear vmap batch '${batch.collection}' lost its rank/row witness frame`);
+        }
+        const rowFieldByRank = (
+          slot: number, field: 'slot' | 'next', rankDelta = 0, extra = 0,
+        ): void => {
+          arg(rowsName, extra);
+          arg(rankName(slot), extra + 1);
+          if (rankDelta !== 0) { this.emit(encodeInt(BigInt(rankDelta)), loc); bin(Op.OP_ADD); }
+          this.emit(encodeInt(64n), loc); bin(Op.OP_MUL);
+          if (field === 'next') { this.emit(encodeInt(32n), loc); bin(Op.OP_ADD); }
+          bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+          this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
+        };
+        const rowFieldAt = (ordinal: number, field: 'slot' | 'next', extra = 0): void => {
+          arg(rowsName, extra);
+          const offset = ordinal * 64 + (field === 'next' ? 32 : 0);
+          if (offset > 0) { this.emit(encodeInt(BigInt(offset)), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP); }
+          this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
+        };
+        const directProofFieldFor = (slot: number, field: 'slot' | 'next' | 'value', extra = 0): void => {
+          commitmentField(() => { proofIndex(slot, extra); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); }, field);
+        };
+
+        arg(rowsName); bin(Op.OP_SIZE); bin(Op.OP_NIP);
+        this.emit(encodeInt(BigInt(targets.length * 64)), loc); bin(Op.OP_NUMEQUALVERIFY);
+        for (let ordinal = 0; ordinal + 1 < targets.length; ordinal++) {
+          rowFieldAt(ordinal, 'slot'); bin(Op.OP_BIN2NUM);
+          rowFieldAt(ordinal + 1, 'slot', 1); bin(Op.OP_BIN2NUM);
+          bin(Op.OP_LESSTHAN); bin(Op.OP_VERIFY);
+        }
+
+        // A malicious spender must not bind two logical writes to one row when their runtime keys alias. Strict
+        // row ordering only proves the rows are unique; it does not prove the supplied ranks form a permutation.
+        // Keep this deliberately small pairwise rank check while topology/link validation remains linear.
+        for (let i = 0; i < targets.length; i++) {
+          for (let j = i + 1; j < targets.length; j++) {
+            arg(rankName(targets[i])); arg(rankName(targets[j]), 1);
+            bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_VERIFY);
+          }
+        }
+
+        for (const slot of targets) {
+          arg(rankName(slot)); bin(Op.OP_DUP); bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY);
+          this.emit(encodeInt(BigInt(targets.length)), loc); bin(Op.OP_LESSTHAN); bin(Op.OP_VERIFY);
+          rowFieldByRank(slot, 'slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
+          rowFieldByRank(slot, 'next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
+
+          arg(rankName(slot)); this.emit(encodeInt(BigInt(targets.length - 1)), loc);
+          bin(Op.OP_LESSTHAN); bin(Op.OP_IF);
+          rowFieldByRank(slot, 'slot', 1);
+          directProofFieldFor(slot, 'next', 1); // [nextTarget, proofNext]
+          bin(Op.OP_2DUP);
+          bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_TOALTSTACK);
+          bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP);
+          bin(Op.OP_LESSTHANOREQUAL);
+          bin(Op.OP_FROMALTSTACK); bin(Op.OP_BOOLOR);
+          bin(Op.OP_IF); bin(Op.OP_DROP); bin(Op.OP_ELSE); bin(Op.OP_NIP); bin(Op.OP_ENDIF);
+          bin(Op.OP_ELSE); directProofFieldFor(slot, 'next'); bin(Op.OP_ENDIF);
+          rowFieldByRank(slot, 'next', 0, 1);
+          bin(Op.OP_EQUALVERIFY);
+
+          directProofFieldFor(slot, 'slot'); rowFieldByRank(slot, 'slot', 0, 1); bin(Op.OP_EQUAL);
+          bin(Op.OP_IF);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+          bin(Op.OP_ELSE);
+          arg(rankName(slot)); bin(Op.OP_0); bin(Op.OP_NUMEQUAL);
+          bin(Op.OP_IF); bin(Op.OP_1);
+          bin(Op.OP_ELSE);
+          rowFieldByRank(slot, 'slot', -1); bin(Op.OP_BIN2NUM);
+          directProofFieldFor(slot, 'slot', 1); bin(Op.OP_BIN2NUM); bin(Op.OP_LESSTHAN);
+          bin(Op.OP_ENDIF);
+          bin(Op.OP_IF);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
+          bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY);
+          bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
+          proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE); bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
+          bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+          this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
+          this.emitVerifyCatBaseEqMaster(loc);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
+          directProofFieldFor(slot, 'slot', 1); rowFieldByRank(slot, 'slot', 0, 2); bin(Op.OP_CAT);
+          directProofFieldFor(slot, 'value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
+          bin(Op.OP_ELSE);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+          bin(Op.OP_ENDIF);
+          bin(Op.OP_ENDIF);
+        }
       } else {
       // Pack slot||plannedNext pairs while the main stack is clean, then keep the blob at the bottom of this
       // batch's altstack frame. Reverse pushes make OP_CAT materialize declaration order.
@@ -17256,7 +17342,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Exact collection-address output cardinality: every target is one node; each distinct nonnegative predOut
       // is one recreated non-target predecessor. Read-only accesses to this collection are preserved separately.
       const expected = `(__vmap_batch_expected_${batch.collection})`;
-      if (aliasWrite !== undefined && aliasOwner !== undefined) {
+      if (batch.linear) {
+        this.emit(encodeInt(BigInt(targets.length)), loc);
+      } else if (aliasWrite !== undefined && aliasOwner !== undefined) {
         arg(`__internal__vmapBatchSlot_${aliasWrite}`); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1);
         bin(Op.OP_EQUAL); bin(Op.OP_IF); this.emit(encodeInt(BigInt(targets.length - 1)), loc);
         bin(Op.OP_ELSE); this.emit(encodeInt(BigInt(targets.length)), loc); bin(Op.OP_ENDIF);
@@ -17272,7 +17360,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const slot = targets[i];
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP);
         bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL); // [pout, include]
-        for (let j = 0; j < i; j++) {
+        for (let j = 0; !batch.linear && j < i; j++) {
           bin(Op.OP_OVER);
           arg(`__internal__vmapBatchPredOut_${targets[j]}`, 3);
           bin(Op.OP_EQUAL); bin(Op.OP_NOT); bin(Op.OP_BOOLAND);
@@ -20493,22 +20581,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     collectionHash: Uint8Array, slotName: string, rootName: string, locationData: SingleLocationData,
   ): void {
     const catPlaceholder = Uint8Array.from({ length: 32 }, (_v, i) => i);
-    const slotPlaceholder = Uint8Array.from({ length: 32 }, (_v, i) => 0x40 + i);
-    const rootPlaceholder = Uint8Array.from({ length: 32 }, (_v, i) => 0x80 + i);
-    const covenant = scriptToBytecode(buildValueChunkCovenantScript(
-      catPlaceholder, collectionHash, slotPlaceholder, rootPlaceholder,
-    ));
+    const domainPlaceholder = Uint8Array.from({ length: 32 }, (_v, i) => 0x40 + i);
+    const covenant = scriptToBytecode(buildEntryNftCovenantScript(catPlaceholder, domainPlaceholder));
     const markers = [
       { kind: 'cat' as const, bytes: Uint8Array.from([0x20, ...catPlaceholder.slice().reverse()]) },
-      { kind: 'slot' as const, bytes: Uint8Array.from([0x20, ...slotPlaceholder]) },
-      { kind: 'root' as const, bytes: Uint8Array.from([0x20, ...rootPlaceholder]) },
+      { kind: 'domain' as const, bytes: Uint8Array.from([0x20, ...domainPlaceholder]) },
     ];
     const matches = (at: number, needle: Uint8Array): boolean =>
       at + needle.length <= covenant.length && needle.every((b, i) => covenant[at + i] === b);
-    const pieces: Array<{ segment: Uint8Array; token?: 'cat' | 'slot' | 'root' }> = [];
+    const pieces: Array<{ segment: Uint8Array; token?: 'cat' | 'domain' }> = [];
     let cursor = 0;
     while (cursor < covenant.length) {
-      let found = -1; let token: 'cat' | 'slot' | 'root' | undefined; let width = 0;
+      let found = -1; let token: 'cat' | 'domain' | undefined; let width = 0;
       for (let at = cursor; at < covenant.length && found < 0; at++) {
         for (const marker of markers) if (matches(at, marker.bytes)) {
           found = at; token = marker.kind; width = marker.bytes.length; break;
@@ -20518,24 +20602,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       pieces.push({ segment: covenant.slice(cursor, found), token });
       cursor = found + width;
     }
+    const markerCount = (kind: 'cat' | 'domain'): number =>
+      pieces.reduce((count, piece) => count + (piece.token === kind ? 1 : 0), 0);
+    if (markerCount('cat') !== 1 || markerCount('domain') !== 1) {
+      throw new Error('Internal error: value-chunk covenant placeholders must each occur exactly once.');
+    }
 
-    // Keep the encoded category below the growing covenant body; inject slot/root from their tracked values.
+    // Encode the category, then compute the tagged 256-bit chunk domain from the tracked slot/root.
     this.emit(hexToBin('20'), locationData); this.emit(Op.OP_SWAP, locationData); this.emit(Op.OP_CAT, locationData);
+    this.emit(Uint8Array.from([...VALUE_CHUNK_DOMAIN_TAG, ...collectionHash]), locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex(slotName) + 1)), locationData); this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex(rootName) + 1)), locationData); this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_CAT, locationData); this.emit(Op.OP_HASH256, locationData);
+    this.emit(hexToBin('20'), locationData); this.emit(Op.OP_SWAP, locationData); this.emit(Op.OP_CAT, locationData);
+
+    // Keep encoded category/domain below the growing covenant body and inject each exactly once.
     this.emit(pieces[0].segment, locationData);
     for (let pieceIndex = 0; pieceIndex < pieces.length; pieceIndex++) {
       const piece = pieces[pieceIndex];
       if (!piece.token) continue;
-      if (piece.token === 'cat') this.emit(Op.OP_OVER, locationData);
-      else {
-        const name = piece.token === 'slot' ? slotName : rootName;
-        this.emit(encodeInt(BigInt(this.getStackIndex(name) + 1)), locationData); this.emit(Op.OP_PICK, locationData);
-        this.emit(hexToBin('20'), locationData); this.emit(Op.OP_SWAP, locationData); this.emit(Op.OP_CAT, locationData);
-      }
+      this.emit(piece.token === 'cat' ? encodeInt(2n) : Op.OP_OVER, locationData);
+      if (piece.token === 'cat') this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_CAT, locationData);
       const following = pieces[pieceIndex + 1]?.segment ?? new Uint8Array();
       if (following.length > 0) { this.emit(following, locationData); this.emit(Op.OP_CAT, locationData); }
     }
-    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_NIP, locationData); this.emit(Op.OP_NIP, locationData);
     this.emit(Op.OP_HASH256, locationData);
     this.emit(P2SH32_LBC_PREFIX, locationData); this.emit(Op.OP_SWAP, locationData); this.emit(Op.OP_CAT, locationData);
     this.emit(P2SH32_LBC_SUFFIX, locationData); this.emit(Op.OP_CAT, locationData);

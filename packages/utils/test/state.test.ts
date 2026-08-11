@@ -9,6 +9,8 @@ import {
   buildInitialStateCommitments,
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
+  buildValueChunkCovenantScript,
+  computeValueChunkDomain,
   buildSatoshiContainerCovenantScript,
   DYNAMIC_CHUNK_SIZE,
   chunkCountForLength,
@@ -397,9 +399,13 @@ describe('buildEntryNftCovenantScript (dual-path)', () => {
 
   it('should contain OP_IF for dual-path structure', () => {
     const script = buildEntryNftCovenantScript(categoryId, collectionHash);
-    expect(script[0]).toBe(Op.OP_IF);
+    expect(script.indexOf(Op.OP_IF)).toBeGreaterThan(0);
     expect(script).toContain(Op.OP_ELSE);
     expect(script).toContain(Op.OP_ENDIF);
+  });
+
+  it('should use the factored 104-byte category-pinned form', () => {
+    expect(scriptToBytecode(buildEntryNftCovenantScript(categoryId, collectionHash))).toHaveLength(104);
   });
 
   it('should contain self-preservation in read-only path but not in write path', () => {
@@ -436,12 +442,37 @@ describe('buildEntryNftCovenantScript (dual-path)', () => {
 
   it('should not enforce satoshi preservation in write path', () => {
     const script = buildEntryNftCovenantScript(categoryId, collectionHash);
-    const ifIdx = 0; // OP_IF is at index 0
+    const ifIdx = script.indexOf(Op.OP_IF);
     const elseIdx = script.indexOf(Op.OP_ELSE);
     const writePath = script.slice(ifIdx + 1, elseIdx);
     // Write path should NOT include satoshi preservation opcodes
     expect(writePath).not.toContain(Op.OP_UTXOVALUE);
     expect(writePath).not.toContain(Op.OP_OUTPUTVALUE);
+  });
+});
+
+describe('buildValueChunkCovenantScript (digested domain)', () => {
+  const categoryId = new Uint8Array(32).fill(0xab);
+  const collectionHash = new Uint8Array(20).fill(0xcd);
+  const slot = new Uint8Array(32).fill(0x11);
+  const root = new Uint8Array(32).fill(0x22);
+
+  it('commits to the tagged collection/slot/root tuple in 116 bytes', () => {
+    const domain = computeValueChunkDomain(collectionHash, slot, root);
+    const script = buildValueChunkCovenantScript(categoryId, collectionHash, slot, root);
+    expect(scriptToBytecode(script)).toHaveLength(116);
+    expect(script.some((item) => item instanceof Uint8Array && item.length === 32
+      && item.every((byte, index) => byte === domain[index]))).toBe(true);
+  });
+
+  it('domain-separates every dynamic identity component', () => {
+    const baseline = computeValueChunkDomain(collectionHash, slot, root);
+    const changedCollection = collectionHash.slice(); changedCollection[0] ^= 1;
+    const changedSlot = slot.slice(); changedSlot[0] ^= 1;
+    const changedRoot = root.slice(); changedRoot[0] ^= 1;
+    expect(computeValueChunkDomain(changedCollection, slot, root)).not.toEqual(baseline);
+    expect(computeValueChunkDomain(collectionHash, changedSlot, root)).not.toEqual(baseline);
+    expect(computeValueChunkDomain(collectionHash, slot, changedRoot)).not.toEqual(baseline);
   });
 });
 

@@ -2178,7 +2178,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         // and loop-owned trailing region share one collection output count, while the scalar path composes those
         // regions correctly.
         const loopWrittenCollections = new Set(ordered.filter((info) => info.inLoop).map((info) => info.collection));
-        const ownsCollectionTopology = node.modifiers.includes(FunctionModifier.DELEGATE)
+        // A lone delegate write remains scalar because the proxy owns its collection topology. Multiple fixed
+        // writes cannot each consume the same predecessor entry, however, so the implementation must authenticate
+        // their shared transition as one batch (notably upgradeable initializers with literal-key inserts).
+        const ownsCollectionTopology = (node.modifiers.includes(FunctionModifier.DELEGATE)
+          && fixedSortedWriteCount <= 1)
           || node.name.startsWith('__message_bus_') || node.messageBusRoute;
         node.sortedBatchInfo = ownsCollectionTopology ? undefined : [...batchByCollection]
           .filter(([collection]) => !loopWrittenCollections.has(collection)

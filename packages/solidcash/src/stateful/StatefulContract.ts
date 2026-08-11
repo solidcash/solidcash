@@ -678,10 +678,10 @@ function extractRouteChunkPin(
   for (let i = trace.length - 1; i >= 0; i--) {
     const state = trace[i];
     if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTBYTECODE || state.stack.length === 0) continue;
-    if (isChunkShaped(state.instructions)) continue;
+    const activeFrameIsChunkShaped = isChunkShaped(state.instructions);
     const callerIsChunkShaped = trace.slice(Math.max(0, i - 96), i).some((candidate) =>
       candidate.instructions !== state.instructions && isChunkShaped(candidate.instructions));
-    if (!callerIsChunkShaped) continue;
+    if (!activeFrameIsChunkShaped && !callerIsChunkShaped) continue;
     const equalStep = trace.slice(i + 1, Math.min(trace.length, i + 12)).find((candidate) =>
       candidate.instructions === state.instructions
       && candidate.instructions[candidate.ip]?.opcode === Op.OP_EQUALVERIFY
@@ -1285,9 +1285,11 @@ function extractVerifiedValuesFromTrace(
   targetOpcode: number,
   outputIndexRange?: { min: number; max: number },
   firstWriteWins = false,
+  expectedOperandOnTop = false,
+  scanFullTrace = false,
 ): Uint8Array[] {
   const p2shStart = findRedeemScriptStart(fullTrace);
-  const lockingScriptTrace = p2shStart >= 0 ? fullTrace.slice(p2shStart) : fullTrace;
+  const lockingScriptTrace = scanFullTrace || p2shStart < 0 ? fullTrace : fullTrace.slice(p2shStart);
 
   // Use a Map keyed by output index for "last write wins" semantics.
   // If a contract loop overwrites transfer parameters for the same output index,
@@ -1296,6 +1298,8 @@ function extractVerifiedValuesFromTrace(
   const valuesNoIndex: Uint8Array[] = [];
   let sawTarget = false;
   let targetOutputIndex = -1;
+  let targetStep = -1;
+  let observedActual: Uint8Array | undefined;
 
   for (let i = 0; i < lockingScriptTrace.length; i++) {
     const step = lockingScriptTrace[i];
@@ -1304,8 +1308,17 @@ function extractVerifiedValuesFromTrace(
     // Skip instructions inside a not-taken conditional branch (see extractCommitmentsFromTrace).
     if (step.controlStack.some((c) => c === false)) continue;
 
+    // The state following an introspection opcode exposes its result on top. Output covenants often validate
+    // token category/commitment before comparing the already-read locking bytecode, so retain that actual value
+    // across the short validation sequence and identify its opposite EQUALVERIFY operand below.
+    if (sawTarget && observedActual === undefined && i === targetStep + 1 && step.stack.length > 0) {
+      observedActual = Uint8Array.from(step.stack[step.stack.length - 1]);
+    }
+
     if (instruction.opcode === targetOpcode) {
       sawTarget = true;
+      targetStep = i;
+      observedActual = undefined;
       // Capture the output index from the stack top before the opcode executes.
       // For OP_OUTPUTBYTECODE/OP_OUTPUTVALUE/OP_OUTPUTTOKENAMOUNT, stack[-1] is the output index.
       if (step.stack.length >= 1) {
@@ -1314,8 +1327,10 @@ function extractVerifiedValuesFromTrace(
       continue;
     }
 
-    // Reset flag if any non-EQUALVERIFY opcode appears between target and verification.
-    if (sawTarget && instruction.opcode !== Op.OP_EQUALVERIFY) {
+    // Other verified introspection values are emitted adjacently. Locking-bytecode checks may be separated from
+    // their equality by the token checks for the same output, but bound the search to the local covenant block.
+    if (sawTarget && instruction.opcode !== Op.OP_EQUALVERIFY
+      && (targetOpcode !== Op.OP_OUTPUTBYTECODE || i - targetStep > 16)) {
       sawTarget = false;
       continue;
     }
@@ -1330,7 +1345,14 @@ function extractVerifiedValuesFromTrace(
       }
       const stack = step.stack;
       if (stack.length >= 2) {
-        const value = Uint8Array.from(stack[stack.length - 2]);
+        const below = Uint8Array.from(stack[stack.length - 2]);
+        const top = Uint8Array.from(stack[stack.length - 1]);
+        const actualHex = observedActual === undefined ? undefined : binToHex(observedActual);
+        const value = targetOpcode === Op.OP_OUTPUTBYTECODE && actualHex !== undefined
+          ? binToHex(below) === actualHex ? top
+            : binToHex(top) === actualHex ? below
+              : Uint8Array.from(stack[stack.length - (expectedOperandOnTop ? 1 : 2)])
+          : Uint8Array.from(stack[stack.length - (expectedOperandOnTop ? 1 : 2)]);
         if (targetOutputIndex >= 0) {
           // Most loop-derived values use "last write wins". Some disjoint covenant families intentionally
           // inspect the same speculative output index while their regions are converging; their caller can retain
@@ -8411,21 +8433,65 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               && output.to instanceof Uint8Array && binToHex(output.to) === chunkBytecode);
             const firstCommitments = stb.getChunkRawCommitments(chunkVars[0].name);
             const knownOrdinal = firstCommitments.findIndex((commitment) => commitment !== '00');
+            // With no authenticated chunk yet, the locking bytecode/category pair is not a sufficient anchor:
+            // a delegate suffix can use the same covenant and category. Falling back to its last match aliases
+            // that suffix onto the chunk window. The builder's layout is authoritative until a commitment pins it.
+            if (knownOrdinal < 0) return stb.getChunkOutputBase();
             const anchored = knownOrdinal < 0 ? undefined : matches.find(({ output }) =>
               output.token?.nft?.commitment === firstCommitments[knownOrdinal]);
             if (anchored) return anchored.index - knownOrdinal;
-            const last = matches.at(-1)?.index;
-            return last === undefined
-              ? stb.getChunkOutputBase() : last - Math.max(0, firstCommitments.length - 1);
+            return stb.getChunkOutputBase();
           };
           if (chunkVars.length > 0 && derivedAState) {
             let chunkOffset = getPhysicalChunkOutputBase();
             for (const dv of chunkVars) {
-              const len = Number((derivedAState[`${dv.name}$len`] as bigint) ?? 0n);
-              const nNew = Math.ceil(len / DYNAMIC_CHUNK_SIZE);
               const existing = stb.getChunkRawCommitments(dv.name);
+              const derivedLength = derivedAState[`${dv.name}$len`];
+              // A composed delegate variable may not exist in the caller's decoded A-state. Missing is not zero:
+              // retain the speculative region so the delegate covenant can reveal its chunk commitment by trace.
+              const lengthIsNumeric = typeof derivedLength === 'bigint' || typeof derivedLength === 'number';
+              const hasDerivedLength = lengthIsNumeric
+                && (dv.delegate !== true || Number(derivedLength) > 0 || existing.length === 0);
+              const len = hasDerivedLength ? Number(derivedLength) : 0;
+              const decodedCount = hasDerivedLength ? Math.ceil(len / DYNAMIC_CHUNK_SIZE) : existing.length;
+              const nNew = dv.delegateSuffix === true ? Math.max(decodedCount, existing.length) : decodedCount;
+              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_DYNAMIC_MIN === '1') {
+                console.error('dynamic-min', {
+                  iter, name: dv.name, delegate: dv.delegate, derivedLength, existing,
+                  hasDerivedLength, nNew, chunkOffset, computedBase: stb.getChunkOutputBase(),
+                });
+              }
               if (existing.length !== nNew) {
                 stb.setChunkRawCommitments(dv.name, Array.from({ length: nNew }, (_, i) => existing[i] ?? '00'));
+              }
+              const derivedDynamicValue = derivedAState[dv.name];
+              let derivedDynamicBytes = typeof derivedDynamicValue === 'string'
+                ? utf8ToBin(derivedDynamicValue)
+                : derivedDynamicValue instanceof Uint8Array ? derivedDynamicValue : undefined;
+              // Dynamic writes keep the newly assembled value on the VM stack while pinning its chunk outputs.
+              // The data-NFT state exposes its exact byte length even when it cannot decode the value itself, so
+              // recover the length-matched stack item and build every canonical chunk without guessing outputs.
+              if (derivedDynamicBytes === undefined && len > 0) {
+                for (let traceIndex = fullTrace2.length - 1; traceIndex >= 0 && !derivedDynamicBytes; traceIndex--) {
+                  const stack = fullTrace2[traceIndex].stack;
+                  for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex--) {
+                    if (stack[stackIndex].length === len) {
+                      derivedDynamicBytes = stack[stackIndex];
+                      break;
+                    }
+                  }
+                }
+              }
+              if (derivedDynamicBytes !== undefined) {
+                const exact = splitValueIntoChunks(derivedDynamicBytes).map((chunk, index) => (
+                  buildChunkCommitment(
+                    index, chunk, this.inner.provider.consensusLimits?.maximumNftCommitmentBytes,
+                  )
+                ));
+                stb.setChunkRawCommitments(dv.name, dv.delegateSuffix === true && existing.length > exact.length
+                  ? [...exact, ...existing.slice(exact.length)] : exact);
+                commitmentProgress += exact.filter((commitment, index) => commitment !== existing[index]).length;
               }
               if (nNew > 0) {
                 // X10: key each observation by ITS output index (chunk i lives at chunkOffset + i), not
@@ -8435,6 +8501,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 // Matches the loop-entry and value-chunk derivations, which are already index-keyed.
                 const range = { min: chunkOffset, max: chunkOffset + nNew };
                 const chunkMap = extractCommitmentMapFromTrace(fullTrace2, range, true);
+                if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                  ?.SOLIDC_DEBUG_DYNAMIC_MIN === '1' && iter < 5) {
+                  console.error('dynamic-min-commit-map', { iter, name: dv.name, range, entries: [...chunkMap.entries()] });
+                }
                 if (chunkMap.size > 0) {
                   const derivedChunks: string[] = [];
                   for (const [outIdx, commit] of chunkMap) derivedChunks[outIdx - chunkOffset] = commit;
@@ -8444,7 +8514,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   commitmentProgress += chunkMap.size;
                 }
               }
-              chunkOffset += nNew;
+              if (dv.delegateSuffix === true) {
+                const current = stb.getChunkRawCommitments(dv.name);
+                const nextIndex = chunkOffset + current.length;
+                const nextBytecodes = extractVerifiedValuesFromTrace(
+                  fullTrace2, Op.OP_OUTPUTBYTECODE, { min: nextIndex, max: nextIndex + 1 }, true, true, true,
+                );
+                if (nextBytecodes.some((bytecode) => binToHex(bytecode) === binToHex(dv.lockingBytecode))) {
+                  stb.setChunkRawCommitments(dv.name, [...current, '00']);
+                  commitmentProgress += 1;
+                }
+              }
+              chunkOffset += stb.getChunkRawCommitments(dv.name).length;
             }
           } else if (chunkVars.length > 0) {
             // Delegate probes can reveal the exact expected chunk commitment before their rewritten data-NFT
@@ -8527,17 +8608,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const requiredCount = stb.getRequiredLoopEntryCount(lv.collection);
               const loopMax = requiredCount > 0
                 ? loopOffset + requiredCount
-                : isSortedValueMintColl ? loopOffset + 1 : loopOffset + LOOP_ENTRY_MAX_ITERATIONS;
+                : isSortedValueMintColl ? loopOffset + 1 : loopOffset + Math.max(1, existing.length);
               const range = { min: loopOffset, max: loopMax };
               // The compiler is authoritative for the precise collection covenant used by a synthesized
               // message-bus handler. Recover the bytecode from its tight OUTPUTBYTECODE equality before reading
               // commitments; proxy routes can graft a loop slot whose signature is not reconstructible from the
               // outer contract's state layout alone.
               const derivedBytecodes = extractVerifiedValuesFromTrace(
-                fullTrace2, Op.OP_OUTPUTBYTECODE, range, true,
+                fullTrace2, Op.OP_OUTPUTBYTECODE, range, true, true, delegatecallInputIndex !== undefined,
               );
               let loopBytecodeChanged = false;
-              if (derivedBytecodes.length > 0
+              if (lv.delegate !== true && derivedBytecodes.length > 0
                 && binToHex(derivedBytecodes[0]) !== binToHex(lv.lockingBytecode)) {
                 stb.setLoopEntryLockingBytecode(lv.collection, derivedBytecodes[0]);
                 commitmentProgress += 1;
@@ -8555,6 +8636,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const commitMap = extractCommitmentMapFromTrace(
                 fullTrace2, range, true,
               );
+              const isChunkableLoop = lv.chunkable === true;
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_CHUNK_SCAN === '1') {
                 console.error('loop-entry-derive-scan', {
@@ -8562,18 +8644,46 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   currentBytecode: binToHex(lv.lockingBytecode),
                   derivedBytecodes: derivedBytecodes.map(binToHex),
                   observed: [...commitMap.entries()], traceError: fullTrace2.at(-1)?.error,
+                  ...(iter >= 60 && { traceTail: fullTrace2.slice(-16).map((state) => ({
+                    ip: state.ip,
+                    opcode: state.instructions[state.ip]?.opcode,
+                    error: state.error,
+                    ...(state.error && { instructionOpcodes: state.instructions.map((instruction) => instruction.opcode) }),
+                    stack: state.stack.slice(-20).map((item) => {
+                      const hex = binToHex(item);
+                      return `${item.length}:${hex.slice(0, 96)}`;
+                    }),
+                  })) }),
                 });
               }
               const derived: string[] = [];
-              for (const [outIdx, commit] of commitMap) derived[outIdx - loopOffset] = commit;
-              const derivedCount = derived.filter((c) => c !== undefined).length;
+              for (const [outIdx, commit] of commitMap) {
+                if (isChunkableLoop) {
+                  try {
+                    // Chunkable mapping loops can emit the same canonical chunk more than once (for example while
+                    // serializing the fields of one pushed struct). The runtime row ordinal, not the commitment's
+                    // embedded chunk index, determines the output position. Parsing remains a structural guard
+                    // against neighbouring covenant observations being mistaken for loop rows.
+                    parseChunkCommitment(commit);
+                    derived[outIdx - loopOffset] = commit;
+                  } catch {
+                    // A neighbouring covenant observation is not a canonical value chunk; do not let it grow
+                    // this chunk-indexed region under a physical ordinal.
+                  }
+                } else {
+                  derived[outIdx - loopOffset] = commit;
+                }
+              }
+              const derivedIndices = derived.map((commitment, index) => ({ commitment, index }))
+                .filter((item): item is { commitment: string; index: number } => item.commitment !== undefined);
+              const derivedCount = derivedIndices.length;
               // A newly-learned last commitment (its placeholder was still '00') means more may follow; keep probing
               // with one extra placeholder. If the last commitment merely re-confirms a known one, the loop ran to
               // completion (all N derived) - drop the extra placeholder so the count pin sees exactly N outputs.
               // A sorted VALUE upsert mints a STATIC number of trailing NEW nodes (1 on insert, 0 on update), not a
               // growing loop, so never add the speculative extra placeholder (it would create a phantom output that
               // shifts the fixed entry-slot P' and oscillates the derivation).
-              const isSortedValueMint = !!scoll?.sorted;
+              const isSortedValueMint = !!scoll?.sorted && !isChunkableLoop;
               // P5b computed INSERT: the value-chunk pin runs BEFORE the NEW-node check in the covenant, so until the
               // chunks converge the NEW OTC never runs and derivedCount is 0. Do NOT drop the seeded loop entry to 0
               // (that would shift vcBase and misalign the chunk derivation) - keep the count of 1 until NEW derives.
@@ -8583,17 +8693,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 loopOffset += existing.length;
                 continue;
               }
-              const stillLearning = !isSortedValueMint && derivedCount > 0
-                && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
-              const next: string[] = [];
-              const acceptedCount = requiredCount > 0 ? Math.min(derivedCount, requiredCount) : derivedCount;
-              for (let i = 0; i < acceptedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
-              if (stillLearning) next.push('00');
+              const highestDerivedIndex = derivedIndices.at(-1)?.index ?? -1;
+              const highestChanged = highestDerivedIndex >= 0
+                && derived[highestDerivedIndex] !== (existing[highestDerivedIndex] ?? '00');
+              const stillLearning = !isSortedValueMint && highestChanged;
+              // Observations can be sparse: once output N is correct, execution may halt at N+1 without
+              // re-verifying earlier outputs in the trace phase we scan. Preserve known lower ordinals and write
+              // each observation at its physical ordinal rather than compacting index N onto index 0.
+              const next: string[] = derivedCount === 0 ? [...existing] : Array.from(
+                { length: highestDerivedIndex + 1 },
+                (_, index) => derived[index] ?? existing[index] ?? '00',
+              );
+              if (stillLearning && (requiredCount === 0 || next.length < requiredCount)) next.push('00');
+              if (!stillLearning && derivedCount > 0 && next.at(-1) === '00') next.pop();
+              if (requiredCount > 0 && next.length > requiredCount) next.length = requiredCount;
               while (next.length < requiredCount) next.push(existing[next.length] ?? '00');
               stb.setLoopEntryCommitments(lv.collection, next);
               commitmentProgress += derivedCount;
               latestLoopEntryCommits = latestLoopEntryCommits.concat(next);
-              loopOffset += derivedCount;
+              loopOffset += next.length;
             }
           }
 
@@ -8663,6 +8781,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const commitMap = extractCommitmentMapFromTrace(
                 fullTrace2, { min: chunkOffset, max: chunkOffset + existing.length }, true,
               );
+              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_JOBS === '1' && dv.name === 'jobs') {
+                const terminal = fullTrace2.at(-1);
+                console.error('jobs-chunk-probe', {
+                  iter, chunkOffset, existing, observed: [...commitMap.entries()],
+                  terminal: terminal && {
+                    ip: terminal.ip, opcode: terminal.instructions[terminal.ip]?.opcode, error: terminal.error,
+                    stack: terminal.stack.slice(-6).map((item) => binToHex(item)),
+                  },
+                  traceTail: fullTrace2.slice(-12).map((state) => ({
+                    ip: state.ip,
+                    opcode: state.instructions[state.ip]?.opcode,
+                    error: state.error,
+                    stack: state.stack.slice(-8).map((item) => binToHex(item)),
+                  })),
+                  loops: stb.getLoopEntryVars().map((value) => ({
+                    collection: value.collection,
+                    categoryId: value.categoryId,
+                    commitments: stb.getLoopEntryCommitments(value.collection),
+                  })),
+                });
+              }
               if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
                 (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
                 console.error('root-dynamic-chunk-scan', {
@@ -8945,6 +9085,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 console.error('cleaned-dynamic-chunk-scan', {
                   iter, variable: dv.name, physicalChunkIndex, chunkOffset, existing,
                   observed: [...commitMap.entries()], traceError: cleanedTrace.at(-1)?.error,
+                  traceTail: cleanedTrace.slice(-24).map((state) => ({
+                    ip: state.ip,
+                    opcode: state.instructions[state.ip]?.opcode,
+                    error: state.error,
+                    ...(state.error && { instructionOpcodes: state.instructions.map((instruction) => instruction.opcode) }),
+                    stack: state.stack.slice(-10).map((item) => {
+                      const hex = binToHex(item);
+                      return `${item.length}:${hex.slice(0, 96)}`;
+                    }),
+                  })),
                   matchingOutputs: cleanedProbe.outputs.map((output, index) => ({ output, index }))
                     .filter(({ output }) => output.to instanceof Uint8Array
                       && binToHex(output.to) === binToHex(dv.lockingBytecode))
@@ -14309,6 +14459,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // entry covenant address. Only written vars (dynamicWrites) get old chunks consumed + new ones created;
     // read-only or untouched vars must be left alone, else their chunks would be wrongly destroyed.
     const dynamicWrites = [...(abiFunction?.dynamicWrites ?? [])];
+    const delegateDynamicWrites = new Set<string>();
     for (const g of lowLevelCallUtxoGroups) {
       if (g.callMode !== 'delegatecall') continue;
       const gFn = (g.externalContract.inner.artifact.abi as readonly {
@@ -14316,18 +14467,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         dynamicWrites?: readonly string[];
       }[]).find((f) => f.name === g.functionName);
       for (const name of gFn?.dynamicWrites ?? []) {
+        delegateDynamicWrites.add(name);
         if (!dynamicWrites.includes(name)) dynamicWrites.push(name);
       }
     }
     const dynamicVarInfos = (stateLayout.variables ?? [])
       .filter((v) => v.dynamic && dynamicWrites.includes(v.name));
-    const dynamicChunkVars = dynamicVarInfos.map((v) => ({
+    const dynamicChunkVars: Array<{
+      name: string; type: string; lockingBytecode: Uint8Array; delegate?: boolean; delegateSuffix?: boolean;
+    }> = dynamicVarInfos.map((v) => ({
       name: v.name,
       type: v.type,
       lockingBytecode: scriptToLockingBytecode(
         buildEntryNftCovenantScript(hexToBin(this.categoryId), computeCollectionHash(dynamicChunkSignature(v.name, v.type))),
         this.inner.addressType,
       ),
+      ...(delegateDynamicWrites.has(v.name) && { delegate: true }),
     }));
     // Old chunk UTXOs to consume (destroy) on this write - fetched from each dynamic var's chunk address,
     // ordered by chunkIndex. The order matters for element ops (read-modify-write): the on-chain read loop
@@ -14403,9 +14558,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Delegate entry metadata is grafted from the implementation after the proxy ABI has been selected, so the
     // proxy's entryLoopWrites cannot advertise a scalar vmap INSERT. The insertion plan itself is authoritative.
     for (const ins of sortedInserts) addLoopCollection(ins.collection);
-    const loopEntryVars = orderedLoopCollections.map((name) => ({
+    const localStateCollections = new Set(this.inner.stateLayout?.collections?.map((collection) => collection.name));
+    const loopEntryVars = orderedLoopCollections.map((name) => {
+      const collection = stateLayout.collections?.find((candidate) => candidate.name === name);
+      const signature = delegateRouteAbi?.entryLoopWriteSignatures?.[name]
+        ?? entryAbiFunction?.entryLoopWriteSignatures?.[name]
+        ?? collection?.signature;
+      return {
       collection: name,
-      ...(delegateRouteAbi?.entryLoopWrites?.includes(name) && { categoryId: delegateStateCategoryId }),
+      chunkable: signature?.includes('[])') === true,
+      ...(delegateRouteAbi?.entryLoopWrites?.includes(name) && {
+        categoryId: localStateCollections.has(name) ? this.categoryId : delegateStateCategoryId,
+        delegate: true,
+      }),
       // Prefer the locking bytecode resolved from the effective (possibly delegate-grafted) state layout above.
       // `this.inner.artifact` is the proxy artifact and does not necessarily declare implementation collections;
       // resolving only by name against it hashes the bare name and mints NEW at a different covenant address.
@@ -14418,7 +14583,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           )
           : undefined)
         ?? getEntryNftLockingBytecode(this.inner, this.categoryId, name),
-    }));
+      };
+    });
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_LOOP_ENTRIES === '1') {
       console.error('loop-entry-plan', {
@@ -14435,6 +14601,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         orderedLoopCollections,
         loopEntryVars: loopEntryVars.map((v) => ({
           collection: v.collection,
+          chunkable: v.chunkable,
           lockingBytecode: binToHex(v.lockingBytecode),
         })),
       });
@@ -14445,6 +14612,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // so the proxy must reserve those output-only slots (funder input + event output), shifting the co-spent impl
     // UTXOs after them. __forward's own layout has none. Offsets align: proxy blockSize == impl master+dataNfts.
     const compilerRouteDelegateLayout = delegateRouteGroup?.compilerRoute?.abiFunction.blockLayout;
+    if (compilerRouteDelegateLayout) {
+      for (const variable of dynamicChunkVars) {
+        if (variable.delegate === true) variable.delegateSuffix = true;
+      }
+    }
     // The proxy is the physical route owner. Its implementation's compiler-owned route layout therefore replaces
     // the forwarder's tiny master/data/call layout, exactly like a nested proxy's preassembled `blockInputs`.
     let effectiveBlockLayout = compilerRouteDelegateLayout ?? abiFunction?.blockLayout;
@@ -14523,7 +14695,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && { delegateEntriesAfterLowLevel: true }),
       ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
         && compilerRouteDelegateLayout
-        && loopEntryVars.length === 0
+        && dynamicChunkVars.some((variable) => variable.delegate === true)
         && { delegateDynamicChunksAtSuffix: true }),
       // X56. Only when the co-spent implementation BOTH emits and returns: its event resolves to the index the
       // forwarder had reserved for the return channel, so the return channel has to follow the events.

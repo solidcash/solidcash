@@ -1243,6 +1243,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // User-defined function tracking (for OP_INVOKE)
   private userFunctionDefs: Map<string, FunctionDefinitionNode> = new Map();
   private isDefineSubTraversal: boolean = false;
+  /** Sorted collections owned by the enclosing compiler route rather than the current helper. */
+  private routePhysicalSortedBatchCollections: Set<string> = new Set();
   // True when the current function has a `return` nested inside a loop (the raw-return stack cleanup can't
   // handle that, so its internal-call subroutine keeps the event-blob return path - see visitReturn).
   private functionHasReturnInLoop: boolean = false;
@@ -1796,6 +1798,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.contractFunctionKeys = new Set(node.functions
       .filter((fn) => fn.functionId !== undefined)
       .map((fn) => `${fn.functionId}:${fn.name}`));
+    const routedFunction = node.functions.find((fn) => fn.messageBusRoute);
+    this.routePhysicalSortedBatchCollections = new Set(
+      (routedFunction?.sortedBatchInfo ?? []).map((batch) => batch.collection),
+    );
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
     // Register contract-level constants for inline substitution
@@ -3257,6 +3263,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
     subTraversal.contractParameters = this.contractParameters;
     subTraversal.contractFunctionKeys = this.contractFunctionKeys;
+    subTraversal.routePhysicalSortedBatchCollections = this.routePhysicalSortedBatchCollections;
     subTraversal.outlinedDynamicReadBasisByFunctionId = this.outlinedDynamicReadBasisByFunctionId;
     subTraversal.outlinedDynamicReadThreadedFunctionIds = this.outlinedDynamicReadThreadedFunctionIds;
     subTraversal.outlinedDynamicReadBasis = func.functionId === undefined
@@ -3544,6 +3551,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.contractUsesMsgValue = this.contractUsesMsgValue;
       subTraversal.contractParameters = this.contractParameters;
       subTraversal.contractFunctionKeys = this.contractFunctionKeys;
+      subTraversal.routePhysicalSortedBatchCollections = this.routePhysicalSortedBatchCollections;
 
       // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
       // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
@@ -4171,7 +4179,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // return, no return event) and would otherwise leave the declared params at the wrong stack offsets.
       // Do NOT mutate node.parameters: the entry-point define shares this node and needs the full list.
       for (const p of node.parameters) {
-        if (p.name === '__internal__returnOutputIdx') continue;
+        if (p.name === '__internal__returnOutputIdx' || p.name === '__internal__msgSenderCategory') continue;
         this.visit(p);
       }
       for (const param of this.constructorCaptures(node)) this.pushToStack(param.name, true);
@@ -4214,6 +4222,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isDefineSubTraversal && node.graphEmissionHandler && node.usesMsgSender) {
       this.pushToStack('__internal__handlerMsgSender', true);
     }
+    if (this.isDefineSubTraversal && !node.graphEmissionHandler && node.usesMsgSender) {
+      this.pushToStack('__internal__handlerMsgSender', true);
+    }
     if (this.isDefineSubTraversal && node.graphEmissionHandler && this.contractUsesMsgSig) {
       this.pushToStack('__internal__handlerMsgSig', true);
     }
@@ -4234,7 +4245,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // the caller actually pushes, and every subsequent read is off by one (observed as an OP_SPLIT on an
         // empty item). The caller pushes each context value exactly once, so the frame must too.
         if (!node.graphEmissionHandler) {
-          if (node.usesMsgSender) this.pushToStack('__internal__handlerMsgSender', true);
           if (this.contractUsesMsgSig) this.pushToStack('__internal__handlerMsgSig', true);
           if (this.contractUsesMsgData) this.pushToStack('__internal__handlerMsgData', true);
         }
@@ -4923,7 +4933,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   enforceFunctionParameterTypes(node: FunctionDefinitionNode): void {
-    node.parameters.forEach((parameter) => this.enforceFunctionParameterType(parameter));
+    node.parameters.forEach((parameter) => {
+      if (this.isDefineSubTraversal && parameter.name === '__internal__msgSenderCategory') return;
+      this.enforceFunctionParameterType(parameter);
+    });
   }
 
   enforceFunctionParameterType(node: ParameterNode): void {
@@ -15025,21 +15038,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * is the proven absent-witness fragment (SortedMappingRead.test.ts) shared by the bool and value-typed reads.
    */
   private emitSortedAbsenceBracket(loc: SingleLocationData): void {
-    const id = GenerateTargetTraversalWithLocation.SORTED_ABSENCE_SUBROUTINE_ID;
-    this.bumpSubroutineUse(id);
-    if (this.subroutineDefined.get(id)) {
-      // Canonical helper frame is [H(k), slot, next]. The caller retains its originals for the present/absent
-      // selection immediately following this proof.
-      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(id), loc); this.emit(Op.OP_INVOKE, loc);
-      return;
-    }
+    // Keep this proof on the caller's original [H(k), slot, next] frame. Copying the frame across an outlined
+    // helper boundary is unsafe in route handlers: shared-span lowering can capture the handler context while
+    // the helper's progressive OP_PICK sequence assumes an ordinary frame, replacing `next` with H(k).
     this.emitSortedAbsenceBracketInline(loc);
   }
 
   private emitSortedAbsenceBracketInline(loc: SingleLocationData, consumeFrame = false): void {
+    const proofStartIp = this.getMostRecentInstructionPointer() + 1;
     this.emit(Op.OP_OVER, loc); this.emit(Op.OP_BIN2NUM, loc);
     this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
     this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);           // slot < H(k)
@@ -15051,6 +15057,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < nextKey
     this.emit(Op.OP_ENDIF, loc);
     if (consumeFrame) { this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); }
+    const proofEndIp = this.getMostRecentInstructionPointer();
+    for (let ip = proofStartIp; ip <= proofEndIp; ip += 1) {
+      this.requires.push({ ip, line: loc.location.start.line });
+    }
   }
 
   /**
@@ -15063,15 +15073,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitSortedKeyHash(
     node: MappingAccessNode | MappingAssignNode | MappingDeleteNode, slotIndex: number, loc: SingleLocationData,
   ): void {
+    const physicalSlotIndex = this.currentFunction.messageBusPhysicalEntrySlots?.[slotIndex] ?? slotIndex;
+    const localEntrySlot = this.entrySlots[slotIndex];
     const numKeys = node.keys.length;
     // Accumulate H(k0)++H(k1)++... on the stack. The running accumulator is kept TRACKED as '(__skh_acc)' during
     // the loop so a PARAM key's OP_PICK offset AND an EXPRESSION key's visit (which uses getStackIndex) both count
     // past it correctly - that is what lets a nested `m[a][b]` use a computed/expression key (msg.sender, xs[i]),
     // not just bare params. The final masked hash is left UNTRACKED (the callers account for it manually / push it).
     for (let i = 0; i < numKeys; i++) {
-      const keySource = this.entrySlots[slotIndex].keySources?.[i];
+      const keySource = localEntrySlot.keySources?.[i];
       if (!keySource || keySource.kind === 'param') {
-        const keyParamName = keySource?.paramName ?? this.entrySlots[slotIndex].keyParams[i];
+        const keyParamName = keySource?.paramName ?? localEntrySlot.keyParams[i];
+        if (keyParamName === undefined && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ROUTE === '1') {
+          // eslint-disable-next-line no-console
+          console.error('sorted-key-missing-param', {
+            function: this.currentFunction.name, slotIndex, physicalSlotIndex, keyIndex: i,
+            nodeKeys: node.keys.map((key) => key instanceof IdentifierNode ? key.name : key.constructor.name),
+            localEntrySlot,
+          });
+        }
         // The accumulator is a TRACKED item for i>0, so getStackIndex already counts it - no manual +1.
         this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName))), loc);
         this.emit(Op.OP_PICK, loc);
@@ -15124,7 +15145,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       return node;
     }
-    const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
+    // Outlined delegate handlers can install a local slot table while retaining the source assignment's slot
+    // ordinal. The assignment's resolved collection, not a same-numbered caller slot, owns this covenant address.
+    const collectionHash = computeCollectionHash(`${collection.name}:${collection.type.toString()}`);
 
     // 1. H(k) (composite for nested m[a][b]) computed FIRST so it sits at the bottom of the working area, giving
     // the proven [Hk32, slot32, nextKey32] layout.
@@ -15167,8 +15190,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 4. value read: present (slot32 == Hk32) -> the value tail (bool/int BIN2NUM-normalized, bytesN verbatim);
     // absent (bracket proven) -> the type default. A bool set is just a mapping(K=>int-bit) here: true=0x01 present,
     // false = an entry whose value tail is empty, absent = default false. stack: [Hk32, slot32, nextKey32, value]
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);   // copy slot32 (depth2)
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc);   // copy Hk32 (depth4 after slot copy)
+    // Copy H first, then slot: both sit at depth 3 at their respective OP_PICK. Besides being easier to audit,
+    // this avoids sharing the entry-decoding span whose captured stack frame cannot represent these operands.
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);   // copy Hk32
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);   // copy slot32
     this.emit(Op.OP_EQUAL, loc);                                 // [Hk32, slot32, nextKey32, value, isPresent]
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); // -> [value | tail]
@@ -15791,7 +15816,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const pinsCollectionOutputCount = aliasOwner === undefined && runtimeAliasOwners.length === 0
       && !this.entrySlots[slotIndex].inLoop
       && !this.sortedInsertLoopActive && !this.sortedUpsertLoopActive
+      && !(this.currentFunction.sortedBatchInfo?.some((batch) => batch.collection === collection.name) ?? false)
+      && !this.routePhysicalSortedBatchCollections.has(collection.name)
       && otherCountsAreStatic;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ENTRY_OUTPUT === '1') {
+      console.error('sorted-output-count-context', {
+        collection: collection.name,
+        function: this.currentFunction.name,
+        slotIndex,
+        pinsCollectionOutputCount,
+        extraCollectionOutputs: extraCollectionOutputs.toString(),
+        sameCollectionOthers,
+        physicalSlots: this.currentFunction.messageBusPhysicalEntrySlots,
+      });
+    }
 
     // 3. entry address -> [v, Hk32, entryAddr]
     this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
@@ -17704,23 +17743,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** First entry slot index written by a runtime loop (inLoop) reachable in `node`, or -1. */
-  private findLoopEntryWriteSlot(node: Node): number {
-    let found = -1;
+  private findLoopEntryWrite(node: Node): MappingAssignNode | null {
+    let found: MappingAssignNode | null = null;
     // Resolved AST nodes contain back-references (for example a call's resolved
     // definition). Recursive functions consequently form a cyclic object graph.
     // This is a graph walk, not a syntax-only visitor, so guard every node rather
     // than relying on the tree shape of the parsed source.
     const seen = new WeakSet<Node>();
+    const semanticBackReferences = new Set([
+      'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+      'referencedContract', 'stateVariable', 'collection',
+    ]);
     const walk = (n: Node): void => {
-      if (found >= 0 || !n || seen.has(n)) return;
+      if (found || !n || seen.has(n)) return;
       seen.add(n);
       const idx = (n as unknown as { entrySlotIndex?: number }).entrySlotIndex;
-      if (typeof idx === 'number' && idx >= 0 && this.entrySlots?.[idx]?.inLoop) {
-        found = idx;
+      if (n instanceof MappingAssignNode && typeof idx === 'number' && idx >= 0
+        && (this.entrySlots[idx]?.inLoop || this.currentFunction.entryAccesses?.[idx]?.inLoop)) {
+        found = n;
         return;
       }
       for (const key of Object.keys(n)) {
-        if (key === 'location') continue;
+        if (semanticBackReferences.has(key)) continue;
         const v = (n as unknown as Record<string, unknown>)[key];
         if (v instanceof Node) walk(v);
         else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) walk(e);
@@ -17738,13 +17782,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitLoopEntryWriteSetup(block: Node, loc: SingleLocationData): boolean {
     if (this.entryLoopActive) return false;
-    const slot = this.findLoopEntryWriteSlot(block);
-    if (slot < 0) return false;
-    const collectionHash = computeCollectionHash(this.entrySlots[slot].collectionSignature);
+    const write = this.findLoopEntryWrite(block);
+    if (!write?.collection) return false;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_LOOP === '1') {
+      console.error('loop-entry-write-setup', {
+        function: this.currentFunction.name, collection: write.collection.name,
+        entrySlotIndex: write.entrySlotIndex,
+      });
+    }
+    // Outlined handlers can retain a stale resolved collection back-reference from their source clone. The
+    // function-level loop signature is rebuilt after lowering and is authoritative when this function has one
+    // runtime loop family (the only shape supported by the loop covenant).
+    const collectionName = write.name;
+    const collectionSignature = this.entrySlots.find((entry) => entry.collection === collectionName)?.collectionSignature
+      ?? `${collectionName}:${write.collection.type.toString()}`;
+    const collectionHash = computeCollectionHash(collectionSignature);
 
     // Record the collection so the SDK derives the N (key,value) pairs + builds N trailing entry outputs.
     const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
-    if (!loopWrites.includes(this.entrySlots[slot].collection)) loopWrites.push(this.entrySlots[slot].collection);
+    if (!loopWrites.includes(collectionName)) loopWrites.push(collectionName);
 
     // Entry NFT address = base(master category) wrapped in the collection's entry covenant.
     this.emitMasterInputIndex(loc);
@@ -20017,6 +20073,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * address `addrDepth` items below it; both operands are consumed, leaving the working area unchanged.
    */
   private emitVerifySortedOutputCountRaw(addrDepth: number, loc: SingleLocationData): void {
+    const scanStartIp = this.getMostRecentInstructionPointer() + 1;
     this.emit(encodeInt(0n), loc);            // running count
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);
     this.emit(Op.OP_1SUB, loc);               // descending output index
@@ -20044,6 +20101,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, loc);
     this.scopeDepth -= 1;
     this.emit(Op.OP_EQUALVERIFY, loc);        // actual == expected
+    // This helper deliberately operates on an untracked raw frame. Automatic shared-span outlining cannot infer
+    // that frame and has previously substituted an invoke-context item for the expected count in routed handlers.
+    // Anchor the complete scan at its call site, as with the C2 absence proof above.
+    const scanEndIp = this.getMostRecentInstructionPointer();
+    for (let ip = scanStartIp; ip <= scanEndIp; ip += 1) {
+      this.requires.push({ ip, line: loc.location.start.line });
+    }
   }
 
   /**

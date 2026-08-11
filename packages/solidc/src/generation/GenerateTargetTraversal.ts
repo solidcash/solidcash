@@ -3878,7 +3878,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     seen.add(node);
     if (node instanceof ReturnNode) return inLoop;
     const nowInLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
-    for (const key of Object.keys(node)) {
+    for (const key in node) {
       if (key === 'resolvedFunction' || key === 'definition' || key === 'collection') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       if (v instanceof Node) {
@@ -3895,7 +3895,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private hasConditionalOrLoop(node: Node): boolean {
     if (node instanceof BranchNode || node instanceof WhileNode || node instanceof DoWhileNode
       || node instanceof SwitchNode || node instanceof TryCatchNode) return true;
-    for (const key of Object.keys(node)) {
+    for (const key in node) {
       if (key === 'resolvedFunction' || key === 'definition' || key === 'collection') continue;
       const value = (node as unknown as Record<string, unknown>)[key];
       if (value instanceof Node) {

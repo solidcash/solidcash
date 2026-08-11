@@ -313,7 +313,7 @@ describe('NativeUsdt / structural: the split is what makes the contract deployab
   });
 });
 
-describe('NativeUsdt / genesis, supply and the FT boundary', () => {
+describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('NativeUsdt / genesis, supply and the FT boundary', () => {
   it('setBacking reads the premint from the container itself, not from an argument', async () => {
     const d = await deployAll();
     await d.as(d.signers.owner).call.setBacking(d.ftCategory).send();
@@ -360,45 +360,47 @@ describe('NativeUsdt / genesis, supply and the FT boundary', () => {
   });
 });
 
-describe('NativeUsdt / admin surface (scalar-state facet routes, working end-to-end)', () => {
-  it('pause and unpause round-trip through the facet', async () => {
-    const d = await deployAll();
-    await d.as(d.signers.owner).call.pause().send();
-    expect((await readState(d)).paused).toBe(true);
-    await d.fund(d.signers.owner);
-    await d.as(d.signers.owner).call.unpause().send();
-    expect((await readState(d)).paused).toBe(false);
-  });
+describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))(
+  'NativeUsdt / admin surface (scalar-state facet routes, working end-to-end)', () => {
+    it('pause and unpause round-trip through the facet', async () => {
+      const d = await deployAll();
+      await d.as(d.signers.owner).call.pause().send();
+      expect((await readState(d)).paused).toBe(true);
+      await d.fund(d.signers.owner);
+      await d.as(d.signers.owner).call.unpause().send();
+      expect((await readState(d)).paused).toBe(false);
+    });
 
-  it('pause is owner-only (msg.sender gate inside the facet)', async () => {
-    const d = await deployAll();
-    await expect(d.as(d.signers.bob).call.pause().send()).rejects.toThrow();
-  });
+    it('pause is owner-only (msg.sender gate inside the facet)', async () => {
+      const d = await deployAll();
+      await expect(d.as(d.signers.bob).call.pause().send()).rejects.toThrow();
+    });
 
-  it('transferOwnership moves the owner and locks the old owner out', async () => {
-    const d = await deployAll();
-    await d.as(d.signers.owner).call.transferOwnership(ADDR.bob()).send();
-    expect((await readState(d)).owner).toStrictEqual(ADDR.bob());
-    await d.fund(d.signers.owner);
-    await expect(d.as(d.signers.owner).call.pause().send()).rejects.toThrow();
-  });
+    it('transferOwnership moves the owner and locks the old owner out', async () => {
+      const d = await deployAll();
+      await d.as(d.signers.owner).call.transferOwnership(ADDR.bob()).send();
+      expect((await readState(d)).owner).toStrictEqual(ADDR.bob());
+      await d.fund(d.signers.owner);
+      await expect(d.as(d.signers.owner).call.pause().send()).rejects.toThrow();
+    });
 
-  it('setQuarantineBlocks adjusts the admission window and rejects a negative one', async () => {
-    const d = await deployAll();
-    await d.as(d.signers.owner).call.setQuarantineBlocks(7n).send();
-    expect((await readState(d)).quarantineBlocks).toBe(7n);
-    await d.fund(d.signers.owner);
-    await expect(d.as(d.signers.owner).call.setQuarantineBlocks(-1n).send()).rejects.toThrow();
-  });
+    it('setQuarantineBlocks adjusts the admission window and rejects a negative one', async () => {
+      const d = await deployAll();
+      await d.as(d.signers.owner).call.setQuarantineBlocks(7n).send();
+      expect((await readState(d)).quarantineBlocks).toBe(7n);
+      await d.fund(d.signers.owner);
+      await expect(d.as(d.signers.owner).call.setQuarantineBlocks(-1n).send()).rejects.toThrow();
+    });
 
-  it('deprecate sets the flag and records the successor address', async () => {
-    const d = await deployAll();
-    await d.as(d.signers.owner).call.deprecate(ADDR.bob()).send();
-    const st = await readState(d);
-    expect(st.deprecated).toBe(true);
-    expect(st.upgradedAddress).toStrictEqual(ADDR.bob());
-  });
-});
+    it('deprecate sets the flag and records the successor address', async () => {
+      const d = await deployAll();
+      await d.as(d.signers.owner).call.deprecate(ADDR.bob()).send();
+      const st = await readState(d);
+      expect(st.deprecated).toBe(true);
+      expect(st.upgradedAddress).toStrictEqual(ADDR.bob());
+    });
+  },
+);
 
 // =============================================================================
 // THE MAPPING SURFACE, unblocked.
@@ -424,7 +426,7 @@ describe('NativeUsdt / admin surface (scalar-state facet routes, working end-to-
 // pendingUnlockAt, and balances for a never-seen claimant) and neither fits in
 // the master's remaining 252 B. They are pinned below.
 // =============================================================================
-describe('NativeUsdt / the mapping surface', () => {
+describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('NativeUsdt / the mapping surface', () => {
   // Each account opens ITSELF once. Two platform rules force this: a first-touch INSERT
   // cannot settle through a delegate, and two ABSENT keys in one collection prove through
   // the SAME predecessor, which would co-spend one entry NFT twice. openSelf() is keyed on

@@ -161,7 +161,10 @@ async function ready(amount: bigint, txid: string): Promise<{ d: Deployed; coin:
 const spendBobs = (coin: Utxo): [Utxo, ReturnType<SignatureTemplate['unlockP2PKH']>] => (
   [coin, new SignatureTemplate(bobPriv).unlockP2PKH()]);
 
-describe('NativeUsdt / deposit delivery proof', () => {
+// This hand-linked proxy/facet fixture must pre-choose both circularly-dependent categories and therefore uses
+// categoryOverride. That creates synthetic chosen-category UTXOs and is deliberately mock-only; the split
+// contract's structural and live spendability coverage remains in NativeUsdt.test.ts/NativeUsdtInherited.test.ts.
+describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('NativeUsdt / deposit delivery proof', () => {
   it('admits a deposit that actually grows the reserve', async () => {
     const { d, coin } = await ready(5n * UNIT, 'ba'.repeat(32));
     const before = plainNumerics(await d.master.getState());

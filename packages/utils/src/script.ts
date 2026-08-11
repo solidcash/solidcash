@@ -321,7 +321,13 @@ const cashproofOptimisations = OptimisationsEquivFile
   // Parse all optimisations in .equiv file
   .map((equiv) => equiv.trim())
   .map((equiv) => equiv.split('<=>').map((part) => part.trim()))
-  .filter((equiv) => equiv.length === 2);
+  .filter((equiv) => equiv.length === 2)
+  .map(([pattern, replacement]) => ({
+    // Add word boundaries once at module load rather than rebuilding both this string and its RegExp for every
+    // rule, fixpoint round, function body, and compiler pass.
+    regex: new RegExp(pattern.replace(/(OP_\w+)/g, '$1(?=\\s|$)'), 'g'),
+    replacement,
+  }));
 
 export function optimiseBytecodeOld(script: Script, runs: number = 1000): Script {
   // Same conversion hoist as optimiseBytecode: the rounds rewrite ASM, so the Script only has to be rebuilt once.
@@ -340,40 +346,54 @@ export function optimiseBytecodeOld(script: Script, runs: number = 1000): Script
 }
 
 /** The rewritten ASM, or undefined when no optimisation matched. */
-function replaceOpsOld(originalAsm: string, optimisations: string[][]): string | undefined {
+function replaceOpsOld(
+  originalAsm: string,
+  optimisations: { regex: RegExp; replacement: string }[],
+): string | undefined {
   let asm = originalAsm;
+  let changed = false;
 
   // Apply all optimisations in the cashproof file
   // Normalize spaces after each rule to prevent double-space artifacts from
   // empty replacements breaking subsequent pattern matches.
   // Add word boundary assertion (?=\s|$) to each opcode in the pattern to prevent
   // partial matching (e.g., OP_EQUAL matching inside OP_EQUALVERIFY).
-  optimisations.forEach(([pattern, replacement]) => {
-    const boundedPattern = pattern.replace(/(OP_\w+)/g, '$1(?=\\s|$)');
-    const next = asm.replace(new RegExp(boundedPattern, 'g'), replacement);
+  optimisations.forEach(({ regex, replacement }) => {
+    const next = asm.replace(regex, replacement);
     // Only re-normalize whitespace when a replacement actually happened (empty replacements can leave double
     // spaces that break the next pattern). Skipping the no-op normalize on non-matching patterns avoids an
     // O(len) whitespace pass per pattern - the dominant cost on very large scripts (e.g. big fixed arrays).
-    if (next !== asm) asm = next.replace(/\s+/g, ' ').trim();
+    if (next !== asm) {
+      asm = next.replace(/\s+/g, ' ').trim();
+      changed = true;
+    }
   });
 
   // Add optimisations that are not compatible with CashProof
   // Use (?=\s|$) lookahead to prevent partial opcode matching
+  const replaceExtra = (regex: RegExp, replacement: string): void => {
+    const next = asm.replace(regex, replacement);
+    if (next !== asm) {
+      asm = next;
+      changed = true;
+    }
+  };
   // CashProof can't prove OP_IF without parameters
-  asm = asm.replace(/OP_NOT OP_IF(?=\s|$)/g, 'OP_NOTIF');
+  replaceExtra(/OP_NOT OP_IF(?=\s|$)/g, 'OP_NOTIF');
   // CashProof can't prove OP_CHECKMULTISIG without specifying N
-  asm = asm.replace(/OP_CHECKMULTISIG OP_VERIFY(?=\s|$)/g, 'OP_CHECKMULTISIGVERIFY');
+  replaceExtra(/OP_CHECKMULTISIG OP_VERIFY(?=\s|$)/g, 'OP_CHECKMULTISIGVERIFY');
   // CashProof can't prove bitwise operators
-  asm = asm.replace(/OP_SWAP OP_AND(?=\s|$)/g, 'OP_AND');
-  asm = asm.replace(/OP_SWAP OP_OR(?=\s|$)/g, 'OP_OR');
-  asm = asm.replace(/OP_SWAP OP_XOR(?=\s|$)/g, 'OP_XOR');
-  asm = asm.replace(/OP_DUP OP_AND(?=\s|$)/g, '');
-  asm = asm.replace(/OP_DUP OP_OR(?=\s|$)/g, '');
+  replaceExtra(/OP_SWAP OP_AND(?=\s|$)/g, 'OP_AND');
+  replaceExtra(/OP_SWAP OP_OR(?=\s|$)/g, 'OP_OR');
+  replaceExtra(/OP_SWAP OP_XOR(?=\s|$)/g, 'OP_XOR');
+  replaceExtra(/OP_DUP OP_AND(?=\s|$)/g, '');
+  replaceExtra(/OP_DUP OP_OR(?=\s|$)/g, '');
 
-  // Remove any double spaces as a result of opcode removal
-  asm = asm.replace(/\s+/g, ' ').trim();
+  if (!changed) return undefined;
 
-  return asm === originalAsm ? undefined : asm;
+  // Remove any double spaces as a result of opcode removal. Inputs are produced by scriptToAsm and therefore
+  // already normalized; only a replacement can introduce spacing that needs this pass.
+  return asm.replace(/\s+/g, ' ').trim();
 }
 
 interface ReplaceOpsResult {

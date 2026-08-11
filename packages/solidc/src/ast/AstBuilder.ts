@@ -437,6 +437,7 @@ export default class AstBuilder
   // as-is (it feeds the library's shared-state/delegate machinery); only CONTRACT-level `public constant` is
   // rerouted to a baked constant (see visitStateVariableDeclaration).
   private inLibraryDecl = false;
+  private readonly sourceContainsSelfdestruct: boolean;
 
   constructor(
     private tree: ParseTree,
@@ -446,6 +447,7 @@ export default class AstBuilder
     private importedFileId?: string,
   ) {
     super();
+    this.sourceContainsSelfdestruct = sourceCode.includes('selfdestruct');
   }
 
   /** ` at line N` for a parse-time diagnostic, naming the imported file when this is not the root file. */
@@ -1406,7 +1408,7 @@ export default class AstBuilder
   }
 
   visitContractDefinition(ctx: ContractDefinitionContext): ContractNode {
-    this.pendingStorageReturnPushes = new Map();
+    this.pendingStorageReturnPushes.clear();
     const name = ctx.anyIdentifier().getText();
     if (this.solidityImportCompat) {
       const declared = new Map<string, string>();
@@ -1448,7 +1450,7 @@ export default class AstBuilder
       ...ctx.errorDefinition_list().map((error) => error.anyIdentifier().getText()),
       ...ctx.modifierDefinition_list().map((modifier) => modifier.Identifier().getText()),
     ]);
-    this.selfExternalFunctionReturnAliases = new Map();
+    this.selfExternalFunctionReturnAliases.clear();
     // Resolve constants up front so they can be used while constructing types anywhere in the contract body.
     this.scanConstantStrings(ctx.constantDefinition_list());
     this.scanConstantDimensions(ctx.constantDefinition_list());
@@ -1512,7 +1514,7 @@ export default class AstBuilder
     );
 
     // Map each `using L for T` target struct type (bare name) to its library, for method-call desugaring.
-    this.usingForLibraries = new Map();
+    this.usingForLibraries.clear();
     for (const u of usingForDirectives) {
       if (u.libraryName && u.isWildcard) {
         this.usingForLibraries.set('*', u.libraryName);
@@ -1541,7 +1543,7 @@ export default class AstBuilder
     // struct-typed field that itself needs flattening expands into its own leaves (`str__nstr__nestedValue`);
     // each intermediate registers in mappingStructStateVars so reads chain through visitFieldAccess and
     // writes collapse their leading members (see buildLvalueAssign).
-    this.mappingStructStateVars = new Map();
+    this.mappingStructStateVars.clear();
     const expandedStateVars: StateVariableNode[] = [];
     const flattenedPublicStructGetters: {
       name: string;
@@ -1583,7 +1585,7 @@ export default class AstBuilder
     // representation): `mapping(K => Outer)` -> one flattened collection per Outer field, keyed by the outer key
     // prepended: `providers__data : mapping(K => <Outer.data type>)`. `providers[k].data[k2]` then routes to the
     // nested state mapping `providers__data[k][k2]`.
-    this.mappingStructValueVars = new Map();
+    this.mappingStructValueVars.clear();
     const expandedCollections: CollectionNode[] = [];
     const innermostMappingStruct = (type: MappingType): StructType | undefined => {
       let value: Type = type.valueType;
@@ -1629,7 +1631,7 @@ export default class AstBuilder
     // Record state mappings whose value is a struct, so `m[i].arr[j] = v` can desugar (read the struct into a
     // temp, write the array-field element, write it back). Covers plain `mapping(K => S)` and the flattened
     // mapping-in-struct fields `X__field` (their value structs). Resolves a placeholder (defined-later) value.
-    this.stateMappingValueStruct = new Map();
+    this.stateMappingValueStruct.clear();
     for (const col of collections) {
       if (!(col.type instanceof MappingType)) continue;
       const st = this.structFromType(col.type.valueType);
@@ -1679,8 +1681,8 @@ export default class AstBuilder
         .filter((c) => c.type instanceof MappingType)
         .map((c) => [c.name, c.type as MappingType]),
     );
-    this.stateSimpleTypeKeys = new Map();
-    this.stateInterfaceReceivers = new Set();
+    this.stateSimpleTypeKeys.clear();
+    this.stateInterfaceReceivers.clear();
     for (const stateVariable of stateVariables) {
       const key = this.usingForTypeKey(stateVariable.type);
       if (key) this.stateSimpleTypeKeys.set(stateVariable.name, key);
@@ -1825,15 +1827,15 @@ export default class AstBuilder
   }
 
   visitConstructorDefinition(ctx: ConstructorDefinitionContext): FunctionDefinitionNode {
-    this.storageAliases = new Map();
-    this.storageReferenceTypes = new Map();
-    this.localStructTypes = new Map();
-    this.localBytesVars = new Set();
-    this.localSimpleTypeKeys = new Map();
-    this.localInterfaceReceivers = new Set();
-    this.localStructArrayTypes = new Map();
-    this.localArrayVarTypes = new Map();
-    this.expiredLoopVariableNames = new Set();
+    this.storageAliases.clear();
+    this.storageReferenceTypes.clear();
+    this.localStructTypes.clear();
+    this.localBytesVars.clear();
+    this.localSimpleTypeKeys.clear();
+    this.localInterfaceReceivers.clear();
+    this.localStructArrayTypes.clear();
+    this.localArrayVarTypes.clear();
+    this.expiredLoopVariableNames.clear();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
@@ -1952,17 +1954,17 @@ export default class AstBuilder
   }
 
   visitFunctionDefinition(ctx: FunctionDefinitionContext): FunctionDefinitionNode {
-    this.selfExternalFunctionAliases = new Map();
-    this.indexedExternalFunctionAliases = new Map();
-    this.storageAliases = new Map();
-    this.storageReferenceTypes = new Map();
-    this.localStructTypes = new Map();
-    this.localBytesVars = new Set();
-    this.localSimpleTypeKeys = new Map();
-    this.localInterfaceReceivers = new Set();
-    this.localStructArrayTypes = new Map();
-    this.localArrayVarTypes = new Map();
-    this.expiredLoopVariableNames = new Set();
+    this.selfExternalFunctionAliases.clear();
+    this.indexedExternalFunctionAliases.clear();
+    this.storageAliases.clear();
+    this.storageReferenceTypes.clear();
+    this.localStructTypes.clear();
+    this.localBytesVars.clear();
+    this.localSimpleTypeKeys.clear();
+    this.localInterfaceReceivers.clear();
+    this.localStructArrayTypes.clear();
+    this.localArrayVarTypes.clear();
+    this.expiredLoopVariableNames.clear();
     const name = ctx.functionName().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring,
@@ -2087,20 +2089,24 @@ export default class AstBuilder
     // `selfdestruct(addr)` in the body implies the selfdestruct modifier (collapse all state UTXOs, no
     // recreation). The destination is enforced in codegen (visitSelfdestructStatement pins tx.outputs[0] to
     // addr); the SDK's selfdestructTo() routes the freed balance to addr at output 0.
-    const directSelfdestruct = functionDefinition.body.statements!
-      .some((s) => s instanceof SelfdestructStatementNode);
-    const containsNestedSelfdestruct = (value: unknown, root = true): boolean => {
-      if (value instanceof SelfdestructStatementNode) return !root;
-      if (!(value instanceof Node)) return false;
-      return Object.entries(value).some(([key, child]) => {
-        if (key === 'location' || key === 'type' || key === 'symbolTable') return false;
-        if (child instanceof Node) return containsNestedSelfdestruct(child, false);
-        return Array.isArray(child) && child.some((entry) => containsNestedSelfdestruct(entry, false));
-      });
-    };
-    const nestedSelfdestruct = functionDefinition.body.statements!
-      .some((statement) => !(statement instanceof SelfdestructStatementNode)
-        && containsNestedSelfdestruct(statement));
+    let directSelfdestruct = false;
+    let nestedSelfdestruct = false;
+    if (this.sourceContainsSelfdestruct) {
+      directSelfdestruct = functionDefinition.body.statements!
+        .some((s) => s instanceof SelfdestructStatementNode);
+      const containsNestedSelfdestruct = (value: unknown, root = true): boolean => {
+        if (value instanceof SelfdestructStatementNode) return !root;
+        if (!(value instanceof Node)) return false;
+        return Object.entries(value).some(([key, child]) => {
+          if (key === 'location' || key === 'type' || key === 'symbolTable') return false;
+          if (child instanceof Node) return containsNestedSelfdestruct(child, false);
+          return Array.isArray(child) && child.some((entry) => containsNestedSelfdestruct(entry, false));
+        });
+      };
+      nestedSelfdestruct = functionDefinition.body.statements!
+        .some((statement) => !(statement instanceof SelfdestructStatementNode)
+          && containsNestedSelfdestruct(statement));
+    }
     if (nestedSelfdestruct) throw new NestedSelfdestructError(functionDefinition, functionDefinition.name);
     if (directSelfdestruct
       && !functionDefinition.modifiers.includes(FunctionModifier.SELFDESTRUCT)) {
@@ -2194,17 +2200,17 @@ export default class AstBuilder
   }
 
   visitFreeFunctionDefinition(ctx: FreeFunctionDefinitionContext): FunctionDefinitionNode {
-    this.selfExternalFunctionAliases = new Map();
-    this.indexedExternalFunctionAliases = new Map();
-    this.storageAliases = new Map();
-    this.storageReferenceTypes = new Map();
-    this.localStructTypes = new Map();
-    this.localBytesVars = new Set();
-    this.localSimpleTypeKeys = new Map();
-    this.localInterfaceReceivers = new Set();
-    this.localStructArrayTypes = new Map();
-    this.localArrayVarTypes = new Map();
-    this.expiredLoopVariableNames = new Set();
+    this.selfExternalFunctionAliases.clear();
+    this.indexedExternalFunctionAliases.clear();
+    this.storageAliases.clear();
+    this.storageReferenceTypes.clear();
+    this.localStructTypes.clear();
+    this.localBytesVars.clear();
+    this.localSimpleTypeKeys.clear();
+    this.localInterfaceReceivers.clear();
+    this.localStructArrayTypes.clear();
+    this.localArrayVarTypes.clear();
+    this.expiredLoopVariableNames.clear();
     const name = ctx.functionName().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring.
@@ -2286,15 +2292,15 @@ export default class AstBuilder
   }
 
   visitModifierDefinition(ctx: ModifierDefinitionContext): ModifierDefinitionNode {
-    this.storageAliases = new Map();
-    this.storageReferenceTypes = new Map();
-    this.localStructTypes = new Map();
-    this.localBytesVars = new Set();
-    this.localSimpleTypeKeys = new Map();
-    this.localInterfaceReceivers = new Set();
-    this.localStructArrayTypes = new Map();
-    this.localArrayVarTypes = new Map();
-    this.expiredLoopVariableNames = new Set();
+    this.storageAliases.clear();
+    this.storageReferenceTypes.clear();
+    this.localStructTypes.clear();
+    this.localBytesVars.clear();
+    this.localSimpleTypeKeys.clear();
+    this.localInterfaceReceivers.clear();
+    this.localStructArrayTypes.clear();
+    this.localArrayVarTypes.clear();
+    this.expiredLoopVariableNames.clear();
     const name = ctx.Identifier().getText();
     const parameters = ctx.parameterList()
       ? ctx.parameterList()!.parameter_list().map((p) => this.visit(p) as ParameterNode)

@@ -25,6 +25,7 @@ import {
   VALUE_CHUNK_SIZE,
   encodeNftIndexTag,
   generateSourceMap,
+  normaliseSourceMapLocationData,
   FullLocationData,
   LogEntry,
   RequireStatement,
@@ -712,12 +713,15 @@ const isAggregate = (type: unknown): boolean =>
 
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private locationData: FullLocationData = []; // detailed location data needed for sourcemap creation
-  sourceMap: string;
   output: Script = [];
   stack: string[] = [];
   consoleLogs: LogEntry[] = [];
   requires: RequireStatement[] = [];
   finalStackUsage: Record<string, StackItem> = {};
+
+  getLocationDataForOptimisation(): FullLocationData {
+    return normaliseSourceMapLocationData(this.locationData);
+  }
 
   private scopeDepth = 0;
   private currentFunction: FunctionDefinitionNode;
@@ -1725,8 +1729,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.poolTopLevelConstants(node);
 
-    this.sourceMap = generateSourceMap(this.locationData);
-
     return node;
   }
 
@@ -2367,11 +2369,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // walks the whole contract AST. Keyed on the node so a different contract never reads a stale set.
   private invokedFunctionIdsCache?: { node: Node; ids: Set<number> };
 
+  // Several generation analyses ask for the same function body's direct invocation set. The AST is immutable for
+  // the lifetime of this traversal, so retain completed top-level scans without sharing them across compilations.
+  private readonly invokedFunctionIdsByNode = new WeakMap<Node, Set<number>>();
+
   private collectInvokedFunctionIds(
     node: Node, ids: Set<number> = new Set(), visited: Set<Node> = new Set(),
   ): Set<number> {
+    const topLevel = visited.size === 0 && ids.size === 0;
     if (this.invokedFunctionIdsCache?.node === node && visited.size === 0 && ids.size === 0) {
       return this.invokedFunctionIdsCache.ids;
+    }
+    if (topLevel) {
+      const cached = this.invokedFunctionIdsByNode.get(node);
+      if (cached) return cached;
     }
     if (visited.has(node)) return ids;
     visited.add(node);
@@ -2410,6 +2421,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         for (const item of value) if (item instanceof Node) this.collectInvokedFunctionIds(item, ids, visited);
       }
     }
+    if (topLevel) this.invokedFunctionIdsByNode.set(node, ids);
     return ids;
   }
 
@@ -3972,7 +3984,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitInfos = node.emitInfos ?? [];
     this.pendingDeploys = [];
     this.deployCounter = 0;
-    const deploySurvey = surveyFunctionDeploys(node.body);
+    const deploySurvey = node.hasContractInstantiation === false
+      ? {
+        count: 0, hasConditional: false, hasLoopValue: false, contractNames: new Set<string>(),
+      }
+      : surveyFunctionDeploys(node.body);
     // A loop `new C{value: V}()` has transfer metadata because it spends the satoshi container, but it has no
     // fixed transfer region: each runtime iteration verifies its value output inline in the child deploy group.
     // Do not pre-allocate an ordinary transfer that the epilogue would try to settle at a nonexistent slot. The

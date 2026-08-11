@@ -61,6 +61,7 @@ export function directCallNames(fn: FunctionDefinitionNode): Set<string> {
 export function collectNamedFunctionClosure(
   fn: FunctionDefinitionNode,
   byName: Map<string, FunctionDefinitionNode[]>,
+  directCallsByFunction?: WeakMap<FunctionDefinitionNode, Set<string>>,
 ): Set<string> {
   const closure = new Set<string>();
   const pending = [fn.name];
@@ -69,24 +70,59 @@ export function collectNamedFunctionClosure(
     if (closure.has(name)) continue;
     closure.add(name);
     for (const candidate of byName.get(name) ?? []) {
-      for (const called of directCallNames(candidate)) if (byName.has(called)) pending.push(called);
+      let directCalls = directCallsByFunction?.get(candidate);
+      if (!directCalls) {
+        directCalls = directCallNames(candidate);
+        directCallsByFunction?.set(candidate, directCalls);
+      }
+      for (const called of directCalls) if (byName.has(called)) pending.push(called);
     }
   }
   return closure;
 }
 
+interface FootprintAnalysisCache {
+  directCalls: WeakMap<FunctionDefinitionNode, Set<string>>;
+  bodyNodes: WeakMap<FunctionDefinitionNode, { locallyBound: Set<string>; nodes: Node[] }>;
+}
+
 export function analyseFunctionFootprint(
   fn: FunctionDefinitionNode,
   byName: Map<string, FunctionDefinitionNode[]>,
+  cache?: FootprintAnalysisCache,
 ): SplitStateFootprint {
   const reads = new Set<string>();
   const writes = new Set<string>();
   const effects = new Set<string>();
   const result = { unknown: false };
-  for (const name of collectNamedFunctionClosure(fn, byName)) {
+  for (const name of collectNamedFunctionClosure(fn, byName, cache?.directCalls)) {
     for (const candidate of byName.get(name) ?? []) {
-      const locallyBound = locallyBoundNames(candidate);
-      walkInvocationAst(candidate.body, (node) => {
+      let locallyBound: Set<string>;
+      let nodes: Node[] | undefined;
+      const cached = cache?.bodyNodes.get(candidate);
+      if (cached) ({ locallyBound, nodes } = cached);
+      else {
+        if (cache) {
+          locallyBound = new Set([
+            ...candidate.parameters.map((parameter) => parameter.name),
+            ...candidate.returnNames,
+          ]);
+          nodes = [];
+          walkInvocationAst(candidate.body, (node) => {
+            nodes!.push(node);
+            if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
+            if (node instanceof TupleAssignmentNode) {
+              for (const element of node.elements) {
+                if (element.name !== undefined && element.type !== undefined) locallyBound.add(element.name);
+              }
+            }
+          });
+          cache.bodyNodes.set(candidate, { locallyBound, nodes });
+        } else {
+          locallyBound = locallyBoundNames(candidate);
+        }
+      }
+      const analyseNode = (node: Node): void => {
         const kind = node.constructor.name;
         const shaped = node as unknown as { name?: string; keys?: Node[] };
         const resourceName = shaped.name;
@@ -127,7 +163,12 @@ export function analyseFunctionFootprint(
         else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {
           effects.add('external-call');
         } else if (node instanceof IndirectCallNode) result.unknown = true;
-      });
+      };
+      if (nodes) {
+        for (const node of nodes) analyseNode(node);
+      } else {
+        walkInvocationAst(candidate.body, analyseNode);
+      }
     }
   }
   return {
@@ -257,6 +298,7 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
     }
     return [...result].sort((a, b) => a - b);
   };
+  const footprintCache: FootprintAnalysisCache = { directCalls: new WeakMap(), bodyNodes: new WeakMap() };
   const summaries = functions.map((fn) => {
     const id = fn.functionId!;
     const closure = closureOf(id);
@@ -269,7 +311,7 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
       closure,
       component: componentByFunction.get(id)!,
       recursive: closure.some((member) => components[componentByFunction.get(member)!].recursive),
-      footprint: analyseFunctionFootprint(fn, byName),
+      footprint: analyseFunctionFootprint(fn, byName, footprintCache),
     };
   }).sort((a, b) => a.id - b.id);
   return { functions: summaries, components };

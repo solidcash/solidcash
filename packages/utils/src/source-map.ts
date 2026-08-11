@@ -1,4 +1,4 @@
-import { FullLocationData, PositionHint, SingleLocationData } from './types.js';
+import { FullLocationData, PositionHint } from './types.js';
 
 /*
  * The source mappings for the bytecode use the following notation (similar to Solidity):
@@ -32,56 +32,75 @@ export function generateSourceMap(locationData: FullLocationData): string {
   let prevEndColumn = 0;
   let prevHint = PositionHint.START;
 
-  return locationData.map(({ location, positionHint }: SingleLocationData) => {
+  const entries = new Array<string>(locationData.length);
+  for (let index = 0; index < locationData.length; index += 1) {
+    const { location, positionHint } = locationData[index];
     // A compiler-generated instruction may carry no source location (like solc's empty source-map entries).
     // Fall back to the previous mapping's positions so the fields serialise as empty ("same as previous")
     // rather than crashing on a missing location.
-    const start = location?.start ?? { line: prevStartLine, column: prevStartColumn };
-    const end = location?.end ?? { line: prevEndLine, column: prevEndColumn };
-    const prevStartLineString = prevStartLine === start.line ? '' : String(start.line);
-    prevStartLine = start.line;
+    const startLine = location?.start.line ?? prevStartLine;
+    const startColumn = location?.start.column ?? prevStartColumn;
+    const endLine = location?.end.line ?? prevEndLine;
+    const endColumn = location?.end.column ?? prevEndColumn;
+    const prevStartLineString = prevStartLine === startLine ? '' : String(startLine);
+    prevStartLine = startLine;
 
-    const prevStartColumnString = prevStartColumn === start.column ? '' : String(start.column);
-    prevStartColumn = start.column;
+    const prevStartColumnString = prevStartColumn === startColumn ? '' : String(startColumn);
+    prevStartColumn = startColumn;
 
-    const prevEndLineString = prevEndLine === end.line ? '' : String(end.line);
-    prevEndLine = end.line;
+    const prevEndLineString = prevEndLine === endLine ? '' : String(endLine);
+    prevEndLine = endLine;
 
-    const prevEndColumnString = prevEndColumn === end.column ? '' : String(end.column);
-    prevEndColumn = end.column;
+    const prevEndColumnString = prevEndColumn === endColumn ? '' : String(endColumn);
+    prevEndColumn = endColumn;
 
     const hint = positionHint ?? PositionHint.START;
     const prevHintString = prevHint === hint ? '' : String(hint);
     prevHint = hint;
 
-    let result = '';
-    if (prevStartLineString) {
-      result += prevStartLineString;
-    }
-
-    result += ':';
-    if (prevStartColumnString) {
-      result += prevStartColumnString;
-    }
-
-    result += ':';
-    if (prevEndLineString) {
-      result += prevEndLineString;
-    }
-
-    result += ':';
-    if (prevEndColumnString) {
-      result += prevEndColumnString;
-    }
-
-    result += ':';
     if (prevHintString) {
-      result += prevHintString;
+      entries[index] = `${prevStartLineString}:${prevStartColumnString}:${prevEndLineString}`
+        + `:${prevEndColumnString}:${prevHintString}`;
+    } else if (prevEndColumnString) {
+      entries[index] = `${prevStartLineString}:${prevStartColumnString}:${prevEndLineString}:${prevEndColumnString}`;
+    } else if (prevEndLineString) {
+      entries[index] = `${prevStartLineString}:${prevStartColumnString}:${prevEndLineString}`;
+    } else if (prevStartColumnString) {
+      entries[index] = `${prevStartLineString}:${prevStartColumnString}`;
+    } else {
+      entries[index] = prevStartLineString;
     }
+  }
+  return entries.join(';');
+}
 
-    result = result.replace(/:*$/, '');
-    return result;
-  }).join(';');
+/** Apply the same location defaults as an encode/decode source-map round trip, without serializing. */
+export function normaliseSourceMapLocationData(locationData: FullLocationData): FullLocationData {
+  let prevStartLine = 0;
+  let prevStartColumn = 0;
+  let prevEndLine = 0;
+  let prevEndColumn = 0;
+  const normalised = new Array<FullLocationData[number]>(locationData.length);
+  for (let index = 0; index < locationData.length; index += 1) {
+    const entry = locationData[index];
+    const startLine = entry.location?.start.line ?? prevStartLine;
+    const startColumn = entry.location?.start.column ?? prevStartColumn;
+    const endLine = entry.location?.end.line ?? prevEndLine;
+    const endColumn = entry.location?.end.column ?? prevEndColumn;
+    const hint = entry.positionHint ?? PositionHint.START;
+    prevStartLine = startLine;
+    prevStartColumn = startColumn;
+    prevEndLine = endLine;
+    prevEndColumn = endColumn;
+    normalised[index] = {
+      location: {
+        start: { line: startLine, column: startColumn },
+        end: { line: endLine, column: endColumn },
+      },
+      positionHint: hint,
+    };
+  }
+  return normalised;
 }
 
 export const sourceMapToLocationData = (sourceMap: string): FullLocationData => {
@@ -91,8 +110,40 @@ export const sourceMapToLocationData = (sourceMap: string): FullLocationData => 
   let prevEndColumn = 0;
   let prevHint: PositionHint = PositionHint.START;
 
-  return sourceMap.split(';').map((entry: string) => {
-    const [startLineStr, startColumnStr, endLineStr, endColumnStr, positionHintStr] = entry.split(':');
+  const entries = sourceMap.split(';');
+  const locationData = new Array<FullLocationData[number]>(entries.length);
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const first = entry.indexOf(':');
+    let startLineStr: string | undefined;
+    let startColumnStr: string | undefined;
+    let endLineStr: string | undefined;
+    let endColumnStr: string | undefined;
+    let positionHintStr: string | undefined;
+    if (first === -1) {
+      startLineStr = entry;
+    } else {
+      startLineStr = entry.slice(0, first);
+      const second = entry.indexOf(':', first + 1);
+      if (second === -1) {
+        startColumnStr = entry.slice(first + 1);
+      } else {
+        startColumnStr = entry.slice(first + 1, second);
+        const third = entry.indexOf(':', second + 1);
+        if (third === -1) {
+          endLineStr = entry.slice(second + 1);
+        } else {
+          endLineStr = entry.slice(second + 1, third);
+          const fourth = entry.indexOf(':', third + 1);
+          if (fourth === -1) {
+            endColumnStr = entry.slice(third + 1);
+          } else {
+            endColumnStr = entry.slice(third + 1, fourth);
+            positionHintStr = entry.slice(fourth + 1);
+          }
+        }
+      }
+    }
 
     const startLine = startLineStr ? Number(startLineStr) : prevStartLine;
     prevStartLine = startLine;
@@ -109,17 +160,18 @@ export const sourceMapToLocationData = (sourceMap: string): FullLocationData => 
     const hint: PositionHint = parsePositionHint(positionHintStr) ?? prevHint;
     prevHint = hint;
 
-    return {
+    locationData[index] = {
       location: {
         start: { line: startLine, column: startColumn },
         end: { line: endLine, column: endColumn },
       },
       positionHint: hint,
     };
-  });
+  }
+  return locationData;
 };
 
-const parsePositionHint = (hint: string): PositionHint | undefined => {
+const parsePositionHint = (hint: string | undefined): PositionHint | undefined => {
   if (hint === '1') return PositionHint.END;
   if (hint === '0') return PositionHint.START;
   return undefined;

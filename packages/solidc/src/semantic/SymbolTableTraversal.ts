@@ -1996,6 +1996,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    Object.defineProperty(node, 'hasContractInstantiation', {
+      value: false, writable: true, configurable: true,
+    });
     this.deployResultLocals = new Map(); // reset per function body
     this.conditionalBranchDepth = 0;
     this.conditionalRefNames = new Set();
@@ -8347,6 +8350,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const contract = this.contractMap.get(contractName);
 
     if (contract) {
+      if (this.currentFunction) this.currentFunction.hasContractInstantiation = true;
       if (this.compilerOptions.solidityImportCompat
         && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
           || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))) {

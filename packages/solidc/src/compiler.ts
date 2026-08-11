@@ -15,7 +15,7 @@ import {
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
-  sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
+  SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   messageBusVerifierLockingBytecode,
 } from '@solidcash/utils';
@@ -4901,7 +4901,7 @@ function compileResolvedAst(
   // scripts (e.g. big fixed-size arrays). Skip the cross-check above a size threshold - it never changes output.
   const optimisationResult = optimiseBytecode(
     traversal.output,
-    sourceMapToLocationData(traversal.sourceMap),
+    traversal.getLocationDataForOptimisation(),
     traversal.consoleLogs,
     traversal.requires,
     constructorParamLength,
@@ -6370,7 +6370,7 @@ function compileReferencedContracts(
 
     const optimisationResult = optimiseBytecode(
       traversal.output,
-      sourceMapToLocationData(traversal.sourceMap),
+      traversal.getLocationDataForOptimisation(),
       traversal.consoleLogs,
       traversal.requires,
       contract.parameters.length,
@@ -6745,19 +6745,21 @@ export function parseCode(
 ): Ast {
   // Solidity corpus files append diagnostic expectations after `// ----`; that trailer is test metadata, not
   // source text, and often repeats the SPDX spelling inside warning prose.
-  const diagnosticTrailer = code.search(/\n\/\/ ----/);
-  const spdxSource = diagnosticTrailer >= 0 ? code.slice(0, diagnosticTrailer) : code;
-  if (solidityImportCompat) validateUnicodeDirectionMarkers(spdxSource);
-  // Common Solidity flattener output retains one SPDX header per concatenated source and marks every boundary
-  // with `// File <path>`. MistSwap ships these generated `*Flat.sol` units directly. Keep the ordinary Solidity
-  // source-unit diagnostic, but admit this explicit flattened format without rewriting the user's checkout.
-  const flattenedSource = /^\s*\/\/\s*File\s+\S+/m.test(spdxSource);
-  const spdxIdentifiers = spdxIdentifiersInComments(spdxSource);
-  if (solidityImportCompat && !flattenedSource && new Set(spdxIdentifiers).size > 1) {
-    throw new Error(
-      'Multiple SPDX license identifiers found in source file. '
-      + 'Use "AND" or "OR" to combine multiple licenses.',
-    );
+  if (solidityImportCompat) {
+    const diagnosticTrailer = code.search(/\n\/\/ ----/);
+    const spdxSource = diagnosticTrailer >= 0 ? code.slice(0, diagnosticTrailer) : code;
+    validateUnicodeDirectionMarkers(spdxSource);
+    // Common Solidity flattener output retains one SPDX header per concatenated source and marks every boundary
+    // with `// File <path>`. MistSwap ships these generated `*Flat.sol` units directly. Keep the ordinary Solidity
+    // source-unit diagnostic, but admit this explicit flattened format without rewriting the user's checkout.
+    const flattenedSource = /^\s*\/\/\s*File\s+\S+/m.test(spdxSource);
+    const spdxIdentifiers = spdxIdentifiersInComments(spdxSource);
+    if (!flattenedSource && new Set(spdxIdentifiers).size > 1) {
+      throw new Error(
+        'Multiple SPDX license identifiers found in source file. '
+        + 'Use "AND" or "OR" to combine multiple licenses.',
+      );
+    }
   }
   // Version-gated EVM instructions are ordinary Yul identifiers before their fork activates. Corpus fixtures
   // carry the requested EVM version in their harness trailer. Rename inactive spellings consistently so their

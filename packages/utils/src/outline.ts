@@ -119,9 +119,10 @@ export interface OutlineResult {
 // Outlining rescans every body once per round, so the same data element is hex-encoded up to MAXIMUM_ROUNDS
 // times. Keyed on identity, so two distinct arrays holding equal bytes still compute (and agree on) one key.
 const dataKeys = new WeakMap<Uint8Array, string>();
+const opcodeKeys = Array.from({ length: 256 }, (_unused, opcode) => `o${opcode}`);
 
 const elementKey = (element: Script[number]): string => {
-  if (typeof element === 'number') return `o${element}`;
+  if (typeof element === 'number') return opcodeKeys[element];
   let key = dataKeys.get(element);
   if (key === undefined) {
     key = `d${binToHex(element)}`;
@@ -150,6 +151,7 @@ const controlDelta = (element: Script[number]): number => {
 
 const isBarrier = (element: Script[number]): boolean =>
   typeof element === 'number' && BARRIER_OPS.has(element);
+const neverAnchored = (): boolean => false;
 
 /**
  * Longest balanced, barrier-free sub-span of `elements`, measured in encoded bytes.
@@ -166,24 +168,21 @@ const isBarrier = (element: Script[number]): boolean =>
  */
 function longestBalancedSpan(
   elements: Script, anchored: (index: number) => boolean,
+  regionStart: number, regionLength: number, bytePrefix: Uint32Array,
 ): { start: number; end: number; bytes: number } {
-  // Prefix byte sizes make every candidate's encoded length an O(1) subtraction.
-  const prefixBytes = new Array<number>(elements.length + 1).fill(0);
-  for (let i = 0; i < elements.length; i += 1) {
-    prefixBytes[i + 1] = prefixBytes[i] + elementByteSize(elements[i]);
-  }
   let best = { start: 0, end: 0, bytes: 0 };
   let depth = 0;
   let firstIndexAtDepth = new Map<number, number>([[0, 0]]);
-  for (let i = 0; i < elements.length; i += 1) {
-    if (isBarrier(elements[i]) || anchored(i)) {
+  for (let i = 0; i < regionLength; i += 1) {
+    const element = elements[regionStart + i];
+    if (isBarrier(element) || anchored(i)) {
       depth = 0;
       firstIndexAtDepth = new Map<number, number>([[0, i + 1]]);
       continue;
     }
-    if (elements[i] === Op.OP_ELSE) firstIndexAtDepth.delete(depth);
+    if (element === Op.OP_ELSE) firstIndexAtDepth.delete(depth);
     const previousDepth = depth;
-    depth += controlDelta(elements[i]);
+    depth += controlDelta(element);
     if (depth < 0) {
       depth = 0;
       firstIndexAtDepth = new Map<number, number>([[0, i + 1]]);
@@ -199,7 +198,7 @@ function longestBalancedSpan(
       firstIndexAtDepth.set(depth, i + 1);
       continue;
     }
-    const bytes = prefixBytes[i + 1] - prefixBytes[start];
+    const bytes = bytePrefix[regionStart + i + 1] - bytePrefix[regionStart + start];
     if (bytes > best.bytes) best = { start, end: i + 1, bytes };
   }
   return best;
@@ -282,9 +281,12 @@ function findCandidates(
     for (let i = 0; i + minimumWindowElements <= ids.length; i += 1) {
       let hash = 0;
       for (let j = 0; j < minimumWindowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
-      const group = windows.get(hash) ?? [];
+      let group = windows.get(hash);
+      if (group === undefined) {
+        group = [];
+        windows.set(hash, group);
+      }
       group.push({ body: bodyIndex, start: i });
-      windows.set(hash, group);
     }
   });
 
@@ -292,13 +294,33 @@ function findCandidates(
   const groups: { occurrences: Occurrence[]; seed: number }[] = [];
   for (const bucket of windows.values()) {
     if (bucket.length < 2) continue;
+    const first = bucket[0];
+    const firstIds = bodyIds[first.body];
+    let collision = false;
+    for (let occurrenceIndex = 1; occurrenceIndex < bucket.length && !collision; occurrenceIndex += 1) {
+      const occurrence = bucket[occurrenceIndex];
+      const ids = bodyIds[occurrence.body];
+      for (let offset = 0; offset < minimumWindowElements; offset += 1) {
+        if (ids[occurrence.start + offset] !== firstIds[first.start + offset]) {
+          collision = true;
+          break;
+        }
+      }
+    }
+    if (!collision) {
+      groups.push({ occurrences: bucket, seed: minimumWindowElements });
+      continue;
+    }
     const exact = new Map<string, Occurrence[]>();
     for (const occurrence of bucket) {
       const ids = bodyIds[occurrence.body];
       const key = ids.slice(occurrence.start, occurrence.start + minimumWindowElements).join(',');
-      const group = exact.get(key) ?? [];
+      let group = exact.get(key);
+      if (group === undefined) {
+        group = [];
+        exact.set(key, group);
+      }
       group.push(occurrence);
-      exact.set(key, group);
     }
     for (const group of exact.values()) {
       if (group.length >= 2) groups.push({ occurrences: group, seed: minimumWindowElements });
@@ -319,7 +341,7 @@ function findCandidates(
   // it is: 256-bit arithmetic bounds are emitted inline at every overflow check, 32 bytes a time. Seed those
   // one element wide so the same pipeline can share them. An identifier operand is excluded - rewriting the
   // element in front of an OP_DEFINE or OP_INVOKE would redirect dispatch rather than share a constant.
-  const constants = new Map<string, Occurrence[]>();
+  const constants = new Map<number, Occurrence[]>();
   bodies.forEach((body, bodyIndex) => {
     for (let i = 0; i < body.script.length; i += 1) {
       const element = body.script[i];
@@ -329,10 +351,15 @@ function findCandidates(
       if (next === Op.OP_DEFINE || next === Op.OP_INVOKE) continue;
       // `<body> <id> OP_DEFINE`: the first element is a function being defined, not a constant being used.
       if (body.script[i + 2] === Op.OP_DEFINE) continue;
-      const key = elementKey(element);
-      const group = constants.get(key) ?? [];
+      // `bodyIds` already interns byte-identical elements for this discovery pass. Reuse that exact identity rather
+      // than rebuilding the (potentially large) constant's string key a second time.
+      const key = bodyIds[bodyIndex][i];
+      let group = constants.get(key);
+      if (group === undefined) {
+        group = [];
+        constants.set(key, group);
+      }
       group.push({ body: bodyIndex, start: i });
-      constants.set(key, group);
     }
   });
   for (const group of constants.values()) if (group.length >= 2) groups.push({ occurrences: group, seed: 1 });
@@ -355,29 +382,36 @@ function findCandidates(
     }
 
     const head = group[0];
-    const region = bodies[head.body].script.slice(head.start, head.start + length);
+    const headScript = bodies[head.body].script;
     // A span is only relocatable if it is anchor-free at *every* occurrence, so test them all against one
     // region-relative index space.
-    const anchoredIndices = new Uint8Array(length);
+    let anchoredIndices: Uint8Array | undefined;
     for (const occurrence of group) {
       const anchors = bodies[occurrence.body].anchors;
       if (anchors === undefined) continue;
       for (const anchor of anchors) {
         const relative = anchor - occurrence.start;
-        if (relative >= 0 && relative < length) anchoredIndices[relative] = 1;
+        if (relative >= 0 && relative < length) {
+          anchoredIndices ??= new Uint8Array(length);
+          anchoredIndices[relative] = 1;
+        }
       }
     }
-    const anchored = (index: number): boolean => anchoredIndices[index] !== 0;
-    const balanced = longestBalancedSpan(region, anchored);
+    const anchored = anchoredIndices === undefined
+      ? neverAnchored
+      : (index: number): boolean => anchoredIndices[index] !== 0;
+    const balanced = longestBalancedSpan(
+      headScript, anchored, head.start, length, bodyBytePrefixes[head.body],
+    );
     if (balanced.bytes === 0) continue;
 
-    // Overlapping copies cannot both be replaced; keep a maximal non-overlapping subset in body order.
+    // Overlapping copies cannot both be replaced; keep a maximal non-overlapping subset. `group` already follows
+    // body/start order: windows and constants are scanned in that order, and collision partitioning only filters
+    // those streams. Avoid sorting the same sequence again for every candidate.
     const spanLength = balanced.end - balanced.start;
-    const starts = group
-      .map((occurrence) => ({ body: occurrence.body, start: occurrence.start + balanced.start }))
-      .sort((left, right) => left.body - right.body || left.start - right.start);
     const occurrences: Occurrence[] = [];
-    for (const occurrence of starts) {
+    for (const source of group) {
+      const occurrence = { body: source.body, start: source.start + balanced.start };
       const previous = occurrences[occurrences.length - 1];
       if (previous && previous.body === occurrence.body && occurrence.start < previous.start + spanLength) continue;
       occurrences.push(occurrence);
@@ -395,7 +429,7 @@ function findCandidates(
     const saved = savingsOf(balanced.bytes, occurrences.length, idPushBytes);
     if (saved <= 0) continue;
     candidates.push({
-      span: region.slice(balanced.start, balanced.end),
+      span: headScript.slice(head.start + balanced.start, head.start + balanced.end),
       bytes: balanced.bytes,
       occurrences,
       saved,

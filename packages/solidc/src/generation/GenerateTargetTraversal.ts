@@ -1298,6 +1298,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
   private currentContractUsesBlockhash: boolean = false;
   private currentContractHasMessageBus: boolean = false;
+  // SDK auto-derivation recognizes the tight verification spans emitted by routes which combine a
+  // verified-map transition with dynamic-storage chunks. Moving those spans behind another OP_INVOKE changes the
+  // active trace shape and can make a valid chunk region unobservable, so these contracts keep their bodies inline.
+  private currentContractRequiresTraceStableBodies: boolean = false;
   private currentContractEmitsEvent: boolean = false;
 
   /** X12. This contract is a split FACET: `delegateOnly`, so its own data NFTs are never materialized. */
@@ -1792,6 +1796,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
     this.currentContractHasMessageBus = node.functions.some((fn) => fn.messageBusRoute === true);
+    this.currentContractRequiresTraceStableBodies = node.functions.some((fn) =>
+      (fn.dynamicWrites?.length ?? 0) > 0
+      && (fn.entryAccesses?.length ?? 0) > 0);
     this.currentContractEmitsEvent = node.emitsEvent;
     this.currentContractIsSplitFacet = node.isSplitFacet;
     this.contractParameters = node.parameters;
@@ -3578,6 +3585,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let attempt = 0; attempt < 2 && this.dynamicReadBasisUnstable(subTraversal, func); attempt += 1) {
       subTraversal = compileBody();
     }
+    this.currentContractRequiresTraceStableBodies ||= subTraversal.currentContractRequiresTraceStableBodies;
 
     // Propagate subroutine-use counts so the parent's inline-vs-subroutine decision sees all uses.
     for (const [id, c] of subTraversal.subroutineUseCount) {
@@ -3647,6 +3655,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private outlineSharedFunctionBodies(locationData: SingleLocationData): void {
     if (this.definedBodyRecords.length === 0) return;
+    if (this.currentContractRequiresTraceStableBodies) return;
     // Diagnostic escape hatch: SOLIDCASH_NO_OUTLINE=1 keeps every body inline, so a covenant failure can be
     // attributed to (or cleared of) span sharing without bisecting the optimiser.
     if ((globalThis as any).process?.env?.SOLIDCASH_NO_OUTLINE) return;
@@ -3893,6 +3902,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    if ((node.dynamicWrites?.length ?? 0) > 0 && (node.entryAccesses?.length ?? 0) > 0) {
+      this.currentContractRequiresTraceStableBodies = true;
+    }
     this.currentFunction = node;
     // X42. Refuse the two effect kinds a graph emission handler cannot describe BEFORE either of them reaches
     // the block-slot lookup or the route's parameter forwarding. Scoped to an emission handler: the same
@@ -4882,6 +4894,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
     }
     this.cleanStack(node.body);
+
+    if ((node.dynamicWrites?.length ?? 0) > 0 && (node.entryAccesses?.length ?? 0) > 0) {
+      this.currentContractRequiresTraceStableBodies = true;
+    }
 
     return node;
   }
@@ -15140,7 +15156,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // No entry slot assigned to this access (e.g. a read whose block-layout slot was never allocated) - fail closed
     // with the clean pending diagnostic rather than crashing on an undefined entrySlot.
     if (slotIndex < 0 || !this.entrySlots[slotIndex]) {
-      throw new SortedMappingCodegenPendingError(node, collection.name);
+      throw new SortedMappingCodegenPendingError(node, collection.name,
+        `The verified-mapping read on '${collection.name}' in '${this.currentFunction.name}' has no allocated entry slot.`);
     }
     const cached = this.sortedCompositeValueCache.get(slotIndex);
     if (cached !== undefined) {
@@ -15958,7 +15975,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.updateSortedUpsertLoopContext(upsertContext);
         return emitted;
       }
-      throw new SortedMappingCodegenPendingError(node, node.collection.name);
+      throw new SortedMappingCodegenPendingError(node, node.collection.name,
+        `The verified-mapping write on '${node.collection.name}' in runtime loop '${this.currentFunction.name}' `
+        + `does not match a supported insert or update loop shape (keys=${node.keys.map((key) => (
+          key instanceof IdentifierNode ? key.name : key.constructor.name)).join(',')}).`);
     }
     // Sorted (vmap linked-list) mapping write `m[k] = v` (or nested `m[a][b] = v`): never the omittable entry-model
     // write. Always an UPSERT (update the value if the key is present, else insert) - this is how `m[k]=false` /
@@ -15994,7 +16014,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       });
     }
     if (node.collection?.sorted) {
-      throw new SortedMappingCodegenPendingError(node, node.collection.name); // unsupported sorted shape/value type
+      throw new SortedMappingCodegenPendingError(node, node.collection.name,
+        `The verified-mapping write on '${node.collection.name}' in '${this.currentFunction.name}' has an unsupported `
+        + `shape (arrayIndex=${node.arrayIndex !== undefined}, arrayPush=${node.arrayPush === true}, `
+        + `arrayPop=${node.arrayPop === true}, valueType=${node.collection.innermostValueType.toString()}).`);
     }
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
       // A pure-write mapping assign inside a runtime loop (`for(i<n) m[k[i]]=v[i]`) emits a runtime-counter-indexed

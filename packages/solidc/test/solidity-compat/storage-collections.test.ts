@@ -495,6 +495,14 @@ describe('bytes state-var element write (data[i] = v)', () => {
   });
 });
 
+describe('fresh local bytes element write', () => {
+  it('compiles an indexed write in a loop over a runtime-sized bytes allocation', () => {
+    expect(compileString('contract C { function f(uint64 n) public pure returns (bytes memory) {'
+      + ' bytes memory b = new bytes(n); for (uint64 i = 0; i < n; i++) {'
+      + ' b[i] = bytes1(uint8(i)); } return b; } }', { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});
+
 describe('bytes element compound write (data[i] |= v / &=)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   it('compiles a compound byte write on state and local bytes', () => {

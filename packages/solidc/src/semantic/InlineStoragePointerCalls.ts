@@ -40,7 +40,9 @@ import {
   LowLevelCallStatementNode,
   MethodCallNode,
   InstantiationNode,
+  NullaryOpNode,
 } from '../ast/AST.js';
+import { NullaryOperator } from '../ast/Operator.js';
 import { StructType, MappingType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 import { Modifier } from '../ast/Globals.js';
@@ -726,6 +728,14 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         // binding would make the key an opaque expression it cannot locate). Guarded on the param not being
         // reassigned AND the arg not being written in the callee, else the alias breaks value-copy semantics (H7).
         rename.set(p.name, arg.name);
+        inlinedArg.add(p.name);
+      } else if (arg instanceof NullaryOpNode
+        && (arg.operator === NullaryOperator.MSG_SENDER || arg.operator === NullaryOperator.TX_ORIGIN)
+        && !this.isReassigned(callee.body, p.name)) {
+        // Transaction-derived sender identities are invariant for the whole invocation. Binding one inside a
+        // runtime loop (e.g. OZ `_transfer(msg.sender, ...)`) obscures that invariant from vmap's same-entry
+        // cache and makes the repeated debit look like an unsupported varying-key write.
+        subs.set(p.name, cloneNode(arg) as ExpressionNode);
         inlinedArg.add(p.name);
       } else {
         rename.set(p.name, `${PREFIX}${n}_${p.name}`);

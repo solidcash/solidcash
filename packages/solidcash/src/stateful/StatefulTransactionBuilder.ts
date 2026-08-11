@@ -723,7 +723,7 @@ export class StatefulTransactionBuilder {
           nestedInputs.push(...delegateInputs(group.delegateCallGroupIndex));
         }
       }
-      return [
+      const prefix = [
         this.masterUtxo, ...this.dataNftUtxos,
         ...this.lowLevelCallUtxoGroups.flatMap((group, index) => associatedDelegates.has(index)
           ? [] : [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos]),
@@ -732,8 +732,46 @@ export class StatefulTransactionBuilder {
         ...this.keccakComputeCoSpendUtxos, ...this.keccakLoopSideCars, ...this.ecrecoverComputeCoSpendUtxos,
         ...externalOutStateInputs, ...entryInputs, ...this.iterationEntryInputs,
         ...this.insertLoopPredecessorInputs, ...nestedInputs,
+      ];
+      // A delegate's trailing storage is addressed from implementationInput + blockSize. Output-only fixed slots
+      // (most commonly an event) still need corresponding funder INPUTS before that trailing region. The legacy
+      // order previously appended every funder after dynamic chunks, placing an old chunk one index too low on the
+      // second read-modify-write. Consume only the funders needed to complete the fixed implementation block here;
+      // leave fee/change funders at the tail.
+      const routeDelegateIndex = this.lowLevelCallUtxoGroups.findIndex((group, index) =>
+        group.callMode === 'delegatecall' && !associatedDelegates.has(index));
+      const routeDelegate = routeDelegateIndex >= 0 ? this.lowLevelCallUtxoGroups[routeDelegateIndex] : undefined;
+      const routeDelegateInputIndex = routeDelegate?.masterUtxo
+        ? prefix.findIndex((input) => input.txid.toLowerCase() === routeDelegate.masterUtxo!.txid.toLowerCase()
+          && input.vout === routeDelegate.masterUtxo!.vout)
+        : -1;
+      const delegateAbiFunction = routeDelegate?.compilerRoute?.abiFunction
+        ?? routeDelegate?.externalContract?.inner.artifact.abi.find(
+          (fn: AbiFunction) => fn.name === routeDelegate.functionName,
+        );
+      const delegateLayout = delegateAbiFunction?.blockLayout;
+      const trailingBase = delegateLayout?.trailingBase ?? delegateLayout?.blockSize
+        ?? this.blockLayout?.trailingBase ?? this.blockLayout?.blockSize;
+      const expectedDynamicIndex = routeDelegateInputIndex >= 0 && trailingBase !== undefined
+        ? routeDelegateInputIndex + trailingBase
+          + this.iterationEntryInputs.length + this.insertLoopPredecessorInputs.length
+        : prefix.length;
+      const fixedPaddingCount = Math.min(
+        this.funderUtxos.length,
+        Math.max(0, expectedDynamicIndex - prefix.length),
+      );
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_INPUTS === '1') {
+        console.error('delegate-trailing-input-geometry', {
+          routeDelegateIndex, routeDelegateInputIndex, delegateBlockSize: delegateLayout?.blockSize,
+          builderBlockSize: this.blockLayout?.blockSize, trailingBase, prefix: prefix.length,
+          fixedPaddingCount, dynamicChunks: this.dynamicChunkInputs.length,
+        });
+      }
+      return [
+        ...prefix,
+        ...this.funderUtxos.slice(0, fixedPaddingCount),
         ...this.dynamicChunkInputs, ...tokenContainerInputs, ...satoshiContainerInputs,
-        ...this.funderUtxos,
+        ...this.funderUtxos.slice(fixedPaddingCount),
       ];
     }
     // When the function also reads a dynamic-storage array (iterationEntryInputs = chunk run),

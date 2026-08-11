@@ -917,6 +917,13 @@ export default class AstBuilder
     if (this.solidityImportCompat) {
       const functionCounts = new Map<string, number>();
       const functionSignatures = new Set<string>();
+      const namespaceAliases = new Set(
+        imports.filter((importNode) => importNode.kind === 'namespace').map((importNode) => importNode.alias!),
+      );
+      const isDeferredNamespaceBinding = (name: string): boolean => {
+        const dot = name.indexOf('.');
+        return dot > 0 && namespaceAliases.has(name.slice(0, dot));
+      };
       for (const fn of freeFunctions) {
         functionCounts.set(fn.name, (functionCounts.get(fn.name) ?? 0) + 1);
         const parameterTypes = fn.parameters
@@ -933,7 +940,7 @@ export default class AstBuilder
       }
       for (const directive of usingForDirectives) {
         for (const binding of directive.functionBindings ?? []) {
-          if (functionCounts.get(binding.funcName) !== 1) {
+          if (functionCounts.get(binding.funcName) !== 1 && !isDeferredNamespaceBinding(binding.funcName)) {
             throw new ParseError(
               `Identifier '${binding.funcName}' in 'using for' directive is not a function name or not unique`,
               directive.location,
@@ -956,7 +963,11 @@ export default class AstBuilder
         if (!directive.functionBindings || directive.isWildcard || !directive.targetTypeName) continue;
         const targetType = this.resolveType(directive.targetTypeName);
         for (const binding of directive.functionBindings) {
-          const fn = freeFunctions.find((candidate) => candidate.name === binding.funcName)!;
+          const fn = freeFunctions.find((candidate) => candidate.name === binding.funcName);
+          // Namespace-imported functions are only available after ImportResolver has merged and qualified the
+          // imported source. SymbolTableTraversal performs this same compatibility check on the resolved binding.
+          if (!fn && isDeferredNamespaceBinding(binding.funcName)) continue;
+          if (!fn) continue;
           const firstParameter = fn.parameters.find((parameter) => !parameter.name.startsWith('__internal__'));
           if (!firstParameter) {
             throw new ParseError(
@@ -997,7 +1008,11 @@ export default class AstBuilder
               directive.location,
             );
           }
-          const fn = freeFunctions.find((candidate) => candidate.name === binding.funcName)!;
+          const fn = freeFunctions.find((candidate) => candidate.name === binding.funcName);
+          // As above, namespace-imported operator implementations are qualified only after import resolution.
+          // InlineReturningStateHelpers/SymbolTableTraversal validate the resolved declaration before lowering.
+          if (!fn && isDeferredNamespaceBinding(binding.funcName)) continue;
+          if (!fn) continue;
           const params = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
           const unary = params.length === 1;
           const requiredArity = operator === '~' ? 1 : operator === '-' ? undefined : 2;
@@ -7565,13 +7580,19 @@ export default class AstBuilder
         Location.fromCtx(ctx),
       );
     }
-    const parameters = ctx.errorParameter_list().map((paramCtx, i) => ({
-      // The name is optional in Solidity (`error Bad(uint256)`); synthesize one for an unnamed param.
-      name: paramCtx.anyIdentifier() ? paramCtx.anyIdentifier()!.getText() : `__unnamed${i}`,
-      type: paramCtx.typeName()
-        ? this.resolveType(paramCtx.typeName().getText())
-        : this.buildArrayType(paramCtx.arrayType()!),
-    }));
+    const parameters = ctx.errorParameter_list().map((paramCtx, i) => {
+      const typeName = paramCtx.typeName()?.getText();
+      return {
+        // The name is optional in Solidity (`error Bad(uint256)`); synthesize one for an unnamed param.
+        name: paramCtx.anyIdentifier() ? paramCtx.anyIdentifier()!.getText() : `__unnamed${i}`,
+        // An imported user-defined type is not available until ImportResolver merges the source units. Preserve
+        // its name in the same AddressType placeholder used by function/event declarations; the post-import
+        // re-resolution pass replaces it with the real struct/enum/UDVT before semantic validation and ABI work.
+        type: typeName
+          ? (this.resolveType(typeName) ?? new AddressType(false, typeName))
+          : this.buildArrayType(paramCtx.arrayType()!),
+      };
+    });
     if (this.solidityImportCompat && parameters.some((parameter) =>
       !this.isValidSolidityErrorParameter(parameter.type))) {
       throw new ParseError(

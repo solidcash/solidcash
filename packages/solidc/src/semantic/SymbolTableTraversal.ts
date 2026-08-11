@@ -7273,6 +7273,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
     }
     this.checkReadOnlyModification(sym);
+    // A local dynamic-bytes write normally becomes a value-copy splice in DesugarLocalBytesElementWrite (or an
+    // in-place memory write in LowerMemoryModel). Keep this semantic fallback for writes introduced/moved by
+    // earlier compatibility transforms after that pass has collected locals (e.g. PRB/IPFS loop bodies).
+    if (sym.type instanceof BytesType && sym.type.bound === undefined) {
+      const at = <T extends Node>(child: T): T => { child.location = node.location; return child; };
+      const read = (): IdentifierNode => at(new IdentifierNode(node.name));
+      const index = (): ExpressionNode => cloneNode(node.index) as ExpressionNode;
+      const prefix = at(new SliceNode(read(), at(new IntLiteralNode(0n)), index()));
+      const next = at(new BinaryOpNode(index(), BinaryOperator.PLUS, at(new IntLiteralNode(1n))));
+      const length = at(new UnaryOpNode(UnaryOperator.SIZE, read()));
+      const suffix = at(new SliceNode(read(), next, length));
+      const rebuilt = at(new BinaryOpNode(
+        at(new BinaryOpNode(prefix, BinaryOperator.PLUS, node.value)), BinaryOperator.PLUS, suffix,
+      ));
+      const assignment = at(new AssignNode(read(), rebuilt));
+      assignment.isReferenceDataWrite = true;
+      return this.visit(assignment);
+    }
     if (sym.type instanceof ArrayType) {
       node.arrayType = sym.type;
     }

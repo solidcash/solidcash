@@ -8662,7 +8662,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     ip: state.ip,
                     opcode: state.instructions[state.ip]?.opcode,
                     error: state.error,
-                    ...(state.error && { instructionOpcodes: state.instructions.map((instruction) => instruction.opcode) }),
+                    ...(state.error && { instructions: state.instructions.map((instruction) => ({
+                      opcode: instruction.opcode,
+                      data: 'data' in instruction && instruction.data instanceof Uint8Array
+                        ? binToHex(instruction.data) : undefined,
+                    })) }),
                     stack: state.stack.slice(-20).map((item) => {
                       const hex = binToHex(item);
                       return `${item.length}:${hex.slice(0, 96)}`;
@@ -9103,7 +9107,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     ip: state.ip,
                     opcode: state.instructions[state.ip]?.opcode,
                     error: state.error,
-                    ...(state.error && { instructionOpcodes: state.instructions.map((instruction) => instruction.opcode) }),
+                    ...(state.error && { instructions: state.instructions.map((instruction) => ({
+                      opcode: instruction.opcode,
+                      data: 'data' in instruction && instruction.data instanceof Uint8Array
+                        ? binToHex(instruction.data) : undefined,
+                    })) }),
                     stack: state.stack.slice(-10).map((item) => {
                       const hex = binToHex(item);
                       return `${item.length}:${hex.slice(0, 96)}`;
@@ -9114,6 +9122,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       && binToHex(output.to) === binToHex(dv.lockingBytecode))
                     .map(({ output, index }) => ({ index, category: output.token?.category,
                       commitment: output.token?.nft?.commitment })),
+                  inputs: cleanedProbe.inputs.map((input, index) => ({
+                    index,
+                    lockingBytecode: binToHex(input.unlocker.generateLockingBytecode()).slice(0, 70),
+                    category: input.token?.category,
+                    commitment: input.token?.nft?.commitment,
+                  })),
                 });
               }
               const currentChunkOffset = chunkOffset;

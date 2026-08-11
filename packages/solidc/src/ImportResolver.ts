@@ -249,7 +249,17 @@ export class ImportResolver {
         target.eventDefinitions.push(...source.eventDefinitions);
         target.errorDefinitions.push(...source.errorDefinitions);
         target.interfaceDefinitions.push(...source.interfaceDefinitions);
-        target.freeFunctions.push(...source.freeFunctions);
+        if (importNode.alias) {
+          // Solidity namespace imports qualify file-level free functions (`X.f`). Clone rather than rename the
+          // cached source nodes: the same source may also be imported bare or under another namespace.
+          target.freeFunctions.push(...source.freeFunctions.map((fn) => {
+            const qualified = cloneNode(fn);
+            qualified.name = `${importNode.alias}.${fn.name}`;
+            return qualified;
+          }));
+        } else {
+          target.freeFunctions.push(...source.freeFunctions);
+        }
         // Propagate global using-for directives through namespace imports
         target.usingForDirectives.push(...source.usingForDirectives.filter((u) => u.isGlobal));
         break;

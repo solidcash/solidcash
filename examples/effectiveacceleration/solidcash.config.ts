@@ -1,46 +1,41 @@
 import { defineConfig } from '@solidcash/testing';
-import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-
-function findEaccContracts(): string {
-  if (process.env.EACC_CONTRACTS_DIR) return resolve(process.env.EACC_CONTRACTS_DIR);
-  let current = process.cwd();
-  while (true) {
-    const project = join(current, 'effectiveacceleration.ai', 'contract');
-    if (existsSync(join(project, 'contracts')) && existsSync(join(project, 'node_modules'))) {
-      return join(project, 'contracts');
-    }
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  // The checked-in mirror is still useful for editor navigation, but package imports require the upstream
-  // Hardhat project's node_modules. The compiler will report that actionable missing dependency if unavailable.
-  return 'contracts';
-}
 
 export default defineConfig({
-  // Compile and run the unmodified upstream EACC Solidity contracts. `contracts-scash` is retained only as
+  // The checked-in contract mirror is the worktree-local source of truth. `contracts-scash` is retained only as
   // historical fixture material; it is not part of the canonical compile or test path.
-  paths: { contracts: findEaccContracts(), artifacts: 'artifacts', tests: 'test' },
+  paths: { contracts: 'contracts', artifacts: 'artifacts', tests: 'test' },
   solc: {
     solidityImportCompat: true,
-    // Preserve production-compatible state partitioning while mocknet relaxes the commitment itself for large
-    // fixed packed values (for example OpenZeppelin storage gaps).
+    // Keep the production state-partitioning layout while the mock VM relaxes execution ceilings.
     commitmentLimit: 128,
+    optimizeForCompilationSpeed: true,
     ecrecover: 'p2pkh',
     // Keep the Hardhat-compatible harness on the uniform fixed-entry backend.
     // Mocknet's relaxed limits remove the former need to selectively switch
     // large mappings to the vmap trailing-output protocol.
     sortedMappingsAll: false,
-    sortedMappings: ['EACCToken._balances', 'whitelistWorkers'],
   },
   typegen: {
     targets: [{
       target: 'ethers6', layout: 'typechain', outDir: 'typechain-types', sourceDir: 'contracts',
     }],
   },
-  networks: { mock: { type: 'mock' } },
+  // This compatibility run exercises the unmodified EACC contracts rather than production-limit sizing.
+  // Keep the mock VM's otherwise-permissive profile permissive for BCH-2026 operation-cost density too.
+  networks: {
+    mock: {
+      type: 'mock',
+      consensus: {
+        maximumInputBytes: 1_000_000,
+        // BCH-2026 uses 10,000 bytes (not the historical 520); this mock run deliberately widens it further.
+        maximumStackItemBytes: 1_000_000,
+        maximumTransactionBytes: 10_000_000,
+        maximumNftCommitmentBytes: 1_000_000,
+        operationCostBudgetPerByte: 10_000_000,
+        hashDigestIterationsPerByte: 10_000_000,
+      },
+    },
+  },
   defaultNetwork: 'mock',
   // The EA hardhat.config mnemonic + Ethereum derivation path, so getSigners() matches the project.
   mnemonic: 'rebuild always symbol rabbit sunset napkin laundry diary doll chalk valid train',

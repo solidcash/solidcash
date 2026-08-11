@@ -345,6 +345,52 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('C');
     });
 
+    it('resolves an imported UDVT used by a custom error parameter', () => {
+      const files: Record<string, string> = {
+        '/ValueType.sol': 'type UD2x18 is uint64;',
+        '/Errors.sol': 'import {UD2x18} from "./ValueType.sol"; error Overflow(UD2x18 x);',
+      };
+      const resolver = (importPath: string): ResolvedImport | undefined => {
+        const id = `/${importPath.replace(/^\.\//, '')}`;
+        return files[id] === undefined ? undefined : { id, source: files[id] };
+      };
+      const artifact = compileString(
+        'import {Overflow} from "./Errors.sol"; contract C { function f() public { require(true); } }',
+        {
+          solidityImportCompat: true,
+          importResolver: resolver,
+          rootFileId: '/main.sol',
+        },
+      );
+      expect(artifact.contractName).toBe('C');
+      expect(artifact.errors).toContainEqual(expect.objectContaining({
+        name: 'Overflow',
+        parameters: [{ name: 'x', type: 'uint64' }],
+      }));
+    });
+
+    it('attaches namespace-imported free functions in a global UDVT using directive', () => {
+      const files: Record<string, string> = {
+        '/Casting.sol': 'function unwrap(U x) pure returns (uint64) { return U.unwrap(x); }'
+          + ' function neg(U x) pure returns (U) { return U.wrap(uint64(0) - U.unwrap(x)); }',
+      };
+      const resolver = (importPath: string): ResolvedImport | undefined => {
+        const id = `/${importPath.replace(/^\.\//, '')}`;
+        return files[id] === undefined ? undefined : { id, source: files[id] };
+      };
+      const artifact = compileString(
+        'import "./Casting.sol" as Casting; type U is uint64;'
+        + ' using {Casting.unwrap, Casting.neg as -} for U global;'
+        + ' contract C { function f(U x) public pure returns (uint64) { return (-x).unwrap(); } }',
+        {
+          solidityImportCompat: true,
+          importResolver: resolver,
+          rootFileId: '/main.sol',
+        },
+      );
+      expect(artifact.contractName).toBe('C');
+    });
+
     it('rebuilds scalar+array field WRITES on an IMPORTED struct-typed local (byte-equal to same-file)', () => {
       // Escrow's type is imported, so unknown at parse - the AstBuilder mis-builds `e.split[i]=v` as a mapping-field
       // assign and `e.claimed=v` as a StateAssign that drops the field. RedesugarImportedStructFieldWrites rewrites

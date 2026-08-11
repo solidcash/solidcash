@@ -217,103 +217,103 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
   throw new Error(`compileCast: unsupported conversion from ${from.toString()} to ${to.toString()}`);
 }
 
-export function compileGlobalFunction(fn: GlobalFunction): Script {
-  const mapping = {
-    [GlobalFunction.ABS]: [Op.OP_ABS],
-    [GlobalFunction.CHECKDATASIG]: [Op.OP_CHECKDATASIG],
-    [GlobalFunction.CHECKMULTISIG]: [Op.OP_CHECKMULTISIG],
-    [GlobalFunction.CHECKSIG]: [Op.OP_CHECKSIG],
-    [GlobalFunction.MAX]: [Op.OP_MAX],
-    [GlobalFunction.MIN]: [Op.OP_MIN],
-    [GlobalFunction.RIPEMD160]: [Op.OP_RIPEMD160],
-    [GlobalFunction.SHA1]: [Op.OP_SHA1],
-    [GlobalFunction.SHA256]: [Op.OP_SHA256],
-    [GlobalFunction.HASH160]: [Op.OP_HASH160],
-    [GlobalFunction.HASH256]: [Op.OP_HASH256],
-    [GlobalFunction.WITHIN]: [Op.OP_WITHIN],
-    [GlobalFunction.TO_PADDED_BYTES]: [Op.OP_NUM2BIN],
-    // intToString/stringToInt/addmod/mulmod/keccak256 are handled directly in visitFunctionCall, not here
-    [GlobalFunction.INT_TO_STRING]: [],
-    [GlobalFunction.STRING_TO_INT]: [],
-    [GlobalFunction.ADDMOD]: [],
-    [GlobalFunction.MULMOD]: [],
-    [GlobalFunction.KECCAK256]: [],
-    // blockhash/blobhash/ecrecover are handled directly in visitFunctionCall (oracle read / bytes32(0) /
-    // checkDataSig + P2PKH build)
-    [GlobalFunction.BLOCKHASH]: [],
-    [GlobalFunction.BLOBHASH]: [],
-    // ecrecoverPubKey/P2pkh/Evm are handled directly in visitFunctionCall (recovery side-car read).
-    [GlobalFunction.ECRECOVER_PUBKEY]: [],
-    [GlobalFunction.ECRECOVER_P2PKH]: [],
-    [GlobalFunction.ECRECOVER_EVM]: [],
-  };
+const GLOBAL_FUNCTION_SCRIPT: Record<GlobalFunction, Script> = {
+  [GlobalFunction.ABS]: [Op.OP_ABS],
+  [GlobalFunction.CHECKDATASIG]: [Op.OP_CHECKDATASIG],
+  [GlobalFunction.CHECKMULTISIG]: [Op.OP_CHECKMULTISIG],
+  [GlobalFunction.CHECKSIG]: [Op.OP_CHECKSIG],
+  [GlobalFunction.MAX]: [Op.OP_MAX],
+  [GlobalFunction.MIN]: [Op.OP_MIN],
+  [GlobalFunction.RIPEMD160]: [Op.OP_RIPEMD160],
+  [GlobalFunction.SHA1]: [Op.OP_SHA1],
+  [GlobalFunction.SHA256]: [Op.OP_SHA256],
+  [GlobalFunction.HASH160]: [Op.OP_HASH160],
+  [GlobalFunction.HASH256]: [Op.OP_HASH256],
+  [GlobalFunction.WITHIN]: [Op.OP_WITHIN],
+  [GlobalFunction.TO_PADDED_BYTES]: [Op.OP_NUM2BIN],
+  // intToString/stringToInt/addmod/mulmod/keccak256 are handled directly in visitFunctionCall, not here
+  [GlobalFunction.INT_TO_STRING]: [],
+  [GlobalFunction.STRING_TO_INT]: [],
+  [GlobalFunction.ADDMOD]: [],
+  [GlobalFunction.MULMOD]: [],
+  [GlobalFunction.KECCAK256]: [],
+  // blockhash/blobhash/ecrecover are handled directly in visitFunctionCall (oracle read / bytes32(0) /
+  // checkDataSig + P2PKH build)
+  [GlobalFunction.BLOCKHASH]: [],
+  [GlobalFunction.BLOBHASH]: [],
+  // ecrecoverPubKey/P2pkh/Evm are handled directly in visitFunctionCall (recovery side-car read).
+  [GlobalFunction.ECRECOVER_PUBKEY]: [],
+  [GlobalFunction.ECRECOVER_P2PKH]: [],
+  [GlobalFunction.ECRECOVER_EVM]: [],
+};
 
-  return mapping[fn];
+export function compileGlobalFunction(fn: GlobalFunction): Script {
+  return GLOBAL_FUNCTION_SCRIPT[fn];
 }
+
+const BINARY_OP_SCRIPT: Record<BinaryOperator, Script> = {
+  [BinaryOperator.POW]: [], // Handled specially in GenerateTargetTraversal.visitBinaryOp
+  [BinaryOperator.MUL]: [Op.OP_MUL],
+  [BinaryOperator.DIV]: [Op.OP_DIV],
+  [BinaryOperator.MOD]: [Op.OP_MOD],
+  [BinaryOperator.PLUS]: [Op.OP_CAT],
+  [BinaryOperator.MINUS]: [Op.OP_SUB],
+  [BinaryOperator.SHIFT_LEFT]: [Op.OP_LSHIFTBIN],
+  [BinaryOperator.SHIFT_RIGHT]: [Op.OP_RSHIFTBIN],
+  [BinaryOperator.BIT_AND]: [Op.OP_AND],
+  [BinaryOperator.BIT_OR]: [Op.OP_OR],
+  [BinaryOperator.BIT_XOR]: [Op.OP_XOR],
+  [BinaryOperator.LT]: [Op.OP_LESSTHAN],
+  [BinaryOperator.LE]: [Op.OP_LESSTHANOREQUAL],
+  [BinaryOperator.GT]: [Op.OP_GREATERTHAN],
+  [BinaryOperator.GE]: [Op.OP_GREATERTHANOREQUAL],
+  [BinaryOperator.EQ]: [Op.OP_EQUAL],
+  [BinaryOperator.NE]: [Op.OP_EQUAL, Op.OP_NOT],
+  [BinaryOperator.AND]: [Op.OP_BOOLAND],
+  [BinaryOperator.OR]: [Op.OP_BOOLOR],
+  [BinaryOperator.SPLIT]: [Op.OP_SPLIT],
+};
+
+const NUMERIC_BINARY_OP_SCRIPT: Partial<Record<BinaryOperator, Script>> = {
+  [BinaryOperator.PLUS]: [Op.OP_ADD],
+  [BinaryOperator.EQ]: [Op.OP_NUMEQUAL],
+  [BinaryOperator.NE]: [Op.OP_NUMNOTEQUAL],
+  [BinaryOperator.SHIFT_LEFT]: [Op.OP_LSHIFTNUM],
+  [BinaryOperator.SHIFT_RIGHT]: [Op.OP_RSHIFTNUM],
+};
 
 export function compileBinaryOp(op: BinaryOperator, numeric: boolean = false): Script {
-  const mapping: { [key in BinaryOperator]: Script } = {
-    [BinaryOperator.POW]: [], // Handled specially in GenerateTargetTraversal.visitBinaryOp
-    [BinaryOperator.MUL]: [Op.OP_MUL],
-    [BinaryOperator.DIV]: [Op.OP_DIV],
-    [BinaryOperator.MOD]: [Op.OP_MOD],
-    [BinaryOperator.PLUS]: [Op.OP_CAT],
-    [BinaryOperator.MINUS]: [Op.OP_SUB],
-    [BinaryOperator.SHIFT_LEFT]: [Op.OP_LSHIFTBIN],
-    [BinaryOperator.SHIFT_RIGHT]: [Op.OP_RSHIFTBIN],
-    [BinaryOperator.BIT_AND]: [Op.OP_AND],
-    [BinaryOperator.BIT_OR]: [Op.OP_OR],
-    [BinaryOperator.BIT_XOR]: [Op.OP_XOR],
-    [BinaryOperator.LT]: [Op.OP_LESSTHAN],
-    [BinaryOperator.LE]: [Op.OP_LESSTHANOREQUAL],
-    [BinaryOperator.GT]: [Op.OP_GREATERTHAN],
-    [BinaryOperator.GE]: [Op.OP_GREATERTHANOREQUAL],
-    [BinaryOperator.EQ]: [Op.OP_EQUAL],
-    [BinaryOperator.NE]: [Op.OP_EQUAL, Op.OP_NOT],
-    [BinaryOperator.AND]: [Op.OP_BOOLAND],
-    [BinaryOperator.OR]: [Op.OP_BOOLOR],
-    [BinaryOperator.SPLIT]: [Op.OP_SPLIT],
-  };
-
-  if (numeric) {
-    mapping[BinaryOperator.PLUS] = [Op.OP_ADD];
-    mapping[BinaryOperator.EQ] = [Op.OP_NUMEQUAL];
-    mapping[BinaryOperator.NE] = [Op.OP_NUMNOTEQUAL];
-    mapping[BinaryOperator.SHIFT_LEFT] = [Op.OP_LSHIFTNUM];
-    mapping[BinaryOperator.SHIFT_RIGHT] = [Op.OP_RSHIFTNUM];
-  }
-
-  return mapping[op];
+  return (numeric && NUMERIC_BINARY_OP_SCRIPT[op]) || BINARY_OP_SCRIPT[op];
 }
+
+const UNARY_OP_SCRIPT = {
+  [UnaryOperator.NOT]: [Op.OP_NOT],
+  [UnaryOperator.NEGATE]: [Op.OP_NEGATE],
+  [UnaryOperator.INVERT]: [Op.OP_INVERT],
+  [UnaryOperator.SIZE]: [Op.OP_SIZE, Op.OP_NIP],
+  [UnaryOperator.REVERSE]: [Op.OP_REVERSEBYTES],
+  [UnaryOperator.INPUT_VALUE]: [Op.OP_UTXOVALUE],
+  [UnaryOperator.INPUT_LOCKING_BYTECODE]: [Op.OP_UTXOBYTECODE],
+  [UnaryOperator.INPUT_OUTPOINT_HASH]: [Op.OP_OUTPOINTTXHASH],
+  [UnaryOperator.INPUT_OUTPOINT_INDEX]: [Op.OP_OUTPOINTINDEX],
+  [UnaryOperator.INPUT_UNLOCKING_BYTECODE]: [Op.OP_INPUTBYTECODE],
+  [UnaryOperator.INPUT_SEQUENCE_NUMBER]: [Op.OP_INPUTSEQUENCENUMBER],
+  [UnaryOperator.OUTPUT_VALUE]: [Op.OP_OUTPUTVALUE],
+  [UnaryOperator.OUTPUT_LOCKING_BYTECODE]: [Op.OP_OUTPUTBYTECODE],
+  [UnaryOperator.INPUT_TOKEN_CATEGORY]: [Op.OP_UTXOTOKENCATEGORY],
+  [UnaryOperator.INPUT_NFT_COMMITMENT]: [Op.OP_UTXOTOKENCOMMITMENT],
+  [UnaryOperator.INPUT_TOKEN_AMOUNT]: [Op.OP_UTXOTOKENAMOUNT],
+  [UnaryOperator.OUTPUT_TOKEN_CATEGORY]: [Op.OP_OUTPUTTOKENCATEGORY],
+  [UnaryOperator.OUTPUT_NFT_COMMITMENT]: [Op.OP_OUTPUTTOKENCOMMITMENT],
+  [UnaryOperator.OUTPUT_TOKEN_AMOUNT]: [Op.OP_OUTPUTTOKENAMOUNT],
+};
 
 export function compileUnaryOp(op: UnaryOperator): Op[] {
   // Postfix `++`/`--` are lowered by DesugarPostfixExpressions before codegen; reaching here is a bug.
   if (op === UnaryOperator.POSTFIX_INCREMENT || op === UnaryOperator.POSTFIX_DECREMENT) {
     throw new Error(`postfix '${op}' reached codegen; it must be desugared before semantic analysis`);
   }
-  const mapping = {
-    [UnaryOperator.NOT]: [Op.OP_NOT],
-    [UnaryOperator.NEGATE]: [Op.OP_NEGATE],
-    [UnaryOperator.INVERT]: [Op.OP_INVERT],
-    [UnaryOperator.SIZE]: [Op.OP_SIZE, Op.OP_NIP],
-    [UnaryOperator.REVERSE]: [Op.OP_REVERSEBYTES],
-    [UnaryOperator.INPUT_VALUE]: [Op.OP_UTXOVALUE],
-    [UnaryOperator.INPUT_LOCKING_BYTECODE]: [Op.OP_UTXOBYTECODE],
-    [UnaryOperator.INPUT_OUTPOINT_HASH]: [Op.OP_OUTPOINTTXHASH],
-    [UnaryOperator.INPUT_OUTPOINT_INDEX]: [Op.OP_OUTPOINTINDEX],
-    [UnaryOperator.INPUT_UNLOCKING_BYTECODE]: [Op.OP_INPUTBYTECODE],
-    [UnaryOperator.INPUT_SEQUENCE_NUMBER]: [Op.OP_INPUTSEQUENCENUMBER],
-    [UnaryOperator.OUTPUT_VALUE]: [Op.OP_OUTPUTVALUE],
-    [UnaryOperator.OUTPUT_LOCKING_BYTECODE]: [Op.OP_OUTPUTBYTECODE],
-    [UnaryOperator.INPUT_TOKEN_CATEGORY]: [Op.OP_UTXOTOKENCATEGORY],
-    [UnaryOperator.INPUT_NFT_COMMITMENT]: [Op.OP_UTXOTOKENCOMMITMENT],
-    [UnaryOperator.INPUT_TOKEN_AMOUNT]: [Op.OP_UTXOTOKENAMOUNT],
-    [UnaryOperator.OUTPUT_TOKEN_CATEGORY]: [Op.OP_OUTPUTTOKENCATEGORY],
-    [UnaryOperator.OUTPUT_NFT_COMMITMENT]: [Op.OP_OUTPUTTOKENCOMMITMENT],
-    [UnaryOperator.OUTPUT_TOKEN_AMOUNT]: [Op.OP_OUTPUTTOKENAMOUNT],
-  };
-
-  return mapping[op as keyof typeof mapping];
+  return UNARY_OP_SCRIPT[op as keyof typeof UNARY_OP_SCRIPT];
 }
 
 // Returns true if the type has a fixed byte width (suitable for abi.encodePacked).
@@ -351,22 +351,22 @@ export function getElementWidth(type: Type): number {
   return getFixedWidth(type);
 }
 
-export function compileNullaryOp(op: NullaryOperator): Op[] {
-  const mapping: Record<string, Op[]> = {
-    [NullaryOperator.INPUT_INDEX]: [Op.OP_INPUTINDEX],
-    [NullaryOperator.BYTECODE]: [Op.OP_ACTIVEBYTECODE],
-    // The active input's own state-NFT category (capability byte appended for mutable/minting NFTs).
-    [NullaryOperator.CATEGORY_ID]: [Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY],
-    [NullaryOperator.INPUT_COUNT]: [Op.OP_TXINPUTCOUNT],
-    [NullaryOperator.OUTPUT_COUNT]: [Op.OP_TXOUTPUTCOUNT],
-    [NullaryOperator.VERSION]: [Op.OP_TXVERSION],
-    [NullaryOperator.LOCKTIME]: [Op.OP_TXLOCKTIME],
-    [NullaryOperator.MSG_SENDER]: [],  // handled inline in GenerateTargetTraversal
-    [NullaryOperator.MSG_VALUE]: [],   // handled inline in GenerateTargetTraversal
-    [NullaryOperator.MSG_SIG]: [],     // handled inline in GenerateTargetTraversal
-    [NullaryOperator.MSG_DATA]: [],    // handled inline in GenerateTargetTraversal
-    [NullaryOperator.TX_ORIGIN]: [],   // handled inline in GenerateTargetTraversal
-  };
+const NULLARY_OP_SCRIPT: Record<string, Op[]> = {
+  [NullaryOperator.INPUT_INDEX]: [Op.OP_INPUTINDEX],
+  [NullaryOperator.BYTECODE]: [Op.OP_ACTIVEBYTECODE],
+  // The active input's own state-NFT category (capability byte appended for mutable/minting NFTs).
+  [NullaryOperator.CATEGORY_ID]: [Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY],
+  [NullaryOperator.INPUT_COUNT]: [Op.OP_TXINPUTCOUNT],
+  [NullaryOperator.OUTPUT_COUNT]: [Op.OP_TXOUTPUTCOUNT],
+  [NullaryOperator.VERSION]: [Op.OP_TXVERSION],
+  [NullaryOperator.LOCKTIME]: [Op.OP_TXLOCKTIME],
+  [NullaryOperator.MSG_SENDER]: [],  // handled inline in GenerateTargetTraversal
+  [NullaryOperator.MSG_VALUE]: [],   // handled inline in GenerateTargetTraversal
+  [NullaryOperator.MSG_SIG]: [],     // handled inline in GenerateTargetTraversal
+  [NullaryOperator.MSG_DATA]: [],    // handled inline in GenerateTargetTraversal
+  [NullaryOperator.TX_ORIGIN]: [],   // handled inline in GenerateTargetTraversal
+};
 
-  return mapping[op];
+export function compileNullaryOp(op: NullaryOperator): Op[] {
+  return NULLARY_OP_SCRIPT[op];
 }

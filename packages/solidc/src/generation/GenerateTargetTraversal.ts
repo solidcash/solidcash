@@ -2360,11 +2360,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // walks the whole contract AST. Keyed on the node so a different contract never reads a stale set.
   private invokedFunctionIdsCache?: { node: Node; ids: Set<number> };
 
+  // Several generation analyses ask for the same function body's direct invocation set. The AST is immutable for
+  // the lifetime of this traversal, so retain completed top-level scans without sharing them across compilations.
+  private readonly invokedFunctionIdsByNode = new WeakMap<Node, Set<number>>();
+
   private collectInvokedFunctionIds(
     node: Node, ids: Set<number> = new Set(), visited: Set<Node> = new Set(),
   ): Set<number> {
+    const topLevel = visited.size === 0 && ids.size === 0;
     if (this.invokedFunctionIdsCache?.node === node && visited.size === 0 && ids.size === 0) {
       return this.invokedFunctionIdsCache.ids;
+    }
+    if (topLevel) {
+      const cached = this.invokedFunctionIdsByNode.get(node);
+      if (cached) return cached;
     }
     if (visited.has(node)) return ids;
     visited.add(node);
@@ -2403,6 +2412,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         for (const item of value) if (item instanceof Node) this.collectInvokedFunctionIds(item, ids, visited);
       }
     }
+    if (topLevel) this.invokedFunctionIdsByNode.set(node, ids);
     return ids;
   }
 

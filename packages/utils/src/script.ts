@@ -22,20 +22,25 @@ interface CompiledOptimisation {
   replacementLength: number;
   patternTokens: string[];
   firstToken: string;
+  requiredTokens: string[];
   replacementTokens: string[];
 }
 
 const compiledOptimisationReplacements: CompiledOptimisation[] = optimisationReplacements.map(
-  ([pattern, replacement]) => ({
-    pattern,
-    replacement,
-    regex: new RegExp(`${pattern}(\\s|$)`, 'g'),
-    patternLength: [...pattern.matchAll(/\s+/g)].length + 1,
-    replacementLength: replacement === '' ? 0 : [...replacement.matchAll(/\s+/g)].length + 1,
-    patternTokens: pattern.split(/\s+/g),
-    firstToken: pattern.split(/\s+/g, 1)[0],
-    replacementTokens: replacement === '' ? [] : replacement.split(/\s+/g),
-  }),
+  ([pattern, replacement]) => {
+    const patternTokens = pattern.split(/\s+/g);
+    return {
+      pattern,
+      replacement,
+      regex: new RegExp(`${pattern}(\\s|$)`, 'g'),
+      patternLength: patternTokens.length,
+      replacementLength: replacement === '' ? 0 : [...replacement.matchAll(/\s+/g)].length + 1,
+      patternTokens,
+      firstToken: patternTokens[0],
+      requiredTokens: [...new Set(patternTokens.slice(1))].filter((token) => token !== patternTokens[0]),
+      replacementTokens: replacement === '' ? [] : replacement.split(/\s+/g),
+    };
+  },
 );
 
 export const Op = OpcodesBch;
@@ -474,9 +479,11 @@ function replaceOps(
   const presentTokens = new Set(asm.split(' '));
 
   optimisations.forEach(({
-    pattern, replacement, regex, patternLength, replacementLength, patternTokens, firstToken, replacementTokens,
+    pattern, replacement, regex, patternLength, replacementLength, patternTokens, firstToken, requiredTokens,
+    replacementTokens,
   }) => {
     if (!presentTokens.has(firstToken)) return;
+    for (const token of requiredTokens) if (!presentTokens.has(token)) return;
     let matchIndex = asm.search(regex);
     // Most of the ~100 rules match nothing, and for those the rebuild below is the identity (`asm` is already
     // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per

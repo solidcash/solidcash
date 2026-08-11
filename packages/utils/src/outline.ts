@@ -370,6 +370,23 @@ function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[]
 
   const hashes = prepared.bodyIds.map((ids) => {
     const result = new Int32Array(Math.max(0, ids.length - width + 1));
+    if (width === 12) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 11]) | 0;
+      }
+      return result;
+    }
     for (let start = 0; start < result.length; start += 1) {
       let hash = ids[start];
       for (let offset = 1; offset < width; offset += 1) {

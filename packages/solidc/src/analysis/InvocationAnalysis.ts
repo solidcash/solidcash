@@ -102,11 +102,24 @@ export function analyseFunctionFootprint(
       const cached = cache?.bodyNodes.get(candidate);
       if (cached) ({ locallyBound, nodes } = cached);
       else {
-        locallyBound = locallyBoundNames(candidate);
         if (cache) {
+          locallyBound = new Set([
+            ...candidate.parameters.map((parameter) => parameter.name),
+            ...candidate.returnNames,
+          ]);
           nodes = [];
-          walkInvocationAst(candidate.body, (node) => nodes!.push(node));
+          walkInvocationAst(candidate.body, (node) => {
+            nodes!.push(node);
+            if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
+            if (node instanceof TupleAssignmentNode) {
+              for (const element of node.elements) {
+                if (element.name !== undefined && element.type !== undefined) locallyBound.add(element.name);
+              }
+            }
+          });
           cache.bodyNodes.set(candidate, { locallyBound, nodes });
+        } else {
+          locallyBound = locallyBoundNames(candidate);
         }
       }
       const analyseNode = (node: Node): void => {

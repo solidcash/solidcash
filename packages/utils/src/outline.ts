@@ -151,6 +151,7 @@ const controlDelta = (element: Script[number]): number => {
 
 const isBarrier = (element: Script[number]): boolean =>
   typeof element === 'number' && BARRIER_OPS.has(element);
+const neverAnchored = (): boolean => false;
 
 /**
  * Longest balanced, barrier-free sub-span of `elements`, measured in encoded bytes.
@@ -170,7 +171,8 @@ function longestBalancedSpan(
   regionStart = 0, regionLength = elements.length,
 ): { start: number; end: number; bytes: number } {
   // Prefix byte sizes make every candidate's encoded length an O(1) subtraction.
-  const prefixBytes = new Array<number>(regionLength + 1).fill(0);
+  const prefixBytes = new Array<number>(regionLength + 1);
+  prefixBytes[0] = 0;
   for (let i = 0; i < regionLength; i += 1) {
     prefixBytes[i + 1] = prefixBytes[i] + elementByteSize(elements[regionStart + i]);
   }
@@ -387,16 +389,21 @@ function findCandidates(
     const headScript = bodies[head.body].script;
     // A span is only relocatable if it is anchor-free at *every* occurrence, so test them all against one
     // region-relative index space.
-    const anchoredIndices = new Uint8Array(length);
+    let anchoredIndices: Uint8Array | undefined;
     for (const occurrence of group) {
       const anchors = bodies[occurrence.body].anchors;
       if (anchors === undefined) continue;
       for (const anchor of anchors) {
         const relative = anchor - occurrence.start;
-        if (relative >= 0 && relative < length) anchoredIndices[relative] = 1;
+        if (relative >= 0 && relative < length) {
+          anchoredIndices ??= new Uint8Array(length);
+          anchoredIndices[relative] = 1;
+        }
       }
     }
-    const anchored = (index: number): boolean => anchoredIndices[index] !== 0;
+    const anchored = anchoredIndices === undefined
+      ? neverAnchored
+      : (index: number): boolean => anchoredIndices[index] !== 0;
     const balanced = longestBalancedSpan(headScript, anchored, head.start, length);
     if (balanced.bytes === 0) continue;
 

@@ -1393,7 +1393,7 @@ export default class AstBuilder
   }
 
   visitContractDefinition(ctx: ContractDefinitionContext): ContractNode {
-    this.pendingStorageReturnPushes = new Map();
+    this.pendingStorageReturnPushes.clear();
     const name = ctx.anyIdentifier().getText();
     if (this.solidityImportCompat) {
       const declared = new Map<string, string>();
@@ -1435,7 +1435,7 @@ export default class AstBuilder
       ...ctx.errorDefinition_list().map((error) => error.anyIdentifier().getText()),
       ...ctx.modifierDefinition_list().map((modifier) => modifier.Identifier().getText()),
     ]);
-    this.selfExternalFunctionReturnAliases = new Map();
+    this.selfExternalFunctionReturnAliases.clear();
     // Resolve constants up front so they can be used while constructing types anywhere in the contract body.
     this.scanConstantStrings(ctx.constantDefinition_list());
     this.scanConstantDimensions(ctx.constantDefinition_list());
@@ -1499,7 +1499,7 @@ export default class AstBuilder
     );
 
     // Map each `using L for T` target struct type (bare name) to its library, for method-call desugaring.
-    this.usingForLibraries = new Map();
+    this.usingForLibraries.clear();
     for (const u of usingForDirectives) {
       if (u.libraryName && u.isWildcard) {
         this.usingForLibraries.set('*', u.libraryName);
@@ -1528,7 +1528,7 @@ export default class AstBuilder
     // struct-typed field that itself needs flattening expands into its own leaves (`str__nstr__nestedValue`);
     // each intermediate registers in mappingStructStateVars so reads chain through visitFieldAccess and
     // writes collapse their leading members (see buildLvalueAssign).
-    this.mappingStructStateVars = new Map();
+    this.mappingStructStateVars.clear();
     const expandedStateVars: StateVariableNode[] = [];
     const flattenedPublicStructGetters: {
       name: string;
@@ -1570,7 +1570,7 @@ export default class AstBuilder
     // representation): `mapping(K => Outer)` -> one flattened collection per Outer field, keyed by the outer key
     // prepended: `providers__data : mapping(K => <Outer.data type>)`. `providers[k].data[k2]` then routes to the
     // nested state mapping `providers__data[k][k2]`.
-    this.mappingStructValueVars = new Map();
+    this.mappingStructValueVars.clear();
     const expandedCollections: CollectionNode[] = [];
     const innermostMappingStruct = (type: MappingType): StructType | undefined => {
       let value: Type = type.valueType;
@@ -1616,7 +1616,7 @@ export default class AstBuilder
     // Record state mappings whose value is a struct, so `m[i].arr[j] = v` can desugar (read the struct into a
     // temp, write the array-field element, write it back). Covers plain `mapping(K => S)` and the flattened
     // mapping-in-struct fields `X__field` (their value structs). Resolves a placeholder (defined-later) value.
-    this.stateMappingValueStruct = new Map();
+    this.stateMappingValueStruct.clear();
     for (const col of collections) {
       if (!(col.type instanceof MappingType)) continue;
       const st = this.structFromType(col.type.valueType);
@@ -1666,8 +1666,8 @@ export default class AstBuilder
         .filter((c) => c.type instanceof MappingType)
         .map((c) => [c.name, c.type as MappingType]),
     );
-    this.stateSimpleTypeKeys = new Map();
-    this.stateInterfaceReceivers = new Set();
+    this.stateSimpleTypeKeys.clear();
+    this.stateInterfaceReceivers.clear();
     for (const stateVariable of stateVariables) {
       const key = this.usingForTypeKey(stateVariable.type);
       if (key) this.stateSimpleTypeKeys.set(stateVariable.name, key);

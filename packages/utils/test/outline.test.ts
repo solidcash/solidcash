@@ -97,6 +97,23 @@ describe('cross-function bytecode outlining', () => {
     expect(cached).toEqual(uncached);
   });
 
+  it('recosts narrower-width discovery for wider identifiers without changing the selected output', () => {
+    const source = [
+      body([...REPEATED, ...FILLER, ...REPEATED]),
+      body([...FILLER, ...REPEATED, ...FILLER, ...REPEATED]),
+    ];
+    const allocator = (): (() => Uint8Array) => {
+      let id = -12;
+      return () => { id -= 1; return Uint8Array.of(0x80 | Math.abs(id)); };
+    };
+    const cache = new Map<string, unknown>();
+    outlineSharedSpans(source, allocator(), () => 1, 'savings', 12, 1024, cache);
+    const cached = outlineSharedSpans(source, allocator(), () => 3, 'density', 12, 1024, cache);
+    const uncached = outlineSharedSpans(source, allocator(), () => 3, 'density', 12, 1024);
+
+    expect(cached).toEqual(uncached);
+  });
+
   it('keeps a conditional whole rather than stranding its OP_ELSE', () => {
     // The repeated run sits between OP_IF and OP_ELSE. A depth-only balance check would happily share
     // "<run> OP_ELSE <run>" - depth never moves - and the invoked body would abort with "OP_ELSE outside of a

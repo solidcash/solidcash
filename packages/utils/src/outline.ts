@@ -239,6 +239,13 @@ function sortCandidates(candidates: Candidate[], ranking: 'savings' | 'density')
     || right.saved - left.saved || right.bytes - left.bytes);
 }
 
+const costCandidates = (
+  candidates: readonly Candidate[], idPushBytes: number, ranking: 'savings' | 'density',
+): Candidate[] => sortCandidates(candidates.flatMap((candidate) => {
+  const saved = savingsOf(candidate.bytes, candidate.occurrences.length, idPushBytes);
+  return saved > 0 ? [{ ...candidate, saved }] : [];
+}), ranking);
+
 /** Net bytes saved by sharing `count` copies of a `bytes`-sized span behind `idPushBytes`-sized invocations. */
 function savingsOf(bytes: number, count: number, idPushBytes: number): number {
   const definitionOverhead = bytes < 76 ? 1 : bytes < 256 ? 2 : 3;
@@ -547,13 +554,29 @@ export function outlineSharedSpans(
     // marginal candidates back.
     const idPushBytes = peekIdPushBytes?.() ?? PROBE_IDENTIFIER_PUSH_BYTES;
     const initialCacheKey = `${idPushBytes}:${minimumWindowElements}:${candidateGroupsPerRound}`;
-    const cached = round === 0
+    let cached = round === 0
       ? initialCandidateCache?.get(initialCacheKey) as Candidate[] | undefined
       : undefined;
+    // Candidate discovery is independent of identifier width. A narrower identifier admits a strict superset
+    // of the profitable candidates for a wider one, so reuse its immutable discovery snapshot and recost it.
+    if (round === 0 && cached === undefined && initialCandidateCache !== undefined) {
+      for (let width = 1; width < idPushBytes && cached === undefined; width += 1) {
+        cached = initialCandidateCache.get(
+          `superset:${width}:${minimumWindowElements}:${candidateGroupsPerRound}`,
+        ) as Candidate[] | undefined;
+      }
+    }
     const candidates = cached === undefined
       ? findCandidates(corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound)
-      : sortCandidates([...cached], ranking);
-    if (round === 0 && cached === undefined) initialCandidateCache?.set(initialCacheKey, [...candidates]);
+      : costCandidates(cached, idPushBytes, ranking);
+    if (round === 0 && cached === undefined) {
+      initialCandidateCache?.set(initialCacheKey, [...candidates]);
+      // Applied spans can be rewritten in later rounds; keep a separate immutable array for other width probes.
+      initialCandidateCache?.set(
+        `superset:${initialCacheKey}`,
+        candidates.map((candidate) => ({ ...candidate, span: [...candidate.span] })),
+      );
+    }
     if (candidates.length === 0) break;
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:

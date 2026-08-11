@@ -130,7 +130,7 @@ import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure,
-  someInvocationAst, walkInvocationAst,
+  walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator } from './ast/Operator.js';
 import { cloneNode } from './ast/clone.js';
@@ -1123,12 +1123,19 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
  */
 function hasMessageBusGraphEdge(ast: Ast): boolean {
   const interfaceNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
-  return someInvocationAst(ast.contract, (node) => node instanceof ExternalFunctionCallNode
+  let found = false;
+  walkInvocationAst(ast.contract, (node) => {
+    if (found) return;
+    if (node instanceof ExternalFunctionCallNode
       || (node instanceof LowLevelCallStatementNode && node.callMode !== 'delegatecall')
       || (node instanceof MethodCallNode && node.methodName !== 'delegatecall'
         && ((node.object instanceof InstantiationNode)
           || (node.object instanceof FunctionCallNode && interfaceNames.has(node.object.identifier.name))))
-      || (node instanceof FunctionCallNode && /\.(call|staticcall)$/.test(node.identifier.name)));
+      || (node instanceof FunctionCallNode && /\.(call|staticcall)$/.test(node.identifier.name))) {
+      found = true;
+    }
+  });
+  return found;
 }
 
 function synthesizeMessageBusRoute(

@@ -55,29 +55,6 @@ export function walkInvocationAst(
   }
 }
 
-/** Return as soon as a matching node is found, without surveying the remainder of the AST. */
-export function someInvocationAst(
-  value: unknown,
-  predicate: (node: Node) => boolean,
-  seen = new Set<object>(),
-): boolean {
-  if (!(value instanceof Node) || seen.has(value)) return false;
-  seen.add(value);
-  if (predicate(value)) return true;
-  for (const key in value) {
-    if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-    const child = value[key as keyof Node];
-    if (child instanceof Node) {
-      if (someInvocationAst(child, predicate, seen)) return true;
-    } else if (Array.isArray(child)) {
-      for (const item of child) {
-        if (someInvocationAst(item, predicate, seen)) return true;
-      }
-    }
-  }
-  return false;
-}
-
 export function directCallNames(fn: FunctionDefinitionNode): Set<string> {
   const calls = new Set<string>();
   walkInvocationAst(fn.body, (node) => {

@@ -6697,7 +6697,8 @@ function validateUnicodeDirectionMarkers(code: string): void {
  */
 function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   const functions = contract.fallbackDef ? [...contract.functions, contract.fallbackDef] : contract.functions;
-  const candidates = functions.filter((fn) => fn.body && fn.functionId !== undefined && fn.returnTypes.length > 0);
+  const candidates = functions.filter((fn) => fn.body && fn.functionId !== undefined && fn.returnTypes.length > 0
+    && (fn.emitInfos?.length ?? 0) > 0 && !fn.graphEmissionHandler);
   if (candidates.length === 0) return;
   const walk = (node: Node, visit: (n: Node) => void, seen = new Set<Node>()): void => {
     if (seen.has(node)) return;
@@ -6725,10 +6726,6 @@ function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   });
   for (const fn of candidates) {
     if (!invoked.has(fn.functionId!)) continue;
-    let emits = false;
-    walk(fn.body!, (node) => { if (node instanceof EmitStatementNode) emits = true; });
-    if (!emits) continue;
-    if (fn.graphEmissionHandler) continue;
     // Name the handler the user wrote, not the compiler's synthetic clone spelling of it.
     throw new EmittingStateHelperEventError(fn, fn.name.replace(/^__message_bus_[a-z]+_/, ''), fn.collectionJournal === true);
   }

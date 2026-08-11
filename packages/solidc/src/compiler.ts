@@ -189,6 +189,8 @@ interface OptionalLoweringFeatures {
   needsMsgDataContext: boolean;
   needsMsgSigContext: boolean;
   needsSpecialMethodPruning: boolean;
+  needsDynamicStateJournal: boolean;
+  needsCollectionJournal: boolean;
 }
 
 function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
@@ -221,6 +223,8 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let needsMsgDataContext = false;
   let needsMsgSigContext = false;
   let needsSpecialMethodPruning = false;
+  let needsDynamicStateJournal = false;
+  let needsCollectionJournal = false;
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
@@ -230,6 +234,8 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       needsMsgDataContext = true;
       needsMsgSigContext = true;
       needsSpecialMethodPruning = true;
+      needsDynamicStateJournal = true;
+      needsCollectionJournal = true;
     } else if ((node instanceof NullaryOpNode && String(node.operator).startsWith('block.'))
       || (node instanceof IdentifierNode && node.name === 'now')
       || (node instanceof FunctionCallNode
@@ -247,6 +253,13 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
         && (node.property === 'creationCode' || node.property === 'runtimeCode'))) {
       needsSpecialMethodPruning = true;
     }
+    if (node instanceof ContractNode) {
+      if (node.collections.length > 0) needsCollectionJournal = true;
+      if (node.stateVariables.some((state) => state.isDynamic || state.type === PrimitiveType.STRING
+        || (state.type instanceof BytesType && state.type.bound === undefined))) {
+        needsDynamicStateJournal = true;
+      }
+    }
     for (const key in node) {
       const value = node[key as keyof Node] as unknown;
       if (value instanceof FunctionType
@@ -262,11 +275,16 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
           needsMsgDataContext: true,
           needsMsgSigContext: true,
           needsSpecialMethodPruning: true,
+          needsDynamicStateJournal: true,
+          needsCollectionJournal: true,
         };
       }
       if ((value instanceof ArrayType || value instanceof MappingType
         || value instanceof StructType || value instanceof TupleType)
-        && typeContainsMapping(value)) needsSpecialMethodPruning = true;
+        && typeContainsMapping(value)) {
+        needsSpecialMethodPruning = true;
+        needsCollectionJournal = true;
+      }
       if (value instanceof Node) pending.push(value);
       else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node) pending.push(item);
@@ -279,6 +297,8 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsMsgDataContext,
     needsMsgSigContext,
     needsSpecialMethodPruning,
+    needsDynamicStateJournal,
+    needsCollectionJournal,
   };
 }
 
@@ -4614,7 +4634,7 @@ function compileResolvedAst(
   // for aliases introduced by the intervening contract-member/function-pointer passes.
   const {
     hasFunctionPointers, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
-    needsSpecialMethodPruning,
+    needsSpecialMethodPruning, needsDynamicStateJournal, needsCollectionJournal,
   } = surveyOptionalLowerings(ast);
   if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
@@ -4746,8 +4766,8 @@ function compileResolvedAst(
 
   // Lower eligible single-entry mapping helpers to value-threaded OP_INVOKE handlers before the legacy
   // entry-reading inline passes see them.
-  ast = ast.accept(new LowerDynamicStateJournalHelpers()) as Ast;
-  ast = ast.accept(new LowerCollectionJournalHelpers()) as Ast;
+  if (needsDynamicStateJournal) ast = ast.accept(new LowerDynamicStateJournalHelpers()) as Ast;
+  if (needsCollectionJournal) ast = ast.accept(new LowerCollectionJournalHelpers()) as Ast;
 
   // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
   // body, capture the return in a temp). Same block-layout reason as the void case below; run first so a void

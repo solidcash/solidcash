@@ -8,10 +8,10 @@ Continue in this dedicated worktree:
 /Code/cashscript/.worktrees/release-readiness
 ```
 
-The verified integration baseline before this handoff document was committed is:
+The requested release baseline is:
 
 ```text
-bec314aeda61a2cd43fcaec92bb7bc295c129386
+c78c135b7
 ```
 
 The ordinary `solidcash_v0.13.1` checkout is `/Code/cashscript`. Both branches were synchronized when this
@@ -41,7 +41,20 @@ Integration commits, oldest first:
 bec314aed  fix(integration): restore release lint gates
 ```
 
-## BCHN matrix: useful diagnostics, not final evidence
+## BCHN matrix: current focused evidence and remaining final gate
+
+At `324cbca5f`, the three consensus-impossible MistSwap constructor probes were explicitly classified as
+mock-only while their useful mock coverage was retained. Focused mock execution passed all 4 tests. With
+`TESTS_USE_REGTEST=true`, the consensus-compatible `CreatePairDeployVMap` layout row passed and the three
+oversized executable rows were reported as skipped (1 passed, 3 skipped).
+
+Old batch 38 was rerun from a wiped `release-readiness` BCHN/Fulcrum chain at the same candidate. All eight files
+and all 46 tests passed in 49.23 seconds. The old failure was therefore accumulated-chain contamination, not a
+reproducible defect at the rebased candidate.
+
+The authoritative full matrix at the final candidate is still outstanding.
+
+## Older BCHN diagnostics (not final evidence)
 
 A pristine BCHN matrix was run at the older candidate `edbf5c2c8`. It reached 416/467 files (batches 1-52)
 before being intentionally interrupted during batch 53 to perform the branch integration. The durable ledger is:
@@ -56,14 +69,13 @@ fingerprint differs, but do not cite or manually resume it as proof for `bec314a
 The old run recorded failed batches 17, 31, and 38:
 
 - Batch 17: the live `CreatePairDeployC2` row (now named `CreatePairDeployVMap`) attempted a constructor probe
-  stack item of about 16.9 KB, exceeding BCHN's 520-byte stack-item limit. The layout-only row passed. The test
-  currently relaxes mock input/transaction policy but does not classify this live consensus boundary.
+  stack item of about 16.9 KB, exceeding BCHN's 520-byte stack-item limit. This is now classified as mock-only;
+  the layout-only row remains live.
 - Batch 31: `MasterChefDeposit` and `MasterChefPoolInfoPush` attempted about 16.6 KB constructor probe items,
-  again exceeding BCHN's 520-byte stack-item limit. These vendored MistSwap diagnostics also relax mock policy
-  but are not currently classified for live BCHN.
-- Batch 38: the terminal output was truncated, so the ledger identifies only the eight-file batch, not the exact
-  failing assertion. Reproduce it; do not assume the historical `Sec13UnpinnedEventNftPaths` high-fee failure is
-  still the cause.
+  again exceeding BCHN's 520-byte stack-item limit. These vendored MistSwap diagnostics are now classified as
+  mock-only.
+- Batch 38: the terminal output was truncated. Its clean-chain reproduction now passes all 46 tests, confirming
+  that the old report was caused by accumulated chain state.
 
 Batch 53 was running `AtomicMessageBusCompose` when interrupted. Its first six tests passed, while later cases
 hit their 120-240 second limits on the accumulated chain. Because the run was interrupted, those timeout reports
@@ -84,29 +96,9 @@ split/merge, upgrades, sorted mappings, and batches 39-52. These are diagnostic 
    git rev-parse HEAD
    ```
 
-2. Re-run focused mock coverage for the three oversized vendored fixtures. Preserve their diagnostic value on
-   the mock provider.
+2. Run the relevant one-shot mock/live suites, then `yarn lint` and `yarn build`.
 
-3. Classify the corresponding BCHN rows explicitly. A live skip is appropriate only if the test is intentionally
-   proving a mock-only, consensus-impossible oversized stack item; keep any layout/metadata assertion live.
-   Avoid weakening production consensus limits merely to make the fixtures pass.
-
-4. Reproduce old batch 38 on a fresh node and capture the exact failing test before changing code. Its files were:
-
-   ```text
-   SameGapChain.test.ts
-   SatoshiContainer.test.ts
-   SatoshiContainerIntegrity.test.ts
-   ScalarStateAdversarial.test.ts
-   Sec13UnpinnedEventNftPaths.test.ts
-   Sec14ZeroParamEventMarker.test.ts
-   SelfExternalFunctionPointer.test.ts
-   SelfLowLevelCall.test.ts
-   ```
-
-5. After focused fixes, run the relevant one-shot mock/live suites, then `yarn lint` and `yarn build`.
-
-6. Start the authoritative full matrix from a wiped chain at the final candidate:
+3. Start the authoritative full matrix from a wiped chain at the final candidate:
 
    ```bash
    docker compose -p release-readiness -f docker-compose.regtest.yml down -v
@@ -118,11 +110,11 @@ split/merge, upgrades, sorted mappings, and batches 39-52. These are diagnostic 
    explicitly classified, wipe the chain again and run `yarn test:regtest` without continue-on-failure for final
    release evidence.
 
-7. Update the BCHN row in `RELEASE_READINESS.md` with the exact final commit, file/test totals, chain-reset
+4. Update the BCHN row in `RELEASE_READINESS.md` with the exact final commit, file/test totals, chain-reset
    procedure, and any documented skips. The current table still describes superseded candidates and must not be
    used as the final attestation.
 
-8. Run the broader release gates named in `package.json` and the first-release exit checklist, especially the
+5. Run the broader release gates named in `package.json` and the first-release exit checklist, especially the
    root test suite, security/application conformance, corpus baseline, generated-project smoke, package smoke,
    spellcheck, and clean-checkout install/CI ordering. Do not infer those results from build/lint.
 

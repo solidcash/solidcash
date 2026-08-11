@@ -831,22 +831,33 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.symbolTables[0].set(Symbol.enumType(name, enumType));
     }
 
-    this.isStatefulContract = node.stateVariables.length > 0
+    const directlyStateful = node.stateVariables.length > 0
       || node.collections.length > 0
       || node.eventDefinitions.length > 0
       || node.functions.some((func) => func.impliedSelfdestruct
         || (this.compilerOptions.solidityImportCompat
           && func.modifiers.includes(FunctionModifier.SELFDESTRUCT)))
       || (this.compilerOptions.forceStateful ?? false)
-      || node.usesBlockhash
-      // Deploying a stateful child (`new T()` where T has state) IS a deploy, and the deploy covenant rides the
-      // parent's block layout - so a parent that instantiates a stateful contract is itself made stateful (the
-      // `deploy` modifier is implied). Recorded on the node so artifact generation also sees it as stateful.
-      || (node.deploysStatefulChild = this.detectStatefulChildDeploy(node))
-      // Value-bearing deployment also needs the parent's value-transfer covenant and therefore a master NFT.
-      || (node.deploysWithValue = this.detectValueBearingDeploy(node))
-      // Emitting any event (including a foreign/library event) needs a state NFT for the commitment -> stateful.
-      || (node.emitsEvent = this.detectEmitsEvent(node));
+      || node.usesBlockhash;
+    if (directlyStateful) {
+      this.isStatefulContract = true;
+    } else {
+      const survey = this.surveyContractStatefulness(node);
+      // Preserve the former short-circuit assignments: later annotations remain untouched when an earlier
+      // condition establishes statefulness, while the one necessary full scan supplies all later answers.
+      node.deploysStatefulChild = survey.deploysStatefulChild;
+      if (survey.deploysStatefulChild) {
+        this.isStatefulContract = true;
+      } else {
+        node.deploysWithValue = survey.deploysWithValue;
+        if (survey.deploysWithValue) {
+          this.isStatefulContract = true;
+        } else {
+          node.emitsEvent = survey.emitsEvent;
+          this.isStatefulContract = survey.emitsEvent;
+        }
+      }
+    }
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
@@ -1687,69 +1698,37 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private deployResultLocals = new Map<string, InstantiationNode>(); // locals = `new C(...)` in the current fn
 
-  // True if any function of `node` instantiates a stateful contract (`new T()` where T has state / collections).
-  // Such a parent is made stateful to host the (implied) deploy covenant. Pure AST scan (siblings are already in
-  // contractMap from visitSourceFile), only recursing into Node children so a recursive Type cannot loop it.
-  private detectStatefulChildDeploy(node: ContractNode): boolean {
+  // Survey the conditions which can make an otherwise stateless contract stateful. Stateful-child deployment is
+  // the first condition in the historical short-circuit chain, so finding one stops immediately. If none exists,
+  // that same necessary full traversal also answers the value-bearing-deploy and event-emission predicates.
+  private surveyContractStatefulness(node: ContractNode): {
+    deploysStatefulChild: boolean; deploysWithValue: boolean; emitsEvent: boolean;
+  } {
     const seen = new Set<Node>();
-    let found = false;
+    const result = { deploysStatefulChild: false, deploysWithValue: false, emitsEvent: false };
     const walk = (n: Node): void => {
-      if (found || seen.has(n)) return;
+      if (result.deploysStatefulChild || seen.has(n)) return;
       seen.add(n);
       if (n instanceof InstantiationNode) {
         const child = this.contractMap.get(n.identifier?.name);
-        if (child && (child.stateVariables.length > 0 || child.collections.length > 0)) { found = true; return; }
+        if (child && (child.stateVariables.length > 0 || child.collections.length > 0)) {
+          result.deploysStatefulChild = true;
+          return;
+        }
+        if (n.callOptions?.value) result.deploysWithValue = true;
+      } else if (n instanceof EmitStatementNode) {
+        result.emitsEvent = true;
       }
-      for (const val of Object.values(n as unknown as Record<string, unknown>)) {
-        if (found) return;
+      for (const key in n) {
+        if (result.deploysStatefulChild) return;
+        const val = n[key as keyof Node];
         if (val instanceof Node) walk(val);
         else if (Array.isArray(val)) for (const x of val) if (x instanceof Node) walk(x);
       }
     };
     const allFunctions = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions];
     for (const fn of allFunctions) if (fn?.body) walk(fn.body);
-    return found;
-  }
-
-  private detectValueBearingDeploy(node: ContractNode): boolean {
-    const seen = new Set<Node>();
-    let found = false;
-    const walk = (current: Node): void => {
-      if (found || seen.has(current)) return;
-      seen.add(current);
-      if (current instanceof InstantiationNode && current.callOptions?.value) {
-        found = true;
-        return;
-      }
-      for (const value of Object.values(current as unknown as Record<string, unknown>)) {
-        if (found) return;
-        if (value instanceof Node) walk(value);
-        else if (Array.isArray(value)) for (const child of value) if (child instanceof Node) walk(child);
-      }
-    };
-    const allFunctions = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions];
-    for (const func of allFunctions) if (func?.body) walk(func.body);
-    return found;
-  }
-
-  // A contract that emits ANY event (including a foreign/library event it does not itself declare) needs a state
-  // NFT to carry the event commitment, so emitting - like declaring an event - forces the contract stateful.
-  private detectEmitsEvent(node: ContractNode): boolean {
-    const seen = new Set<Node>();
-    let found = false;
-    const walk = (n: Node): void => {
-      if (found || seen.has(n)) return;
-      seen.add(n);
-      if (n instanceof EmitStatementNode) { found = true; return; }
-      for (const val of Object.values(n as unknown as Record<string, unknown>)) {
-        if (found) return;
-        if (val instanceof Node) walk(val);
-        else if (Array.isArray(val)) for (const x of val) if (x instanceof Node) walk(x);
-      }
-    };
-    const allFns = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions];
-    for (const fn of allFns) if (fn?.body) walk(fn.body);
-    return found;
+    return result;
   }
 
   // A child function is FOLDABLE into its deploy (genesis becomes its post-call state) iff it is a pure

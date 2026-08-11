@@ -288,15 +288,20 @@ function findCandidates(
     return assigned;
   };
   const bodyIds = bodies.map((body) => body.script.map(idOf));
+  const maximumBodyLength = bodies.reduce((maximum, body) => Math.max(maximum, body.script.length), 0);
+  // Pack (left body, right body, signed diagonal) into one collision-free numeric key. Body indices and offsets
+  // are bounded by these in-memory arrays, so this stays far below Number.MAX_SAFE_INTEGER for compilable input.
+  const diagonalSpan = maximumBodyLength * 2 + 1;
   // Candidate seeds at adjacent offsets often compare the same long equal runs again (particularly generated
   // function bodies with a shared prologue/epilogue). Memoize exact suffix-prefix lengths by body pair and
   // diagonal. Filling the run backwards makes every element on a diagonal participate in at most one scan.
-  const commonPrefixByDiagonal = new Map<string, Int32Array>();
+  const commonPrefixByDiagonal = new Map<number, Int32Array>();
   const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
     const left = bodyIds[leftBody];
     const right = bodyIds[rightBody];
     if (leftStart >= left.length || rightStart >= right.length) return 0;
-    const key = `${leftBody}:${rightBody}:${rightStart - leftStart}`;
+    const key = (leftBody * bodies.length + rightBody) * diagonalSpan
+      + rightStart - leftStart + maximumBodyLength;
     let lengths = commonPrefixByDiagonal.get(key);
     if (lengths === undefined) {
       lengths = new Int32Array(left.length);
@@ -321,7 +326,6 @@ function findCandidates(
     }
     return prefix;
   });
-  const maximumBodyLength = bodies.reduce((maximum, body) => Math.max(maximum, body.script.length), 0);
   const balanceScratch: BalanceScratch = {
     firstIndexAtDepth: new Int32Array(maximumBodyLength + 1),
     depthGeneration: new Uint32Array(maximumBodyLength + 1),

@@ -20,7 +20,11 @@ export default defineConfig(solidhatPreset(
       },
     },
     test: {
-      include: ['test/utils.test.ts', 'test/communication-signature.test.ts'],
+      include: [
+        'test/utils.test.ts',
+        'test/communication-signature.test.ts',
+        'test/marketplace-cold.test.ts',
+      ],
       testTimeout: 120_000,
       hookTimeout: 120_000,
       server: {

@@ -9,7 +9,8 @@ import {
   decodeJobRatedEvent,
   decodeJobSignedEvent,
 } from '../src/utils/decodeEvents';
-import { computeJobStateDiffs } from '../src/utils/ui';
+import { computeJobStateDiffs, fetchEventContents } from '../src/utils/ui';
+import { hashToCid } from '../src/utils/encryption';
 import { Job, JobEvent, JobEventType, JobState } from '../src/interfaces';
 
 const ETHER = 10n ** 18n;
@@ -34,9 +35,9 @@ const addressField = (address: string): number[] => [
 ];
 const stringField = (value: string): number[] => lengthPrefixed(...new TextEncoder().encode(value));
 
-const createdEventData = (amount = 100n): Uint8Array => Uint8Array.from([
+const createdEventData = (amount = 100n, contentByte = 0xab): Uint8Array => Uint8Array.from([
   ...stringField('Cold job'),
-  ...Array(32).fill(0xab),
+  ...Array(32).fill(contentByte),
   0,
   1, 0, ...stringField('test'),
   ...addressField(worker),
@@ -426,6 +427,73 @@ describe('marketplace cold paths', () => {
       expect(() => computeJobStateDiffs([
         jobEvent(JobEventType.Taken, { address_: worker, data_: '0x01' }),
       ], '7')).to.throw('Job must be created before it can be taken');
+    });
+  });
+
+  describe('event content hydration', () => {
+    it('hydrates job descriptions and delivered results from plaintext IPFS payloads', async () => {
+      const contentHash = `0x${'ab'.repeat(32)}`;
+      const resultHash = `0x${'cd'.repeat(32)}`;
+      const reconstructed = computeJobStateDiffs([
+        jobEvent(JobEventType.Created, {
+          address_: creator,
+          data_: createdEventData(),
+          timestamp_: 100,
+        }),
+        jobEvent(JobEventType.Delivered, { data_: resultHash, timestamp_: 200 }),
+      ], '7');
+      const bodies: Record<string, string> = {
+        [hashToCid(contentHash)]: 'Build a native BCH marketplace',
+        [hashToCid(resultHash)]: 'Delivered successfully',
+      };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (input) => {
+        const cid = String(input).split('/').at(-1)!;
+        const payload = Uint8Array.from([
+          ...new Uint8Array(24),
+          ...new TextEncoder().encode(bodies[cid]),
+        ]);
+        return new Response(Buffer.from(payload).toString('base64'), { status: 200 });
+      };
+
+      try {
+        const hydrated = await fetchEventContents(reconstructed, {});
+        expect(hydrated[0].job.content).to.equal('Build a native BCH marketplace');
+        expect(hydrated[1].job.content).to.equal('Build a native BCH marketplace');
+        expect(hydrated[1].job.result).to.equal('Delivered successfully');
+        expect(hydrated[1].diffs.at(-1)).to.deep.equal({
+          field: 'result', oldValue: undefined, newValue: 'Delivered successfully',
+        });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('hydrates media as a deterministic download fragment', async () => {
+      const contentHash = `0x${'ef'.repeat(32)}`;
+      const reconstructed = computeJobStateDiffs([
+        jobEvent(JobEventType.Created, {
+          address_: creator,
+          data_: createdEventData(100n, 0xef),
+          timestamp_: 100,
+        }),
+      ], '7');
+      const media = ethers.getBytes(ethers.AbiCoder.defaultAbiCoder().encode(
+        ['string', 'string', 'bytes'],
+        ['report.txt', 'text/plain', new TextEncoder().encode('done')],
+      ));
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => new Response(Buffer.from(Uint8Array.from([
+        ...new Uint8Array(24), ...media,
+      ])).toString('base64'), { status: 200 });
+
+      try {
+        const [hydrated] = await fetchEventContents(reconstructed, {});
+        const target = `filename=report.txt&cid=${hashToCid(contentHash)}`;
+        expect(hydrated.job.content).to.equal(`#${encodeURIComponent(target)}`);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 });

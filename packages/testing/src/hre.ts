@@ -202,6 +202,10 @@ interface EthersOptions {
 /** Hardhat signers use EIP-191 message signatures; the BCH SDK signer intentionally uses Bitcoin Signed Message. */
 function withEthersMessageSigning<T extends Signer>(signer: T): T {
   const connect = signer.connect.bind(signer);
+  Object.defineProperty(signer, 'signingKey', {
+    configurable: true,
+    get: (): EthersSigningKey => new EthersSigningKey(signer.privateKey),
+  });
   Object.defineProperty(signer, 'signMessage', {
     configurable: true,
     value: async (message: string | Uint8Array): Promise<string> =>

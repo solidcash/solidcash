@@ -3711,17 +3711,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const originalOrder = bodies.map((_body, index) => index);
     const shortestOrder = [...originalOrder].sort((left, right) =>
       bodies[left].script.length - bodies[right].script.length);
+    const strategies = this.currentContractHasMessageBus
+      ? [['savings', 12, 1024, 'original'], ['density', 12, 1024, 'original']] as const
+      : [
+        ['savings', 12, 1024, 'original'], ['density', 12, 1024, 'original'],
+        ['savings', 11, 1024, 'original'], ['density', 11, 1024, 'original'],
+        ['savings', 10, 1024, 'original'], ['density', 10, 1024, 'original'],
+        ['savings', 7, 1024, 'original'], ['density', 7, 1024, 'original'],
+        ['savings', 10, 512, 'original'], ['density', 10, 512, 'original'],
+        ['savings', 10, 512, 'shortest'], ['density', 10, 512, 'shortest'],
+      ] as const;
     for (const width of new Set(widths)) {
-      const strategies = this.currentContractHasMessageBus
-        ? [['savings', 12, 1024, 'original'], ['density', 12, 1024, 'original']] as const
-        : [
-          ['savings', 12, 1024, 'original'], ['density', 12, 1024, 'original'],
-          ['savings', 11, 1024, 'original'], ['density', 11, 1024, 'original'],
-          ['savings', 10, 1024, 'original'], ['density', 10, 1024, 'original'],
-          ['savings', 7, 1024, 'original'], ['density', 7, 1024, 'original'],
-          ['savings', 10, 512, 'original'], ['density', 10, 512, 'original'],
-          ['savings', 10, 512, 'shortest'], ['density', 10, 512, 'shortest'],
-        ] as const;
       for (const [ranking, minimumWindowElements, candidateGroupsPerRound, bodyOrder] of strategies) {
         this.restoreCompactHelperIds(entryPool);
         const order = bodyOrder === 'shortest' ? shortestOrder : originalOrder;

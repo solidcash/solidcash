@@ -164,6 +164,9 @@ interface BalanceScratch {
   firstIndexAtDepth: Int32Array;
   depthGeneration: Uint32Array;
   generation: number;
+  bestStart: number;
+  bestEnd: number;
+  bestBytes: number;
 }
 
 /**
@@ -182,7 +185,7 @@ interface BalanceScratch {
 function longestBalancedSpan(
   elements: Script, anchoredIndices: Uint8Array | undefined,
   regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
-): { start: number; end: number; bytes: number } {
+): BalanceScratch {
   let bestStart = 0;
   let bestEnd = 0;
   let bestBytes = 0;
@@ -226,7 +229,10 @@ function longestBalancedSpan(
       bestBytes = bytes;
     }
   }
-  return { start: bestStart, end: bestEnd, bytes: bestBytes };
+  scratch.bestStart = bestStart;
+  scratch.bestEnd = bestEnd;
+  scratch.bestBytes = bestBytes;
+  return scratch;
 }
 
 interface Candidate {
@@ -437,6 +443,9 @@ function findCandidates(
     firstIndexAtDepth: new Int32Array(maximumBodyLength + 1),
     depthGeneration: new Uint32Array(maximumBodyLength + 1),
     generation: 0,
+    bestStart: 0,
+    bestEnd: 0,
+    bestBytes: 0,
   };
 
   // Seed groups are flat body/start pairs. Most windows are discarded before becoming candidates, so avoid an
@@ -596,18 +605,18 @@ function findCandidates(
     const balanced = longestBalancedSpan(
       headScript, anchoredIndices, firstStart, length, bodyBytePrefixes[firstBody], balanceScratch,
     );
-    if (balanced.bytes === 0) continue;
+    if (balanced.bestBytes === 0) continue;
 
     // Overlapping copies cannot both be replaced; keep a maximal non-overlapping subset. `group` already follows
     // body/start order: windows and constants are scanned in that order, and collision partitioning only filters
     // those streams. Avoid sorting the same sequence again for every candidate.
-    const spanLength = balanced.end - balanced.start;
+    const spanLength = balanced.bestEnd - balanced.bestStart;
     const occurrences: number[] = [];
     let previousBody = -1;
     let nextAvailableStart = 0;
     for (let occurrenceIndex = 0; occurrenceIndex < group.length; occurrenceIndex += 2) {
       const body = group[occurrenceIndex];
-      const start = group[occurrenceIndex + 1] + balanced.start;
+      const start = group[occurrenceIndex + 1] + balanced.bestStart;
       if (previousBody === body && start < nextAvailableStart) continue;
       occurrences.push(body, start);
       previousBody = body;
@@ -628,11 +637,11 @@ function findCandidates(
     }
     if (splitsInvoke) continue;
 
-    const saved = savingsOf(balanced.bytes, occurrences.length / 2, idPushBytes);
+    const saved = savingsOf(balanced.bestBytes, occurrences.length / 2, idPushBytes);
     if (saved <= 0) continue;
     candidates.push({
-      span: headScript.slice(firstStart + balanced.start, firstStart + balanced.end),
-      bytes: balanced.bytes,
+      span: headScript.slice(firstStart + balanced.bestStart, firstStart + balanced.bestEnd),
+      bytes: balanced.bestBytes,
       occurrences,
       saved,
     });

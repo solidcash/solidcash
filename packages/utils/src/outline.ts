@@ -669,6 +669,7 @@ export function outlineSharedSpans(
     origins: undefined as number[] | undefined,
   }));
   const functions: OutlinedFunction[] = [];
+  const claimed: Uint8Array[] = working.map((body) => new Uint8Array(body.script.length));
   let savedBytes = 0;
 
   for (let round = 0; round < MAXIMUM_ROUNDS; round += 1) {
@@ -718,7 +719,10 @@ export function outlineSharedSpans(
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
     // a claimed range makes every overlapping candidate stale until the next round re-measures.
-    const claimed = corpus.map((body) => new Uint8Array(body.script.length));
+    while (claimed.length < corpus.length) {
+      claimed.push(new Uint8Array(corpus[claimed.length].script.length));
+    }
+    const claimGeneration = round + 1;
     const applied: { definition: OutlinedFunction; occurrences: number[]; saved: number }[] = [];
     const free: number[] = [];
     for (const candidate of candidates) {
@@ -730,7 +734,7 @@ export function outlineSharedSpans(
         const start = candidate.occurrences[occurrenceIndex + 1];
         let unclaimed = true;
         for (let i = 0; i < spanLength; i += 1) {
-          if (claimed[body][start + i] !== 0) {
+          if (claimed[body][start + i] === claimGeneration) {
             unclaimed = false;
             break;
           }
@@ -742,7 +746,7 @@ export function outlineSharedSpans(
       for (let occurrenceIndex = 0; occurrenceIndex < free.length; occurrenceIndex += 2) {
         const body = free[occurrenceIndex];
         const start = free[occurrenceIndex + 1];
-        claimed[body].fill(1, start, start + spanLength);
+        claimed[body].fill(claimGeneration, start, start + spanLength);
       }
       applied.push({
         definition: {

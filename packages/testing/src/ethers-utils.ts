@@ -8,7 +8,7 @@
  */
 import {
   parseUnits, formatUnits, parseEther, formatEther,
-  keccak256, sha256, ripemd160, id, computeAddress,
+  keccak256, sha256, ripemd160, randomBytes, id, computeAddress,
   toUtf8Bytes, toUtf8String, getBytes, hexlify, concat, zeroPadValue, zeroPadBytes,
   isHexString, isBytesLike, getBigInt, toBigInt, getNumber, toBeHex, toBeArray, toQuantity,
   getAddress, isAddress, solidityPacked, solidityPackedKeccak256,
@@ -16,12 +16,13 @@ import {
   ZeroAddress, ZeroHash, MaxUint256, MaxInt256, MinInt256, WeiPerEther, N, EtherSymbol, MessagePrefix,
   type BytesLike, type BigNumberish,
 } from 'ethers';
+import { hashMessage } from 'ethers/hash';
 import { getCreateAddress, getCreate2Address } from './ethers-shim.js';
 import { AbiCoder, defaultAbiCoder } from './cash-abi-coder.js';
 
 export {
   parseUnits, formatUnits, parseEther, formatEther,
-  keccak256, sha256, ripemd160, id, computeAddress,
+  keccak256, sha256, ripemd160, randomBytes, id, computeAddress, hashMessage,
   toUtf8Bytes, toUtf8String, getBytes, hexlify, concat, zeroPadValue, zeroPadBytes,
   isHexString, isBytesLike, getBigInt, toBigInt, getNumber, toBeHex, toBeArray, toQuantity,
   getAddress, isAddress, solidityPacked, solidityPackedKeccak256,
@@ -46,7 +47,7 @@ export { BigNumber, getBigNumber } from './ethers-bignumber.js';
 
 /** ethers v5 `ethers.utils` namespace subset (forwards to v6 functions). */
 export const utils = {
-  parseUnits, formatUnits, parseEther, formatEther, keccak256, sha256, ripemd160, id,
+  parseUnits, formatUnits, parseEther, formatEther, keccak256, sha256, ripemd160, randomBytes, id, hashMessage,
   toUtf8Bytes, toUtf8String, getBytes, arrayify: getBytes, hexlify, concat, zeroPadValue, zeroPadBytes,
   isHexString, isBytesLike, getAddress, isAddress, getCreate2Address, solidityPack: solidityPacked,
   // MistSwap utilities use `new ethers.utils.AbiCoder()` (v5); v6 exposes the class as `AbiCoder` and a

@@ -68,22 +68,43 @@ export const publishToIpfs = async (message: string, sessionKey: string | undefi
   return publishToIpfsRaw(encodedData);
 }
 
-export const publishMediaToIpfs = async (fileName: string, mimeType: string, mediaBytes: Uint8Array, sessionKey: string | undefined = undefined): Promise<{
+type PublishedIpfs = { hash: string; cid: string };
+
+export function publishMediaToIpfs(
+  mimeType: string, mediaBytes: Uint8Array, sessionKey?: string,
+): Promise<PublishedIpfs>;
+export function publishMediaToIpfs(
+  fileName: string, mimeType: string, mediaBytes: Uint8Array, sessionKey?: string,
+): Promise<PublishedIpfs>;
+export async function publishMediaToIpfs(
+  fileNameOrMimeType: string,
+  mimeTypeOrBytes: string | Uint8Array,
+  mediaBytesOrSessionKey?: Uint8Array | string,
+  currentSessionKey?: string,
+): Promise<{
   hash: string;
   cid: string;
-}> => {
-  if (fileName.length === 0) {
+}> {
+  const legacy = mimeTypeOrBytes instanceof Uint8Array;
+  const fileName = legacy ? undefined : fileNameOrMimeType;
+  const mimeType = legacy ? fileNameOrMimeType : mimeTypeOrBytes;
+  const mediaBytes = legacy ? mimeTypeOrBytes : mediaBytesOrSessionKey;
+  const sessionKey = legacy ? mediaBytesOrSessionKey : currentSessionKey;
+
+  if (fileName !== undefined && fileName.length === 0) {
     throw new Error("empty file name");
   }
-  if (mimeType.length === 0 || mimeType.indexOf("/") === -1) {
+  if (typeof mimeType !== 'string' || mimeType.length === 0 || mimeType.indexOf("/") === -1) {
     throw new Error("wrong mime type");
   }
-  if (mediaBytes.length === 0) {
+  if (!(mediaBytes instanceof Uint8Array) || mediaBytes.length === 0) {
     throw new Error("empty data");
   }
 
-  const binary = getBytes(AbiCoder.defaultAbiCoder().encode(["string", "string", "bytes"], [fileName, mimeType, mediaBytes]));
-  const encodedData: string = encodeBase64(encryptBinaryData(binary, sessionKey));
+  const binary = getBytes(fileName === undefined
+    ? AbiCoder.defaultAbiCoder().encode(["string", "bytes"], [mimeType, mediaBytes])
+    : AbiCoder.defaultAbiCoder().encode(["string", "string", "bytes"], [fileName, mimeType, mediaBytes]));
+  const encodedData: string = encodeBase64(encryptBinaryData(binary, sessionKey as string | undefined));
   return publishToIpfsRaw(encodedData);
 }
 
@@ -154,7 +175,11 @@ export const getMediaFromIpfs = async (cidOrHash: string, sessionKey: string | u
   mediaBytes: Uint8Array;
 }> => {
   const decodedData = decryptBinaryData(decodeBase64(await getFromIpfsRaw(cidOrHash)), sessionKey);
-  const [fileName, mimeType, mediaBytes] = AbiCoder.defaultAbiCoder().decode(["string", "string", "bytes"], getBytes(decodedData));
+  const legacy = decodedData.length >= 32 && decodedData.slice(0, 31).every((byte) => byte === 0)
+    && decodedData[31] === 0x40;
+  const [fileName, mimeType, mediaBytes] = legacy
+    ? ['', ...AbiCoder.defaultAbiCoder().decode(["string", "bytes"], getBytes(decodedData))]
+    : AbiCoder.defaultAbiCoder().decode(["string", "string", "bytes"], getBytes(decodedData));
   return { fileName, mimeType, mediaBytes: getBytes(mediaBytes) };
 }
 

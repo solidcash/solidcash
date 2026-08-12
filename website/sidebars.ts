@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
           ],
         },
         'sdk/signature-templates',
+        'sdk/solidhat',
         'sdk/testing-setup',
         'sdk/examples',
       ],

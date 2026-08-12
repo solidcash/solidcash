@@ -1460,10 +1460,14 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
       const state = unknownState as AuthenticationProgramStateCommon;
       const opcode = state.instructions[state.ip]?.opcode;
       if (opcode === Op.OP_EQUALVERIFY && !cached.awaitingVerification) return;
-      // libauth operations return the next immutable state rather than mutating the observed one. Retain that
-      // step directly: sparse probes only keep a handful of states, and cloning their potentially huge stacks
-      // was measurable overhead on large non-split scripts.
-      cached.trace.push(state);
+      // libauth reuses/mutates parts of the state between operations. Snapshot the sparse observed states so
+      // later execution cannot rewrite the commitment/index pair consumed by the derivation extractors.
+      cached.trace.push({
+        ...state,
+        stack: state.stack.slice(),
+        alternateStack: state.alternateStack.slice(),
+        controlStack: state.controlStack.slice(),
+      });
       cached.awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
     },
   });

@@ -8384,7 +8384,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // particularly important for a low-level call: its opaque `bytes returndata` is commonly passed straight
         // to `abi.decode` (e.g. OpenZeppelin SafeERC20), so publishing SolidCash's compact pushdata framing here
         // makes an otherwise successful `returns (bool)` look like malformed/false EVM returndata.
-        if (this.compilerOptions.evmCompat && !this.isDynamicAbiType(returnTypes[i])) {
+        if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+          && this.isEvmAbiWordType(returnTypes[i])) {
           this.emitEvmEncodeValue(returnTypes[i], locationData);
         } else {
           this.emitPushdataEncode(returnTypes[i], locationData);
@@ -12004,6 +12005,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return false;
   }
 
+  /** Types represented by one EVM ABI word and supported by both word conversion helpers. */
+  private isEvmAbiWordType(t: Type): boolean {
+    return t === PrimitiveType.BOOL || t === PrimitiveType.BIGINT
+      || t instanceof IntType || t instanceof AddressType
+      || (t instanceof BytesType && t.bound !== undefined && t.bound <= 32);
+  }
+
   // ABI static (head) byte size of a STATIC type: a value type is one 32-byte word; a fixed-width struct is the
   // sum of its fields; a fixed-size array is N times its element. Used to size the head so dynamic offsets stay
   // correct when a static composite (struct/fixed-array) occupies more than one word in the head.
@@ -14054,7 +14062,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack('(returnData)');
       } else {
         // Decode return values from blob
-        if (this.compilerOptions.evmCompat && returnTypes.every((type) => !this.isDynamicAbiType(type))) {
+        if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+          && returnTypes.every((type) => this.isEvmAbiWordType(type))) {
           this.emitEvmAbiDecode(returnTypes, locationData);
           for (let i = 0; i < returnTypes.length; i++) this.pushToStack('(value)');
         } else {

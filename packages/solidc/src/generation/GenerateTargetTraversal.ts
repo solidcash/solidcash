@@ -3708,6 +3708,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let winningPool: ReturnType<typeof this.snapshotCompactHelperIds> | undefined;
     const entryPool = this.snapshotCompactHelperIds();
     const initialCandidateCaches = new Map<string, Map<string, unknown>>();
+    const originalOrder = bodies.map((_body, index) => index);
+    const shortestOrder = [...originalOrder].sort((left, right) =>
+      bodies[left].script.length - bodies[right].script.length);
     for (const width of new Set(widths)) {
       const strategies = this.currentContractHasMessageBus
         ? [['savings', 12, 1024, 'original'], ['density', 12, 1024, 'original']] as const
@@ -3721,9 +3724,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ] as const;
       for (const [ranking, minimumWindowElements, candidateGroupsPerRound, bodyOrder] of strategies) {
         this.restoreCompactHelperIds(entryPool);
-        const order = bodies.map((_body, index) => index);
-        if (bodyOrder === 'shortest') order.sort((left, right) =>
-          bodies[left].script.length - bodies[right].script.length);
+        const order = bodyOrder === 'shortest' ? shortestOrder : originalOrder;
         const initialCandidateCache = initialCandidateCaches.get(bodyOrder) ?? new Map<string, unknown>();
         initialCandidateCaches.set(bodyOrder, initialCandidateCache);
         const orderedAttempt = outlineSharedSpans(

@@ -590,8 +590,12 @@ export async function initHre(dir?: string, networkName?: string): Promise<Hardh
     console.error('init-hre-config', { dir, defaultNetwork: config.defaultNetwork,
       consensus: config.networks[config.defaultNetwork]?.consensus });
   }
-  // Hardhat places configured account balances in genesis; initialize the mock account set before tests run.
-  await hreGlobal.__solidcashActiveHre.ethers.getSigners(config.accounts?.count ?? 20);
+  // Hardhat places configured mock balances in genesis; initialize those accounts before tests run. Live-like
+  // providers (including regtest) fund only when a script explicitly requests signers, so read-only tasks such as
+  // compile and doctor do not mutate a real node wallet or chain merely by initializing the HRE.
+  if (hreGlobal.__solidcashActiveHre.network.provider instanceof MockNetworkProvider) {
+    await hreGlobal.__solidcashActiveHre.ethers.getSigners(config.accounts?.count ?? 20);
+  }
   return hreGlobal.__solidcashActiveHre;
 }
 

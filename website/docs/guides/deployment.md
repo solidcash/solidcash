@@ -7,6 +7,10 @@ Not every SolidCash contract needs a deployment transaction. In the UTXO model, 
 
 Deployment is only needed for **stateful contract systems** where CashTokens authenticate contract state. In these systems, a genesis transaction creates one or more token categories and initializes the contract UTXOs with the right token amounts, NFT capabilities, and NFT commitments.
 
+This guide explains the Bitcoin Cash mechanics and verification requirements of deployment. To compile and run
+repeatable deployment scripts across mocknet, BCHN regtest, chipnet, and mainnet, see the
+[SolidHat project tooling guide](/docs/sdk/solidhat#write-a-deployment-script).
+
 :::tip
 If your contract only enforces spending conditions, use the contract address directly. Deployment is for systems where CashTokens identify and track contract state.
 :::

@@ -238,6 +238,22 @@ describe('CLI entry points', () => {
     expect(output).toContain('"transaction":');
   }, 180_000);
 
+  it('discovers the generated JavaScript deployment script', () => {
+    const parent = temporaryDirectory('generated-javascript-deploy');
+    initializeProject({
+      cwd: parent, target: 'app', template: 'javascript', install: false,
+    });
+    const directory = join(parent, 'app');
+    symlinkSync(resolve('../../node_modules'), join(directory, 'node_modules'), 'dir');
+
+    const output = execFileSync(process.execPath, [solidhatCli, 'deploy', '--network=mock'], {
+      cwd: directory, encoding: 'utf8',
+    });
+
+    expect(output).toContain('Deploying on mock');
+    expect(output).toContain('"network": "mock"');
+  }, 180_000);
+
   it.runIf(process.env.TESTS_USE_REGTEST)('deploys the generated project through BCHN regtest', () => {
     const parent = temporaryDirectory('generated-regtest-deploy');
     initializeProject({ cwd: parent, target: 'app', install: false });

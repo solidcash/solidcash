@@ -94,8 +94,8 @@ and replaces the SolidCash artifact tree only after every compiler job succeeds.
 
 ## Deployment scripts
 
-SolidHat follows Hardhat's network-selected script workflow. `deploy` compiles and runs `scripts/deploy.ts` by
-default; `run` accepts any script path. `--network` may appear before or after the task:
+SolidHat follows Hardhat's network-selected script workflow. `deploy` compiles and runs `scripts/deploy.ts` or
+`scripts/deploy.js` by default; `run` accepts any script path. `--network` may appear before or after the task:
 
 ```sh
 solidhat deploy --network regtest

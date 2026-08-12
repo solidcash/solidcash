@@ -282,8 +282,16 @@ task('test', 'Run the test suite (Vitest)')
     return { status: res.status };
   });
 
-async function runScript(scriptValue: unknown, hre: HardhatRuntimeEnvironment): Promise<void> {
-  const script = path.resolve(String(scriptValue));
+async function runScript(
+  scriptValue: unknown, hre: HardhatRuntimeEnvironment, defaults: string[] = [],
+): Promise<void> {
+  const requested = scriptValue === undefined ? undefined : String(scriptValue);
+  const script = requested
+    ? path.resolve(requested)
+    : defaults.map((candidate) => path.resolve(candidate)).find((candidate) => fs.existsSync(candidate));
+  if (!script) {
+    throw new Error(`Script not found. Tried: ${defaults.map((candidate) => path.resolve(candidate)).join(', ')}`);
+  }
   if (!fs.existsSync(script)) throw new Error(`Script not found: ${script}`);
   (globalThis as any).hre = hre;
   await import(pathToFileURL(script).href);
@@ -298,11 +306,11 @@ task('run', 'Run a script with the SolidCash HRE available as the `hre` global')
   });
 
 task('deploy', 'Compile and run the conventional deployment script')
-  .addPositionalParam('script', 'Deployment script path', 'scripts/deploy.ts')
+  .addPositionalParam('script', 'Deployment script path (defaults to scripts/deploy.ts or .js)')
   .addFlag('no-compile', 'Skip compilation before running the deployment script')
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
     if (args['no-compile'] !== true) await hre.run('compile');
-    await runScript(args.script, hre);
+    await runScript(args.script, hre, ['scripts/deploy.ts', 'scripts/deploy.js']);
   });
 
 task('clean', 'Delete the artifacts directory')

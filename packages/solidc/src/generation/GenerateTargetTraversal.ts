@@ -3711,6 +3711,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const originalOrder = bodies.map((_body, index) => index);
     const shortestOrder = [...originalOrder].sort((left, right) =>
       bodies[left].script.length - bodies[right].script.length);
+    const shortestBodies = shortestOrder.map((index) => bodies[index]);
     const strategies = this.currentContractHasMessageBus
       ? [['savings', 12, 1024, 'original'], ['density', 12, 1024, 'original']] as const
       : [
@@ -3728,7 +3729,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const initialCandidateCache = initialCandidateCaches.get(bodyOrder) ?? new Map<string, unknown>();
         initialCandidateCaches.set(bodyOrder, initialCandidateCache);
         const orderedAttempt = outlineSharedSpans(
-          order.map((index) => bodies[index]),
+          bodyOrder === 'shortest' ? shortestBodies : bodies,
           () => encodeInt(this.allocateCompactHelperId()),
           () => width,
           ranking,

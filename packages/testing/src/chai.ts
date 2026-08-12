@@ -363,8 +363,36 @@ class Assertion {
   get with(): this { return this; }
   get at(): this { return this; }
   get of(): this { return this; }
-  get a(): this { return this; }
-  get an(): this { return this; }
+  a(type: string): this {
+    const ok = type === 'array' ? Array.isArray(this.actual)
+      : type === 'null' ? this.actual === null
+        : typeof this.actual === type;
+    if (ok === this.negate) {
+      throw new Error(`expected ${String(this.actual)} ${this.negate ? 'not ' : ''}to be a ${type}`);
+    }
+    return this;
+  }
+
+  an(type: string): this { return this.a(type); }
+
+  throw(matcher?: RegExp | string): this {
+    if (typeof this.actual !== 'function') throw new Error('expected target to be a function');
+    let thrown: unknown;
+    try {
+      this.actual();
+    } catch (error) {
+      thrown = error;
+    }
+    const message = String((thrown as { message?: unknown } | undefined)?.message ?? thrown ?? '');
+    const matches = thrown !== undefined && (matcher === undefined
+      || (matcher instanceof RegExp ? matcher.test(message) : message.includes(matcher)));
+    if (matches === this.negate) {
+      throw new Error(`expected function ${this.negate ? 'not ' : ''}to throw${matcher === undefined ? '' : ` ${String(matcher)}`}`);
+    }
+    return this;
+  }
+
+  throws(matcher?: RegExp | string): this { return this.throw(matcher); }
 
   get not(): this { this.negate = !this.negate; return this; }
 

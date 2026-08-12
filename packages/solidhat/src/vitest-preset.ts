@@ -7,8 +7,15 @@ export interface ViteLikeConfig {
   [key: string]: unknown;
 }
 
-const testingStub = (name: string): string => fileURLToPath(
-  new URL(`../../testing/dist/stubs/${name}.js`, import.meta.url),
+const testingEntry = (name: string): string => fileURLToPath(
+  new URL(`../../testing/dist/${name}.js`, import.meta.url),
+);
+const testingStub = (name: string): string => testingEntry(`stubs/${name}`);
+const solidhatEntry = (name: string): string => fileURLToPath(
+  new URL(`../dist/${name}.js`, import.meta.url),
+);
+const solidcashEntry = (name: string): string => fileURLToPath(
+  new URL(`../../solidcash/dist/${name}.js`, import.meta.url),
 );
 const solidcashVitest = fileURLToPath(
   new URL('../../solidcash/dist/test/TestExtensions.js', import.meta.url),
@@ -19,18 +26,24 @@ const testingSetup = fileURLToPath(
 
 export function compatibilityAliases(target: CompatibilityTarget): Record<string, string> {
   return {
-    hardhat: `@solidcash/solidhat/hardhat${target.hardhat}`,
-    'hardhat/config': `@solidcash/solidhat/hardhat${target.hardhat}`,
+    hardhat: solidhatEntry(`hardhat${target.hardhat}`),
+    'hardhat/config': solidhatEntry(`hardhat${target.hardhat}`),
     'hardhat/types': testingStub('empty'),
-    ethers: `@solidcash/solidhat/ethers${target.ethers}`,
-    '@nomicfoundation/hardhat-ethers': `@solidcash/solidhat/hardhat${target.hardhat}`,
+    ethers: solidhatEntry(`ethers${target.ethers}`),
+    '@nomicfoundation/hardhat-ethers': solidhatEntry(`hardhat${target.hardhat}`),
     '@nomicfoundation/hardhat-ethers/signers': testingStub('empty'),
-    '@nomiclabs/hardhat-ethers': `@solidcash/solidhat/hardhat${target.hardhat}`,
-    '@openzeppelin/hardhat-upgrades': `@solidcash/solidhat/hardhat${target.hardhat}`,
-    '@nomicfoundation/hardhat-network-helpers': '@solidcash/testing/network-helpers',
-    '@nomicfoundation/hardhat-toolbox/network-helpers': '@solidcash/testing/network-helpers',
-    '@nomicfoundation/hardhat-chai-matchers': '@solidcash/testing/chai',
-    chai: '@solidcash/testing/chai',
+    '@nomiclabs/hardhat-ethers': solidhatEntry(`hardhat${target.hardhat}`),
+    '@openzeppelin/hardhat-upgrades': solidhatEntry(`hardhat${target.hardhat}`),
+    '@nomicfoundation/hardhat-network-helpers': testingEntry('network-helpers'),
+    '@nomicfoundation/hardhat-toolbox/network-helpers': testingEntry('network-helpers'),
+    '@nomicfoundation/hardhat-chai-matchers': testingEntry('chai'),
+    chai: testingEntry('chai'),
+    '@solidcash/testing': testingEntry('index'),
+    '@solidcash/testing/config': testingEntry('config'),
+    '@solidcash/testing/ethers': testingEntry('ethers-utils'),
+    '@solidcash/testing/ethers-shim': testingEntry('ethers-shim'),
+    '@solidcash/testing/hre': testingEntry('hre'),
+    solidcash: solidcashEntry('index'),
     'chai-subset': testingStub('chai-plugin'),
     'chai-as-promised': testingStub('chai-plugin'),
     // Keep the setup extension in the same workspace package graph as this preset. Vite otherwise resolves a

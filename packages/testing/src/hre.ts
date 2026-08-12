@@ -6,6 +6,10 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { encodeCashAddress, hash160 } from '@bitauth/libauth';
+import { SigningKey as EthersSigningKey } from 'ethers/crypto';
+import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
+import { getBytes as getEthersBytes } from 'ethers/utils';
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
 import {
   type NetworkProvider,
@@ -56,6 +60,12 @@ export interface SolidcashEthers {
   provider: NetworkProvider;
   getSigners(count?: number, opts?: { satoshis?: bigint; mnemonic?: string }): Promise<Signer[]>;
   getSigner(index?: number, opts?: { satoshis?: bigint; mnemonic?: string }): Promise<Signer>;
+  /** Recover using the projection selected by `compiler.ecrecover` (`p2pkh` for native BCH identity). */
+  verifyMessage(message: string | Uint8Array, signature: Parameters<typeof verifyEvmMessage>[1]): string;
+  /** Recover the native BCH P2PKH CashAddress on the active network. */
+  verifyMessageP2pkh(message: string | Uint8Array, signature: Parameters<typeof verifyEvmMessage>[1]): string;
+  /** Recover the conventional ethers/Solidity 20-byte EVM address. */
+  verifyMessageEvm(message: string | Uint8Array, signature: Parameters<typeof verifyEvmMessage>[1]): string;
   // Accept a compiled artifact object OR a contract name (hardhat `getContractFactory("Name")`).
   getContractFactory<Value extends Artifact | SplitArtifactBundle | string>(artifactOrName: Value,
     runner?: ContractRunner): Value extends SplitArtifactBundle ? HardhatSplitContractFactory
@@ -183,7 +193,26 @@ export function loadArtifactOrSplitByName(artifactsDir: string, name: string): A
   return loadArtifactByName(artifactsDir, name);
 }
 
-interface EthersOptions { artifactsDir: string; accountsPath?: string }
+interface EthersOptions {
+  artifactsDir: string;
+  accountsPath?: string;
+  recoveryProjection: 'p2pkh' | 'evm';
+}
+
+/** Hardhat signers use EIP-191 message signatures; the BCH SDK signer intentionally uses Bitcoin Signed Message. */
+function withEthersMessageSigning<T extends Signer>(signer: T): T {
+  const connect = signer.connect.bind(signer);
+  Object.defineProperty(signer, 'signMessage', {
+    configurable: true,
+    value: async (message: string | Uint8Array): Promise<string> =>
+      new EthersSigningKey(signer.privateKey).sign(hashEvmMessage(message)).serialized,
+  });
+  Object.defineProperty(signer, 'connect', {
+    configurable: true,
+    value: (nextProvider: NetworkProvider): Signer => withEthersMessageSigning(connect(nextProvider)),
+  });
+  return signer;
+}
 
 function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOptions): SolidcashEthers {
   const { artifactsDir, accountsPath } = opts;
@@ -213,16 +242,30 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       // `fundingUtxos` to pre-split (saves a fan-out tx per deploy).
       // Hardhat accounts are effectively pre-funded for large deployment suites. Split BCH contracts consume
       // several genesis outputs, so use a similarly generous mock default while retaining an explicit override.
-      return anyProvider.getSigners(count, {
+      return (await anyProvider.getSigners(count, {
         // Bounded message-bus participant blocks can require dozens of
         // category-neutral filler inputs in one call. Keep the Hardhat-style
         // mock accounts generously pre-split so those compiler-owned slots do
         // not turn into an artificial wallet-funding limit.
         satoshis: 100_000_000n, fundingUtxos: 128, mnemonic, path: accountsPath, ...o,
-      });
+      })).map(withEthersMessageSigning);
     }
-    return signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath });
+    return signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath })
+      .map(withEthersMessageSigning);
   };
+
+  const verifyMessageP2pkh: SolidcashEthers['verifyMessageP2pkh'] = (message, signature) => {
+    const recovered = EthersSigningKey.recoverPublicKey(hashEvmMessage(message), signature);
+    const compressed = getEthersBytes(EthersSigningKey.computePublicKey(recovered, true));
+    const prefix = provider.network === 'mainnet' ? 'bitcoincash'
+      : provider.network === 'regtest' ? 'bchreg'
+        : 'bchtest';
+    return encodeCashAddress({
+      prefix, type: 'p2pkh', payload: hash160(compressed), throwErrors: true,
+    }).address;
+  };
+  const verifyMessageEvm: SolidcashEthers['verifyMessageEvm'] = (message, signature) =>
+    verifyEvmMessage(message, signature);
 
   // ethers `Wallet.createRandom()` returns a fresh HDNodeWallet with no provider; ported tests then
   // `.connect(provider)` and use it as an unauthorized signer. Bind the active provider and, on a mock network,
@@ -235,7 +278,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       const s = HDSigner.createRandom(p);
       const fundable = p as unknown as { addUtxo?: (a: string, u: Utxo) => Promise<Utxo> };
       if (typeof fundable.addUtxo === 'function') void fundable.addUtxo(s.getAddress(), randomUtxo({ satoshis: 1_000_000n }));
-      return s;
+      return withEthersMessageSigning(s);
     }
   }
   // ethers v6 keeps this compatibility constructor on HDNodeWallet. Unlike `HDSigner.fromPhrase`, its
@@ -243,7 +286,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
   const HDNodeWallet = Object.assign(HDSigner, {
     fromMnemonic(mnemonicValue: string | { phrase: string }, derivationPath?: string): HDSigner {
       const phrase = typeof mnemonicValue === 'string' ? mnemonicValue : mnemonicValue.phrase;
-      return HDSigner.fromPhrase(phrase, provider, derivationPath);
+      return withEthersMessageSigning(HDSigner.fromPhrase(phrase, provider, derivationPath));
     },
   });
 
@@ -350,15 +393,18 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     ...ethersUtils,
     provider: ethersProvider,
     getSigners,
+    verifyMessage: opts.recoveryProjection === 'p2pkh' ? verifyMessageP2pkh : verifyMessageEvm,
+    verifyMessageP2pkh,
+    verifyMessageEvm,
     getSigner: async (index = 0, o = {}): Promise<Signer> => {
       const anyProvider = provider as unknown as { getSigner?: (i: number, x: object) => Promise<Signer> };
       if (typeof anyProvider.getSigner === 'function') {
-        return anyProvider.getSigner(index, { mnemonic, path: accountsPath, ...o });
+        return withEthersMessageSigning(await anyProvider.getSigner(index, { mnemonic, path: accountsPath, ...o }));
       }
       const [signer] = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, {
         initialIndex: index, count: 1, path: accountsPath,
       });
-      return signer;
+      return withEthersMessageSigning(signer);
     },
     getContractFactory: contractFactory,
     getContractAt: contractAt,
@@ -390,6 +436,10 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     // Keep getSigners() and the hardhat-shaped config.networks.*.accounts.path view identical. Ported suites
     // commonly reconstruct HDNodeWallets from that published path and expect wallet i to be signer i.
     accountsPath: config.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,
+    recoveryProjection: config.compiler?.ecrecover === 'evm' ? 'evm'
+      : config.compiler?.ecrecover === 'p2pkh' ? 'p2pkh'
+        : config.compiler?.solidityImportCompat === true ? 'evm'
+          : 'p2pkh',
   };
   const base = buildConnection(name, config.networks[name], mnemonic, ethersOpts);
   // The active provider backs the module-global network helpers (loadFixture/time/...).

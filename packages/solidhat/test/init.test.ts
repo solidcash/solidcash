@@ -156,13 +156,15 @@ describe('initializeProject', () => {
 
   it('generates explicit aliases for each compatibility generation', () => {
     expect(compatibilityAliases({ hardhat: 2, ethers: 5 })).toMatchObject({
-      hardhat: '@solidcash/solidhat/hardhat2', ethers: '@solidcash/solidhat/ethers5',
-      '@nomicfoundation/hardhat-toolbox/network-helpers': '@solidcash/testing/network-helpers',
+      hardhat: expect.stringContaining('solidhat/dist/hardhat2.js'),
+      ethers: expect.stringContaining('solidhat/dist/ethers5.js'),
+      '@nomicfoundation/hardhat-toolbox/network-helpers': expect.stringContaining('testing/dist/network-helpers.js'),
       '@nomicfoundation/hardhat-ethers/signers': expect.stringContaining('testing/dist/stubs/empty.js'),
-      chai: '@solidcash/testing/chai',
+      chai: expect.stringContaining('testing/dist/chai.js'),
     });
     expect(compatibilityAliases({ hardhat: 3, ethers: 6 })).toMatchObject({
-      hardhat: '@solidcash/solidhat/hardhat3', ethers: '@solidcash/solidhat/ethers6',
+      hardhat: expect.stringContaining('solidhat/dist/hardhat3.js'),
+      ethers: expect.stringContaining('solidhat/dist/ethers6.js'),
     });
   });
 

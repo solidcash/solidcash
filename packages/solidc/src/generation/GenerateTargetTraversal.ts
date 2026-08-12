@@ -22931,10 +22931,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(hexToBin('0453434231'), locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData); // [idx, remainder]
 
-    // Construct the exact minimal push encoding of the expected blob. Blobs
-    // through 75 bytes use a one-byte direct-push opcode; the remainder of the
-    // The shared message-bus batch envelope above the direct-push range uses OP_PUSHDATA1
-    // followed by one length byte.
+    // Construct the exact minimal push encoding of the expected blob. BCH2026 permits stack items through
+    // 10,000 bytes: direct pushes cover 0..75, OP_PUSHDATA1 covers 76..255, and OP_PUSHDATA2 covers the rest.
     // Comparing the complete encoded push avoids divergent locator/parser
     // rules and rejects non-minimal encodings without content scanning.
     this.emit(encodeInt(BigInt(this.getStackIndex(accumulator) + 2)), locationData);
@@ -22956,8 +22954,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
     this.emit(Op.OP_ELSE, locationData);
-    // VM numbers >= 128 require a sign byte. Encode to two bytes and
-    // truncate to the unsigned one-byte PUSHDATA1 length.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(255n), locationData);
+    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    // VM numbers >= 128 require a sign byte. Encode to two bytes and truncate to the unsigned PUSHDATA1 byte.
     this.emit(encodeInt(2n), locationData);
     this.emit(Op.OP_NUM2BIN, locationData);
     this.emit(encodeInt(1n), locationData);
@@ -22968,6 +22969,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
+    this.emit(Op.OP_ELSE, locationData);
+    // MAX_MESSAGE_BUS_BLOB_BYTES is below 0x8000, so a fixed two-byte VM number is exactly uint16-le.
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(hexToBin('4d'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
+    this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_ENDIF, locationData);
 
     // Consume exactly the encoded second push and compare it byte-for-byte.

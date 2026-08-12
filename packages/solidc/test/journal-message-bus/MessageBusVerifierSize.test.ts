@@ -1,4 +1,4 @@
-import { asmToBytecode, messageBusVerifierCovenantBytecode } from '@solidcash/utils';
+import { asmToBytecode, bytecodeToScript, messageBusVerifierCovenantBytecode, Op } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../src/compiler.js';
 
@@ -17,18 +17,23 @@ describe('atomic verifier bytecode specialization', () => {
     const artifact = compileString(source, { forceStateful: true, messageBus: true });
     const verifierProgram = artifact.messageBus?.verifierProgram;
     expect(verifierProgram).toBeDefined();
+    expect(artifact.messageBus).not.toHaveProperty('version');
+    expect(verifierProgram!.results).toEqual([
+      { type: 'bytes32' }, { type: 'bytes32' }, { type: 'bytes32' },
+    ]);
     const sidecar = messageBusVerifierCovenantBytecode(verifierProgram!).length;
     // The integrated route also carries authenticated logical-caller and local effect-frame support. Those
-    // facilities moved the scalar participant from 1105 to 1346 bytes; the exact pair remains a drift tripwire,
+    // facilities moved the scalar participant from 1105 to 1269 bytes; the exact pair remains a drift tripwire,
     // while the bounds retain deliberate headroom below BCH's deployment limit.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
       direct: 120,
-      composed: 1346,
-      frameworkTax: 1226,
+      composed: 1269,
+      frameworkTax: 1149,
     });
-    expect(composed).toBeLessThanOrEqual(1400);
-    expect(composed - direct).toBeLessThanOrEqual(1250);
+    expect(composed).toBeLessThanOrEqual(1300);
+    expect(composed - direct).toBeLessThanOrEqual(1200);
     expect(sidecar).toBeLessThanOrEqual(10_000);
+    expect(bytecodeToScript(asmToBytecode(artifact.bytecode))).not.toContain(Op.OP_INPUTBYTECODE);
   });
 
   it('does not bake mapping, event, or value-effect validators into a pure returning sink', () => {

@@ -3,8 +3,12 @@ import {
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
-import { MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES } from '../../../src/stateful/covenant-helpers.js';
+import {
+  Contract, MockNetworkProvider, StatefulContract, messageBus,
+} from '../../../src/index.js';
+import {
+  createMessageBusVerifierUnlocker, MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES,
+} from '../../../src/stateful/covenant-helpers.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
@@ -80,41 +84,41 @@ interface CapacityReading {
 const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
   2: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_132, callManifestBytes: 294,
-    worstOperationCost: 2_196_068, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.30355910649120865,
+    transactionBytes: 23_016, callManifestBytes: 294,
+    worstOperationCost: 2_230_728, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.30835010505363264,
     inputOperationCosts: [
-      412_166, 442_373, 695, 2_159_183, 2_196_068, 27_321,
+      281_121, 311_108, 695, 2_193_876, 2_230_728, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_732_000, 1_766_400, 34_400, 7_234_400, 7_234_400, 112_800,
+      1_664_000, 1_690_400, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   4: {
     participants: 4, authenticatedParticipants: 4, slots: 12,
-    transactionBytes: 49_460, callManifestBytes: 584,
-    worstOperationCost: 3_917_521, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.5415129105385381,
+    transactionBytes: 49_228, callManifestBytes: 584,
+    worstOperationCost: 3_979_586, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.5500920601570275,
     inputOperationCosts: [
-      523_216, 687_881, 695, 687_881, 695, 582_281, 695, 3_825_456, 3_917_521, 3_916_983, 3_832_600,
+      334_055, 498_587, 695, 498_587, 695, 392_894, 695, 3_887_381, 3_979_586, 3_979_048, 3_894_492,
       27_321,
     ],
     inputMaximumOperationCosts: [
-      1_797_600, 3_032_800, 34_400, 3_032_800, 34_400, 1_766_400, 34_400, 7_234_400, 7_234_400,
+      1_729_600, 2_960_800, 34_400, 2_960_800, 34_400, 1_690_400, 34_400, 7_234_400, 7_234_400,
       7_234_400, 7_234_400, 112_800,
     ],
   },
   5: {
     participants: 5, authenticatedParticipants: 5, slots: 15,
-    transactionBytes: 62_747, callManifestBytes: 729,
-    worstOperationCost: 4_825_125, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.6669696173836116,
+    transactionBytes: 62_457, callManifestBytes: 729,
+    worstOperationCost: 4_900_944, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.6774499612960301,
     inputOperationCosts: [
-      578_709, 752_656, 695, 752_656, 695, 752_656, 695, 652_171, 695, 4_733_713, 4_825_125, 4_824_587,
-      4_824_030, 4_724_976, 27_321,
+      360_554, 534_295, 695, 534_295, 695, 534_295, 695, 433_787, 695, 4_809_254, 4_900_944, 4_900_406,
+      4_899_849, 4_800_484, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_830_400, 3_065_600, 34_400, 3_065_600, 34_400, 3_065_600, 34_400, 1_766_400, 34_400, 7_234_400,
+      1_762_400, 2_993_600, 34_400, 2_993_600, 34_400, 2_993_600, 34_400, 1_690_400, 34_400, 7_234_400,
       7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
@@ -263,6 +267,54 @@ const measure = (participants: number, builder: TransactionBuilder): CapacityRea
 };
 
 describe('atomic single-transaction capacity', () => {
+  it('admits BCH2026 stack items through 10 KB but rejects an oversized complete verifier input', () => {
+    const artifact = compileString(SINK, { forceStateful: true, messageBus: true });
+    const provider = new MockNetworkProvider({
+      consensusLimits: { maximumInputBytes: 10_000, maximumStackItemBytes: 10_000 },
+    });
+    const contract = new Contract(artifact, [0n], { provider });
+    const program = artifact.messageBus!.verifierProgram!;
+    const verifierArgs = program.inputs.map((input) => input.type === 'bytes' ? new Uint8Array() : 0n);
+    const categoryId = '11'.repeat(32);
+
+    const ordinary = createMessageBusVerifierUnlocker(
+      contract, categoryId, new Uint8Array(256), verifierArgs,
+    );
+    expect(ordinary.generateUnlockingBytecode({} as never).length)
+      .toBeGreaterThanOrEqual(MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES);
+    expect(() => createMessageBusVerifierUnlocker(
+      contract, categoryId, new Uint8Array(10_000), verifierArgs,
+    )).toThrow(/unlocking-bytecode bytes; maximum is 10000/);
+    expect(() => createMessageBusVerifierUnlocker(
+      contract, categoryId, new Uint8Array(10_001), verifierArgs,
+    )).toThrow(/maximum stack item is 10000 bytes/);
+
+    const asymmetricProvider = new MockNetworkProvider({
+      consensusLimits: { maximumInputBytes: 20_000, maximumStackItemBytes: 10_000 },
+    });
+    const asymmetricContract = new Contract(artifact, [0n], { provider: asymmetricProvider });
+    const hugeIntegerArgs = [...verifierArgs];
+    hugeIntegerArgs[0] = 1n << 80_000n;
+    expect(() => createMessageBusVerifierUnlocker(
+      asymmetricContract, categoryId, new Uint8Array(256), hugeIntegerArgs,
+    )).toThrow(/maximum stack item is 10000 bytes/);
+
+    const shortCommitmentProvider = new MockNetworkProvider({
+      consensusLimits: { maximumNftCommitmentBytes: 69 },
+    });
+    const shortCommitmentContract = new Contract(artifact, [0n], { provider: shortCommitmentProvider });
+    expect(() => createMessageBusVerifierUnlocker(
+      shortCommitmentContract, categoryId, new Uint8Array(256), verifierArgs,
+    )).toThrow(/requires a 70-byte recurrent NFT commitment/);
+
+    const malformedLimitsProvider = new MockNetworkProvider();
+    malformedLimitsProvider.consensusLimits.maximumStackItemBytes = Number.NaN;
+    const malformedLimitsContract = new Contract(artifact, [0n], { provider: malformedLimitsProvider });
+    expect(() => createMessageBusVerifierUnlocker(
+      malformedLimitsContract, categoryId, new Uint8Array(256), verifierArgs,
+    )).toThrow(/maximumStackItemBytes.*positive safe integer/);
+  });
+
   it.each([2, 4, 5])('fits a %i-participant compiled chain under stock BCH-2026 limits', async (count) => {
     const builder = await buildChain(count);
     const reading = measure(count, builder);

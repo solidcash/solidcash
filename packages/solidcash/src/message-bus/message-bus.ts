@@ -1,6 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  ArrayType, decodePushdataValue, parseType, type Artifact, type StateValue, scriptToBytecode,
+  ArrayType, ATOMIC_MESSAGE_BUS_MAX_ROWS, decodePushdataValue, MAX_MESSAGE_BUS_BLOB_BYTES,
+  parseType, type Artifact, type StateValue, scriptToBytecode,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, isSignatureTemplateArray, type FunctionArgument } from '../Argument.js';
 import SignatureTemplate from '../SignatureTemplate.js';
@@ -102,27 +103,30 @@ export function encodeMessageBatch(
       `Artifact '${artifact.contractName}' does not advertise a message-bus route`,
     );
   }
-  if (capability.version !== 1) {
-    throw new MessageBusDiagnosticError(
-      'L3_PROTOCOL_VERSION_UNSUPPORTED',
-      `artifact '${artifact.contractName}' advertises unsupported message bus version ${String(capability.version)}`,
-      { metadataField: 'messageBus.version', actual: capability.version, expected: 1, ownerIdentity: artifact.contractName },
-    );
-  }
-  if (capability.selector !== '53434231'
-    || !Number.isInteger(capability.maximumRows) || capability.maximumRows < 1
-    || !Number.isInteger(capability.maximumBlobBytes) || capability.maximumBlobBytes < 1) {
+  if ('version' in capability || capability.selector !== '53434231'
+    || !Number.isSafeInteger(capability.maximumRows) || capability.maximumRows < 1
+    || capability.maximumRows > ATOMIC_MESSAGE_BUS_MAX_ROWS
+    || (capability.minimumRows !== undefined
+      && (!Number.isSafeInteger(capability.minimumRows) || capability.minimumRows < 1
+        || capability.minimumRows > capability.maximumRows))
+    || capability.maximumBlobBytes !== MAX_MESSAGE_BUS_BLOB_BYTES) {
     throw new MessageBusDiagnosticError(
       'L3_PROTOCOL_METADATA_MALFORMED',
       `artifact '${artifact.contractName}' publishes malformed message-bus batch capability metadata`,
       {
         metadataField: 'messageBus',
         actual: {
+          ...(('version' in capability) && { legacyVersion: (capability as { version?: unknown }).version }),
           selector: capability.selector,
+          minimumRows: capability.minimumRows,
           maximumRows: capability.maximumRows,
           maximumBlobBytes: capability.maximumBlobBytes,
         },
-        expected: { selector: '53434231', positiveIntegerBounds: true },
+        expected: {
+          selector: '53434231', minimumRows: '[1, maximumRows] or absent',
+          maximumRows: `[1, ${ATOMIC_MESSAGE_BUS_MAX_ROWS}]`,
+          maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+        },
         ownerIdentity: artifact.contractName,
       },
     );

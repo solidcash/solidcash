@@ -117,6 +117,9 @@ import {
   createEventNftUnlocker, createAnonymousEventNftUnlocker,
   createTokenContainerUnlocker, createSatoshiContainerUnlocker,
   resolveCollectionSignature, resolveCategoryFromLockingBytecode, resolveCategoryFromAddress,
+  assertMessageBusCapability,
+  assertMessageBusVerifierCommitmentCapacity,
+  getMessageBusVerifierMaximumScriptBytes,
 } from './covenant-helpers.js';
 import {
   findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
@@ -2797,23 +2800,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // commitment ordinal as a stable identity. A composed transaction consumes one instance and recreates it at
     // the same input/output index, so N instances permit N independently in-flight root compositions.
     if (messageBusVerificationInputCount > 0) {
-      const verifierProgram = artifact.messageBus?.verifierProgram;
-      if (!verifierProgram) {
-        throw new Error(`Contract '${artifact.contractName}' publishes no message bus verifier program`);
-      }
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_VERIFIER_LIMIT === '1') {
-        // eslint-disable-next-line no-console
-        console.error('verifier-limit', {
-          contract: artifact.contractName,
-          maximumInputBytes: options.provider.consensusLimits?.maximumInputBytes,
-          hasLimits: !!options.provider.consensusLimits,
-          providerCtor: options.provider.constructor?.name,
-        });
-      }
+      assertMessageBusVerifierCommitmentCapacity(options.provider);
+      const verifierProgram = assertMessageBusCapability(artifact);
       const verifierAddress = scriptToLockingBytecode(
         buildMessageBusVerifierCovenantScript(
-          verifierProgram, options.provider.consensusLimits?.maximumInputBytes ?? 10_000,
+          verifierProgram, getMessageBusVerifierMaximumScriptBytes(options.provider),
         ), 'p2sh32',
       );
       for (let instance = 0; instance < messageBusVerificationInputCount; instance++) {
@@ -15251,6 +15242,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       builder.requireLoopEntryCount(collectionName, count);
     }
 
+    // A compiler-owned message-bus route already reserves an exact entry slot for every route key witness.
+    // `entryLoopWrites` still advertises the collection because the route dispatches a variable number of rows,
+    // but encodeMessageBatch requires every non-per-row witness to identify that one physical entry. Treating it
+    // as a second loop-created entry minted an unpaired trailing output (and could never fit the published block
+    // layout). The fixed entry slot owns both the initial state and every sequential update of that same key.
+    if (abiFunction?.name.startsWith('__message_bus')) {
+      const fixedRouteEntries = new Set((entryAccesses ?? []).map((access) => access.collection));
+      for (const collectionName of entryLoopWrites) {
+        if (!fixedRouteEntries.has(collectionName)) continue;
+        builder.setLoopEntryCommitments(collectionName, []);
+        builder.pinLoopEntry(collectionName);
+      }
+    }
+
     // P5b COMPUTED values: register the collections whose value chunks must be DERIVED from the trace (the covenant
     // pins them but the SDK has no value param to build them). The auto-derivation reads nNew from the entry's len4
     // and progressively extracts the pinned chunk commitments (like dynamicChunkVars).
@@ -16194,11 +16199,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (rows.length < 2) throw new Error('Repeated external message-bus batch batch must contain at least two rows');
 
     const capability = calleeRouteArtifact.messageBus;
-    if (!capability || capability.version !== 1 || capability.selector !== '53434231') {
+    if (!capability) {
       throw new Error(
         `${externalCall.interfaceName} does not advertise a compatible message-bus route`,
       );
     }
+    assertMessageBusCapability(calleeRouteArtifact);
     const minimumRows = capability.minimumRows ?? 1;
     if (rows.length < minimumRows || rows.length > capability.maximumRows) {
       throw new Error(

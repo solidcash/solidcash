@@ -3465,18 +3465,15 @@ function synthesizeMessageBusRoute(
     ? binToHex(messageBusVerifierLockingBytecode(
       offloadedVerifier, compilerOptions.maximumInputBytes,
     )) : '';
+  const bindingDigestGraphValues = !graphExecutionContext ? ', hex"00"' : `, hex"01",
+          bytes2(suppliedFixedSize), bytes2(suppliedBlockSize), sha256(suppliedEmissions),
+          sha256(suppliedCallers), bytes2(suppliedSettlementBoundary),
+          sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
   const compactAtomicBinder = `
-        bigint activeMasterOutput = -1;
-        for (bigint masterOutput = 0; masterOutput < tx.outputs.length; masterOutput = masterOutput + 1) {
-          if (tx.outputs[masterOutput].lockingBytecode == tx.inputs[activeInputIndex].lockingBytecode
-            && tx.outputs[masterOutput].tokenCategory == tx.inputs[activeInputIndex].tokenCategory) {
-            activeMasterOutput = masterOutput;
-          }
-        }
         require(tx.inputs[activeInputIndex].tokenCategory.length == 33
           && tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02"
-          && activeMasterOutput >= 0
-          && tx.outputs[activeMasterOutput].nftCommitment == tx.inputs[activeInputIndex].nftCommitment);
+          && activeInputIndex >= 0 && activeInputIndex < tx.outputs.length
+          && tx.outputs[activeInputIndex].nftCommitment == tx.inputs[activeInputIndex].nftCommitment);
         bytes activeCategory = tx.inputs[activeInputIndex].tokenCategory.slice(0, 32);
         bigint activeVerifier = __internal__activeVerifierIndex;
         require(activeVerifier >= 0 && activeVerifier < tx.inputs.length
@@ -3484,24 +3481,21 @@ function synthesizeMessageBusRoute(
           && tx.inputs[activeVerifier].tokenCategory.length == 33
           && tx.inputs[activeVerifier].tokenCategory.slice(0, 32) == activeCategory
           && tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
-        require(tx.inputs[activeVerifier].nftCommitment.length >= 6
+        require((tx.inputs[activeVerifier].nftCommitment.length == 6
+          || tx.inputs[activeVerifier].nftCommitment.length == 70)
           && tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
-        bigint activeVerifierOutput = -1;
-        for (bigint verifierOutput = 0; verifierOutput < tx.outputs.length; verifierOutput = verifierOutput + 1) {
-          if (tx.outputs[verifierOutput].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
-            && tx.outputs[verifierOutput].tokenCategory == tx.inputs[activeVerifier].tokenCategory) {
-            activeVerifierOutput = verifierOutput;
-          }
-        }
-        require(activeVerifierOutput >= 0 && tx.outputs[activeVerifierOutput].nftCommitment == bytes.concat(
-          tx.inputs[activeVerifier].nftCommitment.slice(0, 6),
-          bindingDigest
+        require(activeVerifier < tx.outputs.length);
+        bytes verifierCommitment = tx.outputs[activeVerifier].nftCommitment;
+        require(verifierCommitment.length == 70
+          && verifierCommitment.slice(0, 6) == tx.inputs[activeVerifier].nftCommitment.slice(0, 6));
+        bytes manifestDigest = verifierCommitment.slice(6, 38);
+        bytes claimedBindingDigest = verifierCommitment.slice(38, 70);
+        bytes bindingDigest = sha256(bytes.concat(
+          hex"4c334231", manifestDigest, bytes2(activeInputIndex), bytes2(expectedLocalRows), sha256(localBatch)
+          ${bindingDigestGraphValues}
         ));
+        require(claimedBindingDigest == bindingDigest);
   `;
-  const bindingDigestGraphValues = !graphExecutionContext ? '' : `,
-          bytes2(suppliedFixedSize), bytes2(suppliedBlockSize), sha256(suppliedEmissions),
-          sha256(suppliedCallers), bytes2(suppliedSettlementBoundary),
-          sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
   const atomicCallManifestLoader = `
       function __message_bus_verify_atomic(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
@@ -3510,16 +3504,17 @@ function synthesizeMessageBusRoute(
         bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
         bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
       ) internal view returns (bytes) {
+        ${offloadedVerifier ? compactAtomicBinder : `
         bytes unlocking = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
         require(unlocking.slice(0, 1) == hex"4d");
         bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(1, 3), hex"00"));
         bytes messageEnvelope = unlocking.slice(3, 3 + messageEnvelopeLength);
         bytes callManifest = messageEnvelope.slice(8, messageEnvelope.length);
+        bytes callManifestDigest = sha256(callManifest);
         bytes bindingDigest = sha256(bytes.concat(
-          sha256(callManifest), bytes2(activeInputIndex), bytes2(expectedLocalRows), sha256(localBatch)
+          hex"4c334231", callManifestDigest, bytes2(activeInputIndex), bytes2(expectedLocalRows), sha256(localBatch)
           ${bindingDigestGraphValues}
         ));
-        ${offloadedVerifier ? compactAtomicBinder : `
         require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");
         require(int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length);
         bigint participantCount = int(bytes.concat(callManifest.slice(12, 13), hex"00"));
@@ -3599,10 +3594,12 @@ function synthesizeMessageBusRoute(
         require(activeVerifierOutput >= 0
           && tx.outputs[activeVerifierOutput].tokenAmount == tx.inputs[activeVerifier].tokenAmount
           && tx.outputs[activeVerifierOutput].value == tx.inputs[activeVerifier].value);
-        require(tx.inputs[activeVerifier].nftCommitment.length >= 6
+        require((tx.inputs[activeVerifier].nftCommitment.length == 6
+          || tx.inputs[activeVerifier].nftCommitment.length == 70)
           && tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
         require(tx.outputs[activeVerifierOutput].nftCommitment == bytes.concat(
           tx.inputs[activeVerifier].nftCommitment.slice(0, 6),
+          callManifestDigest,
           bindingDigest
         ));
         require(tx.outputs.length == tx.inputs.length);
@@ -4043,10 +4040,11 @@ function synthesizeMessageBusRoute(
           require(tx.outputs[activeReturnOutput].nftCommitment == expectedCommitment);
         }
         `}
-        return bytes.concat(
+        ${offloadedVerifier ? 'return bindingDigest;' : `return bytes.concat(
           bindingDigest,
+          callManifestDigest,
           sha256(bytes.concat(hex"4c334331", bytes4(callManifest.length), callManifest))
-        );
+        );`}
       }
   `;
   // A local caller route authenticates msg.sender from the co-spent caller
@@ -5335,7 +5333,6 @@ function compileResolvedAst(
       bytecode: binToHex(verifierBytecodes.get(id)!),
     }));
     artifact.messageBus = {
-      version: 1,
       selector: MESSAGE_BUS_SELECTOR_HEX,
       ...(messageBusMaximumRows === RESOURCE_SHAPED_BATCH_ROWS
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
@@ -5360,6 +5357,9 @@ function compileResolvedAst(
             name: parameter.name,
             type: parameter.type.toString().replace(/address payable/g, 'address'),
           })),
+          results: [
+            { type: 'bytes32' }, { type: 'bytes32' }, { type: 'bytes32' },
+          ],
           functions: verifierFunctions,
         },
       }),

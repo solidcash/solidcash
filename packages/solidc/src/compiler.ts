@@ -199,6 +199,11 @@ interface OptionalLoweringFeatures {
   emitsEvent: boolean;
 }
 
+const OPTIONAL_LOWERING_BACK_REFERENCES = new Set([
+  'resolvedFunction', 'functionReference', 'definition', 'symbolTable', 'referencedContract',
+  'stateVariable', 'collection',
+]);
+
 function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   const seenNodes = new Set<Node>();
   const seenTypes = new Set<object>();
@@ -286,6 +291,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       }
     }
     for (const key in node) {
+      if (OPTIONAL_LOWERING_BACK_REFERENCES.has(key)) continue;
       const value = node[key as keyof Node] as unknown;
       if (value instanceof FunctionType
         || ((value instanceof ArrayType || value instanceof MappingType

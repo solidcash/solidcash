@@ -80,41 +80,41 @@ interface CapacityReading {
 const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
   2: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 23_050, callManifestBytes: 294,
+    transactionBytes: 23_132, callManifestBytes: 294,
     worstOperationCost: 2_196_068, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.30355910649120865,
     inputOperationCosts: [
-      411_596, 430_140, 695, 2_159_183, 2_196_068, 27_321,
+      412_166, 442_373, 695, 2_159_183, 2_196_068, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_686_400, 1_746_400, 34_400, 7_234_400, 7_234_400, 112_800,
+      1_732_000, 1_766_400, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   4: {
     participants: 4, authenticatedParticipants: 4, slots: 12,
-    transactionBytes: 49_174, callManifestBytes: 584,
+    transactionBytes: 49_460, callManifestBytes: 584,
     worstOperationCost: 3_917_521, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.5415129105385381,
     inputOperationCosts: [
-      522_646, 686_981, 695, 686_981, 695, 559_848, 695, 3_825_456, 3_917_521, 3_916_983, 3_832_600,
+      523_216, 687_881, 695, 687_881, 695, 582_281, 695, 3_825_456, 3_917_521, 3_916_983, 3_832_600,
       27_321,
     ],
     inputMaximumOperationCosts: [
-      1_752_000, 2_951_200, 34_400, 2_951_200, 34_400, 1_746_400, 34_400, 7_234_400, 7_234_400,
+      1_797_600, 3_032_800, 34_400, 3_032_800, 34_400, 1_766_400, 34_400, 7_234_400, 7_234_400,
       7_234_400, 7_234_400, 112_800,
     ],
   },
   5: {
     participants: 5, authenticatedParticipants: 5, slots: 15,
-    transactionBytes: 62_359, callManifestBytes: 729,
+    transactionBytes: 62_747, callManifestBytes: 729,
     worstOperationCost: 4_825_125, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.6669696173836116,
     inputOperationCosts: [
-      578_139, 752_356, 695, 752_356, 695, 752_356, 695, 624_638, 695, 4_733_713, 4_825_125, 4_824_587,
+      578_709, 752_656, 695, 752_656, 695, 752_656, 695, 652_171, 695, 4_733_713, 4_825_125, 4_824_587,
       4_824_030, 4_724_976, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_784_800, 2_984_000, 34_400, 2_984_000, 34_400, 2_984_000, 34_400, 1_746_400, 34_400, 7_234_400,
+      1_830_400, 3_065_600, 34_400, 3_065_600, 34_400, 3_065_600, 34_400, 1_766_400, 34_400, 7_234_400,
       7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
     ],
   },

@@ -8770,17 +8770,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const requiredCount = stb.getRequiredLoopEntryCount(lv.collection);
               const loopMax = requiredCount > 0
                 ? loopOffset + requiredCount
-                : isSortedValueMintColl ? loopOffset + 1 : loopOffset + Math.max(1, existing.length);
+                : isSortedValueMintColl ? loopOffset + 1
+                  : loopOffset + (lv.delegate === true || lv.chunkable === true
+                    ? Math.max(1, existing.length) : LOOP_ENTRY_MAX_ITERATIONS);
               const range = { min: loopOffset, max: loopMax };
               // The compiler is authoritative for the precise collection covenant used by a synthesized
               // message-bus handler. Recover the bytecode from its tight OUTPUTBYTECODE equality before reading
               // commitments; proxy routes can graft a loop slot whose signature is not reconstructible from the
               // outer contract's state layout alone.
               const derivedBytecodes = extractVerifiedValuesFromTrace(
-                fullTrace2, Op.OP_OUTPUTBYTECODE, range, true, true, delegatecallInputIndex !== undefined,
+                fullTrace2, Op.OP_OUTPUTBYTECODE, range, true,
+                lv.delegate === true || lv.chunkable === true,
+                lv.delegate === true && delegatecallInputIndex !== undefined,
               );
               let loopBytecodeChanged = false;
-              if (lv.delegate !== true && derivedBytecodes.length > 0
+              if (derivedBytecodes.length > 0
                 && binToHex(derivedBytecodes[0]) !== binToHex(lv.lockingBytecode)) {
                 stb.setLoopEntryLockingBytecode(lv.collection, derivedBytecodes[0]);
                 commitmentProgress += 1;
@@ -8849,6 +8853,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // A sorted VALUE upsert mints a STATIC number of trailing NEW nodes (1 on insert, 0 on update), not a
               // growing loop, so never add the speculative extra placeholder (it would create a phantom output that
               // shifts the fixed entry-slot P' and oscillates the derivation).
+              const specializedSparseDerivation = lv.delegate === true || isChunkableLoop;
               const isSortedValueMint = !!scoll?.sorted && !isChunkableLoop;
               // P5b computed INSERT: the value-chunk pin runs BEFORE the NEW-node check in the covenant, so until the
               // chunks converge the NEW OTC never runs and derivedCount is 0. Do NOT drop the seeded loop entry to 0
@@ -8859,25 +8864,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 loopOffset += existing.length;
                 continue;
               }
-              const highestDerivedIndex = derivedIndices.at(-1)?.index ?? -1;
-              const highestChanged = highestDerivedIndex >= 0
-                && derived[highestDerivedIndex] !== (existing[highestDerivedIndex] ?? '00');
-              const stillLearning = !isSortedValueMint && highestChanged;
-              // Observations can be sparse: once output N is correct, execution may halt at N+1 without
-              // re-verifying earlier outputs in the trace phase we scan. Preserve known lower ordinals and write
-              // each observation at its physical ordinal rather than compacting index N onto index 0.
-              const next: string[] = derivedCount === 0 ? [...existing] : Array.from(
-                { length: highestDerivedIndex + 1 },
-                (_, index) => derived[index] ?? existing[index] ?? '00',
-              );
-              if (stillLearning && (requiredCount === 0 || next.length < requiredCount)) next.push('00');
-              if (!stillLearning && derivedCount > 0 && next.at(-1) === '00') next.pop();
-              if (requiredCount > 0 && next.length > requiredCount) next.length = requiredCount;
+              let next: string[];
+              if (specializedSparseDerivation) {
+                const highestDerivedIndex = derivedIndices.at(-1)?.index ?? -1;
+                const highestChanged = highestDerivedIndex >= 0
+                  && derived[highestDerivedIndex] !== (existing[highestDerivedIndex] ?? '00');
+                const stillLearning = !isSortedValueMint && highestChanged;
+                // Observations can be sparse: once output N is correct, execution may halt at N+1 without
+                // re-verifying earlier outputs in the trace phase we scan. Preserve known lower ordinals and write
+                // each observation at its physical ordinal rather than compacting index N onto index 0.
+                next = derivedCount === 0 ? [...existing] : Array.from(
+                  { length: highestDerivedIndex + 1 },
+                  (_, index) => derived[index] ?? existing[index] ?? '00',
+                );
+                if (stillLearning && (requiredCount === 0 || next.length < requiredCount)) next.push('00');
+                if (!stillLearning && derivedCount > 0 && next.at(-1) === '00') next.pop();
+                if (requiredCount > 0 && next.length > requiredCount) next.length = requiredCount;
+              } else {
+                const stillLearning = !isSortedValueMint && derivedCount > 0
+                  && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
+                next = [];
+                const acceptedCount = requiredCount > 0 ? Math.min(derivedCount, requiredCount) : derivedCount;
+                for (let i = 0; i < acceptedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
+                if (stillLearning) next.push('00');
+              }
               while (next.length < requiredCount) next.push(existing[next.length] ?? '00');
               stb.setLoopEntryCommitments(lv.collection, next);
               commitmentProgress += derivedCount;
               latestLoopEntryCommits = latestLoopEntryCommits.concat(next);
-              loopOffset += next.length;
+              loopOffset += specializedSparseDerivation ? next.length : derivedCount;
             }
           }
 

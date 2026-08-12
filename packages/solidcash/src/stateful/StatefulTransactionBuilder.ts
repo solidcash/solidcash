@@ -46,16 +46,6 @@ import {
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { createRelocatedDataNftUnlocker } from './covenant-helpers.js';
 
-const decodeVmScriptNumber = (bytes: Uint8Array): bigint => {
-  let value = 0n;
-  const negative = bytes.length > 0 && (bytes[bytes.length - 1] & 0x80) !== 0;
-  for (let index = bytes.length - 1; index >= 0; index--) {
-    const byte = index === bytes.length - 1 ? bytes[index] & 0x7f : bytes[index];
-    value = (value << 8n) | BigInt(byte);
-  }
-  return negative ? -value : value;
-};
-
 const cloneToken = <T extends Utxo['token']>(token: T): T => (token === undefined
   ? token
   : { ...token, nft: token.nft === undefined ? undefined : { ...token.nft } } as T);
@@ -379,6 +369,7 @@ export class StatefulTransactionBuilder {
   private loopEntryVars: Array<{
     collection: string; lockingBytecode: Uint8Array; categoryId?: string; delegate?: boolean; chunkable?: boolean;
   }> = [];
+
   // collection -> ordered loop entry commitments (hex) from auto-derivation; length = entry output count.
   private loopEntryCommitments: Map<string, string[]> = new Map();
   private requiredLoopEntryCounts: Map<string, number> = new Map();
@@ -3824,61 +3815,6 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  /**
-   * Recover a computed C2 value-chunk output from the failing covenant itself. Transitive routed calls can be
-   * represented only as low-level groups, so their masters are not visited by StatefulContract's external-call
-   * derivation loop. The chunk verifier nevertheless has the complete authenticated output on its stack before
-   * OP_OUTPUTBYTECODE: [.., commitment, outputIndex, lockingBytecode, outputIndex].
-   */
-  private _repairComputedChunkOutput(builder: TransactionBuilder, inputIndex: number): boolean {
-    const transaction = builder.buildLibauthTransaction(true);
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    let repair: { outputIndex: number; lockingBytecode?: Uint8Array; commitment: Uint8Array } | undefined;
-    const vm = createVirtualMachineBch2026ForProvider(this.builderOptions.provider, {
-      opcodes: new Set(Array.from({ length: 256 }, (_unused, opcode) => opcode)),
-      beforeOperation: (unknownState) => {
-        const state = unknownState as {
-          ip: number; instructions: Array<{ opcode: number; data?: Uint8Array }>; stack: Uint8Array[];
-        };
-        if (state.instructions[state.ip]?.opcode === 0xd2 && state.stack.length >= 2) {
-          const outputIndex = Number(decodeVmScriptNumber(state.stack[state.stack.length - 1]));
-          const commitment = state.stack[state.stack.length - 2];
-          if (commitment.length <= 128 && outputIndex >= 0 && outputIndex < builder.outputs.length) {
-            repair = { outputIndex, commitment };
-          }
-          return;
-        }
-        if (state.instructions[state.ip]?.opcode !== 0xcd || state.stack.length < 4) return;
-        const chunkShaped = state.instructions.some((instruction, at) => instruction.data?.length === 1
-          && instruction.data[0] === 126 && state.instructions[at + 1]?.opcode === 0x95
-          && state.instructions[at + 2]?.data?.length === 1
-          && state.instructions[at + 2]?.data?.[0] === 28
-          && state.instructions[at + 3]?.opcode === 0x93);
-        if (!chunkShaped) return;
-        const lockingBytecode = state.stack[state.stack.length - 2];
-        const commitment = state.stack[state.stack.length - 4];
-        const outputIndex = Number(decodeVmScriptNumber(state.stack[state.stack.length - 1]));
-        if (lockingBytecode.length !== 35 || lockingBytecode[0] !== 0xaa || lockingBytecode[1] !== 0x20
-          || lockingBytecode[34] !== 0x87 || commitment.length < 3 || commitment.length > 128
-          || outputIndex < 0 || outputIndex >= builder.outputs.length) return;
-        repair = { outputIndex, lockingBytecode, commitment };
-      },
-    });
-    vm.evaluate({ inputIndex, sourceOutputs, transaction });
-    if (!repair) return false;
-    const found = repair as { outputIndex: number; lockingBytecode?: Uint8Array; commitment: Uint8Array };
-    const output = builder.outputs[found.outputIndex];
-    if (!output?.token?.nft || output.token.nft.capability !== 'mutable') return false;
-    const unchanged = (found.lockingBytecode === undefined
-      || binToHex(typeof output.to === 'string' ? addressToLockScript(output.to) : output.to)
-        === binToHex(found.lockingBytecode))
-      && output.token.nft.commitment === binToHex(found.commitment);
-    if (unchanged) return false;
-    if (found.lockingBytecode !== undefined) output.to = found.lockingBytecode;
-    output.token.nft.commitment = binToHex(found.commitment);
-    return true;
-  }
-
   private _strictRecursiveVmPreflight(builder: TransactionBuilder): void {
     const transaction = builder.buildLibauthTransaction(true);
     // X121: read the provider's limits. Unlike the tracer above this THROWS, so it decides ACCEPT/REJECT, and
@@ -4091,22 +4027,9 @@ export class StatefulTransactionBuilder {
     // evaluation. This gate is deliberately non-absorbing: unlike debug(), it never catches an objection, and
     // `stateSuccess` includes completed scripts with a falsy top item as well as raised VM errors.
     if (!this.strictVmPreflight) {
-      let preflightError: unknown;
-      for (let pass = 0; pass <= 32; pass++) {
-        try {
-          assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
-          preflightError = undefined;
-          break;
-        } catch (error) {
-          preflightError = error;
-          const reason = error instanceof Error ? error.message : String(error);
-          const failedInput = reason.match(/input(?: index)? (\d+)/)?.[1];
-          if (failedInput === undefined
-            || !this._repairComputedChunkOutput(finalBuilder, Number(failedInput))) break;
-        }
-      }
-      if (preflightError !== undefined) {
-        const error = preflightError;
+      try {
+        assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
+      } catch (error) {
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_PREFLIGHT === '1') {
           console.error('final-preflight-inputs', finalBuilder.inputs.map((input, index) => ({

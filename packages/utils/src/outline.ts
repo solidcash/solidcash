@@ -669,7 +669,7 @@ export function outlineSharedSpans(
     origins: undefined as number[] | undefined,
   }));
   const functions: OutlinedFunction[] = [];
-  const claimed: Uint8Array[] = working.map((body) => new Uint8Array(body.script.length));
+  const claimed: Uint8Array[] = [];
   let savedBytes = 0;
 
   for (let round = 0; round < MAXIMUM_ROUNDS; round += 1) {

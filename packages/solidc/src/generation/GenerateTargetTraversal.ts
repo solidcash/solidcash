@@ -3736,16 +3736,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           candidateGroupsPerRound,
           initialCandidateCache,
         );
-        let attempt = orderedAttempt;
-        if (bodyOrder === 'shortest') {
-          const normalizedBodies = new Array(orderedAttempt.bodies.length);
-          order.forEach((originalIndex, orderedIndex) => {
-            normalizedBodies[originalIndex] = orderedAttempt.bodies[orderedIndex];
-          });
-          attempt = { ...orderedAttempt, bodies: normalizedBodies };
-        }
-        if (result === undefined || attempt.savedBytes > result.savedBytes) {
-          result = attempt;
+        if (result === undefined || orderedAttempt.savedBytes > result.savedBytes) {
+          if (bodyOrder === 'shortest') {
+            const normalizedBodies = new Array(orderedAttempt.bodies.length);
+            order.forEach((originalIndex, orderedIndex) => {
+              normalizedBodies[originalIndex] = orderedAttempt.bodies[orderedIndex];
+            });
+            result = { ...orderedAttempt, bodies: normalizedBodies };
+          } else {
+            result = orderedAttempt;
+          }
           winningPool = this.snapshotCompactHelperIds();
         }
       }

@@ -487,7 +487,7 @@ function replaceOps(
   let newLocationData = locationData;
   let newLogs = logs;
   let newRequires = requires;
-  const presentTokens = new Set(asm.split(' '));
+  const presentTokens = new Set(asm.match(/OP_\w+/g) ?? []);
   const activeOptimisations = new Uint32Array(optimisationMaskWords);
   const activateToken = (token: string): void => {
     const mask = optimisationMasksByFirstToken.get(token);

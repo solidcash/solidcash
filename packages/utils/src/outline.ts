@@ -261,24 +261,6 @@ function savingsOf(bytes: number, count: number, idPushBytes: number): number {
 const scriptBytes = (script: Script): number =>
   script.reduce<number>((sum, element) => sum + elementByteSize(element), 0);
 
-/**
- * Total bytes the caller will emit for this corpus: every body verbatim, plus one
- * `<body-push> <id-push> OP_DEFINE` per outlined function.
- *
- * Per-candidate savings are estimated against the corpus as it stood at the start of a round, so a round that
- * applies several overlapping-in-effect candidates can cost more than the sum of its parts promised. Measuring
- * the whole corpus is what lets a round be judged on its actual result rather than on that estimate.
- */
-function emittedBytes(bodies: { script: Script }[], functions: OutlinedFunction[]): number {
-  let total = bodies.reduce((sum, body) => sum + scriptBytes(body.script), 0);
-  for (const fn of functions) {
-    const bytes = scriptBytes(fn.script);
-    const definitionOverhead = bytes < 76 ? 1 : bytes < 256 ? 2 : 3;
-    total += definitionOverhead + bytes + elementByteSize(fn.id) + 1;
-  }
-  return total;
-}
-
 interface CandidateCorpus {
   bodyIds: number[][];
   bodyBytePrefixes: Uint32Array[];
@@ -744,7 +726,7 @@ export function outlineSharedSpans(
       claimed.push(new Uint8Array(corpus[claimed.length].script.length));
     }
     const claimGeneration = round + 1;
-    const applied: { definition: OutlinedFunction; occurrences: number[]; saved: number }[] = [];
+    const applied: { definition: OutlinedFunction; occurrences: number[] }[] = [];
     const free: number[] = [];
     for (const candidate of candidates) {
       if (functions.length + applied.length >= MAXIMUM_OUTLINED_FUNCTIONS) break;
@@ -777,10 +759,23 @@ export function outlineSharedSpans(
           locationData: corpus[free[0]].locationData.slice(free[1], free[1] + spanLength),
         },
         occurrences: [...free],
-        saved: savingsOf(candidate.bytes, free.length / 2, idPushBytes),
       });
     }
     if (applied.length === 0) break;
+
+    // Sites are disjoint, so once the real helper ids have been allocated their byte deltas add exactly. Cost
+    // with each id's actual push width rather than the round's quoted width: a round can cross an encoding-width
+    // boundary after several allocations. Reject a losing round before mutating anything, avoiding rollback
+    // snapshots and whole-corpus before/after measurements.
+    let roundSaved = 0;
+    for (const entry of applied) {
+      roundSaved += savingsOf(
+        scriptBytes(entry.definition.script),
+        entry.occurrences.length / 2,
+        elementByteSize(entry.definition.id),
+      );
+    }
+    if (roundSaved <= 0) break;
 
     // Most strategy probes discover nothing worth applying. Allocate origin maps only once a rewrite will
     // actually need them; a no-op result can return the identity map directly below.
@@ -788,7 +783,6 @@ export function outlineSharedSpans(
       body.origins ??= body.script.map((_element, index) => index);
     }
 
-    const before = emittedBytes(working, functions);
     // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
     const edits: { body: number; start: number; entry: typeof applied[number] }[] = [];
     for (const entry of applied) {
@@ -802,26 +796,6 @@ export function outlineSharedSpans(
     }
     edits.sort((left, right) =>
       right.body - left.body || right.start - left.start);
-
-    // Snapshot only bodies this round will mutate. Entries for existing outlined functions alias their function
-    // records, so restoring a touched corpus entry still restores both views if the speculative round loses.
-    const snapshot: {
-      entry: typeof corpus[number]; script: Script; locationData: FullLocationData;
-      anchors: number[] | undefined; origins: number[] | undefined;
-    }[] = [];
-    let previousBody = -1;
-    for (const edit of edits) {
-      if (edit.body === previousBody) continue;
-      previousBody = edit.body;
-      const entry = corpus[edit.body];
-      snapshot.push({
-        entry,
-        script: [...entry.script],
-        locationData: [...entry.locationData],
-        anchors: entry.anchors ? [...entry.anchors] : undefined,
-        origins: entry.origins ? [...entry.origins] : undefined,
-      });
-    }
     for (const { body, start, entry } of edits) {
       const target = corpus[body];
       const spanLength = entry.definition.script.length;
@@ -841,22 +815,7 @@ export function outlineSharedSpans(
     }
 
     for (const entry of applied) functions.push(entry.definition);
-
-    const after = emittedBytes(working, functions);
-    if (after >= before) {
-      // The round did not pay for itself. Put every mutated array back and stop: the next round would re-measure
-      // the same corpus against the same identifier width and reach the same decision.
-      functions.length -= applied.length;
-      for (const saved of snapshot) {
-        saved.entry.script.splice(0, saved.entry.script.length, ...saved.script);
-        saved.entry.locationData.splice(0, saved.entry.locationData.length, ...saved.locationData);
-        if (saved.anchors) saved.entry.anchors = saved.anchors;
-        const { origins } = saved.entry;
-        if (saved.origins && origins) origins.splice(0, origins.length, ...saved.origins);
-      }
-      break;
-    }
-    savedBytes += before - after;
+    savedBytes += roundSaved;
   }
 
   const rewritten: OutlinedBody[] = working.map((body, index) => {

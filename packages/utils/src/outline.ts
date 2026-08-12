@@ -553,13 +553,15 @@ function findCandidates(
     const firstStart = group[1];
     const firstIds = bodyIds[firstBody];
     let length = firstIds.length - firstStart;
+    for (let occurrenceIndex = 2; occurrenceIndex < group.length; occurrenceIndex += 2) {
+      const remaining = bodyIds[group[occurrenceIndex]].length - group[occurrenceIndex + 1];
+      if (remaining < length) length = remaining;
+    }
     for (let occurrenceIndex = 2; occurrenceIndex < group.length && length > seed; occurrenceIndex += 2) {
       const body = group[occurrenceIndex];
       const start = group[occurrenceIndex + 1];
-      const ids = bodyIds[body];
-      const limit = Math.min(length, ids.length - start);
       const matching = seed + Math.min(
-        limit - seed,
+        length - seed,
         commonPrefixLength(firstBody, firstStart + seed, body, start + seed),
       );
       length = matching;

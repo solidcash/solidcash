@@ -775,17 +775,16 @@ export function outlineSharedSpans(
     }));
 
     // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
-    const edits = applied.flatMap((entry) => {
-      const result = [] as { body: number; start: number; entry: typeof entry }[];
+    const edits: { body: number; start: number; entry: typeof applied[number] }[] = [];
+    for (const entry of applied) {
       for (let occurrenceIndex = 0; occurrenceIndex < entry.occurrences.length; occurrenceIndex += 2) {
-        result.push({
+        edits.push({
           body: entry.occurrences[occurrenceIndex],
           start: entry.occurrences[occurrenceIndex + 1],
           entry,
         });
       }
-      return result;
-    });
+    }
     edits.sort((left, right) =>
       right.body - left.body || right.start - left.start);
     for (const { body, start, entry } of edits) {

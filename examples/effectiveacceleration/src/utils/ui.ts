@@ -16,9 +16,10 @@ const eventLockingBytecode = (value: string | Uint8Array): Uint8Array => {
 export const computeJobStateDiffs = (jobEvents: JobEvent[], jobId: string, job?: Job): JobEventWithDiffs[] => {
   const result: JobEventWithDiffs[] = [];
 
-  let previousJobState: Job | undefined = job;
+  let previousJobState: Job | undefined = job ? structuredClone(job) : undefined;
   let id = 0n;
   for (const event of jobEvents) {
+    const previousResultLength = result.length;
     if (event.id === undefined) {
       event.id = String(id++);
     }
@@ -513,6 +514,9 @@ export const computeJobStateDiffs = (jobEvents: JobEvent[], jobId: string, job?:
 
     if (job) {
       job.jobTimes!.lastEventAt = event.timestamp_;
+      if (result.length > previousResultLength) {
+        result[result.length - 1].job.jobTimes!.lastEventAt = event.timestamp_;
+      }
     }
   }
 

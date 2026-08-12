@@ -788,17 +788,7 @@ export function outlineSharedSpans(
       body.origins ??= body.script.map((_element, index) => index);
     }
 
-    // Snapshot every array the rewrite mutates, so a round that turns out not to pay can be undone. The corpus
-    // entries for existing functions alias those functions' own arrays, so restoring the corpus restores both.
     const before = emittedBytes(working, functions);
-    const snapshot = corpus.map((entry) => ({
-      entry,
-      script: [...entry.script],
-      locationData: [...entry.locationData],
-      anchors: entry.anchors ? [...entry.anchors] : undefined,
-      origins: entry.origins ? [...entry.origins] : undefined,
-    }));
-
     // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
     const edits: { body: number; start: number; entry: typeof applied[number] }[] = [];
     for (const entry of applied) {
@@ -812,6 +802,26 @@ export function outlineSharedSpans(
     }
     edits.sort((left, right) =>
       right.body - left.body || right.start - left.start);
+
+    // Snapshot only bodies this round will mutate. Entries for existing outlined functions alias their function
+    // records, so restoring a touched corpus entry still restores both views if the speculative round loses.
+    const snapshot: {
+      entry: typeof corpus[number]; script: Script; locationData: FullLocationData;
+      anchors: number[] | undefined; origins: number[] | undefined;
+    }[] = [];
+    let previousBody = -1;
+    for (const edit of edits) {
+      if (edit.body === previousBody) continue;
+      previousBody = edit.body;
+      const entry = corpus[edit.body];
+      snapshot.push({
+        entry,
+        script: [...entry.script],
+        locationData: [...entry.locationData],
+        anchors: entry.anchors ? [...entry.anchors] : undefined,
+        origins: entry.origins ? [...entry.origins] : undefined,
+      });
+    }
     for (const { body, start, entry } of edits) {
       const target = corpus[body];
       const spanLength = entry.definition.script.length;

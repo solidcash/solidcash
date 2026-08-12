@@ -228,12 +228,7 @@ describe("Marketplace Unit Tests", () => {
     expect(recreatedJob.contentHash).to.equal(job.contentHash);
     expect(recreatedJob.multipleApplicants).to.equal(job.multipleApplicants);
     expect(recreatedJob.amount).to.equal(job.amount);
-    const recreatedToken = typeof recreatedJob.token === "string" && recreatedJob.token.startsWith("0x")
-      ? recreatedJob.token.slice(2).toLowerCase() : recreatedJob.token;
-    const jobToken = job.token instanceof Uint8Array
-      ? ethers.hexlify(job.token).slice(2) : job.token;
-    expect(recreatedToken === jobToken || (typeof recreatedToken === "string"
-      && typeof jobToken === "string" && jobToken.includes(recreatedToken))).to.equal(true);
+    expect(recreatedJob.token).to.equal(job.token);
     expect(recreatedJob.timestamp).to.equal(job.timestamp);
     expect(recreatedJob.maxTime).to.equal(job.maxTime);
     expect(recreatedJob.deliveryMethod).to.equal(job.deliveryMethod);

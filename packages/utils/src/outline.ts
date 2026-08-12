@@ -603,13 +603,15 @@ function findCandidates(
     // those streams. Avoid sorting the same sequence again for every candidate.
     const spanLength = balanced.end - balanced.start;
     const occurrences: number[] = [];
+    let previousBody = -1;
+    let nextAvailableStart = 0;
     for (let occurrenceIndex = 0; occurrenceIndex < group.length; occurrenceIndex += 2) {
       const body = group[occurrenceIndex];
       const start = group[occurrenceIndex + 1] + balanced.start;
-      const previousStart = occurrences[occurrences.length - 1];
-      const previousBody = occurrences[occurrences.length - 2];
-      if (previousBody === body && start < previousStart + spanLength) continue;
+      if (previousBody === body && start < nextAvailableStart) continue;
       occurrences.push(body, start);
+      previousBody = body;
+      nextAvailableStart = start + spanLength;
     }
     if (occurrences.length < 4) continue;
     // Never place a span boundary between an OP_INVOKE and the operand push that feeds it. Splitting the pair

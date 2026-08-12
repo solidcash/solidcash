@@ -583,6 +583,13 @@ function findCandidates(
       length = matching;
     }
 
+    // The balanced span can only be shorter than this full common region, and overlap removal can only reduce
+    // its usable occurrence count. If this optimistic upper bound cannot pay for outlining, no descendant span
+    // can become profitable; avoid anchor collection and the control-flow scan entirely.
+    const maximumBytes = bodyBytePrefixes[firstBody][firstStart + length]
+      - bodyBytePrefixes[firstBody][firstStart];
+    if (savingsOf(maximumBytes, group.length / 2, idPushBytes) <= 0) continue;
+
     const headScript = bodies[firstBody].script;
     // A span is only relocatable if it is anchor-free at *every* occurrence, so test them all against one
     // region-relative index space.

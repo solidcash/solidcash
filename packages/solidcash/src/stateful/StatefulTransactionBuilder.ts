@@ -1298,6 +1298,15 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /** Debug/derivation snapshot of pending return events without exposing mutable builder state. */
+  getReturnEventOutputs(): ReadonlyArray<Readonly<{
+    categoryId: string; commitment: Uint8Array; identity: string;
+  }>> {
+    return this.pendingReturnEventOutputs.map((event) => ({
+      ...event, commitment: event.commitment.slice(),
+    }));
+  }
+
   /**
    * Remove all pending return event outputs (used before re-populating with derived values).
    */
@@ -1577,6 +1586,14 @@ export class StatefulTransactionBuilder {
   getExternalCallOutputBase(groupIdx: number): number {
     const requested = this.externalCallUtxoGroups[groupIdx];
     if (requested?.sharedGroupIndex !== undefined) groupIdx = requested.sharedGroupIndex;
+    const physical = this.externalCallUtxoGroups[groupIdx];
+    if (physical?.blockLayout) {
+      // build() pads a full participant block up to its physical master-input coordinate. Return/event/state
+      // derivation must address that same output coordinate; the dense resource-count formula below can be one
+      // or more slots earlier when routed delegate/identity bands exist only on the input side.
+      const aligned = this.getExternalCallMasterInputIndex(groupIdx);
+      if (aligned >= 0) return aligned;
+    }
     let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     // Skip outState outputs
@@ -2136,6 +2153,12 @@ export class StatefulTransactionBuilder {
     for (let groupIndex = 0; groupIndex < this.externalCallUtxoGroups.length; groupIndex++) {
       const group = this.externalCallUtxoGroups[groupIndex];
       if (group.sharedGroupIndex !== undefined) continue;
+      if (group.blockLayout) {
+        const masterInputIndex = this.getExternalCallMasterInputIndex(groupIndex);
+        while (masterInputIndex >= 0 && builder.outputs.length < masterInputIndex) {
+          builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+        }
+      }
       const groupOutputStart = builder.outputs.length;
       // B's master output: preserved unchanged
       const bMaster = group.masterUtxo as UnlockableUtxo;

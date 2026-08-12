@@ -1004,6 +1004,7 @@ const evaluateEveryInput = (
         const inputReads: Array<Record<string, unknown>> = [];
         const largeEqualVerifies: Array<Record<string, unknown>> = [];
         const failedVerifyPoints: Array<Record<string, unknown>> = [];
+        const outputCommitmentReads: Array<Record<string, unknown>> = [];
         let body29Captured = false;
         createVirtualMachineBch2026ForProvider(builder.provider, {
           opcodes: new Set(Array.from({ length: 256 }, (_, opcode) => opcode)),
@@ -1059,6 +1060,18 @@ const evaluateEveryInput = (
                   })),
               });
             }
+            if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTTOKENCOMMITMENT
+              && state.instructions.length > 10_000) {
+              const rawIndex = state.stack.at(-1);
+              const index = rawIndex ? Number(vmNumberToBigInt(rawIndex)) : -1;
+              outputCommitmentReads.push({
+                ip: state.ip,
+                index,
+                commitment: binToHex(transaction.outputs[index]?.token?.nft?.commitment ?? new Uint8Array()),
+                stack: state.stack.slice(-5).map((item) => `${item.length}:${binToHex(item)}`),
+              });
+              if (outputCommitmentReads.length > 40) outputCommitmentReads.shift();
+            }
             if (state.instructions[state.ip]?.opcode === Op.OP_INPUTBYTECODE) {
               const rawIndex = state.stack.at(-1);
               inputReads.push({
@@ -1079,6 +1092,13 @@ const evaluateEveryInput = (
         console.error('message-bus-input-reads', inputReads);
         console.error('message-bus-large-equals', largeEqualVerifies);
         console.error('message-bus-failed-verifies', JSON.stringify(failedVerifyPoints));
+        console.error('message-bus-output-commitment-reads', JSON.stringify(outputCommitmentReads));
+        console.error('message-bus-return-band', transaction.outputs.map((output, index) => ({
+          index,
+          category: binToHex(output.token?.category ?? new Uint8Array()),
+          commitment: binToHex(output.token?.nft?.commitment ?? new Uint8Array()),
+          locking: binToHex(output.lockingBytecode),
+        })).slice(24, 34));
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {

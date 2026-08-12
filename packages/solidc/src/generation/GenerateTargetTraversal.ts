@@ -11290,11 +11290,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (authenticatedSlot) {
         // A factory deployment can expose a stable logical address whose locking bytecode differs from the
         // physical state covenant co-spent for this call. The external-call identity proof already binds that
-        // logical address to the slot master, so read the authenticated input's redeem script directly. An
-        // unrelated `address.code` expression has no slot and retains the exact-locking-bytecode scan below.
+        // logical address to the slot master. Use its non-empty locking bytecode as the authenticated code marker:
+        // stateful unlockers do not necessarily end in a redeem-script push, so parsing INPUTBYTECODE can produce
+        // an empty value and incorrectly report `address.code.length == 0`. An unrelated `address.code` expression
+        // has no slot and retains the exact-locking-bytecode scan below.
         this.emitSlotMasterIndex(authenticatedSlot, locationData);
-        this.emit(Op.OP_INPUTBYTECODE, locationData);
-        this.emitExtractLastPush(locationData);
+        this.emit(Op.OP_UTXOBYTECODE, locationData);
         this.pushToStack('(value)');
         return node;
       }
@@ -12373,7 +12374,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitAbiEncode(node: AbiEncodeNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
-    if (this.compilerOptions.evmCompat) {
+    // Solidity-source compatibility must preserve Solidity's ABI at compiler-generated boundaries too. The
+    // message-bus route uses abi.encode to publish authenticated child results; compact SolidCash framing here
+    // turns `true` into `0151`, which is neither the callee's EVM-compatible return commitment nor decodable by
+    // callers such as OpenZeppelin SafeERC20.
+    if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
       this.emitEvmAbiEncode(node.parameters, locationData);
       return node;
     }
@@ -12499,7 +12504,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitAbiEncodeWithSelector(node: AbiEncodeWithSelectorNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     this.visit(node.selector);
-    if (this.compilerOptions.evmCompat) {
+    if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
       // EVM: the raw 4-byte selector followed by the standard encoding of the args.
       this.emitEvmAbiEncode(node.parameters, locationData);
       this.emit(Op.OP_CAT, locationData);
@@ -12614,7 +12619,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Visit data expression - puts encoded blob on stack
     node.data = this.visit(node.data);
 
-    if (this.compilerOptions.evmCompat) {
+    if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
       const single = node.schema[0];
       if (node.schema.length === 1 && single instanceof StructType) {
         // a single struct: fixed-width -> inline field words; dynamic -> tuple head/tail re-framed to the struct blob
@@ -14471,6 +14476,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The graph subroutine receives this one exact blob and reconstructs the
       // source-level `(success, data)` tuple at the callsite.
       return 1;
+    }
+    if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+      && returnTypes.every((type) => this.isEvmAbiWordType(type))) {
+      // The call manifest carries the producer's exact return-event bytes. Solidity-compatible producers publish
+      // static results as ABI words; decoding that vector as SolidCash pushdata sees the first zero-padding byte
+      // as OP_0 (notably turning ERC20 `true` into false in SafeERC20).
+      this.popFromStack();
+      this.emitEvmAbiDecode(returnTypes, locationData);
+      for (let i = 0; i < returnTypes.length; i++) {
+        this.pushToStack(`(__graph_result_value_${i})`);
+      }
+      return returnTypes.length;
     }
     // Decode the complete producer-authenticated ABI vector. This mirrors ordinary external-return decoding:
     // each non-final field leaves the exact remainder for the next declared type, and the final decoder

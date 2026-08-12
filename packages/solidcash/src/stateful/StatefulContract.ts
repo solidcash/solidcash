@@ -1099,6 +1099,92 @@ function extractPendingReturnCommitment(
   return undefined;
 }
 
+/** Recover a Solidity ABI value which is live immediately before a return-output comparison. */
+function extractEvmScalarReturnCommitment(
+  fullTrace: AuthenticationProgramStateCommon[], expectedTypes: readonly string[],
+): string | undefined {
+  if (expectedTypes.length === 0 || !expectedTypes.every((type) => (
+    type === 'bool' || type === 'int' || type === 'uint' || type === 'bigint'
+    || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
+    || type === 'address' || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type)
+  ))) return undefined;
+  const bytes = expectedTypes.length * 32;
+  let zeroBoolean: string | undefined;
+  for (let traceIndex = fullTrace.length - 1; traceIndex >= Math.max(0, fullTrace.length - 96); traceIndex--) {
+    const stack = fullTrace[traceIndex].stack;
+    for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex--) {
+      const candidate = Uint8Array.from(stack[stackIndex]);
+      if (candidate.length !== bytes) continue;
+      if (expectedTypes.length === 1 && expectedTypes[0] === 'bool') {
+        if (!candidate.slice(0, 31).every((byte) => byte === 0) || candidate[31] > 1) continue;
+        // A live frame commonly contains zero-valued addresses/keys alongside the return. Retain false only as
+        // a fallback, but prefer an observed ABI true: it cannot be one of those ubiquitous zero placeholders.
+        if (candidate[31] === 0) { zeroBoolean ??= binToHex(candidate); continue; }
+      }
+      return binToHex(candidate);
+    }
+  }
+  return zeroBoolean;
+}
+
+/** Encode the scalar Solidity ABI forms used by SDK-side return precomputation. */
+function encodeEvmScalarReturn(value: StateValue, type: string): Uint8Array | undefined {
+  if (type === 'bool') {
+    const out = new Uint8Array(32);
+    out[31] = value === true || value === 1n ? 1 : 0;
+    return out;
+  }
+  if (type === 'int' || type === 'uint' || type === 'bigint' || /^u?int\d+$/.test(type)) {
+    if (typeof value !== 'bigint' && typeof value !== 'number') return undefined;
+    let n = typeof value === 'bigint' ? value : BigInt(value);
+    if (n < 0n) n = (1n << 256n) + n;
+    const out = new Uint8Array(32);
+    for (let index = 31; index >= 0; index--) { out[index] = Number(n & 0xffn); n >>= 8n; }
+    return out;
+  }
+  return undefined;
+}
+
+const artifactUsesSolidityAbi = (artifact: Artifact): boolean =>
+  artifact.compiler?.options?.evmCompat === true
+  || artifact.compiler?.options?.solidityImportCompat === true
+  // Older/formatted artifacts omit the import-compat switch after compilation; the source pragma remains an
+  // authoritative language marker and avoids silently reverting SDK precomputation to BCH-native framing.
+  || /^\s*pragma\s+solidity\b/m.test(artifact.source ?? '');
+
+/** True when a trace candidate is exactly one encoded collection value, with no trailing neighboring value. */
+function isCompleteCollectionValue(
+  candidate: Uint8Array, valueType: string | undefined, structs: StateLayout['structs'],
+): boolean {
+  if (!valueType) return true;
+  try {
+    return decodePushdataValue(candidate, 0, valueType, structs).bytesConsumed === candidate.length;
+  } catch {
+    return false;
+  }
+}
+
+/** Recover a dynamic array whose element blob and authenticated whole-value root occur in different trace states. */
+function recoverAuthenticatedArrayValue(
+  traceItems: readonly Uint8Array[], roots: ReadonlySet<string>, valueType: string | undefined,
+  structs: StateLayout['structs'],
+): Uint8Array | undefined {
+  const array = valueType ? parseArrayTypeString(valueType) : undefined;
+  if (!array || array.bound !== undefined) return undefined;
+  for (const elements of traceItems.filter((item) => item.length > VALUE_HEAD_SIZE && item.length <= 10_000)) {
+    // Probe-derived arrays are bounded by the state decoder's safety limit. Usually the first attempt (length 1)
+    // succeeds; the root check makes this reconstruction exact rather than heuristic.
+    for (let length = 1; length <= 10_000; length++) {
+      const prefix = encodePushdataValue(BigInt(length), 'bigint');
+      const candidate = new Uint8Array(prefix.length + elements.length);
+      candidate.set(prefix); candidate.set(elements, prefix.length);
+      if (!roots.has(binToHex(sha256Sync(candidate)))) continue;
+      if (isCompleteCollectionValue(candidate, valueType, structs)) return candidate;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Extract blockhash oracle reads from an auto-derivation probe trace - the SINGLE source of truth for a
  * blockhash(n) reader's n. The covenant, per read, computes n on-stack (from state/args/constants - ANY
@@ -1464,8 +1550,8 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
       // later execution cannot rewrite the commitment/index pair consumed by the derivation extractors.
       cached.trace.push({
         ...state,
-        stack: state.stack.slice(),
-        alternateStack: state.alternateStack.slice(),
+        stack: state.stack.map((item) => item.slice()),
+        alternateStack: state.alternateStack.map((item) => item.slice()),
         controlStack: state.controlStack.slice(),
       });
       cached.awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
@@ -7446,6 +7532,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // the output doesn't exist and OP_OUTPUTTOKENCOMMITMENT returns empty bytes,
         // causing OP_SPLIT to fail on empty data.
         const initializedReturnFamilies = new Set<number>();
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1') {
+          console.error('external-group-requirements', externalCallUtxoGroups.map((group, index) => ({
+            index,
+            functionName: group.functionName,
+            required: group.requiredDataNftIndices,
+            dataNfts: group.dataNftUtxos.length,
+            routeRows: group.compilerRoute?.rowArguments?.map((row) => ({
+              selector: row.selector, handler: row.handler.name, required: row.handler.requiredNftIndices,
+            })),
+            precomputed: group.precomputedReturnCommitment
+              ? binToHex(group.precomputedReturnCommitment) : undefined,
+          })));
+        }
         for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
           const ec = externalCalls[groupIdx];
           if (ec.hasReturnValues) {
@@ -7663,12 +7763,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               );
             const witnessInputs = delegateFn?.inputs.filter((input: { name: string }) =>
               /^__internal__valueWitness_\d+$/.test(input.name)) ?? [];
+            const witnessCollection = witnessInputs.length === 1
+              ? delegateFn?.entryAccesses?.[Number(witnessInputs[0].name.match(/\d+$/)?.[0] ?? -1)]?.collection
+              : undefined;
+            const witnessLayout = delegateGroup?.stateLayout
+              ?? delegateGroup?.externalContract.inner.stateLayout;
+            const witnessValueType = witnessLayout?.collections?.find((collection) =>
+              collection.name === witnessCollection || collection.signature === witnessCollection)?.valueType;
             let learnedValue: Uint8Array | undefined;
             for (let stateIndex = fullTrace.length - 1; stateIndex >= 0 && !learnedValue; stateIndex--) {
               const stack = fullTrace[stateIndex].stack;
               const roots = new Set(stack.filter((item) => item.length === 32).map(binToHex));
               learnedValue = stack
                 .filter((item) => item.length > VALUE_HEAD_SIZE && item.length <= 10_000)
+                .filter((item) => isCompleteCollectionValue(item, witnessValueType, witnessLayout?.structs))
                 .find((item) => roots.has(binToHex(sha256Sync(item))));
             }
             if (learnedValue && witnessInputs.length === 1 && delegateGroup?.refreshInternalArgs) {
@@ -7876,6 +7984,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 );
               const witnessInput = delegateFn?.inputs.find((input: { name: string }) =>
                 /^__internal__valueWitness_\d+$/.test(input.name));
+              const witnessSlot = Number(witnessInput?.name.match(/\d+$/)?.[0] ?? -1);
+              const witnessCollection = delegateFn?.entryAccesses?.[witnessSlot]?.collection;
+              const witnessLayout = delegateGroup?.stateLayout
+                ?? delegateGroup?.externalContract.inner.stateLayout;
+              const witnessValueType = witnessLayout?.collections?.find((collection) =>
+                collection.name === witnessCollection || collection.signature === witnessCollection)?.valueType;
               // The computed value and the root authenticating it need not coexist in one VM stack frame. Match
               // across the complete trace: the value is assembled before the witness check, while its expected
               // root is loaded by that later check. This breaks the probe's otherwise circular dependency on the
@@ -7885,13 +7999,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const traceItems = entryTrace.flatMap((state) => state.stack);
               let learnedValue = traceItems
                 .filter((item) => item.length > 60 && item.length <= 10_000)
+                .filter((item) => isCompleteCollectionValue(item, witnessValueType, witnessLayout?.structs))
                 .find((item) => traceRoots.has(binToHex(sha256Sync(item))));
+              learnedValue ??= recoverAuthenticatedArrayValue(
+                traceItems, traceRoots, witnessValueType, witnessLayout?.structs,
+              );
+              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_CHUNK_SCAN === '1') console.error('route-learned-witness', {
+                witnessValueType, length: learnedValue?.length,
+                rootCount: traceRoots.size, roots: [...traceRoots].slice(0, 20),
+              });
               // Computed long writes can mutate bytes beyond the 28-byte inline head (e.g. timestamp stamping),
               // so the complete pre-mutation value on the stack does not match the new root. The chunk pin loop
               // nevertheless leaves each expected `uint16 index || data` commitment in the trace. Reassemble
               // those authenticated pieces with each candidate head and accept only a root-matching result.
               if (!learnedValue) {
                 for (const headCandidate of traceItems.filter((item) => item.length > 60 && item.length <= 10_000)) {
+                  if (!isCompleteCollectionValue(headCandidate, witnessValueType, witnessLayout?.structs)) continue;
                   const expectedCount = Math.ceil((headCandidate.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
                   if (expectedCount < 1 || expectedCount > 32) continue;
                   const candidates: Array<{ chunkIndex: number; chunkData: Uint8Array }> = [];
@@ -8001,11 +8125,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const probeBuilderRet = stb.build();
             const transactionRet = probeBuilderRet.buildLibauthTransaction();
             const sourceOutputsRet = generateLibauthSourceOutputs(probeBuilderRet.inputs);
-            const fullTraceRet = evaluateProbeTrace(this.inner.provider, {
+            // Return encoding (especially Solidity ABI words) is assembled by ordinary opcodes between the last
+            // state/event pin and the return comparison. Preserve those states for this one bounded callee probe;
+            // the sparse observer is intentionally insufficient for recovering the opposite EQUALVERIFY operand.
+            const fullTraceRet = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
               inputIndex: bMasterIdx,
               sourceOutputs: sourceOutputsRet,
               transaction: transactionRet,
-            });
+            }) as AuthenticationProgramStateCommon[];
 
             // X13: in the in-block regime this group's return event sits at its own block slot, so scan exactly
             // that index; otherwise scan the appended tail band shared by every returning callee.
@@ -8022,6 +8149,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const routeReturnTypes = (group.compilerRoute?.rowArguments ?? []).flatMap(
               (row) => row.handler.outputs?.map((output) => output.type) ?? [],
             );
+            const calleeReturnTypes = ((group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+              .find((candidate) => candidate.name === group.functionName)?.outputs ?? [])
+              .map((output) => output.type);
             const routeReturnPushes = routeReturnTypes.length || 1;
             const aggregatePending = routeReturnPushes > 1
               ? extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes) : undefined;
@@ -8030,6 +8160,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const pending = extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes);
               if (pending) returnCommitments = [pending];
             }
+            const evmScalar = (artifactUsesSolidityAbi(group.externalContract.inner.artifact)
+              || group.externalContract.inner.artifact.compiler?.options?.evmCompat)
+              ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes) : undefined;
+            if (evmScalar) returnCommitments = [evmScalar];
             if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
               (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
               console.error('route-return-derivation', {
@@ -8101,11 +8235,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const probeBuilder2 = stb.build();
                 const transaction2 = probeBuilder2.buildLibauthTransaction();
                 const sourceOutputs2 = generateLibauthSourceOutputs(probeBuilder2.inputs);
-                const fullTrace2 = evaluateProbeTrace(this.inner.provider, {
+                const fullTrace2 = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
                   inputIndex: bMasterIdx,
                   sourceOutputs: sourceOutputs2,
                   transaction: transaction2,
-                });
+                }) as AuthenticationProgramStateCommon[];
 
                 const eventCommitments = extractCommitmentMapFromTrace(fullTrace2);
                 if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
@@ -8194,11 +8328,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     };
                     group.eventOutputs = eventOutputs;
                     const progressiveProbe = stb.build();
-                    const progressiveTrace = evaluateProbeTrace(this.inner.provider, {
+                    const progressiveTrace = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
                       inputIndex: bMasterIdx,
                       sourceOutputs: generateLibauthSourceOutputs(progressiveProbe.inputs),
                       transaction: progressiveProbe.buildLibauthTransaction(),
-                    });
+                    }) as AuthenticationProgramStateCommon[];
                     const progressiveCommitments = extractCommitmentMapFromTrace(progressiveTrace);
                     const commitment = progressiveCommitments.get(
                       bOutputBase + eventSlots[ei].offset,
@@ -8417,11 +8551,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (ec.hasReturnValues && group.eventOutputs?.some((output) => output !== undefined)
             && (group.fusedReturnGroupIndex !== undefined || !group.precomputedReturnCommitment)) {
             const returnProbe = stb.build();
-            const returnTrace = evaluateProbeTrace(this.inner.provider, {
+            // Return construction can span ordinary stack opcodes between the event pin and the final
+            // OUTPUTTOKENCOMMITMENT check. The sparse commitment observer deliberately omits those opcodes, so
+            // use a faithful trace for this single post-event probe. Callee execution is bounded to its routed
+            // function (typically hundreds of steps), while every iterative state/entry probe remains sparse.
+            const returnTrace = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
               inputIndex: bMasterIdx,
               sourceOutputs: generateLibauthSourceOutputs(returnProbe.inputs),
               transaction: returnProbe.buildLibauthTransaction(),
-            });
+            }) as AuthenticationProgramStateCommon[];
             const returnOutputIndex = group.returnOutputIndex
               ?? stb.getExternalCallReturnEventOutputIndex(groupIdx);
             let returnCommitments = extractCommitmentsFromTrace(
@@ -9525,6 +9663,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         const lastStep = lastTrace?.[lastTrace.length - 1];
         const vmHadError = !!(lastStep && (lastStep as any).error);
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1') {
+          console.error('derive-return-events-complete', stb.getReturnEventOutputs().map((event) => ({
+            identity: event.identity,
+            categoryId: event.categoryId,
+            commitment: binToHex(event.commitment),
+          })));
+        }
 
         // When the VM didn't fully converge, derived transfers may still contain
         // placeholder bytecodes or amounts. Check both bytecodes and amounts are fully
@@ -11755,10 +11901,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         const bStatelayout = callInfo.externalContract.inner.stateLayout!;
 
-        // Get B's required data NFT UTXOs (default to all when ABI doesn't specify)
-        const bRequiredNftIndices = ec.requiredDataNftIndices.length > 0
-          ? ec.requiredDataNftIndices
-          : Array.from({ length: bStatelayout.dataNftCount }, (_, i) => i);
+        // This list is emitted for every callsite. An explicit empty list is authoritative: mapping-only calls
+        // do not co-spend fixed-state NFTs, and expanding empty to "all" shifts every later block slot.
+        const concreteAbi = callInfo.externalContract.inner.artifact.abi as readonly AbiFunction[];
+        const bRequiredNftIndices = compilerRoute
+          ? [...new Set(compilerRoute.rowArguments.flatMap((row) => (
+            concreteAbi.find((candidate) => candidate.selector === row.selector)?.requiredNftIndices
+              ?? row.handler.requiredNftIndices ?? []
+          )))]
+          : [...ec.requiredDataNftIndices];
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1' && callInfo.functionName === 'approve') {
+          console.error('approve-required-nfts', {
+            callsite: ec.requiredDataNftIndices,
+            rows: compilerRoute?.rowArguments.map((row) => ({
+              selector: row.selector,
+              handler: row.handler.name,
+              matched: concreteAbi.find((candidate) => candidate.selector === row.selector)?.name,
+              required: concreteAbi.find((candidate) => candidate.selector === row.selector)?.requiredNftIndices,
+            })),
+            selected: bRequiredNftIndices,
+          });
+        }
         const bDataNfts: UnlockableUtxo[] = [];
         for (const nftIndex of bRequiredNftIndices) {
           const dataNftUtxo = bState.dataNftUtxos[nftIndex];
@@ -12378,9 +12542,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
 
           const cStateLayout = cContract.inner.stateLayout!;
-          const cRequiredNftIndices = bEc.requiredDataNftIndices.length > 0
-            ? bEc.requiredDataNftIndices
-            : Array.from({ length: cStateLayout.dataNftCount }, (_, i) => i);
+          const cRequiredNftIndices = bEc.requiredDataNftIndices;
 
           const cDataNfts: UnlockableUtxo[] = [];
           for (const nftIndex of cRequiredNftIndices) {
@@ -12927,9 +13089,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         const bStateLayout = callInfo.externalContract.inner.stateLayout!;
-        const bRequiredNftIndices = osRead.requiredDataNftIndices.length > 0
-          ? osRead.requiredDataNftIndices
-          : Array.from({ length: bStateLayout.dataNftCount }, (_, i) => i);
+        const bRequiredNftIndices = osRead.requiredDataNftIndices;
         const bDataNfts: UnlockableUtxo[] = [];
         for (const nftIndex of bRequiredNftIndices) {
           const dataNftUtxo = bState.dataNftUtxos[nftIndex];
@@ -13506,7 +13666,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     const outputs = row.handler.outputs ?? [];
                     const resultValues = outputs.length === 1 ? [values] : values as unknown as StateValue[];
                     for (let index = 0; index < outputs.length; index++) {
-                      encodedResults.push(encodePushdataValue(resultValues[index] as never, outputs[index].type));
+                      const returnType = outputs[index].type;
+                      const solidityAbi = artifactUsesSolidityAbi(
+                        (proxyCallee?.implementation ?? callee).inner.artifact,
+                      );
+                      encodedResults.push(solidityAbi
+                        ? encodeEvmScalarReturn(resultValues[index], returnType)
+                          ?? encodePushdataValue(resultValues[index] as never, returnType)
+                        : encodePushdataValue(resultValues[index] as never, returnType));
                     }
                   }
                   precomputedReturnCommitment = scriptToBytecode([
@@ -13585,9 +13752,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   value = await callee._deriveReturnValue(childFunctionName, childFunctionArgs);
                 }
                 if (value !== undefined) {
-                  precomputedReturnCommitment = encodePushdataValue(
-                    value as never, effectiveReturnFn.outputs![0].type,
-                  );
+                  const returnType = effectiveReturnFn.outputs![0].type;
+                  const returnArtifact = effectiveReturnFn === proxyTargetFn
+                    ? proxyCallee?.implementation.inner.artifact
+                    : callee.inner.artifact;
+                  const solidityAbi = returnArtifact ? artifactUsesSolidityAbi(returnArtifact) : false;
+                  precomputedReturnCommitment = solidityAbi
+                    ? encodeEvmScalarReturn(value, returnType)
+                      ?? encodePushdataValue(value as never, returnType)
+                    : encodePushdataValue(value as never, returnType);
                 }
               }
               if (sharedGroupIndex >= 0) {
@@ -14556,15 +14729,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             .find((candidate) => candidate.name === group.functionName);
         return (delegateFunction?.outputs?.length ?? 0) > 0;
       }) ? 1 : 0;
-      const embeddedDelegateIndices = new Set(externalCallUtxoGroups
-        .filter((group) => group.delegateEmbeddedInBlock)
-        .map((group) => group.delegateCallGroupIndex)
-        .filter((index): index is number => index !== undefined));
       const delegateReturnOutputBase = externalOutputStart + externalCallUtxoGroups.reduce(
         (sum, g) => g.sharedGroupIndex === undefined
           ? sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length) : sum, 0,
       ) + lowLevelCallUtxoGroups
-        .filter((g, index) => g.callMode === 'delegatecall' && !embeddedDelegateIndices.has(index))
+        // An associated/embedded delegate is emitted while materializing its external proxy group rather than
+        // in the later low-level loop, but it still occupies physical output coordinates before the appended
+        // return band. Excluding it made every proxy return witness point one slot early (at the implementation
+        // master rather than the first return event).
+        .filter((g) => g.callMode === 'delegatecall')
         .reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0)
         + delegatedCallerReturnCount + delegatedLoopOutputCount;
       const returningExternalGroups = externalCallUtxoGroups
@@ -14606,7 +14779,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             physicalReturnIndexForGroup.set(
               groupIdx,
               (compilerRouteDelegateLayout || delegatedDynamicSuffix
-                ? nestedOutputBases[physicalGroupIdx] : nestedMasterIndices[physicalGroupIdx])
+                // The builder balances a full routed block forward to its physical master coordinate. A dense
+                // output prefix can therefore be earlier than the master, but never later; use the coordinate
+                // the block will actually occupy rather than pointing the return witness into the preceding
+                // participant's final slot.
+                ? Math.max(nestedOutputBases[physicalGroupIdx], nestedMasterIndices[physicalGroupIdx])
+                : nestedMasterIndices[physicalGroupIdx])
               + returnSlot.offset,
             );
           }
@@ -15198,14 +15376,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           group.refreshInternalArgs = (updates) => {
             group.internalArgs = { ...group.internalArgs, ...updates };
-            const refreshedArgs = bFunc.inputs.map((input, index) => updates[input.name] ?? encodedArgs[index]);
+            // Probe-learned witnesses must survive later geometry/anchor refreshes. Keeping them only in this
+            // invocation's temporary argument list caused the next refresh({}) to silently restore the original
+            // empty witness before final preflight.
+            for (const [name, value] of Object.entries(updates)) {
+              const index = bFunc.inputs.findIndex((input) => input.name === name);
+              if (index >= 0) encodedArgs[index] = value;
+            }
             group.masterUtxo = {
               ...(group.masterUtxo as UnlockableUtxo),
               unlocker: group.compilerRoute
                 ? group.externalContract.inner.createCompilerRouteUnlocker(
                   group.compilerRoute.abiFunction, group.compilerRoute.selector,
-                )(...refreshedArgs)
-                : group.externalContract.inner.unlock[group.functionName]!(...refreshedArgs),
+                )(...encodedArgs)
+                : group.externalContract.inner.unlock[group.functionName]!(...encodedArgs),
             };
             for (const externalGroup of externalCallUtxoGroups) {
               if (!externalGroup.delegateEmbeddedInBlock
@@ -16894,7 +17078,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       return '';
     };
-    const solidityImportCompat = artifact.compiler.options?.solidityImportCompat === true;
+    const solidityImportCompat = artifactUsesSolidityAbi(artifact);
     const narrowAddress = (locking: Uint8Array): Uint8Array => {
       if (locking.length === 0) return new Uint8Array(20);
       if (locking.length === 20) return locking;

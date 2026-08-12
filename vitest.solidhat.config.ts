@@ -23,6 +23,7 @@ export default defineConfig(solidhatPreset(
       include: [
         'test/utils.test.ts',
         'test/communication-signature.test.ts',
+        'test/encryption-cold.test.ts',
         'test/marketplace-cold.test.ts',
       ],
       testTimeout: 120_000,

@@ -12,6 +12,8 @@ import type { TypegenTarget } from './typegen.js';
 export interface NetworkConfig {
   /** Which provider backs this network. */
   type?: 'mock' | 'regtest' | 'electrum' | 'bitcoin-rpc';
+  /** BCH network used by live providers. Inferred from the config key when omitted. */
+  network?: 'mainnet' | 'testnet3' | 'testnet4' | 'chipnet' | 'regtest';
   electrum?: { host: string; port?: number };
   rpc?: { url: string; user?: string; password?: string };
   /** Mock-only consensus overrides. Defaults to 1MB inputs/stack items and 10MB transactions. */

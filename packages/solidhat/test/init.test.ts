@@ -31,12 +31,14 @@ describe('initializeProject', () => {
     expect(existsSync(join(directory, 'solidcash.config.ts'))).toBe(true);
     expect(existsSync(join(directory, 'contracts', 'Counter.scash'))).toBe(true);
     expect(existsSync(join(directory, 'test', 'Counter.test.ts'))).toBe(true);
+    expect(existsSync(join(directory, 'scripts', 'deploy.ts'))).toBe(true);
     expect(readFileSync(join(directory, 'README.md'), 'utf8')).toContain('# counter');
     expect(readFileSync(join(directory, 'README.md'), 'utf8')).toContain('Hardhat 3 and Ethers 6');
     const pkg = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
     expect(pkg.devDependencies['@solidcash/solidhat']).toBe('^0.13.0');
     expect(pkg.scripts['solidhat:compile']).toBe('solidhat compile');
     expect(pkg.scripts['solidhat:typegen']).toBe('solidhat typegen');
+    expect(pkg.scripts['solidhat:deploy']).toBe('solidhat deploy');
   });
 
   it('documents and scaffolds the JavaScript/pnpm template accurately', () => {
@@ -219,6 +221,42 @@ describe('CLI entry points', () => {
     // Budget was 20s. This spawns a child process running the whole CLI compile-and-test cycle: measured
     // 10,069 ms on a quiet box (half the old budget) but 63,152 ms and 76,982 ms under concurrent
     // parallel-worker rounds. A hang is unbounded, so 180s still catches one; 20s only caught a busy box.
+  }, 180_000);
+
+  it('runs the generated deployment script on a selected mock network', () => {
+    const parent = temporaryDirectory('generated-deploy');
+    initializeProject({ cwd: parent, target: 'app', install: false });
+    const directory = join(parent, 'app');
+    symlinkSync(resolve('../../node_modules'), join(directory, 'node_modules'), 'dir');
+
+    const output = execFileSync(process.execPath, [solidhatCli, '--network', 'mock', 'deploy'], {
+      cwd: directory, encoding: 'utf8',
+    });
+
+    expect(output).toContain('Deploying on mock');
+    expect(output).toContain('"network": "mock"');
+    expect(output).toContain('"transaction":');
+  }, 180_000);
+
+  it.runIf(process.env.TESTS_USE_REGTEST)('deploys the generated project through BCHN regtest', () => {
+    const parent = temporaryDirectory('generated-regtest-deploy');
+    initializeProject({ cwd: parent, target: 'app', install: false });
+    const directory = join(parent, 'app');
+    symlinkSync(resolve('../../node_modules'), join(directory, 'node_modules'), 'dir');
+
+    const output = execFileSync(process.execPath, [solidhatCli, 'deploy', '--network', 'regtest'], {
+      cwd: directory, encoding: 'utf8',
+      env: {
+        ...process.env,
+        REGTEST_RPC_URL: process.env.REGTEST_RPC_URL ?? 'http://127.0.0.1:18443',
+        REGTEST_RPC_USER: process.env.REGTEST_RPC_USER ?? 'user',
+        REGTEST_RPC_PASSWORD: process.env.REGTEST_RPC_PASSWORD ?? 'password',
+      },
+    });
+
+    expect(output).toContain('Deploying on regtest from bchreg:');
+    expect(output).toContain('"network": "regtest"');
+    expect(output).toContain('"address": "bchreg:');
   }, 180_000);
 });
 

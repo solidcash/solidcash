@@ -12,8 +12,9 @@ import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from
 import { getBytes as getEthersBytes } from 'ethers/utils';
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
 import {
-  type NetworkProvider,
+  type Network, Network as Networks, type NetworkProvider,
   MockNetworkProvider, MOCK_CONSENSUS_LIMITS, RegtestNetworkProvider, ElectrumNetworkProvider,
+  BitcoinRpcNetworkProvider,
   Signer, HDSigner, signersFromMnemonic,
   StatefulContract, type ContractRunner, type ConnectedStatefulContract,
   ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract,
@@ -38,9 +39,41 @@ const HARDHAT_ACCOUNT_BRANCH = "m/44'/60'/0'/0";
 /** Build a network provider from a resolved network config. */
 export function createProvider(name: string, netCfg: NetworkConfig | undefined): NetworkProvider {
   const type = netCfg?.type ?? (name === 'regtest' ? 'regtest' : name === 'mock' ? 'mock' : 'mock');
+  const knownNetworks: readonly Network[] = [
+    Networks.MAINNET, Networks.TESTNET3, Networks.TESTNET4, Networks.CHIPNET, Networks.REGTEST,
+  ];
+  const configuredNetwork = netCfg?.network ?? (
+    knownNetworks.includes(name as Network) ? name as Network : undefined
+  );
   switch (type) {
-    case 'regtest': return new RegtestNetworkProvider();
-    case 'electrum': return new ElectrumNetworkProvider();
+    case 'regtest': return new RegtestNetworkProvider({
+      rpcUrl: netCfg?.rpc?.url,
+      rpcUser: netCfg?.rpc?.user,
+      rpcPassword: netCfg?.rpc?.password,
+    });
+    case 'electrum': {
+      const network = configuredNetwork ?? Networks.MAINNET;
+      if (network === Networks.REGTEST) {
+        throw new Error('ElectrumNetworkProvider does not support regtest; use type "regtest" or "bitcoin-rpc".');
+      }
+      if (netCfg?.electrum?.port !== undefined) {
+        throw new Error('Custom Electrum ports are not supported; configure a hostname using its standard port.');
+      }
+      return new ElectrumNetworkProvider(
+        network,
+        netCfg?.electrum?.host ? { hostname: netCfg.electrum.host } : {},
+      );
+    }
+    case 'bitcoin-rpc': {
+      if (!netCfg?.rpc?.url) throw new Error(`Network "${name}" requires rpc.url.`);
+      if (!configuredNetwork) throw new Error(`Network "${name}" requires an explicit BCH network.`);
+      if (!netCfg.rpc.user || !netCfg.rpc.password) {
+        throw new Error(`Network "${name}" requires rpc.user and rpc.password.`);
+      }
+      return new BitcoinRpcNetworkProvider(configuredNetwork, netCfg.rpc.url, {
+        rpcUser: netCfg.rpc.user, rpcPassword: netCfg.rpc.password,
+      });
+    }
     case 'mock':
     default: return new MockNetworkProvider({
       consensusLimits: { ...MOCK_CONSENSUS_LIMITS, ...netCfg?.consensus },
@@ -196,6 +229,7 @@ export function loadArtifactOrSplitByName(artifactsDir: string, name: string): A
 interface EthersOptions {
   artifactsDir: string;
   accountsPath?: string;
+  accountSatoshis?: bigint;
   recoveryProjection: 'p2pkh' | 'evm';
 }
 
@@ -220,6 +254,20 @@ function withEthersMessageSigning<T extends Signer>(signer: T): T {
 
 function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOptions): SolidcashEthers {
   const { artifactsDir, accountsPath } = opts;
+  const regtestFunding = new Map<string, Promise<void>>();
+  const fundRegtestSigner = async (signer: Signer, satoshis: bigint | undefined): Promise<void> => {
+    if (!(provider instanceof RegtestNetworkProvider) || satoshis === undefined) return;
+    const address = signer.getAddress();
+    let funding = regtestFunding.get(address);
+    if (!funding) {
+      funding = (async () => {
+        const existing = await provider.getUtxos(address);
+        if (existing.length === 0) await provider.addUtxo(address, randomUtxo({ satoshis }));
+      })();
+      regtestFunding.set(address, funding);
+    }
+    await funding;
+  };
   const resolveArtifact = <T extends Artifact>(a: T | SplitArtifactBundle | string): T | SplitArtifactBundle =>
     (typeof a === 'string' ? loadArtifactOrSplitByName(artifactsDir, a) : a) as T | SplitArtifactBundle;
 
@@ -251,11 +299,15 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
         // category-neutral filler inputs in one call. Keep the Hardhat-style
         // mock accounts generously pre-split so those compiler-owned slots do
         // not turn into an artificial wallet-funding limit.
-        satoshis: 100_000_000n, fundingUtxos: 128, mnemonic, path: accountsPath, ...o,
+        satoshis: opts.accountSatoshis ?? 100_000_000n,
+        fundingUtxos: 128, mnemonic, path: accountsPath, ...o,
       })).map(withEthersMessageSigning);
     }
-    return signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath })
+    const signers = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath })
       .map(withEthersMessageSigning);
+    const satoshis = o.satoshis ?? opts.accountSatoshis;
+    await Promise.all(signers.map((signer) => fundRegtestSigner(signer, satoshis)));
+    return signers;
   };
 
   const verifyMessageP2pkh: SolidcashEthers['verifyMessageP2pkh'] = (message, signature) => {
@@ -403,12 +455,16 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     getSigner: async (index = 0, o = {}): Promise<Signer> => {
       const anyProvider = provider as unknown as { getSigner?: (i: number, x: object) => Promise<Signer> };
       if (typeof anyProvider.getSigner === 'function') {
-        return withEthersMessageSigning(await anyProvider.getSigner(index, { mnemonic, path: accountsPath, ...o }));
+        return withEthersMessageSigning(await anyProvider.getSigner(index, {
+          satoshis: opts.accountSatoshis, mnemonic, path: accountsPath, ...o,
+        }));
       }
       const [signer] = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, {
         initialIndex: index, count: 1, path: accountsPath,
       });
-      return withEthersMessageSigning(signer);
+      const connected = withEthersMessageSigning(signer);
+      await fundRegtestSigner(connected, o.satoshis ?? opts.accountSatoshis);
+      return connected;
     },
     getContractFactory: contractFactory,
     getContractAt: contractAt,
@@ -434,24 +490,42 @@ function buildConnection(name: string, netCfg: NetworkConfig | undefined, mnemon
 export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkName?: string)
   : HardhatRuntimeEnvironment {
   const name = networkName ?? config.defaultNetwork;
+  const validateNetwork = (candidate: string): NetworkConfig => {
+    if (!Object.hasOwn(config.networks, candidate)) {
+      throw new Error(
+        `Network "${candidate}" is not configured. Available networks: ${Object.keys(config.networks).join(', ')}`,
+      );
+    }
+    const candidateConfig = config.networks[candidate];
+    const selectedNetwork = candidateConfig.network ?? candidate;
+    if ((candidateConfig.type === 'electrum' || candidateConfig.type === 'bitcoin-rpc')
+      && selectedNetwork !== Networks.REGTEST && !config.mnemonic) {
+      throw new Error(
+        `Network "${candidate}" is live and requires an explicit mnemonic; refusing to use the public mock mnemonic.`,
+      );
+    }
+    return candidateConfig;
+  };
+  const selectedConfig = validateNetwork(name);
   const mnemonic = config.mnemonic ?? DEFAULT_MNEMONIC;
   const ethersOpts: EthersOptions = {
     artifactsDir: config.paths.artifacts,
     // Keep getSigners() and the hardhat-shaped config.networks.*.accounts.path view identical. Ported suites
     // commonly reconstruct HDNodeWallets from that published path and expect wallet i to be signer i.
     accountsPath: config.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,
+    accountSatoshis: config.accounts?.satoshis,
     recoveryProjection: config.compiler?.ecrecover === 'evm' ? 'evm'
       : config.compiler?.ecrecover === 'p2pkh' ? 'p2pkh'
         : config.compiler?.solidityImportCompat === true ? 'evm'
           : 'p2pkh',
   };
-  const base = buildConnection(name, config.networks[name], mnemonic, ethersOpts);
+  const base = buildConnection(name, selectedConfig, mnemonic, ethersOpts);
   // The active provider backs the module-global network helpers (loadFixture/time/...).
   setActiveProvider(base.provider as unknown as nh.TestNetworkProvider);
 
   const connect = async (n?: string): Promise<NetworkConnection> => {
     const cn = n ?? name;
-    const conn = buildConnection(cn, config.networks[cn], mnemonic, ethersOpts);
+    const conn = buildConnection(cn, validateNetwork(cn), mnemonic, ethersOpts);
     await conn.ethers.getSigners(config.accounts?.count ?? 20);
     setActiveProvider(conn.provider as unknown as nh.TestNetworkProvider);
     return conn;

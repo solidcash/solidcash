@@ -92,6 +92,36 @@ The exported `solidcashConfigSchema` provides the same configuration surface as 
 source dependency graph, reuses cached roots whose content and effective compiler configuration are unchanged,
 and replaces the SolidCash artifact tree only after every compiler job succeeds.
 
+## Deployment scripts
+
+SolidHat follows Hardhat's network-selected script workflow. `deploy` compiles and runs `scripts/deploy.ts` by
+default; `run` accepts any script path. `--network` may appear before or after the task:
+
+```sh
+solidhat deploy --network regtest
+solidhat run scripts/deploy-marketplace.ts --network chipnet
+solidhat --network mainnet deploy scripts/deploy-production.ts
+```
+
+Scripts import the generation-specific runtime and use ordinary factories:
+
+```ts
+import { ethers, network } from '@solidcash/solidhat/hardhat3';
+
+const [deployer] = await ethers.getSigners(1);
+const Factory = await ethers.getContractFactory('Marketplace', deployer);
+const contract = await Factory.deploy(/* constructor arguments */);
+await contract.waitForDeployment();
+
+console.log(network.name, await contract.getAddress(), contract.deploymentTransaction().txid);
+```
+
+Configured mock accounts are funded in-process. A `regtest` network uses BCHN RPC and funds mnemonic-derived
+accounts from the node wallet when `accounts.satoshis` is configured. Electrum and generic Bitcoin RPC networks
+never create funds; their mnemonic-derived addresses must already be funded. Live networks also require an
+explicit `mnemonic`, so SolidHat will not accidentally deploy using its public mock mnemonic. Use environment
+variables in `solidcash.config.ts` for mnemonic and RPC credentials, and never commit production secrets.
+
 ## Configuration
 
 ```ts
@@ -111,6 +141,8 @@ export default defineConfig({
   typegen: {
     targets: [{ target: 'ethers6', layout: 'typechain', outDir: 'typechain-types' }],
   },
+  mnemonic: process.env.SOLIDCASH_MNEMONIC,
+  accounts: { count: 1, satoshis: 100_000_000n },
   networks: {
     mock: {
       type: 'mock',
@@ -118,6 +150,16 @@ export default defineConfig({
       consensus: { maximumInputBytes: 500_000 },
       policy: { enforceDust: false },
     },
+    regtest: {
+      type: 'regtest',
+      rpc: {
+        url: process.env.REGTEST_RPC_URL ?? 'http://127.0.0.1:18443',
+        user: process.env.REGTEST_RPC_USER ?? 'user',
+        password: process.env.REGTEST_RPC_PASSWORD ?? 'password',
+      },
+    },
+    chipnet: { type: 'electrum', network: 'chipnet' },
+    mainnet: { type: 'electrum', network: 'mainnet' },
   },
   defaultNetwork: 'mock',
 });

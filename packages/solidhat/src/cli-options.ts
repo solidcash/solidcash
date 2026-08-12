@@ -2,6 +2,22 @@ import type { InitOptions, InitResult, PackageManager, Template } from './init.j
 
 export interface ParsedInitCli { init: boolean; help: boolean; yes: boolean; options: InitOptions; passthrough: string[] }
 
+export function extractNetworkOption(argv: string[]): { network?: string; rest: string[] } {
+  const rest: string[] = [];
+  let network: string | undefined;
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === '--network') {
+      network = argv[++index];
+      if (!network) throw new Error('--network requires a configured network name.');
+    } else if (arg.startsWith('--network=')) {
+      network = arg.slice('--network='.length);
+      if (!network) throw new Error('--network requires a configured network name.');
+    } else rest.push(arg);
+  }
+  return { network, rest };
+}
+
 export function parseInitCli(argv: string[], createMode = false): ParsedInitCli {
   const options: InitOptions = {};
   const passthrough: string[] = [];

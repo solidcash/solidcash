@@ -720,10 +720,11 @@ export function outlineSharedSpans(
     // a claimed range makes every overlapping candidate stale until the next round re-measures.
     const claimed = corpus.map((body) => new Uint8Array(body.script.length));
     const applied: { definition: OutlinedFunction; occurrences: number[]; saved: number }[] = [];
+    const free: number[] = [];
     for (const candidate of candidates) {
       if (functions.length + applied.length >= MAXIMUM_OUTLINED_FUNCTIONS) break;
       const spanLength = candidate.span.length;
-      const free: number[] = [];
+      free.length = 0;
       for (let occurrenceIndex = 0; occurrenceIndex < candidate.occurrences.length; occurrenceIndex += 2) {
         const body = candidate.occurrences[occurrenceIndex];
         const start = candidate.occurrences[occurrenceIndex + 1];
@@ -750,7 +751,7 @@ export function outlineSharedSpans(
           // The shared body inherits its first site's locations; every site maps to the same source construct.
           locationData: corpus[free[0]].locationData.slice(free[1], free[1] + spanLength),
         },
-        occurrences: free,
+        occurrences: [...free],
         saved: savingsOf(candidate.bytes, free.length / 2, idPushBytes),
       });
     }

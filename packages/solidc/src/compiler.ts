@@ -6965,28 +6965,30 @@ export function parseCode(
   // Current Solidity grammar places the clause BEFORE inheritance (`contract C layout at 42 is A`); preserve the
   // `is A` tail rather than consuming it as part of the layout expression. Retain the older post-inheritance
   // spelling below for compatibility with sources SolidCash already accepted.
-  code = code.replace(
+  if (code.includes('layout')) {
+    code = code.replace(
     // eslint-disable-next-line max-len
-    /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
-    (_m, header, layoutPrefix, expr, inheritance) => {
-      if (/\berc7201\b/.test(expr)) {
-        console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
+      /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
+      (_m, header, layoutPrefix, expr, inheritance) => {
+        if (/\berc7201\b/.test(expr)) {
+          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
           + 'base slot on the UTXO model, so the layout specifier is ignored.');
-      }
-      return header + (layoutPrefix + expr).replace(/[^\r\n]/g, ' ') + inheritance;
-    },
-  );
-  code = code.replace(
+        }
+        return header + (layoutPrefix + expr).replace(/[^\r\n]/g, ' ') + inheritance;
+      },
+    );
+    code = code.replace(
     // eslint-disable-next-line max-len
-    /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
-    (_m, header, clause, expr) => {
-      if (/\berc7201\b/.test(expr)) {
-        console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
+      /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
+      (_m, header, clause, expr) => {
+        if (/\berc7201\b/.test(expr)) {
+          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
           + 'base slot on the UTXO model, so the layout specifier is ignored.');
-      }
-      return header + clause.replace(/[^\r\n]/g, ' ');
-    },
-  );
+        }
+        return header + clause.replace(/[^\r\n]/g, ' ');
+      },
+    );
+  }
 
   // X120. The file stamp has to cover LEXING AND PARSING, not only the AST build. An ANTLR error listener builds
   // its own `Location` from the offending token while the parse is still running, i.e. before

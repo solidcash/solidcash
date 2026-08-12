@@ -3727,10 +3727,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const initialCandidateCache = initialCandidateCaches.get(bodyOrder) ?? new Map<string, unknown>();
         initialCandidateCaches.set(bodyOrder, initialCandidateCache);
         const orderedAttempt = outlineSharedSpans(
-          order.map((index) => {
-            const body = bodies[index];
-            return { ...body, script: [...body.script], locationData: [...body.locationData] };
-          }),
+          order.map((index) => bodies[index]),
           () => encodeInt(this.allocateCompactHelperId()),
           () => width,
           ranking,

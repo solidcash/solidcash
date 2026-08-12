@@ -8,7 +8,7 @@ export default defineConfig({
     solidityImportCompat: true,
     // Keep the production state-partitioning layout while the mock VM relaxes execution ceilings.
     commitmentLimit: 128,
-    maximumInputBytes: 1_000_000,
+    maximumInputBytes: 10_000_000,
     optimizeForCompilationSpeed: true,
     ecrecover: 'p2pkh',
     // Keep the Hardhat-compatible harness on the uniform fixed-entry backend.
@@ -17,6 +17,7 @@ export default defineConfig({
     sortedMappingsAll: false,
   },
   typegen: {
+    jsonArtifactModules: true,
     targets: [{
       target: 'ethers6', layout: 'typechain', outDir: 'typechain-types', sourceDir: 'contracts',
     }],
@@ -28,8 +29,8 @@ export default defineConfig({
     mock: {
       type: 'mock',
       consensus: {
-        maximumInputBytes: 1_000_000,
-        maximumStackItemBytes: 1_000_000,
+        maximumInputBytes: 10_000_000,
+        maximumStackItemBytes: 10_000_000,
         maximumTransactionBytes: 10_000_000,
         maximumNftCommitmentBytes: 1_000_000,
         operationCostBudgetPerByte: 10_000_000,

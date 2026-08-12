@@ -741,8 +741,7 @@ export class StatefulTransactionBuilder {
         ...this.lowLevelCallRawInputs,
         ...this.readOnlyDataNftUtxos, ...this.blockhashCoSpendUtxos,
         ...this.keccakComputeCoSpendUtxos, ...this.keccakLoopSideCars, ...this.ecrecoverComputeCoSpendUtxos,
-        ...externalOutStateInputs, ...entryInputs, ...this.iterationEntryInputs,
-        ...this.insertLoopPredecessorInputs, ...nestedInputs,
+        ...externalOutStateInputs, ...entryInputs,
       ];
       // A delegate's trailing storage is addressed from implementationInput + blockSize. Output-only fixed slots
       // (most commonly an event) still need corresponding funder INPUTS before that trailing region. The legacy
@@ -765,22 +764,44 @@ export class StatefulTransactionBuilder {
         ?? this.blockLayout?.trailingBase ?? this.blockLayout?.blockSize;
       const expectedDynamicIndex = routeDelegateInputIndex >= 0 && trailingBase !== undefined
         ? routeDelegateInputIndex + trailingBase
-          + this.iterationEntryInputs.length + this.insertLoopPredecessorInputs.length
         : prefix.length;
+      const delegatedLoopOutputCount = this._delegateLoopEntryVars().reduce(
+        (sum, variable) => sum + (this.loopEntryCommitments.get(variable.collection) ?? []).length,
+        0,
+      );
+      const delegatedLoopInputCount = this.iterationEntryInputs.length + this.insertLoopPredecessorInputs.length;
+      // A sorted INSERT consumes one predecessor but emits both the rewritten predecessor and the new node.
+      // That output-only expansion must be balanced before nested participant blocks, otherwise every callee
+      // input is one position earlier than its output and its self-preservation covenant reads the prior slot.
+      const delegatedLoopOutputSurplus = Math.max(0, delegatedLoopOutputCount - delegatedLoopInputCount);
       const fixedPaddingCount = Math.min(
         this.funderUtxos.length,
-        Math.max(0, expectedDynamicIndex - prefix.length),
+        Math.max(0, expectedDynamicIndex - prefix.length) + delegatedLoopOutputSurplus,
       );
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_INPUTS === '1') {
         console.error('delegate-trailing-input-geometry', {
           routeDelegateIndex, routeDelegateInputIndex, delegateBlockSize: delegateLayout?.blockSize,
           builderBlockSize: this.blockLayout?.blockSize, trailingBase, prefix: prefix.length,
           fixedPaddingCount, dynamicChunks: this.dynamicChunkInputs.length,
+          delegatedLoopOutputCount, delegatedLoopInputCount, delegatedLoopOutputSurplus,
+          counts: {
+            data: this.dataNftUtxos.length,
+            lowLevel: this.lowLevelCallUtxoGroups.length,
+            raw: this.lowLevelCallRawInputs.length,
+            readOnly: this.readOnlyDataNftUtxos.length,
+            externalOutState: externalOutStateInputs.length,
+            entry: entryInputs.length,
+            iteration: this.iterationEntryInputs.length,
+            predecessors: this.insertLoopPredecessorInputs.length,
+            nested: nestedInputs.length,
+            funders: this.funderUtxos.length,
+          },
         });
       }
       return [
         ...prefix,
         ...this.funderUtxos.slice(0, fixedPaddingCount),
+        ...this.iterationEntryInputs, ...this.insertLoopPredecessorInputs, ...nestedInputs,
         ...this.dynamicChunkInputs, ...tokenContainerInputs, ...satoshiContainerInputs,
         ...this.funderUtxos.slice(fixedPaddingCount),
       ];
@@ -1098,6 +1119,7 @@ export class StatefulTransactionBuilder {
       if (typeof value === 'string') {
         if (parameter.type === 'string') value = new TextEncoder().encode(value);
         else if (parameter.type === 'address' && value.includes(':')) value = addressToLockScript(value);
+        else if (parameter.type === 'address' && /^(0x)?0*$/i.test(value)) value = new Uint8Array(0);
         else if (parameter.type === 'address' && /^0x[0-9a-fA-F]*$/.test(value)) value = hexToBin(value.slice(2));
         else if (isHex(value)) value = hexToBin(value);
         else throw new Error(`Invalid event argument at index ${i}: expected a hex string, got '${value}'`);
@@ -1194,11 +1216,13 @@ export class StatefulTransactionBuilder {
 
   /** Insert a non-covenant output before the authenticated [late chunks][terminal suffix] region. */
   private insertBeforeLateValueSuffix(builder: TransactionBuilder, output: Output): void {
-    if (this.lateValueChunkOutputs.length === 0) {
+    const delegateDynamicCount = this.delegateDynamicChunksAtSuffix ? this._dynamicChunkOutputCount() : 0;
+    const authenticatedSuffixCount = delegateDynamicCount + this.lateValueChunkOutputs.length;
+    if (authenticatedSuffixCount === 0) {
       builder.addOutput(output);
       return;
     }
-    const suffixLength = this.lateValueChunkOutputs.length + 1;
+    const suffixLength = authenticatedSuffixCount + 1;
     builder.outputs.splice(builder.outputs.length - suffixLength, 0, output);
   }
 
@@ -2026,6 +2050,62 @@ export class StatefulTransactionBuilder {
         });
       }
     };
+    const appendDelegateLoopEntries = (): void => {
+      const delegateLoopVars = this._delegateLoopEntryVars();
+      if (delegateLoopVars.length === 0) return;
+      const delegateFunction = (group: ExternalCallUtxoGroup): AbiFunction | undefined => (
+        group.compilerRoute?.abiFunction
+        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((candidate) => candidate.name === group.functionName)
+      );
+      const delegateGroupIndex = this.lowLevelCallUtxoGroups.findIndex((group) => group.callMode === 'delegatecall'
+        && (delegateFunction(group)?.sortedUpsertLoopInfo?.length ?? 0) > 0);
+      const delegateGroup = delegateGroupIndex < 0 ? undefined : this.lowLevelCallUtxoGroups[delegateGroupIndex];
+      const delegateAbiFunction = delegateGroup === undefined ? undefined : delegateFunction(delegateGroup);
+      const delegateMaster = delegateGroup?.masterUtxo as UnlockableUtxo | undefined;
+      const delegateOutputIndex = delegateMaster ? builder.outputs.findIndex((output) => (
+        binToHex(typeof output.to === 'string' ? addressToLockScript(output.to) : output.to)
+          === binToHex(delegateMaster.unlocker.generateLockingBytecode())
+        && output.token?.category === delegateMaster.token?.category
+      )) : -1;
+      const delegateBase = delegateOutputIndex >= 0 ? delegateOutputIndex
+        : this.blockLayout?.slots.find((slot) => slot.kind === 'lowLevelCall')?.offset;
+      let outputIndex = delegateBase !== undefined
+        ? delegateBase + (delegateAbiFunction?.blockLayout?.blockSize ?? 1)
+        : this.getLoopEntryOutputBase();
+      // The implementation's block can contain output-only slots (most commonly its return-event slot). The
+      // preservation helper above emits only master + data NFTs, so materialize any intervening balanced slots
+      // before inserting the trailing loop band. Otherwise Array.splice clamps an absolute index beyond the end,
+      // shifting every loop and nested-call output left by the number of omitted block slots.
+      while (builder.outputs.length < outputIndex) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+      }
+      for (const lv of delegateLoopVars) {
+        const emittedByExternalInsert = this.externalCallEntryInserts.some((insert) => (
+          insert.commitment !== ''
+          && insert.categoryId === lv.categoryId
+          && insert.to.length === lv.lockingBytecode.length
+          && insert.to.every((byte, index) => byte === lv.lockingBytecode[index])
+        ));
+        if (emittedByExternalInsert) continue;
+        for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
+          const entryOutput = {
+            to: lv.lockingBytecode,
+            amount: 1200n,
+            token: {
+              amount: 0n,
+              category: lv.categoryId!,
+              nft: { capability: 'mutable' as const, commitment },
+            },
+          };
+          entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
+          // Earlier composed participant/identity outputs may already have been materialized. The implementation
+          // covenant owns an absolute master-relative loop coordinate, so insert at that coordinate rather than
+          // appending after whichever caller outputs happened to be built first.
+          builder.outputs.splice(outputIndex++, 0, entryOutput);
+        }
+      }
+    };
     if (this.delegateEntriesAfterLowLevel) {
       this.lowLevelCallUtxoGroups.forEach((_group, groupIndex) => {
         if (!associatedDelegateOutputs.has(groupIndex)) appendDelegateGroupOutputs(groupIndex);
@@ -2045,6 +2125,10 @@ export class StatefulTransactionBuilder {
           });
         }
       }
+      // The implementation owns this runtime-loop region: its covenant addresses it at
+      // implementationInput + implementationBlockSize. Keep it adjacent to the implementation band even when
+      // the same delegate also places dynamic-storage chunks in the reverse-indexed transaction suffix.
+      appendDelegateLoopEntries();
     }
 
     // Create external call outputs (B's master preserved + B's data NFTs with updated state)
@@ -2325,6 +2409,14 @@ export class StatefulTransactionBuilder {
           // read-only entry (or an absent-key funder placeholder) has no stored commitment -> mirror the input.
           if (slot?.kind === 'entry') {
             const bEntryOut = this.externalCallEntryOutputs.get(group.categoryId)?.get(si);
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_APPROVE_ENTRY === '1' && group.functionName === 'approve') {
+              console.error('builder-approve-entry-output', {
+                groupIndex, si, absoluteOutput: builder.outputs.length,
+                hasCommitment: bEntryOut !== undefined,
+                commitment: bEntryOut,
+              });
+            }
             const embeddedEntry = this.entryNfts.find((entry) => entry.utxo !== undefined
               && entry.utxo.txid.toLowerCase() === input.txid.toLowerCase()
               && entry.utxo.vout === input.vout);
@@ -2797,6 +2889,8 @@ export class StatefulTransactionBuilder {
             value = new TextEncoder().encode(value);
           } else if (type === 'address' && value.includes(':')) {
             value = addressToLockScript(value);
+          } else if (type === 'address' && /^(0x)?0*$/i.test(value)) {
+            value = new Uint8Array(0);
           } else if (type === 'address' && /^0x[0-9a-fA-F]*$/.test(value)) {
             value = hexToBin(value.slice(2));
           } else if (!isHex(value)) {
@@ -3180,29 +3274,6 @@ export class StatefulTransactionBuilder {
         trailingCapacity: this.blockLayout?.trailingCapacity,
       });
     }
-    for (const lv of this._delegateLoopEntryVars()) {
-      const emittedByExternalInsert = this.externalCallEntryInserts.some((insert) => (
-        insert.commitment !== ''
-        && insert.categoryId === lv.categoryId
-        && insert.to.length === lv.lockingBytecode.length
-        && insert.to.every((byte, index) => byte === lv.lockingBytecode[index])
-      ));
-      if (emittedByExternalInsert) continue;
-      for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
-        const entryOutput = {
-          to: lv.lockingBytecode,
-          amount: 1200n,
-          token: {
-            amount: 0n,
-            category: lv.categoryId!,
-            nft: { capability: 'mutable' as const, commitment },
-          },
-        };
-        entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
-        builder.addOutput(entryOutput);
-      }
-    }
-
     if (this.logicalIdentityUtxo) {
       builder.addOutput({
         to: this.logicalIdentityUtxo.unlocker.generateLockingBytecode(),
@@ -3222,7 +3293,9 @@ export class StatefulTransactionBuilder {
     // Reverse-suffix chunk indexing requires exactly ONE output after the late chunk region in every build,
     // including covenant-only probes and direct build() calls. A sidecar must be last for its self-preservation
     // covenant; otherwise use a zero-value OP_RETURN anchor. send() inserts any fee change BEFORE this suffix.
-    if (this.lateValueChunkOutputs.length > 0) {
+    const hasAuthenticatedChunkSuffix = this.lateValueChunkOutputs.length > 0
+      || (this.delegateDynamicChunksAtSuffix && this._dynamicChunkOutputCount() > 0);
+    if (hasAuthenticatedChunkSuffix) {
       if (this.sidecarUtxo) {
         builder.addOutput({
           to: this.sidecarUtxo.unlocker.generateLockingBytecode(),
@@ -3231,6 +3304,16 @@ export class StatefulTransactionBuilder {
       } else {
         builder.addOutput({ to: new Uint8Array([0x6a]), amount: 0n }); // OP_RETURN suffix anchor
       }
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_CHUNK_SCAN === '1'
+      && this.dynamicChunkVars.length > 0) {
+      console.error('authenticated-chunk-suffix', {
+        delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
+        dynamicCount: this._dynamicChunkOutputCount(),
+        lateCount: this.lateValueChunkOutputs.length,
+        hasAuthenticatedChunkSuffix,
+        outputCount: builder.outputs.length,
+      });
     }
     // The final unused funder input of a bounded balanced layout remains after
     // the owner block; the outer transaction builder pairs it with change.
@@ -3659,7 +3742,12 @@ export class StatefulTransactionBuilder {
     const transaction = builder.buildLibauthTransaction(true);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const named = reason.match(/input(?: index)? (\d+)/);
-    const candidates = named ? [Number(named[1])] : transaction.inputs.map((_u, i) => i);
+    const traceInput = Number(
+      (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_TRACE_INPUT,
+    );
+    const candidates = Number.isInteger(traceInput)
+      ? [traceInput]
+      : named ? [Number(named[1])] : transaction.inputs.map((_u, i) => i);
     const relaxedConsensus = (this.builderOptions.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
     if (relaxedConsensus) {
       const traceWidth = Number(
@@ -4070,7 +4158,8 @@ export class StatefulTransactionBuilder {
 
     // Recreate the side-car as the LAST output (its self-preservation verifies the last output).
     // With late chunks it was already emitted by build() as their single terminal suffix.
-    if (this.sidecarUtxo && this.lateValueChunkOutputs.length === 0) {
+    if (this.sidecarUtxo && this.lateValueChunkOutputs.length === 0
+      && !(this.delegateDynamicChunksAtSuffix && this._dynamicChunkOutputCount() > 0)) {
       finalBuilder.addOutput({
         to: this.sidecarUtxo.unlocker.generateLockingBytecode(),
         amount: this.sidecarUtxo.satoshis,
@@ -4116,6 +4205,24 @@ export class StatefulTransactionBuilder {
             unlockingBytes: finalBuilder.buildLibauthTransaction(true).inputs[index]?.unlockingBytecode.length,
             lockingBytes: input.unlocker?.generateLockingBytecode().length,
             category: input.token?.category,
+          })));
+          console.error('final-preflight-outputs', finalBuilder.outputs.map((output, index) => ({
+            index,
+            amount: output.amount,
+            category: output.token?.category,
+            commitment: output.token?.nft?.commitment,
+            lockingBytecode: typeof output.to === 'string'
+              ? output.to.slice(0, 80) : binToHex(output.to).slice(0, 80),
+          })));
+          console.error('final-preflight-groups', this.lowLevelCallUtxoGroups.map((group, index) => ({
+            index,
+            functionName: group.functionName,
+            blockLayout: group.blockLayout,
+            routeEvents: group.compilerRoute?.eventSignaturesBySlot,
+            eventOutputs: group.eventOutputs?.map((output) => output && ({
+              signature: output.eventSignature,
+              commitment: output.commitment,
+            })),
           })));
         }
         this._logCovenantFailureTrace(finalBuilder, error instanceof Error ? error.message : String(error));

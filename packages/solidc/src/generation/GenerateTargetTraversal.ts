@@ -177,6 +177,7 @@ import {
   StateArrayPopNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
+  KeySourceInfo,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { GlobalFunction, Class } from '../ast/Globals.js';
@@ -4081,12 +4082,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Recompute block layout with finalized requiredNftIndices + conditional flags
     if (this.dataNftCount >= 0 && node.isEntryPoint && node.blockLayout) {
       // Compute function-level min counts from branch nodes to detect conditional slots
-      const minCounts = { transfers: node.transferInfos?.length ?? 0, emits: node.emitInfos?.length ?? 0, tcTransfers: 0 };
+      const minCounts = {
+        transfers: node.transferInfos?.length ?? 0,
+        emits: node.emitInfos?.length ?? 0,
+        tcTransfers: Number.MAX_SAFE_INTEGER,
+      };
       const findBranchMins = (n: Node): void => {
         if (n instanceof BranchNode && n.branchOps) {
-          minCounts.transfers = Math.min(minCounts.transfers, n.branchOps.minTransferCount);
-          minCounts.emits = Math.min(minCounts.emits, n.branchOps.minEmitCount);
-          minCounts.tcTransfers = Math.min(minCounts.tcTransfers, n.branchOps.minTokenContainerTransferCount);
+          // A branch which contains no operation of a given kind says nothing about operations which occur
+          // before or after that branch. Treating its zero minimum as function-wide made every later event (and
+          // transfer) conditional; delegate msg.sender setup contains such an effect-free branch.
+          if (n.branchOps.transferCount > 0) {
+            minCounts.transfers = Math.min(minCounts.transfers, n.branchOps.minTransferCount);
+          }
+          if (n.branchOps.emitCount > 0) {
+            minCounts.emits = Math.min(minCounts.emits, n.branchOps.minEmitCount);
+          }
+          if (n.branchOps.tokenContainerTransferCount > 0) {
+            minCounts.tcTransfers = Math.min(
+              minCounts.tcTransfers, n.branchOps.minTokenContainerTransferCount,
+            );
+          }
         }
         if ('statements' in n && Array.isArray((n as any).statements)) {
           for (const s of (n as any).statements) findBranchMins(s);
@@ -8364,7 +8380,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (!this.isDefineSubTraversal || this.functionHasReturnInLoop)) {
       const returnTypes = this.currentFunction.returnTypes;
       for (let i = 0; i < returnTypes.length; i++) {
-        this.emitPushdataEncode(returnTypes[i], locationData);
+        // In Solidity-compatible mode, return data has the same ABI representation as calldata. This is
+        // particularly important for a low-level call: its opaque `bytes returndata` is commonly passed straight
+        // to `abi.decode` (e.g. OpenZeppelin SafeERC20), so publishing SolidCash's compact pushdata framing here
+        // makes an otherwise successful `returns (bool)` look like malformed/false EVM returndata.
+        if (this.compilerOptions.evmCompat && !this.isDynamicAbiType(returnTypes[i])) {
+          this.emitEvmEncodeValue(returnTypes[i], locationData);
+        } else {
+          this.emitPushdataEncode(returnTypes[i], locationData);
+        }
         if (i > 0) {
           // CAT with accumulated blob
           // Stack: [..., blob_so_far, encoded_value]
@@ -9245,13 +9269,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_MUL, locationData);
       }
       // For width == 1 (bool, int8, bytes1): byte_count = n
+      // Create zero-filled packed bytes: 0 byte_count OP_NUM2BIN
+      this.emit(Op.OP_0, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_NUM2BIN, locationData);
+    } else {
+      // A variable-width default is not necessarily the single-byte OP_0 frame. In particular, a default struct
+      // is the concatenation of every field's encoding. Build exactly n encoded defaults; otherwise
+      // `new Struct[](n)` produces count||00... and the first element scan treats the remainder as a malformed
+      // struct (the second field decodes past the empty placeholder).
+      this.emit(Op.OP_0, locationData); // [len_prefix, n, accumulator=""]
+      this.emit(Op.OP_BEGIN, locationData);
+      this.emit(Op.OP_OVER, locationData); // copy n
+      this.emit(Op.OP_0NOTEQUAL, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(Op.OP_SWAP, locationData); // [len_prefix, accumulator, n]
+      this.emit(Op.OP_1SUB, locationData);
+      this.emit(Op.OP_SWAP, locationData); // [len_prefix, n-1, accumulator]
+      const savedStack = [...this.stack];
+      this.emitDefaultValue(locationData, elemType);
+      this.emitPushdataEncode(elemType, locationData);
+      this.stack = savedStack;
+      this.emit(Op.OP_CAT, locationData);
+      this.emit(encodeBool(false), locationData);
+      this.emit(Op.OP_ELSE, locationData);
+      this.emit(Op.OP_SWAP, locationData); // [len_prefix, accumulator, 0]
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(encodeBool(true), locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(Op.OP_UNTIL, locationData); // [len_prefix, encoded_defaults]
     }
-    // For variable-width types: each default element is 1 byte (0x00), byte_count = n
-
-    // Create zero-filled bytes: 0 byte_count OP_NUM2BIN
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_NUM2BIN, locationData);
     // stack: [..., len_prefix, zero_bytes]
 
     // Concatenate length prefix and element data
@@ -12366,6 +12413,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_REVERSEBYTES, loc);
     } else if (type instanceof BytesType && type.bound !== undefined && type.bound <= 32) {
       // bytesN: its natural N bytes, already correct - no padding, no reverse.
+    } else if (type instanceof AddressType) {
+      this.emit(compileCast(type, new BytesType(20), false, true), loc);
     } else if ((type instanceof BytesType && type.bound === undefined) || type === PrimitiveType.STRING) {
       // dynamic bytes/string: packed is the raw content (no length prefix) - the value already IS that.
       return;
@@ -12388,7 +12437,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters[i] = param;
 
       // For packed encoding, pad numeric types to their declared byte width
-      if (this.compilerOptions.evmCompat) {
+      if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
         this.emitEvmPackedValue(param.type!, locationData);
       } else if (param.type === PrimitiveType.BOOL) {
         // OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF [1] OP_NUM2BIN -> canonical 0x00/0x01
@@ -13239,7 +13288,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Use shared OP_DEFINE subroutine when available.
     // The subroutine returns [raw_bytes, remainder]. For int types, add BIN2NUM.
-    if (this.subroutineDefined.get(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID)) {
+    if (!this.currentFunctionIsDelegate
+      && this.subroutineDefined.get(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID)) {
       this.emit(encodeInt(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID), locationData);
       this.emit(Op.OP_INVOKE, locationData);
       // Subroutine returns [raw_bytes, remainder]. Convert raw to int if needed.
@@ -14004,17 +14054,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pushToStack('(returnData)');
       } else {
         // Decode return values from blob
-        for (let i = 0; i < returnTypes.length; i++) {
-          const isLast = i === returnTypes.length - 1;
-          if (isLast) {
-            this.emitPushdataDecodeLastField(returnTypes[i], locationData);
-          } else {
-            this.emitPushdataDecode(returnTypes[i], locationData);
-            // After decode, stack has: [decoded_value, remaining_blob]
-            // Swap so remaining_blob is on top for next iteration
-            this.emit(Op.OP_SWAP, locationData);
+        if (this.compilerOptions.evmCompat && returnTypes.every((type) => !this.isDynamicAbiType(type))) {
+          this.emitEvmAbiDecode(returnTypes, locationData);
+          for (let i = 0; i < returnTypes.length; i++) this.pushToStack('(value)');
+        } else {
+          for (let i = 0; i < returnTypes.length; i++) {
+            const isLast = i === returnTypes.length - 1;
+            if (isLast) {
+              this.emitPushdataDecodeLastField(returnTypes[i], locationData);
+            } else {
+              this.emitPushdataDecode(returnTypes[i], locationData);
+              // After decode, stack has: [decoded_value, remaining_blob]
+              // Swap so remaining_blob is on top for next iteration
+              this.emit(Op.OP_SWAP, locationData);
+            }
+            this.pushToStack('(value)');
           }
-          this.pushToStack('(value)');
         }
       }
     }
@@ -15092,7 +15147,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [root]
     const w = `__internal__valueWitness_${slotIndex}`;
     // The decoded root replaces the untracked value tail; it does not add a second item above the symbolic frame.
-    this.emit(encodeInt(BigInt(this.getStackIndex(w))), loc); this.emit(Op.OP_PICK, loc);
+    // A delegate entry retains one proxy-call context cell outside its symbolic ABI frame while executing the
+    // body. Account for that physical cell when copying a long-value witness; otherwise the read hashes a
+    // neighboring hidden argument and rejects an honestly reconstructed value.
+    const delegateFrameOffset = this.currentFunctionIsDelegate ? 1 : 0;
+    this.emit(encodeInt(BigInt(this.getStackIndex(w) + delegateFrameOffset)), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SHA256, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_NIP, loc); // [witness]
@@ -18068,7 +18127,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Off-chain derivation metadata: the leading FIXED key params + the VARYING key array (its elements are the
     // per-iteration last key, encoded as an `arridx(id:<arr>,id:<loopvar>)` keySource) + the value (a param or a bool
     // literal). Enough for the SDK to compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and plan off-chain.
-    const keySources = (this.entrySlots[slotIndex].keySources ?? []) as Array<{ kind: string; paramName?: string; canonical?: string }>;
+    const keySources = (this.entrySlots[slotIndex].keySources ?? []) as KeySourceInfo[];
     const fixedKeyParams: string[] = [];
     let varyingArrayParam: string | undefined;
     for (const src of keySources) {
@@ -18567,10 +18626,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
 
     // SDK metadata: leading FIXED key params + the VARYING key array + the per-key VALUE array + the op.
-    const keySources = (this.entrySlots[slotIndex].keySources ?? []) as Array<{ kind: string; paramName?: string; canonical?: string }>;
+    // A runtime-loop slot intentionally has no fixed block key recipe. The semantic write node retains the full
+    // canonical recipe so delegate/composed callers can still derive invariant outer keys off-chain.
+    const keySources = (this.entrySlots[slotIndex].keySources ?? writeNode.keySources ?? []) as KeySourceInfo[];
+    // `entrySlots` is the authoritative canonical recipe, but a loop slot can be represented by only its varying
+    // key after route lowering. Recover invariant outer keys from the semantic write node without duplicating the
+    // varying array element.
+    const writeKeySources = (writeNode.keySources ?? []) as KeySourceInfo[];
+    const metadataKeySources = keySources.length >= writeKeySources.length ? keySources : writeKeySources;
     const fixedKeyParams: string[] = [];
+    const fixedKeySources = metadataKeySources.filter((src) => !/^arridx\(/.test(src.canonical ?? ''));
     let varyingArrayParam: string | undefined;
-    for (const src of keySources) {
+    for (const src of metadataKeySources) {
       if (src.kind === 'param' && src.paramName) { fixedKeyParams.push(src.paramName); continue; }
       const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/);
       if (m) varyingArrayParam = m[1];
@@ -18659,7 +18726,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertLoopOp = op;
     const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);
     if (!infos.some((x) => x.collection === collection.name)) {
-      infos.push({ collection: collection.name, fixedKeyParams, varyingArrayParam,
+      infos.push({ collection: collection.name, fixedKeyParams, fixedKeySources, varyingArrayParam,
         ...(decodedKeyRecipe && {
           ...(decodedKeyRecipe.keyDecodeTupleIndex !== undefined
             && { keyDecodeTupleIndex: decodedKeyRecipe.keyDecodeTupleIndex }),
@@ -23684,12 +23751,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Empty-commitment immutable NFTs are message-bus authorization carriers,
     // not serialized events. They cannot be decoded by readEventsFromChain and
     // therefore are outside this anti-forgery pin.
-    this.emit(Op.OP_DUP, loc);
+    // `zeroAmount` is currently on top; duplicate `j` from one item below it.
+    // Using OP_DUP here reads output 0/1 (the boolean) instead of the output
+    // currently being scanned, so an empty authorization NFT can be
+    // misclassified using an unrelated output's commitment.
+    this.emit(Op.OP_OVER, loc);
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
     this.emit(Op.OP_SIZE, loc);
     this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isEventCapableNft]
+    // Cross-call return witnesses are immutable own-category NFTs with
+    // non-empty commitments, but they are deliberately sent to OP_TRUE rather
+    // than an event covenant address. Event readers query the latter address,
+    // so an OP_TRUE return witness cannot masquerade as a serialized event.
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(new Uint8Array([Op.OP_1]), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isEventAddressCandidate]
     // Logical contract identity anchors use the disjoint `SCID` commitment
     // envelope. They can be relocated by return/event outputs and are not
     // event records, so do not subject them to event-slot positioning.

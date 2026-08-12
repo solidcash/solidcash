@@ -379,6 +379,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // valueScalarParam (a loop-INVARIANT param, e.g. `+= amount` fixed-amount airdrop), or valueConst (an int literal).
   sortedUpsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
+    fixedKeySources?: KeySourceInfo[];
     keyDecodeTupleIndex?: number; keyDecodeTupleTypes?: string[];
     predicateArrayParam?: string; predicateEquals?: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
@@ -1159,6 +1160,7 @@ export class MappingAssignNode extends StatementNode implements Named {
   arrayPop?: boolean;  // Set for `map[k].pop()`: drop the last element of the entry's array value (expression unused)
   noArg?: boolean;     // Set for `map[k].push()`: `expression` is a placeholder, replaced with the element default
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
+  keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
 
   constructor(
     public name: string,
@@ -1226,6 +1228,7 @@ export class MappingDeleteNode extends StatementNode implements Named {
   collection?: CollectionNode;
   entrySlotIndex: number = -1;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
+  keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
 
   constructor(
     public name: string,

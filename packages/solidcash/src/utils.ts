@@ -5,7 +5,11 @@ import {
   lockingBytecodeToCashAddress,
   binToHex,
   Transaction,
-  generateSigningSerializationBch,
+  encodeSigningSerializationBch,
+  encodeTokenPrefix,
+  encodeTransactionInputSequenceNumbersForSigning,
+  encodeTransactionOutpoints,
+  encodeTransactionOutputsForSigning,
   utf8ToBin,
   hexToBin,
   LockingBytecodeType,
@@ -15,6 +19,7 @@ import {
   NonFungibleTokenCapability,
   bigIntToVmNumber,
   encodeLockingBytecodeP2pkh,
+  valueSatoshisToBin,
 } from '@bitauth/libauth';
 import {
   hash160,
@@ -32,6 +37,7 @@ import {
   LibauthOutput,
   TokenDetails,
   AddressType,
+  Unlocker,
   UnlockableUtxo,
   LibauthTokenDetails,
 } from './interfaces.js';
@@ -136,11 +142,31 @@ export function getOutputSize(output: Output): number {
   return encodedOutput.byteLength;
 }
 
+interface CachedLibauthOutput {
+  to: Output['to'];
+  amount: bigint;
+  category?: string;
+  tokenAmount?: bigint;
+  capability?: string;
+  commitment?: string;
+  output: LibauthOutput;
+}
+
+const libauthOutputCache = new WeakMap<Output, CachedLibauthOutput>();
+
 export function encodeOutput(output: Output): Uint8Array {
   return encodeTransactionOutput(solidCashOutputToLibauthOutput(output));
 }
 
 export function solidCashOutputToLibauthOutput(output: Output): LibauthOutput {
+  const cached = libauthOutputCache.get(output);
+  if (cached
+    && cached.to === output.to
+    && cached.amount === output.amount
+    && cached.category === output.token?.category
+    && cached.tokenAmount === output.token?.amount
+    && cached.capability === output.token?.nft?.capability
+    && cached.commitment === output.token?.nft?.commitment) return cached.output;
   if (output.token) {
     if (typeof output.token.category !== 'string' || !isHex(output.token.category)) {
       throw new Error(`Provided token category ${output.token?.category} is not a hex string`);
@@ -151,7 +177,7 @@ export function solidCashOutputToLibauthOutput(output: Output): LibauthOutput {
     }
   }
 
-  return {
+  const converted = {
     lockingBytecode: typeof output.to === 'string' ? addressToLockScript(output.to) : output.to,
     valueSatoshis: output.amount,
     token: output.token && {
@@ -163,6 +189,16 @@ export function solidCashOutputToLibauthOutput(output: Output): LibauthOutput {
       },
     },
   };
+  libauthOutputCache.set(output, {
+    to: output.to,
+    amount: output.amount,
+    category: output.token?.category,
+    tokenAmount: output.token?.amount,
+    capability: output.token?.nft?.capability,
+    commitment: output.token?.nft?.commitment,
+    output: converted,
+  });
+  return converted;
 }
 
 export function libauthOutputToSolidCashOutput(output: LibauthOutput): Output {
@@ -184,15 +220,44 @@ export function libauthTokenDetailsToSolidCashTokenDetails(token: LibauthTokenDe
   };
 }
 
+interface CachedSourceOutput {
+  unlocker: Unlocker;
+  satoshis: bigint;
+  category?: string;
+  amount?: bigint;
+  capability?: string;
+  commitment?: string;
+  output: LibauthOutput;
+}
+
+const sourceOutputCache = new WeakMap<UnlockableUtxo, CachedSourceOutput>();
+
 export function generateLibauthSourceOutputs(inputs: UnlockableUtxo[]): LibauthOutput[] {
   const sourceOutputs = inputs.map((input) => {
+    const cached = sourceOutputCache.get(input);
+    if (cached
+      && cached.unlocker === input.unlocker
+      && cached.satoshis === input.satoshis
+      && cached.category === input.token?.category
+      && cached.amount === input.token?.amount
+      && cached.capability === input.token?.nft?.capability
+      && cached.commitment === input.token?.nft?.commitment) return cached.output;
     const sourceOutput = {
       amount: input.satoshis,
       to: input.unlocker.generateLockingBytecode(),
       token: input.token,
     };
-
-    return solidCashOutputToLibauthOutput(sourceOutput);
+    const output = solidCashOutputToLibauthOutput(sourceOutput);
+    sourceOutputCache.set(input, {
+      unlocker: input.unlocker,
+      satoshis: input.satoshis,
+      category: input.token?.category,
+      amount: input.token?.amount,
+      capability: input.token?.nft?.capability,
+      commitment: input.token?.nft?.commitment,
+      output,
+    });
+    return output;
   });
   return sourceOutputs;
 }
@@ -270,6 +335,17 @@ function toBin(output: string): Uint8Array {
   return encode(data);
 }
 
+interface CommonSigningSerialization {
+  transactionOutpoints: Uint8Array;
+  transactionOutputs: Uint8Array;
+  transactionSequenceNumbers: Uint8Array;
+  transactionUtxos: Uint8Array;
+}
+
+const signingSerializationCache = new WeakMap<
+Transaction, WeakMap<LibauthOutput[], CommonSigningSerialization>
+>();
+
 export function createSighashPreimage(
   transaction: Transaction,
   sourceOutputs: LibauthOutput[],
@@ -277,12 +353,38 @@ export function createSighashPreimage(
   coveredBytecode: Uint8Array,
   hashtype: number,
 ): Uint8Array {
-  const context = { inputIndex, sourceOutputs, transaction };
   const signingSerializationType = new Uint8Array([hashtype]);
-
-  const sighashPreimage = generateSigningSerializationBch(context, { coveredBytecode, signingSerializationType });
-
-  return sighashPreimage;
+  let bySources = signingSerializationCache.get(transaction);
+  if (!bySources) {
+    bySources = new WeakMap();
+    signingSerializationCache.set(transaction, bySources);
+  }
+  let common = bySources.get(sourceOutputs);
+  if (!common) {
+    common = {
+      transactionOutpoints: encodeTransactionOutpoints(transaction.inputs),
+      transactionOutputs: encodeTransactionOutputsForSigning(transaction.outputs),
+      transactionSequenceNumbers: encodeTransactionInputSequenceNumbersForSigning(transaction.inputs),
+      transactionUtxos: encodeTransactionOutputsForSigning(sourceOutputs),
+    };
+    bySources.set(sourceOutputs, common);
+  }
+  const input = transaction.inputs[inputIndex];
+  const sourceOutput = sourceOutputs[inputIndex];
+  return encodeSigningSerializationBch({
+    ...common,
+    correspondingOutput: inputIndex < transaction.outputs.length
+      ? encodeTransactionOutput(transaction.outputs[inputIndex]) : undefined,
+    coveredBytecode,
+    locktime: transaction.locktime,
+    outpointIndex: input.outpointIndex,
+    outpointTransactionHash: input.outpointTransactionHash,
+    outputTokenPrefix: encodeTokenPrefix(sourceOutput.token),
+    outputValue: valueSatoshisToBin(sourceOutput.valueSatoshis),
+    sequenceNumber: input.sequenceNumber,
+    signingSerializationType,
+    version: transaction.version,
+  });
 }
 
 export function toRegExp(reasons: string[]): RegExp {

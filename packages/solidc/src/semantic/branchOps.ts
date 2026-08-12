@@ -21,6 +21,8 @@ import {
   StateArrayDeleteNode,
   InstantiationNode,
   BranchOps,
+  ReturnNode,
+  RevertNode,
 } from '../ast/AST.js';
 
 // Restricted (pre-allocated) operation counts for one block: writes/transfers/emits that a branch must reserve
@@ -49,6 +51,16 @@ export function countBranchOps(block: BlockNode): OpCounts {
   const result = emptyCounts();
   countBranchOpsRecursive(block, result);
   return result;
+}
+
+/** Whether every execution of this block exits before reaching the enclosing function epilogue. */
+function blockTerminates(block: BlockNode | undefined): boolean {
+  const last = block?.statements?.at(-1);
+  if (last instanceof ReturnNode || last instanceof RevertNode) return true;
+  return last instanceof BranchNode
+    && blockTerminates(last.ifBlock)
+    && last.elseBlock !== undefined
+    && blockTerminates(last.elseBlock);
 }
 
 function isValueTransferNode(node: Node): boolean {
@@ -206,19 +218,28 @@ export function computeBranchOps(ifBlock: BlockNode, elseBlock?: BlockNode): Bra
   // keep the existing per-arm count (their nested-branch handling is unchanged here).
   const ifT = countTransfersMinMax(ifBlock);
   const elseT = elseBlock ? countTransfersMinMax(elseBlock) : { min: 0, max: 0 };
+  const ifTerminates = blockTerminates(ifBlock);
+  const elseTerminates = blockTerminates(elseBlock);
+  const reachableMin = (ifValue: number, elseValue: number): number => {
+    if (ifTerminates && !elseTerminates) return elseValue;
+    if (elseTerminates && !ifTerminates) return ifValue;
+    return Math.min(ifValue, elseValue);
+  };
 
   return {
     stateWriteKeys: new Set<string>([...ifCounts.stateWriteKeys, ...elseCounts.stateWriteKeys]),
     mappingWriteSlots: new Set<number>([...ifCounts.mappingWriteSlots, ...elseCounts.mappingWriteSlots]),
     mappingDeleteSlots: new Set<number>([...ifCounts.mappingDeleteSlots, ...elseCounts.mappingDeleteSlots]),
     transferCount: Math.max(ifT.max, elseT.max),
-    minTransferCount: Math.min(ifT.min, elseT.min),
+    minTransferCount: reachableMin(ifT.min, elseT.min),
     ifTransferCount: ifT.max,
     emitCount: Math.max(ifCounts.emits, elseCounts.emits),
-    minEmitCount: Math.min(ifCounts.emits, elseCounts.emits),
+    minEmitCount: reachableMin(ifCounts.emits, elseCounts.emits),
     ifEmitCount: ifCounts.emits,
     tokenContainerTransferCount: Math.max(ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers),
-    minTokenContainerTransferCount: Math.min(ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers),
+    minTokenContainerTransferCount: reachableMin(
+      ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers,
+    ),
     ifTokenContainerTransferCount: ifCounts.tokenContainerTransfers,
   };
 }

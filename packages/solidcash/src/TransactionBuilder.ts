@@ -123,6 +123,7 @@ export class TransactionBuilder {
 
   public locktime: number = 0;
   public options: TransactionBuilderOptions;
+  private lastBuiltSourceOutputs?: LibauthTransaction['outputs'];
 
   constructor(
     options: TransactionBuilderOptions,
@@ -1063,6 +1064,7 @@ export class TransactionBuilder {
 
     // Generate source outputs from inputs (for signing with SIGHASH_UTXOS)
     const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
+    this.lastBuiltSourceOutputs = sourceOutputs;
 
     const inputScripts = this.inputs.map((input, inputIndex) => (
       input.unlocker.generateUnlockingBytecode({ transaction, sourceOutputs, inputIndex })
@@ -1073,6 +1075,14 @@ export class TransactionBuilder {
     });
 
     return transaction;
+  }
+
+  /** Build once and return the source-output vector already used while generating every unlocking bytecode. */
+  buildLibauthProgram(skipChecks: boolean = false): {
+    transaction: LibauthTransaction; sourceOutputs: LibauthTransaction['outputs'];
+  } {
+    const transaction = this.buildLibauthTransaction(skipChecks);
+    return { transaction, sourceOutputs: this.lastBuiltSourceOutputs! };
   }
 
   build(): string {

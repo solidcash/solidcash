@@ -1,5 +1,5 @@
 import {
-  hexToBin, isHex, cashAddressToLockingBytecode, lockingBytecodeToCashAddress,
+  binToHex, hexToBin, isHex, cashAddressToLockingBytecode, lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
 import {
   AbiFunction,
@@ -27,6 +27,17 @@ import { Contract } from '../Contract.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createUnlockingBytecode, scriptToAddress, scriptToLockingBytecode } from '../utils.js';
 import { StateReader, OnChainState } from './StateReader.js';
+
+interface CachedCovenantContract {
+  contract: Contract<any, any>;
+  bytecode: Uint8Array;
+  lockingBytecode: Uint8Array;
+}
+
+// Stateful transaction derivation recreates relocated data/entry unlockers on every probe. Their numeric
+// witnesses vary, but the synthetic artifact, covenant bytecode, and locking bytecode do not. Retain one copy
+// per provider so debug metadata remains provider-correct without repeatedly disassembling the same script.
+const covenantContractCache = new WeakMap<NetworkProvider, Map<string, CachedCovenantContract>>();
 
 export function validateCategoryId(hex: string, paramName: string = 'categoryId'): void {
   if (!isHex(hex) || hex.length !== 64) {
@@ -88,11 +99,24 @@ export function createCovenantContractUnlocker(
   addressType: AddressType = contract.addressType,
 ): ContractUnlocker {
   const abiFunction: AbiFunction = { name: 'spend', inputs: abiInputs };
-  const artifact = buildCovenantArtifact(contractName, covenantScript, abiFunction);
-  const covenantContract = new Contract(artifact, [], {
-    provider: contract.provider,
-    addressType,
-  });
+  const covenantBytecodeBytes = scriptToBytecode(covenantScript);
+  const cacheKey = `${addressType}\u0000${contractName}\u0000${abiInputs
+    .map((input) => `${input.name}:${input.type}`).join(',')}\u0000${binToHex(covenantBytecodeBytes)}`;
+  let providerCache = covenantContractCache.get(contract.provider);
+  if (!providerCache) {
+    providerCache = new Map();
+    covenantContractCache.set(contract.provider, providerCache);
+  }
+  let cached = providerCache.get(cacheKey);
+  if (!cached) {
+    const artifact = buildCovenantArtifact(contractName, covenantScript, abiFunction);
+    cached = {
+      contract: new Contract(artifact, [], { provider: contract.provider, addressType }),
+      bytecode: covenantBytecodeBytes,
+      lockingBytecode: scriptToLockingBytecode(covenantScript, addressType),
+    };
+    providerCache.set(cacheKey, cached);
+  }
 
   // Covenant args are always plain values (never SignatureTemplates), so the cast is safe. Thread the struct
   // defs so struct-typed covenant args encode as their value-copy blob (same as the direct call path).
@@ -100,17 +124,15 @@ export function createCovenantContractUnlocker(
   const encodedArgs = args.map(
     (arg, i) => encodeFunctionArgument(arg, abiInputs[i].type, structs),
   ) as Uint8Array[];
-  const covenantBytecodeBytes = scriptToBytecode(covenantScript);
-
   // Note: args are passed in reverse stack order because createUnlockingBytecode reverses them.
   const generateUnlockingBytecode = (): Uint8Array => createUnlockingBytecode(
-    addressType, covenantBytecodeBytes, encodedArgs,
+    addressType, cached.bytecode, encodedArgs,
   );
-  const generateLockingBytecode = (): Uint8Array => scriptToLockingBytecode(covenantScript, addressType);
+  const generateLockingBytecode = (): Uint8Array => cached.lockingBytecode;
 
   return {
     generateUnlockingBytecode, generateLockingBytecode,
-    contract: covenantContract, params: args, abiFunction,
+    contract: cached.contract, params: args, abiFunction,
     covenantUnlocker: true,
   };
 }

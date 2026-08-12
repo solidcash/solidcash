@@ -874,6 +874,58 @@ const evaluateEveryInput = (
     }
     if (objection !== true) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_FAILURE_POINT === '1') {
+        console.error('message-bus-failure-point', {
+          inputIndex,
+          ip: evaluated.ip,
+          opcode: evaluated.instructions[evaluated.ip]?.opcode,
+          controlStack: evaluated.controlStack.map((item) => typeof item === 'object' ? {
+            ip: item.ip,
+            instructionCount: item.instructions.length,
+            opcode: item.instructions[item.ip]?.opcode,
+          } : item),
+          stack: evaluated.stack.slice(-8).map((item) => `${item.length}:${binToHex(item)}`),
+          output26: transaction.outputs[26] && {
+            lockingBytecode: binToHex(transaction.outputs[26].lockingBytecode),
+            category: transaction.outputs[26].token && binToHex(transaction.outputs[26].token.category),
+            commitment: transaction.outputs[26].token?.nft
+              && binToHex(transaction.outputs[26].token.nft.commitment),
+            capability: transaction.outputs[26].token?.nft?.capability,
+            amount: transaction.outputs[26].token?.amount,
+          },
+          outputs: transaction.outputs.map((output, outputIndex) => ({
+            outputIndex,
+            lockingBytecode: binToHex(output.lockingBytecode).slice(0, 16),
+            category: output.token && binToHex(output.token.category),
+            commitmentLength: output.token?.nft?.commitment.length,
+            commitmentHead: output.token?.nft && binToHex(output.token.nft.commitment.slice(0, 20)),
+            capability: output.token?.nft?.capability,
+            amount: output.token?.amount,
+          })),
+          inputs: builder.inputs.map((input, index) => ({
+            index,
+            category: input.token?.category,
+            commitmentLength: input.token?.nft?.commitment.length,
+            contract: (input as unknown as {
+              unlocker?: { contract?: { artifact?: { contractName?: string } } };
+            }).unlocker?.contract?.artifact?.contractName,
+          })),
+          invokeWindow: evaluated.instructions.slice(72700, 72710).map((instruction, offset) => ({
+            ip: 72700 + offset,
+            opcode: instruction.opcode,
+            ...('data' in instruction && { data: binToHex(instruction.data) }),
+          })),
+          frameWindow: typeof evaluated.controlStack[0] === 'object'
+            ? (evaluated.controlStack[0] as { instructions: typeof evaluated.instructions }).instructions
+              .slice(-50).map((instruction, offset, all) => ({
+              ip: (evaluated.controlStack[0] as { instructions: typeof evaluated.instructions })
+                .instructions.length - all.length + offset,
+              opcode: instruction.opcode,
+              ...('data' in instruction && { data: binToHex(instruction.data) }),
+              })) : undefined,
+        });
+      }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_FAILURE_RING === '1') {
         const unlockingInstructions = decodeAuthenticationInstructions(transaction.inputs[inputIndex].unlockingBytecode);
         const redeemBytecode = (unlockingInstructions.at(-1) as { data?: Uint8Array } | undefined)?.data;
@@ -947,27 +999,37 @@ const evaluateEveryInput = (
           group.contracts.length > 0 || group.inputs.some((index) => index >= 90)
         )));
         const recent: Array<Record<string, unknown>> = [];
+        let priorProgramRecent: Array<Record<string, unknown>> = [];
+        let lastInstructionCount = -1;
         const inputReads: Array<Record<string, unknown>> = [];
         const largeEqualVerifies: Array<Record<string, unknown>> = [];
+        const failedVerifyPoints: Array<Record<string, unknown>> = [];
         let body29Captured = false;
         createVirtualMachineBch2026ForProvider(builder.provider, {
           opcodes: new Set(Array.from({ length: 256 }, (_, opcode) => opcode)),
           beforeOperation: (unknownState) => {
             const state = unknownState as AuthenticationProgramStateCommon;
+            if (lastInstructionCount !== -1 && state.instructions.length !== lastInstructionCount) {
+              priorProgramRecent = recent.slice();
+              recent.length = 0;
+            }
+            lastInstructionCount = state.instructions.length;
             if (!body29Captured && inputIndex === 105 && state.instructions.length === 29 && state.ip === 0) {
               body29Captured = true;
               console.error('message-bus-body29-entry', JSON.stringify(state.stack.map((item, index) => ({
                 index, fromTop: state.stack.length - index - 1, value: binToHex(item),
               }))));
             }
-            recent.push({
-              ip: state.ip,
-              opcode: state.instructions[state.ip]?.opcode,
-              instructionCount: state.instructions.length,
-              depth: state.stack.length,
-              top: state.stack.slice(-6).map((item) => `${item.length}:${binToHex(item.slice(0, 48))}`),
-            });
-            if (recent.length > 40) recent.shift();
+            if (state.controlStack.every((item) => item !== false)) {
+              recent.push({
+                ip: state.ip,
+                opcode: state.instructions[state.ip]?.opcode,
+                instructionCount: state.instructions.length,
+                depth: state.stack.length,
+                top: state.stack.slice(-6).map((item) => `${item.length}:${binToHex(item.slice(0, 48))}`),
+              });
+              if (recent.length > 40) recent.shift();
+            }
             if (state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY
               && (state.stack.at(-1)?.length ?? 0) > 100
               && (state.stack.at(-2)?.length ?? 0) > 100) {
@@ -975,6 +1037,27 @@ const evaluateEveryInput = (
                 left: binToHex(state.stack.at(-2)!), right: binToHex(state.stack.at(-1)!),
               });
               if (largeEqualVerifies.length > 4) largeEqualVerifies.shift();
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_VERIFY
+              && state.controlStack.every((item) => item !== false)
+              && (state.stack.at(-1)?.length === 0
+                || state.stack.at(-1)?.every((byte) => byte === 0))) {
+              failedVerifyPoints.push({
+                ip: state.ip,
+                instructionCount: state.instructions.length,
+                controlStack: state.controlStack.map((item) => typeof item === 'object' ? {
+                  ip: item.ip,
+                  instructionCount: item.instructions.length,
+                  opcode: item.instructions[item.ip]?.opcode,
+                } : item),
+                stack: state.stack.slice(-12).map((item) => `${item.length}:${binToHex(item)}`),
+                instructions: state.instructions.slice(Math.max(0, state.ip - 12), state.ip + 4)
+                  .map((instruction, offset) => ({
+                    ip: Math.max(0, state.ip - 12) + offset,
+                    opcode: instruction.opcode,
+                    ...('data' in instruction && { data: binToHex(instruction.data) }),
+                  })),
+              });
             }
             if (state.instructions[state.ip]?.opcode === Op.OP_INPUTBYTECODE) {
               const rawIndex = state.stack.at(-1);
@@ -992,8 +1075,10 @@ const evaluateEveryInput = (
           },
         }).evaluate({ inputIndex, sourceOutputs, transaction });
         console.error('message-bus-failure-ring', recent);
+        console.error('message-bus-prior-program-ring', priorProgramRecent);
         console.error('message-bus-input-reads', inputReads);
         console.error('message-bus-large-equals', largeEqualVerifies);
+        console.error('message-bus-failed-verifies', JSON.stringify(failedVerifyPoints));
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {

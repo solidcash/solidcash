@@ -849,7 +849,18 @@ function buildFunctionAbiMetadata(
       sortedInsertLoopInfo: [...func.sortedInsertLoopInfo],
     }),
     ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && {
-      sortedUpsertLoopInfo: [...func.sortedUpsertLoopInfo],
+      sortedUpsertLoopInfo: func.sortedUpsertLoopInfo.map((info) => ({
+        ...info,
+        ...(info.fixedKeySources && { fixedKeySources: info.fixedKeySources.map((source) => ({
+          kind: source.kind,
+          ...(source.paramName && { paramName: source.paramName }),
+          ...(source.stateVarName && { stateVarName: source.stateVarName }),
+          ...(source.stateArrayName && { stateArrayName: source.stateArrayName }),
+          ...(source.kind === 'constant' && { constantValue: source.constantValue }),
+          ...(source.kind === 'msgSender' && { senderOp: source.senderOp ?? 'msg.sender' }),
+          ...(source.kind === 'expression' && { expressionLabel: source.canonical }),
+        })) }),
+      })),
     }),
     ...(func.sortedBatchInfo && func.sortedBatchInfo.length > 0 && { sortedBatchInfo: [...func.sortedBatchInfo] }),
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
@@ -1284,6 +1295,9 @@ export function generateArtifact(
         allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
         messageBus: compilerOptions.messageBus,
+        // Runtime external-call argument reconstruction must mirror Solidity-only encoding rules such as
+        // abi.encodePacked(address) narrowing to the 20-byte account payload.
+        solidityImportCompat: compilerOptions.solidityImportCompat,
       },
     },
     updatedAt: new Date().toISOString(),

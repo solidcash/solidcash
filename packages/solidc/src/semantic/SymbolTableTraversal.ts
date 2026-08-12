@@ -4268,6 +4268,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     if (node instanceof MappingAssignNode && node.collection) {
       const { keyParams, keySources } = this.getMappingKeyDescriptors(node.keys);
+      node.keySources = keySources;
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
       // `map[k].push(v)` / `.pop()` are read-modify-writes of the entry's array: the SDK must CO-SPEND the existing
@@ -4327,6 +4328,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     if (node instanceof MappingDeleteNode && node.collection) {
       const { keyParams, keySources } = this.getMappingKeyDescriptors(node.keys);
+      node.keySources = keySources;
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
       // A sorted mapping `delete m[k]` compiles to an upsert-to-default (a WRITE: co-spend the entry, emit its
@@ -5829,7 +5831,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         seen.add(expression);
         const source = classifyArg(expression);
-        if (source && source.kind !== 'expression') return { kind: 'source', source };
+        if (source && source.kind !== 'expression') return {
+          kind: 'source',
+          source,
+          // These sources have an intrinsic address type before the later type-checking pass annotates the AST.
+          // Publishing it lets SDK-side external-call expression evaluation reproduce abi.encodePacked(address)
+          // exactly rather than treating the locking bytecode as untyped bytes.
+          ...((source.kind === 'msgSender' || source.kind === 'selfAddress') && { type: 'address' }),
+        };
         const resolved = resolveInitializer(expression);
         if (resolved !== expression) return serializeExpression(resolved, seen);
         if (expression instanceof IntLiteralNode) {

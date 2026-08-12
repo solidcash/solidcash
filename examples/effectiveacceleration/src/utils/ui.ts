@@ -1,7 +1,17 @@
-import { toBigInt, getAddress, ZeroAddress, ZeroHash } from "ethers";
+import { toBigInt, getAddress, hexlify, ZeroAddress, ZeroHash } from "ethers";
 import { Job, JobArbitratedEvent, JobCreatedEvent, JobDisputedEvent, JobEvent, JobEventType, JobEventWithDiffs, JobMessageEvent, JobState, JobUpdatedEvent } from "../interfaces";
 import { getMediaFromIpfs, hashToCid, safeGetFromIpfs } from "./encryption";
 import { decodeJobCreatedEvent, decodeJobUpdatedEvent, decodeJobSignedEvent, decodeJobRatedEvent, decodeJobArbitratedEvent, decodeJobMessageEvent, decodeJobDisputedEvent, decryptJobDisputedEvent } from "./decodeEvents";
+
+const eventAddress = (value: string | Uint8Array): string => getAddress(
+  typeof value === "string" ? value : hexlify(value),
+);
+
+const eventLockingBytecode = (value: string | Uint8Array): Uint8Array => {
+  const hex = typeof value === "string" ? value.replace(/^0x/, "") : hexlify(value).slice(2);
+  const locking = hex.length === 40 ? `76a914${hex.toLowerCase()}88ac` : hex.toLowerCase();
+  return Uint8Array.from(locking.match(/../g)?.map((byte) => Number.parseInt(byte, 16)) ?? []);
+};
 
 export const computeJobStateDiffs = (jobEvents: JobEvent[], jobId: string, job?: Job): JobEventWithDiffs[] => {
   const result: JobEventWithDiffs[] = [];
@@ -36,7 +46,7 @@ export const computeJobStateDiffs = (jobEvents: JobEvent[], jobId: string, job?:
           job.state = JobState.Open;
           job.escrowId = 0n;
           job.rating = 0;
-          job.roles.creator = getAddress(event.address_) as string;
+          job.roles.creator = eventLockingBytecode(event.address_) as unknown as string;
           job.roles.worker = ZeroAddress as string;
           job.timestamp = event.timestamp_;
           job.resultHash = ZeroHash as string;
@@ -94,7 +104,7 @@ export const computeJobStateDiffs = (jobEvents: JobEvent[], jobId: string, job?:
           throw new Error("Job must be created before it can be taken");
         }
 
-        job.roles.worker = getAddress(event.address_) as string;
+        job.roles.worker = eventAddress(event.address_) as string;
         job.state = JobState.Taken;
         job.escrowId = toBigInt(event.data_);
         job.jobTimes!.assignedAt = event.timestamp_;
@@ -118,7 +128,7 @@ export const computeJobStateDiffs = (jobEvents: JobEvent[], jobId: string, job?:
           throw new Error("Job must be created before it can be paid");
         }
 
-        job.roles.worker = getAddress(event.address_) as string;
+        job.roles.worker = eventAddress(event.address_) as string;
         job.state = JobState.Taken;
         job.escrowId = toBigInt(event.data_);
         job.jobTimes!.assignedAt = event.timestamp_;
@@ -425,7 +435,7 @@ export const computeJobStateDiffs = (jobEvents: JobEvent[], jobId: string, job?:
           throw new Error("Job must be created before workers can be whitelisted");
         }
 
-        job.allowedWorkers?.push(getAddress(event.address_));
+        job.allowedWorkers?.push(eventAddress(event.address_));
 
         result.push({
           ...event,
@@ -444,7 +454,7 @@ export const computeJobStateDiffs = (jobEvents: JobEvent[], jobId: string, job?:
           throw new Error("Job must be created before workers can be whitelisted");
         }
 
-        job.allowedWorkers = job.allowedWorkers?.filter(address => address !== getAddress(event.address_) as string);
+        job.allowedWorkers = job.allowedWorkers?.filter(address => address !== eventAddress(event.address_) as string);
 
         result.push({
           ...event,
@@ -543,9 +553,9 @@ export const fetchEventContents = async (events: JobEventWithDiffs[], sessionKey
     }
 
     const details = jobEvent.details as JobMessageEvent;
-    const ownerMessage = getAddress(jobEvent.address_) === jobEvent.job.roles.creator;
+    const ownerMessage = eventAddress(jobEvent.address_) === jobEvent.job.roles.creator;
     if (!ownerMessage) {
-      workerCandidates.add(getAddress(jobEvent.address_));
+      workerCandidates.add(eventAddress(jobEvent.address_));
     }
 
     // if (jobEvent.job.roles.worker !== ZeroAddress) {
@@ -601,7 +611,7 @@ export const fetchEventContents = async (events: JobEventWithDiffs[], sessionKey
       });
     } else if (Number(event.type_) === JobEventType.Disputed) {
       const details = event.details as JobDisputedEvent;
-      const initiator = getAddress(event.address_);
+      const initiator = eventAddress(event.address_);
       const arbitrator = event.job.roles.arbitrator;
       const key = `${initiator}-${arbitrator}`;
       decryptJobDisputedEvent(details, sessionKeys[key]);

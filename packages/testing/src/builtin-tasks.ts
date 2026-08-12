@@ -55,6 +55,13 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         maximumNftCommitmentBytes,
       ),
     };
+    const formatArtifactModule = (artifact: unknown, jsonFilename: string): string => (
+      hre.config.typegen?.jsonArtifactModules
+        ? "import { readFileSync } from 'node:fs';\n"
+          + `const artifact = JSON.parse(readFileSync(new URL('./${jsonFilename}', import.meta.url), 'utf8'));\n`
+          + 'export default artifact;\n'
+        : formatArtifact(artifact as any, 'ts')
+    );
     if (!fs.existsSync(contractsDir)) throw new Error(`Contracts dir not found: ${contractsDir}`);
     fs.rmSync(outputDir, { recursive: true, force: true });
     fs.mkdirSync(outputDir, { recursive: true });
@@ -73,13 +80,18 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         fs.mkdirSync(nestDir, { recursive: true });
         for (const [name, artifact] of Object.entries(map)) {
           fs.writeFileSync(path.join(nestDir, `${name}.json`), formatArtifact(artifact, 'json'));
-          fs.writeFileSync(path.join(nestDir, `${name}.artifact.ts`), formatArtifact(artifact, 'ts'));
+          fs.writeFileSync(
+            path.join(nestDir, `${name}.artifact.ts`), formatArtifactModule(artifact, `${name}.json`),
+          );
           contracts++;
         }
         // Backward-compat flat artifact (the file's primary contract, by file name) for direct `import` usage.
         const primary = compileString(source, compilerOptions);
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
-        fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.artifact.ts')), formatArtifact(primary, 'ts'));
+        fs.writeFileSync(
+          path.join(outputDir, fn.replace('.scash', '.artifact.ts')),
+          formatArtifactModule(primary, fn.replace('.scash', '.json')),
+        );
         // X149: `bytecode` is an ASM listing; measuring it fires on contracts that actually fit.
         if (asmToBytecode(primary.bytecode).length > maxShardBytes) {
           const split = compileStringSplit(source, { ...compilerOptions, maxShardBytes });
@@ -118,7 +130,9 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       for (const [name, artifact] of Object.entries(result.artifacts)) {
         writtenNames.add(name);
         fs.writeFileSync(path.join(outputDir, `${name}.json`), formatArtifact(artifact as any, 'json'));
-        fs.writeFileSync(path.join(outputDir, `${name}.artifact.ts`), formatArtifact(artifact as any, 'ts'));
+        fs.writeFileSync(
+          path.join(outputDir, `${name}.artifact.ts`), formatArtifactModule(artifact, `${name}.json`),
+        );
         contracts++;
       }
       // Splitting is needed only for roots whose normal artifact exceeds the consensus script limit. Preserve the

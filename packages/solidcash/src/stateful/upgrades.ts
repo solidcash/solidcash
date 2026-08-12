@@ -197,6 +197,9 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
   forward(
     implFunction: string, implArgs: FunctionArgument[] = [], extraForwardArgs: FunctionArgument[] = [],
   ): StatefulFunctionCall {
+    const debugForward = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_BUILDER_TIMING === '1';
+    if (debugForward) console.error('proxy-forward-start', { implFunction });
     const abiFn = (this.implementation.inner.artifact.abi as readonly AbiFunction[])
       .find((f) => f.name === implFunction);
     if (!abiFn) throw new Error(`Implementation '${this.implementation.inner.artifact.contractName}' has no function '${implFunction}'.`);
@@ -241,11 +244,13 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
       const physicalLockingBytecode = registered.proxy?.inner.lockingBytecode ?? deployment.lockingBytecode;
       return physicalLockingBytecode ? hexToBin(physicalLockingBytecode) : arg;
     });
+    if (debugForward) console.error('proxy-forward-args', { implFunction });
     // Connect the proxy to the runner so the forwarded call carries the signer. Its native P2PKH input funds the
     // tx and - crucially - is what the delegatecall'd impl's `emitTxOrigin` resolves `msg.sender` to. Without this
     // the proxy call has no _signer, the SDK funds with a dummy input, and a delegate impl that uses msg.sender
     // (e.g. `initialize` setting `this.owner = msg.sender`) reverts in emitTxOrigin.
     const runnerProxy = this.runner instanceof Signer ? this.proxy.connect(this.runner) : this.proxy;
+    if (debugForward) console.error('proxy-forward-connected', { implFunction });
     const proxyCall = (runnerProxy.call as Record<string, (...a: unknown[]) => StatefulFunctionCall>);
     const { name, mode } = this.forwardShape;
 
@@ -266,6 +271,7 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
         builder = proxyCall[name](selector, implLbc, ...authArgs, ...extraForwardArgs);
       }
     }
+    if (debugForward) console.error('proxy-forward-base-call', { implFunction });
     return builder.withDelegatecall(implSc, implFunction, covenantArgs);
   }
 }

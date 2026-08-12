@@ -441,6 +441,7 @@ export interface SortedInsertLoopAbi {
 export interface SortedUpsertLoopAbi {
   collection: string;
   fixedKeyParams: readonly string[];
+  fixedKeySources?: readonly KeySourceAbi[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
   /** The varying array contains ABI blobs; decode this tuple element to obtain each key. */
   keyDecodeTupleIndex?: number;

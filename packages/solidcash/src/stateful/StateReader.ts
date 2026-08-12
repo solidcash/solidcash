@@ -19,6 +19,7 @@ export interface OnChainState {
   masterUtxo: Utxo | undefined;
   dataNftUtxos: Utxo[];
   entryNftUtxos: Utxo[];
+  dynamicChunkUtxos?: Record<string, Utxo[]>;
 }
 
 export class StateReader {
@@ -259,17 +260,19 @@ export class StateReader {
 
     // Assemble dynamic-storage vars (string / unbounded bytes) from their chunk UTXOs, grouped by the
     // address each chunk collection was fetched from.
+    let dynamicChunkUtxos: Record<string, Utxo[]> | undefined;
     if (dynamicChunkAddresses && Object.keys(dynamicChunkAddresses).length > 0) {
       const chunkPoolByVar: Record<string, Utxo[]> = {};
       for (const [varName, addr] of Object.entries(dynamicChunkAddresses)) {
         chunkPoolByVar[varName] = utxosByAddress.get(addr) ?? [];
       }
       this.assembleDynamicVars(state, categoryId, chunkPoolByVar);
+      dynamicChunkUtxos = chunkPoolByVar;
     }
 
     const entryNftUtxos = this.findEntryNfts(allUtxos, dataNftUtxos, categoryId);
 
-    return { state, masterUtxo, dataNftUtxos, entryNftUtxos };
+    return { state, masterUtxo, dataNftUtxos, entryNftUtxos, dynamicChunkUtxos };
   }
 }
 

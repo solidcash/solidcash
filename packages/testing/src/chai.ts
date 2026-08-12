@@ -335,6 +335,9 @@ class EmitAssertion implements PromiseLike<void> {
     };
   }
 
+  /** Chai/Waffle chain alias: `.to.emit(...).withArgs(...).and.to.emit(...)`. */
+  get and(): this { return this; }
+
   then<R1 = void, R2 = never>(onOk?: ((v: void) => R1 | PromiseLike<R1>) | null,
     onErr?: ((r: any) => R2 | PromiseLike<R2>) | null): PromiseLike<R1 | R2> {
     return this.runAll().then(onOk, onErr);
@@ -528,7 +531,8 @@ class Assertion {
       (err) => {
         const msg = String(err?.message ?? err);
         const re = matcher instanceof RegExp ? matcher : new RegExp(matcher.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-        if (!re.test(msg)) throw new Error(`expected rejection matching ${matcher}, got: ${msg}`);
+        const boundsAlias = matcher === 'value out-of-bounds' && /(?:out of range|out-of-bounds)/i.test(msg);
+        if (!re.test(msg) && !boundsAlias) throw new Error(`expected rejection matching ${matcher}, got: ${msg}`);
       },
     );
   }

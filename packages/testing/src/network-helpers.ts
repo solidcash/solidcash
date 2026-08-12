@@ -5,7 +5,14 @@
  * standalone. Snapshots are independent deep clones (via the mem-cash indexer), so restore is repeatable and,
  * unlike EVM, never invalidates other snapshots.
  */
-import { MockNetworkProvider, type SnapshotRestorer } from 'solidcash';
+import {
+  MockNetworkProvider,
+  takeDeploymentRegistrySnapshot,
+  takeSoftStateSnapshot,
+  type DeploymentRegistrySnapshot,
+  type SnapshotRestorer,
+  type SoftStateSnapshot,
+} from 'solidcash';
 import { randomUtxo } from 'solidcash';
 
 /** The subset of provider capabilities the helpers require (MockNetworkProvider implements all of them). */
@@ -37,6 +44,8 @@ interface FixtureSnapshot<T> {
   fixture: () => Promise<T>;
   data: T;
   restorer: SnapshotRestorer;
+  deploymentRestorer: DeploymentRegistrySnapshot;
+  softStateRestorer: SoftStateSnapshot;
   provider: TestNetworkProvider;
 }
 
@@ -55,12 +64,18 @@ export async function loadFixture<T>(fixture: () => Promise<T>): Promise<T> {
   const existing = snapshots.find((s) => s.fixture === fixture) as FixtureSnapshot<T> | undefined;
   if (existing) {
     await existing.restorer.restore();
+    existing.deploymentRestorer.restore();
+    existing.softStateRestorer.restore();
     return existing.data;
   }
   const data = await fixture();
   const provider = getActiveProvider();
   const restorer = await provider.takeSnapshot();
-  snapshots.push({ fixture, data, restorer, provider } as FixtureSnapshot<unknown>);
+  const deploymentRestorer = takeDeploymentRegistrySnapshot(provider as never);
+  const softStateRestorer = takeSoftStateSnapshot();
+  snapshots.push({
+    fixture, data, restorer, deploymentRestorer, softStateRestorer, provider,
+  } as FixtureSnapshot<unknown>);
   return data;
 }
 

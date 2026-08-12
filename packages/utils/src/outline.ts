@@ -282,6 +282,7 @@ function emittedBytes(bodies: { script: Script }[], functions: OutlinedFunction[
 interface CandidateCorpus {
   bodyIds: number[][];
   bodyBytePrefixes: Uint32Array[];
+  bodyAnchorBounds: ({ minimum: number; maximum: number } | undefined)[];
   maximumBodyLength: number;
   commonPrefixByDiagonal: Map<number, Int32Array>;
   windowHashes: Map<number, Int32Array[]>;
@@ -323,6 +324,17 @@ function prepareCandidateCorpus(bodies: OutlineBody[]): CandidateCorpus {
   return {
     bodyIds,
     bodyBytePrefixes,
+    bodyAnchorBounds: bodies.map((body) => {
+      const anchors = body.anchors;
+      if (anchors === undefined || anchors.length === 0) return undefined;
+      let minimum = anchors[0];
+      let maximum = minimum;
+      for (let index = 1; index < anchors.length; index += 1) {
+        if (anchors[index] < minimum) minimum = anchors[index];
+        if (anchors[index] > maximum) maximum = anchors[index];
+      }
+      return { minimum, maximum };
+    }),
     maximumBodyLength,
     commonPrefixByDiagonal: new Map(),
     windowHashes: new Map(),
@@ -409,7 +421,7 @@ function findCandidates(
   bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
   candidateGroupsPerRound: number, prepared: CandidateCorpus = prepareCandidateCorpus(bodies),
 ): Candidate[] {
-  const { bodyIds, bodyBytePrefixes, maximumBodyLength, commonPrefixByDiagonal } = prepared;
+  const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, maximumBodyLength, commonPrefixByDiagonal } = prepared;
   // Pack (left body, right body, signed diagonal) into one collision-free numeric key. Body indices and offsets
   // are bounded by these in-memory arrays, so this stays far below Number.MAX_SAFE_INTEGER for compilable input.
   const diagonalSpan = maximumBodyLength * 2 + 1;
@@ -578,6 +590,8 @@ function findCandidates(
     for (let occurrenceIndex = 0; occurrenceIndex < group.length; occurrenceIndex += 2) {
       const body = group[occurrenceIndex];
       const start = group[occurrenceIndex + 1];
+      const bounds = bodyAnchorBounds[body];
+      if (bounds === undefined || bounds.maximum < start || bounds.minimum >= start + length) continue;
       const anchors = bodies[body].anchors;
       if (anchors === undefined) continue;
       for (const anchor of anchors) {

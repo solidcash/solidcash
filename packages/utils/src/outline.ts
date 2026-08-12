@@ -838,10 +838,12 @@ export function outlineSharedSpans(
     const indexMap = new Array<number>(originalLength + 1).fill(body.script.length);
     let cursor = 0;
     if (body.origins === undefined) {
+      const identityMap = new Array<number>(originalLength + 1);
+      for (let position = 0; position <= originalLength; position += 1) identityMap[position] = position;
       return {
         script: body.script,
         locationData: body.locationData,
-        indexMap: Array.from({ length: originalLength + 1 }, (_unused, position) => position),
+        indexMap: identityMap,
       };
     }
     body.origins.forEach((origin, position) => {

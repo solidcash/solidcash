@@ -193,6 +193,8 @@ export interface ExternalCallUtxoGroup {
   };
   /** ABI-named hidden witnesses resolved while assembling this callee's physical block. */
   internalArgs?: Record<string, any>;
+  /** Hidden return-output ABI witness -> logical external-call group supplying that return. */
+  returnWitnessGroups?: Record<string, number>;
   /** Rebuild this group's master unlocker after probe-derived hidden witnesses become available. */
   refreshInternalArgs?: (updates: Record<string, any>) => void;
   /** Active message-bus batch blockhash reads, retained until the group's absolute input base is known. */
@@ -422,8 +424,10 @@ export class StatefulTransactionBuilder {
   private externalCallEntryInserts: Array<{ categoryId: string; to: Uint8Array; commitment: string }> = [];
 
   private pendingReturnEventOutputs: Array<{
-    categoryId: string; commitment: Uint8Array; identity: string;
+    categoryId: string; commitment: Uint8Array; identity: string; provisional?: boolean;
   }> = [];
+  /** Physical output positions from the most recent build, keyed by logical return identity. */
+  private builtReturnEventOutputIndices = new Map<string, number>();
 
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
   private pinnedEntrySlots: Set<number> = new Set(); // slots whose commitment is known exactly (never re-derive)
@@ -1222,7 +1226,10 @@ export class StatefulTransactionBuilder {
    * makes updateJobPost's first OUTPUTTOKENCOMMITMENT/SPLIT-1 see an empty item.
    * Swap that hole with the next non-token none-cap event so TXOUTPUTCOUNT stays put.
    */
-  private _placeTailReturnAfterSwappedTokenBlock(builder: TransactionBuilder): void {
+  private _placeTailReturnAfterSwappedTokenBlock(
+    builder: TransactionBuilder,
+    returnOutputRefs?: Map<string, Output>,
+  ): void {
     if (!this.mintingOutputSwap) return;
     const master = this.findMintingInputIndex(this.mintingOutputSwap.categoryId);
     if (master < 0) return;
@@ -1240,7 +1247,7 @@ export class StatefulTransactionBuilder {
         // `00` is the canonical script serialization of an empty return value. It is not a probe placeholder
         // when it came from a precomputed return family (e.g. an unknown/non-MECE tag returning "").
         const commitment = rawCommitment === '' ? '0101' : rawCommitment;
-        builder.outputs[outputIndex] = {
+        const output: Output = {
           to: Uint8Array.of(0x51),
           amount: 800n,
           token: {
@@ -1249,6 +1256,8 @@ export class StatefulTransactionBuilder {
             nft: { capability: 'none', commitment },
           },
         };
+        builder.outputs[outputIndex] = output;
+        returnOutputRefs?.set(event.identity, output);
       }
       // INSERT predecessors were emitted at master+blockSize and just got
       // smashed by MD tails. Replay them after the authenticated tail band
@@ -1507,6 +1516,15 @@ export class StatefulTransactionBuilder {
     if (amount <= 0n) {
       throw new Error('Transfer amount must be positive');
     }
+    this.pendingTransfers.push({ lockingBytecode, amount });
+    return this;
+  }
+
+  /** @internal Add a compiler-derived balanced transfer slot. A Solidity `call{value: 0}` still authenticates
+   * its fixed output coordinate, so VM derivation may legitimately recover zero even though the public transfer
+   * API rejects non-positive user payments. */
+  _addDerivedTransfer(lockingBytecode: Uint8Array, amount: bigint): this {
+    if (amount < 0n) throw new Error('Derived transfer amount must not be negative');
     this.pendingTransfers.push({ lockingBytecode, amount });
     return this;
   }
@@ -1883,7 +1901,9 @@ export class StatefulTransactionBuilder {
   /**
    * Set a return event output for a cross-contract call.
    */
-  setReturnEventOutput(categoryId: string, commitment: Uint8Array, identity = categoryId): this {
+  setReturnEventOutput(
+    categoryId: string, commitment: Uint8Array, identity = categoryId, provisional = false,
+  ): this {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_FAILURE_RING === '1') {
       console.error('set-return-event-output', {
         identity, categoryId, commitment: binToHex(commitment),
@@ -1899,20 +1919,40 @@ export class StatefulTransactionBuilder {
       if (previous.length > commitment.length && commitment.length <= 1) {
         return this;
       }
-      this.pendingReturnEventOutputs[existing] = { categoryId, commitment, identity };
+      this.pendingReturnEventOutputs[existing] = { categoryId, commitment, identity, provisional };
     } else {
-      this.pendingReturnEventOutputs.push({ categoryId, commitment, identity });
+      this.pendingReturnEventOutputs.push({ categoryId, commitment, identity, provisional });
     }
     return this;
   }
 
   /** Debug/derivation snapshot of pending return events without exposing mutable builder state. */
   getReturnEventOutputs(): ReadonlyArray<Readonly<{
-    categoryId: string; commitment: Uint8Array; identity: string;
+    categoryId: string; commitment: Uint8Array; identity: string; provisional?: boolean;
   }>> {
     return this.pendingReturnEventOutputs.map((event) => ({
       ...event, commitment: event.commitment.slice(),
     }));
+  }
+
+  /** Physical output index recorded by the most recent build for a logical return identity. */
+  getBuiltReturnEventOutputIndex(identity: string): number {
+    return this.builtReturnEventOutputIndices.get(identity)
+      ?? this.builtReturnEventOutputIndices.get(`${identity}:0`)
+      ?? -1;
+  }
+
+  /** Physical output index recorded by the most recent build for an external-call group's first return. */
+  getBuiltExternalCallReturnEventOutputIndex(groupIdx: number): number {
+    const identity = `external-call:${groupIdx}`;
+    if (this.isInBlockReturnEventGroup(groupIdx)) {
+      return this.builtReturnEventOutputIndices.get(identity)
+        ?? this.builtReturnEventOutputIndices.get(`${identity}:0`)
+        ?? -1;
+    }
+    return this.builtReturnEventOutputIndices.get(`${identity}:0`)
+      ?? this.builtReturnEventOutputIndices.get(identity)
+      ?? -1;
   }
 
   /**
@@ -2327,6 +2367,12 @@ export class StatefulTransactionBuilder {
   }
 
   build(): TransactionBuilder {
+    this.builtReturnEventOutputIndices.clear();
+    const returnOutputRefs = new Map<string, Output>();
+    const addReturnOutput = (builder: TransactionBuilder, identity: string, output: Output): void => {
+      builder.addOutput(output);
+      returnOutputRefs.set(identity, output);
+    };
     // Allow implicit NFT burn when entries are being deleted
     // Apply max fee override if set (user-specified via withMaxFee takes precedence)
     // CovenantTransactionBuilder skips the inner fee check - it can't understand
@@ -2431,7 +2477,9 @@ export class StatefulTransactionBuilder {
     };
     // X56. Delegate return events held back until after the implementation's own event outputs. Empty unless
     // `delegateReturnEventAfterEvents` is set, i.e. unless the co-spent implementation emits AND returns.
-    let deferredDelegateReturnEvents: Array<{ categoryId: string; commitment: Uint8Array }> = [];
+    let deferredDelegateReturnEvents: Array<{
+      categoryId: string; commitment: Uint8Array; identity: string; provisional?: boolean;
+    }> = [];
     if (this.locktimeOverride !== undefined) builder.locktime = this.locktimeOverride;
     const seenInputs = new Map<string, number>();
     for (let index = 0; index < this.allInputs.length; index++) {
@@ -2697,6 +2745,7 @@ export class StatefulTransactionBuilder {
     const associatedDelegateOutputs = new Set(this.externalCallUtxoGroups
       .map((group) => group.delegateCallGroupIndex)
       .filter((index): index is number => index !== undefined));
+    let delegateTransferSlotsConsumed = 0;
     const appendDelegateGroupOutputs = (groupIndex: number): void => {
       const group = this.lowLevelCallUtxoGroups[groupIndex];
       if (!group || group.callMode !== 'delegatecall') return;
@@ -2708,6 +2757,26 @@ export class StatefulTransactionBuilder {
         builder.addOutput({
           to: nftUtxo.unlocker.generateLockingBytecode(), amount: nftUtxo.satoshis, token: nftUtxo.token,
         });
+      }
+      const delegateFn = group.compilerRoute?.abiFunction
+        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((candidate) => candidate.name === group.functionName);
+      const occupied = 1 + group.dataNftUtxos.length;
+      const lastTransferOffset = delegateFn?.blockLayout?.slots
+        .filter((slot) => slot.kind === 'transfer')
+        .reduce((max, slot) => Math.max(max, slot.offset), -1) ?? -1;
+      for (let offset = occupied; offset <= lastTransferOffset; offset += 1) {
+        const slot = delegateFn?.blockLayout?.slots.find((candidate) => candidate.offset === offset);
+        if (slot?.kind === 'transfer') {
+          const transfer = this.pendingTransfers[delegateTransferSlotsConsumed++];
+          builder.addOutput(!transfer || transfer.lockingBytecode.length === 0
+            ? { to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS }
+            : { to: transfer.lockingBytecode, amount: transfer.amount });
+          continue;
+        }
+        // Other output-only implementation slots are populated by their specialized derivation paths. Reserve
+        // their physical coordinates here so a following participant cannot collapse the balanced block.
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
       }
     };
     const appendDelegateLoopEntries = (): void => {
@@ -2806,7 +2875,7 @@ export class StatefulTransactionBuilder {
         deferredDelegateReturnEvents.push(...proxyReturnEvents);
       } else {
         for (const returnEvent of proxyReturnEvents) {
-          builder.addOutput({
+          addReturnOutput(builder, returnEvent.identity, {
             to: new Uint8Array([0x51]), amount: 800n,
             token: {
               amount: 0n, category: returnEvent.categoryId,
@@ -3236,9 +3305,16 @@ export class StatefulTransactionBuilder {
           }
           if (slot?.kind === 'returnEvent' && group.returnEventInBlock) {
             const returnIdentity = `external-call:${group.fusedReturnGroupIndex ?? groupIndex}`;
-            const re = this.pendingReturnEventOutputs.find((r) => r.identity === returnIdentity);
+            const exact = this.pendingReturnEventOutputs.find((r) => r.identity === returnIdentity);
+            const first = this.pendingReturnEventOutputs.find((r) => r.identity === `${returnIdentity}:0`);
+            // A fused writer's exact return starts as a zero seed. Until its covenant reaches the return check,
+            // keep the independently precomputed logical result in that physical slot so the shared route can
+            // advance. Once authenticated (including a legitimate `false`), the exact result wins.
+            const re = exact?.provisional && first?.commitment.some((byte) => byte !== 0)
+              ? first : exact ?? first;
             const returnCommitment = re && re.commitment.length > 0 ? binToHex(re.commitment) : '0101';
-            builder.addOutput({
+            const identity = re?.identity ?? returnIdentity;
+            addReturnOutput(builder, identity, {
               to: new Uint8Array([0x51]),
               amount: BALANCED_SLOT_SATOSHIS,
               token: {
@@ -3378,7 +3454,7 @@ export class StatefulTransactionBuilder {
         .filter((r) => r.categoryId !== this.categoryId);
       if (this.delegateReturnEventAfterEvents) deferredDelegateReturnEvents.push(...externalReturnEvents);
       for (const re of (this.delegateReturnEventAfterEvents ? [] : externalReturnEvents)) {
-        builder.addOutput({
+        addReturnOutput(builder, re.identity, {
           to: new Uint8Array([0x51]),
           amount: 800n,
           token: {
@@ -3556,7 +3632,8 @@ export class StatefulTransactionBuilder {
     // inactive sites remain OP_TRUE outputs so later participant blocks cannot slide into the gaps.
     const reservedTransferSlots = this.blockLayout?.slots.filter((slot) => slot.kind === 'transfer').length
       ?? this.pendingTransfers.length;
-    for (let transferSlot = 0; transferSlot < reservedTransferSlots; transferSlot += 1) {
+    for (let transferSlot = delegateTransferSlotsConsumed;
+      transferSlot < reservedTransferSlots; transferSlot += 1) {
       const transfer = this.pendingTransfers[transferSlot];
       if (!transfer || transfer.lockingBytecode.length === 0) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
@@ -3703,7 +3780,7 @@ export class StatefulTransactionBuilder {
     // X56. The delegate return channel, deferred from the facet-preservation block above so the co-spent
     // implementation's own event outputs keep the position its covenant resolves for them.
     for (const re of deferredDelegateReturnEvents) {
-      builder.addOutput({
+      addReturnOutput(builder, re.identity, {
         to: new Uint8Array([0x51]),
         amount: 800n,
         token: {
@@ -3717,7 +3794,7 @@ export class StatefulTransactionBuilder {
     // Create return event outputs (from cross-contract calls with return values). X13: a callee whose full block
     // carries a returnEvent slot already emitted its own return event inside that block above.
     for (const re of (this.delegateEntriesAfterLowLevel ? [] : this.tailReturnEventOutputs())) {
-      builder.addOutput({
+      addReturnOutput(builder, re.identity, {
         to: new Uint8Array([0x51]), // OP_TRUE
         amount: 800n,
         token: {
@@ -4393,7 +4470,7 @@ export class StatefulTransactionBuilder {
     }
     if (this.mintingOutputSwap) {
       this._fillSwappedTokenEntryHoles(builder);
-      this._placeTailReturnAfterSwappedTokenBlock(builder);
+      this._placeTailReturnAfterSwappedTokenBlock(builder, returnOutputRefs);
     }
     if (this.mintingOutputSwap && this.delegateDynamicChunksAtSuffix) {
       const jobsCount = this._dynamicChunkOutputCount();
@@ -4506,6 +4583,10 @@ export class StatefulTransactionBuilder {
 
     this._tagEmptyP2sh32ImmutablesAsScid(builder);
     this._ensureOpTrueReturnWitnessesAreImmutable(builder);
+    for (const [identity, output] of returnOutputRefs) {
+      const index = builder.outputs.indexOf(output);
+      if (index >= 0) this.builtReturnEventOutputIndices.set(identity, index);
+    }
     return builder;
   }
 
@@ -4757,7 +4838,9 @@ export class StatefulTransactionBuilder {
   }
 
   /** Return events that are NOT emitted inside a callee block, in emission order. */
-  private tailReturnEventOutputs(): Array<{ categoryId: string; commitment: Uint8Array; identity: string }> {
+  private tailReturnEventOutputs(): Array<{
+    categoryId: string; commitment: Uint8Array; identity: string; provisional?: boolean;
+  }> {
     const inBlock = new Set<string>();
     for (let i = 0; i < this.externalCallUtxoGroups.length; i += 1) {
       if (this.isInBlockReturnEventGroup(i)) {
@@ -4765,7 +4848,8 @@ export class StatefulTransactionBuilder {
         inBlock.add(`external-call:${group.fusedReturnGroupIndex ?? i}`);
       }
     }
-    const tail = this.pendingReturnEventOutputs.filter((re) => !inBlock.has(re.identity));
+    const tail = this.pendingReturnEventOutputs.filter((re) => ![...inBlock].some((identity) =>
+      re.identity === identity || re.identity.startsWith(`${identity}:`)));
     const groupIdxOf = (identity: string): number => {
       const match = /^external-call:(\d+)/.exec(identity);
       return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;

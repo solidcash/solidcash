@@ -1524,6 +1524,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitGraphEffectContainerConservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    this.emitPendingTransferValueGuard(locationData);
     this.emitSatoshiContainerIdentity(locationData);
     this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
     this.emit(Op.OP_UTXOVALUE, locationData);
@@ -1551,6 +1552,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(value)');
     this.emit(Op.OP_VERIFY, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
+   * Enter a branch iff at least one pending native-value transfer is non-zero.
+   *
+   * Solidity libraries commonly lower ERC-20 calls through a generic
+   * `functionCallWithValue(..., 0)` helper. Such a call still reserves a fixed transfer output, but it neither
+   * spends nor requires this contract's satoshi container. Avoiding the container introspection on that path is
+   * also required for delegates: the absent container slot may be occupied by the co-spent implementation.
+   * The transfer-output covenant remains unconditional and proves that every inactive slot carries exactly zero.
+   */
+  private emitPendingTransferValueGuard(locationData: SingleLocationData): void {
+    this.emit(encodeBool(false), locationData);
+    this.pushToStack('(__native_value_transfer_active)');
+    for (const transfer of this.pendingTransfers) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(transfer.amountStackName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_0NOTEQUAL, locationData);
+      this.emit(Op.OP_BOOLOR, locationData);
+    }
+    this.emit(Op.OP_IF, locationData);
     this.popFromStack();
   }
 
@@ -22249,7 +22273,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       //     value -> fails closed; never a caller input).
       // No silent fall-through: any other target shape still throws (conservative - the collect phase records
       // addressParam/addressLiteral ONLY for the recognised sound forms).
-      const addrName = slot.addressIsMsgSender ? msgSenderTemp! : slot.addressParam;
+      const inlinedLowLevelTarget = slot.addressParam?.startsWith('__extaddr_ll_')
+        && this.stack.includes(slot.addressParam.slice('__extaddr_ll_'.length))
+        ? slot.addressParam.slice('__extaddr_ll_'.length) : undefined;
+      const addrName = slot.addressIsMsgSender
+        ? msgSenderTemp!
+        : inlinedLowLevelTarget ?? slot.addressParam;
       if (addrName) {
         // +2 for the 2 untracked values on the real stack: B_master_bytecode and B_master_inputIdx
         const addrParamIdx = this.getStackIndex(addrName);
@@ -25015,12 +25044,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // GRAPH_TRANSFER_REACHED below is the occurrence aggregate for precisely this route shape.
     if (this.pendingTransfers.length > 0 && this.currentFunction.blockLayout
       && !this.graphTransferFlagActive) {
+      // A compiler-visible transfer may be a generic call-with-value helper whose runtime value is zero. In
+      // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot.
+      this.emitPendingTransferValueGuard(locationData);
       this.emitSatoshiContainerIdentity(locationData);
-    }
 
-    // containerInputSats <= containerOutputSats + sum(transferValues)
-    if (this.pendingTransfers.length > 0 && this.currentFunction.blockLayout
-      && !this.graphTransferFlagActive) {
+      // containerInputSats <= containerOutputSats + sum(transferValues)
       // Read satoshi container input value
       this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
       this.emit(Op.OP_UTXOVALUE, locationData);
@@ -25061,6 +25090,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       this.emit(Op.OP_VERIFY, locationData);
       this.popFromStack();
+      this.emit(Op.OP_ENDIF, locationData);
     }
 
     // Graph handlers authenticate each transfer output inside their occurrence-specific subroutine frame. Sum
@@ -25068,6 +25098,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // than the authenticated transfers require; it may not lose more. Zero reached transfers reduces naturally
     // to preservation, while repeated occurrences authorize at most their aggregate.
     if (this.graphTransferFlagActive && this.stack.includes(GRAPH_TRANSFER_REACHED)) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_TRANSFER_REACHED))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_0NOTEQUAL, locationData);
+      this.emit(Op.OP_IF, locationData);
       this.emitSatoshiContainerIdentity(locationData);
       this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
       this.emit(Op.OP_UTXOVALUE, locationData);
@@ -25078,6 +25112,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, locationData);
       this.emit(Op.OP_LESSTHANOREQUAL, locationData);
       this.emit(Op.OP_VERIFY, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
     }
   }
 

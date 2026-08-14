@@ -7901,16 +7901,51 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               for (const [partIndex, part] of parts.entries()) {
                 stb.setReturnEventOutput(
                   physical.categoryId, part, `external-call:${candidateIdx}:${partIndex}`,
+                  candidate.precomputedReturnCommitment === undefined
+                    && !(candidate.loopReturnCommitments?.length),
                 );
               }
             }
             if (!complete) {
               stb.setReturnEventOutput(
                 physical.categoryId, commitment, `external-call:${fusedGroupIdx}`,
+                true,
               );
             }
           }
         }
+        // Output construction is the authoritative source of physical return positions. Reconcile only after
+        // derivation has finished its normal builds: refreshing earlier would require an additional build pass,
+        // and output construction also advances convergence handles used by dynamic storage probes.
+        const reconcileReturnWitnesses = (): void => {
+          let refreshed = false;
+          for (const [externalGroupIdx, externalGroup] of externalCallUtxoGroups.entries()) {
+            // The physical callee covenant verifies the return owned by its fused writer. The enclosing caller's
+            // logical read can have a different tail output (`balanceOf` fused with `transferFrom` is the common
+            // case), and is reconciled independently through `returnWitnessGroups` below.
+            const actual = stb.getBuiltExternalCallReturnEventOutputIndex(
+              externalGroup.fusedReturnGroupIndex ?? externalGroupIdx,
+            );
+            if (actual >= 0) externalGroup.returnOutputIndex = actual;
+          }
+          for (const delegateGroup of stb.getLowLevelCallUtxoGroups()) {
+            if (!delegateGroup.returnWitnessGroups || !delegateGroup.refreshInternalArgs) continue;
+            const updates: Record<string, bigint> = {};
+            for (const [name, externalGroupIdx] of Object.entries(delegateGroup.returnWitnessGroups)) {
+              const actual = stb.getBuiltExternalCallReturnEventOutputIndex(externalGroupIdx);
+              if (actual >= 0 && delegateGroup.internalArgs?.[name] !== BigInt(actual)) {
+                updates[name] = BigInt(actual);
+              }
+            }
+            if (Object.keys(updates).length === 0) continue;
+            delegateGroup.refreshInternalArgs(updates);
+            refreshed = true;
+          }
+          if (refreshed) {
+            stb._refreshInputs();
+            (stb as unknown as { __returnWitnessesReconciled?: boolean }).__returnWitnessesReconciled = true;
+          }
+        };
 
         // Phase 1: Derive each B's state + return blob
         // Process groups in reverse order so that transitive dependencies (e.g., C in
@@ -8553,7 +8588,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 || group.externalContract.inner.artifact.compiler?.options?.evmCompat)
                 ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes) : undefined;
             }
-            if (evmScalar) returnCommitments = [evmScalar];
+            if (evmScalar && (returnCommitments?.length
+              || !fullTraceRet.at(-1)?.error || !/^0+$/.test(evmScalar))) {
+              returnCommitments = [evmScalar];
+            }
+            const reachedReturnCommitmentRead = fullTraceRet.some((state) => {
+              if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
+                || state.stack.length === 0) return false;
+              try {
+                const outputIndex = Number(decodeScriptNumber(state.stack.at(-1)!));
+                return outputIndex >= returnOutputRange.min && outputIndex < returnOutputRange.max;
+              } catch {
+                return false;
+              }
+            });
+            // A failing pre-return probe contains many ABI-zero words (addresses, keys, and seed outputs).
+            // Neither the generic pending-stack scan nor scalar fallback can authenticate one as the return.
+            // Keep the provisional advancing value until the callee actually reads its dedicated output.
+            if (fullTraceRet.at(-1)?.error && !reachedReturnCommitmentRead
+              && returnCommitments?.every((commitment) => /^0+$/.test(commitment))) {
+              returnCommitments = undefined;
+            }
             if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
               (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
               console.error('route-return-derivation', {
@@ -10028,8 +10083,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // bytecodes: the STB's getTransferOutputBase() gives us the first transfer output index.
           const totalBytecodeCount = satoshiTransferCount + ftOps.length + nftOps.length;
           if (totalBytecodeCount > 0) {
-            const transferOutputBase = stb.getTransferOutputBase();
-            const tcTransferOutputBase = stb.getTokenContainerTransferOutputBase();
+            const delegateGroup = delegatecallInputIndex === undefined ? undefined
+              : stb.getLowLevelCallUtxoGroups().find((_group, groupIdx) =>
+                stb.getLowLevelCallMasterInputIndex(groupIdx) === delegatecallInputIndex);
+            const delegateFn = delegateGroup?.compilerRoute?.abiFunction
+              ?? (delegateGroup
+                ? (delegateGroup.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
+                  ?.find((candidate) => candidate.name === delegateGroup.functionName)
+                : undefined);
+            const absoluteDelegateSlot = (kind: BlockSlotKind): number | undefined => {
+              if (delegatecallInputIndex === undefined) return undefined;
+              const offset = delegateFn?.blockLayout?.slots.find((slot) => slot.kind === kind)?.offset;
+              return offset === undefined ? undefined : delegatecallInputIndex + offset;
+            };
+            const transferOutputBase = absoluteDelegateSlot('transfer') ?? stb.getTransferOutputBase();
+            const tcTransferOutputBase = absoluteDelegateSlot('tcTransfer')
+              ?? stb.getTokenContainerTransferOutputBase();
 
             // Satoshi transfer bytecodes: filter by output index range [transferOutputBase, tcTransferOutputBase)
             const satoshiBytecodes = extractVerifiedValuesFromTrace(
@@ -10055,7 +10124,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 // Use extracted amount if available, otherwise keep placeholder
                 const amt = i < satoshiValues.length
                   ? decodeScriptNumber(satoshiValues[i]) : 1200n;
-                stb.addTransfer(lbc, amt);
+                stb._addDerivedTransfer(lbc, amt);
                 derivedTransfers.push({ lockingBytecode: lbc, amount: amt });
               }
             }
@@ -10351,6 +10420,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               stb.setState(v.name, onChain.state[v.name] as StateValueType);
             }
           }
+          reconcileReturnWitnesses();
           return {
             state: currentState, vmErrored: vmHadError,
             derivedTransfers, derivedTokenContainerTransfers: derivedFtTransfers,
@@ -10369,6 +10439,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             stb.setState(variable.name, onChain.state[variable.name] as StateValueType);
           }
         }
+        reconcileReturnWitnesses();
         // State commitments were found. If the VM errored, they might be false positives from infrastructure
         // code. Mark for re-derivation while retaining the complete current-state baseline above.
         return {
@@ -14596,6 +14667,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ?? childCompilerRoute?.abiFunction
                 ?? (callee.inner.artifact.abi as readonly AbiFunction[])
                   .find((fn) => fn.name === childFunctionName);
+              if (!proxyCallee && selectedFn?.blockLayout) {
+                // The caller records requirements against the source interface. A concrete deployment can have
+                // additional fixed state which its generated epilogue authenticates even when that interface
+                // declares no state (IERC20 is the common case). The selected concrete block layout is the
+                // physical transaction contract, so it must win over an explicitly empty caller-side footprint.
+                childRequired = [...new Set(
+                  selectedFn.blockLayout.slots
+                    .filter((slot) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)
+                    .map((slot) => slot.nftIndex!),
+                )];
+                childData = childRequired.map((nftIndex) => {
+                  const utxo = childState.dataNftUtxos[nftIndex];
+                  if (!utxo) {
+                    throw new Error(
+                      `External data NFT at index ${nftIndex} not found for ${nested.interfaceName}`,
+                    );
+                  }
+                  return {
+                    ...utxo,
+                    unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
+                  };
+                });
+              }
               // A compiler route created by an earlier logical call owns the callee's one physical UTXO block
               // and executes every selector in its batch blob. Solidity lowering still publishes the individual
               // callsites (including mutually-exclusive SafeERC20 approve branches), so they arrive here too.
@@ -16603,7 +16697,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     returns: allGroupEcSlots[idx]?.hasReturnValues })),
                 });
               }
-              if (nestedGroup !== undefined) tokenReturnPositions.push(inpIndex);
+              if (nestedGroup !== undefined) {
+                tokenReturnPositions.push(inpIndex);
+                group.returnWitnessGroups = {
+                  ...group.returnWitnessGroups,
+                  [inp.name]: nestedGroup,
+                };
+              }
               return BigInt(nestedGroup === undefined
                 ? -1 : physicalReturnIndexForGroup.get(nestedGroup) ?? -1);
             }
@@ -18096,7 +18196,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
     }
-    const derivTransferCount = abiFunction?.transferCount ?? 0;
+    // A proxy forwarder carries no Solidity-visible effects of its own. Transfer slots belong to the routed
+    // implementation ABI, just like its entries/dynamic writes above; counting from the forwarder leaves those
+    // balanced output slots as funders and prevents the VM from deriving their address and value.
+    const derivTransferCount = entryAbiFunction?.transferCount ?? abiFunction?.transferCount ?? 0;
     const derivTokenOps = tokenContainerTransferOps.length > 0 ? tokenContainerTransferOps : undefined;
 
     // Reserve the return placeholder before computing any input indices: an active returnEvent contributes a
@@ -18288,6 +18391,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         entryAccessesForDerive, emitInfos.length > 0 ? emitInfos : undefined,
         derivTransferCount, derivTokenOps, delegatecallInputIndex, osGroupsForDerive,
       );
+      if ((builder as unknown as { __returnWitnessesReconciled?: boolean }).__returnWitnessesReconciled) {
+        (builder as unknown as { __returnWitnessesReconciled?: boolean }).__returnWitnessesReconciled = false;
+        deriveResult = await this._deriveFullTransactionState(
+          builder, requiredNftIndices, ecGroupsForDerive, ecCallsForDerive,
+          entryAccessesForDerive, emitInfos.length > 0 ? emitInfos : undefined,
+          derivTransferCount, derivTokenOps, delegatecallInputIndex, osGroupsForDerive,
+        );
+      }
       if (env?.SOLIDC_DEBUG_STOP_AFTER_DERIVATION === '1'
         && entryAbiFunction?.name === 'publishJobPost') {
         throw new Error('SOLIDC_DEBUG_STOP_AFTER_DERIVATION');

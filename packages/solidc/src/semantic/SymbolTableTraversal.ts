@@ -2572,6 +2572,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         for (const slot of externalCallSlots) {
           if (slot.addressParam && !slot.addressIsMsgSender) {
             node.opRolls.delete(slot.addressParam);
+            // Inlined low-level-call helpers use a compiler-owned alias (`__extaddr_ll_token`) for their
+            // receiver. The epilogue authenticates the original value, not the helper-local copy, because the
+            // latter may have been cleared by the inlined helper's own cleanup. Keep that underlying value alive
+            // just as graph-route verification already does when resolving this spelling.
+            if (slot.addressParam.startsWith('__extaddr_ll_')) {
+              node.opRolls.delete(slot.addressParam.slice('__extaddr_ll_'.length));
+            }
           }
           // Graph emission may read a forwarded argument more than once
           // (raw calldata is split once for its selector and once for its ABI
@@ -5459,6 +5466,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         return undefined;
       };
       let addressParam = directAddressIdentifier(node.addressExpression)?.name;
+      if (addressParam) {
+        addressParam = this.resolveCompilerAddressAliasName(addressParam, this.currentFunction?.body);
+      }
       // An interface/address constant is not a runtime stack source. Peel only the compile-time cast wrappers
       // produced by `IFoo(address(<literal>))`; arbitrary constant expressions remain unrecognized and therefore
       // fail closed below rather than being mistaken for code-baked target identities.
@@ -6563,6 +6573,40 @@ export default class SymbolTableTraversal extends AstTraversal {
       break;
     }
     return cur;
+  }
+
+  /**
+   * InlineReturningStateHelpers and external-call capture lowering introduce single-assignment receiver aliases
+   * (`__rh*`, `__extcap_*`, and `__inl*`). A conditional helper branch may never initialize its final `__rh*`
+   * local, while external-call epilogue checks are deliberately unconditional. Resolve only this compiler-owned
+   * SSA chain to the stable caller value; user locals remain untouched because they may be reassigned later.
+   */
+  private resolveCompilerAddressAliasName(name: string, body: Node | undefined): string {
+    const generated = (candidate: string): boolean => /^__(?:rh|extcap_|inl)/.test(candidate);
+    const seen = new Set<string>();
+    let current = name;
+    while (generated(current) && !seen.has(current)) {
+      seen.add(current);
+      let value = this.findLocalInit(body, current) ?? this.findAssignmentValue(body, current);
+      while (value instanceof CastNode
+        || (value instanceof FunctionCallNode && value.parameters.length === 1
+          && (this.interfaceMap.has(value.identifier.name) || this.contractMap.has(value.identifier.name)))) {
+        value = value instanceof CastNode ? value.expression : value.parameters[0];
+      }
+      if (!(value instanceof IdentifierNode)) break;
+      current = value.name;
+    }
+    if (generated(current)) return name;
+    if (this.currentFunction?.parameters.some((parameter) => parameter.name === current)) return current;
+    // Imported Solidity helpers conventionally name their parameter `token`, while the public caller names the
+    // forwarded ABI value `token_`. Inlining retains the helper ParameterNode on identity-cast wrappers even
+    // though its runtime binding has been flattened. Recover the caller parameter only when normalization is
+    // unique; ambiguity keeps the original capture and therefore fails closed.
+    const normalized = current.replace(/^_+|_+$/g, '');
+    const forwarded = this.currentFunction?.parameters.filter((parameter) =>
+      !parameter.name.startsWith('__internal__')
+      && parameter.name.replace(/^_+|_+$/g, '') === normalized) ?? [];
+    return forwarded.length === 1 ? forwarded[0].name : name;
   }
 
   // C1/B: does this subtree write contract state (state-var / mapping / state-array assign or delete)? A

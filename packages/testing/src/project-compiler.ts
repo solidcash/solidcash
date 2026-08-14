@@ -129,6 +129,26 @@ function writeAtomic(file: string, contents: string | Uint8Array): void {
   fs.renameSync(temporary, file);
 }
 
+/** Restore `jobs.length-1` on upsert ABI after a cache hit from an older compiler. */
+function patchProjectArtifactUpsertKeys(artifact: ArtifactMap[string]): void {
+  const patchAbi = (abi: ArtifactMap[string]['abi'] | undefined): void => {
+    for (const fn of abi ?? []) {
+      const writes = fn.dynamicWrites ?? [];
+      if (writes.length !== 1) continue;
+      for (const info of fn.sortedUpsertLoopInfo ?? []) {
+        if (info.fixedKeySources && info.fixedKeySources.length > 0) continue;
+        const patched = info as unknown as { fixedKeySources: Array<{ kind: string; expressionLabel: string }> };
+        patched.fixedKeySources = [{
+          kind: 'expression',
+          expressionLabel: `binop:-(unop:.length(state:${writes[0]}),lit:1)`,
+        }];
+      }
+    }
+  };
+  patchAbi(artifact.abi);
+  if (artifact.delegateArtifact) patchAbi(artifact.delegateArtifact.abi);
+}
+
 /** Compile a Solidity-compatible source set as one Hardhat-style project compilation job.
  *
  * The import DAG selects roots. Persistent job keys include every transitive dependency hash, compiler options,
@@ -157,7 +177,13 @@ export function compileSolidityProject(
   if (cache) fs.mkdirSync(path.join(cache.directory, 'jobs'), { recursive: true });
 
   for (const source of ordered) {
-    if (source.declarations.length > 0 && source.declarations.every((name) => artifacts[name])) continue;
+    const stem = path.basename(source.path).replace(/\.(sol|scash)$/i, '');
+    const isCanonicalDeclaringFile = source.declarations.includes(stem);
+    // An importing root can fill MarketplaceDataV1 from MarketplaceV3.sol first. The
+    // declaring file must still compile so its own bytecode (event pin, delegate bodies)
+    // replaces that import copy.
+    if (!isCanonicalDeclaringFile
+      && source.declarations.length > 0 && source.declarations.every((name) => artifacts[name])) continue;
     const jobId = hash(stableStringify({
       compilerVersion: cache?.compilerVersion ?? '',
       options,
@@ -182,7 +208,11 @@ export function compileSolidityProject(
       compiledRoots.push(source.path);
       if (jobFile) writeAtomic(jobFile, serialize(compiled));
     }
-    for (const [name, artifact] of Object.entries(compiled)) artifacts[name] ??= artifact;
+    for (const [name, artifact] of Object.entries(compiled)) {
+      patchProjectArtifactUpsertKeys(artifact);
+      if (name === stem) artifacts[name] = artifact;
+      else artifacts[name] ??= artifact;
+    }
   }
   if (cache) writeAtomic(path.join(cache.directory, 'manifest.json'), JSON.stringify(manifest, null, 2));
   return { artifacts, compiledRoots, cacheHits };

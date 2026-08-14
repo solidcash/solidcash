@@ -884,7 +884,9 @@ const evaluateEveryInput = (
             instructionCount: item.instructions.length,
             opcode: item.instructions[item.ip]?.opcode,
           } : item),
-          stack: evaluated.stack.slice(-8).map((item) => `${item.length}:${binToHex(item)}`),
+          stack: evaluated.stack.slice(-24).map((item, offset, items) => (
+            `${evaluated.stack.length - items.length + offset}:${item.length}:${binToHex(item).slice(0, 70)}`
+          )),
           output26: transaction.outputs[26] && {
             lockingBytecode: binToHex(transaction.outputs[26].lockingBytecode),
             category: transaction.outputs[26].token && binToHex(transaction.outputs[26].token.category),
@@ -902,13 +904,33 @@ const evaluateEveryInput = (
             capability: output.token?.nft?.capability,
             amount: output.token?.amount,
           })),
+          functionName: (builder.inputs[inputIndex] as unknown as {
+            unlocker?: { abiFunction?: { name?: string; selector?: string } };
+          }).unlocker?.abiFunction?.name,
+          selector: (builder.inputs[inputIndex] as unknown as {
+            unlocker?: { abiFunction?: { selector?: string } };
+          }).unlocker?.abiFunction?.selector,
           inputs: builder.inputs.map((input, index) => ({
             index,
             category: input.token?.category,
             commitmentLength: input.token?.nft?.commitment.length,
+            lockLen: sourceOutputs[index]?.lockingBytecode.length,
+            lockHead: sourceOutputs[index] && binToHex(sourceOutputs[index].lockingBytecode).slice(0, 16),
+            tokenCatLen: sourceOutputs[index]?.token?.category.length,
             contract: (input as unknown as {
               unlocker?: { contract?: { artifact?: { contractName?: string } } };
             }).unlocker?.contract?.artifact?.contractName,
+            fn: (input as unknown as {
+              unlocker?: { abiFunction?: { name?: string } };
+            }).unlocker?.abiFunction?.name,
+          })),
+          ipWindow: evaluated.instructions.slice(
+            Math.max(0, evaluated.ip - 20),
+            evaluated.ip + 8,
+          ).map((instruction, offset) => ({
+            ip: Math.max(0, evaluated.ip - 20) + offset,
+            opcode: instruction.opcode,
+            ...('data' in instruction && { data: binToHex(instruction.data).slice(0, 40) }),
           })),
           invokeWindow: evaluated.instructions.slice(72700, 72710).map((instruction, offset) => ({
             ip: 72700 + offset,
@@ -916,13 +938,11 @@ const evaluateEveryInput = (
             ...('data' in instruction && { data: binToHex(instruction.data) }),
           })),
           frameWindow: typeof evaluated.controlStack[0] === 'object'
-            ? (evaluated.controlStack[0] as { instructions: typeof evaluated.instructions }).instructions
-              .slice(-50).map((instruction, offset, all) => ({
-              ip: (evaluated.controlStack[0] as { instructions: typeof evaluated.instructions })
-                .instructions.length - all.length + offset,
-              opcode: instruction.opcode,
-              ...('data' in instruction && { data: binToHex(instruction.data) }),
-              })) : undefined,
+            ? {
+              instructionCount: (evaluated.controlStack[0] as { instructions: unknown[] }).instructions.length,
+              ip: (evaluated.controlStack[0] as { ip: number }).ip,
+            }
+            : undefined,
         });
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

@@ -1161,6 +1161,164 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
     const info = art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0];
     expect(info?.op).toBe('set');
   });
+  it('records a read-only dynamic array alongside a sorted upsert loop', () => {
+    const art = compileString(
+      'contract C() { string[] jobs; mapping(int => bool) m;'
+      + ' function f(int[] ks, pubkey pk, sig s) { require(checkSig(s, pk));'
+      + ' require(this.jobs.length >= 0);'
+      + ' for (int i = 0; i < ks.length; i++) { m[ks[i]] = true; } } }',
+      { forceStateful: true },
+    );
+    const fn = art.abi.find((candidate) => candidate.name === 'f');
+    expect(fn?.dynamicReads).toContain('jobs');
+    expect(fn?.sortedUpsertLoopInfo?.[0]?.op).toBe('set');
+  });
+  it('adds ceil(jobsLen/120) onto the upsert predecessor index after a jobs element read', () => {
+    const art = compileString(
+      'struct Job { int creator; int state; }'
+      + ' contract C() { Job[] jobs; mapping(int => mapping(int => bool)) whitelist;'
+      + ' function f(int jobId, int[] ks, pubkey pk, sig s) { require(checkSig(s, pk));'
+      + ' require(this.jobs[jobId].creator == 1);'
+      + ' for (int i = 0; i < ks.length; i++) { this.whitelist[jobId][ks[i]] = true; } } }',
+      { forceStateful: true },
+    );
+    const hex = art.bytecode;
+    // encodeInt(119) ADD encodeInt(120) DIV — X151 foreign read-only chunk count
+    expect(hex).toContain('017793017896');
+    // Teardown input-count pin must pick the entry address from the stack bottom
+    // (OP_DEPTH SUB PICK). A top-relative PICK misses the predecessor once the
+    // upsert working area leaves untracked items above the tracked frame.
+    expect(hex).toMatch(/74(?:0[1-9a-f]|5[1-9a-f])94(?:79)/);
+    const fn = art.abi.find((candidate) => candidate.name === 'f');
+    expect(fn?.dynamicReads).toContain('jobs');
+    expect(fn?.sortedUpsertLoopInfo?.[0]?.collection).toBe('whitelist');
+  });
+  it('records jobs.length-1 as a fixed upsert key after a jobs.push (publishJobPost shape)', () => {
+    const art = compileString(
+      'contract C() { int[] jobs; mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function f(address[] allowedWorkers_) {'
+      + ' this.jobs.push(0);'
+      + ' uint jobId = this.jobs.length - 1;'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId][allowedWorkers_[i]] = true;'
+      + ' } } }',
+      { forceStateful: true },
+    );
+    const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toBe('allowedWorkers_');
+    expect(info?.fixedKeySources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'expression',
+        expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+      }),
+    ]));
+    // Old jobs chunks still occupy impl+trailingBase even though this function writes jobs.
+    expect(art.bytecode).toContain('017793017896');
+  });
+  it('records both allow and disallow upsert loops over the same whitelist mapping', () => {
+    const art = compileString(
+      'contract C() { mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function updateJobWhitelist(uint jobId_, address[] allowedWorkers_, address[] disallowedWorkers_) {'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId_][allowedWorkers_[i]] = true;'
+      + ' }'
+      + ' for (uint j = 0; j < disallowedWorkers_.length; j++) {'
+      + '   this.whitelistWorkers[jobId_][disallowedWorkers_[j]] = false;'
+      + ' } } }',
+      { forceStateful: true },
+    );
+    const infos = art.abi.find((candidate) => candidate.name === 'updateJobWhitelist')?.sortedUpsertLoopInfo ?? [];
+    expect(infos.map((info) => info.varyingArrayParam)).toEqual(['allowedWorkers_', 'disallowedWorkers_']);
+    expect(infos.map((info) => info.valueConst)).toEqual(['1', '0']);
+    expect(infos.every((info) => info.collection === 'whitelistWorkers' && info.op === 'set')).toBe(true);
+  });
+  it('records jobs.length-1 when the local is assigned after an empty declaration', () => {
+    const art = compileString(
+      'contract C() { int[] jobs; mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function f(address[] allowedWorkers_) {'
+      + ' this.jobs.push(0);'
+      + ' uint256 jobId;'
+      + ' jobId = this.jobs.length - 1;'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId][allowedWorkers_[i]] = true;'
+      + ' } } }',
+      { forceStateful: true, solidityImportCompat: true },
+    );
+    const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.fixedKeySources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'expression',
+        expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+      }),
+    ]));
+  });
+  it('records jobs.length-1 even when the upsert write only carries the worker key', () => {
+    // Same ABI obligation as publishJobPost: a nested mapping loop plus `jobId = jobs.length - 1`.
+    const art = compileString(
+      'contract C() { int[] jobs; mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function f(address[] allowedWorkers_) {'
+      + ' this.jobs.push(0);'
+      + ' uint256 jobId = this.jobs.length - 1;'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId][allowedWorkers_[i]] = true;'
+      + ' } } }',
+      { forceStateful: true },
+    );
+    const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.fixedKeySources?.[0]).toMatchObject({
+      kind: 'expression',
+      expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+    });
+  });
+  it('records jobs.length-1 after inlining the marketplace publishJobPost whitelist shape', () => {
+    const art = compileString(
+      'contract C() { int[] jobs; mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function updateJobWhitelist(uint jobId_, address[] allowedWorkers_, address[] disallowedWorkers_) {'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId_][allowedWorkers_[i]] = true;'
+      + ' }'
+      + ' for (uint i = 0; i < disallowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId_][disallowedWorkers_[i]] = false;'
+      + ' } }'
+      + ' function f(address[] allowedWorkers_) {'
+      + ' this.jobs.push(0);'
+      + ' uint256 jobId = this.jobs.length - 1;'
+      + ' if (allowedWorkers_.length > 0) {'
+      + '   updateJobWhitelist(jobId, allowedWorkers_, new address[](0));'
+      + ' } } }',
+      { forceStateful: true },
+    );
+    const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.fixedKeySources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'expression',
+        expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+      }),
+    ]));
+  });
+  it('records jobs.length-1 after inlining updateJobWhitelist(jobId, workers)', () => {
+    const art = compileString(
+      'contract C() { int[] jobs; mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function updateJobWhitelist(uint jobId_, address[] allowedWorkers_) {'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId_][allowedWorkers_[i]] = true;'
+      + ' } }'
+      + ' function f(address[] allowedWorkers_) {'
+      + ' this.jobs.push(0);'
+      + ' uint jobId = this.jobs.length - 1;'
+      + ' updateJobWhitelist(jobId, allowedWorkers_);'
+      + ' } }',
+      { forceStateful: true },
+    );
+    const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toBe('allowedWorkers_');
+    expect(info?.fixedKeySources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'expression',
+        expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+      }),
+    ]));
+  });
   it('compiles an INVARIANT-PARAM value loop (m[ks[i]] = v) via the upsert loop (op=set, gains UPDATE support)', () => {
     // `= <param>` now routes to the upsert loop (was the insert-only range-splice) - update+insert, same-gap chaining.
     const info = abiOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = v; }')?.sortedUpsertLoopInfo?.[0];

@@ -1,11 +1,29 @@
 import { toBigInt, getAddress, hexlify, ZeroAddress, ZeroHash } from "ethers";
+import { hexToBin, lockingBytecodeToCashAddress } from "@bitauth/libauth";
 import { Job, JobArbitratedEvent, JobCreatedEvent, JobDisputedEvent, JobEvent, JobEventType, JobEventWithDiffs, JobMessageEvent, JobState, JobUpdatedEvent } from "../interfaces";
 import { getMediaFromIpfs, hashToCid, safeGetFromIpfs } from "./encryption";
 import { decodeJobCreatedEvent, decodeJobUpdatedEvent, decodeJobSignedEvent, decodeJobRatedEvent, decodeJobArbitratedEvent, decodeJobMessageEvent, decodeJobDisputedEvent, decryptJobDisputedEvent } from "./decodeEvents";
 
-const eventAddress = (value: string | Uint8Array): string => getAddress(
-  typeof value === "string" ? value : hexlify(value),
-);
+const lockingBytecodeToAddress = (bytecode: Uint8Array): string | undefined => {
+  for (const prefix of ["bchtest", "bitcoincash", "bchreg"] as const) {
+    const result = lockingBytecodeToCashAddress({ bytecode, prefix, tokenSupport: false });
+    if (typeof result === "string") return result;
+    if (result && typeof result === "object" && "address" in result) return result.address;
+  }
+  return undefined;
+};
+
+const eventAddress = (value: string | Uint8Array): string => {
+  if (typeof value === "string" && value.includes(":")) return value;
+  const hex = (typeof value === "string" ? value : hexlify(value)).replace(/^0x/i, "");
+  const bytes = hexToBin(hex);
+  // p2sh20=23, p2pkh=25, p2sh32=35 — full locking bytecode, same form as signer.address.
+  if (bytes.length === 23 || bytes.length === 25 || bytes.length === 35) {
+    return lockingBytecodeToAddress(bytes) ?? `0x${hex.toLowerCase()}`;
+  }
+  if (hex.length === 40) return getAddress(`0x${hex}`);
+  return getAddress(typeof value === "string" ? value : hexlify(value));
+};
 
 const eventLockingBytecode = (value: string | Uint8Array): Uint8Array => {
   const hex = typeof value === "string" ? value.replace(/^0x/, "") : hexlify(value).slice(2);

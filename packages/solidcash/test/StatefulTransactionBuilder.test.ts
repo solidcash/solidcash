@@ -142,6 +142,29 @@ describe('StatefulTransactionBuilder', () => {
         ]);
       }
     });
+
+    it('keeps TXOUTPUTCOUNT-1-nNew on chunk 0 when a derivation remainder is inserted', () => {
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x11), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        delegateDynamicChunksAtSuffix: true,
+        dynamicChunkVars: [{ name: 'jobs', type: 'JobPost[]', lockingBytecode: chunkLock }],
+      }));
+      builder.setChunkRawCommitments('jobs', ['00', '01']);
+      const tx = builder.build();
+      const nNew = 2;
+      const beforeFirst = tx.outputs.length - 1 - nNew;
+      expect(tx.outputs[beforeFirst]?.to).toEqual(chunkLock);
+      expect(tx.outputs.at(-1)?.to).toEqual(new Uint8Array([0x6a]));
+
+      builder.insertBeforeLateValueSuffix(tx, { to: change, amount: 1000n });
+      const afterFirst = tx.outputs.length - 1 - nNew;
+      expect(tx.outputs[afterFirst]?.to).toEqual(chunkLock);
+      expect(tx.outputs.slice(-4).map((o) => o.to)).toEqual([
+        change, chunkLock, chunkLock, new Uint8Array([0x6a]),
+      ]);
+    });
+
   });
 
   describe('satoshi container underflow guard', () => {

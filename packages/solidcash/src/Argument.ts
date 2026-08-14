@@ -119,6 +119,14 @@ export function encodeFunctionArgument(
     const isObject = typeof argument === 'object'
       && !(argument instanceof Uint8Array) && !(argument instanceof SignatureTemplate);
     if (!isObject) throw new TypeError(typeof argument, typeStr);
+    if (typeof argument === 'object' && argument !== null && !Array.isArray(argument)
+      && !(argument instanceof Uint8Array)) {
+      const record = argument as StructArgument;
+      const addressField = structDef.fields.find((field) => field.name === 'address_' && field.type === 'bytes');
+      if (addressField && typeof record.address_ === 'string' && record.address_.includes(':')) {
+        record.address_ = addressToLockScript(record.address_);
+      }
+    }
     return encodePushdataValue(argument as StateValue, typeStr, structs);
   }
 
@@ -172,7 +180,7 @@ export function encodeFunctionArgument(
     if (type instanceof IntType) {
       if (argument < type.minValue || argument > type.maxValue) {
         throw new Error(
-          `Value ${argument} is out of range for type ${type.toString()} `
+          `value out-of-bounds: ${argument} for type ${type.toString()} `
           + `(min: ${type.minValue}, max: ${type.maxValue})`,
         );
       }
@@ -252,7 +260,9 @@ export function encodeFunctionArgument(
 
   // Bounded bytes types require a correctly sized argument
   if (type instanceof BytesType && type.bound && argument.byteLength !== type.bound) {
-    throw new TypeError(`bytes${argument.byteLength}`, type);
+    throw new Error(
+      `incorrect data length: got ${argument.byteLength} bytes, expected ${type.bound} for ${type.toString()}`,
+    );
   }
 
   return argument;

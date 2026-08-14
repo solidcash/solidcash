@@ -131,6 +131,26 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     warn.mockRestore();
   });
 
+  it('uint160(address) HASH160s a 35-byte P2SH32 instead of the P2PKH offset-3 extract', () => {
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const asm = bytecodeToAsm(hexToBin(compileString(
+      'contract C() { function f(address a, int e) { require(uint160(a) == e); } }',
+      { messageBus: false }).debug.bytecode));
+    expect(asm).toContain('OP_SIZE 23 OP_EQUAL');
+    expect(asm).toContain('OP_HASH160');
+    warn.mockRestore();
+  });
+
+  it('abi.encodePacked(uint160(address)) publishes the locking bytecode under solidityImportCompat', () => {
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const asm = bytecodeToAsm(hexToBin(compileString(
+      'contract C() { function f(address a) returns (bytes) { return abi.encodePacked(uint160(a)); } }',
+      { solidityImportCompat: true, messageBus: false }).debug.bytecode));
+    expect(asm).not.toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(asm).not.toContain('OP_HASH160');
+    warn.mockRestore();
+  });
+
   it('bytes(address) keeps the full locking bytecode (only bytes20/int narrow)', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(

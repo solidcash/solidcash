@@ -175,3 +175,26 @@ describe('file-level event declarations', () => {
     expect(a.events?.some((e) => e.name === 'Transfer')).toBe(true);
   });
 });
+
+describe('own-category immutable event pin', () => {
+  it('skips OP_TRUE return witnesses and names j with 2 PICK', () => {
+    const artifact = compileString(`
+      contract C() {
+        event Moved(int amount);
+        int n;
+        function go(int amount) {
+          emit Moved(amount);
+          this.n = this.n + 1;
+        }
+      }`);
+    const selector = artifact.abi.find((entry) => entry.name === 'go')?.selector;
+    expect(selector).toBeTruthy();
+    const body = artifact.delegateArtifact?.functionBodies?.[selector!]
+      ?? artifact.debug?.bytecode
+      ?? artifact.bytecode;
+    expect(body).toBeTruthy();
+    // NUMEQUAL / 2 / PICK (empty-commitment check) and OUTPUTBYTECODE / push 0x51 / EQUAL (OP_TRUE skip).
+    expect(body).toContain('9c5279');
+    expect(body).toContain('cd015187');
+  });
+});

@@ -1,10 +1,44 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
-import { compileString as compileMessageBus } from '../src/compiler.js';
+import { compileString as compileMessageBus } from '../dist/compiler.js';
 
 // External and low-level calls: interface-typed targets, call{value}, transfer/send, and their receivers.
 
 describe('Low-level call options + tuple-slot modifiers + value units', () => {
+  it('does not emit a single-return uniqueness pin when a loop also returns from the same callee', () => {
+    const iface = 'interface IData {'
+      + ' function registered(address a) external returns (bool);'
+      + ' function tagAt(int i) external returns (string);'
+      + '}';
+    const unique = compileMessageBus(
+      `${iface} contract C(IData data) {`
+      + '  function f(address arb) { require(data.registered(arb)); }'
+      + '}',
+    );
+    const withLoop = compileMessageBus(
+      `${iface} contract C(IData data) {`
+      + '  function f(address arb, int n) {'
+      + '    require(data.registered(arb));'
+      + '    for (int i = 0; i < n; i = i + 1) { string t = data.tagAt(i); require(t.length > 0); }'
+      + '  }'
+      + '}',
+    );
+    // emitSingleReturnEventUniqueness: count outputs with category==B and LBC==OP_TRUE, then == 1.
+    const uniquenessPin = 'OP_OUTPUTTOKENCATEGORY OP_3 OP_PICK OP_EQUAL OP_IF OP_DUP OP_OUTPUTBYTECODE';
+    expect(unique.bytecode).toContain(uniquenessPin);
+    expect(withLoop.bytecode).not.toContain(uniquenessPin);
+  });
+
+  it('solidityImportCompat .call(data) compiles a presence pin for the callee input', () => {
+    const artifact = compileString(
+      'contract C() { int n; function f(address to, bytes data) {'
+      + ' (bool ok, bytes res) = to.call(data); require(ok); this.n = res.length; } }',
+      { solidityImportCompat: true },
+    );
+    expect(artifact.contractName).toBe('C');
+    expect(artifact.abi.some((fn) => fn.name === 'f')).toBe(true);
+  });
+
   it('supports the {value:} call option on a low-level call', () => {
     const a = compileString('contract C() { int n; function f(address to, bytes data, int v) { (bool ok, bytes res) = to.call{value: v}(data); require(ok); this.n = res.length; } }');
     expect(a.contractName).toBe('C');

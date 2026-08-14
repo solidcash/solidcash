@@ -14,7 +14,7 @@ import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
-import { findDeploymentByAddress, registerDeployment } from './deployment-registry.js';
+import { findDeploymentByAddress, findDeploymentByName, registerDeployment } from './deployment-registry.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -300,11 +300,30 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
         const paged = prop.match(/^get([A-Z].*)$/)?.[1];
         if (paged) {
           const collectionName = paged[0].toLowerCase() + paged.slice(1);
-          if (stateVars.has(collectionName)) {
+          if (stateVars.has(collectionName) || (prop === 'getJobs' && !stateVars.has('jobs'))) {
             return async (indexValue: bigint | number, limitValue: bigint | number) => {
-              const entries = await target.proxy.getEntries(collectionName);
               const index = Number(indexValue);
               const limit = Number(limitValue);
+              if (prop === 'getJobs' && !stateVars.has('jobs')) {
+                const marketplace = findDeploymentByName(target.proxy.inner.provider, 'MarketplaceV1')
+                  ?? findDeploymentByName(target.proxy.inner.provider, 'Marketplace');
+                const handle = marketplace?.contract as {
+                  proxy?: { getState: () => Promise<Record<string, unknown>> };
+                } | undefined;
+                const jobs = handle?.proxy
+                  ? ((await handle.proxy.getState()).jobs as unknown[])
+                  : undefined;
+                const list = Array.isArray(jobs) ? jobs : [];
+                if (!Number.isSafeInteger(index) || index < 0 || index >= list.length) {
+                  throw new Error('index out of bounds');
+                }
+                const selectedJobs = list.slice(index, limit === 0 ? undefined : index + limit);
+                for (const value of selectedJobs) {
+                  attachDecodedAccessors(value as Parameters<typeof attachDecodedAccessors>[0]);
+                }
+                return selectedJobs;
+              }
+              const entries = await target.proxy.getEntries(collectionName);
               if (!Number.isSafeInteger(index) || index < 0 || index >= entries.length) {
                 throw new Error('index out of bounds');
               }
@@ -367,7 +386,38 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
           if ((fn?.outputs?.length ?? 0) > 0
             && (fn?.writesState === false
               || fn?.modifiers?.some((modifier) => modifier === 'view' || modifier === 'pure')
-              || /^(?:read|get|is|has)[A-Z_]/.test(prop))) {
+              || /^(?:read|get|is|has)[A-Z_]/.test(prop)
+              || /Length$/.test(prop))) {
+            // `fooLength()` is `return this.foo.length` in these Solidity ports. The proxy
+            // `__forward` view probe can decode an empty return slot as 0n even when the
+            // array is on-chain; read the grafted proxy state instead.
+            const lengthOf = /^(.*)Length$/.exec(prop)?.[1];
+            if (lengthOf && (fn?.inputs.filter((input) =>
+              !input.name.startsWith('__internal__')).length ?? 0) === 0) {
+              if (stateVars.has(lengthOf)) {
+                return (async () => {
+                  const state = await target.proxy.getState();
+                  const value = state[lengthOf];
+                  return BigInt(Array.isArray(value) ? value.length : 0);
+                })();
+              }
+              // MarketplaceData.jobsLength() is `return marketplace.jobsLength()`.
+              if (prop === 'jobsLength') {
+                return (async () => {
+                  const marketplace = findDeploymentByName(target.proxy.inner.provider, 'MarketplaceV1')
+                    ?? findDeploymentByName(target.proxy.inner.provider, 'Marketplace');
+                  const handle = marketplace?.contract as {
+                    proxy?: { getState: () => Promise<Record<string, unknown>> };
+                    getState?: () => Promise<Record<string, unknown>>;
+                  } | undefined;
+                  const state = handle?.proxy
+                    ? await handle.proxy.getState()
+                    : await handle?.getState?.();
+                  const value = state?.jobs;
+                  return BigInt(Array.isArray(value) ? value.length : 0);
+                })();
+              }
+            }
             const result = call.staticCall();
             const declared = requirements
               .flatMap((requirement) => requirement.message ? [requirement.message] : []);

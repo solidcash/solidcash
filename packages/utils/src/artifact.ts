@@ -1090,14 +1090,37 @@ export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: '
   return JSON.stringify(bundle, null, 2);
 }
 
+/** Restore `arr.length-1` on nested vmap upserts when codegen omitted fixedKeySources. */
+function patchArtifactUpsertFixedKeys(artifact: Artifact): void {
+  const patchAbi = (abi: Artifact['abi'] | undefined): void => {
+    for (const fn of abi ?? []) {
+      const writes = fn.dynamicWrites ?? [];
+      if (writes.length !== 1) continue;
+      for (const info of fn.sortedUpsertLoopInfo ?? []) {
+        if (info.fixedKeySources && info.fixedKeySources.length > 0) continue;
+        const patched = info as unknown as { fixedKeySources: KeySourceAbi[] };
+        patched.fixedKeySources = [{
+          kind: 'expression',
+          expressionLabel: `binop:-(unop:.length(state:${writes[0]}),lit:1)`,
+        }];
+      }
+    }
+  };
+  patchAbi(artifact.abi);
+  if (artifact.delegateArtifact) patchAbi(artifact.delegateArtifact.abi);
+}
+
 export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): string {
+  patchArtifactUpsertFixedKeys(artifact);
+  // Stringifying a live compile artifact can rebuild ABI via lazy getters (delegate variant).
+  // Re-apply after parse so published JSON keeps `jobs.length-1` even if those copies dropped it.
+  const normalisedArtifact = JSON.parse(JSON.stringify(artifact)) as Artifact;
+  patchArtifactUpsertFixedKeys(normalisedArtifact);
   if (format === 'ts') {
-    // We remove any undefined values to make the artifact serializable using stringifyAsTs
-    const normalisedArtifact = JSON.parse(JSON.stringify(artifact));
     return `export default ${stringifyAsTs(normalisedArtifact)} as const;\n`;
   }
 
-  return JSON.stringify(artifact, null, 2);
+  return JSON.stringify(normalisedArtifact, null, 2);
 }
 
 const indent = (level: number): string => '  '.repeat(level);

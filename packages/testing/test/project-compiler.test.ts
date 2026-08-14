@@ -32,8 +32,24 @@ describe('compileSolidityProject', () => {
       return { Root: {}, Middle: {}, Leaf: {} };
     };
     const result = compileSolidityProject(files, { solidityImportCompat: true }, compile);
-    expect(calls).toEqual(['Root.sol']);
+    expect(calls).toEqual(['Root.sol', 'Leaf.sol', 'Middle.sol']);
     expect(Object.keys(result.artifacts)).toEqual(['Root', 'Middle', 'Leaf']);
+  });
+
+  it('lets a declaring file overwrite the artifact imported from another root', () => {
+    const files = project({
+      'Leaf.sol': 'contract Leaf {}',
+      'Root.sol': 'import "./Leaf.sol"; contract Root {}',
+    });
+    const compile = (file: string): any => {
+      const name = path.basename(file);
+      return name === 'Root.sol'
+        ? { Root: { from: 'root' }, Leaf: { from: 'root-import' } }
+        : { Leaf: { from: 'leaf-file' } };
+    };
+    const result = compileSolidityProject(files, { solidityImportCompat: true }, compile);
+    expect(result.artifacts.Leaf).toEqual({ from: 'leaf-file' });
+    expect(result.artifacts.Root).toEqual({ from: 'root' });
   });
 
   it('compiles a dependency when selective imports leave one of its declarations unresolved', () => {
@@ -66,15 +82,15 @@ describe('compileSolidityProject', () => {
 
     const first = compileSolidityProject(files, { optimize: true }, compile, cache);
     const second = compileSolidityProject(files, { optimize: true }, compile, cache);
-    expect(first.compiledRoots).toHaveLength(1);
+    expect(first.compiledRoots).toHaveLength(2);
     expect(second.compiledRoots).toHaveLength(0);
-    expect(second.cacheHits).toHaveLength(1);
-    expect(calls).toBe(1);
+    expect(second.cacheHits).toHaveLength(2);
+    expect(calls).toBe(2);
 
     fs.appendFileSync(files[0], '\n// dependency changed');
     const third = compileSolidityProject(files, { optimize: true }, compile, cache);
-    expect(third.compiledRoots).toHaveLength(1);
-    expect(calls).toBe(2);
+    expect(third.compiledRoots).toHaveLength(2);
+    expect(calls).toBe(4);
   });
 
   it('re-hashes a touched file but reuses the job when its contents are unchanged', () => {
@@ -91,6 +107,30 @@ describe('compileSolidityProject', () => {
     const result = compileSolidityProject([file], {}, compile, cache);
     expect(result.cacheHits).toHaveLength(1);
     expect(calls).toBe(1);
+  });
+
+  it('restores jobs.length-1 on upsert ABI that omitted fixedKeySources', () => {
+    const [file] = project({ 'Root.sol': 'contract Root {}' });
+    const compile = (): any => ({
+      Root: {
+        abi: [{
+          name: 'publishJobPost',
+          dynamicWrites: ['jobs'],
+          sortedUpsertLoopInfo: [{
+            collection: 'whitelistWorkers',
+            fixedKeyParams: [],
+            varyingArrayParam: 'allowedWorkers_',
+            valueConst: '1',
+            op: 'set',
+          }],
+        }],
+      },
+    });
+    const result = compileSolidityProject([file], {}, compile);
+    expect(result.artifacts.Root.abi[0].sortedUpsertLoopInfo[0].fixedKeySources).toEqual([{
+      kind: 'expression',
+      expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+    }]);
   });
 
   it('does not trust preserved mtime and size when file contents changed', () => {

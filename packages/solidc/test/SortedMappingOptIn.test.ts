@@ -175,3 +175,31 @@ describe('sorted mapping keyed by msg.sender / tx.origin compiles (msgSender key
     expect(artifact.debug.bytecode).not.toBe('');
   });
 });
+
+describe('sorted mapping array push leading-value param', () => {
+  it('injects __internal__leadingPushValue_0 on a chunkable vmap push', () => {
+    const artifact = compileString(`
+      contract C() {
+        struct E { uint8 t; bytes a; }
+        mapping(int => E[]) items;
+        function push(int k, E e) { this.items[k].push(e); }
+      }
+    `, { forceStateful: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'push');
+    expect(fn?.inputs.some((input) => input.name === '__internal__leadingPushValue_0')).toBe(true);
+    expect(fn?.inputs.some((input) => input.name === '__internal__valueWitness_0')).toBe(true);
+  });
+
+  it('does not inject leadingPushValue on a read-only vmap getter', () => {
+    const artifact = compileString(`
+      contract C() {
+        struct E { uint8 t; bytes a; }
+        mapping(int => E[]) items;
+        function get(int k) returns (E[] memory) { return this.items[k]; }
+      }
+    `, { forceStateful: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'get');
+    expect(fn?.inputs.some((input) => input.name === '__internal__valueWitness_0')).toBe(true);
+    expect(fn?.inputs.some((input) => input.name.startsWith('__internal__leadingPushValue_'))).toBe(false);
+  });
+});

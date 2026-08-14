@@ -615,3 +615,19 @@ export function resolveEventSignature(artifact: Artifact, eventNameOrSignature: 
   }
   return matches[0].signature;
 }
+
+/**
+ * `__internal__msgSenderCategory` for a delegatecall implementation unlocker.
+ * EVM delegatecall keeps the original caller. The implementation of THIS contract's
+ * proxy must see the user (32 zero bytes → emitMsgSender uses tx.origin). A nested
+ * proxy implementation (we called their proxy) sees us as msg.sender.
+ */
+export function delegateImplMsgSenderCategory(
+  nestedProxyCategoryId: string | undefined,
+  callerCategoryId: string,
+): Uint8Array {
+  if (!nestedProxyCategoryId || nestedProxyCategoryId === callerCategoryId) {
+    return new Uint8Array(32);
+  }
+  return hexToBin(callerCategoryId).reverse();
+}

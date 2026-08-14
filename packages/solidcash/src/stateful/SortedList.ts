@@ -84,6 +84,19 @@ export function decodeEntryCommitment(commitment: Uint8Array): { slot: Uint8Arra
   };
 }
 
+/**
+ * True when a 128-byte entry is slot||next||64-byte empty padding (an unfilled builder placeholder).
+ * H(uint256 0) is sha256('') with the high bit cleared, so a real UPDATE of key 0 also starts with
+ * `e3b0c442`. Only an all-zero value tail distinguishes that placeholder from slot||next||long-tail.
+ */
+export function isEmptyValueEntryCommitment(commitment: Uint8Array | string): boolean {
+  const bytes = typeof commitment === 'string'
+    ? (commitment.length === 0 ? new Uint8Array() : hexToBin(commitment))
+    : commitment;
+  if (bytes.length !== SLOT_BYTES * 2 + 64) return false;
+  return bytes.subarray(SLOT_BYTES * 2).every((byte) => byte === 0);
+}
+
 const ZERO_SLOT = new Uint8Array(SLOT_BYTES); // slot 0 = HEAD sentinel; nextKey 0 = +infinity
 
 /** Co-spend plan for a non-membership read `require(!m[k])` / absent branch. */

@@ -1527,6 +1527,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitParameter(node: ParameterNode): Node {
     const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
       || node.name.startsWith('__internal__valueWitness_')
+      || node.name.startsWith('__internal__leadingPushValue_')
       || [
         '__internal__msgData',
         '__internal__msgSig',
@@ -2312,12 +2313,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         // long value is stored as its sha256 hash; the covenant materializes it by verifying sha256(witness)==hash,
         // so the SDK supplies the value (from its persisted chunks) and a forged witness fails closed.
         for (const info of ordered) {
-          if (!info.operations.includes('read')) continue;
           const coll = this.collectionMap.get(info.collection);
           const vt = coll?.innermostValueType;
           // Only a SORTED (vmap) chunkable-value read uses the witness path (emitChunkableValueRead); a non-sorted
           // (opt-out) bytes/string mapping reads its value tail verbatim and must NOT get a spurious witness param.
           if (!coll?.sorted || !vt || !isChunkableValueType(vt)) continue;
+          if (!info.operations.includes('read') && !info.operations.includes('write')) continue;
           const wname = `__internal__valueWitness_${info.slotIndex}`;
           // A varying-key array RMW loop needs one old whole-value witness per iteration. The covenant selects
           // witness[i] with the same runtime index as key[i] and authenticates it against that entry's inline
@@ -2333,6 +2334,16 @@ export default class SymbolTableTraversal extends AstTraversal {
           const wsym = this.symbolTables[0].get(wname);
           if (wsym) wsym.references.push({ name: wname } as IdentifierNode);
           this.pushToStack(wparam);
+          if (info.operations.includes('write')) {
+            const lname = `__internal__leadingPushValue_${info.slotIndex}`;
+            const lparam = new ParameterNode(new BytesType(), lname);
+            lparam.location = node.location;
+            node.parameters.push(lparam);
+            this.symbolTables[0].set(Symbol.variable(lparam));
+            const lsym = this.symbolTables[0].get(lname);
+            if (lsym) lsym.references.push({ name: lname } as IdentifierNode);
+            this.pushToStack(lparam);
+          }
           if (node.name.startsWith('__message_bus_')) {
             const routeFn = this.currentContract?.functions.find((candidate) => candidate.messageBusRoute);
             if (routeFn && routeFn !== node
@@ -2340,6 +2351,14 @@ export default class SymbolTableTraversal extends AstTraversal {
               const routeParam = new ParameterNode(wtype, wname);
               routeParam.location = routeFn.location;
               routeFn.parameters.push(routeParam);
+            }
+            if (routeFn && routeFn !== node && info.operations.includes('write')) {
+              const lname = `__internal__leadingPushValue_${info.slotIndex}`;
+              if (!routeFn.parameters.some((parameter) => parameter.name === lname)) {
+                const routeLeading = new ParameterNode(new BytesType(), lname);
+                routeLeading.location = routeFn.location;
+                routeFn.parameters.push(routeLeading);
+              }
             }
           }
         }

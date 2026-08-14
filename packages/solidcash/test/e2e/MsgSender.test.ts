@@ -231,6 +231,14 @@ describe('msg.sender and tx.origin', () => {
       expect(categoryInput!.type).toBe('bytes32');
     });
 
+    it('matches an identity-anchor commitment by its SCID magic prefix', () => {
+      const artifact = compileString(SENDER_CHECKER);
+      expect(artifact.bytecode).toContain(
+        'OP_UTXOTOKENCOMMITMENT OP_4 OP_SPLIT OP_DROP 53434944 OP_EQUAL',
+      );
+      expect(artifact.bytecode).not.toContain('00000000 OP_CAT OP_4 OP_SPLIT OP_DROP 53434944');
+    });
+
     it('should NOT include usesMsgSender for functions using only tx.origin', () => {
       const artifact = compileString(ORIGIN_CHECKER);
       const checkOrigin = artifact.abi.find((f) => f.name === 'checkOrigin');

@@ -18,6 +18,7 @@ import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
+import { applyUpsertFixedKeyRecovery, patchAbiUpsertFixedKeys } from '../generation/upsertKeySources.js';
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
  * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
@@ -535,6 +536,12 @@ function buildFunctionAbiMetadata(
   func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
   interfaces: readonly InterfaceNode[] = [],
 ): Partial<AbiFunction> {
+  if (contract) {
+    applyUpsertFixedKeyRecovery(func, new Set([
+      ...contract.collections.map((collection) => collection.name),
+      ...contract.stateVariables.map((variable) => variable.name),
+    ]));
+  }
   const possibleSelectorTargets = (
     interfaceName: string, parameters: readonly ExpressionNode[],
   ): readonly { functionName: string; selector: string }[] => {
@@ -1006,6 +1013,13 @@ export function generateArtifact(
     || contract.deploysWithValue
     || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 
+  const stateVarNames = new Set<string>([
+    ...contract.collections.map((collection) => collection.name),
+    ...contract.stateVariables.map((variable) => variable.name),
+  ]);
+  for (const func of contract.functions) applyUpsertFixedKeyRecovery(func, stateVarNames);
+  if (contract.constructorDef) applyUpsertFixedKeyRecovery(contract.constructorDef, stateVarNames);
+
   const abi: AbiFunction[] = abiFunctions.map((func) => ({
     name: func.name,
     ...(func.functionSelector && { selector: binToHex(func.functionSelector) }),
@@ -1066,6 +1080,8 @@ export function generateArtifact(
       ...buildFunctionAbiMetadata(contract.receiveDef, false, contract, ast.interfaceDefinitions),
     });
   }
+
+  patchAbiUpsertFixedKeys(abi, stateVarNames);
 
   const bytecode = scriptToAsm(script);
 

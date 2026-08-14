@@ -33,6 +33,7 @@ import {
   scriptToBytecode,
   StructDefinitionInfo,
 } from '../src/index.js';
+import { hexToBin, lockingBytecodeToCashAddress, utf8ToBin } from '@bitauth/libauth';
 
 describe('getDefaultStateValue', () => {
   it('should return 0n for "bigint"', () => {
@@ -239,6 +240,23 @@ describe('buildInitialStateCommitments with defaults', () => {
     const parsed = parsePushdataCommitment(commitments[0], layout, 0);
     expect(parsed.counter).toBe(42n);
     expect(parsed.label).toEqual(new Uint8Array(4));
+  });
+});
+
+describe('encodePushdataValue CashAddress bytes', () => {
+  it('encodes a CashAddress string as locking bytecode, not UTF-8', () => {
+    const pkh = hexToBin('71782e8159265ed94bd35b8e699c08f53a6f38c6');
+    const lock = new Uint8Array(25);
+    lock.set([0x76, 0xa9, 0x14], 0);
+    lock.set(pkh, 3);
+    lock.set([0x88, 0xac], 23);
+    const cashaddr = lockingBytecodeToCashAddress({
+      bytecode: lock, prefix: 'bchtest', tokenSupport: false,
+    });
+    const address = typeof cashaddr === 'string' ? cashaddr : cashaddr.address;
+    expect(address.includes(':')).toBe(true);
+    expect(encodePushdataValue(address, 'bytes')).toEqual(encodePushdataValue(lock, 'bytes'));
+    expect(encodePushdataValue(utf8ToBin(address), 'bytes')).toEqual(encodePushdataValue(lock, 'bytes'));
   });
 });
 

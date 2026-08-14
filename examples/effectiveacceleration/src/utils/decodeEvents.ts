@@ -40,8 +40,10 @@ export const decodeJobUpdatedEvent = (rawData: BytesLike): JobUpdatedEvent => {
   result.tags = decodeStringArray(ptr);
   result.amount = decodeUint256(ptr);
   result.maxTime = decodeUint16(ptr);
-  result.arbitrator = decodeAddress(ptr);
-  result.whitelistWorkers = decodeBool(ptr);
+  // Schema is `uint160(arbitrator) || bool`. Zero-address packing can be a run of
+  // 0x00 (1..22 bytes); the bool is always the last byte.
+  result.whitelistWorkers = bytes.length > ptr.index && bytes[bytes.length - 1] === 1;
+  result.arbitrator = decodeAddress({ bytes: bytes.slice(0, Math.max(ptr.index, bytes.length - 1)), index: ptr.index });
 
   return result;
 };

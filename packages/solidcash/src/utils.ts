@@ -447,6 +447,13 @@ export function addressToLockScript(address: string): Uint8Array {
   return result.bytecode;
 }
 
+/** CashAddress string or already-encoded locking bytecode; undefined for any other value. */
+export function tryCashAddressToLockScript(value: unknown): Uint8Array | undefined {
+  if (value instanceof Uint8Array) return value;
+  if (typeof value !== 'string' || !/^(bitcoincash|bchtest|bchreg):/i.test(value)) return undefined;
+  return addressToLockScript(value);
+}
+
 export function getNetworkPrefix(network: string): 'bitcoincash' | 'bchtest' | 'bchreg' {
   switch (network) {
     case Network.MAINNET:

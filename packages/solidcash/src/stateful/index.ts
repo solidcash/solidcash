@@ -92,7 +92,7 @@ export { ThreadManager, ThreadHandle, type SplitOptions, type MergeOptions } fro
 export { resolveDeployReads, type DeployReadResolveOptions } from './resolveDeployReads.js';
 export {
   SortedList, keyToSlot, keyToSlotMulti, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
-  encodeEntryCommitment, decodeEntryCommitment, headSentinelCommitment,
+  encodeEntryCommitment, decodeEntryCommitment, isEmptyValueEntryCommitment, headSentinelCommitment,
   type SortedEntry, type NonMembershipPlan, type MembershipPlan, type InsertPlan, type DeletePlan, type UpdatePlan,
 } from './SortedList.js';
 export {

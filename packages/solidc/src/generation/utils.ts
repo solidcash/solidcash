@@ -162,10 +162,11 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
 
   // Solidity-compat narrowing casts: `bytes20(address)` / `uint160(address)`. A SolidCash address is a
   // variable-length locking bytecode, not necessarily a 20-byte value. Preserve an already-raw Solidity
-  // address, extract the hash at offset 2 from P2SH20 (a914 <20> 87), or at offset 3 from P2PKH
-  // (76a914 <20> 88ac). This is lossy and warned in TypeCheckTraversal. Only bytes20 and int targets narrow;
-  // `bytes(address)` keeps the full locking bytecode. Other lengths deliberately take the P2PKH path and fail
-  // closed at OP_SPLIT if they cannot contain a 20-byte payload.
+  // address, extract the hash at offset 2 from P2SH20 (a914 <20> 87), take HASH160 of a P2SH32
+  // (aa20 <32> 87 — a 35-byte script whose 32-byte payload is not a 20-byte account id), or extract at
+  // offset 3 from P2PKH (76a914 <20> 88ac). This is lossy and warned in TypeCheckTraversal. Only bytes20
+  // and int targets narrow; `bytes(address)` keeps the full locking bytecode. Other lengths take the
+  // P2PKH path and fail closed at OP_SPLIT if they cannot contain a 20-byte payload.
   const extractAddressHash = (offset: bigint): Script => [
     encodeInt(offset), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP,
   ];
@@ -184,7 +185,13 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     Op.OP_IF,
     ...extractAddressHash(2n),
     Op.OP_ELSE,
+    Op.OP_SIZE, encodeInt(35n), Op.OP_EQUAL,
+    Op.OP_IF,
+    // P2SH32 is 35 bytes; the P2PKH offset-3 extract would take script-hash[1:21], not an identity.
+    Op.OP_HASH160,
+    Op.OP_ELSE,
     ...extractAddressHash(3n),
+    Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,

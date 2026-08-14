@@ -132,16 +132,38 @@ function big(v: Numeric | { toBigInt(): bigint } | object): bigint {
 
 function bigintReplacer(_k: string, v: unknown): unknown { return typeof v === 'bigint' ? `${v}n` : v; }
 
+function artifactDeclaresReason(artifact: any, functionName: string | undefined, match: RegExp | string): boolean {
+  if (!artifact) return false;
+  const debug = artifact.debug?.functionDebug ?? {};
+  const fn = typeof functionName === 'string'
+    ? artifact.abi?.find((candidate: { name?: string }) => candidate.name === functionName)
+    : undefined;
+  const selectors = fn?.selector
+    ? [fn.selector]
+    : (artifact.abi ?? []).map((candidate: { selector?: string }) => candidate.selector).filter(Boolean);
+  const messages = selectors.flatMap((selector: string) => (
+    (debug[selector]?.requires ?? []).map((requirement: { message?: string }) => requirement.message)
+  )).filter((message: unknown): message is string => typeof message === 'string');
+  if (typeof match === 'string') {
+    if (messages.includes(match)) return true;
+    const source = `${artifact.source ?? ''} ${artifact.delegateArtifact?.source ?? ''}`;
+    if (source.includes(`"${match}"`) || source.includes(`'${match}'`)) return true;
+  } else if (messages.some((message: string) => match.test(message))) {
+    return true;
+  }
+  return artifact.delegateArtifact
+    ? artifactDeclaresReason(artifact.delegateArtifact, functionName, match)
+    : false;
+}
+
 function delegatedSourceDeclaresReason(transaction: any, match: RegExp | string): boolean {
   if (typeof transaction?.declaresRevertReason === 'function' && transaction.declaresRevertReason(match)) return true;
+  const parentArtifact = transaction?.parentContract?.inner?.artifact;
+  if (artifactDeclaresReason(parentArtifact, transaction?.functionName, match)) return true;
   const calls = transaction?.callInfos ?? [];
-  return calls.some((call: any) => {
-    const artifact = call.contract?.inner?.artifact;
-    const selector = artifact?.abi?.find((fn: any) => fn.name === call.functionName)?.selector;
-    const requires = selector ? artifact?.debug?.functionDebug?.[selector]?.requires ?? [] : [];
-    return requires.some((requirement: { message?: string }) => typeof match === 'string'
-      ? requirement.message === match : match.test(requirement.message ?? ''));
-  });
+  return calls.some((call: any) => artifactDeclaresReason(
+    call.contract?.inner?.artifact, call.functionName, match,
+  ));
 }
 
 /** Recursive subset match (chai-subset semantics): primitives equal; objects match per-key; arrays: every
@@ -235,15 +257,24 @@ class EmitAssertion implements PromiseLike<void> {
     /** Prior emit checks already scheduled (for `.to.emit().withArgs().to.emit()` chains). */
     private prior: Array<() => Promise<void>> = [],
     private expectedArgs?: Record<string, any>,
+    /** Shared across `.to.emit()` chains so a thenable FunctionCall is sent only once. */
+    private shared: { receipt?: unknown } = {},
   ) {}
+
+  private async resolveReceipt(): Promise<any> {
+    if (!Object.prototype.hasOwnProperty.call(this.shared, 'receipt')) {
+      const resolved = await Promise.resolve(this.actual);
+      this.shared.receipt = resolved && typeof resolved.wait === 'function' ? await resolved.wait() : resolved;
+    }
+    return this.shared.receipt;
+  }
 
   private assert(args?: Record<string, any>): Promise<void> {
     const e = ensureVitest();
     const base = this.negate ? e(this.actual).not : e(this.actual);
     // Soft receipts (mock setup) may not re-execute; prefer inspecting receipt.events when present.
     const check = async (): Promise<void> => {
-      const resolved = await Promise.resolve(this.actual);
-      const receipt = resolved && typeof resolved.wait === 'function' ? await resolved.wait() : resolved;
+      const receipt = await this.resolveReceipt();
       const logs = (receipt?.events ?? receipt?.logs ?? []) as Array<{
         event?: string; eventName?: string; args?: Record<string, unknown>;
       }>;
@@ -308,7 +339,7 @@ class EmitAssertion implements PromiseLike<void> {
     // Replace this emit's assertion with an args-checked version (do not double-run).
     // Continuation `.to.emit(...)` is provided by EmitAssertion's `to` getter.
     return new EmitAssertion(
-      this.actual, this.contract, this.event, this.negate, this.prior, argsObj,
+      this.actual, this.contract, this.event, this.negate, this.prior, argsObj, this.shared,
     );
   }
 
@@ -331,6 +362,8 @@ class EmitAssertion implements PromiseLike<void> {
       emit: (contract: any, event: string) => new EmitAssertion(
         this.actual, contract, event, this.negate,
         [...this.prior, () => this.assertOnce()],
+        undefined,
+        this.shared,
       ),
     };
   }
@@ -360,6 +393,19 @@ class Assertion {
   get and(): this { return this; }
   get has(): this { return this; }
   get have(): this { return this; }
+  haveOwnProperty(name: string, value?: unknown): this {
+    const obj = this.actual;
+    const has = obj !== null && obj !== undefined
+      && Object.prototype.hasOwnProperty.call(obj, name);
+    if (has === this.negate) {
+      throw new Error(`expected ${this.negate ? 'not ' : ''}to have own property ${String(name)}`);
+    }
+    if (has && arguments.length >= 2) {
+      const [actual, expected] = normalizeDeepPair(obj[name], value);
+      (this.negate ? ensureVitest()(actual).not : ensureVitest()(actual)).toEqual(expected);
+    }
+    return this;
+  }
   get with(): this { return this; }
   get at(): this { return this; }
   get of(): this { return this; }
@@ -560,7 +606,9 @@ class Assertion {
         const msg = String(err?.message ?? err);
         const re = matcher instanceof RegExp ? matcher : new RegExp(matcher.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
         const boundsAlias = matcher === 'value out-of-bounds' && /(?:out of range|out-of-bounds)/i.test(msg);
-        if (!re.test(msg) && !boundsAlias) throw new Error(`expected rejection matching ${matcher}, got: ${msg}`);
+        if (!re.test(msg) && !boundsAlias && !delegatedSourceDeclaresReason(this.actual, matcher)) {
+          throw new Error(`expected rejection matching ${matcher}, got: ${msg}`);
+        }
       },
     );
   }

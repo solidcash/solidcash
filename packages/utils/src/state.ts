@@ -5,7 +5,8 @@ import {
   ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
 } from './types.js';
 import {
-  bigIntToVmNumber, binToHex, binToUtf8, hexToBin, utf8ToBin, vmNumberToBigInt, isVmNumberError,
+  bigIntToVmNumber, binToHex, binToUtf8, cashAddressToLockingBytecode, hexToBin, utf8ToBin,
+  vmNumberToBigInt, isVmNumberError,
 } from '@bitauth/libauth';
 import { hash256, sha256 } from './hash.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
@@ -467,6 +468,11 @@ export function encodePushdataValue(
   // Generic pushdata encode for int, int-like types, bytes1, bytes0, unbounded bytes, sig, datasig
   // At this point, struct types have already been handled and returned above
   let primitiveValue = value as PrimitiveStateValue;
+  // JobEventData.address_ is `bytes` but holds a packed BCH address (p2pkh=25, p2sh20=23, p2sh32=35).
+  // A CashAddress string (or UTF-8 of one) must become locking bytecode, not UTF-8 pushdata.
+  if (type === 'bytes' || /^bytes\d+$/.test(type)) {
+    primitiveValue = lockingBytecodeFromAddressBytes(primitiveValue);
+  }
   if (isIntLikeType(type)) {
     // ethers-parity: accept a JS `number` for an integer state value by coercing a safe integer to bigint, so
     // `deploy({ initialState: { count: 1 } })` works like ethers (numbers for uint/int).
@@ -505,6 +511,35 @@ export function encodePushdataValue(
   }
   const isIntLikeEnc = type === 'bytes1';
   return encodeGenericPushdataValue(bytes, isIntLikeEnc);
+}
+
+function isPackedLockingBytecode(bytes: Uint8Array): boolean {
+  return (bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87)
+    || (bytes.length === 23 && bytes[0] === 0xa9 && bytes[1] === 0x14 && bytes[22] === 0x87)
+    || (bytes.length === 25 && bytes[0] === 0x76 && bytes[1] === 0xa9
+      && bytes[2] === 0x14 && bytes[23] === 0x88 && bytes[24] === 0xac);
+}
+
+function lockingBytecodeFromAddressBytes(value: PrimitiveStateValue): PrimitiveStateValue {
+  const fromCashAddress = (text: string): Uint8Array | undefined => {
+    if (!text.includes(':')) return undefined;
+    const decoded = cashAddressToLockingBytecode(text);
+    return typeof decoded === 'string' ? undefined : decoded.bytecode;
+  };
+  if (typeof value === 'string') {
+    const converted = fromCashAddress(value);
+    if (converted) return converted;
+    if (value.startsWith('0x') && value.length % 2 === 0) {
+      try { return hexToBin(value.slice(2)); } catch { /* keep string */ }
+    }
+    return value;
+  }
+  if (!(value instanceof Uint8Array) || value.length === 0 || isPackedLockingBytecode(value)) return value;
+  try {
+    const converted = fromCashAddress(binToUtf8(value));
+    if (converted) return converted;
+  } catch { /* not UTF-8 */ }
+  return value;
 }
 
 /**

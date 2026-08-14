@@ -4,7 +4,7 @@ import { createVirtualMachineBch2026, hash256, hexToBin, binToHex } from '@bitau
 import { Op } from '@solidcash/utils';
 import {
   SortedList, keyToSlot, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
-  encodeEntryCommitment, decodeEntryCommitment, headSentinelCommitment,
+  encodeEntryCommitment, decodeEntryCommitment, isEmptyValueEntryCommitment, headSentinelCommitment,
 } from '../../src/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 
@@ -124,6 +124,20 @@ describe('SortedList SDK: slot hashing + commitment codec', () => {
     expect(binToHex(s)).toBe(binToHex(slot));
     expect(binToHex(n)).toBe(binToHex(next));
     expect(binToHex(v)).toBe('cafe');
+  });
+
+  it('does not treat a key-0 long-tail UPDATE as an empty placeholder', () => {
+    const emptySlot = keyToSlot(new Uint8Array());
+    const placeholder = encodeEntryCommitment(emptySlot, new Uint8Array(32), new Uint8Array(64));
+    const longTail = new Uint8Array(64);
+    longTail[0] = 0x6e;
+    longTail[4] = 0xab;
+    const update = encodeEntryCommitment(emptySlot, new Uint8Array(32), longTail);
+    expect(placeholder.length).toBe(128);
+    expect(binToHex(placeholder).startsWith('e3b0c44298fc1c14')).toBe(true);
+    expect(isEmptyValueEntryCommitment(placeholder)).toBe(true);
+    expect(isEmptyValueEntryCommitment(update)).toBe(false);
+    expect(isEmptyValueEntryCommitment(encodeEntryCommitment(emptySlot, new Uint8Array(32), hexToBin('37000000')))).toBe(false);
   });
 });
 

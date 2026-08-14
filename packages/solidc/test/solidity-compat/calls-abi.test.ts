@@ -431,6 +431,10 @@ describe('external-call target through a single-assignment local intermediary (E
       + ' IUnicrow u = IUnicrow(unicrowAddress); u.pay(amt, pk, s); this.calls = this.calls + 1; } }';
     const ec = compileString(src, {}).abi.find((f) => f.name === 'f')?.externalCalls?.[0];
     expect(ec?.addressParam).toBe('__extaddr_unicrowAddress_IUnicrow');
+    expect(ec?.addressStateVar).toBe('unicrowAddress');
+    expect(ec?.addressSource).toEqual({
+      kind: 'expression', expression: { kind: 'state', name: 'unicrowAddress' },
+    });
   });
 });
 

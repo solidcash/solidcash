@@ -99,7 +99,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // Transitive-target decls to insert right BEFORE the current statement (a computed target with a mid-body-only
   // single-assign-local leaf cannot hoist to the body top). Flushed per-statement by visitBlock. A fresh counter
   // names each so repeated uses do not collide.
-  private pendingMidbodyDecls: VariableDefinitionNode[] = [];
+  private pendingMidbodyDecls: Node[] = [];
   private transitiveCounter = 0;
   // Constructor state is initialized in body order, so a state-backed receiver must be captured at its call site
   // rather than in the normal function body-top prologue (which would read it before an earlier assignment).
@@ -462,6 +462,32 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     } else if (pureCallIface && !ADDRESS_METHODS.has(node.methodName)
       && this.isInterfaceMethod(pureCallIface, node.methodName)) {
       const localName = this.captureAtCallSite(pureCallIface, node.object, node);
+      const loc = node.object.location;
+      node.object = new IdentifierNode(localName);
+      node.object.location = loc;
+    } else if (LOW_LEVEL_CALLS.has(node.methodName)
+      && node.object instanceof FieldAccessNode
+      && node.object.expression instanceof IdentifierNode
+      && this.localStructTypes.get(node.object.expression.name) instanceof StructType
+      && (this.localStructTypes.get(node.object.expression.name) as StructType).fields
+        .some((field) => field.name === (node.object as FieldAccessNode).name
+          && field.type instanceof AddressType)) {
+      // A low-level receiver can be an address field of a live memory struct (`escrow.buyer.call(..)`). The
+      // struct may mutate other fields after its state-backed initialization, so lifting the original initializer
+      // to function entry is not sound. Reserve a function-scope local, then assign its actual value immediately
+      // before this call. The function-scope slot survives until the external-call epilogue's identity pin.
+      const localName = `${PREFIX}llf${this.transitiveCounter}`;
+      this.transitiveCounter += 1;
+      const zero = new CastNode(
+        new AddressType(false), new IntLiteralNode(0n), false,
+      );
+      zero.location = node.object.location ?? node.location;
+      this.usedInFn.set(localName, { iface: undefined, init: zero });
+      const assignment = new AssignNode(
+        new IdentifierNode(localName), cloneNode(node.object) as ExpressionNode,
+      );
+      assignment.location = node.object.location ?? node.location;
+      this.pendingMidbodyDecls.push(assignment);
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
@@ -916,7 +942,20 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     // base of the resulting chain (`JobPost storage job = jobs[id]; job.token` -> `jobs[id].token`) - the AstBuilder
     // usually inlines the storage alias, but not always (EACC Marketplace takeJob), so do it here for the target.
     const root = this.inlineStoragePtrBases(cloneNode(this.llReceiverRoot(obj)) as ExpressionNode);
-    if (!(this.resolveChainType(root) instanceof AddressType) && !this.isParamRooted(root)) return undefined;
+    const rootType = this.resolveChainType(root);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RAW_TARGET === '1' && root instanceof FieldAccessNode) {
+      console.error('ll-receiver-root', {
+        field: root.name,
+        base: root.expression instanceof IdentifierNode ? root.expression.name : root.expression.constructor.name,
+        type: rootType?.toString(),
+        key: this.chainKey(root),
+        localInitNames: [...this.localInits.keys()].filter((name) => name.includes('escrow')),
+        single: root.expression instanceof IdentifierNode
+          ? this.singleAssignLocals.has(root.expression.name) : undefined,
+      });
+    }
+    if (!(rootType instanceof AddressType) && !this.isParamRooted(root)) return undefined;
     const key = this.chainKey(root);
     return key ? { localName: `${PREFIX}ll_${key}`, init: root } : undefined;
   }

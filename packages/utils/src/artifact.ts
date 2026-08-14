@@ -8,6 +8,8 @@ export type ImportResolverFn = (importPath: string, currentFile: string) => Reso
 export interface CompilerOptions {
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
+  /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
+  optimizeForCompilationSpeed?: boolean;
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
   __messageBusVerifierProgram?: {
     verifyFunctionId: number;
@@ -577,6 +579,7 @@ export interface ExternalCallAbi {
   opaqueReturn?: boolean; // `(bool,bytes)=addr.call(payload)`: opaque integrity-bound return, callee unknown at compile time
   argSources?: readonly ArgSource[];
   rawFunctionName?: string; // decoded abi.encodeCall target for a low-level call
+  rawSelector?: string; // decoded abi.encodeWithSelector selector when the source function name is unavailable
   rawArgSources?: readonly ArgSource[];
   batchInvocations?: readonly {
     selector: string;
@@ -852,7 +855,8 @@ export interface Artifact {
       batchKeyWitnesses?: {
         routeInput: string;
         inputIndex: number;
-        source?: 'argument' | 'msgSender';
+        source?: 'argument' | 'msgSender' | 'expression';
+        expressionLabel?: string;
         perRow?: boolean;
       }[];
     }[];

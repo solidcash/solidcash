@@ -3,6 +3,8 @@
  * Registered on import (side effect). `solidc` is imported dynamically so it stays an optional peer of the SDK.
  */
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
+import { createRequire } from 'module';
 import { pathToFileURL } from 'url';
 import fs from 'fs';
 import path from 'path';
@@ -13,6 +15,33 @@ import { solidcashArtifactsPath } from './artifact-paths.js';
 import { migrateHardhatConfig } from './config.js';
 import { generateTypechainTargets, watchTypechainTargets } from './typegen.js';
 import { diagnoseProject } from './doctor.js';
+
+/**
+ * Project artifacts depend on the emitted compiler implementation, not only its package version. During local
+ * development the version remains stable while compiler passes and artifact metadata change, so version-only
+ * keys can silently publish stale artifacts. Hashing the emitted JavaScript tree costs only a few milliseconds
+ * and avoids invalidating artifacts for declaration/source-map timestamp churn.
+ */
+function compilerJavaScriptFingerprint(entryFile: string): string {
+  const root = path.dirname(entryFile);
+  const files: string[] = [];
+  const visit = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else if (entry.isFile() && entry.name.endsWith('.js')) files.push(absolute);
+    }
+  };
+  visit(root);
+  const digest = createHash('sha256');
+  for (const file of files.sort()) {
+    digest.update(path.relative(root, file));
+    digest.update('\0');
+    digest.update(fs.readFileSync(file));
+    digest.update('\0');
+  }
+  return digest.digest('hex');
+}
 
 // Recursively collect `.sol` sources, skipping vendored dependency trees (node_modules + `@scope` package dirs like
 // @openzeppelin / @sablier) - those are resolved as imports by compileFileMulti, not compiled as top-level targets.
@@ -35,6 +64,8 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       compileString, compileStringMulti, compileStringSplit, compileFileMulti, compileFileSplit,
       version: compilerVersion,
     } = await import('solidc');
+    const compilerEntry = createRequire(import.meta.url).resolve('solidc');
+    const compilerCacheIdentity = `${compilerVersion}:${compilerJavaScriptFingerprint(compilerEntry)}`;
     const { asmToBytecode, formatArtifact, formatSplitArtifactBundle } = await import('@solidcash/utils');
     const contractsDir = path.resolve(hre.config.paths.contracts);
     const artifactsDir = solidcashArtifactsPath(hre.config.paths.artifacts);
@@ -124,7 +155,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         compileFileMulti,
         {
           directory: path.join(hre.config.paths.cache, 'solidcash'),
-          compilerVersion,
+          compilerVersion: compilerCacheIdentity,
         },
       );
       for (const [name, artifact] of Object.entries(result.artifacts)) {

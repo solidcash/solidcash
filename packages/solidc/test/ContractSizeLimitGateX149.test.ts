@@ -126,6 +126,18 @@ describe('X149: the size gate measures the script, not its listing', () => {
     expect(printed).toContain(`${MAX_INPUT_BYTESIZE}-byte input-script limit`);
   }, 120_000);
 
+  it('uses an explicitly configured permissive input limit', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const artifact = compileString(bulk(300), {
+      messageBus: false,
+      maximumInputBytes: 1_000_000,
+    }) as Compiled;
+
+    expect(lengths(artifact).scriptBytes).toBeGreaterThan(MAX_INPUT_BYTESIZE);
+    expect(sizeDiagnostics(artifact)).toHaveLength(0);
+    expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).not.toContain('input-script limit');
+  }, 120_000);
+
   /**
    * THE SECOND CONTROL: under the limit on BOTH renderings. Neither the diagnostic nor the print appears, so
    * the case above is measuring the size and not merely the presence of a contract.

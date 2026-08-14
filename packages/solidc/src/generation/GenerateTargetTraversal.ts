@@ -9040,6 +9040,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitUnaryOp(node: UnaryOpNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
+    // A runtime graph edge has no fixed `externalCallInputBase`: its callee is located by the authenticated
+    // callManifest settlement table. Solidity's ubiquitous `Address.functionCall` guard only asks
+    // `target.code.length`, so answer that exact question from the logical BCH address without attempting the
+    // ordinary fixed-slot redeem-script lookup. P2SH20 and P2SH32 locking bytecodes are respectively 23 and 35
+    // bytes; EOAs (P2PKH) are 25 bytes. The reached callsite still consumes and authenticates the target row.
+    if (node.operator === UnaryOperator.SIZE && node.expression instanceof FieldAccessNode
+      && node.expression.name === 'code' && this.currentFunction.graphRuntimeEmissionHandler) {
+      const addressExpression = node.expression.expression;
+      const addressParam = addressExpression instanceof IdentifierNode ? addressExpression.name : undefined;
+      const authenticatedSlot = (addressParam === undefined
+        ? undefined : this.externalCallSlots.find((slot) => slot.addressParam === addressParam))
+        ?? this.externalCallSlots.find((slot) => slot.interfaceName === '__raw__');
+      if (authenticatedSlot) {
+        this.visit(addressExpression);
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_NIP, locationData);
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(encodeInt(23n), locationData);
+        this.emit(Op.OP_NUMEQUAL, locationData);
+        this.emit(Op.OP_SWAP, locationData);
+        this.emit(encodeInt(35n), locationData);
+        this.emit(Op.OP_NUMEQUAL, locationData);
+        this.emit(Op.OP_BOOLOR, locationData);
+        this.stack[0] = '(value)';
+        return node;
+      }
+    }
+
     // Chunk-packed FIXED-WIDTH array `.length`: count = A$len / elementWidth - cheap (no chunk reads).
     // Special-cased BEFORE visiting the expression so we don't reassemble the whole array just to read its
     // length. A variable-width array has no fixed width, so it falls through to the normal array `.length`
@@ -11337,9 +11365,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // has no slot and retains the exact-locking-bytecode scan below.
         this.emitSlotMasterIndex(authenticatedSlot, locationData);
         this.emit(Op.OP_UTXOBYTECODE, locationData);
-        // OP_UTXOBYTECODE replaces the tracked input index with its locking bytecode. Adding a second symbolic
-        // item here shifts every later OP_PICK depth even though the runtime stack did not grow.
-        this.stack[0] = '(value)';
+        // emitSlotMasterIndex deliberately leaves an UNTRACKED runtime index. OP_UTXOBYTECODE replaces that index
+        // with the locking bytecode, so the result is one new runtime item above the tracked stack. Track that new
+        // item: overwriting stack[0] loses the previous symbol and makes every later OP_PICK one slot too shallow
+        // (`token.code.length > 0 && token.balanceOf(msg.sender) > 0; ... msg.sender` was the concrete failure).
+        this.pushToStack('(value)');
         return node;
       }
       node.expression = this.visit(node.expression);
@@ -13994,7 +14024,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const physicalSlot = node.callInfo
       ? this.externalCallSlots[node.callInfo.externalCallSlotIndex] : undefined;
     if (this.currentFunction.graphRuntimeEmissionHandler) {
-      if (!physicalSlot) throw new Error('Runtime graph call lacks compiler metadata');
+      if (!physicalSlot) throw new Error(
+        `Runtime graph call '${node.interfaceName}.${node.functionName}' in '${this.currentFunction.name}' `
+        + `lacks compiler metadata (slot ${node.callInfo?.externalCallSlotIndex ?? 'unset'}, `
+        + `slots ${this.externalCallSlots.map((slot) => `${slot.interfaceName}.${slot.functionName}`).join(', ')})`,
+      );
       if (this.graphStraightRuntimeMode) {
         this.verifyGraphEmissionRow(physicalSlot, this.currentFunction, node.parameters, locationData, {
           disposition: 'defer-whole-vector', parametersAreCallArguments: true,

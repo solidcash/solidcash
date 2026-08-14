@@ -199,9 +199,47 @@ describe('Release 1 scalar journal lowering', () => {
     expect(artifact.invocationAnalysis?.functions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name: '__message_bus_graph_approve',
-        writes: ['collection:allowances:*'],
         effects: ['events'],
       }),
+      expect.objectContaining({
+        name: '__message_bus1',
+        reads: expect.arrayContaining(['collection:balances:*', 'collection:allowances:*']),
+        writes: ['collection:allowances:*'],
+      }),
     ]));
+  });
+
+  it('keeps the public result/effect route when compilation-speed optimization skips external admission', () => {
+    const source = `pragma solidcash >=0.8.0;
+      contract Token {
+        mapping(address => uint) balances;
+        mapping(address => mapping(address => uint)) allowances;
+        event Approval(address indexed owner, address indexed spender, uint value);
+        function balanceOf(address who) public view returns (uint) { return balances[who]; }
+        function approve(address spender, uint value) public returns (bool) {
+          address owner = msg.sender;
+          allowances[owner][spender] = value;
+          emit Approval(owner, spender, value);
+          return true;
+        }
+      }
+    `;
+    const normal = compileMessageBusString(source, {
+      forceStateful: true, messageBus: true, maximumInputBytes: 10_000_000,
+    });
+    const fast = compileMessageBusString(source, {
+      forceStateful: true,
+      messageBus: true,
+      maximumInputBytes: 10_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    const eligible = (artifact: typeof normal): string[] => artifact.messageBus?.handlers
+      .filter((handler) => handler.eligible).map((handler) => handler.name) ?? [];
+    expect(eligible(fast)).toEqual(eligible(normal));
+    expect(eligible(fast)).toEqual(expect.arrayContaining(['balanceOf', 'approve']));
+    // Resource-shaped routes remain compact under production consensus, while an explicitly permissive input
+    // budget admits the full unrolled band needed by deeper application call DAGs.
+    expect(normal.messageBus?.maximumRows).toBe(8);
+    expect(fast.messageBus?.maximumRows).toBe(8);
   });
 });

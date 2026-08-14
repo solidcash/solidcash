@@ -87,7 +87,7 @@ type OccurrenceInfo = {
  * branch at all, so it is a FLOOR as well as a ceiling: it survives only when every enclosing loop has a
  * compile-time trip count and nothing conditional stands between the function entry and the callsite.
  */
-const occurrenceInfoOf = (
+export const occurrenceInfoOf = (
   fn: FunctionDefinitionNode, target: Node | undefined,
 ): OccurrenceInfo => {
   if (!target) return { occurrence: 'once' };
@@ -763,6 +763,7 @@ function buildFunctionAbiMetadata(
         ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
         ...(ec.opaqueReturn && { opaqueReturn: true }),
         ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
+        ...(ec.rawSelector && { rawSelector: binToHex(ec.rawSelector) }),
         ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
         ...(ec.argSources && ec.argSources.length > 0 && { argSources: ec.argSources }),
         ...(ec.batchInvocations && {

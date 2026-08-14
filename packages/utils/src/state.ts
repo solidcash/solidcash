@@ -1396,8 +1396,12 @@ export function decodePackedEventArray(
   if (count < 0 || count > 10000) {
     throw new Error(`decodePackedEventArray: array length ${count} exceeds safe decoding limit (max 10000)`);
   }
-  const elemType = parseTypeStrict(arrInfo.elementType);
-  if (isFixedWidthType(elemType)) {
+  // User-defined struct names are resolved by decodePushdataValue below, not by the primitive type parser.
+  // Calling parseTypeStrict first made every chunked `Struct[]` mapping unreadable even when its artifact
+  // supplied the complete struct table (MarketplaceData.jobEvents is the representative shape).
+  const structElement = structs?.some((definition) => definition.name === arrInfo.elementType) === true;
+  const elemType = structElement ? undefined : parseTypeStrict(arrInfo.elementType);
+  if (elemType !== undefined && isFixedWidthType(elemType)) {
     const width = fixedWidthBytes(elemType);
     const blob = data.slice(offset + countBytes, offset + countBytes + count * width);
     return {

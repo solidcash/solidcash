@@ -63,6 +63,21 @@ const cloneToken = <T extends Utxo['token']>(token: T): T => (token === undefine
   ? token
   : { ...token, nft: token.nft === undefined ? undefined : { ...token.nft } } as T);
 
+// Finalized-input probes are synchronous and a provider's consensus profile is immutable for its lifetime.
+// Rebuilding libauth's complete BCH-2026 instruction set for every conditional token participant is pure work;
+// reuse the configured VM exactly as the state-derivation probe path does.
+const finalizedInputVmCache = new WeakMap<NonNullable<TransactionBuilderOptions['provider']>,
+ReturnType<typeof createVirtualMachineBch2026ForProvider>>();
+
+function finalizedInputVm(provider: NonNullable<TransactionBuilderOptions['provider']>):
+ReturnType<typeof createVirtualMachineBch2026ForProvider> {
+  const cached = finalizedInputVmCache.get(provider);
+  if (cached) return cached;
+  const vm = createVirtualMachineBch2026ForProvider(provider);
+  finalizedInputVmCache.set(provider, vm);
+  return vm;
+}
+
 /**
  * The in-block return NFT is owned by one logical callsite. A later write fused onto the first
  * FakeToken group copies its layout; the earlier view must not read that writer's success flag.
@@ -967,9 +982,9 @@ export class StatefulTransactionBuilder {
       && (group.functionName === 'transferFrom'
         || group.compilerRoute?.abiFunction.name === 'transferFrom'));
     if (!tokenGroup?.categoryId) return;
-    this.mintingOutputSwap = undefined;
+    const previousSwap = this.mintingOutputSwap;
     const start = this.findMintingInputIndex(tokenGroup.categoryId);
-    if (start < 0) return;
+    if (start < 0) { this.mintingOutputSwap = undefined; return; }
     const publishLlcIndex = this.lowLevelCallUtxoGroups.findIndex((group) =>
       group.functionName === 'publishJobEvent');
     if (publishLlcIndex < 0) return;
@@ -981,7 +996,16 @@ export class StatefulTransactionBuilder {
     const chunkBase = implIndex + (publishFn?.blockLayout?.blockSize ?? 5);
     const derivedInBand = [...this.derivedChunkOutputs.keys()].filter((index) => index >= chunkBase);
     const nNew = Math.max(3, derivedInBand.length === 0 ? 0 : Math.max(...derivedInBand) - chunkBase + 1);
-    if (start < chunkBase || start >= chunkBase + nNew) return;
+    if (start < chunkBase || start >= chunkBase + nNew) {
+      // Probe builds reuse `allInputs`. Once the first pass rotates this token block, the next pass sees the
+      // already-correct master and must retain the relocation metadata so output materialization performs the
+      // matching rotation. Clearing it here made the probe and finalized transaction disagree by one tail slot.
+      if (previousSwap?.categoryId === tokenGroup.categoryId
+        && start === previousSwap.from + previousSwap.width) return;
+      this.mintingOutputSwap = undefined;
+      return;
+    }
+    this.mintingOutputSwap = undefined;
     // Count the full consecutive token run (master + data + existing entries).
     // A band-limited width of 1 tries to swap the minting NFT with the data NFT
     // and aborts, leaving minting on chunk slot 22 so jobs derive 0 of 2.
@@ -1100,7 +1124,7 @@ export class StatefulTransactionBuilder {
     for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
       if (group.sharedGroupIndex !== undefined) continue;
       const name = group.functionName ?? group.compilerRoute?.abiFunction.name;
-      if (name !== 'transferFrom' && name !== 'approve') continue;
+      if (name !== 'transferFrom' && name !== 'transfer' && name !== 'approve') continue;
       let master = this.findMintingInputIndex(group.categoryId);
       if (master < 0) master = this.getExternalCallMasterInputIndex(groupIndex);
       if (master < 0 || !group.blockLayout) continue;
@@ -1110,15 +1134,21 @@ export class StatefulTransactionBuilder {
         const learned = group.eventOutputs?.[eventOrdinal];
         eventOrdinal += 1;
         const learnedCommit = String(learned?.commitment ?? '');
-        if (learned && learnedCommit !== '' && !/^(00)+$/.test(learnedCommit)) continue;
+        // `SCID` marks an empty message-bus identity carrier; it is not evidence that a conditional token event
+        // was emitted. The generic empty-carrier pass can temporarily tag an inactive Approval/Transfer slot and
+        // route-event discovery can then echo that marker into `eventOutputs`. Treat it as unresolved so the
+        // token function observes the required SIZE==0 at this physical slot.
+        const learnedIsDummy = learnedCommit === '' || /^(00)+$/.test(learnedCommit)
+          || learnedCommit.toLowerCase() === '53434944';
+        if (learned && !learnedIsDummy) continue;
         const existing = builder.outputs[master + slot.offset];
         if (!existing?.token || existing.token.nft?.capability !== 'none') continue;
         const raw: unknown = existing.token.nft.commitment;
         const isDummy = raw instanceof Uint8Array
-          ? raw.length === 0 || raw.every((byte) => byte === 0)
+          ? raw.length === 0 || raw.every((byte) => byte === 0) || binToHex(raw) === '53434944'
           : (() => {
             const hex = String(raw ?? '');
-            return hex === '' || /^(00)+$/.test(hex);
+            return hex === '' || /^(00)+$/.test(hex) || hex.toLowerCase() === '53434944';
           })();
         if (!isDummy) continue;
         // Token-free: OUTPUTTOKENCOMMITMENT size is 0. An empty-commitment
@@ -1207,10 +1237,9 @@ export class StatefulTransactionBuilder {
         const outputIndex = after + offset;
         if (outputIndex >= builder.outputs.length) break;
         const rawCommitment = binToHex(event.commitment);
-        const commitment = rawCommitment === '' || rawCommitment === '00' || rawCommitment === '01'
-          || /^0+$/.test(rawCommitment)
-          ? '0101'
-          : rawCommitment;
+        // `00` is the canonical script serialization of an empty return value. It is not a probe placeholder
+        // when it came from a precomputed return family (e.g. an unknown/non-MECE tag returning "").
+        const commitment = rawCommitment === '' ? '0101' : rawCommitment;
         builder.outputs[outputIndex] = {
           to: Uint8Array.of(0x51),
           amount: 800n,
@@ -1222,22 +1251,39 @@ export class StatefulTransactionBuilder {
         };
       }
       // INSERT predecessors were emitted at master+blockSize and just got
-      // smashed by MD tails. Replay them after the tail band (output 36)
+      // smashed by MD tails. Replay them after the authenticated tail band
       // only when that slot already exists and is a hole — never pad, or
       // publishJobPost's TXOUTPUTCOUNT shifts.
       const blockSize = tokenGroup?.blockLayout?.blockSize ?? 8;
-      // Match encode: MD tails keep 34/35; preds start at master+blockSize+2.
-      let predDest = after + 2;
+      // The call planner accounts for variable-width loop returns. Honor its absolute destination; falling back
+      // to the historical two-slot band keeps older direct builders stable.
+      let predDest = Math.max(
+        tokenGroup?.relocatedPredOutBase ?? 0,
+        after + tailReturns.length,
+      );
       for (const pred of tokenGroup?.batchPredecessorOutputs ?? []) {
         if (pred.outputBlockSlot < blockSize) continue;
-        const occupant = builder.outputs[predDest];
+        let occupant = builder.outputs[predDest];
+        while (occupant) {
+          const lock = occupant.to instanceof Uint8Array ? occupant.to : undefined;
+          const commitment = String(occupant.token?.nft?.commitment ?? '').toLowerCase();
+          const dummyCommitment = commitment === '' || commitment === '00' || /^0+$/.test(commitment);
+          // Earlier output assembly can leave an unowned copy of the final logical return immediately after the
+          // packed return band. It is safe to reuse in place: every identified return has already been written at
+          // `after + offset`, while advancing past this copy creates an extra output and mispublishes PredOut.
+          const staleReturnDuplicate = predDest >= after + tailReturns.length
+            && !!lock && lock.length === 1 && lock[0] === 0x51
+            && occupant.token?.nft?.capability === 'none'
+            && tailReturns.some((event) => event.categoryId === occupant.token?.category
+              && binToHex(event.commitment).toLowerCase() === commitment);
+          const isHole = !occupant.token || (!!lock && lock.length === 1 && lock[0] === 0x51
+            && occupant.token.nft?.capability === 'none' && dummyCommitment)
+            || staleReturnDuplicate;
+          if (isHole) break;
+          predDest += 1;
+          occupant = builder.outputs[predDest];
+        }
         if (!occupant) break;
-        const lock = occupant.to instanceof Uint8Array ? occupant.to : undefined;
-        const isHole = !occupant.token
-          || (!!lock && lock.length === 1 && lock[0] === 0x51)
-          || (occupant.token.nft?.capability === 'none'
-            && occupant.token.category !== tokenGroup!.categoryId);
-        if (!isHole) break;
         builder.outputs[predDest] = {
           to: pred.lockingBytecode,
           amount: 1000n,
@@ -1703,6 +1749,8 @@ export class StatefulTransactionBuilder {
     for (const outputIndex of [...this.derivedChunkOutputs.keys()].sort((left, right) => left - right)) {
       const chunk = this.derivedChunkOutputs.get(outputIndex);
       if (!chunk) continue;
+      if (this.delegateDynamicChunksAtSuffix
+        && (chunk.categoryId ?? this.categoryId) === this.categoryId) continue;
       if (protectedMasters.has(outputIndex)) continue;
       const existing = builder.outputs[outputIndex];
       if (existing) {
@@ -1960,6 +2008,11 @@ export class StatefulTransactionBuilder {
   }
 
   private _dynamicChunkOutputCount(): number {
+    if (this.delegateDynamicChunksAtSuffix) {
+      const recovered = [...this.derivedChunkOutputs.values()].filter((chunk) =>
+        (chunk.categoryId ?? this.categoryId) === this.categoryId);
+      if (recovered.length > 0) return recovered.length;
+    }
     let n = 0;
     for (const dv of this.dynamicChunkVars) n += (this.chunkRawCommitments.get(dv.name) ?? []).length;
     return n;
@@ -2977,7 +3030,10 @@ export class StatefulTransactionBuilder {
           // group is not the group it was probed from. See deriveRouteValueChunks.
           const derivedChunk = this.derivedChunkOutputs.get(builder.outputs.length);
           const derivedOccupant = this.allInputs[builder.outputs.length];
-          if (derivedChunk && derivedOccupant?.token?.nft?.capability !== 'minting') {
+          const suffixOwnedChunk = this.delegateDynamicChunksAtSuffix && derivedChunk
+            && (derivedChunk.categoryId ?? this.categoryId) === this.categoryId;
+          if (derivedChunk && !suffixOwnedChunk
+            && derivedOccupant?.token?.nft?.capability !== 'minting') {
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
               console.error('chunk-placed', { groupIndex, si, absOut: builder.outputs.length });
@@ -3208,8 +3264,9 @@ export class StatefulTransactionBuilder {
                   nft: { capability: 'none', commitment: eo.commitment },
                 },
               });
-            } else if (group.compilerRoute && group.functionName !== 'transferFrom'
-              && group.compilerRoute.abiFunction.name !== 'transferFrom') {
+            } else if (group.compilerRoute
+              && !['transferFrom', 'transfer'].includes(group.functionName)
+              && !['transferFrom', 'transfer'].includes(group.compilerRoute.abiFunction.name)) {
               // A message-bus route reserves the union of every handler's event slots. Slots not reached by
               // this dispatch are ordinary balanced funding slots and the route covenant binds them by
               // preservation. Mirroring the input also works as the active-slot probe: its empty commitment
@@ -3577,6 +3634,11 @@ export class StatefulTransactionBuilder {
             value = new Uint8Array(0);
           } else if (type === 'address' && /^0x[0-9a-fA-F]*$/.test(value)) {
             value = hexToBin(value.slice(2));
+          } else if (/^0x[0-9a-fA-F]*$/.test(value)) {
+            // SDK callers commonly supply pubkeys, hashes, and fixed bytes in ethers-style `0x` form. `isHex`
+            // intentionally accepts canonical bare hex only, so normalize the transport prefix before encoding
+            // event arguments rather than rejecting an otherwise valid bytes value.
+            value = hexToBin(value.slice(2));
           } else if (!isHex(value)) {
             throw new Error(`Invalid event argument at index ${i}: expected a hex string, got '${value}'`);
           } else {
@@ -3830,6 +3892,27 @@ export class StatefulTransactionBuilder {
     if (this.delegateEntriesAfterLowLevel) appendValueChunks();
 
     const appendDynamicChunks = (): void => {
+      if (this.delegateDynamicChunksAtSuffix) {
+        const recovered = [...this.derivedChunkOutputs.entries()]
+          .filter(([, chunk]) => (chunk.categoryId ?? this.categoryId) === this.categoryId)
+          .sort(([left], [right]) => left - right);
+        if (recovered.length > 0) {
+          for (const [, chunk] of recovered) {
+            const chunkOutput = {
+              to: chunk.lockingBytecode,
+              amount: 1200n,
+              token: {
+                amount: 0n,
+                category: chunk.categoryId ?? this.categoryId,
+                nft: { capability: 'mutable' as const, commitment: chunk.commitment },
+              },
+            };
+            chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+            builder.addOutput(chunkOutput);
+          }
+          return;
+        }
+      }
       for (const dv of this.dynamicChunkVars) {
         const commitments = this.chunkRawCommitments.get(dv.name) ?? [];
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -4087,8 +4170,14 @@ export class StatefulTransactionBuilder {
         if (existing?.token?.nft?.capability === 'mutable' && (existing.token.nft.commitment?.length ?? 0) > 2) {
           continue;
         }
+        const existingCommitment = String(existing?.token?.nft?.commitment ?? '').toLowerCase();
+        const existingIsLogicalIdentity = existingCommitment.startsWith('5343494401');
         if (existing?.token?.nft?.capability === 'none' && existing.token.category
-          && existing.token.category !== categoryId) {
+          && (existing.token.category !== categoryId || existingIsLogicalIdentity)) {
+          // A nested implementation-relative event can land on an already-appended logical identity anchor.
+          // Category equality does not make that collision safe: both the event and the anchor legitimately use
+          // the callee category. Move the authenticated SCID-v1 anchor to the tail before publishing the event,
+          // otherwise this successful call permanently destroys the callee's Solidity-visible CREATE identity.
           displacedDelegateIdentities.push({
             to: existing.to instanceof Uint8Array ? existing.to : addressToLockScript(existing.to),
             amount: existing.amount,
@@ -4166,7 +4255,12 @@ export class StatefulTransactionBuilder {
       const blockSize = fn?.blockLayout?.blockSize ?? 1;
       const chunkBase = Math.min(implIndex + blockSize, masterIndex + blockSize);
       const derivedIndexes = [...this.derivedChunkOutputs.keys()]
-        .filter((outputIndex) => outputIndex >= Math.min(chunkBase, masterIndex + 1))
+        .filter((outputIndex) => {
+          if (outputIndex < Math.min(chunkBase, masterIndex + 1)) return false;
+          const chunk = this.derivedChunkOutputs.get(outputIndex);
+          return !this.delegateDynamicChunksAtSuffix
+            || (chunk?.categoryId ?? this.categoryId) !== this.categoryId;
+        })
         .sort((left, right) => left - right);
 
       for (const outputIndex of derivedIndexes) {
@@ -4304,24 +4398,33 @@ export class StatefulTransactionBuilder {
     if (this.mintingOutputSwap && this.delegateDynamicChunksAtSuffix) {
       const jobsCount = this._dynamicChunkOutputCount();
       const extra = builder.outputs.length - (this.allInputs.length + jobsCount + 3);
-      if (jobsCount > 0 && extra > 0) {
+      // Three non-chunk tail outputs are part of the routed layout. Only surplus beyond that baseline is
+      // disposable; compacting when `extra <= 3` removes an alignment pad from the participant band and shifts
+      // every nested state recreation away from its input index.
+      const disposableExtra = Math.max(0, extra - 3);
+      if (jobsCount > 0 && disposableExtra > 0) {
         const suffixLen = jobsCount + 1;
         let dropped = 0;
         const tokenBlockEnd = this.mintingOutputSwap.from + this.mintingOutputSwap.width
           + (this.externalCallUtxoGroups.find((group) =>
             group.categoryId === this.mintingOutputSwap?.categoryId
             && group.sharedGroupIndex === undefined)?.blockLayout?.blockSize ?? 8);
-        for (let index = builder.outputs.length - suffixLen - 1; index >= 0 && dropped < extra; index--) {
+        for (let index = builder.outputs.length - suffixLen - 1;
+          index >= 0 && dropped < Math.min(disposableExtra, 1); index--) {
           if (index >= this.mintingOutputSwap.from + this.mintingOutputSwap.width && index < tokenBlockEnd) {
             continue;
           }
           const output = builder.outputs[index];
           const lock = output?.to instanceof Uint8Array ? output.to : undefined;
           const isTruePad = !!lock && lock.length === 1 && lock[0] === 0x51 && !output?.token;
-          const isDupNone = output?.token?.nft?.capability === 'none' && output.token.category !== undefined
-            && builder.outputs.slice(0, index).some((candidate) =>
-              candidate.token?.nft?.capability === 'none'
-              && candidate.token.category === output.token?.category);
+          const commitment = output?.token?.nft?.commitment;
+          const isBareZero = String(commitment ?? '').toLowerCase() === '00';
+          // A routed raw call can provision both its conditional and opaque-return placeholder at the same
+          // OP_TRUE tail coordinate. Only the one-byte zero placeholder is disposable. Same-category immutable
+          // outputs in general are NOT duplicates: return witnesses, events, and SCID identity anchors all share
+          // that shape and must survive this suffix compaction.
+          const isDupNone = !!lock && lock.length === 1 && lock[0] === 0x51 && isBareZero
+            && output?.token?.nft?.capability === 'none';
           if (!isTruePad && !isDupNone) continue;
           builder.outputs.splice(index, 1);
           dropped += 1;
@@ -5012,7 +5115,7 @@ export class StatefulTransactionBuilder {
     for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
       if (group.sharedGroupIndex !== undefined) continue;
       const name = group.functionName ?? group.compilerRoute?.abiFunction.name;
-      if (name !== 'transferFrom' && name !== 'approve') continue;
+      if (name !== 'transferFrom' && name !== 'transfer' && name !== 'approve') continue;
       let master = this.findMintingInputIndex(group.categoryId);
       if (master < 0) master = this.getExternalCallMasterInputIndex(groupIndex);
       if (master < 0 || !group.blockLayout) continue;
@@ -5165,6 +5268,14 @@ export class StatefulTransactionBuilder {
       }
     }
     return changed || derivedChanged;
+  }
+
+  /** Evaluate one known repairable participant without rescanning every independent input in the composition. */
+  private _inputPassesCovenant(builder: TransactionBuilder, inputIndex: number): boolean {
+    const transaction = builder.buildLibauthTransaction(true);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = finalizedInputVm(this.builderOptions.provider);
+    return vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })) === true;
   }
 
   private _strictRecursiveVmPreflight(builder: TransactionBuilder): void {
@@ -5331,10 +5442,20 @@ export class StatefulTransactionBuilder {
     for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
       if (group.sharedGroupIndex !== undefined) continue;
       const name = group.functionName ?? group.compilerRoute?.abiFunction.name;
-      if (name !== 'transferFrom' && name !== 'approve') continue;
+      if (name !== 'transferFrom' && name !== 'transfer' && name !== 'approve') continue;
       let master = this.findMintingInputIndex(group.categoryId);
       if (master < 0) master = this.getExternalCallMasterInputIndex(groupIndex);
-      if (master >= 0) this._repairComputedChunkOutput(finalBuilder, master);
+      if (master >= 0) {
+        // One trace can expose only the first mismatching conditional event/chunk pin. Converge this known
+        // repairable input directly before the authoritative provider check; otherwise the general preflight
+        // must re-evaluate every composed input once per newly exposed pin.
+        for (let pass = 0; pass <= 32; pass++) {
+          if (this._inputPassesCovenant(finalBuilder, master)) break;
+          const changed = this._repairComputedChunkOutput(finalBuilder, master);
+          if (!changed) break;
+          this._clearDummyTokenEventCommitments(finalBuilder);
+        }
+      }
     }
     this._clearDummyTokenEventCommitments(finalBuilder);
 
@@ -5385,11 +5506,17 @@ export class StatefulTransactionBuilder {
       }
     }
 
-    // X210. The ordinary stateful submit path must verify the exact fully funded transaction too. The
-    // recursive flag controls only the earlier, specialized diagnostic; it is not permission to skip covenant
-    // evaluation. This gate is deliberately non-absorbing: unlike debug(), it never catches an objection, and
-    // `stateSuccess` includes completed scripts with a falsy top item as well as raised VM errors.
-    if (!this.strictVmPreflight) {
+    // X210. The ordinary stateful submit path must verify the exact fully funded transaction too. A provider
+    // may advertise that its unmodified submit path performs authoritative full validation (the in-memory
+    // mem-cash provider does); in that case, running the same configured VM here first only evaluates every
+    // input twice. The capability turns itself off when that submit method is patched or overridden, preserving
+    // this SDK gate for hostile-provider and failure-injection paths.
+    const providerValidatesFinalizedTransaction = (provider as typeof provider & {
+      canValidateFinalizedTransaction?: () => boolean;
+    }).canValidateFinalizedTransaction?.() === true;
+    // This gate is deliberately non-absorbing: unlike debug(), it never catches an objection, and stateSuccess
+    // includes completed scripts with a falsy top item as well as raised VM errors.
+    if (!this.strictVmPreflight && !providerValidatesFinalizedTransaction) {
       let preflightError: unknown;
       for (let pass = 0; pass <= 32; pass++) {
         try {

@@ -32,6 +32,85 @@ describe('message-bus compilation selection', () => {
     expect(artifact.messageBus).toBeUndefined();
   });
 
+  it('keeps direct mapping keys visible beside dynamic-array reads in explicit graph mode', () => {
+    const artifact = compileString(`contract Marketplace {
+      struct Job { bool whitelistWorkers; }
+      Job[] jobs;
+      mapping(uint => mapping(address => bool)) whitelistWorkers;
+      function takeJob(uint jobId) public {
+        require(!jobs[jobId].whitelistWorkers || whitelistWorkers[jobId][msg.sender]);
+        jobs[jobId].whitelistWorkers = false;
+        require(jobs[jobId].whitelistWorkers == false);
+      }
+    }`, { messageBus: true, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'takeJob')).toEqual(
+      expect.objectContaining({ eligible: true }),
+    );
+  });
+
+  it('binds a state-derived collection key while preserving a bounded graph result', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IToken { function balanceOf(address holder) external returns (uint); }
+      contract Escrow(address token) {
+        mapping(uint => uint) escrows;
+        uint next;
+        function readBalance(address currency) internal returns (uint) {
+          return IToken(currency).balanceOf(address(this));
+        }
+        function pay(bool useToken) external returns (uint) {
+          uint id = next;
+          uint amount = 1;
+          if (useToken) { amount = readBalance(token); }
+          escrows[id] = amount;
+          next = next + 1;
+          return id;
+        }
+        // Keep an unrelated low-level return consumer in the expanded contract. It must not taint pay with a
+        // contract-wide refusal once pay's own typed result graph has been proved finite.
+        function raw(bytes payload) internal returns (bytes) {
+          (bool success, bytes memory result) = address(token).call(payload);
+          require(success);
+          return result;
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toEqual(
+      expect.objectContaining({
+        eligible: true,
+        batchKeyWitnesses: [expect.objectContaining({
+          source: 'expression',
+          expressionLabel: 'state:next',
+        })],
+      }),
+    );
+  });
+
+  it('threads the logical caller into a no-argument delegate route handler', () => {
+    const artifact = compileString(`contract Pausable {
+      address _owner;
+      bool paused;
+      constructor() { _owner = msg.sender; }
+      function pause() external {
+        require(msg.sender == _owner);
+        this.paused = true;
+        require(this.paused);
+      }
+    }`, {
+      forceStateful: true,
+      messageBus: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'pause'))
+      .toEqual(expect.objectContaining({ eligible: true }));
+  });
+
   it('automatically selects message-bus planning for an external call graph', () => {
     const artifact = compileString(`
       interface ISink { function set(int value) external; }

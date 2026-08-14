@@ -9,6 +9,9 @@ export default defineConfig({
     // Keep the production state-partitioning layout while the mock VM relaxes execution ceilings.
     commitmentLimit: 128,
     maximumInputBytes: 10_000_000,
+    // This compatibility run exercises authenticated multi-contract call DAGs. Graph-free leaf contracts (the
+    // ERC-20 in particular) still need their route emitted because a routed parent can reach them repeatedly.
+    messageBus: true,
     optimizeForCompilationSpeed: true,
     ecrecover: 'p2pkh',
     // Keep the Hardhat-compatible harness on the uniform fixed-entry backend.

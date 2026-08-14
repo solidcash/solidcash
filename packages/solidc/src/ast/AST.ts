@@ -462,7 +462,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusKeyWitnesses?: {
     routeInput: string;
     inputIndex: number;
-    source?: 'argument' | 'msgSender';
+    source?: 'argument' | 'msgSender' | 'expression';
+    expressionLabel?: string;
     perRow?: boolean;
   }[];
 

@@ -1,4 +1,4 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, scriptToBytecode,
   MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256,
@@ -9,7 +9,7 @@ import type {
 } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
-import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
+import { evalComputedKey, StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
 import {
   createMessageBusVerifierUnlocker, getMessageBusVerifierLockingBytecode,
 } from '../stateful/covenant-helpers.js';
@@ -46,10 +46,14 @@ interface CallDescriptor {
 const funderUtxo = (funder: AtomicMessageBusFunder | UnlockableUtxo): UnlockableUtxo =>
   ('utxo' in funder ? { ...funder.utxo, unlocker: funder.unlocker } : funder);
 
-const participantOf = (descriptor: CallDescriptor): WorklistParticipant => ({
+const participantOf = (
+  descriptor: CallDescriptor,
+  unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
+): WorklistParticipant => ({
   artifact: descriptor.contract.inner.artifact,
   lockingBytecode: descriptor.contract.inner.lockingBytecode,
   constructorArgs: descriptor.contract.inner.constructorArgs as FunctionArgument[],
+  ...(Object.keys(unboundRouteWitnesses).length > 0 && { unboundRouteWitnesses }),
 });
 
 const concat = (...parts: readonly Uint8Array[]): Uint8Array => {
@@ -131,9 +135,83 @@ export class AtomicMessageBusComposition {
       throw new Error('messageBus: all participants must use the same network provider');
     }
 
+    const stateByContract = new Map<StatefulContract, Promise<Record<string, unknown>>>();
+    const stateOf = (contract: StatefulContract): Promise<Record<string, unknown>> => {
+      let pending = stateByContract.get(contract);
+      if (!pending) {
+        pending = contract.getState() as Promise<Record<string, unknown>>;
+        stateByContract.set(contract, pending);
+      }
+      return pending;
+    };
+    const descriptorWitnesses = await Promise.all(descriptors.map(async (descriptor) => {
+      const artifact = descriptor.contract.inner.artifact;
+      const handler = artifact.messageBus?.handlers.find((candidate) =>
+        candidate.name === descriptor.functionName);
+      const expressionBindings = handler?.batchKeyWitnesses?.filter((binding) =>
+        binding.source === 'expression') ?? [];
+      if (expressionBindings.length === 0) return Object.freeze({}) as Readonly<Record<string, FunctionArgument>>;
+      const abi = artifact.abi.find((candidate) => candidate.name === descriptor.functionName);
+      if (!abi) throw new Error(`messageBus: ABI for '${descriptor.functionName}' is missing`);
+      const state = await stateOf(descriptor.contract);
+      const witnesses: Record<string, FunctionArgument> = {};
+      for (const binding of expressionBindings) {
+        const encoded = evalComputedKey(
+          binding.expressionLabel,
+          [...descriptor.args],
+          abi.inputs,
+          state as Parameters<typeof evalComputedKey>[3],
+        );
+        if (!encoded) {
+          throw new Error(
+            `messageBus: cannot derive computed route witness '${binding.routeInput}' `
+            + `from '${binding.expressionLabel ?? '<missing expression>'}'`,
+          );
+        }
+        const routeType = artifact.messageBus?.route.inputs.find((input) =>
+          input.name === (binding.perRow ? `${binding.routeInput}_r0` : binding.routeInput))?.type;
+        witnesses[binding.routeInput] = routeType === 'bool'
+          ? vmNumberToBigInt(encoded) !== 0n
+          : routeType === 'bigint' || routeType === 'int' || routeType === 'uint'
+            || /^u?int\d+$/.test(routeType ?? '')
+            ? vmNumberToBigInt(encoded)
+            : encoded;
+      }
+      return Object.freeze(witnesses);
+    }));
+    // `planCompiledGraph` interns one participant per locking bytecode and then batches that owner's rows in
+    // global invocation order. Aggregate each prepared invocation's derived values into that same owner-local
+    // row numbering before planning, so a route input named `_rN` receives the Nth invocation's proven key.
+    const ownerWitnesses = new Map<string, Record<string, FunctionArgument>>();
+    const ownerRows = new Map<string, number>();
+    descriptors.forEach((descriptor, index) => {
+      const owner = descriptor.contract.inner.lockingBytecode.toLowerCase();
+      const row = ownerRows.get(owner) ?? 0;
+      ownerRows.set(owner, row + 1);
+      const aggregate = ownerWitnesses.get(owner) ?? {};
+      const handler = descriptor.contract.inner.artifact.messageBus?.handlers.find((candidate) =>
+        candidate.name === descriptor.functionName);
+      for (const binding of handler?.batchKeyWitnesses?.filter((candidate) =>
+        candidate.source === 'expression') ?? []) {
+        const value = descriptorWitnesses[index][binding.routeInput];
+        if (value === undefined) continue;
+        const name = binding.perRow ? `${binding.routeInput}_r${row}` : binding.routeInput;
+        const prior = aggregate[name];
+        if (prior !== undefined && semanticJson(prior) !== semanticJson(value)) {
+          throw new Error(`messageBus: derived route witness '${name}' disagrees across prepared calls`);
+        }
+        aggregate[name] = value;
+      }
+      ownerWitnesses.set(owner, aggregate);
+    });
+    const workParticipants = descriptors.map((descriptor) => participantOf(
+      descriptor,
+      Object.freeze(ownerWitnesses.get(descriptor.contract.inner.lockingBytecode.toLowerCase()) ?? {}),
+    ));
+
     let next = 1;
     const plan = deriveCompiledGraphPlan({
-      root: participantOf(descriptors[0]),
+      root: workParticipants[0],
       function: descriptors[0].functionName,
       args: descriptors[0].args,
       rootCaller,
@@ -142,7 +220,7 @@ export class AtomicMessageBusComposition {
         const descriptor = descriptors[next];
         if (!descriptor) return undefined;
         next += 1;
-        return participantOf(descriptor);
+        return workParticipants[next - 1];
       },
       occurrence: ({ participant, function: ownerFunction, callsiteId, kind }) => {
         const abiFunction = participant.artifact.abi.find((candidate) => candidate.name === ownerFunction);
@@ -173,7 +251,7 @@ export class AtomicMessageBusComposition {
         if (!descriptor) throw new Error('messageBus: prepared calls omit a low-level target');
         next += 1;
         return {
-          participant: participantOf(descriptor),
+          participant: workParticipants[next - 1],
           function: descriptor.functionName,
           args: descriptor.args,
         };
@@ -194,13 +272,21 @@ export class AtomicMessageBusComposition {
           + `expected '${invocation.function}'`,
         );
       }
+      const handler = supplied.contract.inner.artifact.messageBus?.handlers.find((candidate) =>
+        candidate.name === supplied.functionName);
+      const validationWitnesses = Object.fromEntries((handler?.batchKeyWitnesses ?? [])
+        .filter((binding) => binding.source === 'expression')
+        .map((binding) => [
+          binding.perRow ? `${binding.routeInput}_r0` : binding.routeInput,
+          descriptorWitnesses[index][binding.routeInput],
+        ]).filter((entry): entry is [string, FunctionArgument] => entry[1] !== undefined));
       const suppliedRow = encodeMessageBatch(supplied.contract.inner.artifact, [{
         function: supplied.functionName,
         args: supplied.args,
         callMode: invocation.callMode,
         logicalCaller: invocation.caller === null
           ? rootCaller : hexToBin(plan.participants[invocation.caller].lockingBytecode),
-      }]).rows[0];
+      }], validationWitnesses).rows[0];
       if (suppliedRow.argsHex !== invocation.argsHex) {
         throw new Error(
           `messageBus: prepared call ${index} arguments disagree with compiler-derived invocation arguments`,

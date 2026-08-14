@@ -5408,6 +5408,12 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private collectExternalCalls(node: Node, slots: ExternalCallSlot[]): void {
     if (node instanceof ExternalFunctionCallNode && node.callInfo && !node.foldedIntoDeploy) {
+      // Nested returning calls in the receiver/arguments execute before this outer call. Collect them first so
+      // each receives a real slot and the published callManifest order matches evaluation order. Returning here
+      // without this descent left `outer(inner())`'s inner node at slot -1 even though code generation still
+      // evaluates it (Marketplace `unicrow.pay(..., data.getArbitratorFee(...))`).
+      if (node.addressExpression instanceof Node) this.collectExternalCalls(node.addressExpression, slots);
+      for (const parameter of node.parameters) this.collectExternalCalls(parameter, slots);
       // A concrete contract cast exposes only real ABI-visible functions (including synthesized PUBLIC state
       // getters). Do not let `C(addr).privateState()` become an arbitrary external-call selector merely because
       // the call node was formed before the secondary contract's members were validated.
@@ -5469,8 +5475,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A `__extaddr_<var>` address local is the synthesized read of an interface-typed state var (see
       // SynthesizeExternalAddressLocals); record the underlying state var so the SDK resolves it from state.
       const directStateTarget = addressParam ? this.stateVariableMap.get(addressParam) : undefined;
+      const synthesizedAddressName = addressParam?.startsWith('__extaddr_')
+        ? addressParam.slice('__extaddr_'.length) : undefined;
+      // Plain `address` state variables are hoisted once per interface as
+      // `__extaddr_<stateVar>_<interface>`. The interface suffix is part of the local's collision-proof name,
+      // not the state key. Preserve the actual state-variable name in ABI metadata so the SDK can resolve the
+      // authenticated runtime address instead of falling through to an unrelated same-method deployment.
+      const synthesizedInterfaceSuffix = `_${node.callInfo.interfaceName}`;
+      const synthesizedPlainStateVar = synthesizedAddressName?.endsWith(synthesizedInterfaceSuffix)
+        ? synthesizedAddressName.slice(0, -synthesizedInterfaceSuffix.length) : undefined;
+      const normalizedSynthesizedStateVar = synthesizedPlainStateVar
+        && this.stateVariableMap.get(synthesizedPlainStateVar)?.type instanceof AddressType
+        ? synthesizedPlainStateVar : synthesizedAddressName;
       const addressStateVar = addressParam?.startsWith('__extaddr_')
-        ? addressParam.slice('__extaddr_'.length)
+        ? normalizedSynthesizedStateVar
         : directStateTarget?.type instanceof AddressType && directStateTarget.type.interfaceName
           ? addressParam : directAddressStateAccess(node.addressExpression)?.name;
       // Loop-body local aliasing a per-iteration array element `address input = path[i]; IToken(input).m()`
@@ -5815,6 +5833,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         argSources.push({ kind: 'expression' });
       }
       let addressSource = classifyArg(node.addressExpression);
+      if (!addressSource && addressStateVar && this.stateVariableMap.has(addressStateVar)) {
+        addressSource = {
+          kind: 'expression',
+          expression: { kind: 'state', name: addressStateVar },
+        };
+      }
       if (!addressSource && addressStateVar?.startsWith('ll_')) {
         const sourceName = addressStateVar.slice('ll_'.length);
         const sourceIndex = userVisibleParams.findIndex((param) => param.name === sourceName);
@@ -5831,6 +5855,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (expression instanceof IdentifierNode) {
           const definition = expression.definition?.definition;
           const initializer = definition instanceof VariableDefinitionNode
+            || definition instanceof ConstantDefinitionNode
             ? definition.expression
             : this.currentFunction?.body
               ? this.findLocalInit(this.currentFunction.body, expression.name)
@@ -5848,6 +5873,11 @@ export default class SymbolTableTraversal extends AstTraversal {
             name: expression instanceof IdentifierNode ? expression.name : expression.constructor.name,
           };
         }
+        // AST transformations intentionally share expression nodes across sibling branches. `seen` is a recursion
+        // path, not a global visited set: retaining a sibling's node turns an ordinary repeated state read into an
+        // opaque `reference` and makes SDK argument derivation fail. Copy before descending so only a true ancestor
+        // cycle is classified as a reference.
+        seen = new Set(seen);
         seen.add(expression);
         const source = classifyArg(expression);
         if (source && source.kind !== 'expression') return {
@@ -5973,6 +6003,14 @@ export default class SymbolTableTraversal extends AstTraversal {
             ? { kind: 'array', args: elements }
             : undefined;
         }
+        if (expression instanceof NewArrayNode) {
+          const size = serializeExpression(expression.size, seen);
+          return size && {
+            kind: 'newArray',
+            type: expression.elementType.toString(),
+            args: [size],
+          };
+        }
         const serializeArgs = (parameters: ExpressionNode[]): ExternalCallExpression[] | undefined => {
           const values = parameters.map((parameter) => serializeExpression(parameter, seen));
           return values.every((value): value is ExternalCallExpression => value !== undefined)
@@ -5988,6 +6026,15 @@ export default class SymbolTableTraversal extends AstTraversal {
                 : expression instanceof AbiEncodePackedNode ? 'abiEncodePacked' : 'abiEncode',
             args: values,
             fields: expression.parameters.map((parameter) => parameter.type?.toString() ?? ''),
+          };
+        }
+        if (expression instanceof ExternalFunctionCallNode) {
+          const values = serializeArgs(expression.parameters);
+          return values && {
+            kind: 'externalCall',
+            name: `${expression.interfaceName}.${expression.functionName}`,
+            args: values,
+            ...(expression.type && { type: expression.type.toString() }),
           };
         }
         if (expression instanceof FunctionCallNode) {
@@ -6018,20 +6065,56 @@ export default class SymbolTableTraversal extends AstTraversal {
           },
         };
       }
+      if (!addressSource) {
+        const resolvedAddressExpression = serializeExpression(resolveInitializer(node.addressExpression));
+        if (resolvedAddressExpression
+          && resolvedAddressExpression.kind !== 'identifier'
+          && resolvedAddressExpression.kind !== 'unsupported'
+          && resolvedAddressExpression.kind !== 'missing') {
+          addressSource = { kind: 'expression', expression: resolvedAddressExpression };
+        }
+      }
       const rawPayload = node.opaqueReturn && node.parameters.length === 1
         ? resolveInitializer(node.parameters[0])
         : undefined;
       const rawFunctionName = rawPayload instanceof AbiEncodeCallNode
         ? rawPayload.functionName
         : undefined;
-      const rawArgSources = rawPayload instanceof AbiEncodeCallNode
-        ? rawPayload.parameters.map((parameter) => {
+      const rawSelector = rawPayload instanceof AbiEncodeWithSelectorNode
+        && rawPayload.selector instanceof HexLiteralNode
+        ? rawPayload.selector.value : undefined;
+      const rawParameters = rawPayload instanceof AbiEncodeCallNode
+        || rawPayload instanceof AbiEncodeWithSelectorNode
+        ? rawPayload.parameters : undefined;
+      const rawArgSources = rawParameters
+        ? rawParameters.map((parameter) => {
           const classified = classifyArg(parameter);
           if (classified) return classified;
           const expression = serializeExpression(parameter);
           return expression ? { kind: 'expression' as const, expression } : { kind: 'expression' as const };
         })
         : undefined;
+
+      if (node.callInfo.interfaceName === '__raw__' && !addressParam && addressLiteral === undefined
+        && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RAW_TARGET === '1') {
+        const summarize = (value: unknown, depth = 0, seen = new Set<object>()): unknown => {
+          if (!value || typeof value !== 'object' || depth > 5 || seen.has(value as object)) return value;
+          seen.add(value as object);
+          const candidate = value as Record<string, unknown>;
+          const result: Record<string, unknown> = { node: (value as object).constructor.name };
+          for (const key of ['name', 'identifier', 'object', 'expression', 'array', 'index', 'keys', 'parameters']) {
+            if (candidate[key] !== undefined) result[key] = Array.isArray(candidate[key])
+              ? (candidate[key] as unknown[]).map((child) => summarize(child, depth + 1, seen))
+              : summarize(candidate[key], depth + 1, seen);
+          }
+          return result;
+        };
+        console.error('unresolved-raw-target', {
+          functionName: this.currentFunction?.name,
+          target: summarize(node.addressExpression),
+        });
+      }
 
       slots.push({
         interfaceName: node.callInfo.interfaceName,
@@ -6047,6 +6130,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(addressIsMsgSender && { addressIsMsgSender: true }),
         ...(addressSource && { addressSource }),
         ...(rawFunctionName && { rawFunctionName }),
+        ...(rawSelector && { rawSelector }),
         ...(rawArgSources && { rawArgSources }),
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,
@@ -6098,6 +6182,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('tupleExpressions' in node && Array.isArray((node as any).tupleExpressions)) {
       for (const e of (node as any).tupleExpressions) { if (e instanceof Node) this.collectExternalCalls(e, slots); }
+    }
+    if ('callNode' in node && (node as any).callNode instanceof Node) {
+      this.collectExternalCalls((node as any).callNode, slots);
     }
     if ('addressExpression' in node && (node as any).addressExpression instanceof Node) {
       this.collectExternalCalls((node as any).addressExpression, slots);
@@ -6153,6 +6240,12 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private assignExternalCallSlotIndices(node: Node, slots: ExternalCallSlot[], counter: { idx: number }): void {
     if (node instanceof ExternalFunctionCallNode && node.callInfo) {
+      if (node.addressExpression instanceof Node) {
+        this.assignExternalCallSlotIndices(node.addressExpression, slots, counter);
+      }
+      for (const parameter of node.parameters) {
+        this.assignExternalCallSlotIndices(parameter, slots, counter);
+      }
       // Each call site was collected in traversal order, so the counter matches
       const slot = slots[counter.idx];
       if (slot) {

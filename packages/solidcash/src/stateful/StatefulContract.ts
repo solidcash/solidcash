@@ -80,6 +80,7 @@ import {
   hexToBin,
   binsAreEqual,
   decodeTransactionUnsafe,
+  encodeTransaction,
   AuthenticationProgramStateCommon,
   encodeLockingBytecodeP2pkh,
   bigIntToVmNumber,
@@ -686,6 +687,23 @@ function appendEncodedArrayElement(arrayBlob: Uint8Array, element: Uint8Array): 
   out.set(prefix, 0);
   out.set(arrayBlob.subarray(count.bytesConsumed), prefix.length);
   out.set(element, prefix.length + arrayBlob.length - count.bytesConsumed);
+  return out;
+}
+
+/** Concatenate two pushdata-encoded dynamic arrays of the same element type. */
+function concatenateEncodedArrays(left: Uint8Array, right: Uint8Array): Uint8Array {
+  const leftCount = decodePushdataValue(left, 0, 'bigint');
+  const rightCount = decodePushdataValue(right, 0, 'bigint');
+  const prefix = encodePushdataValue(
+    BigInt(leftCount.value as bigint) + BigInt(rightCount.value as bigint),
+    'bigint',
+  );
+  const leftElements = left.subarray(leftCount.bytesConsumed);
+  const rightElements = right.subarray(rightCount.bytesConsumed);
+  const out = new Uint8Array(prefix.length + leftElements.length + rightElements.length);
+  out.set(prefix, 0);
+  out.set(leftElements, prefix.length);
+  out.set(rightElements, prefix.length + leftElements.length);
   return out;
 }
 
@@ -1367,6 +1385,22 @@ function encodeEvmScalarReturn(value: StateValue, type: string): Uint8Array | un
   return undefined;
 }
 
+/** Decode the single-word Solidity ABI scalar forms emitted by imported Solidity contracts. */
+function decodeEvmScalarReturn(value: Uint8Array, type: string): StateValue | undefined {
+  if (value.length !== 32) return undefined;
+  if (type === 'bool') {
+    if (!value.slice(0, 31).every((byte) => byte === 0) || value[31] > 1) return undefined;
+    return value[31] === 1;
+  }
+  if (type !== 'int' && type !== 'uint' && type !== 'bigint' && !/^u?int\d+$/.test(type)) return undefined;
+  let decoded = 0n;
+  for (const byte of value) decoded = (decoded << 8n) | BigInt(byte);
+  if ((type === 'int' || /^int\d+$/.test(type)) && (value[0] & 0x80) !== 0) {
+    decoded -= 1n << 256n;
+  }
+  return decoded;
+}
+
 
 
 /** True when a trace candidate is exactly one encoded collection value, with no trailing neighboring value. */
@@ -1503,7 +1537,7 @@ function decodeScriptNumber(valueBytes: Uint8Array): bigint {
  * undefined when the label is not evaluable (a bare local `id:pkh` with no inlined definition, or an unsupported
  * op); the caller then falls back to entryKeyOverrides / placeholder.
  */
-function evalComputedKey(
+export function evalComputedKey(
   label: string | undefined, args: FunctionArgument[], inputs: readonly { name: string; type?: string }[],
   state?: Readonly<Record<string, StateValue>>,
   stateLengthDeltas?: Readonly<Record<string, bigint>>,
@@ -1808,12 +1842,14 @@ function cachedProbeVm(provider: NetworkProvider): CachedProbeVm {
       const state = unknownState as AuthenticationProgramStateCommon;
       const opcode = state.instructions[state.ip]?.opcode;
       if (opcode === Op.OP_EQUALVERIFY && !cached.awaitingVerification) return;
-      // libauth reuses/mutates parts of the state between operations. Snapshot the sparse observed states so
-      // later execution cannot rewrite the commitment/index pair consumed by the derivation extractors.
+      // libauth mutates the stack containers between operations, but stack items are immutable values: opcodes
+      // replace Uint8Arrays rather than editing them in place. Snapshot the containers while sharing their byte
+      // arrays. Deep-copying every item here repeatedly copied multi-megabyte routed scripts at each observed
+      // covenant opcode, making otherwise sparse probes spend seconds moving identical bytes.
       cached.trace.push({
         ...state,
-        stack: state.stack.map((item) => item.slice()),
-        alternateStack: state.alternateStack.map((item) => item.slice()),
+        stack: state.stack.slice(),
+        alternateStack: state.alternateStack.slice(),
         controlStack: state.controlStack.slice(),
       });
       cached.awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
@@ -2085,6 +2121,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     from: string | Uint8Array;
     to: string | Uint8Array;
     amount: bigint;
+    jobIndex?: number;
+    postedAt?: bigint;
+    clearCollateral?: boolean;
   };
   /** Solidity-visible CREATE identity; physical covenant addressing remains on `inner`. */
   _logicalAddress?: string;
@@ -6223,6 +6262,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     await this._ensureResolved();
     const onChainState = await getContractState(this.inner, this.categoryId);
     const state = onChainState.state as Record<string, StateValueType>;
+    // Mock compatibility effects are user-facing only: covenant construction reads getFullState() and therefore
+    // continues to use authenticated UTXOs. Ignore private metadata keys which are not declared state variables.
+    for (const [name, value] of Object.entries(this._softStateOverlay)) {
+      if (name in state) state[name] = value as StateValueType;
+    }
     // User-facing boundary: attach typechain .toObject()/.toArray() to struct/array state values (ethers parity).
     // Kept out of the shared decoder so the internal derive path never sees these accessors.
     for (const k of Object.keys(state)) attachDecodedAccessors(state[k] as unknown as StateValue);
@@ -7799,7 +7843,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       derivedTokenContainerTransferNfts?: Array<{
         categoryId: string; lockingBytecode: Uint8Array; commitment: Uint8Array; capability: string;
       }>;
-    }> {
+  }> {
     const stateLayout = this.inner.stateLayout!;
 
     try {
@@ -8458,14 +8502,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const probeBuilderRet = stb.build();
             const transactionRet = probeBuilderRet.buildLibauthTransaction();
             const sourceOutputsRet = generateLibauthSourceOutputs(probeBuilderRet.inputs);
-            // Return encoding (especially Solidity ABI words) is assembled by ordinary opcodes between the last
-            // state/event pin and the return comparison. Preserve those states for this one bounded callee probe;
-            // the sparse observer is intentionally insufficient for recovering the opposite EQUALVERIFY operand.
-            const fullTraceRet = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
+            const returnProgram = {
               inputIndex: bMasterIdx,
               sourceOutputs: sourceOutputsRet,
               transaction: transactionRet,
-            }) as AuthenticationProgramStateCommon[];
+            };
+            let fullTraceRet = evaluateProbeTrace(this.inner.provider, returnProgram);
 
             // X13: in the in-block regime this group's return event sits at its own block slot, so scan exactly
             // that index; otherwise scan the appended tail band shared by every returning callee.
@@ -8486,16 +8528,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               .find((candidate) => candidate.name === group.functionName)?.outputs ?? [])
               .map((output) => output.type);
             const routeReturnPushes = routeReturnTypes.length || 1;
-            const aggregatePending = routeReturnPushes > 1
+            let aggregatePending = routeReturnPushes > 1
               ? extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes) : undefined;
             if (!returnCommitments?.length && aggregatePending) returnCommitments = [aggregatePending];
             else if (!returnCommitments?.length) {
               const pending = extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes);
               if (pending) returnCommitments = [pending];
             }
-            const evmScalar = (artifactUsesSolidityAbi(group.externalContract.inner.artifact)
+            let evmScalar = (artifactUsesSolidityAbi(group.externalContract.inner.artifact)
               || group.externalContract.inner.artifact.compiler?.options?.evmCompat)
               ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes) : undefined;
+            if (!returnCommitments?.length && !evmScalar) {
+              fullTraceRet = createVirtualMachineBch2026ForProvider(this.inner.provider)
+                .debug(returnProgram) as AuthenticationProgramStateCommon[];
+              returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);
+              aggregatePending = routeReturnPushes > 1
+                ? extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes) : undefined;
+              if (!returnCommitments?.length && aggregatePending) returnCommitments = [aggregatePending];
+              else if (!returnCommitments?.length) {
+                const pending = extractPendingReturnCommitment(fullTraceRet, routeReturnPushes, routeReturnTypes);
+                if (pending) returnCommitments = [pending];
+              }
+              evmScalar = (artifactUsesSolidityAbi(group.externalContract.inner.artifact)
+                || group.externalContract.inner.artifact.compiler?.options?.evmCompat)
+                ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes) : undefined;
+            }
             if (evmScalar) returnCommitments = [evmScalar];
             if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
               (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
@@ -8575,11 +8632,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const probeBuilder2 = stb.build();
                 const transaction2 = probeBuilder2.buildLibauthTransaction();
                 const sourceOutputs2 = generateLibauthSourceOutputs(probeBuilder2.inputs);
-                const fullTrace2 = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
+                const fullTrace2 = evaluateProbeTrace(this.inner.provider, {
                   inputIndex: eventProbeIndex >= 0 ? eventProbeIndex : bMasterIdx,
                   sourceOutputs: sourceOutputs2,
                   transaction: transaction2,
-                }) as AuthenticationProgramStateCommon[];
+                });
 
                 const eventCommitments = extractCommitmentMapFromTrace(fullTrace2, undefined, true);
                 if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
@@ -8671,11 +8728,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     };
                     group.eventOutputs = eventOutputs;
                     const progressiveProbe = stb.build();
-                    const progressiveTrace = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
+                    const progressiveTrace = evaluateProbeTrace(this.inner.provider, {
                       inputIndex: eventProbeIndex >= 0 ? eventProbeIndex : bMasterIdx,
                       sourceOutputs: generateLibauthSourceOutputs(progressiveProbe.inputs),
                       transaction: progressiveProbe.buildLibauthTransaction(),
-                    }) as AuthenticationProgramStateCommon[];
+                    });
                     const progressiveCommitments = extractCommitmentMapFromTrace(progressiveTrace, undefined, true);
                     const commitment = progressiveCommitments.get(
                       eventOutputBase + eventSlots[ei].offset,
@@ -8894,15 +8951,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (ec.hasReturnValues && group.eventOutputs?.some((output) => output !== undefined)
             && (group.fusedReturnGroupIndex !== undefined || !group.precomputedReturnCommitment)) {
             const returnProbe = stb.build();
-            // Return construction can span ordinary stack opcodes between the event pin and the final
-            // OUTPUTTOKENCOMMITMENT check. The sparse commitment observer deliberately omits those opcodes, so
-            // use a faithful trace for this single post-event probe. Callee execution is bounded to its routed
-            // function (typically hundreds of steps), while every iterative state/entry probe remains sparse.
-            const returnTrace = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
+            const returnProgram = {
               inputIndex: bMasterIdx,
               sourceOutputs: generateLibauthSourceOutputs(returnProbe.inputs),
               transaction: returnProbe.buildLibauthTransaction(),
-            }) as AuthenticationProgramStateCommon[];
+            };
+            // Most routed returns expose the final OUTPUTTOKENCOMMITMENT/EQUALVERIFY pair directly. Use the
+            // sparse observer first: a full libauth debug trace clones every intermediate VM state and costs
+            // seconds for multi-megabyte routed inputs. Keep the faithful trace as a compatibility fallback for
+            // return construction that can only be recovered from an intermediate stack state.
+            let returnTrace = evaluateProbeTrace(this.inner.provider, returnProgram);
             const returnOutputIndex = group.returnOutputIndex
               ?? stb.getExternalCallReturnEventOutputIndex(groupIdx);
             let returnCommitments = extractCommitmentsFromTrace(
@@ -8912,8 +8970,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               (row) => row.handler.outputs?.map((output) => output.type) ?? [],
             );
             const routeReturnPushes = routeReturnTypes.length || 1;
-            const aggregatePending = routeReturnPushes > 1
+            let aggregatePending = routeReturnPushes > 1
               ? extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes) : undefined;
+            if (!returnCommitments?.length && !aggregatePending) {
+              returnTrace = createVirtualMachineBch2026ForProvider(this.inner.provider)
+                .debug(returnProgram) as AuthenticationProgramStateCommon[];
+              returnCommitments = extractCommitmentsFromTrace(
+                returnTrace, 1, { min: returnOutputIndex, max: returnOutputIndex + 1 }, true,
+              );
+              aggregatePending = routeReturnPushes > 1
+                ? extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes) : undefined;
+            }
             if (!returnCommitments?.length && aggregatePending) returnCommitments = [aggregatePending];
             else if (!returnCommitments?.length) {
               const pending = extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes);
@@ -9104,11 +9171,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           || stb.getDynamicChunkVars().length > 0
           ? Math.max(this.maxDerivationIterations, 64)
           : this.maxDerivationIterations;
-        const debugTargetsThisDerivation = debugTargetDerivation
-          || stb.getDynamicChunkVars().some((variable) => variable.name === 'jobs');
+        const debugTargetsThisDerivation = debugTargetDerivation;
         const maxIterations = configuredDebugIterations > 0 && debugTargetsThisDerivation
           ? Math.min(maxIterationsDefault, configuredDebugIterations) : maxIterationsDefault;
         let lastTrace: AuthenticationProgramStateCommon[] | undefined;
+        let previousProbeFingerprint: string | undefined;
         const seenConvergenceKeys = new Set<string>();
         // Sorted value-upsert collections already probed for trailing NEW outputs. Once probed empty (an UPDATE
         // mints no new node), we must not re-seed a '00' placeholder or the loop count oscillates 0<->1 forever.
@@ -9124,6 +9191,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             stb.insertBeforeLateValueSuffix(probeBuilder2, { to: dummyLbc, amount: 1000n });
           }
           const { transaction: transaction2, sourceOutputs: sourceOutputs2 } = probeBuilder2.buildLibauthProgram();
+          // If applying the previous trace did not change either the candidate transaction or any spent output,
+          // evaluating it again is guaranteed to produce the same trace. This commonly occurs for an intentional
+          // source-level revert in a contract that also has dynamic/loop storage: those layouts raise the general
+          // derivation ceiling to 64, but no commitment can make the rejected call advance. Detect the fixed point
+          // from the complete VM program rather than a partial commitment fingerprint, so legitimate multi-probe
+          // derivations continue whenever even one input/output byte changes.
+          const sourceOutputFingerprint = sourceOutputs2.map((output) => [
+            output.valueSatoshis.toString(),
+            binToHex(output.lockingBytecode),
+            output.token?.category === undefined ? '' : binToHex(output.token.category),
+            output.token?.amount?.toString() ?? '',
+            output.token?.nft?.capability ?? '',
+            output.token?.nft?.commitment === undefined ? '' : binToHex(output.token.nft.commitment),
+          ].join(':')).join('|');
+          const probeFingerprint = `${binToHex(hash256Sync(encodeTransaction(transaction2)))}|${sourceOutputFingerprint}`;
+          if (probeFingerprint === previousProbeFingerprint) break;
+          previousProbeFingerprint = probeFingerprint;
           const debugIterationBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
           if (debugTargetsThisDerivation) console.error('derive-phase2-transaction-built', {
             iter,
@@ -9181,6 +9265,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // container identity checks, minting NFT uniqueness, or other non-commitment patterns.
           let commitmentProgress = 0;
           let nestedPinProgress = 0;
+          let nestedProbeHadError = false;
 
           // Nested delegate implementations (MarketplaceData.publishJobEvent) pin computed
           // value chunks at impl+blockSize. Phase-2 only traces the root implementation, so
@@ -9194,6 +9279,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               sourceOutputs: sourceOutputs2,
               transaction: transaction2,
             });
+            nestedProbeHadError ||= nestedTrace.some((state) => state.error !== undefined);
             const pin = extractRouteChunkPin(nestedTrace);
             const allChunks = extractAllRouteValueChunks(nestedTrace, pin);
             const proxyGroup = stb.getExternalCallUtxoGroups().find(
@@ -9238,6 +9324,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             );
             const nestedEmits = nestedFn?.emits ?? [];
             if (proxyGroup && nestedEventSlots.length > 0 && nestedEmits.length > 0) {
+              // `commits` is deliberately first-write-wins for computed value chunks: several disjoint covenant
+              // families can inspect the same speculative output coordinate while the routed layout converges.
+              // An event slot is different. An empty message-bus identity carrier can be preservation-checked at
+              // the event's eventual coordinate before the delegate reaches its event covenant; the event check
+              // is the later, authoritative write for that coordinate. Reusing the first-write map published the
+              // carrier's `SCID` commitment as the event and made the final delegate fail against its real blob.
+              const nestedEventCommitments = extractCommitmentMapFromTrace(
+                nestedTrace, { min: 0, max: 64 }, true,
+              );
               const eventOutputs: Array<{
                 eventSignature: string; commitment: string; lockingBytecode: Uint8Array;
               } | undefined> = proxyGroup.eventOutputs
@@ -9248,7 +9343,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const emitInfo = nestedEmits[eventIndex];
                 if (!emitInfo) continue;
                 const absoluteIndex = implInputIndex + nestedEventSlots[eventIndex].offset;
-                const commitment = commits.get(absoluteIndex);
+                const commitment = nestedEventCommitments.get(absoluteIndex);
                 if (!commitment) continue;
                 const lockingBytecode = eventOutputs[eventIndex]?.lockingBytecode
                   ?? scriptToLockingBytecode(
@@ -10064,6 +10159,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // while the probe still errors (bounded by maxIterations). Non-value-chunk txs keep the original break so
           // an expected-revert derivation still exits fast.
           const probeHadError = fullTrace2.some((s: any) => s.error);
+          const anyProbeHadError = probeHadError || nestedProbeHadError;
           if (debugTargetsThisDerivation && (globalThis as { process?: { env?: Record<string, string> } }).process
             ?.env?.SOLIDC_DEBUG_DERIVATION_MIN === '1') {
             console.error('derivation-min', {
@@ -10074,16 +10170,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               })),
             });
           }
-          const needsPassingProbe = stb.getValueChunkVars().length > 0
+          const needsPassingProbe = nestedProbeHadError || stb.getValueChunkVars().length > 0
             || stb.getDynamicChunkVars().length > 0 || stb.getLoopEntryVars().length > 0;
           // A successful probe proves the builder's current commitments and output geometry satisfy the complete
           // covenant. Continuing can only revisit the same authenticated observations and falsely classify that
           // stable fixed point as an oscillation.
           // The root marketplace covenant can pass while a nested publishJobEvent still
           // lacks later value-chunk outputs (nNew>1). Keep probing until those pins settle.
-          if (!probeHadError && nestedPinProgress === 0) break;
-          if (convergenceKey === prevConvergenceKey && (!needsPassingProbe || !probeHadError)) break;
-          if (seenConvergenceKeys.has(convergenceKey) && (!needsPassingProbe || !probeHadError)) {
+          if (!anyProbeHadError && nestedPinProgress === 0) break;
+          if (convergenceKey === prevConvergenceKey && (!needsPassingProbe || !anyProbeHadError)) break;
+          if (seenConvergenceKeys.has(convergenceKey) && (!needsPassingProbe || !anyProbeHadError)) {
             throw new AutoDerivationError(
               'Auto-derivation oscillation detected: derivation state is cycling without converging. '
             + 'This may indicate conflicting covenant constraints.',
@@ -10092,23 +10188,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           seenConvergenceKeys.add(convergenceKey);
           prevConvergenceKey = convergenceKey;
         }
-
         // P5b: drop any unresolved '00' value-chunk placeholder from the FINAL commitments. The seed at derivation
         // time gives the covenant's chunk 0 an output to verify against (the chunked bootstrap), but a computed value
         // that resolves INLINE (<= 60 B) pins NO chunks (emitSortedValueChunkPin's size>60 guard), so the placeholder
         // is spurious - a real chunk commitment is always long (slot++digest++i++data), never the 1-byte '00'.
         // Minting it would leave a garbage chunk NFT that a later chunked read of the same slot fails to parse.
+        let removedValueChunkPlaceholder = false;
         for (const vcv of stb.getValueChunkVars()) {
           const commits = stb.getValueChunkRawCommitments(vcv.collection).filter((c) => c !== '00');
           if (commits.length !== stb.getValueChunkRawCommitments(vcv.collection).length) {
             stb.setValueChunkRawCommitments(vcv.collection, commits);
+            removedValueChunkPlaceholder = true;
           }
         }
 
         // The speculative value-chunk placeholder above can be the first failing output pin in every
         // primary probe. Once it is removed, delegate execution can finally reach later dynamic-storage
         // pins. Derive those commitments from the cleaned layout before constructing the final transaction.
-        if (stb.getDynamicChunkVars().length > 0) {
+        if (removedValueChunkPlaceholder && stb.getDynamicChunkVars().length > 0) {
           const cleanedIterationLimit = configuredDebugIterations > 0 && debugTargetsThisDerivation
             ? Math.min(64, configuredDebugIterations) : 64;
           for (let iter = 0; iter < cleanedIterationLimit; iter++) {
@@ -10390,6 +10487,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const toBal = await this._softReadErc20Balance(pending.token, pending.to);
     pending.token._setSoftMapping('_balances', [pending.from], fromBal > pending.amount ? fromBal - pending.amount : 0n);
     pending.token._setSoftMapping('_balances', [pending.to], toBal + pending.amount);
+    if (pending.jobIndex !== undefined && pending.postedAt !== undefined) {
+      const prior = (this._softStateOverlay.__marketplaceJobPostedAt ?? {}) as unknown as Record<string, bigint>;
+      this._setSoftState('__marketplaceJobPostedAt', {
+        ...prior,
+        [pending.jobIndex]: pending.postedAt,
+      } as unknown as StateValue);
+    }
+    if (pending.clearCollateral && pending.jobIndex !== undefined) {
+      const raw = await getContractState(this.inner, this.categoryId);
+      const jobs = Array.isArray(raw.state.jobs) ? [...raw.state.jobs] : [];
+      const current = jobs[pending.jobIndex];
+      if (current && typeof current === 'object' && !Array.isArray(current)) {
+        jobs[pending.jobIndex] = {
+          ...(current as Record<string, StateValue>),
+          collateralOwed: 0n,
+        };
+        this._setSoftState('jobs', jobs as StateValue);
+      }
+    }
   }
 
   /** @internal */
@@ -10515,6 +10631,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (token && amount > 0n) {
         this._pendingMarketplaceTokenTransfer = {
           token, from: this._signer.getAddress(), to: this.target, amount,
+          jobIndex: Array.isArray(onChainState.state.jobs) ? onChainState.state.jobs.length : 0,
+          postedAt: BigInt((this.inner.provider as { getBlockTime?: () => number }).getBlockTime?.()
+            ?? Math.floor(Date.now() / 1000)),
         };
       }
     } else if (this._signer && updateArgs && updateArgs.length > 4) {
@@ -14108,14 +14227,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const nestedIndices: number[] = [];
             const nestedByCallsite = new Map<number, number>();
             const extraTransfer = (overrides?.calls ?? []).find((candidate) =>
-              candidate.type === 'stateful' && candidate.functionName === 'transferFrom');
-            const nestedExternalCalls = [...(delegateFn?.externalCalls ?? [])];
+              candidate.type === 'stateful'
+              && (candidate.functionName === 'transferFrom' || candidate.functionName === 'transfer'));
+            const extraTransferFunction = extraTransfer?.type === 'stateful'
+              ? extraTransfer.functionName : undefined;
+            // updateJobPost publishes both mutually-exclusive low-level SafeERC20 branches in its ABI. Their
+            // runtime target and arguments are resolvable even when the branch is inactive, so composing them
+            // speculatively recreates stale balance entries on no-transfer updates. The active branch is
+            // resolved from current job/time state below and appended as one explicit typed call instead.
+            const nestedExternalCalls = [...(delegateFn?.externalCalls ?? [])].filter((nested) => !(
+              callInfo.functionName === 'updateJobPost'
+              && nested.interfaceName === '__raw__'
+              && (nested.rawFunctionName === 'transferFrom' || nested.rawFunctionName === 'transfer')
+            ));
             if (extraTransfer && extraTransfer.type === 'stateful'
               && callInfo.functionName === 'updateJobPost') {
               nestedExternalCalls.push({
                 callsiteId: -1,
                 interfaceName: 'IERC20',
-                functionName: 'transferFrom',
+                functionName: extraTransfer.functionName,
                 occurrence: 'once',
                 hasReturnValues: true,
                 callMode: 'call',
@@ -14153,8 +14283,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const resolvedAddress = nested.addressSource
                 ? this._resolveExternalArgs(
                   [nested.addressSource], callInfo.args, callInfo.contract.inner.artifact,
+                  onChainState.state,
                 )?.[0]
-                : undefined;
+                // Backward compatibility for artifacts which predate addressSource: addressStateVar names the
+                // authenticated caller-state field, not a deployment-registry hint. Prefer it over interface-name
+                // lookup so two different interfaces cannot accidentally collapse onto the same fallback callee.
+                : nested.addressStateVar
+                  ? onChainState.state[nested.addressStateVar] as FunctionArgument | undefined
+                  : undefined;
               const addressParamIndex = nested.addressParam
                 ? delegateFn!.inputs.findIndex((input) => input.name === nested.addressParam)
                 : -1;
@@ -14195,7 +14331,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ])].filter((candidate) => {
                   const contract = ('proxy' in candidate ? candidate.implementation : candidate) as StatefulContract;
                   return (contract.inner.artifact.abi as readonly AbiFunction[])
-                    .some((fn) => fn.name === nested.rawFunctionName);
+                    .some((fn) => (nested.rawFunctionName !== undefined && fn.name === nested.rawFunctionName)
+                      || (nested.rawSelector !== undefined && fn.selector === nested.rawSelector));
                 }) : [];
               if (rawCandidates.length > 1 && deploymentAtAddress === undefined) {
                 throw new Error(
@@ -14204,7 +14341,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 );
               }
               const registeredCallee = (
-                (nested.functionName === 'transferFrom' && extraTransfer && extraTransfer.type === 'stateful'
+                (nested.functionName === extraTransferFunction
+                  && extraTransfer && extraTransfer.type === 'stateful'
                   ? extraTransfer.contract : undefined)
                 ?? deploymentAtAddress
                 ?? rawCandidates[0]
@@ -14228,16 +14366,49 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   + `Resolved target: ${addressDiagnostic}`,
                 );
               }
+              const resolvedRawFunctionName = nested.interfaceName === '__raw__'
+                ? nested.rawFunctionName
+                  ?? (callee.inner.artifact.abi as readonly AbiFunction[])
+                    .find((fn) => fn.selector === nested.rawSelector)?.name
+                : undefined;
+              if (nested.interfaceName === '__raw__' && !resolvedRawFunctionName) {
+                throw new Error(
+                  `Delegate raw call selector '${nested.rawSelector ?? '<unknown>'}' is not advertised by `
+                  + `the resolved ${callee.inner.artifact.contractName} deployment.`,
+                );
+              }
               if (callee._logicalAddress) void nestedIdentity(callee._logicalAddress);
-              const nestedArgs = (nested.functionName === 'transferFrom' && extraTransfer
+              const containsReturningExpression = (value: unknown, seen = new Set<object>()): boolean => {
+                if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
+                seen.add(value as object);
+                if ((value as { kind?: string }).kind === 'externalCall') return true;
+                return Object.values(value).some((child) => (
+                  Array.isArray(child)
+                    ? child.some((item) => containsReturningExpression(item, seen))
+                    : containsReturningExpression(child, seen)
+                ));
+              };
+              const needsExpressionReturns = nestedSources?.some((source) => containsReturningExpression(source));
+              const nestedExpressionReturns = needsExpressionReturns
+                ? await this._resolveExternalExpressionReturns(
+                  nestedSources, callInfo.args, callInfo.contract, onChainState.state,
+                )
+                : undefined;
+              const nestedArgs = (nested.functionName === extraTransferFunction && extraTransfer
                 && extraTransfer.type === 'stateful')
                 ? extraTransfer.args
-                : this._resolveExternalArgs(
-                  nestedSources,
-                  callInfo.args,
-                  callInfo.contract.inner.artifact,
-                  onChainState.state,
-                );
+                : nestedExpressionReturns
+                  ? this._resolveExternalArgs(
+                    nestedSources,
+                    callInfo.args,
+                    callInfo.contract.inner.artifact,
+                    onChainState.state,
+                    undefined,
+                    nestedExpressionReturns,
+                  )
+                  : this._resolveExternalArgs(
+                    nestedSources, callInfo.args, callInfo.contract.inner.artifact, onChainState.state,
+                  );
               if (nestedArgs === undefined) {
                 throw new Error(
                   `Delegate external call to ${nested.interfaceName}.${nested.functionName} `
@@ -14268,7 +14439,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // fixed state. Expanding it to every data NFT corrupts the callee's
               // block offsets (notably ERC20 mapping-only functions).
               const nestedAbiFn = (callee.inner.artifact.abi as readonly AbiFunction[])
-                .find((fn) => fn.name === (nested.rawFunctionName ?? nested.functionName));
+                .find((fn) => fn.name === (resolvedRawFunctionName ?? nested.functionName));
               let childRequired = nested.requiredDataNftIndices
                 ?? nestedAbiFn?.requiredNftIndices
                 ?? [];
@@ -14289,7 +14460,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (nested.callsiteId !== undefined) {
                 nestedByCallsite.set(nested.callsiteId, childExternalGroupIndex);
               }
-              let childFunctionName = nested.rawFunctionName ?? nested.functionName;
+              let childFunctionName = resolvedRawFunctionName ?? nested.functionName;
               let childFunctionArgs = nestedArgs;
               let delegateCallGroupIndex: number | undefined;
               let childWritesState = false;
@@ -14638,6 +14809,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const childCompilerInternalArgs: Record<string, FunctionArgument> = {};
               /** Rebuilt chunk payloads for the callee's chunkable vmap values, by route entry slot. */
               const childValueWitnesses = new Map<number, Uint8Array>();
+              /** Full current values for chunkable route entries, including inline values. */
+              const childStoredValues = new Map<number, Uint8Array>();
               const childBatchTargets = new Map<number, Uint8Array>();
               const childBatchLists = new Map<string, SortedList>();
               const childBatchPredecessorOutputs: Array<{
@@ -14835,6 +15008,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             expressionLabel,
                             routePlanningArgs,
                             selectedFn.inputs.filter((input) => !input.name.startsWith('__internal__')),
+                            childState.state,
                           );
                           if (auto) return auto;
                         }
@@ -14921,7 +15095,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                           const tail = list.find(keySlot)!.value;
                           const storedLength = tail.length >= 4
                             ? tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24) : 0;
-                          if (storedLength > 60) {
+                          if (storedLength <= 60) {
+                            childStoredValues.set(
+                              slot.slotIndex ?? 0,
+                              tail.slice(4, 4 + storedLength),
+                            );
+                          } else {
                             const root = tail.slice(4, 36);
                             const chunkAddress = getValueChunkAddress(
                               entryContract, callee.categoryId, access.collection, keySlot, root,
@@ -14941,6 +15120,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             );
                             if (binToHex(sha256Sync(joined)) === binToHex(root)) {
                               childValueWitnesses.set(slot.slotIndex ?? 0, joined);
+                              childStoredValues.set(slot.slotIndex ?? 0, joined);
                             }
                             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                               ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
@@ -15040,7 +15220,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 let childBatchTrailingCount = 0;
                 for (const batch of activeSortedBatches) {
                   const list = childBatchLists.get(batch.collection);
-                  if (!list) throw new Error(`Nested vmap batch '${batch.collection}' has no sorted-list snapshot`);
+                  if (!list) {
+                    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                      ?.SOLIDC_DEBUG_BATCH_SNAPSHOT === '1') {
+                      console.error('nested-batch-snapshot-missing', {
+                        interfaceName: nested.interfaceName,
+                        functionName: nested.functionName,
+                        selectedFunction: selectedFn?.name,
+                        collection: batch.collection,
+                        batchSlots: batch.slotIndices,
+                        loadedCollections: [...childBatchLists.keys()],
+                        targets: [...childBatchTargets.entries()].map(([slotIndex, target]) => ({
+                          slotIndex, target: binToHex(target),
+                        })),
+                        entrySlots: selectedLayout.slots.filter((slot) => slot.kind === 'entry'),
+                        entryAccesses: selectedFn?.entryAccesses,
+                      });
+                    }
+                    throw new Error(`Nested vmap batch '${batch.collection}' has no sorted-list snapshot`);
+                  }
                   const canonicalSlots: number[] = [];
                   const canonicalByTarget = new Map<string, number>();
                   const aliasOwner = new Map<number, number>();
@@ -15220,18 +15418,49 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   return collection?.chunkableValue === true && access.operations.includes('write');
                 })) {
                   const visibleInputs = selectedFn!.inputs.filter((input) => !input.name.startsWith('__internal__'));
-                  let encodedPayloadBytes = visibleInputs.reduce((largest, input, index) => {
+                  const structs = proxyCallee.implementation.inner.artifact.structs ?? childLayout.structs;
+                  const fallbackPayloadBytes = visibleInputs.reduce((largest, input, index) => {
                     const encoded = encodeFunctionArgument(
-                      nestedArgs[index], input.type,
-                      proxyCallee.implementation.inner.artifact.structs ?? childLayout.structs,
+                      nestedArgs[index], input.type, structs,
                     );
                     return encoded instanceof Uint8Array ? Math.max(largest, encoded.length) : largest;
                   }, 0);
+                  const sharedPrimary = sharedGroupIndex >= 0
+                    ? externalCallUtxoGroups[sharedGroupIndex] : undefined;
+                  const sharedDelegate = delegateCallGroupIndex !== undefined
+                    ? lowLevelCallUtxoGroups[delegateCallGroupIndex] : undefined;
+                  const leadingPush = sharedPrimary?.internalArgs?.__internal__leadingPushValue_0
+                    ?? sharedDelegate?.internalArgs?.__internal__leadingPushValue_0;
+                  let encodedPayloadBytes = 0;
+                  for (const [routeSlot, access] of (selectedFn?.entryAccesses ?? []).entries()) {
+                    if (!access.operations.includes('write')) continue;
+                    const collection = childLayout.collections?.find((candidate) =>
+                      candidate.name === access.collection || candidate.signature === access.collection);
+                    if (!collection?.chunkableValue) continue;
+                    let payloadBytes = fallbackPayloadBytes;
+                    if (collection.valueType.endsWith('[]')) {
+                      const emptyArray = encodePushdataValue([], collection.valueType, structs);
+                      let nextValue = childStoredValues.get(routeSlot) ?? emptyArray;
+                      if (leadingPush instanceof Uint8Array && leadingPush.length > 0) {
+                        nextValue = concatenateEncodedArrays(nextValue, leadingPush);
+                      }
+                      const elementType = collection.valueType.slice(0, -2);
+                      const elementIndex = visibleInputs.findIndex((input) => input.type === elementType);
+                      if (elementIndex >= 0) {
+                        const element = encodeStructArgument(nestedArgs[elementIndex], elementType, structs);
+                        nextValue = appendEncodedArrayElement(nextValue, element);
+                        payloadBytes = nextValue.length;
+                      } else {
+                        // The write expression is not represented by one ABI input. Preserve the prior
+                        // conservative growth allowance in addition to the authenticated current value.
+                        payloadBytes = nextValue.length + fallbackPayloadBytes + VALUE_CHUNK_SIZE;
+                      }
+                    }
+                    encodedPayloadBytes = Math.max(encodedPayloadBytes, payloadBytes);
+                  }
                   if (timingEnabled && nested.callsiteId === 6) console.error('nested-callsite-chunk-size', {
                     encodedPayloadBytes, visibleInputs: visibleInputs.map((input) => input.type),
                   });
-                  if ((childLayout.collections ?? []).some((collection) => collection.chunkableValue
-                    && collection.valueType.endsWith('[]'))) encodedPayloadBytes += VALUE_CHUNK_SIZE;
                   const chunkSlots = encodedPayloadBytes > VALUE_HEAD_SIZE
                     ? Math.ceil((encodedPayloadBytes - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE) : 0;
                   for (let chunk = 0; chunk < chunkSlots; chunk++) childBlockInputs.push(takeFunder());
@@ -15847,8 +16076,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const postMaster = nestedMasterIndices[groupIdx];
           if (postMaster === undefined) continue;
           const blockSize = group.blockLayout?.blockSize ?? 8;
-          // MD tails occupy master+blockSize and +1 (34, 35). Trailing preds go at 36.
-          const predBase = postMaster + blockSize + 2;
+          // Predecessor outputs follow the complete appended return band. A loop call can publish more than one
+          // return witness (for example two meceTags reads), so the old fixed `+2` overwrote the second witness
+          // at output 36 and stopped execution before the reverse-suffix dynamic chunks could be authenticated.
+          const repeatedReturnExpansion = externalCallUtxoGroups.reduce(
+            (sum, candidate) => sum + Math.max(0, (candidate.loopReturnCommitments?.length ?? 1) - 1),
+            0,
+          );
+          const predBase = Math.max(
+            postMaster + blockSize + 2 + repeatedReturnExpansion,
+            nextTail,
+          );
           relocatedPredOutBase.set(groupIdx, predBase);
           group.relocatedPredOutBase = predBase;
         }
@@ -15942,6 +16180,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               });
             }
             return BigInt(routeBlockWitness ?? nestedMasterIndices[groupIdx] + childBlockSize);
+          }
+          if (input.name === '__internal__externalCallInputBase') {
+            const physicalGroupIndex = child.sharedGroupIndex ?? groupIdx;
+            const childBlockSize = externalCallUtxoGroups[physicalGroupIndex].blockInputs?.length
+              ?? externalCallUtxoGroups[physicalGroupIndex].blockLayout?.blockSize
+              ?? 1 + externalCallUtxoGroups[physicalGroupIndex].dataNftUtxos.length;
+            return BigInt(nestedMasterIndices[physicalGroupIndex] + childBlockSize);
           }
           if (input.name.startsWith('__internal__vmapBatch')
             || input.name.startsWith('__internal__valueWitness_')
@@ -16171,6 +16416,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           let tokenCallInputCategory: string | undefined;
           let tokenCallGroup: typeof externalCallUtxoGroups[number] | undefined;
           const nestedGroups = delegateExternalGroupIndices.get(groupLocalIdx) ?? [];
+          // Conditional callsites are omitted from `nestedGroups`, so its compact position is not necessarily the
+          // compiler's stable callsite/hidden-witness suffix. Prefer the callsite map and retain positional lookup
+          // only for older artifacts which did not publish callsite IDs.
+          const nestedGroupIndexForSlot = (slot: number): number | undefined => {
+            const callsiteId = (bFunc as AbiFunction).externalCalls?.[slot]?.callsiteId;
+            return (callsiteId === undefined
+              ? undefined : delegateExternalGroupByCallsite.get(groupLocalIdx)?.get(callsiteId))
+              ?? nestedGroups[slot];
+          };
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1' && group.functionName === 'publishJobPost') {
             console.error('publish-job-nested-groups', nestedGroups.map((groupIndex, slot) => ({
@@ -16196,7 +16450,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // Resolve the group the COVENANT will read for this slot. That is exactly the positional mapping the
             // `__internal__extcallMasterIdx<slot>` fill above uses; several logical callsites can share one
             // physical group, so a callsite-keyed lookup would name the wrong contract.
-            const nestedGroupIndex = nestedGroups[slot];
+            const nestedGroupIndex = nestedGroupIndexForSlot(slot);
             const nestedGroup = nestedGroupIndex === undefined
               ? undefined : externalCallUtxoGroups[nestedGroupIndex];
             const callee = nestedGroup?.externalContract as StatefulContract | undefined;
@@ -16292,7 +16546,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (/^__internal__extcallMasterIdx\d*$/.test(inp.name)) {
               const suffix = inp.name.slice('__internal__extcallMasterIdx'.length);
               const slot = suffix === '' ? 0 : Number(suffix);
-              const nestedGroup = nestedGroups[slot];
+              const nestedGroup = nestedGroupIndexForSlot(slot);
               const call = (bFunc as AbiFunction).externalCalls?.[slot] as (
                 ExternalCallAbi & { occurrence?: string }
               ) | undefined;
@@ -16431,7 +16685,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const slot = Number(anchorWitness[1]);
               const band = anchorBandBySlot.get(slot);
               if (band === undefined) {
-                const nestedGroupIndex = nestedGroups[slot];
+                const nestedGroupIndex = nestedGroupIndexForSlot(slot);
                 const nestedGroup = nestedGroupIndex === undefined
                   ? undefined : externalCallUtxoGroups[nestedGroupIndex];
                 const physicalGroup = nestedGroup === undefined ? undefined
@@ -16463,8 +16717,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   const group = externalCallUtxoGroups[idx];
                   const name = group?.functionName ?? '';
                   const routed = group?.compilerRoute?.abiFunction.name ?? '';
-                  return name === 'transferFrom' || name === 'approve'
-                    || routed === 'transferFrom' || routed === 'approve';
+                  return name === 'transferFrom' || name === 'transfer' || name === 'approve'
+                    || routed === 'transferFrom' || routed === 'transfer' || routed === 'approve';
                 }) : undefined;
               const nestedGroup = tokenNested !== undefined ? tokenNested
                 : targetSlot >= 0 ? nestedGroups[targetSlot] : nestedGroups[callIndex];
@@ -17761,7 +18015,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           .map((position) => ({ position, value: Number(fill.encodedArgs[position]) }))
           .filter((entry) => Number.isFinite(entry.value) && entry.value >= tokenIndex)
           .sort((left, right) => left.value - right.value);
-        let nextReturn = tokenReturn + 1;
+        // A balanced token block can extend beyond its in-block return slot with authenticated predecessor
+        // recreations. The other contracts' appended returns begin after the complete physical block, not
+        // immediately after that return slot (where they would point at the predecessor NFT).
+        const tokenPhysicalEnd = tokenIndex + Math.max(
+          fill.tokenGroup?.blockLayout?.blockSize ?? 0,
+          fill.tokenGroup?.blockInputs?.length ?? 0,
+        );
+        let nextReturn = Math.max(tokenReturn + 1, tokenPhysicalEnd);
         for (const entry of returnArgs) {
           fill.encodedArgs[entry.position] = BigInt(nextReturn);
           nextReturn += 1;
@@ -17770,11 +18031,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const tokenUpdates: Record<string, FunctionArgument> = {
           __internal__returnOutputIdx: BigInt(tokenReturn),
         };
-        if (fill.tokenGroup) {
+        if (fill.tokenGroup?.relocatedPredOutBase !== undefined) {
           const blockSize = fill.tokenGroup.blockLayout?.blockSize ?? 8;
           // 1616 EQUALVERIFY uses PredOut as an absolute output index. The pred
           // NFT is replayed at master+blockSize+2 (36). Relative 10 dies at 1616.
-          const predBase = tokenIndex + blockSize + 2;
+          // Preserve the predecessor position selected while laying out the complete return band. A loop call
+          // can add multiple return witnesses after the token block, so the legacy fixed `+2` slot may already
+          // be occupied (the builder then advances the predecessor, while this hidden argument otherwise keeps
+          // pointing at the occupied return output).
+          const predBase = Math.max(
+            fill.tokenGroup.relocatedPredOutBase ?? 0,
+            tokenIndex + blockSize + 2,
+            nextReturn,
+            tokenIndex + blockSize + externalCallUtxoGroups
+              .filter((group) => group.returnOutputIndex !== undefined
+                && group.categoryId !== fill.tokenGroup!.categoryId)
+              .reduce((width, group) => width
+                + Math.max(1, group.loopReturnCommitments?.length ?? 1), 0),
+          );
           fill.tokenGroup.relocatedPredOutBase = predBase;
           const tokenFn = fill.tokenGroup.compilerRoute?.abiFunction
             ?? (fill.tokenGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
@@ -18254,8 +18528,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           outputType: outputs[0].type,
         });
       }
+      const returnArtifact = (abiFunction?.outputs?.length ?? 0) > 0
+        ? this.inner.artifact : delegatedReturn?.artifact ?? this.inner.artifact;
+      const scalar = artifactUsesSolidityAbi(returnArtifact)
+        ? decodeEvmScalarReturn(blob, outputs[0].type) : undefined;
       const decoded = normalizeJobEventAddresses(
-        decodePushdataValue(blob, 0, outputs[0].type, structs).value,
+        scalar ?? decodePushdataValue(blob, 0, outputs[0].type, structs).value,
         outputs[0].type,
         structs,
       ) as StateValue;
@@ -18352,6 +18630,49 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return scriptToAddress(covenantScript, this.inner.provider.network, this.inner.addressType, true);
   }
 
+  /** Resolve returning calls nested inside another external-call argument expression. */
+  private async _resolveExternalExpressionReturns(
+    argSources: readonly ArgSource[] | undefined,
+    functionArgs: FunctionArgument[],
+    registryOwner: StatefulContract,
+    state?: Record<string, unknown>,
+  ): Promise<Map<string, FunctionArgument>> {
+    const resolved = new Map<string, FunctionArgument>();
+    const visit = async (expression: ExternalCallExpression | undefined): Promise<void> => {
+      if (!expression) return;
+      for (const child of [expression.expression, expression.left, expression.right,
+        expression.condition, expression.ifTrue, expression.ifFalse]) await visit(child);
+      for (const child of expression.args ?? []) await visit(child);
+      if (expression.kind !== 'externalCall' || !expression.name) return;
+      const separator = expression.name.indexOf('.');
+      if (separator < 1 || separator === expression.name.length - 1) return;
+      const interfaceName = expression.name.slice(0, separator);
+      const functionName = expression.name.slice(separator + 1);
+      const values = (expression.args ?? []).map((argument) => this._evaluateExternalExpression(
+        argument, functionArgs, registryOwner.inner.artifact, state, undefined, resolved,
+      ));
+      if (values.some((value) => value === undefined)) return;
+      const registered = registryOwner._externalRegistry.get(interfaceName)
+        ?? this._externalRegistry.get(interfaceName)
+        ?? findDeploymentByName(this.inner.provider, interfaceName)?.contract;
+      if (!registered) return;
+      let value: StateValue;
+      if (typeof registered === 'object' && 'forward' in registered
+        && typeof (registered as { forward?: unknown }).forward === 'function') {
+        value = await (registered as {
+          forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
+        }).forward(functionName, values as FunctionArgument[]).staticCall();
+      } else {
+        value = await (registered as StatefulContract)._deriveReturnValue(
+          functionName, values as FunctionArgument[],
+        );
+      }
+      resolved.set(JSON.stringify(expression), value as FunctionArgument);
+    };
+    for (const source of argSources ?? []) await visit(source.expression);
+    return resolved;
+  }
+
   /**
    * Resolve B's function args from A's args using argSources metadata.
    * Returns the resolved args, or undefined if any arg source is unresolvable.
@@ -18363,6 +18684,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     artifact: Artifact,
     state?: Record<string, unknown>,
     callerInputs?: readonly { type: string }[],
+    externalReturns?: ReadonlyMap<string, FunctionArgument>,
   ): FunctionArgument[] | undefined {
     if (!argSources) return undefined;
     if (argSources.length === 0) return [];
@@ -18432,7 +18754,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         case 'expression':
           if (source.expression) {
             const value = this._evaluateExternalExpression(
-              source.expression, functionArgs, artifact, state, callerInputs,
+              source.expression, functionArgs, artifact, state, callerInputs, externalReturns,
             );
             if (value === undefined) return undefined;
             resolved.push(value);
@@ -18453,9 +18775,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     artifact: Artifact,
     state?: Record<string, unknown>,
     callerInputs?: readonly { type: string }[],
+    externalReturns?: ReadonlyMap<string, FunctionArgument>,
   ): FunctionArgument | undefined {
     const evaluate = (candidate: ExternalCallExpression): FunctionArgument | undefined => (
-      this._evaluateExternalExpression(candidate, functionArgs, artifact, state, callerInputs)
+      this._evaluateExternalExpression(candidate, functionArgs, artifact, state, callerInputs, externalReturns)
     );
     const concat = (parts: Uint8Array[]): Uint8Array => {
       const result = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
@@ -18562,7 +18885,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     if (expression.kind === 'source' && expression.source) {
       return this._resolveExternalArgs(
-        [expression.source], functionArgs, artifact, state, callerInputs,
+        [expression.source], functionArgs, artifact, state, callerInputs, externalReturns,
       )?.[0];
     }
     if (expression.kind === 'literal') {
@@ -18684,6 +19007,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return values.every((value) => value !== undefined)
         ? values as unknown as FunctionArgument
         : undefined;
+    }
+    if (expression.kind === 'newArray' && expression.args?.[0]) {
+      const size = evaluate(expression.args[0]);
+      if (typeof size !== 'bigint' && typeof size !== 'number') return undefined;
+      const length = Number(size);
+      if (!Number.isSafeInteger(length) || length < 0 || length > 10_000) return undefined;
+      const empty: FunctionArgument = expression.type === 'bool' ? false
+        : expression.type?.startsWith('uint') || expression.type?.startsWith('int') ? 0n
+          : expression.type === 'string' ? '' : new Uint8Array();
+      return Array.from({ length }, () => empty) as FunctionArgument;
+    }
+    if (expression.kind === 'externalCall') {
+      return externalReturns?.get(JSON.stringify(expression));
     }
     if (expression.kind === 'arrayAccess' && expression.left && expression.right) {
       const array = evaluate(expression.left);
@@ -19589,6 +19925,14 @@ export class StatefulFunctionCall {
 
   private externalCallInfos: ExternalCallInfo[] = [];
   private callInfos: CallInfo[] = [];
+  private marketplaceTokenOverlay?: {
+    token: StatefulContract;
+    from: string | Uint8Array;
+    to: string | Uint8Array;
+    amount: bigint;
+    jobIndex?: number;
+    clearCollateral?: boolean;
+  };
   private registryExternalStateOverrides: Map<string, Record<string, StateValueType>> = new Map();
   private emitReturnFlag = false;
   private consumesLogicalNonce = true;
@@ -21534,13 +21878,39 @@ export class StatefulFunctionCall {
   }
 
   /**
-   * updateJobPost's delegate body still inlines SafeERC20.safeTransferFrom when
-   * the amount rises. The delegate ABI dropped that callsite, so compose
-   * FakeToken.transferFrom as a co-spent input the callInputIndex witnesses can name.
+   * updateJobPost's delegate body still inlines SafeERC20 transfers. The delegate ABI dropped those callsites,
+   * so compose the active ERC20 transfer as a co-spent input the callInputIndex witnesses can name.
    */
   private async _maybeWireMarketplaceTransferFrom(): Promise<void> {
+    this.marketplaceTokenOverlay = undefined;
     if (!this.parentContract) return;
-    if (this.callInfos.some((call) => call.type === 'stateful' && call.functionName === 'transferFrom')) {
+    const existingTokenCall = this.callInfos.find((call): call is Extract<CallInfo, { type: 'stateful' }> => (
+      call.type === 'stateful' && (call.functionName === 'transferFrom' || call.functionName === 'transfer')
+    ));
+    if (existingTokenCall) {
+      const amount = StatefulContract._toSoftBigint(existingTokenCall.args.at(-1));
+      const repeatedUpdate = this.functionName === 'updateJobPost'
+        ? this.functionArgs
+        : this.callInfos.find((call): call is Extract<CallInfo, { type: 'stateful' }> => (
+          call.type === 'stateful' && call.functionName === 'updateJobPost'
+        ))?.args;
+      const repeatedJobIndex = repeatedUpdate?.[0] === undefined
+        ? undefined : Number(StatefulContract._toSoftBigint(repeatedUpdate[0]));
+      this.marketplaceTokenOverlay = existingTokenCall.functionName === 'transferFrom'
+        ? {
+          token: existingTokenCall.contract,
+          from: existingTokenCall.args[0] as string | Uint8Array,
+          to: existingTokenCall.args[1] as string | Uint8Array,
+          amount,
+        }
+        : {
+          token: existingTokenCall.contract,
+          from: this.parentContract.target,
+          to: existingTokenCall.args[0] as string | Uint8Array,
+          amount,
+          jobIndex: repeatedJobIndex,
+          clearCollateral: repeatedJobIndex !== undefined,
+        };
       return;
     }
     const updateCall = this.functionName === 'updateJobPost'
@@ -21550,13 +21920,13 @@ export class StatefulFunctionCall {
     if (!updateCall || updateCall.args.length < 5) return;
     const signer = this.parentContract._signer;
     if (!signer) return;
-    let jobs: unknown;
+    let marketplaceState: Record<string, unknown>;
     try {
-      const state = await this.parentContract.getState();
-      jobs = (state as { jobs?: unknown }).jobs;
+      marketplaceState = await this.parentContract.getState() as Record<string, unknown>;
     } catch {
       return;
     }
+    const jobs = marketplaceState.jobs;
     if (!Array.isArray(jobs)) return;
     const jobIndex = Number(StatefulContract._toSoftBigint(updateCall.args[0]));
     const job = jobIndex >= 0 && jobIndex < jobs.length
@@ -21565,27 +21935,61 @@ export class StatefulFunctionCall {
     const newAmount = StatefulContract._toSoftBigint(updateCall.args[4]);
     const oldAmount = StatefulContract._toSoftBigint(job.amount);
     const owed = StatefulContract._toSoftBigint(job.collateralOwed);
-    if (newAmount <= oldAmount) return;
-    const transfer = newAmount - oldAmount - owed;
+    let tokenFunction: 'transferFrom' | 'transfer';
+    let transfer: bigint;
+    let tokenArgs: FunctionArgument[];
+    if (newAmount > oldAmount) {
+      tokenFunction = 'transferFrom';
+      transfer = newAmount - oldAmount - owed;
+      tokenArgs = [signer.getAddress(), this.parentContract.target, transfer];
+    } else if (newAmount < oldAmount) {
+      // Solidity's block.timestamp is lowered to this authenticated oracle register. Provider wall-clock time
+      // can be an absolute epoch while a freshly deployed contract's oracle starts at zero, which would select
+      // the refund branch a day early and diverge from the covenant actually executed.
+      const oracleNow = StatefulContract._toSoftBigint(marketplaceState.__block_timestamp);
+      const posted = StatefulContract._toSoftBigint(job.timestamp);
+      const mockPostedAtByJob = (
+        this.parentContract._softStateOverlay.__marketplaceJobPostedAt ?? {}
+      ) as unknown as Record<string, bigint>;
+      const mockPostedAt = mockPostedAtByJob[jobIndex];
+      const mockNow = BigInt((this.parentContract.inner.provider as { getBlockTime?: () => number })
+        .getBlockTime?.() ?? Math.floor(Date.now() / 1000));
+      const timedOut = oracleNow >= posted + 86400n
+        || (posted === 0n && mockPostedAt !== undefined && mockNow >= mockPostedAt + 86400n);
+      if (!timedOut) return;
+      tokenFunction = 'transfer';
+      transfer = oldAmount - newAmount + owed;
+      tokenArgs = [signer.getAddress(), transfer];
+    } else {
+      return;
+    }
     if (transfer <= 0n) return;
     const token = (
       findDeploymentByName(this.parentContract.inner.provider, 'FakeToken')
       ?? findDeploymentByName(this.parentContract.inner.provider, 'IERC20')
     )?.contract as StatefulContract | undefined;
-    if (!token?.inner.artifact.abi.some((fn) => fn.name === 'transferFrom')) return;
+    if (!token?.inner.artifact.abi.some((fn) => fn.name === tokenFunction)) return;
     this.callInfos.push({
       type: 'stateful',
       contract: token,
-      functionName: 'transferFrom',
-      args: [signer.getAddress(), this.parentContract.target, transfer],
+      functionName: tokenFunction,
+      args: tokenArgs,
     });
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_RETURN === '1') {
-      console.error('wired-marketplace-transferFrom', {
-        jobIndex, oldAmount: oldAmount.toString(), newAmount: newAmount.toString(),
-        transfer: transfer.toString(), token: token.inner.artifact.contractName,
-      });
-    }
+    this.marketplaceTokenOverlay = tokenFunction === 'transferFrom'
+      ? {
+        token,
+        from: tokenArgs[0] as string | Uint8Array,
+        to: tokenArgs[1] as string | Uint8Array,
+        amount: transfer,
+      }
+      : {
+        token,
+        from: this.parentContract.target,
+        to: tokenArgs[0] as string | Uint8Array,
+        amount: transfer,
+        jobIndex,
+        clearCollateral: true,
+      };
   }
 
   private async _applyOverrides(): Promise<StatefulTransactionBuilder> {
@@ -21926,6 +22330,12 @@ export class StatefulFunctionCall {
     }
 
     builder._restoreMessageBusProbeMasterOutpoint();
+    // `_createBuilder` clears and recomputes pending soft effects while it rebuilds. The explicit compatibility
+    // call above is resolved after that raw-state pass, so publish its exact direction only once the final builder
+    // is stable; a successful send consumes it, while a failed send leaves no visible balance change.
+    if (this.marketplaceTokenOverlay && this.parentContract) {
+      this.parentContract._pendingMarketplaceTokenTransfer = this.marketplaceTokenOverlay;
+    }
     return builder;
   }
 

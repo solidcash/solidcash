@@ -486,6 +486,17 @@ export default class MockNetworkProvider implements NetworkProvider {
     return result.txid;
   }
 
+  /**
+   * Whether the ordinary submission method still performs mem-cash's authoritative full validation.
+   * Stateful builders use this to avoid evaluating every finalized input twice. An instance patch or subclass
+   * override makes the answer false, preserving the SDK gate for failure-injection and hostile-provider tests.
+   */
+  canValidateFinalizedTransaction(): boolean {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_FORCE_SDK_PREFLIGHT === '1') return false;
+    return this.sendRawTransaction === MockNetworkProvider.prototype.sendRawTransaction;
+  }
+
   async addUtxo(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {
     const lockingBytecodeBin = isHex(addressOrLockingBytecode)
       ? hexToBin(addressOrLockingBytecode)

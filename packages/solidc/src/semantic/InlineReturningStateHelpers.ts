@@ -110,6 +110,26 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    // Message-bus compilation intentionally runs this pass both before and after route synthesis. The second
+    // traversal sees locals emitted by the first; restarting at `__rh0_` can collide with those locals inside a
+    // cloned handler. Continue after the largest serial already present in the tree. This also makes the pass
+    // idempotent when another lowering requests a second helper-inlining boundary.
+    let highestExistingSerial = -1;
+    const findExistingSerials = (value: unknown, seen = new Set<object>()): void => {
+      if (!value || typeof value !== 'object' || seen.has(value as object)) return;
+      seen.add(value as object);
+      const name = (value as { name?: unknown }).name;
+      if (typeof name === 'string') {
+        const match = /^__rh(\d+)(?:_|__)/.exec(name);
+        if (match) highestExistingSerial = Math.max(highestExistingSerial, Number(match[1]));
+      }
+      for (const child of Object.values(value)) {
+        if (Array.isArray(child)) child.forEach((entry) => findExistingSerials(entry, seen));
+        else findExistingSerials(child, seen);
+      }
+    };
+    findExistingSerials(node);
+    this.counter = Math.max(this.counter, highestExistingSerial + 1);
     this.freeFns = node.freeFunctions ?? [];
     if (this.solidityImportCompat) {
       const functionCounts = new Map<string, number>();
@@ -311,14 +331,17 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // code generation correctly refuses it. Inline it into the compiler-owned route just like a context-only
     // graph clone. A real emission handler retains its definition and graph frame exactly as before.
     for (const fn of node.functions) {
-      const appendsDynamicArray = this.nodesOf(fn).some((candidate) => candidate instanceof StateArrayPushNode);
+      const writesDynamicArray = this.nodesOf(fn).some((candidate) =>
+        candidate instanceof StateArrayPushNode || candidate instanceof StateArrayPopNode
+        || candidate instanceof StateArrayAssignNode || candidate instanceof StateArrayDeleteNode);
       const compilerOwnedRouteClone = fn.name.startsWith('__message_bus_entry_')
         || fn.name.startsWith('__message_bus_resource_')
-        || (fn.graphEmissionHandler && (fn.externalCalls?.length ?? 0) === 0);
+        || (fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler
+          && (fn.externalCalls?.length ?? 0) === 0);
       const returningEntryEffectClone = fn.name.startsWith('__message_bus_entry_')
-        && fn.graphEmissionHandler && this.eligibleShape(fn);
+        && fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler && this.eligibleShape(fn);
       if (returningEntryEffectClone || (compilerOwnedRouteClone
-        && fn.collectionJournal && appendsDynamicArray
+        && fn.collectionJournal && writesDynamicArray
         && (fn.parameters[0]?.name === `__dj_${fn.name}`
           || fn.parameters[0]?.name.startsWith(`__cj_${fn.name}`))
         && this.eligibleShape(fn))) {

@@ -181,7 +181,9 @@ export function encodeMessageBatch(
     for (const binding of handler.batchKeyWitnesses ?? []) {
       const value = binding.source === 'msgSender'
         ? invocation.logicalCaller
-        : args[binding.inputIndex];
+        : binding.source === 'expression'
+          ? unboundRouteWitnesses[binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput]
+          : args[binding.inputIndex];
       if (value === undefined) {
         throw new MessageBusDiagnosticError(
           'L3_RESOURCE_UNRESOLVED',
@@ -189,9 +191,13 @@ export function encodeMessageBatch(
           { handler: handler.name, resourceIdentity: binding.routeInput, keyIdentity: 'msg.sender', invocationIds: [rowIndex] },
         );
       }
+      const routeInputName = binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
+      const routeInputType = capability.route.inputs.find((input) => input.name === routeInputName)?.type;
       const encodedValue = binding.source === 'msgSender'
         ? encodeFunctionArgument(value, 'address', structs)
-        : encoded[binding.inputIndex] as Uint8Array;
+        : binding.source === 'expression'
+          ? encodeFunctionArgument(value, routeInputType ?? 'bytes', structs)
+          : encoded[binding.inputIndex] as Uint8Array;
       if (!(encodedValue instanceof Uint8Array)) {
         throw new MessageBusDiagnosticError(
           'L3_RESOURCE_UNRESOLVED',
@@ -199,7 +205,7 @@ export function encodeMessageBatch(
           { handler: handler.name, resourceIdentity: binding.routeInput, invocationIds: [rowIndex] },
         );
       }
-      const routeInput = binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
+      const routeInput = routeInputName;
       const prior = keyWitnessValues.get(routeInput);
       if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
         throw new MessageBusDiagnosticError(

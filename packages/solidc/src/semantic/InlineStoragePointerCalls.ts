@@ -79,7 +79,10 @@ import { AmbiguousInlineOverloadError, GraphEmissionEffectError } from '../Error
 const PREFIX = '__sp';
 
 export default class InlineStoragePointerCalls extends AstTraversal {
-  constructor(private readonly inlineSolidityInitializers = false) { super(); }
+  constructor(
+    private readonly inlineSolidityInitializers = false,
+    private readonly inlineDelegateStateHelpers = false,
+  ) { super(); }
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   // Overload-aware callee lookup keyed by inlineKey(name, arity): a name-only map returns the wrong overload for a
   // call whose arity differs (OZ ERC20 `_approve/3` -> `_approve/4`), so the arity-mismatched call is never inlined
@@ -229,7 +232,13 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
       // dispatchable), internal helpers are dropped below.
-      const scalarJournalEligible = this.isScalarJournalEligible(fn);
+      // A scalar-state helper normally has enough context to remain an OP_INVOKE subroutine: both it and its
+      // caller address state relative to the active covenant input. A delegate build is different. Its entry
+      // points address the co-spent proxy block, while an ordinary internal helper would address the
+      // implementation's own block. Keep those reads/writes in the delegate entry traversal so they inherit the
+      // authenticated proxy-master basis. This also covers modifier wrappers such as
+      // `entry -> _checkOwner -> owner()` after the returning getter has been reduced into `_checkOwner`.
+      const scalarJournalEligible = !this.inlineDelegateStateHelpers && this.isScalarJournalEligible(fn);
       // CashToken-container transfers are transaction effects rather than
       // value-like state: their authenticated input/output slots and transfer
       // occurrence indices belong to the physical entry point. Until an

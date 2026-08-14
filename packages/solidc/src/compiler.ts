@@ -4919,9 +4919,18 @@ function compileResolvedAst(
   if (mergedCompilerOptions.messageBus) {
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.autoDelegate ?? false,
     )) as Ast;
     ast = ast.accept(new InlineReturningStateHelpers(
       mergedCompilerOptions.solidityImportCompat ?? false,
+    )) as Ast;
+    // Returning-helper reduction can expose scalar state inside a previously context-only void wrapper
+    // (`_checkOwner -> owner()` is the canonical Solidity shape). Reach the same state-helper fixed point as
+    // the non-message-bus pipeline below; otherwise the wrapper survives as an ordinary OP_INVOKE body and a
+    // delegate variant reads the implementation block rather than the co-spent proxy block.
+    ast = ast.accept(new InlineStoragePointerCalls(
+      mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.autoDelegate ?? false,
     )) as Ast;
   }
 
@@ -5157,7 +5166,10 @@ function compileResolvedAst(
   // Inline void calls to functions taking `storage` reference params; a storage pointer has no value
   // representation, so the callee is substituted into the caller as direct state access.
   if (!mergedCompilerOptions.messageBus) {
-    ast = ast.accept(new InlineStoragePointerCalls(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
+    ast = ast.accept(new InlineStoragePointerCalls(
+      mergedCompilerOptions.solidityImportCompat ?? false,
+      mergedCompilerOptions.autoDelegate ?? false,
+    )) as Ast;
   }
   // A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r=b; }`) is
   // resolved by straight-line dataflow into its side effects + the mapping it finally aliases, and inlined at call

@@ -5001,7 +5001,8 @@ export class StatefulTransactionBuilder {
               data: instruction?.data === undefined ? undefined : binToHex(instruction.data).slice(0, 64),
               top: state.stack.slice(-traceWidth).map((item) => {
                 const hex = binToHex(item);
-                return hex.length > 40 ? `${hex.slice(0, 40)}..` : hex;
+                if (hex.length === 0) return '<empty>';
+                return hex.length > 80 ? `${hex.slice(0, 80)}..` : hex;
               }),
             });
             if (ring.length > traceDepth) ring.shift();
@@ -5025,7 +5026,14 @@ export class StatefulTransactionBuilder {
           return `    [${itemIndex}] ${hex.length > 80 ? `${hex.slice(0, 80)}..(${item.length}B)` : hex}`;
         }).join('\n');
         // eslint-disable-next-line no-console
-        console.error(`[covenant VM trace] input ${idx}: ${finalState.error}\nunlocking=${binToHex(transaction.inputs[idx].unlockingBytecode)}\nprobeUnlocking105=${binToHex(transaction.inputs[105]?.unlockingBytecode ?? new Uint8Array())}\nprobeUnlocking106=${binToHex(transaction.inputs[106]?.unlockingBytecode ?? new Uint8Array())}\ninvokedBodies=${JSON.stringify([...invokedBodies].map(([length, ids]) => [length, [...ids]]))}\noutputBytecodeMatches=${JSON.stringify(outputBytecodeMatches.filter((entry) => entry.matches))}\nhelper54=${helper54?.map((instruction) => instruction.data === undefined ? instruction.opcode.toString(16).padStart(2, '0') : `${instruction.opcode.toString(16).padStart(2, '0')}(${binToHex(instruction.data)})`).join(' ')}\n${ring.map((step, stepIndex) => (
+        const verboseBytecode = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_TRACE_BYTECODE === '1';
+        const bytecodeDetails = verboseBytecode
+          ? `\nunlocking=${binToHex(transaction.inputs[idx].unlockingBytecode)}`
+            + `\nprobeUnlocking105=${binToHex(transaction.inputs[105]?.unlockingBytecode ?? new Uint8Array())}`
+            + `\nprobeUnlocking106=${binToHex(transaction.inputs[106]?.unlockingBytecode ?? new Uint8Array())}`
+          : '';
+        console.error(`[covenant VM trace] input ${idx}: ${finalState.error}${bytecodeDetails}\ninvokedBodies=${JSON.stringify([...invokedBodies].map(([length, ids]) => [length, [...ids]]))}\noutputBytecodeMatches=${JSON.stringify(outputBytecodeMatches.filter((entry) => entry.matches))}\nhelper54=${helper54?.map((instruction) => instruction.data === undefined ? instruction.opcode.toString(16).padStart(2, '0') : `${instruction.opcode.toString(16).padStart(2, '0')}(${binToHex(instruction.data)})`).join(' ')}\n${ring.map((step, stepIndex) => (
           `  ip=${step.ip} op=0x${step.opcode.toString(16).padStart(2, '0')}`
           + `${step.data === undefined ? '' : `(${step.data})`} body=${step.bodyLen} depth=${step.depth} top=[${step.top.join(' ')}]`
           + (stepIndex === ring.length - 1 ? '  <-- FAILS HERE' : '')

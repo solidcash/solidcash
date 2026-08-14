@@ -8158,12 +8158,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if ((targetJournalSlots.length > 0 || targetFunc.graphEmissionHandler)
       && targetFunc.usesMsgSender) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (targetFunc.graphEmissionHandler) {
+      if (targetFunc.graphEmissionHandler && this.stack.includes('__message_bus_graph_caller')) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_caller'))), contextLoc);
+        this.emit(Op.OP_PICK, contextLoc);
+      } else if (targetFunc.graphEmissionHandler && this.stack.includes('__internal__graphCallers')) {
+        // A real graph route authenticates one caller per row. Local message-bus event/transfer handlers reuse
+        // the graph-emission frame machinery too, but have no caller vector and correctly fall through to the
+        // route's ordinary authenticated sender context below.
         if (!this.stack.includes('__message_bus_graph_caller')) {
           throw new Error(`Missing authenticated graph caller while invoking '${targetFunc.name}'`);
         }
-        this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_caller'))), contextLoc);
-        this.emit(Op.OP_PICK, contextLoc);
       } else if (this.stack.includes('__internal__handlerMsgSender')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSender'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
@@ -20304,11 +20308,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // "exactly 1 master output" pin (2 jobs chunks vs expected 1). Top-relative
       // ROLL is correct here: verify-count extras sit above this frame.
       const dropNow = ['(dyn_i)', '(dyn_nnew)', '(dyn_chunkaddr)', ...wPriorTempNames];
-      if (this.currentFunctionIsDelegate) {
+      if (this.currentFunctionIsDelegate && writesInDeclOrder.length === 1) {
         // One written dynamic var (Marketplace jobs): do not keep the value for a
         // later sibling offset. Leaving it leaks the 174-byte blob into the epilogue.
         dropNow.push(valueStackName);
       } else {
+        // A delegate route with several dynamic writes anchors the whole chunk family from the output suffix.
+        // Every later sibling therefore needs every earlier value's chunk count. Keep all values until the
+        // shared final cleanup; unlike the historical one-write path, dropping one here invalidates the next
+        // sibling's suffix calculation.
         writtenValueStackNames.push(valueStackName);
       }
       for (const tmp of dropNow) {

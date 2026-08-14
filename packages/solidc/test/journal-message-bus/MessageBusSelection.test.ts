@@ -111,6 +111,47 @@ describe('message-bus compilation selection', () => {
       .toEqual(expect.objectContaining({ eligible: true }));
   });
 
+  it('threads the logical caller through a modifier helper closure in a delegate journal handler', () => {
+    const artifact = compileString(`contract Governed {
+      address _owner;
+      mapping(int => int) values;
+      mapping(string => string) tags;
+      event Changed(address nextOwner);
+      function sender() internal view returns (address) { return msg.sender; }
+      function checkOwner() internal view { require(sender() == _owner); }
+      modifier onlyOwner() { checkOwner(); _; }
+      function remove(int key) public onlyOwner { delete values[key]; }
+      function update(string key, string value) public onlyOwner { tags[key] = value; }
+      function renounce() public onlyOwner { this._owner = address(0); emit Changed(address(0)); }
+    }`, {
+      forceStateful: true,
+      messageBus: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'remove'))
+      .toEqual(expect.objectContaining({ eligible: true }));
+    expect(artifact.delegateArtifact).toBeDefined();
+  });
+
+  it('uses local sender context for a delegate route event-frame handler', () => {
+    const artifact = compileString(`contract EventGoverned {
+      address _owner;
+      event Changed(address nextOwner);
+      function sender() internal view returns (address) { return msg.sender; }
+      function checkOwner() internal view { require(sender() == _owner); }
+      modifier onlyOwner() { checkOwner(); _; }
+      function renounce() public onlyOwner { this._owner = address(0); emit Changed(address(0)); }
+    }`, {
+      forceStateful: true,
+      messageBus: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'renounce'))
+      .toEqual(expect.objectContaining({ eligible: true }));
+  });
+
   it('automatically selects message-bus planning for an external call graph', () => {
     const artifact = compileString(`
       interface ISink { function set(int value) external; }

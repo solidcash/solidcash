@@ -2094,7 +2094,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // msg.sender pre-scan: inject synthetic _msgSenderCategory parameter
     {
-      const usesMsgSender = bodySurvey.usesMsgSender;
+      // Compiler-owned closure analysis can prove an indirect use through a modifier/helper chain even when
+      // this body's local survey contains no NullaryOp. Preserve that proof so externally callable functions
+      // receive the same authenticated context as direct msg.sender users.
+      const usesMsgSender = bodySurvey.usesMsgSender || node.usesMsgSender === true;
       if (usesMsgSender) {
         node.usesMsgSender = true;
         // Graph handlers receive logical msg.sender from the caller vector

@@ -1653,7 +1653,14 @@ function synthesizeMessageBusRoute(
     // when the surface member access has already been lowered away from its
     // NullaryOp representation.
     if (fn.usesMsgSender) routeUsesMsgSender = true;
-    if (routeUsesMsgSender) logicalMsgSenderHandlers.add(fn);
+    if (routeUsesMsgSender) {
+      // Preserve the transitive closure result for the semantic/codegen pass too. A modifier-expanded entry can
+      // reach msg.sender only through `_checkOwner -> _msgSender`; the body-local survey cannot rediscover that
+      // after helper boundaries are established, so without this bit the ordinary delegate entry point has no
+      // authenticated sender context even though route admission already proved the dependency.
+      fn.usesMsgSender = true;
+      logicalMsgSenderHandlers.add(fn);
+    }
     fn.usesMsgValue = routeUsesMsgValue;
     let reason: string | undefined;
     // In auto mode the message bus is an optional capability. One entry point with an unsupported low-level
@@ -2280,11 +2287,13 @@ function synthesizeMessageBusRoute(
       // expensive generated-route attempts. Refuse it before cloning: no message-bus handler survives today,
       // while the ordinary entry point compiles and remains unchanged.
       reason = 'nested-dynamic-array-route-not-enabled';
-    } else if (!reason && compilerOptions.autoDelegate && reachesDynamicState) {
-      // A delegate route shares the proxy's trailing storage region. Dynamic read/write settlement is emitted
-      // once at the route epilogue, while dispatch eligibility is selector-conditional; admitting even one
-      // dynamic handler therefore makes unrelated rows consume or mint that handler's chunks. Until the route
-      // carries a per-row dynamic frame, keep those handlers on their ordinary delegate entry points.
+    } else if (!reason && compilerOptions.autoDelegate && reachesDynamicState
+      && !explicitlyEnabledMessageBus) {
+      // In auto mode, keep dynamic proxy handlers on their ordinary delegate entry points: selecting an
+      // authenticated batch surface was not requested. An explicit route can safely own the proxy's balanced
+      // trailing region. Its dynamic journal initializes every admitted slot from the proxy's authenticated
+      // chunks and writes untouched slots back unchanged, so selector-conditional handlers do not manufacture
+      // state for one another; the fixed participant block keeps the following graph owner relocatable.
       reason = 'delegate-dynamic-state-route-not-enabled';
     } else if (!reason && writesDynamicState && reachesCollection
       && (compilerOptions as InternalCompilerOptions).__messageBusMode === 'auto') {
@@ -3442,7 +3451,13 @@ function synthesizeMessageBusRoute(
       return node;
     };
     if (handler.body) rewrite(handler.body);
-    if (!replaced) return false;
+    if (!replaced) {
+      // The source closure can use msg.sender only through an internal helper (the OZ onlyOwner ->
+      // _checkOwner -> _msgSender shape). The clone has no NullaryOp to replace yet, but its OP_INVOKE frame
+      // must still carry the authenticated logical caller so later helper inlining/codegen can resolve it.
+      handler.usesMsgSender = true;
+      return false;
+    }
     handler.parameters.push(Object.assign(
       new ParameterNode(new AddressType(false), parameterName, []), { location: handler.location },
     ));
@@ -5232,6 +5247,33 @@ function compileResolvedAst(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
+  }
+
+  // Propagate logical msg.sender use through the named internal-call closure before the body-local semantic
+  // survey injects entry-point context. Modifier expansion commonly leaves `entry -> _checkOwner -> _msgSender`;
+  // surveying only the entry body cannot see the NullaryOp and a delegate build then reaches code generation
+  // without either a category witness or an authenticated hidden caller. Name-level closure resolution matches
+  // the compiler's existing conservative internal-call analysis and deliberately errs toward carrying context.
+  {
+    const byName = new Map<string, FunctionDefinitionNode[]>();
+    const directSenderNames = new Set<string>();
+    for (const fn of ast.contract.functions) {
+      const group = byName.get(fn.name) ?? [];
+      group.push(fn);
+      byName.set(fn.name, group);
+      let direct = fn.usesMsgSender === true;
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SENDER) direct = true;
+      });
+      if (direct) directSenderNames.add(fn.name);
+    }
+    if (directSenderNames.size > 0) {
+      for (const fn of ast.contract.functions) {
+        if ([...collectNamedFunctionClosure(fn, byName)].some((name) => directSenderNames.has(name))) {
+          fn.usesMsgSender = true;
+        }
+      }
+    }
   }
 
   // Semantic analysis

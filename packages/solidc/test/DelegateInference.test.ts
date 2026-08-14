@@ -30,6 +30,22 @@ describe('delegate inference', () => {
     }`)).toEqual(['f']);
   });
 
+  it('carries msg.sender through a modifier helper closure in the delegate entry point', () => {
+    const artifact = compileString(`contract Governed {
+      address _owner;
+      bigint counter;
+      mapping(string => string) tags;
+      function sender() internal view returns (address) { return msg.sender; }
+      function checkOwner() internal view { require(sender() == _owner); }
+      modifier onlyOwner() { checkOwner(); _; }
+      function update(string key, string value) public onlyOwner { tags[key] = value; }
+      function touch() public { this.counter = this.counter + 1; }
+    }`);
+    expect(artifact.delegateArtifact).toBeDefined();
+    expect(artifact.delegateArtifact?.abi.find((fn) => fn.name === 'update')).toBeDefined();
+    expect(artifact.delegateArtifact?.abi.find((fn) => fn.name === 'touch')?.modifiers).toContain('delegate');
+  });
+
   it('excludes a transfer reached through a helper chain', () => {
     expect(markedNames(`contract C() {
       bigint counter;
@@ -122,14 +138,16 @@ describe('delegate inference', () => {
     expect(artifact.delegateArtifact!.source).toBe(artifact.source);
   });
 
-  it('does not leak dynamic storage settlement from refused handlers into a delegate message-bus route', () => {
+  it('settles explicitly requested dynamic storage inside the delegate message-bus route', () => {
     const artifact = compileString(`contract C() {
       address[] members;
+      address[] admins;
       mapping(address => int) scores;
       function register(address member) public {
         scores[member] = 1;
         members.push(member);
       }
+      function addAdmin(address admin) public { admins.push(admin); }
       function memberCount() public view returns (uint) {
         return members.length;
       }
@@ -139,12 +157,15 @@ describe('delegate inference', () => {
     }`, { messageBus: true });
     const route = artifact.delegateArtifact?.messageBus?.route;
     expect(route).toBeDefined();
-    expect(route?.dynamicReads).toBeUndefined();
-    expect(route?.dynamicWrites).toBeUndefined();
+    expect(route?.dynamicReads).toContain('members');
+    expect(route?.dynamicWrites).toContain('members');
+    expect(route?.dynamicWrites).toContain('admins');
     expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'register')?.eligible)
-      .toBe(false);
+      .toBe(true);
     expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'memberCount')?.eligible)
-      .toBe(false);
+      .toBe(true);
+    expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'addAdmin')?.eligible)
+      .toBe(true);
     expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'registered')?.eligible)
       .toBe(true);
   });

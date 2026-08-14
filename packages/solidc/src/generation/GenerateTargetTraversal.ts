@@ -8155,8 +8155,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(`(__handler_msg_sig_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
-    if ((targetJournalSlots.length > 0 || targetFunc.graphEmissionHandler)
-      && targetFunc.usesMsgSender) {
+    if (targetFunc.usesMsgSender) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (targetFunc.graphEmissionHandler && this.stack.includes('__message_bus_graph_caller')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_caller'))), contextLoc);

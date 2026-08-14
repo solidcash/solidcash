@@ -13,7 +13,8 @@ import {
 } from '../fixture/vars.js';
 import { Utxo } from '../../src/interfaces.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, getSigner, setupStatefulUtxos } from '../test-util.js';
+import { addressToLockScript } from '../../src/utils.js';
 
 // =============================================================================
 // Contract Sources
@@ -382,6 +383,34 @@ describe('msg.sender and tx.origin', () => {
       // checkSender expects: (address expected, bytes32 _msgSenderCategory)
       const unlocker = contract.unlock.checkSender(aliceP2PKH, zeroCategory);
       expect(unlocker).toBeDefined();
+    });
+
+    it('passes the resolved sender to an outlined read-only access-control helper', async () => {
+      const helperProvider = createTestProvider();
+      const helperArtifact = compileString(`
+        contract HelperSender() {
+          address owner;
+          int marker;
+          function checkOwner() internal view { require(msg.sender == owner); }
+          function first() public { checkOwner(); this.marker = this.marker + 1; }
+          function second() public { checkOwner(); this.marker = this.marker + 2; }
+        }
+      `);
+      const helperContract = new Contract(helperArtifact, [], { provider: helperProvider });
+      const helperSigner = await getSigner(0, { provider: helperProvider });
+      const helperOwner = addressToLockScript(helperSigner.getAddress());
+      const { categoryId: helperCategory } = await setupStatefulUtxos(
+        helperProvider,
+        helperContract,
+        helperArtifact.stateLayout!,
+        { owner: helperOwner, marker: 0n },
+        { saltContract: true },
+      );
+      const helper = StatefulContract.withCategory(helperContract, helperCategory).connect(helperSigner);
+
+      const tx = await helper.first().send();
+      expect(tx.txid).toBeDefined();
+      expect((await helper.getState()).marker).toBe(1n);
     });
   });
 

@@ -177,7 +177,7 @@ describe('file-level event declarations', () => {
 });
 
 describe('own-category immutable event pin', () => {
-  it('skips OP_TRUE return witnesses and names j with 2 PICK', () => {
+  it('skips OP_TRUE return witnesses and selects j above each predicate', () => {
     const artifact = compileString(`
       contract C() {
         event Moved(int amount);
@@ -193,8 +193,10 @@ describe('own-category immutable event pin', () => {
       ?? artifact.debug?.bytecode
       ?? artifact.bytecode;
     expect(body).toBeTruthy();
-    // NUMEQUAL / 2 / PICK (empty-commitment check) and OUTPUTBYTECODE / push 0x51 / EQUAL (OP_TRUE skip).
-    expect(body).toContain('9c5279');
+    // NUMEQUAL / OVER selects j below the predicate (not base via 2 PICK), then OUTPUTBYTECODE / push 0x51 /
+    // EQUAL excludes OP_TRUE return witnesses from event-slot positioning.
+    expect(body).toContain('9c78');
+    expect(body).not.toContain('9c5279');
     expect(body).toContain('cd015187');
   });
 });

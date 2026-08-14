@@ -24133,11 +24133,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);       // [cat, base, j, ftAmount]
     this.emit(encodeInt(0n), loc);
     this.emit(Op.OP_NUMEQUAL, loc);                // [cat, base, j, zeroAmount]
-    // Empty-commitment immutable NFTs are message-bus authorization carriers.
-    // Do not `DUP`/`OVER` here: outlining merged `OVER OUTCOMMIT` with a `DUP`
-    // site and the bool 0/1 was used as the output index. `2 PICK` names `j`.
-    this.emit(encodeInt(2n), loc);
-    this.emit(Op.OP_PICK, loc);                    // [cat, base, j, zeroAmount, j]
+    // Empty-commitment immutable NFTs are message-bus authorization carriers. At this point the predicate is
+    // above [cat, base, j], so j is the second item from the top. OP_OVER selects it directly (the old 2 PICK
+    // selected base, causing a distant output's commitment to classify the current output).
+    this.emit(Op.OP_OVER, loc);                    // [cat, base, j, zeroAmount, j]
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
     this.emit(Op.OP_SIZE, loc);
     this.emit(Op.OP_NIP, loc);
@@ -24147,10 +24146,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // non-empty commitments, but they are deliberately sent to OP_TRUE rather
     // than an event covenant address. Event readers query the latter address,
     // so an OP_TRUE return witness cannot masquerade as a serialized event.
-    // Same `2 PICK` discipline as the empty-commitment check: outlining has
-    // previously merged `OVER OUT*` with a `DUP` site and then indexed the bool.
-    this.emit(encodeInt(2n), loc);
-    this.emit(Op.OP_PICK, loc);                    // [cat, base, j, isEventCapableNft, j]
+    // As above, j is one item below the predicate.
+    this.emit(Op.OP_OVER, loc);                    // [cat, base, j, isEventCapableNft, j]
     this.emit(Op.OP_OUTPUTBYTECODE, loc);
     this.emit(new Uint8Array([Op.OP_1]), loc);
     this.emit(Op.OP_EQUAL, loc);

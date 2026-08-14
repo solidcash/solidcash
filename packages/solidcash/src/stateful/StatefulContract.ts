@@ -12640,6 +12640,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       encodedArgs: any[];
       positions: { argIndex: number; band: number; proxyRoute: boolean }[];
     }[] = [];
+    // A caller's dynamic entry band can grow while the transaction is assembled. Any nested master positions
+    // computed before that final layout are provisional; retain their ABI names and categories so the concrete
+    // minting-input positions can be written into the implementation unlocker after funding/layout completes.
+    const pendingExternalCallInputFills: {
+      group: { refreshInternalArgs?: (updates: Record<string, FunctionArgument>) => void };
+      positions: { name: string; categoryId: string }[];
+    }[] = [];
     const topLevelAnchorFillPositions: { argIndex: number; band: number; proxyRoute: boolean }[] = [];
     const pendingTokenCallInputFills: {
       group: { refreshInternalArgs?: (updates: Record<string, FunctionArgument>) => void };
@@ -16507,6 +16514,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           let delegateCallInputWitnessIndex = 0;
           const tokenCallInputPositions: number[] = [];
           const tokenReturnPositions: number[] = [];
+          const externalCallInputPositions: { name: string; categoryId: string }[] = [];
           let tokenCallInputCategory: string | undefined;
           let tokenCallGroup: typeof externalCallUtxoGroups[number] | undefined;
           const nestedGroups = delegateExternalGroupIndices.get(groupLocalIdx) ?? [];
@@ -16633,6 +16641,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             if (inp.name === '__internal__externalCallInputBase') {
               const firstNested = nestedGroups[0];
+              if (firstNested !== undefined) {
+                const nested = externalCallUtxoGroups[firstNested];
+                const physical = externalCallUtxoGroups[nested.sharedGroupIndex ?? firstNested];
+                externalCallInputPositions.push({ name: inp.name, categoryId: physical.categoryId });
+              }
               return BigInt(firstNested === undefined
                 ? masterInputIndex + 1 + group.dataNftUtxos.length
                 : nestedMasterIndices[firstNested]);
@@ -16644,6 +16657,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const call = (bFunc as AbiFunction).externalCalls?.[slot] as (
                 ExternalCallAbi & { occurrence?: string }
               ) | undefined;
+              if (nestedGroup !== undefined) {
+                const nested = externalCallUtxoGroups[nestedGroup];
+                const physical = externalCallUtxoGroups[nested.sharedGroupIndex ?? nestedGroup];
+                externalCallInputPositions.push({ name: inp.name, categoryId: physical.categoryId });
+              }
               return BigInt(nestedGroup === undefined
                 ? call?.occurrence && call.occurrence !== 'once'
                   ? -1 : masterInputIndex + 1 + group.dataNftUtxos.length
@@ -16946,6 +16964,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (timingEnabled) console.error('delegate-refresh-complete', { groupLocalIdx });
           if (anchorFillPositions.length > 0) {
             pendingAnchorFills.push({ group, functionName: group.functionName, encodedArgs, positions: anchorFillPositions });
+          }
+          if (externalCallInputPositions.length > 0) {
+            pendingExternalCallInputFills.push({ group, positions: externalCallInputPositions });
           }
           if (tokenCallInputPositions.length > 0 && tokenCallInputCategory) {
             pendingTokenCallInputFills.push({
@@ -17914,6 +17935,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && effectiveBlockLayout.slots.some((slot) => slot.kind === 'satoshiContainer')) {
         neededFunders += 1;
       }
+      // A delegated sorted INSERT consumes one predecessor input but emits P' + NEW. When nested participant
+      // blocks follow that trailing band, reserve one positional input for each output-only expansion so every
+      // participant master remains paired with its same-index output. `_buildInputs` consumes these funders after
+      // the predecessor run; without reserving them here, all available funders can be exhausted merely aligning
+      // the predecessor to implementationInput+trailingBase.
+      if (externalCallUtxoGroups.some((group) => group.sharedGroupIndex === undefined)) {
+        neededFunders += insertLoopPredecessors.length;
+      }
       neededFunders += effectiveBlockLayout.slots.filter(
         (s) => s.kind === 'entry' && !entryInfos.some((e) => e.slotIndex === s.slotIndex && e.exists),
       ).length;
@@ -18082,6 +18111,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(fill.group.masterUtxo as UnlockableUtxo),
           unlocker: fill.group.externalContract.inner.unlock[fill.functionName]!(...fill.encodedArgs as never[]),
         };
+      }
+      builder._refreshInputs();
+    }
+    if (pendingExternalCallInputFills.length > 0) {
+      for (const fill of pendingExternalCallInputFills) {
+        if (!fill.group.refreshInternalArgs) continue;
+        const updates: Record<string, FunctionArgument> = {};
+        for (const position of fill.positions) {
+          const inputIndex = builder.findMintingInputIndex(position.categoryId);
+          if (inputIndex < 0) {
+            throw new Error(`External call master input not found for category ${position.categoryId}`);
+          }
+          updates[position.name] = BigInt(inputIndex);
+        }
+        fill.group.refreshInternalArgs(updates);
       }
       builder._refreshInputs();
     }

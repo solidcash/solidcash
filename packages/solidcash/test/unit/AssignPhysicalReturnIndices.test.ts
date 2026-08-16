@@ -1328,7 +1328,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(persistDigestLockDests(14)).toEqual([17, 19]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: true, bandStart: 20, nNew: 3,
-    })).toEqual([18, 19, 20]);
+    })).toEqual([18, 20]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: false, bandStart: 25, nNew: 2,
     })).toEqual([18, 25, 26, 20]);
@@ -1337,7 +1337,10 @@ describe('assignPhysicalReturnIndices', () => {
     })).toEqual([16, 18, 19]);
     expect(persistUpdatePredecessorDests({
       implIndex: 14, persistUpdate: true, keepAtLayout: false, bandStart: 18, nNew: 2,
-    })).toEqual([17, 18, 19]);
+    })).toEqual([17, 19]);
+    expect(persistUpdatePredecessorDests({
+      implIndex: 11, persistUpdate: true, keepAtLayout: false, bandStart: 14, nNew: 3,
+    })).toEqual([14, 16]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: false, keepAtLayout: false, bandStart: 20, nNew: 2,
     })).toEqual([20, 21]);

@@ -1003,6 +1003,12 @@ export function persistUpdatePredecessorDests(parts: {
       dests.splice(dests.indexOf(entryDest), 1);
       dests.unshift(entryDest);
     }
+    // INPUTINDEX+4 is the JobEvent emit dest. Persist chunks must not land there.
+    const eventDest = entryDest >= 0 ? entryDest + 1 : -1;
+    if (eventDest >= 0) {
+      const eventIndex = dests.indexOf(eventDest);
+      if (eventIndex >= 0) dests.splice(eventIndex, 1);
+    }
   }
   return dests;
 }

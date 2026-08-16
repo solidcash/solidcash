@@ -917,9 +917,26 @@ describe('assignPhysicalReturnIndices', () => {
     ];
     expect(isDelegateEventNftOutput(versionEvent)).toBe(true);
     expect(isDelegateEventNftOutput(versionParked[4])).toBe(false);
-    expect(relocateDelegateEventNftToDest(versionParked, 6)).toBe(true);
+    expect(relocateDelegateEventNftToDest(versionParked, 6, Uint8Array.from([0xaa, 0x20, 0x11]))).toBe(true);
     expect(versionParked[6]?.token?.nft?.commitment).toBe('0119');
     expect(versionParked[3]?.token).toBeUndefined();
+    const jobEvent = {
+      to: Uint8Array.from([0xbb, 0x20, 0x22]),
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'c3c3c3c3',
+        nft: { capability: 'none' as const, commitment: '00' + '11'.repeat(20) },
+      },
+    };
+    const mixed = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      jobEvent,
+      versionEvent,
+    ];
+    expect(relocateDelegateEventNftToDest(mixed, 5, Uint8Array.from([0xaa, 0x20, 0x11]))).toBe(true);
+    expect(mixed[5]?.token?.nft?.commitment).toBe('0119');
+    expect(mixed[1]?.token?.nft?.commitment).toBe(jobEvent.token.nft.commitment);
     expect(resolveNamedEventValues(
       [{ name: 'treasuryAddress' }],
       [{ name: 'treasuryAddress_' }],

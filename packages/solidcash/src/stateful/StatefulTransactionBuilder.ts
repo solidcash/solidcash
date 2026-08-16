@@ -2230,6 +2230,11 @@ export function isDelegateEventNftOutput(output: {
  * Delegate emit verification is `OP_INPUTINDEX + event.offset` of the implementation.
  * The builder often parks that NFT in the proxy event band; move it onto dest.
  */
+function lockingHexOf(output: { to?: Uint8Array | string } | undefined): string {
+  if (!output?.to) return '';
+  return output.to instanceof Uint8Array ? binToHex(output.to) : String(output.to);
+}
+
 export function relocateDelegateEventNftToDest(
   outputs: Array<{
     to?: Uint8Array | string;
@@ -2237,17 +2242,23 @@ export function relocateDelegateEventNftToDest(
     token?: { amount?: bigint; category?: string; nft?: { capability?: string; commitment?: string } };
   }>,
   dest: number,
+  expectedLocking?: Uint8Array,
 ): boolean {
   if (dest < 0) return false;
   while (outputs.length <= dest) {
     outputs.push({ to: Uint8Array.of(0x51), amount: 1000n });
   }
-  if (isDelegateEventNftOutput(outputs[dest])) return true;
+  const expectedHex = expectedLocking ? binToHex(expectedLocking) : undefined;
+  const matches = (output: typeof outputs[number] | undefined): boolean => (
+    isDelegateEventNftOutput(output)
+    && (expectedHex === undefined || lockingHexOf(output) === expectedHex)
+  );
+  if (matches(outputs[dest])) return true;
   if (outputs[dest]?.token?.nft?.capability === 'minting') return false;
   let source = -1;
   for (let index = 0; index < outputs.length; index++) {
     if (index === dest) continue;
-    if (!isDelegateEventNftOutput(outputs[index])) continue;
+    if (!matches(outputs[index])) continue;
     source = index;
     break;
   }
@@ -2553,7 +2564,15 @@ export function placePublishJobEventOutput(
     && current.token.category === placed.token.category
     && commit.length > 20
     && !commit.startsWith('53434944');
-  if (!alreadyEvent) {
+  if (alreadyEvent) {
+    // A JobEvent token parked on a P2PKH (or other) lock still fails the event-covenant
+    // OUTPUTBYTECODE pin. Keep the commitment, restore the event locking bytecode.
+    outputs[dest] = {
+      to: placed.to,
+      amount: placed.amount ?? current?.amount ?? 1200n,
+      token: current!.token,
+    };
+  } else {
     if (current && !isOverwritableEmitOccupant(current, { persistCloneOk: options?.persistCloneOk })) {
       return false;
     }
@@ -5090,15 +5109,17 @@ export class StatefulTransactionBuilder {
       ));
       if (implIndex < 0) continue;
       const dest = implIndex + eventOffset;
-      if (relocateDelegateEventNftToDest(builder.outputs, dest)) continue;
       const emitInfo = fn?.emits?.[0];
-      if (!emitInfo) continue;
+      if (!emitInfo || emitInfo.eventName === 'JobEvent' || emitInfo.eventSignature?.startsWith('JobEvent(')) {
+        continue;
+      }
       const artifact = group.externalContract.inner.artifact;
       const eventDef = (artifact.events ?? []).find((event: EventDefinitionAbi) => (
         event.signature === emitInfo.eventSignature
       ));
       const locking = this.eventNftLockingBytecodes.get(emitInfo.eventSignature);
       if (!eventDef || !locking) continue;
+      if (relocateDelegateEventNftToDest(builder.outputs, dest, locking)) continue;
       const args = group.logicalFunctionArgs ?? group.functionArgs ?? [];
       const visibleInputs = (fn?.inputs ?? []).filter((input) => !input.name.startsWith('__internal__'));
       const values = resolveNamedEventValues(eventDef.parameters, visibleInputs, args);

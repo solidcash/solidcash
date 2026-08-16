@@ -2561,9 +2561,12 @@ export function placePublishJobEventOutput(
   const current = outputs[dest];
   const commit = String(current?.token?.nft?.commitment ?? '');
   const alreadyEvent = current?.token?.nft?.capability === 'none'
-    && current.token.category === placed.token.category
     && commit.length > 20
-    && !commit.startsWith('53434944');
+    && !commit.startsWith('53434944')
+    && (
+      current.token.category === placed.token.category
+      || isJobEventEmitCommitment(commit)
+    );
   if (alreadyEvent) {
     // A JobEvent token parked on a P2PKH (or other) lock still fails the event-covenant
     // OUTPUTBYTECODE pin. Keep the commitment, restore the event locking bytecode.

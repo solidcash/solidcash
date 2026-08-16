@@ -75,6 +75,7 @@ import {
   persistPredecessorPlaceCount,
   persistUpdatePredecessorDests,
   persistDigestLockDests,
+  persistChunkOutputDests,
   selectPublishJobEventInputIndex,
   recoverPersistValueFromOutputs,
   persistOccupantDisplaceable,
@@ -1326,6 +1327,8 @@ describe('assignPhysicalReturnIndices', () => {
     expect(String(nativeEntry[16]?.token?.nft?.commitment ?? '').startsWith('e3b0c442')).toBe(true);
     expect(persistDigestLockDests(13)).toEqual([16, 18]);
     expect(persistDigestLockDests(14)).toEqual([17, 19]);
+    expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 18 })).toEqual([16, 17, 18]);
+    expect(persistChunkOutputDests({ implIndex: 13, bandStart: 18, bandEnd: 19 })).toEqual([18, 19]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: true, bandStart: 20, nNew: 3,
     })).toEqual([18, 20]);

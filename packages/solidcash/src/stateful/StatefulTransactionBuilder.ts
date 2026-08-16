@@ -955,6 +955,25 @@ export function persistDigestLockDests(implIndex: number, blockSize = 5): number
   ].filter((dest) => dest >= 0))];
 }
 
+/** Persist-v OUTPUTBYTECODE dests: trailing + live band, never entry or emit dest. */
+export function persistChunkOutputDests(parts: {
+  implIndex: number;
+  bandStart: number;
+  bandEnd: number;
+}): number[] {
+  const entryDest = persistValueChunkBase(parts.implIndex, 5, true);
+  const eventDest = entryDest >= 0 ? entryDest + 1 : -1;
+  const dests = new Set<number>();
+  const trailing = persistValueChunkBase(parts.implIndex, 5, false);
+  if (trailing >= 0) dests.add(trailing);
+  if (parts.bandStart >= 0 && parts.bandEnd >= parts.bandStart) {
+    for (let index = parts.bandStart; index <= parts.bandEnd; index++) dests.add(index);
+  }
+  dests.delete(entryDest);
+  dests.delete(eventDest);
+  return [...dests].filter((dest) => dest >= 0).sort((left, right) => left - right);
+}
+
 /**
  * Persist UPDATE stays at impl+blockSize when FakeToken already occupies dest 20.
  * If dest 20–24 are still 1:1 pads (whitelist), slide past INPUTINDEX*scale.
@@ -4636,9 +4655,10 @@ export class StatefulTransactionBuilder {
         persistCategory ?? this.allInputs[dests[0]]?.token?.category,
         this._persistDigestCategories(),
       ) ?? persistLock;
+      const entryDest = persistValueChunkBase(impl, 5, true);
       const digestDests = new Set([
         dests[0],
-        ...persistDigestLockDests(impl),
+        entryDest,
       ].filter((dest): dest is number => dest !== undefined && dest >= 0));
       for (const dest of digestDests) {
         const input = this.allInputs[dest];
@@ -5543,8 +5563,15 @@ export class StatefulTransactionBuilder {
     if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
     const locking = this._persistChunkLocking();
     if (!locking || locking.length !== 35) return;
-    const dest = persistValueChunkBase(this._executingPublishJobEventInputIndex(builder), 5, false);
-    if (dest >= 0) pinPersistDigestLock(builder.outputs, dest, locking);
+    const impl = this._executingPublishJobEventInputIndex(builder);
+    const band = this.getPublishJobEventsBand();
+    for (const dest of persistChunkOutputDests({
+      implIndex: impl,
+      bandStart: band?.start ?? -1,
+      bandEnd: band?.end ?? -1,
+    })) {
+      pinPersistDigestLock(builder.outputs, dest, locking);
+    }
   }
 
   /**
@@ -5593,9 +5620,17 @@ export class StatefulTransactionBuilder {
       }
     }
     const chunk = this._persistChunkLocking();
-    const chunkDest = persistValueChunkBase(impl, 5, false);
-    if (chunk && chunk.length === 35 && chunkDest >= 0 && chunkDest < transaction.outputs.length) {
-      transaction.outputs[chunkDest].lockingBytecode = chunk;
+    const band = this.getPublishJobEventsBand();
+    if (chunk && chunk.length === 35) {
+      for (const dest of persistChunkOutputDests({
+        implIndex: impl,
+        bandStart: band?.start ?? -1,
+        bandEnd: band?.end ?? -1,
+      })) {
+        if (dest >= 0 && dest < transaction.outputs.length) {
+          transaction.outputs[dest].lockingBytecode = chunk;
+        }
+      }
     }
   }
 
@@ -5655,20 +5690,6 @@ export class StatefulTransactionBuilder {
           nft: { capability: 'mutable', commitment: chunkCommit },
         },
       };
-      const input = this.allInputs[dest];
-      if (input?.unlocker && input.token) {
-        const current = input.unlocker.generateLockingBytecode();
-        if (current.length !== 35 || binToHex(current) !== binToHex(locking)) {
-          const inner = input.unlocker;
-          this.allInputs[dest] = {
-            ...input,
-            unlocker: {
-              generateLockingBytecode: () => locking,
-              generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
-            },
-          };
-        }
-      }
     }
   }
 

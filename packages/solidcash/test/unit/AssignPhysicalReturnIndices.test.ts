@@ -74,6 +74,8 @@ import {
   shouldKeepPersistAtLayoutBase,
   persistPredecessorPlaceCount,
   persistUpdatePredecessorDests,
+  selectPublishJobEventInputIndex,
+  recoverPersistValueFromOutputs,
   persistOccupantDisplaceable,
   persistPredecessorRank,
   persistPredecessorWantedRank,
@@ -1279,10 +1281,35 @@ describe('assignPhysicalReturnIndices', () => {
     })).toEqual([18, 19, 20]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: false, bandStart: 25, nNew: 2,
-    })).toEqual([25, 26]);
+    })).toEqual([18, 25, 26]);
+    expect(persistUpdatePredecessorDests({
+      implIndex: 13, persistUpdate: true, keepAtLayout: false, bandStart: 18, nNew: 2,
+    })).toEqual([16, 18, 19]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: false, keepAtLayout: false, bandStart: 20, nNew: 2,
     })).toEqual([20, 21]);
+    expect(binToHex(recoverPersistValueFromOutputs([
+      { token: { nft: { commitment: '00004142' } } },
+      { token: { nft: { commitment: '01004344' } } },
+    ], [0, 1]) ?? new Uint8Array())).toBe('41424344');
+    expect(selectPublishJobEventInputIndex({
+      namedUnlockers: [13], llcMasters: [6, 13], persistReady: true, firstPublish: false,
+    })).toBe(13);
+    expect(selectPublishJobEventInputIndex({
+      namedUnlockers: [13], llcMasters: [6, 13], persistReady: false, firstPublish: true,
+    })).toBe(6);
+    expect(selectPublishJobEventInputIndex({
+      namedUnlockers: [13], llcMasters: [6], persistReady: false, firstPublish: false,
+    })).toBe(6);
+    expect(selectPublishJobEventInputIndex({
+      namedUnlockers: [], llcMasters: [6], implMintingInputs: [13], persistReady: true, firstPublish: false,
+    })).toBe(13);
+    expect(selectPublishJobEventInputIndex({
+      namedUnlockers: [], llcMasters: [6, 13], persistReady: true, firstPublish: false,
+    })).toBe(13);
+    expect(selectPublishJobEventInputIndex({
+      namedUnlockers: [], llcMasters: [6], persistReady: true, firstPublish: false,
+    })).toBe(6);
     expect(persistOccupantDisplaceable({
       occupantIsPad: true, persistUpdate: true, keepAtLayout: true, occupantCapability: 'minting',
     })).toBe(true);

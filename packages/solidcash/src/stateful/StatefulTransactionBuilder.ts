@@ -901,6 +901,30 @@ export function valueChunkIndexFromCommitment(commitment: string): number | unde
   return index;
 }
 
+/** Rebuild persist `v` from uint16-le value-chunk outputs when staged memory is empty. */
+export function recoverPersistValueFromOutputs(
+  outputs: ReadonlyArray<{ token?: { nft?: { commitment?: string } } }>,
+  dests: readonly number[],
+): Uint8Array | undefined {
+  const parts: Array<Uint8Array | undefined> = [];
+  for (const dest of dests) {
+    const hex = String(outputs[dest]?.token?.nft?.commitment ?? '');
+    const chunkIndex = valueChunkIndexFromCommitment(hex);
+    if (chunkIndex === undefined || hex.length < 8) continue;
+    parts[chunkIndex] = hexToBin(hex.slice(4));
+  }
+  if (parts.length === 0 || parts.some((part) => part === undefined)) return undefined;
+  const total = parts.reduce((sum, part) => sum + (part?.length ?? 0), 0);
+  if (total === 0) return undefined;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part as Uint8Array, offset);
+    offset += (part as Uint8Array).length;
+  }
+  return out;
+}
+
 /**
  * Persist jobEvents value-chunks: uint16-le index heads (`0000`/`0100`/`0200`)
  * or the empty-root digest (`e3b0c442…`). Data-NFT tags (`0023…`, `51…`) are not.
@@ -958,13 +982,40 @@ export function persistUpdatePredecessorDests(parts: {
     ? Math.min(layout, parts.bandStart)
     : parts.bandStart;
   const dests = Array.from({ length: parts.nNew }, (_, offset) => start + offset);
-  if (parts.persistUpdate && parts.keepAtLayout && parts.implIndex >= 0) {
+  if (parts.persistUpdate && parts.implIndex >= 0) {
     const entryDest = persistValueChunkBase(parts.implIndex, 5, true);
-    const chunk0Dest = persistValueChunkBase(parts.implIndex, 5, false);
+    // Layout entry is INPUTINDEX+3 even when value-chunks slid past dest 20.
     if (entryDest >= 0 && !dests.includes(entryDest)) dests.unshift(entryDest);
-    if (chunk0Dest >= 0 && !dests.includes(chunk0Dest)) dests.push(chunk0Dest);
+    if (parts.keepAtLayout) {
+      const chunk0Dest = persistValueChunkBase(parts.implIndex, 5, false);
+      if (chunk0Dest >= 0 && !dests.includes(chunk0Dest)) dests.push(chunk0Dest);
+    }
   }
   return dests;
+}
+
+/**
+ * First-publish keeps the earliest candidate (LLC fallback can sit before the
+ * named unlocker). Persist-ready type-14/15 dests must use the named
+ * `publishJobEvent` unlocker (`OP_INPUTINDEX`), not min(LLC master).
+ */
+export function selectPublishJobEventInputIndex(parts: {
+  namedUnlockers: readonly number[];
+  llcMasters: readonly number[];
+  implMintingInputs?: readonly number[];
+  persistReady: boolean;
+  firstPublish: boolean;
+}): number {
+  const named = [...new Set(parts.namedUnlockers.filter((index) => index >= 0))];
+  const masters = [...new Set(parts.llcMasters.filter((index) => index >= 0))];
+  const minting = [...new Set((parts.implMintingInputs ?? []).filter((index) => index >= 0))];
+  const executing = named.length > 0 ? named : minting;
+  const all = executing.length > 0 ? executing : masters;
+  if (all.length === 0) return -1;
+  // Persist-ready dests are INPUTINDEX-relative to the executing unlocker
+  // (later nested publishJobEvent), not the earliest LLC fallback.
+  if (parts.persistReady && !parts.firstPublish) return Math.max(...all);
+  return Math.min(...[...named, ...masters, ...minting].filter((index) => index >= 0));
 }
 
 /** Persist UPDATE dests own the layout; FakeToken minting there is displaced, not skipped. */
@@ -3928,26 +3979,56 @@ export class StatefulTransactionBuilder {
     });
   }
 
+  /** Prefer the builder input that evaluates publishJobEvent (`OP_INPUTINDEX`). */
+  private _executingPublishJobEventInputIndex(builder?: TransactionBuilder): number {
+    if (builder) {
+      for (let index = builder.inputs.length - 1; index >= 0; index--) {
+        const name = (builder.inputs[index]?.unlocker as { abiFunction?: { name?: string } } | undefined)
+          ?.abiFunction?.name ?? '';
+        if (name === 'publishJobEvent') return index;
+      }
+    }
+    return this._publishJobEventInputIndex();
+  }
+
   /** The input that actually evaluates publishJobEvent (`OP_INPUTINDEX`). */
   private _publishJobEventInputIndex(): number {
-    // Dest is INPUTINDEX+4 of the earliest executing publishJobEvent. Occupied
-    // dests are displaced; do not relocate dest because persist sits at +4.
-    const candidates: number[] = [];
+    const namedUnlockers: number[] = [];
     for (const [index, input] of this.allInputs.entries()) {
       const name = (input as { unlocker?: { abiFunction?: { name?: string } } })
         .unlocker?.abiFunction?.name ?? '';
-      if (name === 'publishJobEvent' || name.includes('publishJobEvent')) candidates.push(index);
+      if (name === 'publishJobEvent' || name.includes('publishJobEvent')) namedUnlockers.push(index);
     }
+    const llcMasters: number[] = [];
+    const implMintingInputs: number[] = [];
+    const publishCategories = new Set<string>();
     for (const [llcIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
       const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
       if (!names.some((name) => name === 'publishJobEvent' || String(name ?? '').includes('publishJobEvent'))) {
         continue;
       }
+      if (group.categoryId) publishCategories.add(group.categoryId);
       const master = this.getLowLevelCallMasterInputIndex(llcIndex);
-      if (master >= 0) candidates.push(master);
+      if (master >= 0) llcMasters.push(master);
     }
-    if (candidates.length > 0) return Math.min(...candidates);
-    return -1;
+    for (const group of this.externalCallUtxoGroups) {
+      const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
+      if (!names.some((name) => name === 'publishJobEvent' || String(name ?? '').includes('publishJobEvent'))) {
+        continue;
+      }
+      if (group.categoryId) publishCategories.add(group.categoryId);
+    }
+    for (const [index, input] of this.allInputs.entries()) {
+      if (!input?.token?.category || !publishCategories.has(input.token.category)) continue;
+      if (input.token.nft?.capability === 'minting') implMintingInputs.push(index);
+    }
+    return selectPublishJobEventInputIndex({
+      namedUnlockers,
+      llcMasters,
+      implMintingInputs,
+      persistReady: isPersistedJobEventsReady(),
+      firstPublish: this._rootIsPublishJobPost(),
+    });
   }
 
   /** publishJobEvent emit is implementation-relative (`INPUTINDEX + event.offset`). */
@@ -5060,9 +5141,11 @@ export class StatefulTransactionBuilder {
       const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
       return names.includes('publishJobEvent');
     });
-    const impl = this._publishJobEventInputIndex();
-    const dest = this._scaledEmitOutputIndex(builder.outputs.length)
-      ?? publishJobEventOutputIndex(impl, eventOffset);
+    const impl = this._executingPublishJobEventInputIndex(builder);
+    const dest = impl >= 0
+      ? publishJobEventOutputIndex(impl, eventOffset)
+      : this._scaledEmitOutputIndex(builder.outputs.length)
+        ?? -1;
     const persistEmitEarly = this._shouldRematerializePersistUpdate();
     if (dest < 0 || (impl >= 0 && dest <= impl)) {
       const fallback = publishJobEventOutputIndex(impl, eventOffset);
@@ -5074,7 +5157,8 @@ export class StatefulTransactionBuilder {
       }
       return;
     }
-    const categoryId = proxyGroup?.categoryId
+    const categoryId = this._persistJobEventsTokenCategory()
+      ?? proxyGroup?.categoryId
       ?? (llcIndex >= 0 ? this.lowLevelCallUtxoGroups[llcIndex].categoryId : undefined);
     const emitInfo = publishFn?.emits?.[0];
     const derived = proxyGroup?.eventOutputs?.[0]
@@ -5119,6 +5203,7 @@ export class StatefulTransactionBuilder {
       ? encodeJobEventEmitCommitment(visibleArgs![0], emitEvent, structs)
       : undefined;
     const persistEmit = this._shouldRematerializePersistUpdate();
+    const persistReady = isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
     placePublishJobEventOutput(builder.outputs, dest, {
       to: lockingBytecode,
       amount: 1200n,
@@ -5133,7 +5218,7 @@ export class StatefulTransactionBuilder {
       persistCloneOk: !persistEmit,
       destInput: this.allInputs[dest],
     });
-    if (persistEmit && dest >= 0) {
+    if (persistReady && dest >= 0) {
       this.forcedJobEventsBandStart = dest + 1;
       this._placeJobEventsPredecessorInputs(this.pendingJobEventsPredecessors);
       this._materializeJobEventsBand(builder);
@@ -5147,14 +5232,61 @@ export class StatefulTransactionBuilder {
         persistCloneOk: !persistEmit,
         preferCreated: this._rootIsPublishJobPost(),
       });
+      const placedOut = builder.outputs[executingDest];
+      const placedCommit = String(placedOut?.token?.nft?.commitment ?? '');
+      if (isJobEventEmitCommitment(placedCommit) || isCreatedJobEventCommitment(placedCommit)) {
+        builder.outputs[executingDest] = {
+          to: lockingBytecode,
+          amount: placedOut?.amount && placedOut.amount >= 1200n ? placedOut.amount : 1200n,
+          token: placedOut?.token,
+        };
+      }
     }
     this._repairPublishJobEventDestLocks(builder);
+  }
+
+  /** Persist-ready entry dest is INPUTINDEX+3 (`aa204736` jobEvents entry lock). */
+  private _repairPublishJobEventEntryDest(builder: TransactionBuilder): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    const impl = this._executingPublishJobEventInputIndex(builder);
+    if (impl < 0) return;
+    const dest = persistValueChunkBase(impl, 5, true);
+    if (dest < 0 || dest >= builder.outputs.length) return;
+    const categoryId = this._persistJobEventsTokenCategory()
+      ?? this._jobEventsPublishCategory()
+      ?? builder.outputs[dest]?.token?.category;
+    const locking = persistUpdateDigestLock(categoryId, this._persistDigestCategories());
+    if (!locking || locking.length !== 35) return;
+    const existing = builder.outputs[dest];
+    let current = existing?.to instanceof Uint8Array ? existing.to : undefined;
+    if (!current && typeof existing?.to === 'string') {
+      try { current = addressToLockScript(existing.to); } catch { current = undefined; }
+    }
+    if (current && current.length === locking.length
+      && current.every((byte, index) => byte === locking[index])) {
+      return;
+    }
+    const existingToken = existing?.token;
+    const inputToken = this.allInputs[dest]?.token;
+    let token = existingToken;
+    if (existingToken !== undefined
+      && existingToken.category === categoryId
+      && existingToken.nft?.capability === 'mutable') {
+      token = existingToken;
+    } else if (inputToken !== undefined && inputToken.category === categoryId) {
+      token = cloneToken(inputToken);
+    }
+    builder.outputs[dest] = {
+      to: locking,
+      amount: existing?.amount && existing.amount >= 1200n ? existing.amount : 1200n,
+      token,
+    };
   }
 
   /** Drop a 1:1 P2PKH preserve that landed on a JobEvent dest. */
   private _repairPublishJobEventDestLocks(builder: TransactionBuilder): void {
     const dests = new Set(this._emitDestinationIndices());
-    const impl = this._publishJobEventInputIndex();
+    const impl = this._executingPublishJobEventInputIndex(builder);
     const offset = this._publishJobEventAbi()?.blockLayout?.slots
       .find((slot) => slot.kind === 'event')?.offset ?? 4;
     dests.add(publishJobEventOutputIndex(impl, offset));
@@ -5193,6 +5325,7 @@ export class StatefulTransactionBuilder {
       if (!locking) continue;
       repairJobEventDestLock(builder.outputs, dest, locking);
     }
+    this._repairPublishJobEventEntryDest(builder);
   }
 
   /**
@@ -5265,8 +5398,9 @@ export class StatefulTransactionBuilder {
     const persistLockCategory = this._persistJobEventsTokenCategory() ?? categoryId;
     const persistLock = (persistLockCategory ? persistedJobEventsLock(persistLockCategory) : undefined)
       ?? this.jobEventsRedeemLock;
+    const persistImpl = this._executingPublishJobEventInputIndex(builder);
     const persistDests = new Set(persistUpdatePredecessorDests({
-      implIndex: this._publishJobEventInputIndex(),
+      implIndex: persistImpl,
       persistUpdate: isPersistedJobEventsReady() && !this._rootIsPublishJobPost(),
       keepAtLayout: shouldKeepPersistAtLayoutBase({
         persistReady: isPersistedJobEventsReady(),
@@ -5285,7 +5419,7 @@ export class StatefulTransactionBuilder {
       const persistShaped = commit.length >= 64 && !isDataNftIndexCommitment(commit);
       if (index === emitDest && !persistShaped) continue;
       if (input?.token?.nft?.capability !== 'mutable') continue;
-      const chunk0Dest = persistValueChunkBase(this._publishJobEventInputIndex(), 5, false);
+      const chunk0Dest = persistValueChunkBase(persistImpl, 5, false);
       const forceChunk0 = index === chunk0Dest
         && !this._rootIsPublishJobPost()
         && isPersistValueChunkCommitment(commit);
@@ -5299,7 +5433,8 @@ export class StatefulTransactionBuilder {
           const persistCat = this._persistJobEventsTokenCategory() ?? input.token?.category ?? categoryId;
           const persistValue = firstPersisted(stagedJobEventsValues)
             ?? firstPersisted(persistedJobEventsValues)
-            ?? (persistCat ? persistedJobEventsValue(persistCat) : undefined);
+            ?? (persistCat ? persistedJobEventsValue(persistCat) : undefined)
+            ?? recoverPersistValueFromOutputs(builder.outputs, [...persistDests]);
           const destOffset = [...persistDests].sort((left, right) => left - right).indexOf(index);
           const inputLock = input.unlocker?.generateLockingBytecode();
           const persistVLock = persistValueChunkLock(this._jobEventsPublishCategory(), persistValue)
@@ -9397,7 +9532,7 @@ export class StatefulTransactionBuilder {
       const addressType = proxyGroup?.externalContract?.inner?.addressType
         ?? llc.externalContract?.inner?.addressType ?? 'p2sh32';
       for (let eventIndex = 0; eventIndex < eventSlots.length; eventIndex++) {
-        const namedImpl = this._publishJobEventInputIndex();
+        const namedImpl = this._executingPublishJobEventInputIndex(builder);
         const outputIndex = namedImpl >= 0
           ? publishJobEventOutputIndex(namedImpl, eventSlots[eventIndex].offset)
           : implIndex + eventSlots[eventIndex].offset;
@@ -9509,17 +9644,25 @@ export class StatefulTransactionBuilder {
       );
       for (const slot of entrySlots) {
         if (slot.offset < walkedWidth) continue;
-        const outputIndex = implIndex + slot.offset;
+        const namedImpl = this._executingPublishJobEventInputIndex(builder);
+        const outputIndex = namedImpl >= 0 && (fn?.name === 'publishJobEvent' || llc.functionName === 'publishJobEvent')
+          ? namedImpl + slot.offset
+          : implIndex + slot.offset;
         const commitment = this.getExternalCallEntryOutput(categoryId, slot.offset);
         if (!commitment) continue;
         const existing = builder.outputs[outputIndex];
         if (existing?.token?.nft?.capability === 'minting') continue;
         const occupant = this.allInputs[outputIndex];
-        const lockingBytecode = occupant && 'unlocker' in occupant && occupant.unlocker
-          ? occupant.unlocker.generateLockingBytecode()
-          : existing?.to instanceof Uint8Array
-            ? existing.to
-            : undefined;
+        const entryLock = persistUpdateDigestLock(
+          this._persistJobEventsTokenCategory() ?? this._jobEventsPublishCategory() ?? categoryId,
+          this._persistDigestCategories(),
+        );
+        const lockingBytecode = (entryLock && entryLock.length === 35 ? entryLock : undefined)
+          ?? (occupant && 'unlocker' in occupant && occupant.unlocker
+            ? occupant.unlocker.generateLockingBytecode()
+            : existing?.to instanceof Uint8Array
+              ? existing.to
+              : undefined);
         if (!lockingBytecode) continue;
         while (builder.outputs.length < outputIndex) {
           builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
@@ -11157,6 +11300,7 @@ export class StatefulTransactionBuilder {
               finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
             );
           }
+          this._reassertNestedEmitEvents(finalBuilder);
         }
       }
       if (preflightError !== undefined) {

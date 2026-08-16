@@ -4152,7 +4152,7 @@ export class StatefulTransactionBuilder {
   }
 
   private _persistReplayWidth(): number {
-    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return 0;
+    if (!this._shouldReplayPreviousPersist()) return 0;
     return persistUpdatePersistVWidth();
   }
 
@@ -7613,8 +7613,8 @@ export class StatefulTransactionBuilder {
       derivedWidth: source.length,
     });
     // Dominant lock count can include a leftover probe slot (output 25). The
-    // covenant EQUALVERIFYs nNew from v; extra same-lock outputs fail. Persist
-    // UPDATE stays at dest 16-18 even after updateJobPost grows persist to 5.
+    // covenant EQUALVERIFYs nNew from v; extra same-lock outputs fail. Closed
+    // replay stays at dest 16-18. Updated (amounts) keeps dest 16-19.
     const liveBand = {
       start: band.start,
       nNew: persistWidth > 0 ? persistWidth : Math.max(band.nNew, liveN, 1),

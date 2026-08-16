@@ -18,7 +18,10 @@ export default defineConfig({
     mock: {
       type: 'mock',
       consensus: {
-        operationCostBudgetPerByte: 10_000,
+        // Proxy __forward inspects the implementation INPUTBYTECODE (full p2sh32 redeem, ~3.8MB
+        // for MarketplaceV1). That OP_SPLIT is charged to the 781-byte proxy input; 10_000/byte
+        // is not enough. 1e6/byte covers the introspection without changing input/tx size caps.
+        operationCostBudgetPerByte: 1_000_000,
         maximumInputBytes: 10_000_000,
         maximumTransactionBytes: 100_000_000,
         maximumStackItemBytes: 10_000_000,

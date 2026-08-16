@@ -45,18 +45,18 @@ export function mockProxyDensityReserveBytes(
   },
 ): number {
   if ((maximumInputBytes ?? 10_000) <= 10_000) return 0;
-  let maxBody = 0;
+  let hasAdminBody = false;
   const routeSelector = implArtifact?.messageBus?.selector;
   for (const [selector, body] of Object.entries(implArtifact?.functionBodies ?? {})) {
     if (selector === routeSelector || selector === '53434231') continue;
     if (typeof body !== 'string') continue;
     const bytes = body.length / 2;
-    // Compiler-route bodies unlock with the route blob and carry their own density.
-    if (bytes > 80_000) continue;
-    if (bytes > maxBody) maxBody = bytes;
+    if (bytes > 16_000) continue;
+    if (bytes > 1_000) hasAdminBody = true;
   }
-  const needed = Math.ceil((maxBody * 360) / 10_000) + 80 - 260;
-  return Math.max(96, needed);
+  // CREATE2 salt cap. A 10KB Marketplace setter through the default proxy costs
+  // ~7.6M ops; 520 reserved bytes yields ~9.3M budget at 10_000/byte.
+  return hasAdminBody || !implArtifact?.functionBodies ? 520 : 96;
 }
 
 export interface DeployProxyOptions {

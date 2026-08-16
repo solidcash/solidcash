@@ -485,6 +485,64 @@ export function scaledEventOutputIndex(inputIndex: number, scale: number): numbe
   return endExclusive < 0 ? -1 : endExclusive - 1;
 }
 
+/** Persist UPDATE must never occupy dest 0/1 (proxy minting/data NFT). */
+export function persistJobEventsBandFloor(implIndex: number, persistReady: boolean): number {
+  if (!persistReady) return -1;
+  const entry = persistValueChunkBase(implIndex, 5, true);
+  return entry >= 0 ? entry : 2;
+}
+
+/** Proxy minting (0) and data-NFT (1) 1:1 slots. Persist chunks must not land here. */
+export function isProxyPreserveOutputIndex(index: number): boolean {
+  return index === 0 || index === 1;
+}
+
+/**
+ * Move off-band derived persist chunks onto the live band by uint16-le index.
+ * Dest 1 with chunk `0100…` is persist chunk 1, not dest 1 — sequential remapping
+ * would put it at `band.start` and overwrite the proxy data NFT.
+ */
+export function remapDerivedChunkDests<T extends { commitment?: string }>(
+  derived: ReadonlyMap<number, T>,
+  band: { start: number; nNew: number },
+  persistFloor = -1,
+): Map<number, T> {
+  const next = new Map<number, T>();
+  const offBand: T[] = [];
+  const bandEnd = band.start + band.nNew - 1;
+  const floor = persistFloor >= 0 ? persistFloor : 2;
+  for (const [dest, chunk] of [...derived.entries()].sort(([left], [right]) => left - right)) {
+    const chunkIndex = valueChunkIndexFromCommitment(chunk.commitment ?? '');
+    const falseDest = isProxyPreserveOutputIndex(dest)
+      || dest < floor
+      || (chunkIndex !== undefined && dest === chunkIndex && dest < band.start);
+    if (falseDest) {
+      if (chunkIndex !== undefined && chunkIndex < band.nNew && !next.has(band.start + chunkIndex)) {
+        next.set(band.start + chunkIndex, chunk);
+      }
+      continue;
+    }
+    if (dest >= band.start && dest <= bandEnd) {
+      next.set(dest, chunk);
+    } else {
+      offBand.push(chunk);
+    }
+  }
+  let offset = 0;
+  for (const chunk of offBand) {
+    const chunkIndex = valueChunkIndexFromCommitment(chunk.commitment ?? '');
+    if (chunkIndex !== undefined && chunkIndex < band.nNew) {
+      if (!next.has(band.start + chunkIndex)) next.set(band.start + chunkIndex, chunk);
+      continue;
+    }
+    while (offset < band.nNew && next.has(band.start + offset)) offset += 1;
+    if (offset >= band.nNew) break;
+    next.set(band.start + offset, chunk);
+    offset += 1;
+  }
+  return next;
+}
+
 export function computePublishJobEventsBand(parts: {
   implIndex?: number;
   blockSize?: number;
@@ -497,13 +555,19 @@ export function computePublishJobEventsBand(parts: {
   insertShift?: number;
   /** First index after a 1:1 preserve band the covenant still checks. */
   preserveEndExclusive?: number;
+  /** Persist UPDATE floor: entry dest, or dest 2 when impl is unknown. */
+  persistFloor?: number;
 }): { start: number; end: number; nNew: number } | undefined {
   const layoutStart = parts.start ?? (
     parts.implIndex !== undefined && parts.implIndex >= 0
       ? parts.implIndex + (parts.blockSize ?? 5) + (parts.insertShift ?? 0)
       : -1
   );
-  const start = Math.max(layoutStart, parts.preserveEndExclusive ?? -1);
+  const start = Math.max(
+    layoutStart,
+    parts.preserveEndExclusive ?? -1,
+    parts.persistFloor ?? -1,
+  );
   if (start < 0) return undefined;
   const derivedInBand = (parts.derivedIndices ?? []).filter((index) => index >= start);
   const liveWidth = parts.liveWidth ?? 0;
@@ -971,7 +1035,10 @@ export function persistChunkOutputDests(parts: {
   }
   dests.delete(entryDest);
   dests.delete(eventDest);
-  return [...dests].filter((dest) => dest >= 0).sort((left, right) => left - right);
+  const floor = persistJobEventsBandFloor(parts.implIndex, true);
+  return [...dests]
+    .filter((dest) => dest >= 2 && (floor < 0 || dest >= floor))
+    .sort((left, right) => left - right);
 }
 
 /**
@@ -1006,6 +1073,7 @@ export function persistUpdatePredecessorDests(parts: {
   nNew: number;
 }): number[] {
   if (parts.nNew <= 0 || parts.bandStart < 0) return [];
+  if (parts.persistUpdate && parts.implIndex < 0) return [];
   const layout = persistValueChunkBase(parts.implIndex, 5, true);
   const start = parts.persistUpdate && parts.keepAtLayout && layout >= 0
     ? Math.min(layout, parts.bandStart)
@@ -4387,9 +4455,18 @@ export class StatefulTransactionBuilder {
     // Live covenant nNew (extracted/persisted v) wins over a short compose plan
     // so the missing continuation (first post slot 25) is reserved. Persist is
     // cleared on deploy, so a prior test's Created extract cannot inflate this.
+    const persistReady = isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
+    const executingImpl = this._executingPublishJobEventInputIndex();
+    const persistFloor = persistJobEventsBandFloor(executingImpl, persistReady);
+    if (persistReady && persistFloor >= 0
+      && (forcedLayoutStart ?? layoutStart) === undefined
+      && executingImpl < 0) {
+      return undefined;
+    }
     return computePublishJobEventsBand({
       start: forcedLayoutStart ?? layoutStart,
       preserveEndExclusive: Math.max(preserveEndExclusive, forcedStart ?? -1),
+      persistFloor,
       plannedWidth,
       jobEventsCount,
       liveWidth: liveJobEventsBandWidth({ plannedWidth, persistWidth, derivedWidth }),
@@ -6573,6 +6650,11 @@ export class StatefulTransactionBuilder {
   }
 
   setExternalCallEntryOutputAt(outputIndex: number, categoryId: string, commitmentHex: string): boolean {
+    if (isProxyPreserveOutputIndex(outputIndex)) return false;
+    const occupantCommit = String(this.allInputs[outputIndex]?.token?.nft?.commitment ?? '');
+    if (isDataNftIndexCommitment(occupantCommit) && !isPersistValueChunkCommitment(occupantCommit)) {
+      return false;
+    }
     if (commitmentHex.length < 128 || /^0+$/.test(commitmentHex)) return false;
     const previous = this.externalCallEntryOutputsByIndex.get(outputIndex);
     if (previous?.commitment === commitmentHex && previous.categoryId === categoryId) return false;
@@ -6586,6 +6668,11 @@ export class StatefulTransactionBuilder {
   private _applyDerivedEntryOutputs(builder: TransactionBuilder): void {
     const entryDest = persistValueChunkBase(this._executingPublishJobEventInputIndex(builder), 5, true);
     for (const [outputIndex, placed] of this.externalCallEntryOutputsByIndex) {
+      if (isProxyPreserveOutputIndex(outputIndex)) continue;
+      const occupantCommit = String(this.allInputs[outputIndex]?.token?.nft?.commitment ?? '');
+      if (isDataNftIndexCommitment(occupantCommit) && !isPersistValueChunkCommitment(occupantCommit)) {
+        continue;
+      }
       while (builder.outputs.length <= outputIndex) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
       }
@@ -6882,6 +6969,11 @@ export class StatefulTransactionBuilder {
   setDerivedChunkOutput(
     outputIndex: number, chunk: { commitment: string; lockingBytecode: Uint8Array; categoryId?: string },
   ): boolean {
+    if (isProxyPreserveOutputIndex(outputIndex)) return false;
+    const occupantCommit = String(this.allInputs[outputIndex]?.token?.nft?.commitment ?? '');
+    if (isDataNftIndexCommitment(occupantCommit) && !isPersistValueChunkCommitment(occupantCommit)) {
+      return false;
+    }
     const valueChunkPin = chunk.lockingBytecode.length === 35
       && chunk.lockingBytecode[0] === 0xaa && chunk.lockingBytecode[1] === 0x20
       && chunk.lockingBytecode[34] === 0x87
@@ -6979,16 +7071,14 @@ export class StatefulTransactionBuilder {
     const tokenWriterPresent = this.externalCallUtxoGroups.some((group) =>
       isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name));
     if (band && !tokenWriterPresent && this.derivedChunkOutputs.size > 0) {
-      const keys = [...this.derivedChunkOutputs.keys()].sort((left, right) => left - right);
-      const offBand = keys.some((index) => index < band.start || index > band.end);
-      if (offBand) {
-        const chunks = keys.map((index) => this.derivedChunkOutputs.get(index)!);
-        this.derivedChunkOutputs.clear();
-        for (const [offset, chunk] of chunks.entries()) {
-          if (offset >= band.nNew) break;
-          this.derivedChunkOutputs.set(band.start + offset, chunk);
-        }
-      }
+      const persistReady = isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
+      const remapped = remapDerivedChunkDests(
+        this.derivedChunkOutputs,
+        band,
+        persistJobEventsBandFloor(this._executingPublishJobEventInputIndex(), persistReady),
+      );
+      this.derivedChunkOutputs.clear();
+      for (const [index, chunk] of remapped) this.derivedChunkOutputs.set(index, chunk);
     }
     const protectedMasters = new Set<number>();
     for (const [llcIndex, llc] of this.lowLevelCallUtxoGroups.entries()) {
@@ -7020,6 +7110,7 @@ export class StatefulTransactionBuilder {
     for (const outputIndex of [...this.derivedChunkOutputs.keys()].sort((left, right) => left - right)) {
       const chunk = this.derivedChunkOutputs.get(outputIndex);
       if (!chunk) continue;
+      if (isProxyPreserveOutputIndex(outputIndex)) continue;
       // Only the caller's own suffix chunks are skipped here. Nested
       // publishJobEvent pins often omit categoryId; treating them as
       // `this.categoryId` dropped the 20-25 jobEvents run on the view-only path.
@@ -7170,7 +7261,7 @@ export class StatefulTransactionBuilder {
       if (isEmptyValueChunkCommitment(prior.commitment) || prior.commitment === '00') continue;
       this.derivedChunkOutputs.set(index, prior);
     }
-    const reserved = new Set<number>();
+    const reserved = new Set<number>([0, 1]);
     for (const [index, input] of this.allInputs.entries()) {
       if (input.token?.nft?.capability === 'minting') reserved.add(index);
       const inputCommit = String(input.token?.nft?.commitment ?? '');

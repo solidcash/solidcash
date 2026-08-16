@@ -50,6 +50,9 @@ import {
   proxyValueChunkPadCount,
   liveChunkSlotsByOwner,
   computePublishJobEventsBand,
+  persistJobEventsBandFloor,
+  isProxyPreserveOutputIndex,
+  remapDerivedChunkDests,
   scaledInputPreserveExclusiveEnd,
   scaledEventOutputIndex,
   liveJobEventsBandWidth,
@@ -758,6 +761,42 @@ describe('assignPhysicalReturnIndices', () => {
     expect(viewTailOccupancyCap([17, 20], { start: 20, end: 22 })).toBe(22);
     expect(viewTailOccupancyCap([17, 19])).toBe(-1);
     expect(computePublishJobEventsBand({ implIndex: -1, plannedWidth: 6 })).toBeUndefined();
+    expect(persistJobEventsBandFloor(11, true)).toBe(14);
+    expect(persistJobEventsBandFloor(-1, true)).toBe(2);
+    expect(persistJobEventsBandFloor(11, false)).toBe(-1);
+    expect(computePublishJobEventsBand({
+      start: 1, plannedWidth: 5, persistFloor: 14,
+    })).toEqual({ start: 14, end: 18, nNew: 5 });
+    expect(computePublishJobEventsBand({
+      plannedWidth: 5, preserveEndExclusive: 1, persistFloor: 2,
+    })).toEqual({ start: 2, end: 6, nNew: 5 });
+    expect(persistUpdatePredecessorDests({
+      implIndex: -1, persistUpdate: true, keepAtLayout: false, bandStart: 1, nNew: 5,
+    })).toEqual([]);
+    expect(isProxyPreserveOutputIndex(0)).toBe(true);
+    expect(isProxyPreserveOutputIndex(1)).toBe(true);
+    expect(isProxyPreserveOutputIndex(2)).toBe(false);
+    const remapped = remapDerivedChunkDests(
+      new Map([
+        [1, { commitment: `0100${'41'.repeat(40)}` }],
+        [17, { commitment: `0100${'41'.repeat(40)}` }],
+      ]),
+      { start: 16, nNew: 2 },
+      6,
+    );
+    expect([...remapped.keys()].sort((left, right) => left - right)).toEqual([17]);
+    expect(remapped.get(1)).toBeUndefined();
+    expect(remapDerivedChunkDests(
+      new Map([
+        [1, { commitment: `0100${'41'.repeat(40)}` }],
+        [16, { commitment: `0000${'42'.repeat(40)}` }],
+      ]),
+      { start: 16, nNew: 2 },
+      6,
+    )).toEqual(new Map([
+      [16, { commitment: `0000${'42'.repeat(40)}` }],
+      [17, { commitment: `0100${'41'.repeat(40)}` }],
+    ]));
     expect(scaledInputPreserveExclusiveEnd(5, 5)).toBe(25);
     expect(scaledEventOutputIndex(5, 5)).toBe(24);
     expect(publishJobEventOutputIndex(15, 4)).toBe(19);
@@ -1329,6 +1368,8 @@ describe('assignPhysicalReturnIndices', () => {
     expect(persistDigestLockDests(14)).toEqual([17, 19]);
     expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 18 })).toEqual([16, 17, 18]);
     expect(persistChunkOutputDests({ implIndex: 13, bandStart: 18, bandEnd: 19 })).toEqual([18, 19]);
+    expect(persistChunkOutputDests({ implIndex: 3, bandStart: 1, bandEnd: 5 })).toEqual([8]);
+    expect(persistChunkOutputDests({ implIndex: 11, bandStart: 1, bandEnd: 5 })).not.toContain(1);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: true, bandStart: 20, nNew: 3,
     })).toEqual([18, 20]);

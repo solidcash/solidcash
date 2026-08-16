@@ -136,6 +136,7 @@ import {
   expectedFromOtcEqualVerify,
   preferChunkCommitment,
   valueChunkIndexFromCommitment,
+  isProxyPreserveOutputIndex,
   predOutBaseAfterOccupancy,
   assignedTailEnd,
 } from './StatefulTransactionBuilder.js';
@@ -1405,10 +1406,6 @@ function extractFailingValueChunkCommitments(
     if (isJobEventEmitCommitment(expectedHex)) continue;
     if (expected.length < 3 || expected.length > 128) continue;
     result.set(outIdx, expectedHex);
-    const chunkIndex = valueChunkIndexFromCommitment(expectedHex);
-    if (chunkIndex !== undefined && !result.has(chunkIndex)) {
-      result.set(chunkIndex, expectedHex);
-    }
   }
   return result;
 }
@@ -10097,11 +10094,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (commitment.length < 6 || isEmptyValueChunkCommitment(commitment)) continue;
               if (isJobEventEmitCommitment(commitment)) continue;
               const chunkIndex = valueChunkIndexFromCommitment(commitment);
-              const inBand = !!band && rawIndex >= band.start && rawIndex <= band.end;
+              const falseDest = isProxyPreserveOutputIndex(rawIndex)
+                || (chunkIndex !== undefined && rawIndex === chunkIndex);
+              const inBand = !!band && !falseDest && rawIndex >= band.start && rawIndex <= band.end;
               const trailingWrite = !!band && rawIndex === band.start - 1 && chunkIndex === undefined;
               const outputIndex = inBand
                 ? rawIndex
                 : (band && chunkIndex !== undefined && chunkIndex < band.nNew ? band.start + chunkIndex : rawIndex);
+              if (isProxyPreserveOutputIndex(outputIndex)) continue;
               const existing = stb.getDerivedChunkOutputs().get(outputIndex);
               const kept = preferChunkCommitment(existing?.commitment, commitment);
               if (existing?.commitment === kept) continue;
@@ -10124,6 +10124,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             for (const [rawIndex, commitment] of failingCommits) {
               if (commitment.length < 128 || isEmptyValueChunkCommitment(commitment)) continue;
+              if (isProxyPreserveOutputIndex(rawIndex)) continue;
               if (stb.setExternalCallEntryOutputAt(rawIndex, chunkCategory, commitment)) {
                 commitmentProgress += 1;
               }

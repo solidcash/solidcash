@@ -96,6 +96,7 @@ import {
   stripSurplusValueChunkLocks,
   persistUpdateRedeemLock,
   persistUpdateDigestLock,
+  pinPersistDigestLock,
   persistUpdateEntryCommitment,
   persistUpdateDestLock,
   persistValueChunkLock,
@@ -1278,6 +1279,12 @@ describe('assignPhysicalReturnIndices', () => {
     expect(persistPredecessorPlaceCount(3, 5, true)).toBe(3);
     expect(persistPredecessorPlaceCount(2, 5, false)).toBe(5);
     expect(persistPredecessorPlaceCount(0, 2, true)).toBe(0);
+    const p2pkh = Uint8Array.from([0x76, 0xa9, 0x14, ...Array(20).fill(0x71), 0x88, 0xac]);
+    const digest = hexToBin('aa2047362c5b4a0c597c12b75c90f68f6933b2e86c63eb6ce7ed46e083407361b7b587');
+    const padded = Array.from({ length: 17 }, () => ({ to: p2pkh, amount: 1000n }));
+    expect(pinPersistDigestLock(padded, 16, digest)).toBe(true);
+    expect(padded[16]?.to).toEqual(digest);
+    expect(padded[16]?.amount).toBe(1200n);
     expect(persistDigestLockDests(13)).toEqual([16, 18]);
     expect(persistDigestLockDests(14)).toEqual([17, 19]);
     expect(persistUpdatePredecessorDests({

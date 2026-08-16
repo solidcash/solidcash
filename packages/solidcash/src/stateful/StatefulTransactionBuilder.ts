@@ -2499,6 +2499,27 @@ export function persistUpdateEntryCommitment(persistValue: Uint8Array | undefine
   ));
 }
 
+/** Last-writer: dest 16/19 OUTPUTBYTECODE must be the persist digest lock, not a 1:1 P2PKH. */
+export function pinPersistDigestLock(
+  outputs: Array<{
+    to?: Uint8Array | string;
+    amount?: bigint;
+    token?: { amount?: bigint; category?: string; nft?: { capability?: string; commitment?: string } };
+  }>,
+  dest: number,
+  locking: Uint8Array,
+): boolean {
+  if (dest < 0 || dest >= outputs.length) return false;
+  const existing = outputs[dest];
+  if (existing?.token?.nft?.capability === 'minting') return false;
+  outputs[dest] = {
+    to: locking,
+    amount: existing?.amount && existing.amount >= 1200n ? existing.amount : 1200n,
+    token: existing?.token,
+  };
+  return true;
+}
+
 export function persistUpdateDigestLock(
   categoryId?: string,
   _extraCategories: readonly string[] = [],
@@ -3923,9 +3944,11 @@ export class StatefulTransactionBuilder {
         tokenReturns.add(tokenWriterReturnIndex(master, group.blockLayout, persistBand));
       }
     }
+    const digestDests = new Set(persistDigestLockDests(this._executingPublishJobEventInputIndex(builder)));
     const restore = (start: number, endExclusive: number): void => {
       for (let index = start; index < endExclusive; index++) {
         if (emitDests.has(index)) continue;
+        if (digestDests.has(index)) continue;
         if (tokenReturns.has(index)) continue;
         if (persistBand && index >= persistBand.start && index <= persistBand.end) continue;
         const occupantCommit = String(builder.outputs[index]?.token?.nft?.commitment ?? '');
@@ -5403,6 +5426,45 @@ export class StatefulTransactionBuilder {
     this._repairPublishJobEventEntryDest(builder);
     this._repairPublishJobEventEmitDest(builder);
     this._repairPersistTrailingDest(builder);
+    this._pinPersistDigestLocks(builder);
+  }
+
+  /** Last writer before preflight: dest 16/19 lock is persist digest, not a 1:1 P2PKH pad. */
+  private _pinPersistDigestLocks(builder: TransactionBuilder): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    const locking = this._persistDigestLocking();
+    if (!locking) return;
+    const dests = new Set(persistDigestLockDests(this._executingPublishJobEventInputIndex(builder)));
+    if (builder.outputs.length > 16) dests.add(16);
+    if (builder.outputs.length > 19) dests.add(19);
+    for (const dest of dests) pinPersistDigestLock(builder.outputs, dest, locking);
+  }
+
+  private _persistDigestLocking(): Uint8Array | undefined {
+    const cats = this._persistDigestCategories();
+    const preferred = this._persistJobEventsTokenCategory() ?? this._jobEventsPublishCategory();
+    const locking = persistUpdateDigestLock(preferred, cats);
+    if (locking && locking.length === 35) return locking;
+    for (const categoryId of cats) {
+      const next = persistUpdateDigestLock(categoryId);
+      if (next && next.length === 35) return next;
+    }
+    return undefined;
+  }
+
+  private _pinPersistDigestLocksOnTransaction(transaction: {
+    outputs: Array<{ lockingBytecode: Uint8Array; valueSatoshis: bigint }>;
+  }): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    const locking = this._persistDigestLocking();
+    if (!locking) return;
+    const dests = new Set(persistDigestLockDests(this._executingPublishJobEventInputIndex()));
+    if (transaction.outputs.length > 16) dests.add(16);
+    if (transaction.outputs.length > 19) dests.add(19);
+    for (const dest of dests) {
+      if (dest < 0 || dest >= transaction.outputs.length) continue;
+      transaction.outputs[dest].lockingBytecode = locking;
+    }
   }
 
   /**
@@ -11439,8 +11501,11 @@ export class StatefulTransactionBuilder {
       let preflightError: unknown;
       for (let pass = 0; pass <= 32; pass++) {
         this._repairPublishJobEventDestLocks(finalBuilder);
+        this._pinPersistDigestLocks(finalBuilder);
         try {
-          assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
+          const transaction = finalBuilder.buildLibauthTransaction(true);
+          this._pinPersistDigestLocksOnTransaction(transaction);
+          assertFinalizedTransactionCovenants(finalBuilder, transaction);
           preflightError = undefined;
           break;
         } catch (error) {

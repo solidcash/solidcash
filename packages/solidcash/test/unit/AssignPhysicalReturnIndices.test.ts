@@ -60,6 +60,7 @@ import {
   scaledEventOutputIndex,
   liveJobEventsBandWidth,
   persistUpdateBandWidth,
+  persistUpdatePersistVWidth,
   selectLatestJobEventsChunks,
   persistedJobEventsWidth,
   selectHashedValueForChunkPin,
@@ -83,6 +84,7 @@ import {
   persistUpdatePredecessorDests,
   persistDigestLockDests,
   persistChunkOutputDests,
+  surplusPersistDigestDests,
   selectPublishJobEventInputIndex,
   recoverPersistValueFromOutputs,
   persistOccupantDisplaceable,
@@ -110,6 +112,7 @@ import {
   persistUpdateDestLock,
   persistValueChunkLock,
   isWithdrawShapedJobEvent,
+  isPersistReplayJobEvent,
   isInsertShapedJobEvent,
   shouldRematerializePersistUpdate,
   shouldStampPersistUpdateDigestLock,
@@ -1241,8 +1244,9 @@ describe('assignPhysicalReturnIndices', () => {
       !output.token && (output.amount ?? 0n) >= 499_000n
     ))).toBe(true);
     expect(liveJobEventsBandWidth({ plannedWidth: 2, persistWidth: 3 })).toBe(3);
+    expect(persistUpdatePersistVWidth()).toBe(3);
     expect(persistUpdateBandWidth({
-      persistReady: true, persistWidth: 3, plannedWidth: 5, derivedWidth: 5,
+      persistReady: true, persistWidth: persistUpdatePersistVWidth(), plannedWidth: 5, derivedWidth: 5,
     })).toBe(3);
     expect(persistUpdateBandWidth({
       persistReady: false, persistWidth: 0, plannedWidth: 5, derivedWidth: 2,
@@ -1329,6 +1333,9 @@ describe('assignPhysicalReturnIndices', () => {
   it('rematerializes persist UPDATE only for empty-address dest, not Created or Whitelisted', () => {
     expect(isWithdrawShapedJobEvent([16, '', '', 0])).toBe(true);
     expect(isWithdrawShapedJobEvent([7, '', '', 0])).toBe(true);
+    expect(isPersistReplayJobEvent([7, '', '', 0])).toBe(true);
+    expect(isPersistReplayJobEvent([16, '', '', 0])).toBe(true);
+    expect(isPersistReplayJobEvent([3, '', '', 0])).toBe(false);
     expect(isWithdrawShapedJobEvent([0, '76a914', '', 0])).toBe(false);
     expect(isWithdrawShapedJobEvent({ type_: 15, address_: '76a914', data_: '', timestamp_: 0 })).toBe(false);
     expect(shouldRematerializePersistUpdate({
@@ -1416,6 +1423,19 @@ describe('assignPhysicalReturnIndices', () => {
     expect(persistChunkOutputDests({ implIndex: 13, bandStart: 18, bandEnd: 19 })).toEqual([18, 19]);
     expect(persistChunkOutputDests({ implIndex: 3, bandStart: 1, bandEnd: 5 })).toEqual([8]);
     expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 20 })).toEqual([16, 17, 18, 19, 20]);
+    expect(persistChunkOutputDests({
+      implIndex: 11, bandStart: 16, bandEnd: 20, persistWidth: 3,
+    })).toEqual([16, 17, 18]);
+    expect(surplusPersistDigestDests({
+      entryDest: 14,
+      persistDests: [16, 17, 18],
+      destLocks: [
+        { dest: 14, lock: 'aa2047362c5b4a0c597c' },
+        { dest: 16, lock: 'aa20a8ff6e94d0a3199b' },
+        { dest: 19, lock: 'aa2047362c5b4a0c597c' },
+      ],
+      digestLock: 'aa2047362c5b4a0c597c',
+    })).toEqual([19]);
     expect(persistChunkOutputDests({ implIndex: 11, bandStart: 1, bandEnd: 5 })).not.toContain(1);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: true, bandStart: 20, nNew: 3,

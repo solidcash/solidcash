@@ -470,6 +470,11 @@ export function liveJobEventsBandWidth(parts: {
   ));
 }
 
+/** Persist UPDATE EQUALVERIFYs dest 16-18. persistWidth after updateJobPost is 5. */
+export function persistUpdatePersistVWidth(): number {
+  return 3;
+}
+
 /**
  * Persist UPDATE dests EQUALVERIFY the previous persist width (closeJob 3).
  * Extracted Closed/Updated blobs are dest 15 emit — do not grow dest 16+ to 5.
@@ -1104,6 +1109,7 @@ export function persistChunkOutputDests(parts: {
   implIndex: number;
   bandStart: number;
   bandEnd: number;
+  persistWidth?: number;
 }): number[] {
   const entryDest = persistValueChunkBase(parts.implIndex, 5, true);
   const eventDest = entryDest >= 0 ? entryDest + 1 : -1;
@@ -1116,8 +1122,11 @@ export function persistChunkOutputDests(parts: {
   dests.delete(entryDest);
   dests.delete(eventDest);
   const floor = persistJobEventsBandFloor(parts.implIndex, true);
+  const maxDest = parts.persistWidth && parts.persistWidth > 0 && parts.bandStart >= 0
+    ? parts.bandStart + parts.persistWidth - 1
+    : Number.POSITIVE_INFINITY;
   return [...dests]
-    .filter((dest) => dest >= 2 && (floor < 0 || dest >= floor))
+    .filter((dest) => dest >= 2 && (floor < 0 || dest >= floor) && dest <= maxDest)
     .sort((left, right) => left - right);
 }
 
@@ -2644,6 +2653,27 @@ export function shouldRematerializePersistUpdate(parts: {
   return isWithdrawShapedJobEvent(parts.event);
 }
 
+/** Closed / CollateralWithdrawn replay previous persist v; Updated writes a new blob. */
+export function isPersistReplayJobEvent(event: unknown): boolean {
+  const type = jobEventTypeOf(event);
+  return type === 7 || type === 16;
+}
+
+/** Extra dests with the entry digest lock (dest 14 + dest 19) fail NUMEQUALVERIFY 1. */
+export function surplusPersistDigestDests(parts: {
+  entryDest: number;
+  persistDests: readonly number[];
+  destLocks: ReadonlyArray<{ dest: number; lock: string }>;
+  digestLock: string;
+}): number[] {
+  if (parts.entryDest < 0 || !parts.digestLock) return [];
+  return parts.destLocks
+    .filter((row) => row.lock.startsWith(parts.digestLock)
+      && row.dest !== parts.entryDest
+      && !parts.persistDests.includes(row.dest))
+    .map((row) => row.dest);
+}
+
 /** First-publish Created / whitelist INSERT dests must keep their own redeem lock. */
 export function isInsertShapedJobEvent(event: unknown): boolean {
   const type = jobEventTypeOf(event);
@@ -4107,6 +4137,23 @@ export class StatefulTransactionBuilder {
     return this.lowLevelCallUtxoGroups.some((group) => group.functionName === 'publishJobPost')
       || this.externalCallUtxoGroups.some((group) =>
         (group.functionName ?? group.logicalFunctionName) === 'publishJobPost');
+  }
+
+  /** Closed/CollateralWithdrawn replay previous persist v (nNew=3), not dest 15 emit. */
+  private _shouldReplayPreviousPersist(): boolean {
+    if (!this._shouldRematerializePersistUpdate()) return false;
+    for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
+      const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
+      if (!names.includes('publishJobEvent')) continue;
+      const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
+      if (isPersistReplayJobEvent(event)) return true;
+    }
+    return false;
+  }
+
+  private _persistReplayWidth(): number {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return 0;
+    return persistUpdatePersistVWidth();
   }
 
   /** Persist UPDATE rematerialize only for empty-address dest, never INSERT/whitelist dest. */
@@ -5794,14 +5841,40 @@ export class StatefulTransactionBuilder {
     if (!locking || locking.length !== 35) return;
     const impl = this._executingPublishJobEventInputIndex(builder);
     const band = this.getPublishJobEventsBand();
-    for (const dest of persistChunkOutputDests({
+    const persistWidth = this._persistReplayWidth();
+    const persistDests = persistChunkOutputDests({
       implIndex: impl,
       bandStart: band?.start ?? -1,
       bandEnd: band?.end ?? -1,
-    })) {
+      persistWidth: persistWidth > 0 ? persistWidth : undefined,
+    });
+    for (const dest of persistDests) {
       const inputCommit = String(this.allInputs[dest]?.token?.nft?.commitment ?? '');
       if (isDataNftIndexCommitment(inputCommit) && !isPersistValueChunkCommitment(inputCommit)) continue;
       pinPersistDigestLock(builder.outputs, dest, locking);
+    }
+    this._stripSurplusPersistDigestLocks(builder, persistDests);
+  }
+
+  /** Dest 14 is the only digest dest; dest 19 as a second digest fails 1 vs 2. */
+  private _stripSurplusPersistDigestLocks(builder: TransactionBuilder, persistDests: readonly number[]): void {
+    const digest = this._persistDigestLocking();
+    const impl = this._executingPublishJobEventInputIndex(builder);
+    const entryDest = persistValueChunkBase(impl, 5, true);
+    if (!digest || entryDest < 0) return;
+    const digestHex = binToHex(digest);
+    const destLocks = builder.outputs.map((output, dest) => ({
+      dest,
+      lock: output?.to instanceof Uint8Array ? binToHex(output.to) : '',
+    }));
+    for (const dest of surplusPersistDigestDests({
+      entryDest, persistDests, destLocks, digestLock: digestHex,
+    })) {
+      const existing = builder.outputs[dest];
+      const amount = existing?.amount && existing.amount >= 1200n && existing.amount < 10_000n
+        ? existing.amount
+        : 1200n;
+      builder.outputs[dest] = { to: Uint8Array.of(0x51), amount };
     }
   }
 
@@ -5852,11 +5925,13 @@ export class StatefulTransactionBuilder {
     }
     const chunk = this._persistChunkLocking();
     const band = this.getPublishJobEventsBand();
+    const persistWidth = this._persistReplayWidth();
     if (chunk && chunk.length === 35) {
       for (const dest of persistChunkOutputDests({
         implIndex: impl,
         bandStart: band?.start ?? -1,
         bandEnd: band?.end ?? -1,
+        persistWidth: persistWidth > 0 ? persistWidth : undefined,
       })) {
         if (dest >= 0 && dest < transaction.outputs.length) {
           transaction.outputs[dest].lockingBytecode = chunk;
@@ -5868,17 +5943,14 @@ export class StatefulTransactionBuilder {
   /**
    * Input 14 EQUALVERIFYs UTXOBYTECODE(INPUTINDEX+5) against the persist
    * digest lock. Dest 19 must be that lock plus a persist chunk, not a pad.
+   * Only the executing impl is a trailing base — a persist-entry UTXO also
+   * unlocks as publishJobEvent and would stamp dest 19 as a second digest.
    */
   private _repairPersistTrailingDest(builder: TransactionBuilder): void {
     if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
     const impls = new Set<number>();
     const executing = this._executingPublishJobEventInputIndex(builder);
     if (executing >= 0) impls.add(executing);
-    for (const [index, input] of (builder.inputs ?? this.allInputs).entries()) {
-      const name = (input as { unlocker?: { abiFunction?: { name?: string } } } | undefined)
-        ?.unlocker?.abiFunction?.name ?? '';
-      if (name === 'publishJobEvent') impls.add(index);
-    }
     const categoryId = this._persistJobEventsTokenCategory()
       ?? this._jobEventsPublishCategory();
     const persistValue = firstPersisted(stagedJobEventsValues)
@@ -7497,13 +7569,21 @@ export class StatefulTransactionBuilder {
       .map(([, chunk]) => chunk)
       .filter((chunk) => chunk.lockingBytecode.length === 35
         && chunk.commitment.length >= 3 && chunk.commitment !== '00');
-    const persistedValue = this._shouldRematerializePersistUpdate() && categoryId
-      ? persistedJobEventsValue(categoryId) : undefined;
+    const replay = this._shouldReplayPreviousPersist();
+    const persistedValue = replay
+      ? ((categoryId ? persistedJobEventsValue(categoryId) : undefined)
+        ?? firstPersisted(persistedJobEventsValues))
+      : undefined;
     const fromValue = persistedValue
       ? chunksFromJobEventsValue(persistedValue, redeemLock, categoryId)
       : [];
-    const source = this._shouldRematerializePersistUpdate()
-      ? selectLatestJobEventsChunks(fromDerived, fromValue) : fromDerived;
+    // Closed replays previous persist. Updated prefers the new derived blob
+    // (same-length selectLatest would otherwise keep the empty dest-17 stub).
+    const source = replay && fromValue.length > 0
+      ? fromValue
+      : (this._shouldRematerializePersistUpdate()
+        ? selectLatestJobEventsChunks(fromValue, fromDerived)
+        : fromDerived);
     const lockCounts = new Map<string, { lock: Uint8Array; n: number }>();
     for (let index = band.start; index < band.start + Math.max(band.nNew, 8); index++) {
       const lock = builder.outputs[index]?.to;
@@ -7525,16 +7605,20 @@ export class StatefulTransactionBuilder {
       ?? source[0]?.lockingBytecode
       ?? fromDerived[0]?.lockingBytecode;
     if (!siblingLock || siblingLock.length !== 35) return;
-    const persistWidth = categoryId ? persistedJobEventsWidth(categoryId) : 0;
-    const liveN = liveJobEventsBandWidth({
-      plannedWidth: band.nNew,
+    const persistWidth = this._persistReplayWidth();
+    const liveN = persistUpdateBandWidth({
+      persistReady: persistWidth > 0,
       persistWidth,
+      plannedWidth: band.nNew,
       derivedWidth: source.length,
     });
     // Dominant lock count can include a leftover probe slot (output 25). The
-    // covenant EQUALVERIFYs nNew from v; extra same-lock outputs fail. Grow
-    // only from extracted/persisted width, then strip the rest.
-    const liveBand = { start: band.start, nNew: Math.max(band.nNew, liveN, 1) };
+    // covenant EQUALVERIFYs nNew from v; extra same-lock outputs fail. Persist
+    // UPDATE stays at dest 16-18 even after updateJobPost grows persist to 5.
+    const liveBand = {
+      start: band.start,
+      nNew: persistWidth > 0 ? persistWidth : Math.max(band.nNew, liveN, 1),
+    };
     const reserved = new Set<number>();
     for (const [index, input] of this.allInputs.entries()) {
       if (input.token?.nft?.capability === 'minting') reserved.add(index);

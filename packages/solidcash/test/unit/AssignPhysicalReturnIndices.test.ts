@@ -95,6 +95,7 @@ import {
   stripSurplusValueChunkLocks,
   persistUpdateRedeemLock,
   persistUpdateDigestLock,
+  persistUpdateEntryCommitment,
   persistUpdateDestLock,
   persistValueChunkLock,
   isWithdrawShapedJobEvent,
@@ -1292,6 +1293,21 @@ describe('assignPhysicalReturnIndices', () => {
       { token: { nft: { commitment: '00004142' } } },
       { token: { nft: { commitment: '01004344' } } },
     ], [0, 1]) ?? new Uint8Array())).toBe('41424344');
+    const persistHead = utf8ToBin('Create a marketplace in solidity');
+    const entryCommit = persistUpdateEntryCommitment(persistHead);
+    expect(entryCommit).toBeDefined();
+    expect(entryCommit!.startsWith('e3b0c442')).toBe(true);
+    expect(entryCommit!.slice(64, 128)).toBe('00'.repeat(32));
+    expect(entryCommit!.slice(128)).toBe(binToHex(persistHead.slice(0, 28)));
+    const forced = [{
+      to: hexToBin('aa207bfacc17406829dd9ccc78306f099dc6905493f8c1d567e8c832bc8c1a05723b87'),
+      amount: 1200n,
+      token: { nft: { capability: 'none' as const, commitment: '005e1976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac0000' } },
+    }];
+    const proxyEventLock = Uint8Array.from([0xaa, 0x20, ...Array(32).fill(0x12), 0x87]);
+    expect(repairJobEventDestLock(forced, 0, proxyEventLock)).toBe(false);
+    expect(repairJobEventDestLock(forced, 0, proxyEventLock, true)).toBe(true);
+    expect(forced[0]?.to).toEqual(proxyEventLock);
     expect(selectPublishJobEventInputIndex({
       namedUnlockers: [13], llcMasters: [6, 13], persistReady: true, firstPublish: false,
     })).toBe(13);

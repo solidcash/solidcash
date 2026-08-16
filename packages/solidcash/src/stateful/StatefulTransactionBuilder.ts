@@ -2230,6 +2230,7 @@ export function repairJobEventDestLock(
   }>,
   dest: number,
   locking: Uint8Array,
+  force = false,
 ): boolean {
   if (dest < 0 || dest >= outputs.length) return false;
   const existing = outputs[dest];
@@ -2246,8 +2247,9 @@ export function repairJobEventDestLock(
     && current.every((byte, index) => byte === locking[index])) {
     return true;
   }
-  // Only vacate a 1:1 P2PKH funder. First-publish Created dests already use p2sh32.
-  if (!current || current.length !== 25 || current[0] !== 0x76 || current[1] !== 0xa9 || current[2] !== 0x14) {
+  // Only vacate a 1:1 P2PKH funder unless persist-ready dest 17 must take the
+  // emit-authenticating proxy covenant over an impl-minting p2sh32.
+  if (!force && (!current || current.length !== 25 || current[0] !== 0x76 || current[1] !== 0xa9 || current[2] !== 0x14)) {
     return false;
   }
   outputs[dest] = {
@@ -2475,6 +2477,16 @@ export function shouldStampPersistUpdateDigestLock(parts: {
  * category + collection `jobEvents:mapping(uint256 => JobEventData[])`.
  * That is emitSortedEntryAddress, not a value-chunk domain lock.
  */
+/** jobEvents[0] entry: H(0)||zeros||persistHead. Dest-16 EQUALVERIFYs this, not persist-v. */
+export function persistUpdateEntryCommitment(persistValue: Uint8Array | undefined): string | undefined {
+  if (!persistValue || persistValue.length === 0) return undefined;
+  return binToHex(encodeEntryCommitment(
+    keyToSlot(new Uint8Array()),
+    new Uint8Array(32),
+    persistValue.slice(0, Math.min(VALUE_HEAD_SIZE, persistValue.length)),
+  ));
+}
+
 export function persistUpdateDigestLock(
   categoryId?: string,
   _extraCategories: readonly string[] = [],
@@ -5245,7 +5257,7 @@ export class StatefulTransactionBuilder {
     this._repairPublishJobEventDestLocks(builder);
   }
 
-  /** Persist-ready entry dest is INPUTINDEX+3 (`aa204736` jobEvents entry lock). */
+  /** Persist-ready entry dest is INPUTINDEX+3 (`aa204736` + H(0)||zeros||persistHead). */
   private _repairPublishJobEventEntryDest(builder: TransactionBuilder): void {
     if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
     const impl = this._executingPublishJobEventInputIndex(builder);
@@ -5257,30 +5269,79 @@ export class StatefulTransactionBuilder {
       ?? builder.outputs[dest]?.token?.category;
     const locking = persistUpdateDigestLock(categoryId, this._persistDigestCategories());
     if (!locking || locking.length !== 35) return;
+    const persistDests = persistUpdatePredecessorDests({
+      implIndex: impl,
+      persistUpdate: true,
+      keepAtLayout: shouldKeepPersistAtLayoutBase({
+        persistReady: true,
+        firstPublish: false,
+        layoutDestOccupiedByMintingWriter: this.hasMintingBandTokenWriter(),
+      }),
+      bandStart: this.getPublishJobEventsBand()?.start ?? dest + 2,
+      nNew: this.getPublishJobEventsBand()?.nNew ?? 2,
+    });
+    const persistValue = firstPersisted(stagedJobEventsValues)
+      ?? firstPersisted(persistedJobEventsValues)
+      ?? (categoryId ? persistedJobEventsValue(categoryId) : undefined)
+      ?? recoverPersistValueFromOutputs(builder.outputs, persistDests);
+    const extracted = this.externalCallEntryOutputsByIndex.get(dest)?.commitment;
+    const entryCommit = (extracted
+      && extracted.toLowerCase().startsWith('e3b0c442')
+      && extracted.length >= 256 ? extracted : undefined)
+      ?? persistUpdateEntryCommitment(persistValue);
     const existing = builder.outputs[dest];
-    let current = existing?.to instanceof Uint8Array ? existing.to : undefined;
-    if (!current && typeof existing?.to === 'string') {
-      try { current = addressToLockScript(existing.to); } catch { current = undefined; }
-    }
-    if (current && current.length === locking.length
-      && current.every((byte, index) => byte === locking[index])) {
-      return;
-    }
     const existingToken = existing?.token;
     const inputToken = this.allInputs[dest]?.token;
-    let token = existingToken;
-    if (existingToken !== undefined
-      && existingToken.category === categoryId
-      && existingToken.nft?.capability === 'mutable') {
-      token = existingToken;
-    } else if (inputToken !== undefined && inputToken.category === categoryId) {
-      token = cloneToken(inputToken);
-    }
+    const baseToken = (existingToken?.category === categoryId ? existingToken : undefined)
+      ?? (inputToken?.category === categoryId ? cloneToken(inputToken) : undefined)
+      ?? existingToken
+      ?? (categoryId
+        ? { amount: 0n, category: categoryId, nft: { capability: 'mutable' as const, commitment: '' } }
+        : undefined);
+    const nextCommit = entryCommit ?? String(baseToken?.nft?.commitment ?? '');
     builder.outputs[dest] = {
       to: locking,
       amount: existing?.amount && existing.amount >= 1200n ? existing.amount : 1200n,
-      token,
+      token: baseToken
+        ? {
+          amount: baseToken.amount ?? 0n,
+          category: baseToken.category ?? categoryId,
+          nft: { capability: 'mutable', commitment: nextCommit },
+        }
+        : existingToken,
     };
+  }
+
+  /** Persist-ready emit dest is INPUTINDEX+4 with the proxy/CREATE event covenant. */
+  private _repairPublishJobEventEmitDest(builder: TransactionBuilder): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    const impl = this._executingPublishJobEventInputIndex(builder);
+    const offset = this._publishJobEventAbi()?.blockLayout?.slots
+      .find((slot) => slot.kind === 'event')?.offset ?? 4;
+    const dest = publishJobEventOutputIndex(impl, offset);
+    if (dest < 0 || dest >= builder.outputs.length) return;
+    const implCategory = this.lowLevelCallUtxoGroups.find((group) =>
+      group.functionName === 'publishJobEvent')?.categoryId;
+    const categoryId = this._persistJobEventsTokenCategory()
+      ?? this.externalCallUtxoGroups.find((group) =>
+        (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')?.categoryId
+      ?? this.allInputs.find((input) =>
+        input.token?.nft?.capability === 'minting'
+        && !!input.token.category
+        && input.token.category !== implCategory)?.token?.category
+      ?? this._jobEventsPublishCategory();
+    if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId)) return;
+    const addressType = this.lowLevelCallUtxoGroups.find((group) =>
+      group.functionName === 'publishJobEvent' || group.logicalFunctionName === 'publishJobEvent')
+      ?.externalContract?.inner?.addressType ?? 'p2sh32';
+    const locking = scriptToLockingBytecode(
+      buildEventNftCovenantScript(hexToBin(categoryId), computeEventNameHash('JobEvent(uint256,JobEventData)')),
+      addressType,
+    );
+    const existing = builder.outputs[dest];
+    const commit = String(existing?.token?.nft?.commitment ?? '');
+    if (!isJobEventEmitCommitment(commit) && !isCreatedJobEventCommitment(commit)) return;
+    repairJobEventDestLock(builder.outputs, dest, locking, true);
   }
 
   /** Drop a 1:1 P2PKH preserve that landed on a JobEvent dest. */
@@ -5326,6 +5387,7 @@ export class StatefulTransactionBuilder {
       repairJobEventDestLock(builder.outputs, dest, locking);
     }
     this._repairPublishJobEventEntryDest(builder);
+    this._repairPublishJobEventEmitDest(builder);
   }
 
   /**
@@ -6213,15 +6275,24 @@ export class StatefulTransactionBuilder {
   }
 
   private _applyDerivedEntryOutputs(builder: TransactionBuilder): void {
+    const entryDest = persistValueChunkBase(this._executingPublishJobEventInputIndex(builder), 5, true);
     for (const [outputIndex, placed] of this.externalCallEntryOutputsByIndex) {
+      if (outputIndex !== entryDest) continue;
+      if (!placed.commitment.toLowerCase().startsWith('e3b0c442') || placed.commitment.length < 256) continue;
+      while (builder.outputs.length <= outputIndex) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
       const existing = builder.outputs[outputIndex];
-      if (!existing?.token?.nft || existing.token.nft.capability !== 'mutable') continue;
+      if (existing?.token?.nft?.capability === 'minting') continue;
+      const locking = persistUpdateDigestLock(placed.categoryId, this._persistDigestCategories())
+        ?? (existing?.to instanceof Uint8Array ? existing.to : undefined);
+      if (!locking) continue;
       builder.outputs[outputIndex] = {
-        to: existing.to,
-        amount: existing.amount,
+        to: locking,
+        amount: existing?.amount && existing.amount >= 1200n ? existing.amount : 1200n,
         token: {
-          amount: existing.token.amount ?? 0n,
-          category: existing.token.category ?? placed.categoryId,
+          amount: existing?.token?.amount ?? 0n,
+          category: existing?.token?.category ?? placed.categoryId,
           nft: { capability: 'mutable', commitment: placed.commitment },
         },
       };

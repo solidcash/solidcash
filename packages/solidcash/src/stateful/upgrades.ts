@@ -31,6 +31,34 @@ interface ForwardShape {
   mode: ForwardMode;
 }
 
+/**
+ * Extra CREATE2 salt bytes the default mock proxy carries as a BCH-2026 density reserve.
+ * Proxy unlocks are tiny (~260 bytes) while a delegate setter still runs its full body against
+ * that input's budget (`operationCostBudgetPerByte * densityControlLength`). Size the reserve
+ * from the largest non-route function body so admin calls clear the mock 10_000/byte budget.
+ */
+export function mockProxyDensityReserveBytes(
+  maximumInputBytes: number | undefined,
+  implArtifact?: {
+    functionBodies?: Record<string, string>;
+    messageBus?: { selector?: string };
+  },
+): number {
+  if ((maximumInputBytes ?? 10_000) <= 10_000) return 0;
+  let maxBody = 0;
+  const routeSelector = implArtifact?.messageBus?.selector;
+  for (const [selector, body] of Object.entries(implArtifact?.functionBodies ?? {})) {
+    if (selector === routeSelector || selector === '53434231') continue;
+    if (typeof body !== 'string') continue;
+    const bytes = body.length / 2;
+    // Compiler-route bodies unlock with the route blob and carry their own density.
+    if (bytes > 80_000) continue;
+    if (bytes > maxBody) maxBody = bytes;
+  }
+  const needed = Math.ceil((maxBody * 360) / 10_000) + 80 - 260;
+  return Math.max(96, needed);
+}
+
 export interface DeployProxyOptions {
   // OZ-style initializer. Default auto-detects an `initialize` delegate function and runs it with the init args
   // through the proxy; `false` seeds state at genesis instead; a string names a different initializer.
@@ -675,10 +703,12 @@ export async function deployProxy<TImpl extends Artifact>(
       // Relaxed mock consensus admits composed transactions far larger than production policy (Marketplace's
       // route has hundreds of outputs). The built-in proxy scans that shape, so give its covered bytecode a small
       // density reserve unless the caller selected an explicit CREATE2 salt. Production addresses remain stable.
-      if (proxyOverrides.salt === undefined
-        && ((runner instanceof Signer ? runner.provider : runner)?.consensusLimits?.maximumInputBytes ?? 10_000)
-          > 10_000) {
-        proxyOverrides.salt = new Uint8Array(96);
+      if (proxyOverrides.salt === undefined) {
+        const reserve = mockProxyDensityReserveBytes(
+          (runner instanceof Signer ? runner.provider : runner)?.consensusLimits?.maximumInputBytes,
+          implArtifact,
+        );
+        if (reserve > 0) proxyOverrides.salt = new Uint8Array(reserve);
       }
       proxy = await new ContractFactory(graftDefaultProxy(implArtifact), runner)
         .deploy(implLbc, {

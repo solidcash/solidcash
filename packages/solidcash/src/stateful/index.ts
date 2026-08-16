@@ -75,7 +75,7 @@ export {
   type LogicalIdentityCommitment, type ResolvedLogicalIdentity, type ResolvedSplitLogicalIdentity,
 } from './logical-identity.js';
 export {
-  upgrades, deployProxy, ProxyContract,
+  upgrades, deployProxy, ProxyContract, mockProxyDensityReserveBytes,
   type DeployProxyOptions, type ProxyInitialState,
 } from './upgrades.js';
 export {

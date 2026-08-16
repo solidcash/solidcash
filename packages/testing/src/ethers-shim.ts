@@ -22,13 +22,13 @@ export * from 'ethers/utils';
 export * from 'ethers/wallet';
 export * from 'ethers/wordlists';
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from 'solidcash';
 // CashAddress-aware ABI coder (wins over ethers/utils re-export for defaultAbiCoder / AbiCoder).
 // Cycle-free: cash-abi-coder only imports ethers/abi + libauth.
 import { AbiCoder as CashAbiCoder, defaultAbiCoder as cashDefaultAbiCoder } from './cash-abi-coder.js';
 import { hexlify, toUtf8Bytes, toUtf8String, getBytes, concat, zeroPadValue, zeroPadBytes, isHexString, isBytesLike } from 'ethers/utils';
-import { getAddress, isAddress } from 'ethers/address';
+import { getAddress as ethersGetAddress, isAddress } from 'ethers/address';
 import { id, solidityPacked, solidityPackedKeccak256 } from 'ethers/hash';
 import { keccak256, sha256, ripemd160 } from 'ethers/crypto';
 import { parseUnits, formatUnits, parseEther, formatEther } from 'ethers/utils';
@@ -38,6 +38,26 @@ import { computeAddress } from 'ethers/transaction';
 // Import from a cycle-free path: ethers-utils imports getCreate* from this file, so only pull BigNumber.
 import { BigNumber as CashBigNumber } from './ethers-bignumber.js';
 export { CashAbiCoder as AbiCoder, cashDefaultAbiCoder as defaultAbiCoder, CashBigNumber as BigNumber };
+
+/**
+ * ethers.getAddress for BCH event payloads. Unmodified Solidity helpers pass a locking-bytecode
+ * hex (`0x76a914…88ac`); return the matching CashAddress so it compares equal to signer.getAddress().
+ */
+export function getAddress(value: string | Uint8Array): string {
+  if (typeof value === 'string' && value.includes(':')) return value;
+  const hex = (typeof value === 'string' ? value : binToHex(value)).replace(/^0x/i, '');
+  const bytes = hexToBin(hex);
+  if (bytes.length === 23 || bytes.length === 25 || bytes.length === 35) {
+    for (const prefix of ['bchtest', 'bitcoincash', 'bchreg'] as const) {
+      const result = lockingBytecodeToCashAddress({ bytecode: bytes, prefix, tokenSupport: false });
+      if (typeof result === 'string') return result;
+      if (result && typeof result === 'object' && 'address' in result) {
+        return (result as { address: string }).address;
+      }
+    }
+  }
+  return ethersGetAddress(`0x${hex}`);
+}
 
 /**
  * ethers.Contract shim that accepts BCH CashAddresses without ENS name resolution.

@@ -5404,7 +5404,10 @@ export class StatefulTransactionBuilder {
     const existing = builder.outputs[dest];
     const existingToken = existing?.token;
     const inputToken = this.allInputs[dest]?.token;
-    const baseToken = (existingToken?.category === categoryId ? existingToken : undefined)
+    // UTXOBYTECODE dest spends the persist entry NFT. Keep that UTXO's category
+    // (ee643a16), not the persist-v proxy category, or the entry covenant fails.
+    const baseToken = (inputToken?.nft?.capability === 'mutable' ? cloneToken(inputToken) : undefined)
+      ?? (existingToken?.category === categoryId ? existingToken : undefined)
       ?? (inputToken?.category === categoryId ? cloneToken(inputToken) : undefined)
       ?? existingToken
       ?? (categoryId
@@ -5498,6 +5501,7 @@ export class StatefulTransactionBuilder {
       if (!locking) continue;
       repairJobEventDestLock(builder.outputs, dest, locking);
     }
+    this._pinPersistDigestInputLocks(builder);
     this._repairPublishJobEventEntryDest(builder);
     this._repairPublishJobEventEmitDest(builder);
     this._repairPersistTrailingDest(builder);
@@ -5507,16 +5511,15 @@ export class StatefulTransactionBuilder {
   /** Last writer before preflight: dest 16 lock is persist digest, not a 1:1 P2PKH pad. */
   private _pinPersistDigestLocks(builder: TransactionBuilder): void {
     if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    this._pinPersistDigestInputLocks(builder);
     const locking = this._persistDigestLocking();
     if (!locking) return;
     const impl = this._executingPublishJobEventInputIndex(builder);
     const dests = new Set<number>();
     const entryDest = persistValueChunkBase(impl, 5, true);
     if (entryDest >= 0) dests.add(entryDest);
-    if (builder.outputs.length > 16) dests.add(16);
     for (const dest of dests) pinPersistDigestLock(builder.outputs, dest, locking);
     this._pinPersistChunkLocks(builder);
-    this._pinPersistDigestInputLocks(builder);
   }
 
   /** Dest 18 OUTPUTBYTECODE is the persist-v redeem lock, not the entry digest. */
@@ -5552,7 +5555,6 @@ export class StatefulTransactionBuilder {
     const entryDest = persistValueChunkBase(impl, 5, true);
     const dests = new Set<number>();
     if (entryDest >= 0) dests.add(entryDest);
-    if (this.allInputs.length > 16) dests.add(16);
     for (const dest of dests) pinPersistDigestInput(this.allInputs, dest, locking);
     this._syncBuilderUnlockers(builder);
   }
@@ -5579,7 +5581,6 @@ export class StatefulTransactionBuilder {
     if (digest) {
       const dests = new Set<number>();
       if (entryDest >= 0) dests.add(entryDest);
-      if (transaction.outputs.length > 16) dests.add(16);
       for (const dest of dests) {
         if (dest < 0 || dest >= transaction.outputs.length) continue;
         transaction.outputs[dest].lockingBytecode = digest;
@@ -5630,7 +5631,6 @@ export class StatefulTransactionBuilder {
       ? chunksFromJobEventsValue(persistValue, locking, categoryId) : [];
     const dests = new Set<number>();
     for (const impl of impls) dests.add(persistValueChunkBase(impl, 5, false));
-    if (builder.outputs.length > 19) dests.add(19);
     for (const dest of dests) {
       if (dest < 0 || dest >= builder.outputs.length) continue;
       const existing = builder.outputs[dest];
@@ -11736,6 +11736,8 @@ export class StatefulTransactionBuilder {
         finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
       );
     }
+    this._repairPublishJobEventDestLocks(finalBuilder);
+    this._pinPersistDigestLocks(finalBuilder);
 
     let rawTx = finalBuilder.build();
 
@@ -11777,6 +11779,8 @@ export class StatefulTransactionBuilder {
       }
       const current = finalBuilder.outputs[changeIndex];
       finalBuilder.outputs[changeIndex] = { ...current, amount: (current.amount ?? 0n) - shortfall };
+      this._repairPublishJobEventDestLocks(finalBuilder);
+      this._pinPersistDigestLocks(finalBuilder);
       rawTx = finalBuilder.build();
       rawTxBin = hexToBin(rawTx);
       decodedTx = decodeTransactionUnsafe(rawTxBin);

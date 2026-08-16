@@ -74,6 +74,7 @@ import {
   shouldKeepPersistAtLayoutBase,
   persistPredecessorPlaceCount,
   persistUpdatePredecessorDests,
+  persistDigestLockDests,
   selectPublishJobEventInputIndex,
   recoverPersistValueFromOutputs,
   persistOccupantDisplaceable,
@@ -1277,15 +1278,20 @@ describe('assignPhysicalReturnIndices', () => {
     expect(persistPredecessorPlaceCount(3, 5, true)).toBe(3);
     expect(persistPredecessorPlaceCount(2, 5, false)).toBe(5);
     expect(persistPredecessorPlaceCount(0, 2, true)).toBe(0);
+    expect(persistDigestLockDests(13)).toEqual([16, 18]);
+    expect(persistDigestLockDests(14)).toEqual([17, 19]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: true, bandStart: 20, nNew: 3,
-    })).toEqual([18, 19, 20]);
+    })).toEqual([20, 18, 19]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: false, bandStart: 25, nNew: 2,
-    })).toEqual([18, 25, 26]);
+    })).toEqual([20, 18, 25, 26]);
     expect(persistUpdatePredecessorDests({
       implIndex: 13, persistUpdate: true, keepAtLayout: false, bandStart: 18, nNew: 2,
-    })).toEqual([16, 18, 19]);
+    })).toEqual([18, 16, 19]);
+    expect(persistUpdatePredecessorDests({
+      implIndex: 14, persistUpdate: true, keepAtLayout: false, bandStart: 18, nNew: 2,
+    })).toEqual([19, 17, 18]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: false, keepAtLayout: false, bandStart: 20, nNew: 2,
     })).toEqual([20, 21]);

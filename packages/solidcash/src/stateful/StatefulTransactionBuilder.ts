@@ -946,6 +946,15 @@ export function persistValueChunkBase(implIndex: number, blockSize = 5, persistU
   return persistUpdate ? implIndex + Math.min(3, blockSize) : implIndex + blockSize;
 }
 
+/** Persist digest lock dests: impl+3 (entry) and impl+blockSize (trailing / dest 19). */
+export function persistDigestLockDests(implIndex: number, blockSize = 5): number[] {
+  if (implIndex < 0) return [];
+  return [...new Set([
+    persistValueChunkBase(implIndex, blockSize, true),
+    persistValueChunkBase(implIndex, blockSize, false),
+  ].filter((dest) => dest >= 0))];
+}
+
 /**
  * Persist UPDATE stays at impl+blockSize when FakeToken already occupies dest 20.
  * If dest 20–24 are still 1:1 pads (whitelist), slide past INPUTINDEX*scale.
@@ -984,11 +993,14 @@ export function persistUpdatePredecessorDests(parts: {
   const dests = Array.from({ length: parts.nNew }, (_, offset) => start + offset);
   if (parts.persistUpdate && parts.implIndex >= 0) {
     const entryDest = persistValueChunkBase(parts.implIndex, 5, true);
+    const trailingDest = persistValueChunkBase(parts.implIndex, 5, false);
     // Layout entry is INPUTINDEX+3 even when value-chunks slid past dest 20.
     if (entryDest >= 0 && !dests.includes(entryDest)) dests.unshift(entryDest);
-    if (parts.keepAtLayout) {
-      const chunk0Dest = persistValueChunkBase(parts.implIndex, 5, false);
-      if (chunk0Dest >= 0 && !dests.includes(chunk0Dest)) dests.push(chunk0Dest);
+    // INPUTINDEX+blockSize (dest 19) is the UTXOBYTECODE pin for input 14.
+    if (trailingDest >= 0 && !dests.includes(trailingDest)) dests.push(trailingDest);
+    if (trailingDest >= 0) {
+      dests.splice(dests.indexOf(trailingDest), 1);
+      dests.unshift(trailingDest);
     }
   }
   return dests;
@@ -4519,25 +4531,27 @@ export class StatefulTransactionBuilder {
       }
     }
     if (persistUpdate) {
-      const dest18 = dests[0];
-      const input = dest18 !== undefined ? this.allInputs[dest18] : undefined;
-      // Proxy persist recipe (Created digest aa204736), never the impl minting recipe.
       const recipeLock = persistUpdateDigestLock(
-        persistCategory ?? input?.token?.category,
+        persistCategory ?? this.allInputs[dests[0]]?.token?.category,
         this._persistDigestCategories(),
       ) ?? persistLock;
-      if (recipeLock && recipeLock.length === 35 && input?.token && input.unlocker) {
+      const digestDests = new Set([
+        dests[0],
+        ...persistDigestLockDests(this._publishJobEventInputIndex()),
+      ].filter((dest): dest is number => dest !== undefined && dest >= 0));
+      for (const dest of digestDests) {
+        const input = this.allInputs[dest];
+        if (!recipeLock || recipeLock.length !== 35 || !input?.token || !input.unlocker) continue;
         const current = input.unlocker.generateLockingBytecode();
-        if (current.length !== 35 || binToHex(current) !== binToHex(recipeLock)) {
-          const inner = input.unlocker;
-          this.allInputs[dest18] = {
-            ...input,
-            unlocker: {
-              generateLockingBytecode: () => recipeLock,
-              generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
-            },
-          };
-        }
+        if (current.length === 35 && binToHex(current) === binToHex(recipeLock)) continue;
+        const inner = input.unlocker;
+        this.allInputs[dest] = {
+          ...input,
+          unlocker: {
+            generateLockingBytecode: () => recipeLock,
+            generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
+          },
+        };
       }
     }
   }
@@ -5388,6 +5402,79 @@ export class StatefulTransactionBuilder {
     }
     this._repairPublishJobEventEntryDest(builder);
     this._repairPublishJobEventEmitDest(builder);
+    this._repairPersistTrailingDest(builder);
+  }
+
+  /**
+   * Input 14 EQUALVERIFYs UTXOBYTECODE(INPUTINDEX+5) against the persist
+   * digest lock. Dest 19 must be that lock plus a persist chunk, not a pad.
+   */
+  private _repairPersistTrailingDest(builder: TransactionBuilder): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    const impls = new Set<number>();
+    const executing = this._executingPublishJobEventInputIndex(builder);
+    if (executing >= 0) impls.add(executing);
+    for (const [index, input] of (builder.inputs ?? this.allInputs).entries()) {
+      const name = (input as { unlocker?: { abiFunction?: { name?: string } } } | undefined)
+        ?.unlocker?.abiFunction?.name ?? '';
+      if (name === 'publishJobEvent') impls.add(index);
+    }
+    const categoryId = this._persistJobEventsTokenCategory()
+      ?? this._jobEventsPublishCategory();
+    const locking = persistUpdateDigestLock(categoryId, this._persistDigestCategories());
+    if (!locking || locking.length !== 35 || !categoryId) return;
+    const persistValue = firstPersisted(stagedJobEventsValues)
+      ?? firstPersisted(persistedJobEventsValues)
+      ?? persistedJobEventsValue(categoryId)
+      ?? recoverPersistValueFromOutputs(
+        builder.outputs,
+        persistDigestLockDests(executing).concat(
+          this.getPublishJobEventsBand()
+            ? Array.from(
+              { length: this.getPublishJobEventsBand()!.nNew },
+              (_, offset) => this.getPublishJobEventsBand()!.start + offset,
+            )
+            : [],
+        ),
+      );
+    const chunks = persistValue
+      ? chunksFromJobEventsValue(persistValue, locking, categoryId) : [];
+    const dests = new Set<number>();
+    for (const impl of impls) dests.add(persistValueChunkBase(impl, 5, false));
+    if (builder.outputs.length > 19) dests.add(19);
+    for (const dest of dests) {
+      if (dest < 0 || dest >= builder.outputs.length) continue;
+      const existing = builder.outputs[dest];
+      if (existing?.token?.nft?.capability === 'minting') continue;
+      const existingCommit = String(existing?.token?.nft?.commitment ?? '');
+      const chunkCommit = chunks[0]?.commitment
+        ?? persistUpdateEntryCommitment(persistValue)
+        ?? (isPersistValueChunkCommitment(existingCommit) ? existingCommit : undefined);
+      if (!chunkCommit) continue;
+      builder.outputs[dest] = {
+        to: locking,
+        amount: existing?.amount && existing.amount >= 1200n ? existing.amount : 1200n,
+        token: {
+          amount: 0n,
+          category: existing?.token?.category ?? categoryId,
+          nft: { capability: 'mutable', commitment: chunkCommit },
+        },
+      };
+      const input = this.allInputs[dest];
+      if (input?.unlocker && input.token) {
+        const current = input.unlocker.generateLockingBytecode();
+        if (current.length !== 35 || binToHex(current) !== binToHex(locking)) {
+          const inner = input.unlocker;
+          this.allInputs[dest] = {
+            ...input,
+            unlocker: {
+              generateLockingBytecode: () => locking,
+              generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
+            },
+          };
+        }
+      }
+    }
   }
 
   /**
@@ -6277,19 +6364,25 @@ export class StatefulTransactionBuilder {
   private _applyDerivedEntryOutputs(builder: TransactionBuilder): void {
     const entryDest = persistValueChunkBase(this._executingPublishJobEventInputIndex(builder), 5, true);
     for (const [outputIndex, placed] of this.externalCallEntryOutputsByIndex) {
-      if (outputIndex !== entryDest) continue;
-      if (!placed.commitment.toLowerCase().startsWith('e3b0c442') || placed.commitment.length < 256) continue;
       while (builder.outputs.length <= outputIndex) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
       }
       const existing = builder.outputs[outputIndex];
       if (existing?.token?.nft?.capability === 'minting') continue;
-      const locking = persistUpdateDigestLock(placed.categoryId, this._persistDigestCategories())
-        ?? (existing?.to instanceof Uint8Array ? existing.to : undefined);
+      const persistEntry = outputIndex === entryDest
+        && placed.commitment.toLowerCase().startsWith('e3b0c442')
+        && placed.commitment.length >= 256;
+      if (!persistEntry && (!existing?.token?.nft || existing.token.nft.capability !== 'mutable')) continue;
+      const locking = persistEntry
+        ? (persistUpdateDigestLock(placed.categoryId, this._persistDigestCategories())
+          ?? (existing?.to instanceof Uint8Array ? existing.to : undefined))
+        : existing.to;
       if (!locking) continue;
       builder.outputs[outputIndex] = {
         to: locking,
-        amount: existing?.amount && existing.amount >= 1200n ? existing.amount : 1200n,
+        amount: persistEntry && existing?.amount && existing.amount >= 1200n
+          ? existing.amount
+          : (existing?.amount ?? 1200n),
         token: {
           amount: existing?.token?.amount ?? 0n,
           category: existing?.token?.category ?? placed.categoryId,

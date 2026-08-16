@@ -59,6 +59,7 @@ import {
   scaledInputPreserveExclusiveEnd,
   scaledEventOutputIndex,
   liveJobEventsBandWidth,
+  persistUpdateBandWidth,
   selectLatestJobEventsChunks,
   persistedJobEventsWidth,
   selectHashedValueForChunkPin,
@@ -782,6 +783,8 @@ describe('assignPhysicalReturnIndices', () => {
     expect(publishJobEventDataNftDests(11)).toEqual([12, 13]);
     expect(publishJobEventDataNftDests(-1)).toEqual([]);
     expect(publishJobEventDataNftDests(0)).toEqual([2]);
+    // Live last-writer must not clone dest 9-10 onto dest 12-13: publishJobEvent
+    // NUMEQUALVERIFYs dests-with-that-lock == 2 (dest 9-10 only).
     const mdNft = { token: { category: 'md', nft: { capability: 'mutable' as const, commitment: '0023aa20' } } };
     const otherNft = { token: { category: 'mv', nft: { capability: 'mutable' as const, commitment: '0023aa20' } } };
     const pad = { token: undefined };
@@ -1238,6 +1241,15 @@ describe('assignPhysicalReturnIndices', () => {
       !output.token && (output.amount ?? 0n) >= 499_000n
     ))).toBe(true);
     expect(liveJobEventsBandWidth({ plannedWidth: 2, persistWidth: 3 })).toBe(3);
+    expect(persistUpdateBandWidth({
+      persistReady: true, persistWidth: 3, plannedWidth: 5, derivedWidth: 5,
+    })).toBe(3);
+    expect(persistUpdateBandWidth({
+      persistReady: false, persistWidth: 0, plannedWidth: 5, derivedWidth: 2,
+    })).toBe(5);
+    expect(persistUpdateBandWidth({
+      persistReady: true, persistWidth: 0, plannedWidth: 2,
+    })).toBe(2);
     expect(computePublishJobEventsBand({
       implIndex: 18, blockSize: 5, plannedWidth: 2, insertShift: 1,
     })).toEqual({ start: 24, end: 25, nNew: 2 });

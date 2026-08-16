@@ -471,6 +471,22 @@ export function liveJobEventsBandWidth(parts: {
 }
 
 /**
+ * Persist UPDATE dests EQUALVERIFY the previous persist width (closeJob 3).
+ * Extracted Closed/Updated blobs are dest 15 emit — do not grow dest 16+ to 5.
+ */
+export function persistUpdateBandWidth(parts: {
+  persistReady: boolean;
+  persistWidth: number;
+  plannedWidth?: number;
+  derivedWidth?: number;
+}): number {
+  if (parts.persistReady && parts.persistWidth > 0) {
+    return Math.min(32, parts.persistWidth);
+  }
+  return liveJobEventsBandWidth(parts);
+}
+
+/**
  * Exclusive end of the `INPUTINDEX * scale - k` 1:1 preserve window used by
  * delegate epilogues (`scale = 1 + dataNftCount`). Chunks must start at or after this.
  */
@@ -5439,41 +5455,13 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * publishJobEvent dests impl+1 / impl+2 are the callee's data NFTs. Occupancy
-   * can leave P2PKH pads there after the NFTs were placed at the proxy block.
-   * Copy proxy-block data-NFT outputs; do not move those UTXOs (dest 8 1:1).
+   * Do not clone dest 9–10 MarketplaceData data-NFTs onto dest impl+1/impl+2.
+   * publishJobEvent counts outputs with that lock and NUMEQUALVERIFYs 2; a
+   * clone makes dest 9,10,12,13 all match (4 vs 2). Dest 8 1:1 also requires
+   * dest 9–10 to stay on their own inputs. Dest 12–13 keep 1:1 with theirs.
    */
-  private _reassertPublishJobEventDataNftOneToOnes(builder: TransactionBuilder): void {
-    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
-    const impl = this._executingPublishJobEventInputIndex(builder);
-    if (impl < 0) return;
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
-    const categoryId = publish?.categoryId;
-    const dests = publishJobEventDataNftDests(impl);
-    if (dests.length === 0) return;
-    let sources = selectPublishJobEventDataNftSources(this.allInputs, impl, categoryId);
-    // Proxy data-NFTs often use a different category than the impl minting NFT.
-    if (sources.length === 0) {
-      sources = selectPublishJobEventDataNftSources(this.allInputs, impl);
-    }
-    if (sources.length === 0) return;
-    const entryDest = persistValueChunkBase(impl, 5, true);
-    const eventDest = entryDest >= 0 ? entryDest + 1 : -1;
-    const band = this.getPublishJobEventsBand();
-    for (let offset = 0; offset < dests.length && offset < sources.length; offset++) {
-      const dest = dests[offset];
-      if (dest === entryDest || dest === eventDest) continue;
-      if (band && dest >= band.start && dest <= band.end) continue;
-      const source = this.allInputs[sources[offset]];
-      if (!source?.token || !('unlocker' in source) || !source.unlocker) continue;
-      builder.outputs[dest] = {
-        to: source.unlocker.generateLockingBytecode(),
-        amount: source.satoshis,
-        token: cloneToken(source.token),
-      };
-    }
+  private _reassertPublishJobEventDataNftOneToOnes(_builder: TransactionBuilder): void {
+    return;
   }
 
   /** Dest 0/1 are the executing proxy's minting + data NFT. Persist must not keep a foreign lock there. */

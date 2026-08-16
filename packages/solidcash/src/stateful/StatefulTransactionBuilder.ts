@@ -1028,6 +1028,10 @@ export function persistUpdatePredecessorDests(parts: {
       const eventIndex = dests.indexOf(eventDest);
       if (eventIndex >= 0) dests.splice(eventIndex, 1);
     }
+    // A wrong band start (dest 1) must not steal proxy data-NFT dests.
+    if (entryDest >= 0) {
+      return dests.filter((dest) => dest === entryDest || dest === trailingDest || dest >= entryDest);
+    }
   }
   return dests;
 }
@@ -5570,6 +5574,8 @@ export class StatefulTransactionBuilder {
       bandStart: band?.start ?? -1,
       bandEnd: band?.end ?? -1,
     })) {
+      const inputCommit = String(this.allInputs[dest]?.token?.nft?.commitment ?? '');
+      if (isDataNftIndexCommitment(inputCommit) && !isPersistValueChunkCommitment(inputCommit)) continue;
       pinPersistDigestLock(builder.outputs, dest, locking);
     }
   }
@@ -7005,6 +7011,10 @@ export class StatefulTransactionBuilder {
       if (tokenWriterCategory && input?.token?.category === tokenWriterCategory) {
         protectedMasters.add(index);
       }
+      const inputCommit = String(input?.token?.nft?.commitment ?? '');
+      if (isDataNftIndexCommitment(inputCommit) && !isPersistValueChunkCommitment(inputCommit)) {
+        protectedMasters.add(index);
+      }
     }
     let changed = false;
     for (const outputIndex of [...this.derivedChunkOutputs.keys()].sort((left, right) => left - right)) {
@@ -7163,6 +7173,10 @@ export class StatefulTransactionBuilder {
     const reserved = new Set<number>();
     for (const [index, input] of this.allInputs.entries()) {
       if (input.token?.nft?.capability === 'minting') reserved.add(index);
+      const inputCommit = String(input.token?.nft?.commitment ?? '');
+      if (isDataNftIndexCommitment(inputCommit) && !isPersistValueChunkCommitment(inputCommit)) {
+        reserved.add(index);
+      }
     }
     for (const [index, group] of this.externalCallUtxoGroups.entries()) {
       if (groupOwnsInBlockReturnEvent(this.externalCallUtxoGroups, index)) continue;

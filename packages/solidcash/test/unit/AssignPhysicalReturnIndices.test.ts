@@ -1345,6 +1345,9 @@ describe('assignPhysicalReturnIndices', () => {
       implIndex: 11, persistUpdate: true, keepAtLayout: false, bandStart: 14, nNew: 3,
     })).toEqual([14, 16]);
     expect(persistUpdatePredecessorDests({
+      implIndex: 11, persistUpdate: true, keepAtLayout: false, bandStart: 1, nNew: 3,
+    })).toEqual([14, 16]);
+    expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: false, keepAtLayout: false, bandStart: 20, nNew: 2,
     })).toEqual([20, 21]);
     expect(binToHex(recoverPersistValueFromOutputs([

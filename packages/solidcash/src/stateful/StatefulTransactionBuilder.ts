@@ -485,11 +485,11 @@ export function scaledEventOutputIndex(inputIndex: number, scale: number): numbe
   return endExclusive < 0 ? -1 : endExclusive - 1;
 }
 
-/** Persist UPDATE must never occupy dest 0/1 (proxy minting/data NFT). */
+/** Persist UPDATE value-chunks start at impl+blockSize, never dest 0/1 or entry/emit. */
 export function persistJobEventsBandFloor(implIndex: number, persistReady: boolean): number {
   if (!persistReady) return -1;
-  const entry = persistValueChunkBase(implIndex, 5, true);
-  return entry >= 0 ? entry : 2;
+  const trailing = persistValueChunkBase(implIndex, 5, false);
+  return trailing >= 0 ? trailing : 2;
 }
 
 /** Proxy minting (0) and data-NFT (1) 1:1 slots. Persist chunks must not land here. */
@@ -5349,6 +5349,101 @@ export class StatefulTransactionBuilder {
       }
       builder.outputs[index] = {
         to: input.unlocker.generateLockingBytecode(),
+        amount: input.satoshis,
+        token: cloneToken(input.token),
+      };
+    }
+  }
+
+  /** Keep `__internal__valueChunkOutputBase` on the live persist band, not a stale entry dest. */
+  private _refreshPublishJobEventsChunkBase(builder?: TransactionBuilder): void {
+    const start = this.getPublishJobEventsBand()?.start;
+    if (start === undefined || start < 0) return;
+    let changed = false;
+    for (const group of [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]) {
+      if ((group.functionName ?? group.logicalFunctionName) !== 'publishJobEvent') continue;
+      const current = group.internalArgs?.__internal__valueChunkOutputBase;
+      if (current === BigInt(start) || current === start) continue;
+      group.refreshInternalArgs?.({ __internal__valueChunkOutputBase: BigInt(start) });
+      changed = true;
+    }
+    if (!changed) return;
+    this._refreshInputs();
+    if (builder) this._syncBuilderUnlockers(builder);
+  }
+
+  /**
+   * publishJobEvent dests impl+1 / impl+2 are the callee's data NFTs. Occupancy
+   * can leave P2PKH pads there after the NFTs were placed at the proxy block.
+   */
+  private _reassertPublishJobEventDataNftOneToOnes(builder: TransactionBuilder): void {
+    const impl = this._executingPublishJobEventInputIndex(builder);
+    if (impl < 0) return;
+    const publish = this.externalCallUtxoGroups.find((group) =>
+      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
+      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
+    const categoryId = publish?.categoryId;
+    const dataNfts = this.allInputs
+      .map((input, index) => ({ input, index }))
+      .filter(({ input }) => {
+        if (!input?.token || (categoryId && input.token.category !== categoryId)) return false;
+        if (input.token.nft?.capability !== 'mutable') return false;
+        return isDataNftIndexCommitment(String(input.token.nft?.commitment ?? ''));
+      });
+    if (dataNfts.length === 0) return;
+    for (const [offset, source] of dataNfts.entries()) {
+      const dest = impl + 1 + offset;
+      if (dest === impl) continue;
+      if (!source.input.unlocker) continue;
+      const existing = builder.outputs[dest];
+      const existingLock = existing?.to instanceof Uint8Array
+        ? existing.to
+        : existing?.to !== undefined ? addressToLockScript(existing.to) : undefined;
+      const sourceLock = source.input.unlocker.generateLockingBytecode();
+      const same = existingLock !== undefined && binToHex(existingLock) === binToHex(sourceLock)
+        && String(existing?.token?.nft?.commitment ?? '') === String(source.input.token?.nft?.commitment ?? '');
+      if (same) continue;
+      builder.outputs[dest] = {
+        to: sourceLock,
+        amount: source.input.satoshis,
+        token: cloneToken(source.input.token!),
+      };
+    }
+  }
+
+  /** Dest 0/1 are the executing proxy's minting + data NFT. Persist must not keep a foreign lock there. */
+  private _reassertProxyPreserveOneToOnes(builder: TransactionBuilder): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    for (const index of [0, 1]) {
+      const input = this.allInputs[index];
+      if (!input?.token || !('unlocker' in input) || !input.unlocker) continue;
+      const inputCommit = String(input.token.nft?.commitment ?? '');
+      if (index === 1 && !isDataNftIndexCommitment(inputCommit)) continue;
+      if (index === 0 && input.token.nft?.capability !== 'minting') continue;
+      const existing = builder.outputs[index];
+      const existingLock = existing?.to instanceof Uint8Array
+        ? existing.to
+        : existing?.to !== undefined ? addressToLockScript(existing.to) : undefined;
+      const existingCommit = String(existing?.token?.nft?.commitment ?? '');
+      const persistOccupant = isPersistValueChunkCommitment(existingCommit)
+        || (existingLock !== undefined && existingLock.length === 35
+          && existingLock[0] === 0xaa && existingLock[1] === 0x20 && existingLock[34] === 0x87
+          && isPersistValueChunkCommitment(existingCommit));
+      const inputLock = input.unlocker.generateLockingBytecode();
+      const sameLock = existingLock !== undefined && binToHex(existingLock) === binToHex(inputLock);
+      if (sameLock && !persistOccupant) continue;
+      if (!persistOccupant && existing?.token?.category === input.token.category
+        && isDataNftIndexCommitment(existingCommit)) {
+        if (sameLock) continue;
+        builder.outputs[index] = {
+          to: inputLock,
+          amount: existing?.amount ?? input.satoshis,
+          token: existing.token,
+        };
+        continue;
+      }
+      builder.outputs[index] = {
+        to: inputLock,
         amount: input.satoshis,
         token: cloneToken(input.token),
       };
@@ -11220,9 +11315,41 @@ export class StatefulTransactionBuilder {
         )).join('\n');
         if (!verbose) {
           const lastMismatch = [...outputBytecodeMatches].reverse().find((entry) => !entry.matches);
+          const dest1In = this.allInputs[1];
+          const dest1Out = transaction.outputs[1];
+          const dest1Builder = builder.outputs[1];
+          const band = this.getPublishJobEventsBand();
+          const wantLock = 'aa20a7055a14';
+          const destLocks = transaction.outputs.map((output, dest) => ({
+            dest,
+            lock: binToHex(output.lockingBytecode).slice(0, 20),
+            commit: binToHex(output.token?.nft?.commitment ?? new Uint8Array()).slice(0, 16),
+            hit: binToHex(output.lockingBytecode).startsWith(wantLock),
+          }));
           console.error(`[covenant VM trace] input ${idx}: ${finalState.error}\n${ringText}\n`
             + `lastLockMismatch=${JSON.stringify(lastMismatch ?? null)} `
-            + `equalOk=${outputBytecodeMatches.filter((entry) => entry.matches).length}`);
+            + `equalOk=${outputBytecodeMatches.filter((entry) => entry.matches).length}\n`
+            + `band=${JSON.stringify(band)} persistReady=${isPersistedJobEventsReady()}`
+            + ` impl=${this._executingPublishJobEventInputIndex()}\n`
+            + `dest1-in=${dest1In?.unlocker ? binToHex(dest1In.unlocker.generateLockingBytecode()).slice(0, 20) : 'none'}`
+            + `:cap=${dest1In?.token?.nft?.capability ?? '-'}`
+            + `:commit=${String(dest1In?.token?.nft?.commitment ?? '').slice(0, 24)}\n`
+            + `dest1-tx=${dest1Out ? binToHex(dest1Out.lockingBytecode).slice(0, 20) : 'none'}`
+            + `:commit=${binToHex(dest1Out?.token?.nft?.commitment ?? new Uint8Array()).slice(0, 24)}\n`
+            + `dest1-b=${dest1Builder?.to instanceof Uint8Array ? binToHex(dest1Builder.to).slice(0, 20) : String(dest1Builder?.to ?? 'none').slice(0, 20)}`
+            + `:commit=${String(dest1Builder?.token?.nft?.commitment ?? '').slice(0, 24)}\n`
+            + `wantLockDests=${JSON.stringify(destLocks.filter((row) => row.hit))}\n`
+            + `obc=${JSON.stringify(outputBytecodeMatches)}\n`
+            + `in11=${(builder.inputs[idx] as { unlocker?: { abiFunction?: { name?: string } } } | undefined)
+              ?.unlocker?.abiFunction?.name ?? '?'}\n`
+            + `chunkBaseArgs=${JSON.stringify([...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+              .filter((group) => (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
+              .map((group) => ({
+                fn: group.functionName ?? group.logicalFunctionName,
+                internal: String(group.internalArgs?.__internal__valueChunkOutputBase ?? ''),
+                route: String(group.compilerRoute?.internalArgs?.__internal__valueChunkOutputBase ?? ''),
+              })))}\n`
+            + `dests=${JSON.stringify(destLocks.slice(0, 22))}`);
           if (idx === 15) {
             console.error('dest15-sha256-count', sha256Inputs.length);
             console.error('dest15-sha256-lens', sha256Inputs.map((hex) => hex.length / 2).join(','));
@@ -11762,9 +11889,12 @@ export class StatefulTransactionBuilder {
     if (!this.strictVmPreflight && (!providerValidatesFinalizedTransaction || needsJobEventsRepair)) {
       let preflightError: unknown;
       for (let pass = 0; pass <= 32; pass++) {
+        this._refreshPublishJobEventsChunkBase(finalBuilder);
         this._repairPublishJobEventDestLocks(finalBuilder);
         this._pinPersistDigestLocks(finalBuilder);
         this._pinPersistDigestInputLocks(finalBuilder);
+        this._reassertPublishJobEventDataNftOneToOnes(finalBuilder);
+        this._reassertProxyPreserveOneToOnes(finalBuilder);
         try {
           const transaction = finalBuilder.buildLibauthTransaction(true);
           this._pinPersistDigestLocksOnTransaction(transaction);
@@ -11868,8 +11998,11 @@ export class StatefulTransactionBuilder {
         finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
       );
     }
+    this._refreshPublishJobEventsChunkBase(finalBuilder);
     this._repairPublishJobEventDestLocks(finalBuilder);
     this._pinPersistDigestLocks(finalBuilder);
+    this._reassertPublishJobEventDataNftOneToOnes(finalBuilder);
+    this._reassertProxyPreserveOneToOnes(finalBuilder);
 
     let rawTx = finalBuilder.build();
 

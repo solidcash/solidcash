@@ -761,12 +761,12 @@ describe('assignPhysicalReturnIndices', () => {
     expect(viewTailOccupancyCap([17, 20], { start: 20, end: 22 })).toBe(22);
     expect(viewTailOccupancyCap([17, 19])).toBe(-1);
     expect(computePublishJobEventsBand({ implIndex: -1, plannedWidth: 6 })).toBeUndefined();
-    expect(persistJobEventsBandFloor(11, true)).toBe(14);
+    expect(persistJobEventsBandFloor(11, true)).toBe(16);
     expect(persistJobEventsBandFloor(-1, true)).toBe(2);
     expect(persistJobEventsBandFloor(11, false)).toBe(-1);
     expect(computePublishJobEventsBand({
-      start: 1, plannedWidth: 5, persistFloor: 14,
-    })).toEqual({ start: 14, end: 18, nNew: 5 });
+      start: 1, plannedWidth: 5, persistFloor: 16,
+    })).toEqual({ start: 16, end: 20, nNew: 5 });
     expect(computePublishJobEventsBand({
       plannedWidth: 5, preserveEndExclusive: 1, persistFloor: 2,
     })).toEqual({ start: 2, end: 6, nNew: 5 });
@@ -1369,6 +1369,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 18 })).toEqual([16, 17, 18]);
     expect(persistChunkOutputDests({ implIndex: 13, bandStart: 18, bandEnd: 19 })).toEqual([18, 19]);
     expect(persistChunkOutputDests({ implIndex: 3, bandStart: 1, bandEnd: 5 })).toEqual([8]);
+    expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 20 })).toEqual([16, 17, 18, 19, 20]);
     expect(persistChunkOutputDests({ implIndex: 11, bandStart: 1, bandEnd: 5 })).not.toContain(1);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: true, bandStart: 20, nNew: 3,

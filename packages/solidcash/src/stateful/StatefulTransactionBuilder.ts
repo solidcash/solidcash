@@ -2157,6 +2157,56 @@ export function publishJobEventOutputIndex(implIndex: number, eventOffset = 4): 
   return implIndex < 0 ? -1 : implIndex + eventOffset;
 }
 
+/** True when this output is the executing publishJobEvent dest (`INPUTINDEX + event.offset`). */
+export function isPublishJobEventEmitDest(
+  outputIndex: number,
+  implIndex: number,
+  eventOffset = 4,
+): boolean {
+  const dest = publishJobEventOutputIndex(implIndex, eventOffset);
+  return dest >= 0 && outputIndex === dest;
+}
+
+/**
+ * A 1:1 P2PKH funder at INPUTINDEX+4 keeps the JobEvent commitment but the
+ * wrong lock. Restore the event covenant without moving the blob.
+ */
+export function repairJobEventDestLock(
+  outputs: Array<{
+    to?: Uint8Array | string;
+    amount?: bigint;
+    token?: { amount?: bigint; category?: string; nft?: { capability?: string; commitment?: string } };
+  }>,
+  dest: number,
+  locking: Uint8Array,
+): boolean {
+  if (dest < 0 || dest >= outputs.length) return false;
+  const existing = outputs[dest];
+  const commit = String(existing?.token?.nft?.commitment ?? '');
+  if (!isJobEventEmitCommitment(commit) && !isCreatedJobEventCommitment(commit)) return false;
+  let current = existing?.to instanceof Uint8Array ? existing.to : undefined;
+  if (!current && typeof existing?.to === 'string') {
+    try { current = addressToLockScript(existing.to); } catch { current = undefined; }
+    if (!current && /^[0-9a-f]+$/i.test(existing.to) && existing.to.length % 2 === 0) {
+      try { current = hexToBin(existing.to); } catch { current = undefined; }
+    }
+  }
+  if (current && current.length === locking.length
+    && current.every((byte, index) => byte === locking[index])) {
+    return true;
+  }
+  // Only vacate a 1:1 P2PKH funder. First-publish Created dests already use p2sh32.
+  if (!current || current.length !== 25 || current[0] !== 0x76 || current[1] !== 0xa9 || current[2] !== 0x14) {
+    return false;
+  }
+  outputs[dest] = {
+    to: locking,
+    amount: existing?.amount && existing.amount >= 1200n ? existing.amount : 1200n,
+    token: existing?.token,
+  };
+  return true;
+}
+
 /** Created JobEvent CAT (`005e19…` / `5e19…`). */
 export function isCreatedJobEventCommitment(commitment: string): boolean {
   const hex = commitment.toLowerCase();
@@ -3803,6 +3853,8 @@ export class StatefulTransactionBuilder {
         if (emitDests.has(index)) continue;
         if (tokenReturns.has(index)) continue;
         if (persistBand && index >= persistBand.start && index <= persistBand.end) continue;
+        const occupantCommit = String(builder.outputs[index]?.token?.nft?.commitment ?? '');
+        if (isJobEventEmitCommitment(occupantCommit)) continue;
         const input = this.allInputs[index];
         if (!input || !('unlocker' in input) || !input.unlocker || input.token) continue;
         builder.outputs[index] = {
@@ -3918,6 +3970,12 @@ export class StatefulTransactionBuilder {
     const dests: number[] = [];
     const scaled = this._scaledEmitOutputIndex(this.allInputs.length);
     if (scaled !== undefined && scaled >= 0) dests.push(scaled);
+    const publishImpl = this._publishJobEventInputIndex();
+    const publishDest = publishJobEventOutputIndex(
+      publishImpl,
+      this._publishJobEventAbi()?.blockLayout?.slots.find((slot) => slot.kind === 'event')?.offset ?? 4,
+    );
+    if (publishDest >= 0) dests.push(publishDest);
     for (const [llcIndex, llc] of this.lowLevelCallUtxoGroups.entries()) {
       if (llc.callMode !== 'delegatecall') continue;
       const impl = this.getLowLevelCallMasterInputIndex(llcIndex);
@@ -5087,6 +5145,51 @@ export class StatefulTransactionBuilder {
         persistCloneOk: !persistEmit,
         preferCreated: this._rootIsPublishJobPost(),
       });
+    }
+    this._repairPublishJobEventDestLocks(builder);
+  }
+
+  /** Drop a 1:1 P2PKH preserve that landed on a JobEvent dest. */
+  private _repairPublishJobEventDestLocks(builder: TransactionBuilder): void {
+    const dests = new Set(this._emitDestinationIndices());
+    const impl = this._publishJobEventInputIndex();
+    const offset = this._publishJobEventAbi()?.blockLayout?.slots
+      .find((slot) => slot.kind === 'event')?.offset ?? 4;
+    dests.add(publishJobEventOutputIndex(impl, offset));
+    for (const [llcIndex, llc] of this.lowLevelCallUtxoGroups.entries()) {
+      if (llc.callMode !== 'delegatecall') continue;
+      const master = this.getLowLevelCallMasterInputIndex(llcIndex);
+      if (master < 0) continue;
+      const fn = llc.compilerRoute?.abiFunction
+        ?? llc.externalContract?.inner?.artifact.abi.find((candidate: AbiFunction) => candidate.name === llc.functionName);
+      for (const slot of fn?.blockLayout?.slots ?? []) {
+        if (slot.kind === 'event') dests.add(master + slot.offset);
+      }
+    }
+    for (let index = 0; index < builder.outputs.length; index++) {
+      const commit = String(builder.outputs[index]?.token?.nft?.commitment ?? '');
+      if (isJobEventEmitCommitment(commit) || isCreatedJobEventCommitment(commit)) dests.add(index);
+    }
+    const addressType = this.lowLevelCallUtxoGroups.find((group) =>
+      group.functionName === 'publishJobEvent' || group.logicalFunctionName === 'publishJobEvent')
+      ?.externalContract?.inner?.addressType
+      ?? 'p2sh32';
+    const registered = this.eventNftLockingBytecodes.get('JobEvent(uint256,JobEventData)');
+    for (const dest of dests) {
+      if (dest < 0) continue;
+      const existing = builder.outputs[dest];
+      const categoryId = existing?.token?.category
+        ?? this._jobEventsPublishCategory()
+        ?? this.categoryId;
+      const locking = registered
+        ?? (categoryId && /^[0-9a-f]{64}$/i.test(categoryId)
+          ? scriptToLockingBytecode(
+            buildEventNftCovenantScript(hexToBin(categoryId), computeEventNameHash('JobEvent(uint256,JobEventData)')),
+            addressType,
+          )
+          : undefined);
+      if (!locking) continue;
+      repairJobEventDestLock(builder.outputs, dest, locking);
     }
   }
 
@@ -8378,11 +8481,20 @@ export class StatefulTransactionBuilder {
               });
             } else if (group.compilerRoute
               && !['transferFrom', 'transfer'].includes(group.functionName)
-              && !['transferFrom', 'transfer'].includes(group.compilerRoute.abiFunction.name)) {
+              && !['transferFrom', 'transfer'].includes(group.compilerRoute.abiFunction.name)
+              && !isPublishJobEventEmitDest(
+                builder.outputs.length,
+                this._publishJobEventInputIndex(),
+                this._publishJobEventAbi()?.blockLayout?.slots
+                  .find((eventSlot) => eventSlot.kind === 'event')?.offset ?? 4,
+              )
+              && !(group.functionName === 'publishJobEvent'
+                || group.logicalFunctionName === 'publishJobEvent'
+                || group.compilerRoute.abiFunction.name === 'publishJobEvent')) {
               // A message-bus route reserves the union of every handler's event slots. Slots not reached by
               // this dispatch are ordinary balanced funding slots and the route covenant binds them by
-              // preservation. Mirroring the input also works as the active-slot probe: its empty commitment
-              // lets the trace expose the expected event blob, after which `eventOutputs` replaces this slot.
+              // preservation. Do not 1:1-mirror a P2PKH funder onto the executing publishJobEvent dest
+              // (`INPUTINDEX + event.offset`) — that lock fails the event OUTPUTBYTECODE pin.
               builder.addOutput({
                 to: input.unlocker.generateLockingBytecode(),
                 amount: input.satoshis,
@@ -11015,6 +11127,7 @@ export class StatefulTransactionBuilder {
     if (!this.strictVmPreflight && (!providerValidatesFinalizedTransaction || needsJobEventsRepair)) {
       let preflightError: unknown;
       for (let pass = 0; pass <= 32; pass++) {
+        this._repairPublishJobEventDestLocks(finalBuilder);
         try {
           assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
           preflightError = undefined;

@@ -32,6 +32,8 @@ import {
   relocateDelegateEventNftToDest,
   isDelegateEventNftOutput,
   resolveNamedEventValues,
+  isPublishJobEventEmitDest,
+  repairJobEventDestLock,
   emitDestCollidesPreservedInput,
   encodeEmptyJobEventEmitCommitment,
   encodeJobEventEmitCommitment,
@@ -754,6 +756,39 @@ describe('assignPhysicalReturnIndices', () => {
     expect(publishJobEventOutputIndex(15, 4)).toBe(19);
     expect(publishJobEventOutputIndex(17)).toBe(21);
     expect(publishJobEventOutputIndex(18)).toBe(22);
+    expect(isPublishJobEventEmitDest(10, 6)).toBe(true);
+    expect(isPublishJobEventEmitDest(9, 6)).toBe(false);
+    const publishEventLock = Uint8Array.from([0xaa, 0x20, ...Array(32).fill(0x11), 0x87]);
+    const p2pkhDest = Array.from({ length: 11 }, () => ({
+      to: Uint8Array.from([0x76, 0xa9, 0x14, ...Array(20).fill(0x71), 0x88, 0xac]),
+      amount: 1000n,
+    }));
+    expect(placePublishJobEventOutput(p2pkhDest, 10, {
+      to: publishEventLock,
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'aabbccdd',
+        nft: { capability: 'none', commitment: '5e1976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac0000' },
+      },
+    })).toBe(true);
+    expect(p2pkhDest[10]?.to).toEqual(publishEventLock);
+    expect(p2pkhDest[10]?.token?.nft?.commitment?.startsWith('5e19')).toBe(true);
+    const parkedP2pkh = {
+      to: Uint8Array.from([0x76, 0xa9, 0x14, ...Array(20).fill(0x71), 0x88, 0xac]),
+      amount: 1000n,
+      token: {
+        amount: 0n,
+        category: 'aabbccdd',
+        nft: { capability: 'none' as const, commitment: '5e1976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac0000' },
+      },
+    };
+    const parkedOutputs = Array.from({ length: 11 }, (_, index) => (
+      index === 10 ? parkedP2pkh : { to: Uint8Array.of(0x51), amount: 1000n }
+    ));
+    expect(repairJobEventDestLock(parkedOutputs, 10, publishEventLock)).toBe(true);
+    expect(parkedOutputs[10]?.to).toEqual(publishEventLock);
+    expect(parkedOutputs[10]?.token?.nft?.commitment?.startsWith('5e19')).toBe(true);
     expect(isJobEventEmitCommitment(
       '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000',
     )).toBe(true);

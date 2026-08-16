@@ -13,7 +13,19 @@ import { getActiveProvider } from './network-helpers.js';
 // wrapped CashAddress). Ported ethers/Solidity tests compare it to a CashAddress string (e.g. `owner()` vs
 // `signer.getAddress()`). Bridge such a pair by DECODING the CashAddress to its locking bytecode - never wrapping
 // the locking bytecode into an address - and comparing as hex. Any other value pair passes through unchanged.
+function isEmptyAddress(value: unknown): boolean {
+  if (value === '' || value == null) return true;
+  if (value instanceof Uint8Array) return value.length === 0 || value.every((byte) => byte === 0);
+  if (typeof value !== 'string') return false;
+  if (/^(bitcoincash|bchtest|bchreg):q{20,}/.test(value)) return false;
+  const hex = value.replace(/^0x/i, '');
+  if (hex.length === 0 || /^0+$/.test(hex)) return true;
+  // 20-byte fallback over a zero VM-number + following packed field (e.g. 16×00 || 0x78 || 00).
+  return hex.length === 40 && /^0{24,}/.test(hex);
+}
+
 function normalizeAddressPair(actual: any, expected: any): [any, any] {
+  if (isEmptyAddress(actual) && isEmptyAddress(expected)) return ['', ''];
   const isBytes = (x: any): x is Uint8Array => x instanceof Uint8Array;
   const isCashAddr = (x: any): x is string => typeof x === 'string' && /^(bitcoincash|bchtest|bchreg):[0-9a-z]+$/.test(x);
   const decode = (addr: string): Uint8Array | null => {
@@ -289,8 +301,20 @@ class EmitAssertion implements PromiseLike<void> {
           );
         }
         if (args && hit.args) {
+          const names = eventFieldNames(this.contract, this.event);
           for (const [k, v] of Object.entries(args)) {
-            const got = hit.args[k];
+            const positional = Number.parseInt(k, 10);
+            const got = hit.args[k]
+              ?? (Number.isInteger(positional) ? hit.args[names[positional]] ?? hit.args[positional] : undefined);
+            if (typeof v === 'function') {
+              if (got === undefined) {
+                throw new Error(`event '${this.event}' arg '${k}' is missing for predicate`);
+              }
+              if (v(got) === false) {
+                throw new Error(`event '${this.event}' arg '${k}' predicate returned false`);
+              }
+              continue;
+            }
             if (got === undefined) continue;
             const ga = typeof got === 'bigint' ? got : (got as any)?.toString?.() ?? got;
             const ea = typeof v === 'bigint' ? v : (v as any)?.toString?.() ?? v;
@@ -334,7 +358,7 @@ class EmitAssertion implements PromiseLike<void> {
     } else {
       const names = eventFieldNames(this.contract, this.event);
       argsObj = {};
-      expected.forEach((v, i) => { if (names[i]) argsObj[names[i]] = v; });
+      expected.forEach((v, i) => { argsObj[names[i] ?? String(i)] = v; });
     }
     // Replace this emit's assertion with an args-checked version (do not double-run).
     // Continuation `.to.emit(...)` is provided by EmitAssertion's `to` getter.

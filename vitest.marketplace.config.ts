@@ -1,5 +1,7 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, type Plugin } from 'vitest/config';
 import { solidhatPreset } from '@solidcash/solidhat/vitest-preset';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const cipher = (entry: string): string => fileURLToPath(new URL(`node_modules/@noble/ciphers/${entry}.js`, import.meta.url));
@@ -7,22 +9,54 @@ const worktreeRoot = fileURLToPath(new URL('.', import.meta.url));
 const bchCompatSrc = fileURLToPath(new URL('examples/effectiveacceleration/src', import.meta.url));
 process.env.SOLIDCASH_PROJECT_ROOT = worktreeRoot;
 
+/** Relative imports skip Vite aliases; remap the Ethereum EA src onto the BCH-aware copy. */
+export function redirectEffectiveAccelerationSrc(id: string): string | undefined {
+  const normalized = id.replace(/\\/g, '/');
+  for (const marker of ['/.marketplace/project/src/', '/effectiveacceleration.ai/contract/src/']) {
+    const index = normalized.indexOf(marker);
+    if (index < 0) continue;
+    return path.join(bchCompatSrc, normalized.slice(index + marker.length));
+  }
+  return undefined;
+}
+
+function existingSource(candidate: string): string | undefined {
+  if (!candidate) return undefined;
+  if (existsSync(candidate)) return candidate;
+  if (existsSync(`${candidate}.ts`)) return `${candidate}.ts`;
+  if (existsSync(`${candidate}.js`)) return `${candidate}.js`;
+  if (existsSync(path.join(candidate, 'index.ts'))) return path.join(candidate, 'index.ts');
+  return undefined;
+}
+
+function eaSrcRedirectPlugin(): Plugin {
+  return {
+    name: 'ea-bch-src-redirect',
+    enforce: 'pre',
+    resolveId(source, importer) {
+      const direct = existingSource(redirectEffectiveAccelerationSrc(source) ?? '');
+      if (direct) return direct;
+      if (!source.startsWith('.') || !importer) return undefined;
+      const resolved = path.resolve(path.dirname(importer), source);
+      const redirected = redirectEffectiveAccelerationSrc(resolved);
+      return redirected ? existingSource(redirected) : undefined;
+    },
+  };
+}
+
 export default defineConfig(solidhatPreset(
   { hardhat: 2, ethers: 6 },
   {
     root: worktreeRoot,
     cacheDir: '.marketplace/vite-cache-marketplace',
+    plugins: [eaSrcRedirectPlugin()],
     resolve: {
-      alias: {
-        // The marketplace test file is unchanged; its `../src` import follows the
-        // EA symlink. Replay helpers there assume 20-byte EVM addresses. Use the
-        // worktree BCH-compat utils instead (same exports, locking-bytecode aware).
-        '/Code/effectiveacceleration.ai/contract/src': bchCompatSrc,
-        '@noble/ciphers/chacha': cipher('chacha'),
-        '@noble/ciphers/crypto': cipher('utils'),
-        '@noble/ciphers/utils': cipher('utils'),
-        '@noble/ciphers/webcrypto': cipher('utils'),
-      },
+      alias: [
+        { find: '@noble/ciphers/chacha', replacement: cipher('chacha') },
+        { find: '@noble/ciphers/crypto', replacement: cipher('utils') },
+        { find: '@noble/ciphers/utils', replacement: cipher('utils') },
+        { find: '@noble/ciphers/webcrypto', replacement: cipher('utils') },
+      ],
     },
     test: {
       include: ['.marketplace/project/test/marketplace.test.ts'],

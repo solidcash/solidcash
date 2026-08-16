@@ -94,8 +94,8 @@ import {
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
 import {
-  SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment, encodeEntryCommitment,
-  decodeEntryCommitment,
+  SortedList, getCachedSortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment,
+  encodeEntryCommitment, decodeEntryCommitment,
 } from './SortedList.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
@@ -15212,6 +15212,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const nestedIdentityCache = new Map<string, Promise<Awaited<ReturnType<typeof resolveLogicalIdentity>> | undefined>>();
     const resolvedNestedIdentityCache = new Map<string, Awaited<ReturnType<typeof resolveLogicalIdentity>>>();
     const nestedAddressUtxoCache = new Map<string, Promise<Utxo[]>>();
+    const nestedSortedListCache = new Map<string, SortedList>();
     const nestedAddressUtxos = (address: string): Promise<Utxo[]> => {
       let pending = nestedAddressUtxoCache.get(address);
       if (!pending) {
@@ -16302,8 +16303,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                               ?.slice(0, 64)),
                           });
                         }
-                        const list = SortedList.fromUtxos(
-                          addressUtxos.filter((utxo) => utxo.token?.category === callee.categoryId),
+                        const list = getCachedSortedList(
+                          nestedSortedListCache, address, callee.categoryId, addressUtxos,
                         );
                         if (timingEnabled && nested.callsiteId === 6) console.error('nested-entry-list-complete', {
                           collection: access.collection,

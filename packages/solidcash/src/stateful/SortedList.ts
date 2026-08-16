@@ -268,6 +268,23 @@ export class SortedList {
   }
 }
 
+/** Reuse one parsed list per (category, address) while assembling a nested route block. */
+export function getCachedSortedList(
+  cache: Map<string, SortedList>,
+  address: string,
+  categoryId: string,
+  utxos: readonly Utxo[],
+): SortedList {
+  const cacheKey = `${categoryId}:${address}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return hit;
+  const list = SortedList.fromUtxos(
+    utxos.filter((utxo) => utxo.token?.category === categoryId),
+  );
+  cache.set(cacheKey, list);
+  return list;
+}
+
 /** The empty-map genesis entry: HEAD[slot 0 | nextKey 0 (+inf)]. */
 export function headSentinelCommitment(): Uint8Array {
   return encodeEntryCommitment(ZERO_SLOT, ZERO_SLOT);

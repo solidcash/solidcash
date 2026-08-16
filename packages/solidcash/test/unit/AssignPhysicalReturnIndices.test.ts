@@ -97,6 +97,7 @@ import {
   persistUpdateRedeemLock,
   persistUpdateDigestLock,
   pinPersistDigestLock,
+  pinPersistDigestInput,
   persistUpdateEntryCommitment,
   persistUpdateDestLock,
   persistValueChunkLock,
@@ -1285,20 +1286,58 @@ describe('assignPhysicalReturnIndices', () => {
     expect(pinPersistDigestLock(padded, 16, digest)).toBe(true);
     expect(padded[16]?.to).toEqual(digest);
     expect(padded[16]?.amount).toBe(1200n);
+    const padUnlocker = {
+      generateLockingBytecode: () => p2pkh,
+      generateUnlockingBytecode: () => new Uint8Array(),
+    };
+    const persistUnlocker = {
+      generateLockingBytecode: () => digest,
+      generateUnlockingBytecode: () => new Uint8Array(),
+    };
+    const persistInputs = [
+      ...Array.from({ length: 16 }, () => ({ unlocker: padUnlocker })),
+      { unlocker: padUnlocker },
+      { unlocker: padUnlocker },
+      {
+        unlocker: persistUnlocker,
+        token: { nft: { capability: 'mutable' as const, commitment: `e3b0c442${'00'.repeat(32)}` } },
+      },
+    ];
+    expect(pinPersistDigestInput(persistInputs, 16, digest)).toBe(true);
+    expect(persistInputs[16]?.unlocker.generateLockingBytecode()).toEqual(digest);
+    expect(String(persistInputs[16]?.token?.nft?.commitment ?? '').startsWith('e3b0c442')).toBe(true);
+    expect(persistInputs[18]?.unlocker.generateLockingBytecode()).toEqual(p2pkh);
+    expect(pinPersistDigestInput(persistInputs, 16, digest)).toBe(false);
+    const otherLock = Uint8Array.from([0xaa, 0x20, ...Array(32).fill(0x11), 0x87]);
+    const nativeEntry = [
+      ...Array.from({ length: 16 }, () => ({ unlocker: padUnlocker })),
+      { unlocker: padUnlocker },
+      { unlocker: padUnlocker },
+      {
+        unlocker: {
+          generateLockingBytecode: () => otherLock,
+          generateUnlockingBytecode: () => new Uint8Array(),
+        },
+        token: { nft: { capability: 'mutable' as const, commitment: `e3b0c442${'00'.repeat(32)}` } },
+      },
+    ];
+    expect(pinPersistDigestInput(nativeEntry, 16, digest)).toBe(true);
+    expect(nativeEntry[16]?.unlocker.generateLockingBytecode()).toEqual(digest);
+    expect(String(nativeEntry[16]?.token?.nft?.commitment ?? '').startsWith('e3b0c442')).toBe(true);
     expect(persistDigestLockDests(13)).toEqual([16, 18]);
     expect(persistDigestLockDests(14)).toEqual([17, 19]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: true, bandStart: 20, nNew: 3,
-    })).toEqual([20, 18, 19]);
+    })).toEqual([18, 19, 20]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: false, bandStart: 25, nNew: 2,
-    })).toEqual([20, 18, 25, 26]);
+    })).toEqual([18, 25, 26, 20]);
     expect(persistUpdatePredecessorDests({
       implIndex: 13, persistUpdate: true, keepAtLayout: false, bandStart: 18, nNew: 2,
-    })).toEqual([18, 16, 19]);
+    })).toEqual([16, 18, 19]);
     expect(persistUpdatePredecessorDests({
       implIndex: 14, persistUpdate: true, keepAtLayout: false, bandStart: 18, nNew: 2,
-    })).toEqual([19, 17, 18]);
+    })).toEqual([17, 18, 19]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: false, keepAtLayout: false, bandStart: 20, nNew: 2,
     })).toEqual([20, 21]);

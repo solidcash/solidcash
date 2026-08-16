@@ -974,9 +974,10 @@ export function persistPredecessorPlaceCount(nNew: number, candidateCount: numbe
 }
 
 /**
- * Persist UPDATE pins UTXOBYTECODE at impl+3 (dest 18) even when the live
- * output band starts at dest 20. Predecessors must occupy those dests after
- * every `_buildInputs` rebuild.
+ * Persist UPDATE pins UTXOBYTECODE at impl+3 (dest 16 when publishJobEvent is
+ * input 13) even when the live output band starts at dest 20. Predecessors
+ * must occupy those dests after every `_buildInputs` rebuild. Entry dest is
+ * first so a single persist UTXO lands on the UTXOBYTECODE pin, not impl+5.
  */
 export function persistUpdatePredecessorDests(parts: {
   implIndex: number;
@@ -994,13 +995,13 @@ export function persistUpdatePredecessorDests(parts: {
   if (parts.persistUpdate && parts.implIndex >= 0) {
     const entryDest = persistValueChunkBase(parts.implIndex, 5, true);
     const trailingDest = persistValueChunkBase(parts.implIndex, 5, false);
-    // Layout entry is INPUTINDEX+3 even when value-chunks slid past dest 20.
-    if (entryDest >= 0 && !dests.includes(entryDest)) dests.unshift(entryDest);
-    // INPUTINDEX+blockSize (dest 19) is the UTXOBYTECODE pin for input 14.
+    // INPUTINDEX+blockSize keeps a persist-chunk dest when the band slid.
     if (trailingDest >= 0 && !dests.includes(trailingDest)) dests.push(trailingDest);
-    if (trailingDest >= 0) {
-      dests.splice(dests.indexOf(trailingDest), 1);
-      dests.unshift(trailingDest);
+    // Layout entry is INPUTINDEX+3. UTXOBYTECODE(INPUTINDEX+3) reads this lock.
+    if (entryDest >= 0 && !dests.includes(entryDest)) dests.unshift(entryDest);
+    if (entryDest >= 0) {
+      dests.splice(dests.indexOf(entryDest), 1);
+      dests.unshift(entryDest);
     }
   }
   return dests;
@@ -2520,6 +2521,77 @@ export function pinPersistDigestLock(
   return true;
 }
 
+const persistLockHex = (lock: Uint8Array | undefined): string => (
+  lock && lock.length === 35 && lock[0] === 0xaa ? binToHex(lock) : ''
+);
+
+/**
+ * UTXOBYTECODE(dest) reads `inputs[dest].unlocker`. Swap a persist-digest
+ * predecessor onto that dest (new object so sourceOutputCache misses). Do not
+ * wrap a tokenless P2PKH pad: that input would then fail to unlock.
+ */
+export function pinPersistDigestInput<T extends {
+  token?: { nft?: { capability?: string; commitment?: string } };
+  unlocker?: {
+    generateLockingBytecode: () => Uint8Array;
+    generateUnlockingBytecode: (context: Parameters<Unlocker['generateUnlockingBytecode']>[0]) => Uint8Array;
+  };
+}>(
+  inputs: T[],
+  dest: number,
+  locking: Uint8Array,
+): boolean {
+  if (dest < 0 || dest >= inputs.length || locking.length !== 35) return false;
+  const expected = binToHex(locking);
+  const destInput = inputs[dest];
+  if (destInput?.token?.nft?.capability === 'minting') return false;
+  const destAlreadyPinned = persistLockHex(destInput?.unlocker?.generateLockingBytecode()) === expected
+    && !!destInput?.token;
+  if (destAlreadyPinned) return false;
+  let source = -1;
+  let sourceRank = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < inputs.length; index++) {
+    if (index === dest) continue;
+    const input = inputs[index];
+    if (input?.token?.nft?.capability === 'minting' || !input?.unlocker) continue;
+    const lockHex = persistLockHex(input.unlocker.generateLockingBytecode());
+    const rank = persistPredecessorRank(String(input.token?.nft?.commitment ?? ''));
+    const matchesLock = lockHex === expected;
+    const persistShaped = rank < 1000;
+    if (!matchesLock && !persistShaped) continue;
+    const score = matchesLock ? rank : rank + 100;
+    if (score < sourceRank) {
+      sourceRank = score;
+      source = index;
+    }
+  }
+  if (source >= 0) {
+    const sourceInput = inputs[source];
+    const inner = sourceInput.unlocker;
+    inputs[dest] = inner && persistLockHex(inner.generateLockingBytecode()) !== expected
+      ? {
+        ...sourceInput,
+        unlocker: {
+          generateLockingBytecode: () => locking,
+          generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
+        },
+      }
+      : { ...sourceInput };
+    inputs[source] = destInput !== undefined ? { ...destInput } : sourceInput;
+    return true;
+  }
+  if (!destInput?.token || !destInput.unlocker) return false;
+  const inner = destInput.unlocker;
+  inputs[dest] = {
+    ...destInput,
+    unlocker: {
+      generateLockingBytecode: () => locking,
+      generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
+    },
+  };
+  return true;
+}
+
 export function persistUpdateDigestLock(
   categoryId?: string,
   _extraCategories: readonly string[] = [],
@@ -4028,12 +4100,11 @@ export class StatefulTransactionBuilder {
 
   /** Prefer the builder input that evaluates publishJobEvent (`OP_INPUTINDEX`). */
   private _executingPublishJobEventInputIndex(builder?: TransactionBuilder): number {
-    if (builder) {
-      for (let index = builder.inputs.length - 1; index >= 0; index--) {
-        const name = (builder.inputs[index]?.unlocker as { abiFunction?: { name?: string } } | undefined)
-          ?.abiFunction?.name ?? '';
-        if (name === 'publishJobEvent') return index;
-      }
+    const inputs = builder?.inputs ?? this.allInputs;
+    for (let index = inputs.length - 1; index >= 0; index--) {
+      const name = (inputs[index]?.unlocker as { abiFunction?: { name?: string } } | undefined)
+        ?.abiFunction?.name ?? '';
+      if (name === 'publishJobEvent') return index;
     }
     return this._publishJobEventInputIndex();
   }
@@ -4483,8 +4554,9 @@ export class StatefulTransactionBuilder {
       firstPublish: this._rootIsPublishJobPost(),
       layoutDestOccupiedByMintingWriter: this.hasMintingBandTokenWriter(),
     });
+    const impl = this._executingPublishJobEventInputIndex();
     const dests = persistUpdatePredecessorDests({
-      implIndex: this._publishJobEventInputIndex(),
+      implIndex: impl,
       persistUpdate,
       keepAtLayout,
       bandStart: band.start,
@@ -4499,7 +4571,7 @@ export class StatefulTransactionBuilder {
         persistReady: isPersistedJobEventsReady(),
         firstPublish: this._rootIsPublishJobPost(),
         hasTokenWriter: this.hasMintingBandTokenWriter(),
-        impl: this._publishJobEventInputIndex(),
+        impl,
         band,
         dests,
         dest18cap: dest18?.token?.nft?.capability ?? 'plain',
@@ -4508,7 +4580,7 @@ export class StatefulTransactionBuilder {
       });
     }
     const placements = assignPersistPredecessors(
-      dests, candidates, this._publishJobEventInputIndex(), persistUpdate,
+      dests, candidates, impl, persistUpdate,
     );
     for (const { dest, candidate: wanted } of placements) {
       if (dest < 0 || dest >= this.allInputs.length) continue;
@@ -4560,7 +4632,7 @@ export class StatefulTransactionBuilder {
       ) ?? persistLock;
       const digestDests = new Set([
         dests[0],
-        ...persistDigestLockDests(this._publishJobEventInputIndex()),
+        ...persistDigestLockDests(impl),
       ].filter((dest): dest is number => dest !== undefined && dest >= 0));
       for (const dest of digestDests) {
         const input = this.allInputs[dest];
@@ -4575,6 +4647,9 @@ export class StatefulTransactionBuilder {
             generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
           },
         };
+      }
+      if (recipeLock && recipeLock.length === 35) {
+        for (const dest of digestDests) pinPersistDigestInput(this.allInputs, dest, recipeLock);
       }
     }
   }
@@ -5429,15 +5504,57 @@ export class StatefulTransactionBuilder {
     this._pinPersistDigestLocks(builder);
   }
 
-  /** Last writer before preflight: dest 16/19 lock is persist digest, not a 1:1 P2PKH pad. */
+  /** Last writer before preflight: dest 16 lock is persist digest, not a 1:1 P2PKH pad. */
   private _pinPersistDigestLocks(builder: TransactionBuilder): void {
     if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
     const locking = this._persistDigestLocking();
     if (!locking) return;
-    const dests = new Set(persistDigestLockDests(this._executingPublishJobEventInputIndex(builder)));
+    const impl = this._executingPublishJobEventInputIndex(builder);
+    const dests = new Set<number>();
+    const entryDest = persistValueChunkBase(impl, 5, true);
+    if (entryDest >= 0) dests.add(entryDest);
     if (builder.outputs.length > 16) dests.add(16);
-    if (builder.outputs.length > 19) dests.add(19);
     for (const dest of dests) pinPersistDigestLock(builder.outputs, dest, locking);
+    this._pinPersistChunkLocks(builder);
+    this._pinPersistDigestInputLocks(builder);
+  }
+
+  /** Dest 18 OUTPUTBYTECODE is the persist-v redeem lock, not the entry digest. */
+  private _persistChunkLocking(): Uint8Array | undefined {
+    const categoryId = this._persistJobEventsTokenCategory() ?? this._jobEventsPublishCategory();
+    const persistValue = firstPersisted(stagedJobEventsValues)
+      ?? firstPersisted(persistedJobEventsValues)
+      ?? (categoryId ? persistedJobEventsValue(categoryId) : undefined);
+    return persistUpdateRedeemLock(categoryId, this.jobEventsRedeemLock)
+      ?? persistValueChunkLock(categoryId, persistValue)
+      ?? this.jobEventsRedeemLock;
+  }
+
+  private _pinPersistChunkLocks(builder: TransactionBuilder): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    const locking = this._persistChunkLocking();
+    if (!locking || locking.length !== 35) return;
+    const dest = persistValueChunkBase(this._executingPublishJobEventInputIndex(builder), 5, false);
+    if (dest >= 0) pinPersistDigestLock(builder.outputs, dest, locking);
+  }
+
+  /**
+   * OP_UTXOBYTECODE(INPUTINDEX+3) reads `builder.inputs[dest]`, not outputs.
+   * Swap the persist-digest predecessor onto dest 16 before sourceOutputs.
+   * Only the entry dest is pinned here so dest 18 wrap cannot keep the only
+   * persist UTXO off the UTXOBYTECODE pin.
+   */
+  private _pinPersistDigestInputLocks(builder: TransactionBuilder): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    const locking = this._persistDigestLocking();
+    if (!locking) return;
+    const impl = this._executingPublishJobEventInputIndex(builder);
+    const entryDest = persistValueChunkBase(impl, 5, true);
+    const dests = new Set<number>();
+    if (entryDest >= 0) dests.add(entryDest);
+    if (this.allInputs.length > 16) dests.add(16);
+    for (const dest of dests) pinPersistDigestInput(this.allInputs, dest, locking);
+    this._syncBuilderUnlockers(builder);
   }
 
   private _persistDigestLocking(): Uint8Array | undefined {
@@ -5456,14 +5573,22 @@ export class StatefulTransactionBuilder {
     outputs: Array<{ lockingBytecode: Uint8Array; valueSatoshis: bigint }>;
   }): void {
     if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
-    const locking = this._persistDigestLocking();
-    if (!locking) return;
-    const dests = new Set(persistDigestLockDests(this._executingPublishJobEventInputIndex()));
-    if (transaction.outputs.length > 16) dests.add(16);
-    if (transaction.outputs.length > 19) dests.add(19);
-    for (const dest of dests) {
-      if (dest < 0 || dest >= transaction.outputs.length) continue;
-      transaction.outputs[dest].lockingBytecode = locking;
+    const digest = this._persistDigestLocking();
+    const impl = this._executingPublishJobEventInputIndex();
+    const entryDest = persistValueChunkBase(impl, 5, true);
+    if (digest) {
+      const dests = new Set<number>();
+      if (entryDest >= 0) dests.add(entryDest);
+      if (transaction.outputs.length > 16) dests.add(16);
+      for (const dest of dests) {
+        if (dest < 0 || dest >= transaction.outputs.length) continue;
+        transaction.outputs[dest].lockingBytecode = digest;
+      }
+    }
+    const chunk = this._persistChunkLocking();
+    const chunkDest = persistValueChunkBase(impl, 5, false);
+    if (chunk && chunk.length === 35 && chunkDest >= 0 && chunkDest < transaction.outputs.length) {
+      transaction.outputs[chunkDest].lockingBytecode = chunk;
     }
   }
 
@@ -5483,11 +5608,9 @@ export class StatefulTransactionBuilder {
     }
     const categoryId = this._persistJobEventsTokenCategory()
       ?? this._jobEventsPublishCategory();
-    const locking = persistUpdateDigestLock(categoryId, this._persistDigestCategories());
-    if (!locking || locking.length !== 35 || !categoryId) return;
     const persistValue = firstPersisted(stagedJobEventsValues)
       ?? firstPersisted(persistedJobEventsValues)
-      ?? persistedJobEventsValue(categoryId)
+      ?? (categoryId ? persistedJobEventsValue(categoryId) : undefined)
       ?? recoverPersistValueFromOutputs(
         builder.outputs,
         persistDigestLockDests(executing).concat(
@@ -5499,6 +5622,10 @@ export class StatefulTransactionBuilder {
             : [],
         ),
       );
+    const locking = persistUpdateRedeemLock(categoryId, this.jobEventsRedeemLock)
+      ?? persistValueChunkLock(categoryId, persistValue)
+      ?? this.jobEventsRedeemLock;
+    if (!locking || locking.length !== 35 || !categoryId) return;
     const chunks = persistValue
       ? chunksFromJobEventsValue(persistValue, locking, categoryId) : [];
     const dests = new Set<number>();
@@ -10836,7 +10963,10 @@ export class StatefulTransactionBuilder {
   private _logCovenantFailureTrace(builder: TransactionBuilder, reason: string): void {
     const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
     const verbose = env?.SOLIDC_DEBUG_COVENANT_TRACE === '1';
+    this._pinPersistDigestLocks(builder);
+    this._pinPersistDigestInputLocks(builder);
     const transaction = builder.buildLibauthTransaction(true);
+    this._pinPersistDigestLocksOnTransaction(transaction);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const named = reason.match(/input(?: index)? (\d+)/);
     const traceInput = Number(env?.SOLIDC_TRACE_INPUT);
@@ -11502,6 +11632,7 @@ export class StatefulTransactionBuilder {
       for (let pass = 0; pass <= 32; pass++) {
         this._repairPublishJobEventDestLocks(finalBuilder);
         this._pinPersistDigestLocks(finalBuilder);
+        this._pinPersistDigestInputLocks(finalBuilder);
         try {
           const transaction = finalBuilder.buildLibauthTransaction(true);
           this._pinPersistDigestLocksOnTransaction(transaction);

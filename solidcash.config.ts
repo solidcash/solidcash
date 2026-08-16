@@ -10,6 +10,10 @@ export default defineConfig({
   // This project composes graph-free ERC-20 leaves into caller-authenticated atomic routes. Explicitly request
   // leaf participant routes; no marketplace source or test changes are required.
   compiler: { solidityImportCompat: true, messageBus: true },
+  // Same mnemonic/path as the EffectiveAcceleration Hardhat project so getSigners() and
+  // config.networks.hardhat.accounts.mnemonic stay aligned with marketplace.test.ts.
+  mnemonic: 'rebuild always symbol rabbit sunset napkin laundry diary doll chalk valid train',
+  accounts: { path: "m/44'/60'/0'/0", count: 20, initialIndex: 0 },
   networks: {
     mock: {
       type: 'mock',

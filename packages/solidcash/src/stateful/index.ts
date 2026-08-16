@@ -21,7 +21,25 @@ type StatefulContractCtor =
   };
 export const StatefulContract = StatefulContractClass as unknown as StatefulContractCtor;
 export type StatefulContract<T extends Artifact = Artifact> = ConnectedStatefulContractType<T>;
-export { clearSoftBentoTotals, takeSoftStateSnapshot, type SoftStateSnapshot } from './StatefulContract.js';
+export {
+  clearSoftBentoTotals,
+  takeSoftStateSnapshot,
+  isMarketplaceConditionalTokenWriter,
+  isSpeculativeSafeErc20Call,
+  marketplaceJobTimedOut,
+  providerUnixLocktime,
+  marketplaceWriterTokenTransfer,
+  type MarketplaceWriterTokenPlan,
+  selectorParamSlot,
+  groupIndexForExternalCallSlot,
+  marketplaceTokenCallsiteId,
+  parseRowArgsDecodeLabel,
+  visibleHandlerInputs,
+  matchingRouteRowsForExpressionKey,
+  resolveRouteRowExpressionKey,
+  type RouteExpressionKeyRow,
+  type SoftStateSnapshot,
+} from './StatefulContract.js';
 
 export {
   StatefulTransactionBuilder,
@@ -49,8 +67,11 @@ export {
   deriveLogicalCreateAddress, deriveLogicalAddressFromSeed,
   encodeLogicalIdentityCommitment, decodeLogicalIdentityCommitment,
   encodeLogicalFacetCommitment, decodeLogicalFacetCommitment,
-  buildLogicalIdentityCommitment, resolveLogicalIdentity, resolveSplitLogicalIdentity,
-  createLogicalIdentityUnlocker,
+  buildLogicalIdentityCommitment, resolveLogicalIdentity, resolveLogicalIdentityFromAddresses,
+  resolveLogicalIdentityByCategory, requireMsgSenderIdentity, isZeroMsgSenderCategory,
+  resolveSplitLogicalIdentity,
+  createLogicalIdentityUnlocker, isScidIdentityCommitment,
+  logicalIdentityAddressVariants, sameLogicalIdentityAddress, logicalIdentityBandKey,
   type LogicalIdentityCommitment, type ResolvedLogicalIdentity, type ResolvedSplitLogicalIdentity,
 } from './logical-identity.js';
 export {

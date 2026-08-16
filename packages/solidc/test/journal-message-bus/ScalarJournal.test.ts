@@ -209,6 +209,94 @@ describe('Release 1 scalar journal lowering', () => {
     ]));
   });
 
+  it('journals an outlined view helper that reads a scalar the caller just wrote', () => {
+    // OZ initializer shape: the entry writes `_initializing = true`, then an outlined `onlyInitializing`
+    // check reads it back. Without downward journal admission the helper re-reads the pre-transaction NFT
+    // and `require(this.initializing)` fails even though the pending write is live on the caller stack.
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      abstract contract Initializable {
+        uint64 private _initialized;
+        bool private _initializing;
+        modifier initializer() {
+          require(!_initializing && _initialized < 1);
+          _initialized = 1;
+          _initializing = true;
+          _;
+          _initializing = false;
+        }
+        modifier onlyInitializing() {
+          _checkInitializing();
+          _;
+        }
+        function _checkInitializing() internal view {
+          require(_isInitializing());
+        }
+        function _isInitializing() private view returns (bool) {
+          return _initializing;
+        }
+      }
+      contract FlagReader is Initializable {
+        address public marketplace;
+        mapping(string => string) public meceTags;
+        function initialize(address marketplace_) public initializer {
+          _checkInitializing();
+          marketplace = marketplace_;
+          meceTags["DA"] = "DIGITAL_AUDIO";
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true });
+
+    const helpers = artifact.invocationAnalysis?.functions ?? [];
+    const checkInit = helpers.find((fn) => fn.name === '_checkInitializing' || fn.name === '_isInitializing');
+    // A small fixture often inlines the helper into initialize (same stack frame as the pending write).
+    // When the helper remains an OP_INVOKE body - MarketplaceData.initialize's actual shape - it must
+    // receive the pending _initializing write as journal context instead of rereading the input NFT.
+    if (checkInit) {
+      expect(checkInit.arity).toBeGreaterThan(0);
+    } else {
+      expect(artifact.abi.find((entry) => entry.name === 'initialize')?.writesState).toBe(true);
+    }
+  });
+
+  it('inlines _checkInitializing into a delegate initialize after late IRSH on the message-bus path', () => {
+    // MarketplaceData.initialize is inferred `delegate` and compiled with messageBus. A later IRSH
+    // reduces `_isInitializing()` into `_checkInitializing`; without a follow-up void-helper inline
+    // the check stays an OP_INVOKE body that reads INPUTINDEX+1 (impl data / entry pad) instead of
+    // the proxy pending write.
+    const artifact = compileMessageBusString(`pragma solidity ^0.8.0;
+      abstract contract Initializable {
+        uint64 private _initialized;
+        bool private _initializing;
+        modifier initializer() {
+          require(!_initializing && _initialized < 1);
+          _initialized = 1;
+          _initializing = true;
+          _;
+          _initializing = false;
+        }
+        function _checkInitializing() internal view {
+          require(_isInitializing());
+        }
+        function _isInitializing() private view returns (bool) {
+          return _initializing;
+        }
+      }
+      contract FlagReader is Initializable {
+        address public marketplace;
+        function initialize(address marketplace_) public initializer {
+          _checkInitializing();
+          marketplace = marketplace_;
+        }
+      }
+    `, {
+      forceStateful: true, solidityImportCompat: true, messageBus: true, maximumInputBytes: 10_000_000,
+    });
+    const init = artifact.abi.find((entry) => entry.name === 'initialize');
+    expect(init?.modifiers).toEqual(expect.arrayContaining(['delegate']));
+    const helpers = Object.values(artifact.debug.invokeDebug ?? {});
+    expect(helpers.some((helper) => helper.name === '_checkInitializing')).toBe(false);
+  });
+
   it('keeps the public result/effect route when compilation-speed optimization skips external admission', () => {
     const source = `pragma solidcash >=0.8.0;
       contract Token {

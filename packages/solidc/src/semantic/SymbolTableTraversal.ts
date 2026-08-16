@@ -367,6 +367,10 @@ export interface ContractStatefulnessHint {
 
 export default class SymbolTableTraversal extends AstTraversal {
   private activeBodySurvey?: ActiveFunctionBodySurvey;
+  private readonly addressAliasIndexes = new WeakMap<Node, {
+    declarations: Map<string, { count: number; init?: ExpressionNode }>;
+    assignments: Map<string, ExpressionNode[]>;
+  }>();
 
   // Function symbol resolution already visits every structural body node. Gather the independent pre-scan facts
   // on that unavoidable traversal instead of walking the resolved body again. Collection loops count for recovery
@@ -2857,6 +2861,21 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.pushToStack(inputBaseParam);
         }
       }
+    }
+
+    // Occupancy may park value-chunks after a 1:1 preserve band. A witnessed base
+    // lets the SDK name that start; -1 keeps INPUTINDEX+trailingBase.
+    if (node.name === 'publishJobEvent'
+      && !node.parameters.some((parameter) => parameter.name === '__internal__valueChunkOutputBase')) {
+      const chunkBaseParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__valueChunkOutputBase');
+      chunkBaseParam.location = node.location;
+      node.parameters.push(chunkBaseParam);
+      this.symbolTables[0].set(Symbol.variable(chunkBaseParam));
+      const chunkBaseSymbol = this.symbolTables[0].get('__internal__valueChunkOutputBase');
+      if (chunkBaseSymbol) {
+        chunkBaseSymbol.references.push({ name: '__internal__valueChunkOutputBase' } as IdentifierNode);
+      }
+      this.pushToStack(chunkBaseParam);
     }
 
     // B-side: inject _returnOutputIdx for functions with return types that are entry points
@@ -6596,7 +6615,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!(value instanceof IdentifierNode)) break;
       current = value.name;
     }
-    if (generated(current)) return name;
+    if (generated(current)) return this.findEquivalentSynthesizedAddress(name, body) ?? name;
     if (this.currentFunction?.parameters.some((parameter) => parameter.name === current)) return current;
     // Imported Solidity helpers conventionally name their parameter `token`, while the public caller names the
     // forwarded ABI value `token_`. Inlining retains the helper ParameterNode on identity-cast wrappers even
@@ -6606,7 +6625,106 @@ export default class SymbolTableTraversal extends AstTraversal {
     const forwarded = this.currentFunction?.parameters.filter((parameter) =>
       !parameter.name.startsWith('__internal__')
       && parameter.name.replace(/^_+|_+$/g, '') === normalized) ?? [];
-    return forwarded.length === 1 ? forwarded[0].name : name;
+    return forwarded.length === 1 ? forwarded[0].name
+      : this.findEquivalentSynthesizedAddress(name, body) ?? name;
+  }
+
+  /**
+   * Canonicalize a late inliner/capture alias to an address local already synthesized from the same authenticated
+   * expression. Generated aliases are SSA; user locals are followed only when declared once with an initializer
+   * and never assigned. This lets SafeERC20's conditional `__rh*_target` fallbacks reuse the body-top
+   * `__extaddr_ll_jobs_..._token` target without ever lifting a reassignable user value.
+   */
+  private findEquivalentSynthesizedAddress(name: string, body: Node | undefined): string | undefined {
+    if (!body) return undefined;
+    let index = this.addressAliasIndexes.get(body);
+    if (!index) {
+      const declarations = new Map<string, { count: number; init?: ExpressionNode }>();
+      const assignments = new Map<string, ExpressionNode[]>();
+      const seen = new Set<Node>();
+      const scan = (node: Node): void => {
+        if (seen.has(node)) return;
+        seen.add(node);
+        if (node instanceof VariableDefinitionNode) {
+          const previous = declarations.get(node.name);
+          declarations.set(node.name, {
+            count: (previous?.count ?? 0) + 1,
+            init: previous?.init ?? node.expression,
+          });
+        } else if (node instanceof AssignNode) {
+          assignments.set(node.identifier.name, [
+            ...(assignments.get(node.identifier.name) ?? []), node.expression,
+          ]);
+        } else if (node instanceof TupleAssignmentNode) {
+          node.elements.forEach((element, elementIndex) => {
+            if (!element.name || !element.existing) return;
+            const expression = node.tupleExpressions?.[elementIndex]
+              ?? (node.tuple ? new TupleIndexOpNode(node.tuple, elementIndex) : undefined);
+            if (expression) assignments.set(element.name, [
+              ...(assignments.get(element.name) ?? []), expression,
+            ]);
+          });
+        }
+        for (const [key, value] of Object.entries(node)) {
+          if (RESOLVED_BACKREF_KEYS.has(key)) continue;
+          if (value instanceof Node) scan(value);
+          else if (Array.isArray(value)) for (const child of value) if (child instanceof Node) scan(child);
+        }
+      };
+      scan(body);
+      index = { declarations, assignments };
+      this.addressAliasIndexes.set(body, index);
+    }
+    const generated = (candidate: string): boolean => /^__(?:rh|extcap_|inl|extaddr_)/.test(candidate);
+    const keyOf = (expression: ExpressionNode, names = new Set<string>()): string | undefined => {
+      if (expression instanceof CastNode) return keyOf(expression.expression, names);
+      if (expression instanceof FunctionCallNode && expression.parameters.length === 1
+        && (this.interfaceMap.has(expression.identifier.name) || this.contractMap.has(expression.identifier.name))) {
+        return keyOf(expression.parameters[0], names);
+      }
+      if (expression instanceof ContractReferenceNode && expression.constructorArgs.length === 1) {
+        return keyOf(expression.constructorArgs[0], names);
+      }
+      if (expression instanceof IdentifierNode) {
+        if (names.has(expression.name)) return undefined;
+        const nextNames = new Set(names).add(expression.name);
+        const declaration = index!.declarations.get(expression.name);
+        const assigned = index!.assignments.get(expression.name) ?? [];
+        const aliasValue = generated(expression.name)
+          ? declaration?.init ?? (assigned.length === 1 ? assigned[0] : undefined)
+          : declaration?.count === 1 && declaration.init && assigned.length === 0
+            ? declaration.init : undefined;
+        return aliasValue ? keyOf(aliasValue, nextNames) : `id:${expression.name}`;
+      }
+      if (expression instanceof StateAccessNode) return `state:${expression.name}`;
+      if (expression instanceof FieldAccessNode) {
+        const base = keyOf(expression.expression, names);
+        return base && `field:${base}:${expression.name}`;
+      }
+      if (expression instanceof MappingAccessNode) {
+        const keys = expression.keys.map((key) => keyOf(key, names));
+        return keys.every((key) => key !== undefined)
+          ? `mapping:${expression.name}:${keys.join(':')}` : undefined;
+      }
+      if (expression instanceof ArrayAccessNode) {
+        const array = keyOf(expression.array, names);
+        const element = keyOf(expression.index, names);
+        return array && element ? `array:${array}:${element}` : undefined;
+      }
+      if (expression instanceof TupleIndexOpNode) {
+        const tuple = keyOf(expression.tuple, names);
+        return tuple && `tuple:${tuple}:${expression.index}`;
+      }
+      if (expression instanceof IntLiteralNode) return `int:${expression.value}`;
+      return undefined;
+    };
+    const target = keyOf(new IdentifierNode(name));
+    if (!target) return undefined;
+    for (const [candidate, declaration] of index.declarations) {
+      if (!candidate.startsWith('__extaddr_') || !declaration.init) continue;
+      if (keyOf(declaration.init) === target) return candidate;
+    }
+    return undefined;
   }
 
   // C1/B: does this subtree write contract state (state-var / mapping / state-array assign or delete)? A
@@ -12199,31 +12317,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     // The terms are kept because they state the intent this predicate must regain if the layout ever moves after
     // code generation; they are not, today, a second leg that could be sized independently.
     //
-    // X69 asked whether the DIRECT route should declare and fund a region here, so the balanced assembly model
-    // could describe its 680 `unbalanced transaction` / 381 `token outside every participant block` rejections.
-    // MEASURED at this commit and REFUSED. Three findings, in order of weight:
-    //
-    // 1. A vmap mapping insert - the whole 381 category - has NO term here that can fire. Measured on
-    //    `mapping(int => int) m; function put(..) { m[k] = v; }`: `stateVars=0, dynamicNames=0, collections=1`.
-    //    Every term above is about dynamic state VARIABLES, loops, keccak or ecrecover, and a mapping is a
-    //    CollectionNode. So that half is not a relaxation of this predicate at all; it needs a NEW reservation
-    //    class keyed on `contract.collections.length`, which puts 64 slots on nearly every stateful contract.
-    // 2. Where the blanket term CAN fire, declaring the region BREAKS SETTLED SENDS. Ungating it for the direct
-    //    route turned 4 of 33 previously-settling sends in DynamicWriteBehavior/ChunkedArrays into
-    //    `Program failed an OP_VERIFY operation` at INPUT INDEX 0. All four are value-returning + dynamic-write.
-    //    That is a soundness regression, not a diagnostic change.
-    // 3. It buys no describability and is arithmetically self-limiting. `arr.push(9)` grew from 2 inputs /
-    //    3 outputs / 1,513 raw bytes to 67 / 66 / 4,938 (+226%) and the model still refused it, only under a
-    //    different category. The returnEvent variant reached `blockSize` 67 against 67 funded inputs, so the
-    //    block consumed the fee/change pair the model requires past every participant block - at capacity 64 the
-    //    funder budget the SDK requests (`capacity + 1`) exactly equals the slack one more fixed slot removes.
-    //
-    // Also: the row is filed as spanning `computeBlockLayout` and `StatefulTransactionBuilder`, and that span is
-    // short. `GenerateTargetTraversal` has two live `blockLayout.trailingBase === undefined` branches (the
-    // returnEvent `-1` adjustment and `emitTrailingBlockBase`) that flip the moment the direct route declares a
-    // region. Both sides moved the chunk consistently from output 2 to 3 in the measurement, so that pairing is
-    // NOT the cause of (2); which covenant check fails was NOT isolated.
-    const needsTrailingRegion = node.name === '__message_bus1' && (touchesDynamicState
+    // A bounded collection route may INSERT one trailing NEW node (and, for a multi-write batch, one displaced
+    // predecessor) per published physical access even though the fixed entry proof stays in the core block.
+    // This is distinct from ordinary/direct calls: atomic graph spans need an advertised maximum so they can
+    // converge from the fixed core to the actually used suffix. Size collection-only routes from their physical
+    // access count rather than imposing the 64-slot dynamic-storage reserve on every mapping contract.
+    const collectionRouteCapacity = node.name === '__message_bus1' && contract.collections.length > 0
+      ? Math.min(BALANCED_TRAILING_CAPACITY, Math.max(1, (node.entryAccesses?.length ?? 1) * 2)) : 0;
+    const needsWideTrailingRegion = touchesDynamicState
       || (node.dynamicReads?.length ?? 0) > 0
       || (node.dynamicWrites?.length ?? 0) > 0
       || (node.entryLoopWrites?.length ?? 0) > 0
@@ -12231,18 +12332,21 @@ export default class SymbolTableTraversal extends AstTraversal {
       || (node.sortedInsertLoops?.length ?? 0) > 0
       || node.keccakInLoop === true
       || node.keccakLoopReads === true
-      || node.ecrecoverLoopReads === true);
+      || node.ecrecoverLoopReads === true;
+    const needsTrailingRegion = node.name === '__message_bus1'
+      && (needsWideTrailingRegion || collectionRouteCapacity > 0);
     if (!needsTrailingRegion) return { blockSize: offset, slots };
 
     const trailingBase = offset;
-    for (let i = 0; i < BALANCED_TRAILING_CAPACITY; i++) {
+    const trailingCapacity = needsWideTrailingRegion ? BALANCED_TRAILING_CAPACITY : collectionRouteCapacity;
+    for (let i = 0; i < trailingCapacity; i++) {
       slots.push({ kind: 'trailing', offset: offset++, slotIndex: i, conditional: true });
     }
     return {
       blockSize: offset,
       slots,
       trailingBase,
-      trailingCapacity: BALANCED_TRAILING_CAPACITY,
+      trailingCapacity,
     };
   }
 

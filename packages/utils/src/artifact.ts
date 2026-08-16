@@ -75,6 +75,17 @@ export interface CompilerOptions {
   // compilation and is rejected when semantic analysis finds a transaction shape that cannot be built without
   // one shared message bus. The resolved value is what the artifact publishes.
   messageBus?: boolean;
+  // Optional compile-time surface for large compatibility projects. Direct ABI entry points remain unchanged;
+  // only these named functions are cloned into the authenticated message-bus route. Omitted means all eligible
+  // entry points. This avoids cloning dozens of unrelated external handlers when one atomic DAG needs a few.
+  messageBusHandlers?: readonly string[];
+  // Compile an otherwise graph-free message-bus participant with the atomic graph envelope. Leaf participants
+  // still need per-row logical callers when one composed transaction reaches them from different parents.
+  // Omitted preserves the compact local-caller route used by standalone batching.
+  messageBusGraphContext?: boolean;
+  // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
+  // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
+  delegateArtifactContracts?: readonly string[];
 }
 
 export interface AbiInput {
@@ -148,6 +159,8 @@ export interface FunctionBlockLayout {
   trailingBase?: number;
   /** Number of balanced slots reserved for chunks, loop entries, and loop sidecars. */
   trailingCapacity?: number;
+  /** Fixed slots after the runtime-variable region. Such a block cannot compact its trailing placeholders. */
+  fixedSuffix?: number;
 }
 
 /**
@@ -753,7 +766,9 @@ export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 /** Shared wire constants for the atomic single-transaction message bus. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
 export const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;
-export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 24;
+// The wire stores row count as uint16. Sixty-four covers bounded multi-effect DAGs while finalized-byte and VM
+// preflight remain the authoritative production admission gates (notably the stock 520-byte stack-item limit).
+export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 64;
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
 export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
   'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
@@ -858,6 +873,8 @@ export interface Artifact {
         source?: 'argument' | 'msgSender' | 'expression';
         expressionLabel?: string;
         perRow?: boolean;
+        /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
+        swappable?: boolean;
       }[];
     }[];
   };
@@ -1120,6 +1137,10 @@ export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): strin
   // Re-apply after parse so published JSON keeps `jobs.length-1` even if those copies dropped it.
   const normalisedArtifact = JSON.parse(JSON.stringify(artifact)) as Artifact;
   patchArtifactUpsertFixedKeys(normalisedArtifact);
+  if (artifact.delegateProxyStateOutputCountPinned
+    || normalisedArtifact.abi?.some((fn) => fn.modifiers?.includes('delegate'))) {
+    normalisedArtifact.delegateProxyStateOutputCountPinned = true;
+  }
   if (format === 'ts') {
     return `export default ${stringifyAsTs(normalisedArtifact)} as const;\n`;
   }

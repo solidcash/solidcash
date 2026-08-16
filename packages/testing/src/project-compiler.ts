@@ -210,6 +210,9 @@ export function compileSolidityProject(
     }
     for (const [name, artifact] of Object.entries(compiled)) {
       patchProjectArtifactUpsertKeys(artifact);
+      if (artifact.abi.some((fn) => fn.modifiers?.includes('delegate'))) {
+        artifact.delegateProxyStateOutputCountPinned = true;
+      }
       if (name === stem) artifacts[name] = artifact;
       else artifacts[name] ??= artifact;
     }

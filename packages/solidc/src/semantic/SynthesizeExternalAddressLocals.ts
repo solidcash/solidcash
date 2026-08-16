@@ -22,6 +22,7 @@ import {
   DoWhileNode,
   CollectionIterationNode,
   ContractReferenceNode,
+  ExternalFunctionCallNode,
   FunctionModifier,
   StateVariableVisibility,
 } from '../ast/AST.js';
@@ -54,7 +55,7 @@ const ADDRESS_METHODS = new Set(['send', 'call', 'staticcall', 'delegatecall']);
 const LOW_LEVEL_CALLS = new Set(['call', 'staticcall', 'delegatecall']);
 // Synthetic single-assignment alias locals safe to trace through: `__rh*`/`__inl*` are inliner-created bindings of
 // call args (never reassigned); `__extaddr_*` are this pass's own hoists. A user local is deliberately excluded.
-const SYNTH_ALIAS = /^(__rh|__inl|__extaddr_)/;
+const SYNTH_ALIAS = /^(__rh|__inl|__extaddr_|__extcap_)/;
 
 // The element/value type of an array/mapping (for stepping through an access chain), else undefined.
 function elementOf(t: Type | undefined): Type | undefined {
@@ -78,6 +79,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // localName -> synthesized decl parts (init reads the self-pinned state; iface = the local's interface type, or
   // undefined for a plain-`address` local hoisted as a low-level-call receiver)
   private usedInFn: Map<string, { iface: string | undefined; init: ExpressionNode }> = new Map();
+  /** Body-top address locals emitted by an earlier synthesis pass; reuse them without redeclaring them. */
+  private preexistingSynthLocals: Set<string> = new Set();
   // Inlined/user local name -> its initializer expression, in body order. Populated as VariableDefinitions are
   // visited, so a low-level `.call` on `address(<inlined local>)` can trace the local back to a self-pinned state
   // chain (the SafeERC20 `address(token).call` shape, where the inliner binds `token = IERC20(coll[k].field)`).
@@ -231,6 +234,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     if (!node.body) return node;
     this.usedInFn = new Map();
+    this.preexistingSynthLocals = new Set(
+      (node.body.statements ?? []).flatMap((statement) => statement instanceof VariableDefinitionNode
+        && statement.name.startsWith(PREFIX) ? [statement.name] : []),
+    );
     this.pendingMidbodyDecls = [];
     this.localInits = new Map();
     this.storagePointerLocals = new Set();
@@ -244,12 +251,14 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     this.currentParams = new Set(node.parameters.map((p) => p.name));
     node.body = this.visit(node.body) as BlockNode;
     if (this.usedInFn.size > 0) {
-      const decls = [...this.usedInFn.entries()].map(([localName, { iface, init }]) => {
+      const decls = [...this.usedInFn.entries()]
+        .filter(([localName]) => !this.preexistingSynthLocals.has(localName))
+        .map(([localName, { iface, init }]) => {
         if (!init.location) init.location = node.location; // fresh IdentifierNode init has none
         const def = new VariableDefinitionNode(new AddressType(false, iface), [], localName, init);
         def.location = node.location;
         return def;
-      });
+        });
       node.body.statements = [...decls, ...(node.body.statements ?? [])];
     }
     return node;
@@ -290,6 +299,25 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         const loc = node.identifier.location;
         node.identifier = new IdentifierNode(`${localName}.${method}`);
         node.identifier.location = loc;
+      } else if (LOW_LEVEL_CALLS.has(method)) {
+        // Inlined Address/SafeERC20 helpers can leave a low-level call in dotted FunctionCall form
+        // (`__rhN_target.call(data)`) rather than MethodCall form. Trace that compiler-owned alias through the
+        // same provenance resolver: otherwise the first direct branch is pinned to the self-authenticated state
+        // chain while later forceApprove fallbacks retain conditional `__rh` targets that are empty at epilogue.
+        const receiver = new IdentifierNode(varName);
+        receiver.location = node.identifier.location;
+        const resolved = this.resolveLlReceiver(receiver);
+        if (resolved) {
+          if (!this.usedInFn.has(resolved.localName)) {
+            this.usedInFn.set(resolved.localName, {
+              iface: undefined,
+              init: cloneNode(resolved.init) as ExpressionNode,
+            });
+          }
+          const loc = node.identifier.location;
+          node.identifier = new IdentifierNode(`${resolved.localName}.${method}`);
+          node.identifier.location = loc;
+        }
       } else if (this.stateVarIface.has(varName) && !ADDRESS_METHODS.has(method)
         // Sibling-contract member indexes can be pruned before this pass in a constructor. The state variable's
         // declared contract type still proves this is a contract receiver; capture it at the call site and let
@@ -320,6 +348,27 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     }
     node.parameters = this.visitList(node.parameters) as ExpressionNode[];
     return node;
+  }
+
+  visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
+    // Some nested helper calls have already been lowered to the dedicated external-call AST node by the time a
+    // second provenance pass runs. Preserve the same sound low-level receiver rewrite used for MethodCall and
+    // dotted FunctionCall forms; this is the final SafeERC20 forceApprove fallback shape after branch capture.
+    if ((node.interfaceName === '__raw__' || node.opaqueReturn) && node.addressExpression) {
+      const resolved = this.resolveLlReceiver(node.addressExpression);
+      if (resolved) {
+        if (!this.usedInFn.has(resolved.localName)) {
+          this.usedInFn.set(resolved.localName, {
+            iface: undefined,
+            init: cloneNode(resolved.init) as ExpressionNode,
+          });
+        }
+        const replacement = new IdentifierNode(resolved.localName);
+        replacement.location = node.addressExpression.location;
+        node.addressExpression = replacement;
+      }
+    }
+    return super.visitExternalFunctionCall(node) as Node;
   }
 
   // `token.method{value:}(..)` (interface-typed state var) or `IFoo(a).method(..)` (plain-`address` state var
@@ -867,6 +916,13 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
           || (node.type instanceof StructType && this.resolveChainType(node.expression) instanceof StructType)) {
           this.storagePointerLocals.add(node.name);
         }
+      }
+      // CaptureBranchExternalCallTargets emits an uninitialized body-top `__extcap_` declaration followed by
+      // exactly one compiler-owned assignment at the original branch-local definition. Record that assignment as
+      // the alias initializer so the post-capture provenance pass can follow it just like `__rh`/`__inl` SSA.
+      if (node instanceof AssignNode && node.identifier.name.startsWith('__extcap_')
+        && !this.localInits.has(node.identifier.name)) {
+        this.localInits.set(node.identifier.name, node.expression);
       }
       // A tuple-destructured declaration `(address input, address output) = (path[i], path[i+1])` (swap loops) or
       // `(address t0, address t1) = sortTokens(a, b)` (pairFor): map each NEW element to its per-slot RHS (a tuple

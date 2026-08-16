@@ -677,6 +677,9 @@ function compileWithExternalAdmissionFallback(
       try {
         return compileOnce(true, true, true, true, true);
       } catch (error) {
+        if (process.env.SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK === '1') {
+          console.error('message-bus widest route failed', primaryContractName, error);
+        }
         firstError = error;
         latestError = error;
       }
@@ -881,6 +884,11 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1'
     && !artifactCompilerOptions.__messageBusVerifierProgram && artifact.messageBus?.verifierProgram) {
     const verifierProgram = artifact.messageBus.verifierProgram;
+    // The bound route replaces the speculative embedded-verifier artifact wholesale. Release that often-large
+    // object before parsing/code-generating the second pass, otherwise a one-CPU compatibility compile holds two
+    // complete contracts at the peak (Unicrow exceeds the practical heap despite selecting only `pay`).
+    artifact = undefined as unknown as Artifact;
+    (globalThis as typeof globalThis & { gc?: () => void }).gc?.();
     const bindingOptions = normalizeCompilerOptions({
       ...artifactCompilerOptions,
       __messageBusVerifierProgram: verifierProgram,
@@ -939,6 +947,13 @@ function attachDelegateVariant(
   errorListener?: SolidCashErrorListener, primaryName?: string,
 ): void {
   if (mergedCompilerOptions.autoDelegate || artifact.isLibrary) return;
+  // Solidity initializer inference marks the primary artifact itself as a proxy implementation. Do not attach a
+  // second delegate pass to that already-delegate artifact: synthetic ABI helpers such as __updateBlockOracle
+  // have no visibility modifier and previously looked like another candidate, producing a much larger hybrid
+  // route which the SDK then preferred over the correct primary implementation.
+  if (artifact.abi.some((fn) => fn.modifiers?.includes(FunctionModifier.DELEGATE))) return;
+  if (mergedCompilerOptions.delegateArtifactContracts !== undefined
+    && !mergedCompilerOptions.delegateArtifactContracts.includes(artifact.contractName)) return;
   // Cheap pre-filter on the standalone ABI, so only contracts that could BE an implementation pay for the second
   // compile: stateful, with an externally-callable state-writing function carrying no disqualifying modifier.
   // Conservative in the same direction as writesState (a false positive costs one wasted compile, never a
@@ -947,6 +962,8 @@ function attachDelegateVariant(
     || !!mergedCompilerOptions.forceStateful || artifact.abi.some((f) => (f.emits?.length ?? 0) > 0);
   if (!hasStatefulBacking) return;
   const couldBeImplementation = artifact.abi.some((f) => f.writesState !== false
+    && f.modifiers?.some((modifier) => modifier === FunctionModifier.PUBLIC
+      || modifier === FunctionModifier.EXTERNAL)
     && !f.isFallback && !f.isReceive
     && !f.modifiers?.some((m) => DELEGATE_INELIGIBLE_MODIFIERS.includes(m)));
   if (!couldBeImplementation) return;
@@ -1369,7 +1386,10 @@ function synthesizeMessageBusRoute(
   if (!compilerOptions.messageBus) return;
   const contract = ast.contract;
   assertNoReservedMessageBusSelector(contract.functions);
-  const functions = contract.functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract);
+  const requestedHandlerNames = compilerOptions.messageBusHandlers === undefined
+    ? undefined : new Set(compilerOptions.messageBusHandlers);
+  const functions = contract.functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract
+    && (requestedHandlerNames === undefined || requestedHandlerNames.has(fn.name)));
   // Record every entry point's span BEFORE any refusal is decided and before anything downstream
   // can throw, so the fallback can attribute a later route-generation failure to the handler containing it.
   for (const fn of functions) {
@@ -1897,7 +1917,7 @@ function synthesizeMessageBusRoute(
           const flattened = includeBare && flattenBare ? bareEntryAccessOf(node, locallyBound) : undefined;
           for (const inner of flattened?.chain ?? []) consumed.add(inner);
           const access = node instanceof MappingAccessNode || node instanceof MappingAssignNode
-            || node instanceof MappingDeleteNode
+            || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode
             ? { name: node.name, keys: node.keys as ExpressionNode[] }
             : (flattened ?? (includeBare && !flattenBare ? bareAccessOf(node) : undefined));
           if (!access || !collectionByName.has(access.name)) return;
@@ -1987,7 +2007,7 @@ function synthesizeMessageBusRoute(
         walkInvocationAst(candidate.body, (node) => {
           const bare = bareEntryAccessOf(node, candidateBound);
           const access = node instanceof MappingAccessNode || node instanceof MappingAssignNode
-            || node instanceof MappingDeleteNode
+            || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode
             ? { name: node.name, keys: node.keys as ExpressionNode[] }
             : bare;
           if (!access) return;
@@ -2015,7 +2035,7 @@ function synthesizeMessageBusRoute(
         walkInvocationAst(fn.body, (node) => {
           const bare = bareEntryAccessOf(node, locallyBound);
           const name = node instanceof MappingAccessNode || node instanceof MappingAssignNode
-            || node instanceof MappingDeleteNode ? node.name : bare?.name;
+            || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode ? node.name : bare?.name;
           if (name && fixedArrayCollections.has(name)) fixedIterationCollections.add(name);
         });
       }
@@ -2049,7 +2069,7 @@ function synthesizeMessageBusRoute(
           let touches = false;
           walkInvocationAst(candidate.body, (node) => {
             if (node instanceof MappingAccessNode || node instanceof MappingAssignNode
-              || node instanceof MappingDeleteNode) touches = true;
+              || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode) touches = true;
           });
           return touches;
         }))) {
@@ -3016,6 +3036,7 @@ function synthesizeMessageBusRoute(
     }
   };
   let resourceSelfAliasHandlerInvokeName: string | undefined;
+  let resourceSwappedHandlerInvokeName: string | undefined;
   const allGraphEmissionHandlersRuntime = graphTailHandlers.size > 0
     && [...graphTailHandlers].every((handler) => graphRuntimeHandlers.has(handler));
   if (resourceShapedHandler) {
@@ -3057,11 +3078,41 @@ function synthesizeMessageBusRoute(
     resourceHandlerInvokeName = handler.name;
     contract.functions.push(handler);
     const resourceEntryShape = handlerEntryKeys.get(resourceShapedHandler) ?? [];
-    const varyingResourceEntry = resourceEntryShape.find((entry) => entry.perRow);
+    const varyingResourceEntry = resourceEntryShape.find((entry) => entry.perRow
+      && resourceEntryShape.some((candidate) => !candidate.perRow
+        && candidate.collection === entry.collection && `${candidate.base}_row` === entry.base));
     const sharedResourceEntry = varyingResourceEntry && resourceEntryShape.find((entry) =>
       !entry.perRow && entry.collection === varyingResourceEntry.collection
       && `${entry.base}_row` === varyingResourceEntry.base);
     if (varyingResourceEntry && sharedResourceEntry) {
+      // The one-shared/one-row-local layout is physical, not semantic. A graph can prove that the second source
+      // key is the value shared with sibling rows (balanceOf(self), transferFrom(from, self), balanceOf(self)).
+      // Advertise that either source alternative may occupy the shared slot, and compile the corresponding clone.
+      for (const binding of resourceShapedHandler.messageBusKeyWitnesses ?? []) {
+        if (binding.routeInput === sharedResourceEntry.base
+          || binding.routeInput === varyingResourceEntry.base) binding.swappable = true;
+      }
+      const swappedHandler = cloneNode(handler);
+      swappedHandler.name = `${handler.name}_swapped`;
+      walkInvocationAst(swappedHandler.body, (node) => {
+        if (!isMappingNode(node) || node.name !== varyingResourceEntry.collection) return;
+        node.keys = node.keys.map((key) => {
+          if (!(key instanceof IdentifierNode)) return key;
+          if (key.name === `${ENTRY_KEY_PREFIX}${sharedResourceEntry.base}`) {
+            return Object.assign(
+              new IdentifierNode(`${ENTRY_KEY_PREFIX}${varyingResourceEntry.base}`), { location: key.location },
+            );
+          }
+          if (key.name === `${ENTRY_KEY_PREFIX}${varyingResourceEntry.base}`) {
+            return Object.assign(
+              new IdentifierNode(`${ENTRY_KEY_PREFIX}${sharedResourceEntry.base}`), { location: key.location },
+            );
+          }
+          return key;
+        });
+      });
+      resourceSwappedHandlerInvokeName = swappedHandler.name;
+      contract.functions.push(swappedHandler);
       const aliasHandler = cloneNode(handler);
       aliasHandler.name = `${handler.name}_self_alias`;
       let retainedVaryingRead: MappingAccessNode | undefined;
@@ -3477,6 +3528,10 @@ function synthesizeMessageBusRoute(
       const alias = contract.functions.find((candidate) => candidate.name === resourceSelfAliasHandlerInvokeName);
       if (alias) bindLogicalCaller(alias);
     }
+    if (sourceHandler === resourceShapedHandler && resourceSwappedHandlerInvokeName) {
+      const swapped = contract.functions.find((candidate) => candidate.name === resourceSwappedHandlerInvokeName);
+      if (swapped) bindLogicalCaller(swapped);
+    }
   }
   const buildDecodeAndCall = (
     captureResults = false, rowIndex?: number, rowExpression = String(rowIndex ?? 0),
@@ -3559,11 +3614,21 @@ function synthesizeMessageBusRoute(
       const declarations = decodedParameters.map(({ parameter, index }) =>
         `${parameter.type.toString()} ${decodedName(index)} = ${decodedExpression(index)}`);
       const logicalCaller = graphExecutionContext ? '__message_bus_graph_caller' : 'msg.sender';
-      const keyChecks = (fn.messageBusKeyWitnesses ?? []).map((binding) =>
+      const swappableBindings = (fn.messageBusKeyWitnesses ?? []).filter((binding) => binding.swappable);
+      const swappableShared = swappableBindings.find((binding) => !binding.perRow);
+      const swappableVarying = swappableBindings.find((binding) => binding.perRow);
+      const ordinaryKeyChecks = (fn.messageBusKeyWitnesses ?? []).filter((binding) => !binding.swappable).map((binding) =>
         binding.source === 'msgSender'
           ? `require(${witnessName(binding)} == ${logicalCaller});`
           : binding.source === 'expression' ? ''
             : `require(${decodedName(binding.inputIndex)} == ${witnessName(binding)});`).join('\n');
+      const swappableKeyCheck = swappableShared && swappableVarying
+        ? `require((${decodedName(swappableShared.inputIndex)} == ${witnessName(swappableShared)} && `
+          + `${decodedName(swappableVarying.inputIndex)} == ${witnessName(swappableVarying)}) || (`
+          + `${decodedName(swappableVarying.inputIndex)} == ${witnessName(swappableShared)} && `
+          + `${decodedName(swappableShared.inputIndex)} == ${witnessName(swappableVarying)}));`
+        : '';
+      const keyChecks = `${ordinaryKeyChecks}\n${swappableKeyCheck}`;
       // Declared arguments come from the row; entry keys come from the canonical witnesses this row already
       // checked, so the journal sees one identity per physical entry however the handler names its parameters.
       //
@@ -3601,7 +3666,9 @@ function synthesizeMessageBusRoute(
           && !graphTailHandlers.has(fn) && !localEffectFrameHandlers.has(fn)
           ? ['__internal__msgSenderCategory'] : [];
       const entryShape = handlerEntryKeys.get(fn);
-      const varyingEntryIndex = entryShape?.findIndex((entry) => entry.perRow) ?? -1;
+      const varyingEntryIndex = entryShape?.findIndex((entry) => entry.perRow
+        && entryShape.some((candidate) => !candidate.perRow
+          && candidate.collection === entry.collection && `${candidate.base}_row` === entry.base)) ?? -1;
       const varyingEntry = varyingEntryIndex >= 0 ? entryShape![varyingEntryIndex] : undefined;
       const sharedEntryIndex = varyingEntry
         ? entryShape!.findIndex((entry) =>
@@ -3618,7 +3685,8 @@ function synthesizeMessageBusRoute(
       // semantics. The distinct arm retains its own physical entry slot. Later semantic metadata gates that slot
       // off when one of these equality arms is taken.
       if (fn === resourceShapedHandler && rowIndex !== undefined
-      && entryShape && entryShape.filter((entry) => entry.perRow).length === 1
+      && entryShape && varyingEntry
+      && entryShape.filter((entry) => entry.perRow && entry.collection === varyingEntry.collection).length === 1
       && sharedEntryIndex >= 0 && varyingEntry) {
         const shared = entryShape[sharedEntryIndex].base;
         const varying = `${varyingEntry.base}_r${rowIndex}`;
@@ -3629,7 +3697,13 @@ function synthesizeMessageBusRoute(
           ...Array.from({ length: rowIndex }, (_unused, priorRow) =>
             `${varyingEntry.base}_r${priorRow}`),
         ];
-        let dispatch = invoke(callArgs);
+        const orientedInvoke = (args: string): string => (
+          swappableShared && swappableVarying && resourceSwappedHandlerInvokeName
+            ? `if (${decodedName(swappableShared.inputIndex)} == ${shared}) { ${invoke(args)} } else { `
+              + `${invoke(args, resourceSwappedHandlerInvokeName)} }`
+            : invoke(args)
+        );
+        let dispatch = orientedInvoke(callArgs);
         for (let candidateIndex = prior.length - 1; candidateIndex >= 0; candidateIndex--) {
           const candidate = prior[candidateIndex];
           const aliasedEntryArgs = [...physicalEntryArgs];
@@ -3643,7 +3717,9 @@ function synthesizeMessageBusRoute(
             ? callArgs : [...sourceCallArgs, ...aliasedEntryArgs, ...callerContextArgs].join(', ');
           const selectedInvoke = candidate === shared && resourceSelfAliasHandlerInvokeName
             ? resourceSelfAliasHandlerInvokeName : invokeName;
-          dispatch = `if (${varying} == ${candidate}) { ${invoke(aliasedArgs, selectedInvoke)} } else { ${dispatch} }`;
+          const selectedDispatch = candidate === shared
+            ? invoke(aliasedArgs, selectedInvoke) : orientedInvoke(aliasedArgs);
+          dispatch = `if (${varying} == ${candidate}) { ${selectedDispatch} } else { ${dispatch} }`;
         }
         return `${condition} { ${decode} ${keyChecks} ${outStateBoundaryChecks} ${dispatch}
           require(rowArgs == rowArgs); }`;
@@ -3677,7 +3753,10 @@ function synthesizeMessageBusRoute(
         ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
           `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
         : []));
-  const graphExecutionContext = graphTailHandlers.size > 0;
+  // Outgoing graph edges imply graph execution, but a composed leaf can also receive rows from multiple logical
+  // parents. In that case the caller stream is the only sound source of msg.sender for each row. Keep this
+  // explicit so standalone graph-free batching retains its smaller single-caller route.
+  const graphExecutionContext = graphTailHandlers.size > 0 || !!compilerOptions.messageBusGraphContext;
   const resourceVerificationMode = eligible.some((fn) => {
     const footprint = eligibleFootprint(fn);
     return footprint.reads.length > 0 || footprint.writes.length > 0;
@@ -3932,7 +4011,7 @@ function synthesizeMessageBusRoute(
         require(tx.outputs.length == tx.inputs.length);
         require(cursor + 2 <= callManifest.length);
         bigint rowCount = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
-        require(rowCount <= 24);
+        require(rowCount <= ${ATOMIC_MESSAGE_BUS_MAX_ROWS});
         cursor = cursor + 2;
         bigint consumedLocalRows = 0;
         bigint batchCursor = 7;
@@ -4805,7 +4884,18 @@ function compileResolvedAst(
   // options and iterated low-level calls today and must keep doing so.
   if (messageBusGraphMode
     && (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode === 'required') {
-    validateLowLevelCallShapes(ast.contract);
+    const requestedHandlers = mergedCompilerOptions.messageBusHandlers;
+    if (process.env.SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK === '1') {
+      console.error('message-bus required validation surface', ast.contract.name, requestedHandlers);
+    }
+    if (requestedHandlers === undefined) {
+      validateLowLevelCallShapes(ast.contract);
+    } else {
+      const requested = new Set(requestedHandlers);
+      for (const fn of ast.contract.functions) {
+        if (fn.isEntryPoint && requested.has(fn.name)) validateFunctionLowLevelCallShapes(fn);
+      }
+    }
   }
   const pointerTableBounds = new Map<string, PointerTableExpansion[]>();
   const rolledLoopCeilings: ProvenLoopCeilingMap = new Map<string, number[]>();
@@ -4856,6 +4946,12 @@ function compileResolvedAst(
     }
   }
 
+  // Delegate entries address the co-spent proxy block. Outlined internal helpers address the implementation
+  // input instead, so `onlyOwner` / `_checkInitializing` read the wrong NFT. Force those helpers into the
+  // delegate entry whether the variant came from `autoDelegate` or Solidity initializer inference.
+  const inlineDelegateStateHelpers = (mergedCompilerOptions.autoDelegate ?? false)
+    || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
+
   // Modifier expansion (before semantic analysis)
   ast = expandModifiers(ast);
   validateExpandedSelfdestructs(ast.contract);
@@ -4871,7 +4967,15 @@ function compileResolvedAst(
   // than the count diagnostic the bus loop expansions would produce for it here.
   if (messageBusGraphMode
     && (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode === 'required') {
-    validateLowLevelCallShapes(ast.contract);
+    const requestedHandlers = mergedCompilerOptions.messageBusHandlers;
+    if (requestedHandlers === undefined) {
+      validateLowLevelCallShapes(ast.contract);
+    } else {
+      const requested = new Set(requestedHandlers);
+      for (const fn of ast.contract.functions) {
+        if (fn.isEntryPoint && requested.has(fn.name)) validateFunctionLowLevelCallShapes(fn);
+      }
+    }
   }
 
   // Message-bus synthesis sometimes runs before the main lowering pipeline so collection/effect footprints are
@@ -4919,7 +5023,7 @@ function compileResolvedAst(
   if (mergedCompilerOptions.messageBus) {
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
-      mergedCompilerOptions.autoDelegate ?? false,
+      inlineDelegateStateHelpers,
     )) as Ast;
     ast = ast.accept(new InlineReturningStateHelpers(
       mergedCompilerOptions.solidityImportCompat ?? false,
@@ -4930,7 +5034,7 @@ function compileResolvedAst(
     // delegate variant reads the implementation block rather than the co-spent proxy block.
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
-      mergedCompilerOptions.autoDelegate ?? false,
+      inlineDelegateStateHelpers,
     )) as Ast;
   }
 
@@ -5165,10 +5269,14 @@ function compileResolvedAst(
 
   // Inline void calls to functions taking `storage` reference params; a storage pointer has no value
   // representation, so the callee is substituted into the caller as direct state access.
-  if (!mergedCompilerOptions.messageBus) {
+  // Message-bus compilation already ran this pass before route synthesis. The IRSH above can still
+  // expose scalar state inside a previously context-only void wrapper (`_checkInitializing` after
+  // `_isInitializing()` is reduced). Without a follow-up inline, that wrapper stays an OP_INVOKE
+  // body and a delegate `initialize` re-reads the pre-tx NFT (or INPUTINDEX+1 on the impl).
+  if (!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) {
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
-      mergedCompilerOptions.autoDelegate ?? false,
+      inlineDelegateStateHelpers,
     )) as Ast;
   }
   // A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r=b; }`) is
@@ -5219,6 +5327,10 @@ function compileResolvedAst(
   // A contract/interface-typed external-call target LOCAL declared in a branch (e.g. a `restricted` modifier's
   // if-wrapper) is popped before the epilogue's co-spend verification -> capture it into a function-top local.
   if (needsExternalCallLowering) ast = ast.accept(new CaptureBranchExternalCallTargets()) as Ast;
+  // Capturing branch-local targets introduces compiler-owned `__extcap_` aliases after the first address
+  // synthesis pass. Re-run the idempotent provenance pass so nested Address/SafeERC20 fallbacks trace those
+  // aliases back to the same body-top state/parameter target as their first conditional branch.
+  if (needsExternalCallLowering) ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
   // `L.f()` calls to a state-touching (delegate) library -> a delegatecall against the caller's state (with a
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
   ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
@@ -5495,7 +5607,14 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
-  if (mergedCompilerOptions.autoDelegate) artifact.delegateProxyStateOutputCountPinned = true;
+  // Solidity-compatible upgradeable contracts are marked delegate in the primary compilation pass (the
+  // initializer/reinitializer inference above), rather than through the lazy `autoDelegate` variant. They use
+  // the same pinned delegate covenant and must publish the same certificate; otherwise the SDK keeps the
+  // default proxy's strict output-cardinality check and valid mapping-growing initializers fail at input 0.
+  const hasCompilerDelegate = artifact.abi.some((fn) => fn.modifiers?.includes(FunctionModifier.DELEGATE));
+  if (mergedCompilerOptions.autoDelegate || hasCompilerDelegate) {
+    artifact.delegateProxyStateOutputCountPinned = true;
+  }
   // X149. `artifact.bytecode` IS NOT BYTES. `generateArtifact` publishes it as `scriptToAsm(script)` - the
   // human-readable listing, in which one 1-byte opcode occupies `OP_CHECKSIGVERIFY ` - so `.length / 2` is
   // half a character count and OVERSTATES the script on every contract: 1,332 against a real 283 on a small
@@ -6905,6 +7024,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
     singleAst = singleAst.accept(new CaptureBranchExternalCallTargets()) as Ast;
+    singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle(
       compilerOptions.solidityImportCompat ?? false,
     )) as Ast;

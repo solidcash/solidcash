@@ -525,7 +525,8 @@ function graftDefaultProxy(impl: Artifact): Artifact {
   // one yields a well-formed script whose ONLY difference is the comparison.
   const strictTail = 'OP_NUMEQUALVERIFY OP_2DROP OP_1';
   const relaxedTail = 'OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
-  const canDelegateCardinality = impl.delegateProxyStateOutputCountPinned === true;
+  const canDelegateCardinality = impl.delegateProxyStateOutputCountPinned === true
+    || impl.abi.some((fn) => fn.modifiers?.includes('delegate'));
   if (canDelegateCardinality && !defaultProxyArtifact.bytecode.endsWith(strictTail)) {
     throw new Error('Built-in proxy covenant shape changed; refusing to derive the delegate-authorized variant.');
   }
@@ -538,6 +539,11 @@ function graftDefaultProxy(impl: Artifact): Artifact {
     }),
     abi,
     stateLayout: { ...impl.stateLayout, constructorInputs: defaultProxyArtifact.stateLayout?.constructorInputs },
+    // The proxy owns the state/category while the pinned implementation executes the delegate route. Publish
+    // that verifier capability on the grafted deployment artifact so genesis mints a verifier branded to the
+    // proxy category; the implementation's own verifier is branded to its executor category and cannot
+    // authenticate a proxy-owned atomic participant.
+    ...(impl.messageBus && { messageBus: impl.messageBus }),
   } as Artifact;
 }
 
@@ -637,6 +643,16 @@ export async function deployProxy<TImpl extends Artifact>(
     const seededState = initializer
       ? (mockInitializerHasEntries ? undefined : mockInitializerState)
       : toInitialState(initialState, implArtifact);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_PROXY_STATE === '1') {
+      console.error('proxy-seeded-state', {
+        contract: implArtifact.contractName,
+        initializer,
+        owner: seededState?.OwnableStorage___owner instanceof Uint8Array
+          ? binToHex(seededState.OwnableStorage___owner) : seededState?.OwnableStorage___owner,
+        variableCount: Object.keys(seededState ?? {}).length,
+      });
+    }
 
     // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
     const implementation = await delegateFactory.deploy({
@@ -669,6 +685,15 @@ export async function deployProxy<TImpl extends Artifact>(
           ...proxyOverrides, initialState: seededState, logicalNonce: false, logicalIdentity,
         });
       shape = { name: '__forward', mode: 'baked' };
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_PROXY_STATE === '1') {
+      const deployedState = await proxy.getState();
+      console.error('proxy-deployed-state', {
+        contract: implArtifact.contractName,
+        owner: deployedState.OwnableStorage___owner instanceof Uint8Array
+          ? binToHex(deployedState.OwnableStorage___owner) : deployedState.OwnableStorage___owner,
+      });
     }
 
     const handle = wrapDispatch(new ProxyContract<TImpl>(proxy, implementation, shape, auth, runner));

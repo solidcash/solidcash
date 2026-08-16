@@ -9,8 +9,8 @@ import {
   StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions,
 } from './StatefulContract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { addressToLockScript, getNetworkPrefix } from '../utils.js';
-import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress } from './logical-identity.js';
+import { getNetworkPrefix } from '../utils.js';
+import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } from './logical-identity.js';
 import { registerDeployment } from './deployment-registry.js';
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */
@@ -134,9 +134,13 @@ export async function fanOutPlainUtxos(
   const current = plain(await signer.getUtxos());
   if (current.length >= needed) return current;
 
-  const fee = 1000n;
   const perOutput = 5000n;
   const missing = needed - current.length;
+  // One P2PKH input is ~148 bytes and each P2PKH output is ~34 bytes. A fixed 1000-satoshi fee stops meeting
+  // the 1 sat/byte relay floor once a wide compiler-authored block needs a few dozen positional funders. Keep a
+  // conservative linear margin (including compact-size growth and signature variance) without tying this helper
+  // to mock-provider internals.
+  const fee = BigInt(Math.max(1000, 250 + 40 * (missing + 1)));
   // Spend the largest coin only; splitting several would consume the very outpoints the caller still needs.
   const [largest] = [...current].sort((a, b) => (b.satoshis > a.satoshis ? 1 : -1));
   if (!largest || largest.satoshis < perOutput * BigInt(missing + 1) + fee) return undefined;
@@ -267,7 +271,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
     let result: Awaited<ReturnType<typeof StatefulContract.deploy<T>>>;
     try {
       const identityAnchors = overrides.identityAnchors ?? (logicalAddress ? [{
-        to: addressToLockScript(logicalAddress),
+        to: logicalAddress,
         commitment: buildLogicalIdentityCommitment(
           logicalIdentity!.deployer, logicalIdentity!.nonce,
           // Must mirror the DEPLOYED contract's options exactly, `salt` included: the anchor commits to an
@@ -300,7 +304,27 @@ export class ContractFactory<T extends Artifact = Artifact> {
     }
 
     const contract = result.contract as DeployedContract<T>;
-    if (logicalAddress) (contract as StatefulContract)._logicalAddress = logicalAddress;
+    if (logicalAddress) {
+      (contract as StatefulContract)._logicalAddress = logicalAddress;
+      try {
+        const identity = await resolveLogicalIdentity(provider, logicalAddress);
+        if (identity.categoryId !== contract.categoryId) {
+          throw new Error(
+            `Logical identity at ${logicalAddress} binds category ${identity.categoryId}, `
+            + `not the deployed category ${contract.categoryId}.`,
+          );
+        }
+      } catch (error) {
+        const utxos = await provider.getUtxos(logicalAddress);
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `ContractFactory.deploy(${this.artifact.contractName}) did not leave exactly one authenticated `
+          + `SCID identity UTXO at getAddress() ${logicalAddress}: ${detail} `
+          + `(found ${utxos.length} UTXO(s): `
+          + `${utxos.map((utxo) => `${utxo.token?.nft?.capability ?? 'none'}:${(utxo.token?.nft?.commitment ?? '').slice(0, 16)}`).join(',') || 'none'})`,
+        );
+      }
+    }
     // ethers parity: `factory.deploy()` returns a contract CONNECTED to the factory's signer, so a call on it
     // needs no explicit `.connect(signer)`. Without `_signer` the builder computed `neededFunders` correctly and
     // then skipped provisioning them, because that whole block is gated on a signer being present. Nothing

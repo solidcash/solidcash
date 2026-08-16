@@ -568,11 +568,22 @@ class Assertion {
     const maximumInputBytes = (this.actual as any)?.parentContract?.inner?.provider
       ?.consensusLimits?.maximumInputBytes ?? 10_000;
     const relaxed = maximumInputBytes > 10_000;
-    if (!this.negate && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))) {
+    const isConstructionFailure = (error: unknown): boolean => {
+      const message = String((error as { message?: unknown })?.message ?? error);
+      return /Cannot send stateful transaction|could not be auto-derived|state commitments could not/i
+        .test(message);
+    };
+    const viewRead = this.actual?.parentContract?.inner?.artifact?.abi
+      ?.find((fn: { name?: string; writesState?: boolean }) => fn.name === this.actual?.functionName)
+      ?.writesState === false;
+    if (!this.negate && !viewRead && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))) {
       const result = typeof this.actual?.send === 'function' ? this.actual.send() : this.actual;
       return Promise.resolve(result).then(
         () => { throw new Error(`expected transaction to revert with ${String(reason)}, but it succeeded`); },
-        () => undefined,
+        (error) => {
+          // A failed layout/derivation is not the Solidity require named in the assertion.
+          if (isConstructionFailure(error)) throw error;
+        },
       );
     }
     const e = ensureVitest();

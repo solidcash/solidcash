@@ -465,6 +465,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     source?: 'argument' | 'msgSender' | 'expression';
     expressionLabel?: string;
     perRow?: boolean;
+    /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
+    swappable?: boolean;
   }[];
 
   /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */

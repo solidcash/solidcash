@@ -19,6 +19,19 @@ describe('message-bus compilation selection', () => {
     const artifact = compileString(STATEFUL_LEAF, { messageBus: true });
     expect(artifact.messageBus).toBeDefined();
     expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.route.inputs.some((input) => input.name === '__internal__graphCallers'))
+      .toBe(false);
+  });
+
+  it('can bind a graph-free leaf participant to per-row logical callers', () => {
+    const artifact = compileString(STATEFUL_LEAF, {
+      messageBus: true,
+      messageBusGraphContext: true,
+    });
+    expect(artifact.messageBus?.route.inputs.some((input) => input.name === '__internal__graphCallers'))
+      .toBe(true);
+    expect(artifact.messageBus?.verifierProgram?.inputs
+      .some((input) => input.name === 'suppliedCallers')).toBe(true);
   });
 
   // Explicit true is a request, not an assertion: it opts out of graph-edge narrowing but keeps the direct-only

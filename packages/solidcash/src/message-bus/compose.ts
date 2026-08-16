@@ -3,6 +3,7 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, scriptToBytecode,
   MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256,
 } from '@solidcash/utils';
+import type { Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type {
   ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
@@ -30,18 +31,67 @@ export interface AtomicMessageBusFunder {
 
 export interface ComposeAtomicMessageBusOptions {
   /** Root call followed by the concrete calls reached in compiler-authored depth-first order. */
-  calls: readonly StatefulFunctionCall[];
+  calls?: readonly StatefulFunctionCall[];
+  /** @internal Resolved calls used by transparent SDK graph promotion. */
+  preparedCalls?: readonly PreparedAtomicMessageBusCall[];
   /** The one ordinary fee input. Its unlocker signs only after the messageEnvelope and all blocks are final. */
   funder: AtomicMessageBusFunder | UnlockableUtxo;
   changeAddress: string | Uint8Array;
   feeRate?: number;
 }
 
-interface CallDescriptor {
+export interface PreparedAtomicMessageBusCall {
   contract: StatefulContract;
   functionName: string;
   args: readonly FunctionArgument[];
+  /** Delegate route artifact executed against `contract`'s state/category. */
+  executionArtifact?: Artifact;
+  /** Pinned delegate executor co-spent inside this participant's block. */
+  executor?: StatefulContract;
 }
+
+interface CallDescriptor extends PreparedAtomicMessageBusCall {
+  artifact: Artifact;
+}
+
+const delegateParticipantArtifacts = new WeakMap<Artifact, Map<number, Artifact>>();
+
+/** Add the proxy-specific implementation input to compiler-authored delegate route geometry. */
+const delegateParticipantArtifact = (artifact: Artifact, identityAnchorCount: number): Artifact => {
+  const cached = delegateParticipantArtifacts.get(artifact)?.get(identityAnchorCount);
+  if (cached) return cached;
+  const capability = artifact.messageBus;
+  const layout = capability?.route.blockLayout;
+  if (!capability || !layout) throw new Error('messageBus: delegate route publishes no block layout');
+  if (layout.slots.some((slot) => slot.kind === 'lowLevelCall')) return artifact;
+  // The implementation executor and optional identity anchors follow the compiler-owned route block. Preserve
+  // that block's bounded runtime-resource region: moving trailingBase to the executor loses every route chunk.
+  const executorOffset = layout.blockSize;
+  const slots = [
+    ...layout.slots,
+    { kind: 'lowLevelCall' as const, offset: executorOffset, slotIndex: 0 },
+  ];
+  const blockSize = layout.blockSize + 1 + identityAnchorCount;
+  const effective = {
+    ...artifact,
+    messageBus: {
+      ...capability,
+      route: {
+        ...capability.route,
+        blockLayout: {
+          ...layout,
+          blockSize,
+          slots,
+          fixedSuffix: 1 + identityAnchorCount,
+        },
+      },
+    },
+  } as Artifact;
+  const variants = delegateParticipantArtifacts.get(artifact) ?? new Map<number, Artifact>();
+  variants.set(identityAnchorCount, effective);
+  delegateParticipantArtifacts.set(artifact, variants);
+  return effective;
+};
 
 const funderUtxo = (funder: AtomicMessageBusFunder | UnlockableUtxo): UnlockableUtxo =>
   ('utxo' in funder ? { ...funder.utxo, unlocker: funder.unlocker } : funder);
@@ -50,8 +100,16 @@ const participantOf = (
   descriptor: CallDescriptor,
   unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
 ): WorklistParticipant => ({
-  artifact: descriptor.contract.inner.artifact,
+  artifact: descriptor.executor
+    ? delegateParticipantArtifact(descriptor.artifact, (() => {
+      const logical = descriptor.contract._logicalAddress;
+      return logical && binToHex(addressToLockScript(logical)) !== descriptor.contract.inner.lockingBytecode ? 1 : 0;
+    })()) : descriptor.artifact,
   lockingBytecode: descriptor.contract.inner.lockingBytecode,
+  ...(descriptor.executor && {
+    executionKind: 'delegate' as const,
+    executorLockingBytecode: descriptor.executor.inner.lockingBytecode,
+  }),
   constructorArgs: descriptor.contract.inner.constructorArgs as FunctionArgument[],
   ...(Object.keys(unboundRouteWitnesses).length > 0 && { unboundRouteWitnesses }),
 });
@@ -107,6 +165,11 @@ const graphRouteContext = (
     __internal__graphSettlementBoundary: BigInt(execution.settlementBoundary),
     __internal__graphCompletionPositions: concat(...completions),
     __internal__graphSettlementTable: concat(...settlementTable),
+    ...(execution.executionKind === 1 ? {
+      // The delegate route executes against the owner block rooted at this participant's physical master. The
+      // distinct implementation executor is pinned by executorOffset; it is not the state/master identity.
+      __internal__proxyMasterIndex: BigInt(finalized.layout.participantInputs[participant]),
+    } : {}),
     ...(blockhashSlot !== undefined && blockhashParameter !== undefined ? {
       [blockhashParameter]: BigInt(finalized.layout.participantInputs[participant] + blockhashSlot.offset),
     } : {}),
@@ -118,10 +181,18 @@ export class AtomicMessageBusComposition {
   public constructor(private readonly options: ComposeAtomicMessageBusOptions) {}
 
   private async _build(): Promise<TransactionBuilder> {
-    if (this.options.calls.length < 2) {
+    const descriptors: CallDescriptor[] = this.options.preparedCalls
+      ? this.options.preparedCalls.map((call) => ({
+        ...call,
+        artifact: call.executionArtifact ?? call.contract.inner.artifact,
+      }))
+      : (this.options.calls ?? []).map((call) => {
+        const descriptor = call._messageBusCompositionDescriptor();
+        return { ...descriptor, artifact: descriptor.contract.inner.artifact };
+      });
+    if (descriptors.length < 2) {
       throw new Error('messageBus: atomic composition requires at least two prepared calls');
     }
-    const descriptors = this.options.calls.map((call) => call._messageBusCompositionDescriptor());
     const feeFunder = funderUtxo(this.options.funder);
     const rootCaller = feeFunder.unlocker.generateLockingBytecode();
     if (rootCaller.length !== 25 || rootCaller[0] !== 0x76 || rootCaller[1] !== 0xa9
@@ -145,7 +216,7 @@ export class AtomicMessageBusComposition {
       return pending;
     };
     const descriptorWitnesses = await Promise.all(descriptors.map(async (descriptor) => {
-      const artifact = descriptor.contract.inner.artifact;
+      const artifact = descriptor.artifact;
       const handler = artifact.messageBus?.handlers.find((candidate) =>
         candidate.name === descriptor.functionName);
       const expressionBindings = handler?.batchKeyWitnesses?.filter((binding) =>
@@ -189,7 +260,7 @@ export class AtomicMessageBusComposition {
       const row = ownerRows.get(owner) ?? 0;
       ownerRows.set(owner, row + 1);
       const aggregate = ownerWitnesses.get(owner) ?? {};
-      const handler = descriptor.contract.inner.artifact.messageBus?.handlers.find((candidate) =>
+      const handler = descriptor.artifact.messageBus?.handlers.find((candidate) =>
         candidate.name === descriptor.functionName);
       for (const binding of handler?.batchKeyWitnesses?.filter((candidate) =>
         candidate.source === 'expression') ?? []) {
@@ -204,6 +275,36 @@ export class AtomicMessageBusComposition {
       }
       ownerWitnesses.set(owner, aggregate);
     });
+    // Fully-unrolled resource routes publish key positions for their maximum row width. Rows which select a
+    // sibling handler do not bind those positions, but the balanced route still needs a typed, collision-free
+    // absent-key probe. These values are compiler-inactive: an active binding always overrides them, and the
+    // route gates their entry slots off. Keep strict encodeMessageBatch callers explicit; only the compiler-DAG
+    // composer derives these deterministic fillers.
+    const filler = (name: string, type: string): FunctionArgument => {
+      const digest = sha256(new TextEncoder().encode(`SolidCash message-bus inactive key\0${name}`));
+      if (type === 'address' || type === 'address payable') {
+        return new Uint8Array([0xaa, 0x20, ...digest, 0x87]);
+      }
+      const bytes = /^bytes(\d+)$/.exec(type);
+      if (bytes) return digest.slice(0, Number(bytes[1]));
+      if (type === 'bytes') return digest;
+      if (type === 'string') return `__solidcash_inactive_${binToHex(digest)}`;
+      if (type === 'bool') return (digest[0] & 1) === 1;
+      if (/^(u?int\d*|bigint)$/.test(type)) {
+        return digest.slice(0, 8).reduce((value, byte, index) =>
+          value | (BigInt(byte) << BigInt(index * 8)), 0n);
+      }
+      throw new Error(`messageBus: cannot derive an inactive route witness of type '${type}'`);
+    };
+    for (const descriptor of descriptors) {
+      const owner = descriptor.contract.inner.lockingBytecode.toLowerCase();
+      const aggregate = ownerWitnesses.get(owner) ?? {};
+      for (const input of descriptor.artifact.messageBus?.route.inputs ?? []) {
+        if (!/^__message_bus_key_.*_r\d+$/.test(input.name) || aggregate[input.name] !== undefined) continue;
+        aggregate[input.name] = filler(`${owner}:${input.name}`, input.type);
+      }
+      ownerWitnesses.set(owner, aggregate);
+    }
     const workParticipants = descriptors.map((descriptor) => participantOf(
       descriptor,
       Object.freeze(ownerWitnesses.get(descriptor.contract.inner.lockingBytecode.toLowerCase()) ?? {}),
@@ -229,8 +330,21 @@ export class AtomicMessageBusComposition {
           throw new Error(`messageBus: compiler omitted occurrence metadata for callsite ${callsiteId}`);
         }
         const maximum = callsite.maximumOccurrences ?? (kind === 'conditional' ? 1 : 0);
+        // Compiler-authored raw edges retain `functionName: __raw__` and publish the decoded concrete selector
+        // separately. Prepared calls use that concrete function name, so occurrence matching must do the same.
         let count = 0;
-        while (count < maximum && descriptors[next + count]?.functionName === callsite.functionName) count += 1;
+        while (count < maximum) {
+          const reached = descriptors[next + count];
+          if (!reached) break;
+          const matches = callsite.rawFunctionName
+            ? reached.functionName === callsite.rawFunctionName
+            : callsite.rawSelector
+              ? reached.artifact.abi.find((candidate) => candidate.name === reached.functionName)
+                ?.selector?.toLowerCase() === callsite.rawSelector.toLowerCase()
+              : reached.functionName === callsite.functionName;
+          if (!matches) break;
+          count += 1;
+        }
         return count;
       },
       expressionArgument: ({ callsiteId, argument }) => {
@@ -272,7 +386,7 @@ export class AtomicMessageBusComposition {
           + `expected '${invocation.function}'`,
         );
       }
-      const handler = supplied.contract.inner.artifact.messageBus?.handlers.find((candidate) =>
+      const handler = supplied.artifact.messageBus?.handlers.find((candidate) =>
         candidate.name === supplied.functionName);
       const validationWitnesses = Object.fromEntries((handler?.batchKeyWitnesses ?? [])
         .filter((binding) => binding.source === 'expression')
@@ -280,13 +394,18 @@ export class AtomicMessageBusComposition {
           binding.perRow ? `${binding.routeInput}_r0` : binding.routeInput,
           descriptorWitnesses[index][binding.routeInput],
         ]).filter((entry): entry is [string, FunctionArgument] => entry[1] !== undefined));
-      const suppliedRow = encodeMessageBatch(supplied.contract.inner.artifact, [{
+      const participantExecution = plan.participants[invocation.callee];
+      const plannedWitnesses = Object.fromEntries(participantExecution.routeInputs
+        .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'))
+        .map((input, witnessIndex) => [input.name, participantExecution.batch.routeWitnesses[witnessIndex]]));
+      const suppliedRow = encodeMessageBatch(supplied.artifact, [{
         function: supplied.functionName,
         args: supplied.args,
         callMode: invocation.callMode,
+        ...(invocation.caller !== null && handler?.usesMsgValue && { msgValue: 0n }),
         logicalCaller: invocation.caller === null
           ? rootCaller : hexToBin(plan.participants[invocation.caller].lockingBytecode),
-      }], validationWitnesses).rows[0];
+      }], { ...plannedWitnesses, ...validationWitnesses }).rows[0];
       if (suppliedRow.argsHex !== invocation.argsHex) {
         throw new Error(
           `messageBus: prepared call ${index} arguments disagree with compiler-derived invocation arguments`,
@@ -294,8 +413,11 @@ export class AtomicMessageBusComposition {
       }
     });
     const byLockingBytecode = new Map<string, StatefulContract>();
+    const descriptorByLockingBytecode = new Map<string, CallDescriptor>();
     for (const descriptor of descriptors) {
-      byLockingBytecode.set(descriptor.contract.inner.lockingBytecode.toLowerCase(), descriptor.contract);
+      const lockingBytecode = descriptor.contract.inner.lockingBytecode.toLowerCase();
+      byLockingBytecode.set(lockingBytecode, descriptor.contract);
+      descriptorByLockingBytecode.set(lockingBytecode, descriptor);
     }
     const categories = plan.participants.map((participant) => {
       const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase());
@@ -363,17 +485,27 @@ export class AtomicMessageBusComposition {
     const assemble = async (
       graph: ReturnType<typeof finalizeAtomicInvocationGraph>,
       results: Readonly<Record<number, string>>,
-    ): Promise<{ builder: TransactionBuilder; actualSizes: readonly number[] }> => {
+    ): Promise<{
+      builder: TransactionBuilder;
+      actualSizes: readonly number[];
+      incompleteDynamicChunks: readonly {
+        participant: number; variable: string; resolved: number; total: number;
+      }[];
+    }> => {
       // Resource delete rows authorize exact NFT disappearance at participant-owned slots; the generated
       // covenants still reject any unlisted burn through endpoint cardinality and commitment checks.
       const aggregate = new TransactionBuilder({
         provider, allowImplicitNftBurn: true, skipAutomaticCoSpends: true,
       });
       const actualSizes: number[] = [];
-      const stateInputUnlockers: ContractUnlocker[] = [];
+      const incompleteDynamicChunks: Array<{
+        participant: number; variable: string; resolved: number; total: number;
+      }> = [];
+      const aggregateOutpoints = new Map<string, { participant: number; localIndex: number }>();
 
       for (const participant of plan.participants) {
         const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+        const descriptor = descriptorByLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
         const blockSize = participant.blockLayout!.blockSize;
         const returnBlob = participantReturnBlob(participant.participant, results);
         const localCall = contract._batchRaw(
@@ -384,6 +516,7 @@ export class AtomicMessageBusComposition {
           returnBlob !== undefined,
           returnBlob,
           true,
+          descriptor.executor ? { artifact: descriptor.artifact, executor: descriptor.executor } : undefined,
         );
         // A participant probe is built in isolation while its covenant addresses outputs in the final graph's
         // absolute coordinate space. Forward/literal BCH transfers are already compiler-authenticated in the
@@ -412,6 +545,26 @@ export class AtomicMessageBusComposition {
           }
         }
         const local = await localCall.build();
+        const localIncomplete = (local as TransactionBuilder & {
+          __messageBusIncompleteDynamicChunks?: readonly {
+            variable: string; resolved: number; total: number;
+          }[];
+        }).__messageBusIncompleteDynamicChunks ?? [];
+        for (const variable of localIncomplete) {
+          incompleteDynamicChunks.push({
+            participant: participant.participant,
+            ...variable,
+          });
+        }
+        if (participant.executionKind === 1 && participant.executorOffset !== null) {
+          const executorInput = local.inputs[participant.executorOffset];
+          if (!executorInput) throw new Error('messageBus: delegate executor input is absent from its published slot');
+          local.outputs[participant.executorOffset] = {
+            to: executorInput.unlocker.generateLockingBytecode(),
+            amount: executorInput.satoshis,
+            ...(executorInput.token && { token: executorInput.token }),
+          };
+        }
         aggregate.locktime = Math.max(aggregate.locktime, local.locktime);
         while (local.outputs.length < blockSize && local.outputs.length < local.inputs.length) {
           const input = local.inputs[local.outputs.length];
@@ -421,12 +574,31 @@ export class AtomicMessageBusComposition {
           });
         }
         if (local.inputs.length !== blockSize || local.outputs.length !== blockSize) {
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+            console.error('atomic-local-block-mismatch', {
+              participant: participant.participant,
+              executionKind: participant.executionKind,
+              expected: blockSize,
+              layout: participant.blockLayout,
+              inputs: local.inputs.map((input, index) => ({
+                index, lockingBytecode: binToHex(input.unlocker.generateLockingBytecode()),
+                category: input.token?.category, commitment: input.token?.nft?.commitment,
+              })),
+              outputs: local.outputs.map((output, index) => ({
+                index, lockingBytecode: binToHex(typeof output.to === 'string'
+                  ? addressToLockScript(output.to) : output.to),
+                category: output.token?.category, commitment: output.token?.nft?.commitment,
+              })),
+            });
+          }
           throw new Error(
             `messageBus: participant ${participant.participant} built ${local.inputs.length}/${local.outputs.length} `
             + `slots, expected balanced block size ${blockSize}`,
           );
         }
-        const fixedSize = participant.blockLayout!.trailingBase ?? blockSize;
+        const fixedSize = participant.blockLayout!.fixedSuffix
+          ? blockSize : participant.blockLayout!.trailingBase ?? blockSize;
         let actualSize = blockSize;
         while (actualSize > fixedSize) {
           const input = local.inputs[actualSize - 1];
@@ -444,7 +616,6 @@ export class AtomicMessageBusComposition {
         const stateInputUnlocker = local.inputs[0].unlocker as Unlocker & {
           abiFunction?: { blockLayout?: NonNullable<typeof participant.blockLayout> };
         };
-        stateInputUnlockers[participant.participant] = local.inputs[0].unlocker as ContractUnlocker;
         if (stateInputUnlocker.abiFunction?.blockLayout !== undefined) {
           stateInputUnlocker.abiFunction = {
             ...stateInputUnlocker.abiFunction,
@@ -457,6 +628,20 @@ export class AtomicMessageBusComposition {
           };
         }
         actualSizes.push(actualSize);
+        for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
+          const input = local.inputs[localIndex];
+          const outpoint = `${input.txid.toLowerCase()}:${input.vout}`;
+          const prior = aggregateOutpoints.get(outpoint);
+          if (prior && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+            console.error('atomic-participant-input-collision', {
+              outpoint, participant: participant.participant, localIndex, prior,
+              blockBase: graph.layout.participantInputs[participant.participant],
+              lockingBytecode: binToHex(input.unlocker.generateLockingBytecode()),
+            });
+          }
+          aggregateOutpoints.set(outpoint, { participant: participant.participant, localIndex });
+        }
         aggregate.addInputs(local.inputs);
         aggregate.addOutputs(local.outputs as Output[]);
       }
@@ -464,7 +649,7 @@ export class AtomicMessageBusComposition {
       const spansMatch = actualSizes.every(
         (size, participant) => size === graph.callManifest.participants[participant].actualSize,
       );
-      if (!spansMatch) return { builder: aggregate, actualSizes };
+      if (!spansMatch) return { builder: aggregate, actualSizes, incompleteDynamicChunks };
 
       const verifierDomain = binToHex(MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN);
       const messageEnvelope = encodeAtomicMessageEnvelope(graph.callManifest);
@@ -484,9 +669,11 @@ export class AtomicMessageBusComposition {
             + 'deploy with messageBusVerificationInputCount >= 1',
           );
         }
-        const stateInputUnlocker = stateInputUnlockers[participant.participant];
-        const verifierProgram = contract.inner.artifact.messageBus!.verifierProgram!;
-        const batchBlob = stateInputUnlocker.params[0] as Uint8Array;
+        const verifierProgram = participant.artifact.messageBus!.verifierProgram!;
+        // A direct route carries the blob in master param 0, but a proxy master carries only the forwarded
+        // selector while its implementation unlocker owns the route arguments. The compiler-planned participant
+        // batch is the common canonical source used to build either shape and is what the verifier must bind.
+        const batchBlob = participant.batch.blob;
         const routeContext = graphRouteContext(graph, participant.participant);
         const verifierGraphArgumentNames = [
           '__internal__graphFixedSize', '__internal__graphBlockSize', '__internal__graphEmissions',
@@ -547,7 +734,7 @@ export class AtomicMessageBusComposition {
           + `(${aggregate.inputs.length} inputs, ${aggregate.outputs.length} outputs)`,
         );
       }
-      return { builder: aggregate, actualSizes };
+      return { builder: aggregate, actualSizes, incompleteDynamicChunks };
     };
     const admit = (builder: TransactionBuilder): TransactionBuilder => {
       preflightMessageBusTransaction(builder);
@@ -766,10 +953,16 @@ export class AtomicMessageBusComposition {
           const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
           if (!returnSlot) throw new Error(`messageBus: returning participant ${participant.participant} has no return slot`);
           const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+          const participantBase = finalized.layout.participantInputs[participant.participant];
+          // A proxy master only pins and invokes its co-spent implementation. The implementation input executes
+          // the message-bus route and publishes the return commitment, so probe that input for delegate owners.
+          const executionInput = participant.executionKind === 1 && participant.executorOffset !== null
+            ? participantBase + participant.executorOffset
+            : participantBase;
           const blob = contract._messageBusReturnBlobFromTransaction(
             provisional,
-            finalized.layout.participantInputs[participant.participant] + returnSlot.offset,
-            finalized.layout.participantInputs[participant.participant],
+            participantBase + returnSlot.offset,
+            executionInput,
           );
           if (!blob) throw new Error(`messageBus: participant ${participant.participant} did not expose its return vector`);
           const outer = decodePushdataValue(blob, 0, 'bytes');
@@ -814,7 +1007,14 @@ export class AtomicMessageBusComposition {
           if (derivedResults[invocation.index] !== claimedResults[invocation.index]) stable = false;
         }
         if (JSON.stringify(derivedEventEffects) !== JSON.stringify(claimedEventEffects)) stable = false;
-        if (stable) return admit(provisional);
+        if (stable) {
+          if (assembled.incompleteDynamicChunks.length > 0) {
+            const detail = assembled.incompleteDynamicChunks.map((item) =>
+              `${item.participant}:${item.variable} (${item.resolved}/${item.total})`).join(', ');
+            throw new Error(`messageBus: stable graph retains incomplete dynamic chunks: ${detail}`);
+          }
+          return admit(provisional);
+        }
         claimedResults = derivedResults;
         claimedEventEffects = derivedEventEffects;
         claimedResourceEffects = derivedResourceEffects;
@@ -836,6 +1036,11 @@ export class AtomicMessageBusComposition {
         throw new Error('messageBus: participant spans did not converge after compact assembly');
       }
     }
+    if (assembled.incompleteDynamicChunks.length > 0) {
+      const detail = assembled.incompleteDynamicChunks.map((item) =>
+        `${item.participant}:${item.variable} (${item.resolved}/${item.total})`).join(', ');
+      throw new Error(`messageBus: final graph retains incomplete dynamic chunks: ${detail}`);
+    }
     return admit(assembled.builder);
   }
 
@@ -847,5 +1052,12 @@ export class AtomicMessageBusComposition {
 
 export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageBusComposition {
   // Snapshot the caller-owned array so later mutation cannot alter the graph between compose() and send().
-  return new AtomicMessageBusComposition({ ...options, calls: Object.freeze([...options.calls]) });
+  if (!options.calls && !options.preparedCalls) {
+    throw new Error('messageBus: composition requires calls or preparedCalls');
+  }
+  return new AtomicMessageBusComposition({
+    ...options,
+    ...(options.calls && { calls: Object.freeze([...options.calls]) }),
+    ...(options.preparedCalls && { preparedCalls: Object.freeze([...options.preparedCalls]) }),
+  });
 }

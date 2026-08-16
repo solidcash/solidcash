@@ -1,4 +1,6 @@
+import { binToHex } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { addressToLockScript } from '../utils.js';
 
 export interface RegisteredDeployment {
   contractName: string;
@@ -59,6 +61,16 @@ export function findDeploymentByAddress(
   for (let index = current.length - 1; index >= 0; index--) {
     if (current[index].address === addr) return current[index];
   }
+  // Token-aware and non-token cashaddrs share a lock script; string equality misses that pair.
+  try {
+    const wanted = binToHex(addressToLockScript(addr));
+    for (let index = current.length - 1; index >= 0; index--) {
+      const registered = current[index].address ?? '';
+      try {
+        if (binToHex(addressToLockScript(registered)) === wanted) return current[index];
+      } catch { /* not a cashaddr */ }
+    }
+  } catch { /* keep the string fallback below */ }
   // Fuzzy: cashaddr prefix variants / trailing payload match (MistSwap MasterChef lp.address forms).
   if (addr.length > 12) {
     const tail = addr.slice(-20);

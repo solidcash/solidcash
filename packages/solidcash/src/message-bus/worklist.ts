@@ -141,7 +141,8 @@ const resolveArguments = (
     return value;
   }
   if (source.kind === 'literal') return literal(source);
-  if (source.kind === 'expression') {
+  if (source.kind === 'selfAddress') return hexToBin(sourceParticipant.lockingBytecode);
+  if (source.kind === 'expression' || source.kind === 'msgSender' || source.kind === 'arrayElement') {
     const value = expressionArgument?.({
       participant: sourceParticipant,
       function: functionName,
@@ -344,13 +345,27 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           && call.minimumOccurrences !== undefined
           && call.minimumOccurrences === call.maximumOccurrences
           && call.minimumOccurrences >= 1 && call.minimumOccurrences <= 24;
-        if (occurrence !== 'once' && !boundedLiteralLoop) {
+        const boundedConditional = occurrence === 'conditional'
+          && (call.maximumOccurrences ?? 1) === 1;
+        if (occurrence !== 'once' && !boundedLiteralLoop && !boundedConditional) {
           throw new Error(
             `messageBus: raw callsite ${call.callsiteId} is ${call.occurrence} and has no bounded occurrence proof; `
             + 'iterated low-level calls are not an admitted graph edge',
           );
         }
-        const count = boundedLiteralLoop ? call.minimumOccurrences! : 1;
+        const count = occurrence === 'once' ? 1
+          : boundedLiteralLoop ? call.minimumOccurrences!
+            : options.occurrence?.({
+              participant,
+              function: functionName,
+              invocation,
+              callsiteId: call.callsiteId!,
+              kind: 'conditional',
+            }) ?? -1;
+        if (!Number.isInteger(count) || count < 0) {
+          throw new Error(`messageBus: raw callsite ${call.callsiteId} lacks a valid ${occurrence} occurrence proof`);
+        }
+        if (boundedConditional) assertPlannedOccurrenceCount(call, count);
         for (let reached = 0; reached < count; reached += 1) {
           const resolved = options.dynamicCall?.({
             participant,
@@ -367,12 +382,6 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           if (!targetFunction.selector) {
             throw new Error(`messageBus: raw callsite ${call.callsiteId} resolved to a selectorless function`);
           }
-          const payload = resolveArguments(
-            participant, args, call, functionName, invocation, reached, options.expressionArgument,
-          )[0];
-          if (!(payload instanceof Uint8Array)) {
-            throw new Error(`messageBus: raw callsite ${call.callsiteId} calldata is not bytes`);
-          }
           const structs = resolved.participant.artifact.structs
           ?? resolved.participant.artifact.stateLayout?.structs;
           if (resolved.args.length !== targetFunction.inputs.filter((input) =>
@@ -388,20 +397,52 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             ...hexToBin(targetFunction.selector),
             ...scriptToBytecode(encoded as Uint8Array[]),
           ]);
-          if (binToHex(canonicalPayload) !== binToHex(payload)) {
-            throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded calldata is not canonical`);
+          const decodedShape = call.rawArgSources && (call.rawFunctionName || call.rawSelector);
+          if (decodedShape) {
+            if (call.rawFunctionName && resolved.function !== call.rawFunctionName) {
+              throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded function disagrees with source`);
+            }
+            if (call.rawSelector && targetFunction.selector.toLowerCase() !== call.rawSelector.toLowerCase()) {
+              throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded selector disagrees with source`);
+            }
+            const expectedArgs = resolveArguments(
+              participant, args, { ...call, argSources: call.rawArgSources }, functionName,
+              invocation, reached, options.expressionArgument,
+            );
+            const expectedEncoded = expectedArgs.map((argument, index) =>
+              encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
+            if (expectedEncoded.length !== encoded.length
+              || expectedEncoded.some((argument, index) => {
+                const actual = encoded[index];
+                return !(argument instanceof Uint8Array) || !(actual instanceof Uint8Array)
+                  || binToHex(argument) !== binToHex(actual);
+              })) {
+              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+                console.error('atomic-raw-argument-mismatch', {
+                  callsiteId: call.callsiteId,
+                  resolvedFunction: resolved.function,
+                  expectedArgs,
+                  resolvedArgs: resolved.args,
+                  rawArgSources: call.rawArgSources,
+                });
+              }
+              throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded arguments disagree with source`);
+            }
+          } else {
+            const payload = resolveArguments(
+              participant, args, call, functionName, invocation, reached, options.expressionArgument,
+            )[0];
+            if (!(payload instanceof Uint8Array)) {
+              throw new Error(`messageBus: raw callsite ${call.callsiteId} calldata is not bytes`);
+            }
+            if (binToHex(canonicalPayload) !== binToHex(payload)) {
+              throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded calldata is not canonical`);
+            }
           }
-          const targetName = call.addressParam ?? call.loopArrayVar;
-          const targetInput = fn.inputs.findIndex((input) => input.name === targetName);
-          const targetArgument = targetInput >= 0 ? args[targetInput] : undefined;
-          const targetValue = call.loopArrayVar && Array.isArray(targetArgument)
-            ? targetArgument[reached] : targetArgument;
-          const encodedTarget = targetValue === undefined
-            ? undefined : encodeFunctionArgument(targetValue, 'address', structs);
-          if (!(encodedTarget instanceof Uint8Array)
-          || binToHex(encodedTarget) !== resolved.participant.lockingBytecode.toLowerCase()) {
-            throw new Error(`messageBus: raw callsite ${call.callsiteId} target proof disagrees with calldata owner`);
-          }
+          // A visible forwarded address is checked here. State/expression-derived targets intentionally have no
+          // public ABI argument; their compiler-emitted graph projection binds the concrete owner on-chain.
+          assertForwardedTarget(participant, fn, args, call, resolved.participant, reached);
           expand(
             resolved.participant,
             resolved.function,

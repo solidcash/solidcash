@@ -143,6 +143,57 @@ export function encodeMessageBatch(
   const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
   const modeVersion = invocations.some((invocation) => invocation.callMode !== undefined);
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
+  const swappableGlobals = new Map<string, { value: FunctionArgument; encoded: Uint8Array; rowBase: string }>();
+  // A resource route has one shared entry and one row-local alternative. The compiler can advertise the two as
+  // swappable, allowing the batch to choose the value common to every relevant row rather than assuming the
+  // source handler's first mapping access is globally shared.
+  const swappableBases = new Set(capability.handlers.flatMap((handler) =>
+    (handler.batchKeyWitnesses ?? []).filter((binding) => binding.swappable && !binding.perRow)
+      .map((binding) => binding.routeInput)));
+  for (const base of swappableBases) {
+    const choices: Array<Array<{ value: FunctionArgument; encoded: Uint8Array }>> = [];
+    let rowBase = `${base}_row`;
+    for (const invocation of invocations) {
+      const handler = capability.handlers.find((candidate) => candidate.name === invocation.function);
+      if (!handler) continue;
+      const bindings = handler.batchKeyWitnesses ?? [];
+      const shared = bindings.find((binding) => binding.routeInput === base);
+      const varying = bindings.find((binding) => binding.swappable && binding.perRow
+        && binding.routeInput === `${base}_row`);
+      const invocationArgs = invocation.args ?? [];
+      const relevant = varying ? [shared, varying] : [shared];
+      const rowChoices = relevant.flatMap((binding) => {
+        if (!binding || binding.source === 'msgSender' || binding.source === 'expression'
+          || binding.inputIndex < 0) return [];
+        const value = invocationArgs[binding.inputIndex];
+        const type = handler.inputs[binding.inputIndex]?.type;
+        if (value === undefined || !type) return [];
+        const encoded = encodeFunctionArgument(value, type, structs);
+        return encoded instanceof Uint8Array ? [{ value, encoded }] : [];
+      });
+      if (rowChoices.length > 0) choices.push(rowChoices);
+      if (varying) rowBase = varying.routeInput;
+    }
+    const suppliedValue = unboundRouteWitnesses[base];
+    const suppliedType = capability.route.inputs.find((input) => input.name === base)?.type;
+    const suppliedEncoded = suppliedValue === undefined || !suppliedType
+      ? undefined : encodeFunctionArgument(suppliedValue, suppliedType, structs);
+    const suppliedCandidate = suppliedEncoded instanceof Uint8Array
+      ? { value: suppliedValue!, encoded: suppliedEncoded } : undefined;
+    const suppliedFits = suppliedCandidate && (choices.length === 0 || choices.every((row) => row.some((choice) =>
+      binToHex(choice.encoded) === binToHex(suppliedCandidate.encoded))));
+    const selected = suppliedFits ? suppliedCandidate : choices[0]?.find((candidate) =>
+      choices.every((row) => row.some((choice) =>
+        binToHex(choice.encoded) === binToHex(candidate.encoded))));
+    if (!selected) {
+      throw new MessageBusDiagnosticError(
+        'L3_RESOURCE_UNRESOLVED',
+        `message-bus batch collection witness '${base}' has no shared physical entry orientation`,
+        { resourceIdentity: base },
+      );
+    }
+    swappableGlobals.set(base, { ...selected, rowBase });
+  }
   const signatureWitnessValues = new Map<string, FunctionArgument>();
   const results: { row: number; types: readonly string[] }[] = [];
   const projectedRows: {
@@ -179,6 +230,43 @@ export function encodeMessageBatch(
       signatureWitnessValues.set(`__message_bus_sig_${handlerIndex}_${index}_r${rowIndex}`, argument);
     });
     for (const binding of handler.batchKeyWitnesses ?? []) {
+      if (binding.swappable) {
+        if (binding.perRow) continue;
+        const global = swappableGlobals.get(binding.routeInput);
+        const varying = handler.batchKeyWitnesses?.find((candidate) => candidate.swappable
+          && candidate.perRow && candidate.routeInput === `${binding.routeInput}_row`);
+        if (!global || !varying || binding.inputIndex < 0 || varying.inputIndex < 0) {
+          throw new MessageBusDiagnosticError(
+            'L3_RESOURCE_UNRESOLVED',
+            `message-bus batch collection witness '${binding.routeInput}' lacks a swappable key pair`,
+            { handler: handler.name, resourceIdentity: binding.routeInput, invocationIds: [rowIndex] },
+          );
+        }
+        const sharedValue = args[binding.inputIndex];
+        const varyingValue = args[varying.inputIndex];
+        const sharedEncoded = encoded[binding.inputIndex];
+        const varyingEncoded = encoded[varying.inputIndex];
+        if (!(sharedEncoded instanceof Uint8Array) || !(varyingEncoded instanceof Uint8Array)) {
+          throw new MessageBusDiagnosticError(
+            'L3_RESOURCE_UNRESOLVED', 'message-bus swappable collection keys are not byte-encodable',
+            { handler: handler.name, resourceIdentity: binding.routeInput, invocationIds: [rowIndex] },
+          );
+        }
+        const sharedMatches = binToHex(sharedEncoded) === binToHex(global.encoded);
+        const varyingMatches = binToHex(varyingEncoded) === binToHex(global.encoded);
+        if (!sharedMatches && !varyingMatches) {
+          throw new MessageBusDiagnosticError(
+            'L3_RESOURCE_UNRESOLVED',
+            `message-bus batch collection witness '${binding.routeInput}' does not match either row key`,
+            { handler: handler.name, resourceIdentity: binding.routeInput, invocationIds: [rowIndex] },
+          );
+        }
+        keyWitnessValues.set(binding.routeInput, { value: global.value, encoded: global.encoded });
+        keyWitnessValues.set(`${varying.routeInput}_r${rowIndex}`, sharedMatches
+          ? { value: varyingValue, encoded: varyingEncoded }
+          : { value: sharedValue, encoded: sharedEncoded });
+        continue;
+      }
       const value = binding.source === 'msgSender'
         ? invocation.logicalCaller
         : binding.source === 'expression'
@@ -297,14 +385,19 @@ export function encodeMessageBatch(
         if (fallback) return fallback;
       }
       const supplied = unboundRouteWitnesses[input.name];
-      if (supplied === undefined) {
-        throw new MessageBusDiagnosticError(
-          'L3_RESOURCE_UNRESOLVED',
-          `Missing message-bus batch route witness '${input.name}'; no invocation binds it, so it must be supplied`,
-          { resourceIdentity: input.name, keyIdentity: input.name },
-        );
-      }
-      return supplied;
+      const inactiveSwappable = [...swappableGlobals.values()].find((candidate) =>
+        input.name.startsWith(`${candidate.rowBase}_r`));
+      // The graph composer allocates a distinct, real entry key to every inactive physical slot. Prefer that
+      // collision-free witness; repeating the selected shared key here would co-spend one entry NFT at several
+      // offsets. Direct callers without an explicit filler may still reuse the shared value because the row is
+      // unreachable and only ABI typing is required during their isolated construction.
+      if (supplied !== undefined) return supplied;
+      if (inactiveSwappable) return inactiveSwappable.value;
+      throw new MessageBusDiagnosticError(
+        'L3_RESOURCE_UNRESOLVED',
+        `Missing message-bus batch route witness '${input.name}'; no invocation binds it, so it must be supplied`,
+        { resourceIdentity: input.name, keyIdentity: input.name },
+      );
     });
 
   return {

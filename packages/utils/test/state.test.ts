@@ -2,6 +2,9 @@ import {
   getDefaultStateValue,
   getMaxPushdataEncodedSize,
   encodePushdataValue,
+  encodeEventCommitment,
+  completeEventCommitment,
+  preferZeroPrefixedEventBlob,
   decodePushdataValue,
   attachDecodedAccessors,
   buildPushdataCommitment,
@@ -33,7 +36,7 @@ import {
   scriptToBytecode,
   StructDefinitionInfo,
 } from '../src/index.js';
-import { hexToBin, lockingBytecodeToCashAddress, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, lockingBytecodeToCashAddress, utf8ToBin } from '@bitauth/libauth';
 
 describe('getDefaultStateValue', () => {
   it('should return 0n for "bigint"', () => {
@@ -240,6 +243,83 @@ describe('buildInitialStateCommitments with defaults', () => {
     const parsed = parsePushdataCommitment(commitments[0], layout, 0);
     expect(parsed.counter).toBe(42n);
     expect(parsed.label).toEqual(new Uint8Array(4));
+  });
+});
+
+describe('encodeEventCommitment', () => {
+  const jobEventStructs: StructDefinitionInfo[] = [{
+    name: 'JobEventData',
+    fields: [
+      { name: 'type_', type: 'uint8' },
+      { name: 'address_', type: 'bytes' },
+      { name: 'data_', type: 'bytes' },
+      { name: 'timestamp_', type: 'uint32' },
+    ],
+  }];
+
+  const lock = hexToBin('76a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac');
+  const event = { type_: 14n, address_: lock, data_: new Uint8Array(), timestamp_: 0n };
+  const structBytes = encodePushdataValue(event, 'JobEventData', jobEventStructs);
+
+  it('encodes JobEvent(uint256,JobEventData) as encode(jobId) || encode(struct)', () => {
+    expect(structBytes).toEqual(hexToBin('5e1976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac0000'));
+    const full = encodeEventCommitment(
+      [{ type: 'uint256' }, { type: 'JobEventData' }],
+      [0n, event],
+      jobEventStructs,
+    );
+    expect(full).toEqual(hexToBin(`00${binToHex(structBytes)}`));
+    expect(full.length).toBe(structBytes.length + 1);
+  });
+
+  it('completes a struct-only derived commitment with the jobId prefix', () => {
+    const completed = completeEventCommitment(
+      structBytes,
+      [{ type: 'uint256' }, { type: 'JobEventData' }],
+      [0n, event],
+      jobEventStructs,
+    );
+    expect(completed).toEqual(hexToBin(`00${binToHex(structBytes)}`));
+  });
+
+  it('does not complete when the last argument does not encode to derived', () => {
+    const other = encodePushdataValue(
+      { type_: 0n, address_: lock, data_: new Uint8Array(), timestamp_: 0n },
+      'JobEventData',
+      jobEventStructs,
+    );
+    expect(completeEventCommitment(
+      other,
+      [{ type: 'uint256' }, { type: 'JobEventData' }],
+      [0n, event],
+      jobEventStructs,
+    )).toEqual(other);
+  });
+
+  it('leaves an empty derived commitment empty', () => {
+    expect(completeEventCommitment(
+      new Uint8Array(),
+      [{ type: 'uint256' }, { type: 'JobEventData' }],
+      [0n, event],
+      jobEventStructs,
+    )).toEqual(new Uint8Array());
+  });
+
+  it('prefers the 00-prefixed emit blob over the struct-only operand', () => {
+    const full = hexToBin(`00${binToHex(structBytes)}`);
+    expect(preferZeroPrefixedEventBlob(structBytes, full)).toEqual(full);
+    expect(preferZeroPrefixedEventBlob(full, structBytes)).toEqual(full);
+    expect(preferZeroPrefixedEventBlob(structBytes, hexToBin('51'))).toBeUndefined();
+  });
+
+  it('leaves a non-suffix derived commitment unchanged', () => {
+    const other = hexToBin('51');
+    expect(completeEventCommitment(
+      other,
+      [{ type: 'uint256' }, { type: 'JobEventData' }],
+      [0n, event],
+      jobEventStructs,
+    )).toEqual(other);
   });
 });
 

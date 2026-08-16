@@ -513,6 +513,76 @@ export function encodePushdataValue(
   return encodeGenericPushdataValue(bytes, isIntLikeEnc);
 }
 
+/** Concatenate pushdata-encoded event/struct fields in declaration order. */
+export function concatPushdataParts(parts: readonly Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, part) => n + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+/**
+ * Encode an event NFT commitment the way `visitEmitStatement` does: each parameter is
+ * pushdata-encoded, then the parts are concatenated. `emit JobEvent(0, ev)` is therefore
+ * `encode(0) || encode(ev)` (`00` + struct), not the struct alone.
+ */
+export function encodeEventCommitment(
+  parameters: readonly { type: string }[],
+  args: readonly StateValue[],
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  return concatPushdataParts(
+    parameters.map((parameter, i) => encodePushdataValue(
+      args[i] ?? getDefaultStateValue(parameter.type, structs),
+      parameter.type,
+      structs,
+    )),
+  );
+}
+
+/**
+ * A probe can capture only the last event parameter (commonly the struct) because
+ * `encode(0)` is a single `0x00`. Complete only when `derived` equals that last
+ * parameter's encoding, then prepend the other parameters. Empty stays empty.
+ */
+export function completeEventCommitment(
+  derived: Uint8Array,
+  parameters: readonly { type: string }[],
+  args: readonly StateValue[],
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  if (parameters.length < 2 || derived.length === 0) return derived;
+  const last = parameters[parameters.length - 1];
+  const lastArg = args[parameters.length - 1] ?? getDefaultStateValue(last.type, structs);
+  const lastEncoded = encodePushdataValue(lastArg, last.type, structs);
+  if (lastEncoded.length !== derived.length) return derived;
+  for (let i = 0; i < derived.length; i += 1) {
+    if (lastEncoded[i] !== derived[i]) return derived;
+  }
+  return encodeEventCommitment(parameters, args, structs);
+}
+
+/**
+ * `emit F(0, x)` is `encode(0) || encode(x)` (`0x00` + x). A probe EQUALVERIFY of
+ * that blob against a struct-only commitment looks like `00||x` vs `x`. Prefer the
+ * longer operand — that is the emit blob the covenant pins.
+ */
+export function preferZeroPrefixedEventBlob(below: Uint8Array, top: Uint8Array): Uint8Array | undefined {
+  const prefixed = (short: Uint8Array, long: Uint8Array): boolean => (
+    short.length > 1
+    && long.length === short.length + 1
+    && long[0] === 0x00
+    && short.every((byte, i) => long[i + 1] === byte)
+  );
+  if (prefixed(below, top)) return top;
+  if (prefixed(top, below)) return below;
+  return undefined;
+}
+
 function isPackedLockingBytecode(bytes: Uint8Array): boolean {
   return (bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87)
     || (bytes.length === 23 && bytes[0] === 0xa9 && bytes[1] === 0x14 && bytes[22] === 0x87)

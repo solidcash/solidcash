@@ -179,6 +179,10 @@ beforeEach(async () => {
   if (fixtureSnapshotReady) return;
   if (provider && typeof provider.reset === 'function') {
     provider.reset();
+    try {
+      const { StatefulTransactionBuilder } = await import('solidcash');
+      StatefulTransactionBuilder.clearPersistedJobEvents();
+    } catch { /* persist module not loaded in this suite */ }
     try { clearDeployments(provider as never); } catch { /* ignore */ }
     try { clearSoftBentoTotals(); } catch { /* ignore */ }
     // Re-fund signers after reset (getSigners only funds once per key without reset of fundedSignerKeys).

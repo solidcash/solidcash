@@ -28,4 +28,13 @@ describe('artifact formatting', () => {
       expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
     }]);
   });
+
+  it('publishes the proxy mapping-growth certificate for delegate initializers', () => {
+    const artifact = {
+      contractName: 'MarketplaceDataV1',
+      abi: [{ name: 'initialize', modifiers: ['public', 'delegate'] }],
+    } as any;
+    const parsed = JSON.parse(formatArtifact(artifact, 'json'));
+    expect(parsed.delegateProxyStateOutputCountPinned).toBe(true);
+  });
 });

@@ -213,7 +213,11 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // reserves an owner-local frame per dispatch site on their behalf (SymbolTableTraversal
       // planGraphEffectFrames) and pushes the site ordinal as hidden context, against which the subroutine
       // resolves its own event/transfer OUTPUT indices (GenerateTargetTraversal emitGraphEffectSlotIndex).
-      if (this.keepsGraphEmissionBinding(fn)) continue;
+      // Delegate initializer/owner guards must still flatten into the entry even when a message-bus
+      // clone would otherwise keep them behind OP_INVOKE. Those clones address INPUTINDEX, not the
+      // proxy pending write, so `initialize` fails `_checkInitializing` on a clean compile.
+      if (this.keepsGraphEmissionBinding(fn)
+        && !/^(?:_checkInitializing|_checkOwner|_requireNotPaused)$/.test(fn.name)) continue;
       // SEC-7. A TOKEN-CONTAINER operation is still refused, and for the reason X29 removed for events and
       // transfers rather than an unexamined one: `this.tokens[c].transfer(..)` needs a co-spent tokenContainer
       // INPUT slot as well as its tcTransfer outputs, and an input slot is not a per-site output frame - it
@@ -239,6 +243,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // authenticated proxy-master basis. This also covers modifier wrappers such as
       // `entry -> _checkOwner -> owner()` after the returning getter has been reduced into `_checkOwner`.
       const scalarJournalEligible = !this.inlineDelegateStateHelpers && this.isScalarJournalEligible(fn);
+      // OZ `_checkInitializing` / `_checkOwner` often still look context-only after the first IRSH
+      // (ERC-7201 `$._initializing` / `owner()`). A later IRSH exposes the read, but a message-bus
+      // compile can leave the wrapper as OP_INVOKE. Force those guards into the delegate entry so
+      // they inherit proxy-master + pending writes instead of INPUTINDEX+1 on the impl.
+      const delegateGuard = this.inlineDelegateStateHelpers
+        && /^(?:_checkInitializing|_checkOwner|_requireNotPaused)$/.test(fn.name);
       // CashToken-container transfers are transaction effects rather than
       // value-like state: their authenticated input/output slots and transfer
       // occurrence indices belong to the physical entry point. Until an
@@ -249,6 +259,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       const hasPhysicalEffects = this.hasPhysicalEffects(fn);
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
+          || delegateGuard
           || (this.isInternalHelper(fn) && !valueReferenced.has(fn.name)
             && (this.readsEntry(fn) || (this.touchesScalarState(fn) && !scalarJournalEligible)
               || hasTokenContainerEffects

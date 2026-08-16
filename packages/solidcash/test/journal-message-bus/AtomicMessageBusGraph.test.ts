@@ -45,6 +45,60 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('uses a runtime occurrence proof for a bounded conditional raw edge', () => {
+    const capability = (name: string, selector: string, inputs: { name: string; type: string }[]) => ({
+      version: 1 as const,
+      selector: '53434231' as const,
+      maximumRows: 2,
+      maximumBlobBytes: 256,
+      route: {
+        name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
+        blockLayout: { blockSize: 1, slots: [{ kind: 'master' as const, offset: 0 }] },
+      },
+      handlers: [{ name, selector, inputs, outputs: [], eligible: true }],
+    });
+    const approveInputs = [{ name: 'amount', type: 'int' }];
+    const targetArtifact = {
+      contractName: 'Target',
+      abi: [{
+        name: 'approve', selector: '01020304', inputs: approveInputs, outputs: [],
+      }],
+      messageBus: capability('approve', '01020304', approveInputs),
+      invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+    } as unknown as Artifact;
+    const target = { artifact: targetArtifact, lockingBytecode: '51' };
+    const payload = Uint8Array.of(0x01, 0x02, 0x03, 0x04, 0x51);
+    const runInputs = [{ name: 'target', type: 'address' }, { name: 'payload', type: 'bytes' }];
+    const root = {
+      artifact: {
+        contractName: 'Root',
+        abi: [{
+          name: 'run', selector: '11111111',
+          inputs: runInputs, outputs: [],
+          externalCalls: [{
+            callsiteId: 1, occurrence: 'conditional', maximumOccurrences: 1,
+            interfaceName: '__raw__', functionName: '__raw__', rawSelector: '01020304',
+            rawArgSources: [{ kind: 'literal', value: '1', type: 'int' }],
+            addressParam: 'target', argSources: [{ kind: 'forward', paramIndex: 1 }],
+          }],
+        }],
+        messageBus: capability('run', '11111111', runInputs),
+        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+      } as unknown as Artifact,
+      lockingBytecode: '52',
+    };
+    const derive = (count: number) => messageBus.deriveCompiledGraphPlan({
+      root,
+      function: 'run',
+      args: [Uint8Array.of(0x51), payload],
+      targets: {},
+      occurrence: () => count,
+      dynamicCall: () => ({ participant: target, function: 'approve', args: [1n] }),
+    });
+    expect(derive(0).invocations.map((invocation) => invocation.function)).toEqual(['run']);
+    expect(derive(1).invocations.map((invocation) => invocation.function)).toEqual(['run', 'approve']);
+  });
+
   it('derives participant bases, identities, policies, and exact invocation rows', () => {
     const finalized = messageBus.finalizeAtomicInvocationGraph(
       plan(), ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },

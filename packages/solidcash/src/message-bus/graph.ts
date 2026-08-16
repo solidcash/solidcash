@@ -292,7 +292,7 @@ export function finalizeAtomicInvocationGraph(
   }
   const spans = plan.participants.map((participant, index) => {
     const block = participant.blockLayout!;
-    const fixedSize = block.trailingBase ?? block.blockSize;
+    const fixedSize = block.fixedSuffix ? block.blockSize : block.trailingBase ?? block.blockSize;
     const actualSize = actualSizes?.[index] ?? block.blockSize;
     if (!Number.isSafeInteger(actualSize) || actualSize < fixedSize || actualSize > block.blockSize) {
       throw new Error(
@@ -307,7 +307,7 @@ export function finalizeAtomicInvocationGraph(
     return slots.some((slot) => ![
       'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer',
       'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'keccakSideCar',
-      'ecrecoverSideCar', 'trailing',
+      'ecrecoverSideCar', 'trailing', 'lowLevelCall',
     ].includes(slot.kind));
   });
   if (unsupported) {
@@ -323,7 +323,8 @@ export function finalizeAtomicInvocationGraph(
       throw new Error(`messageBus: participant ${index} master category must be 32-byte hex`);
     }
     const maximumSize = participant.blockLayout!.blockSize;
-    const fixedSize = participant.blockLayout!.trailingBase ?? maximumSize;
+    const fixedSize = participant.blockLayout!.fixedSuffix
+      ? maximumSize : participant.blockLayout!.trailingBase ?? maximumSize;
     const actualSize = spans[index];
     const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
     const lockingBytecode = participant.lockingBytecode.toLowerCase();
@@ -746,11 +747,15 @@ function bindConsumerCallsites(
   reached: readonly string[],
 ): (ExternalCallAbi | undefined)[] {
   if (callsites.length === 0) return reached.map(() => undefined);
-  const singular = callsites.every((callsite) =>
-    callsite.occurrence === undefined || callsite.occurrence === 'once');
-  const sorted = (names: readonly string[]): string => [...names].sort().join('\x00');
-  const namesArePermuted = sorted(reached) === sorted(callsites.map((call) => call.functionName));
-  if (singular && callsites.length === reached.length && namesArePermuted) {
+  const singular = callsites.every((callsite) => (occurrenceBoundOf(callsite).maximum ?? 2) <= 1);
+  const positionallyCompatible = callsites.length === reached.length && reached.every((functionName, position) => {
+    const callsite = callsites[position];
+    return isRuntimeResolvedCallsite(callsite)
+      || (callsite.rawFunctionName ?? callsite.functionName) === functionName;
+  });
+  // A fully reached bounded conditional list remains in compiler callsite order. Preserve that stronger identity
+  // (including selector-only raw rows) rather than widening every raw callsite into a candidate for every child.
+  if (singular && positionallyCompatible) {
     return reached.map((functionName, position) => {
       const callsite = callsites[position];
       if (!isRuntimeResolvedCallsite(callsite) && callsite.functionName !== functionName) {
@@ -764,7 +769,9 @@ function bindConsumerCallsites(
   }
   return reached.map((functionName) => {
     const candidates = callsites.filter((callsite) =>
-      isRuntimeResolvedCallsite(callsite) || callsite.functionName === functionName);
+      (isRuntimeResolvedCallsite(callsite)
+        && (callsite.rawFunctionName === undefined || callsite.rawFunctionName === functionName))
+      || callsite.functionName === functionName);
     if (candidates.length === 0) return undefined;
     const contract = (callsite: ExternalCallAbi): string =>
       `${callsite.hasReturnValues === true}|${(callsite.returnTypes ?? []).join(',')}`;
@@ -1281,9 +1288,15 @@ export function planCompiledGraph(
         },
       );
     }
+    const rowHandler = participants[invocation.callee].artifact.messageBus?.handlers.find((handler) =>
+      handler.name === invocation.function);
     perOwner[invocation.callee].push({
       function: invocation.function,
       args: invocation.args,
+      // Graph admission rejects every unbound `{value: ...}` call option. A nested payable row therefore has
+      // exactly zero logical BCH value; publish that proof explicitly so a handler which conditionally reads
+      // msg.value (ERC20-vs-native payment) does not ask the SDK for a witness it already constrained to zero.
+      ...(invocation.parent !== null && rowHandler?.usesMsgValue && { msgValue: 0n }),
       ...(invocation.parent !== null && { callMode: encodedCallMode(invocation) }),
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
@@ -1337,6 +1350,16 @@ export function planCompiledGraph(
     return bits;
   });
 
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+    console.error('atomic-graph-owner-rows', participants.map((participant, owner) => ({
+      owner,
+      contract: participant.artifact.contractName,
+      rows: perOwner[owner].map((row) => ({ function: row.function, args: row.args })),
+      witnesses: participant.artifact.messageBus?.handlers.filter((handler) => handler.eligible)
+        .map((handler) => ({ name: handler.name, keys: handler.batchKeyWitnesses })),
+    })));
+  }
   const executions = participants.map((participant, owner) => {
     if (perOwner[owner].length === 0) {
       throw new Error(`messageBus: participant ${owner} has no invocation and must not be co-spent`);

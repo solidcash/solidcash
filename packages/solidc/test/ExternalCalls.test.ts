@@ -58,6 +58,59 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
   });
 });
 
+describe('state-backed external-call expected address', () => {
+  const IFACE = 'interface IData { function ping() external; }';
+  it('re-reads an interface-typed state var at the epilogue instead of a HASH160 PICK', () => {
+    const artifact = compileString(`${IFACE}
+      contract C() {
+        IData public data;
+        function set(IData d) { this.data = d; }
+        function f(sig s, pubkey pk) { data.ping(); require(checkSig(s, pk)); }
+      }`);
+    const fn = artifact.abi.find((candidate) => candidate.name === 'f');
+    expect(fn?.externalCalls?.[0]?.addressStateVar).toBe('data');
+    expect(fn?.externalCalls?.[0]?.addressParam).toBe('__extaddr_data');
+    // empty/20-byte HASH160 is dropped; DUP copies the locking bytecode already on stack.
+    // 76 = OP_DUP. 78 = OP_OVER would copy the master/anchor index underneath.
+    expect(artifact.bytecode.replace(/\s+/g, '')).toContain('01149c9b63757668');
+  });
+});
+
+describe('unlocking selector extract', () => {
+  it('takes the first 4-byte script push, not a 0x04 prefix plus three selector bytes', () => {
+    const artifact = compileString(
+      'interface IData { function ping() external; function pong() external; }'
+      + ' contract C(IData data) {'
+      + '   function f(sig s, pubkey pk) { data.ping(); require(checkSig(s, pk)); }'
+      + ' }',
+    );
+    const compact = artifact.bytecode.replace(/\s+/g, '');
+    // After INPUTBYTECODE, consume the first script push and keep it only when
+    // SIZE == 4. DROP leftover so the compared value is the 4-byte payload,
+    // not the 0x04 prefix plus three selector bytes.
+    expect(compact).toContain('OP_INPUTBYTECODEOP_1OP_SPLITOP_SWAP');
+    expect(compact).toContain('OP_OVEROP_SIZEOP_NIPOP_4OP_NUMEQUALOP_IFOP_DROP');
+  });
+});
+
+describe('inactive conditional external-call identity', () => {
+  const IFACE = 'interface IERC20 { function transfer(address t, int a) external returns (bool); }';
+  it('skips UTXOBYTECODE identity when the SDK binds masterIdx < 0', () => {
+    const artifact = compileString(`${IFACE}
+      contract C(IERC20 token) {
+        int n;
+        function f(bool pay, address to, sig s, pubkey pk) {
+          if (pay) { bool ok = token.transfer(to, 1); require(ok); }
+          this.n = 1;
+          require(checkSig(s, pk));
+        }
+      }`);
+    const fn = artifact.abi.find((candidate) => candidate.name === 'f');
+    expect(fn?.externalCalls?.[0]?.occurrence).toBe('conditional');
+    expect(artifact.bytecode).toContain('OP_0 OP_LESSTHAN OP_IF OP_DROP OP_ELSE');
+  });
+});
+
 describe('SBE-6: external calls on interface-typed variables (EVM parity)', () => {
   const IFACE = 'interface IERC20 { function transferFrom(address f, address t, int a) external returns (bool); }';
   it('routes a method call on an interface-typed state var to an external call', () => {

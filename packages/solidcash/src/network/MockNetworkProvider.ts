@@ -23,6 +23,13 @@ export interface MockNetworkProviderOptions {
   policy: NetworkPolicy;
 }
 
+const mockNetworkResetHooks: Array<() => void> = [];
+
+/** Process-global caches (jobEvents persist) must drop when the mock chain is wiped. */
+export function onMockNetworkProviderReset(hook: () => void): void {
+  mockNetworkResetHooks.push(hook);
+}
+
 export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptions, 'consensusLimits' | 'policy'>> & {
   consensusLimits?: Partial<ConsensusLimits>;
   policy?: Partial<NetworkPolicy>;
@@ -332,6 +339,34 @@ export default class MockNetworkProvider implements NetworkProvider {
     }));
   }
 
+  async getUtxosByTokenCategory(categoryId: string): Promise<Utxo[]> {
+    const wanted = new Set([categoryId.toLowerCase()]);
+    try {
+      const reversed = binToHex(hexToBin(categoryId).reverse());
+      wanted.add(reversed.toLowerCase());
+    } catch { /* not hex */ }
+    const snap = this.indexer.storage.snapshot();
+    const live: typeof snap.utxos = new Map(snap.utxos);
+    for (const key of snap.mempoolSpends.keys()) live.delete(key);
+    for (const [key, entry] of snap.mempoolUtxos) live.set(key, entry);
+    const found: Utxo[] = [];
+    for (const entry of live.values()) {
+      const category = entry.tokenData?.category?.toLowerCase() ?? '';
+      if (!wanted.has(category) && !wanted.has(category.slice(0, 64))) continue;
+      found.push({
+        txid: entry.outpoint.txid,
+        vout: entry.outpoint.vout,
+        satoshis: entry.satoshis,
+        token: entry.tokenData ? {
+          amount: entry.tokenData.amount,
+          category: entry.tokenData.category,
+          nft: entry.tokenData.nft,
+        } : undefined,
+      });
+    }
+    return found;
+  }
+
   setBlockHeight(newBlockHeight: number): void {
     const time = this.getBlockTime();
     this.blockHeight = newBlockHeight;
@@ -346,6 +381,8 @@ export default class MockNetworkProvider implements NetworkProvider {
   // become final and each mined height is fresh.
   async mine(count: number = 1): Promise<void> {
     this.setBlockHeight(this.blockHeight + count);
+    const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
+    await syncMockBlockOracles(this);
   }
 
   /** hardhat-network-helpers `mineUpTo`: mine until the tip height equals `height` (no-op if already past). */
@@ -420,14 +457,18 @@ export default class MockNetworkProvider implements NetworkProvider {
       case 'evm_mine':
         await this.mine(1);
         return '0x0';
+      case 'evm_increaseTime': {
+        const timestamp = this.increaseTime(Number(params[0]));
+        const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
+        await syncMockBlockOracles(this);
+        return timestamp;
+      }
       case 'hardhat_mine': {
         // hardhat_mine([blocks?, interval?]) - hex quantities; default 1 block. Interval (spacing) is a no-op here.
         const blocks = params[0] === undefined ? 1 : Number(params[0]);
         await this.mine(Math.max(1, blocks));
         return '0x0';
       }
-      case 'evm_increaseTime':
-        return this.increaseTime(Number(params[0]));
       case 'evm_setNextBlockTimestamp':
         this.setNextBlockTimestamp(Number(params[0]));
         return null;
@@ -560,6 +601,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
+    for (const hook of mockNetworkResetHooks) hook();
   }
 
   private nextFundingTxid(): string {

@@ -5,6 +5,8 @@ import {
   ArrayAccessNode,
   ArrayAssignNode,
   ArrayDeleteNode,
+  ArrayPopNode,
+  ArrayPushNode,
   ContractNode,
   EmitStatementNode,
   ExpressionNode,
@@ -209,8 +211,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
           || candidate instanceof MappingDeleteNode) {
           if ((candidate instanceof MappingAccessNode && candidate.arrayIndex)
-            || (candidate instanceof MappingAssignNode
-              && (candidate.arrayIndex || candidate.arrayPush || candidate.arrayPop))) unsupported = true;
+            || (candidate instanceof MappingAssignNode && candidate.arrayIndex)) unsupported = true;
           accesses.push({ name: candidate.name, keys: candidate.keys, node: candidate });
         } else if (candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
           && collections.has(candidate.array.name)) {
@@ -236,7 +237,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const distinct = new Map<string, JournalEntry>();
       for (const access of leafAccesses) {
         const collection = collections.get(access.name);
-        if (!collection || collection.innermostValueType.toString().endsWith('[]')) {
+        if (!collection) {
           unsupported = true;
           break;
         }
@@ -438,6 +439,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     if (this.currentMulti && statement instanceof MappingAssignNode) {
       const entry = this.multiEntry(statement.name, statement.keys);
       if (entry) {
+        if (statement.arrayPush) {
+          const push = this.at(new ArrayPushNode(
+            entry.journalName, this.rewriteExpression(statement.expression),
+          ), statement);
+          push.noArg = statement.noArg;
+          return push;
+        }
+        if (statement.arrayPop) return this.at(new ArrayPopNode(entry.journalName), statement);
         return this.at(new AssignNode(
           this.at(new IdentifierNode(entry.journalName), statement),
           this.rewriteExpression(statement.expression),
@@ -473,6 +482,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     }
     if (this.current && statement instanceof MappingAssignNode
       && statement.name === this.current.collection) {
+      if (statement.arrayPush) {
+        const push = this.at(new ArrayPushNode(
+          this.current.journalName, this.rewriteExpression(statement.expression),
+        ), statement);
+        push.noArg = statement.noArg;
+        return push;
+      }
+      if (statement.arrayPop) return this.at(new ArrayPopNode(this.current.journalName), statement);
       return this.at(new AssignNode(
         this.at(new IdentifierNode(this.current.journalName), statement),
         this.rewriteExpression(statement.expression),

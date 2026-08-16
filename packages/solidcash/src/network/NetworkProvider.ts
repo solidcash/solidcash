@@ -66,6 +66,13 @@ export default interface NetworkProvider {
   getUtxosForLockingBytecode(lockingBytecode: Uint8Array | string): Promise<Utxo[]>;
 
   /**
+   * Optional: every live UTXO whose CashToken category is `categoryId` (either
+   * byte order). Used to find a CREATE identity NFT that no longer sits at the
+   * contract's cashaddr.
+   */
+  getUtxosByTokenCategory?(categoryId: string): Promise<Utxo[]>;
+
+  /**
    * @returns The current block height.
    */
   getBlockHeight(): Promise<number>;

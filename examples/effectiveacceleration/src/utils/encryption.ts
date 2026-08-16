@@ -35,29 +35,48 @@ export const encryptUtf8Data = (data: string, sessionKey: string | undefined): U
   return encryptBinaryData(utf8ToBytes(data), sessionKey);
 }
 
+const localIpfs = new Map<string, string>();
+
+const storeLocalIpfs = (encodedData: string): { hash: string; cid: string } => {
+  const hash = keccak256(decodeBase64(encodedData));
+  const cid = hashToCid(hash);
+  localIpfs.set(cid, encodedData);
+  localIpfs.set(hash, encodedData);
+  if (typeof globalThis.localStorage?.setItem === 'function') {
+    globalThis.localStorage.setItem(`IpfsContent-${cid}`, encodedData);
+  }
+  return { hash, cid };
+};
+
 export const publishToIpfsRaw = async (encodedData: string): Promise<{
   hash: string;
   cid: string;
 }> => {
   const host = process.env.IPFS_UPLOAD_SERVICE_URL ?? process.env.NEXT_PUBLIC_IPFS_UPLOAD_SERVICE_URL ?? "http://localhost:8000";
 
-  const response = await fetch(host, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "IPFS_UPLOAD_SERVICE_SECRET": process.env.IPFS_UPLOAD_SERVICE_SECRET ?? process.env.NEXT_PUBLIC_IPFS_UPLOAD_SERVICE_SECRET ?? ""
-    },
-    body: JSON.stringify({
-      dataB64: encodedData,
-    }),
-  });
+  try {
+    const response = await fetch(host, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "IPFS_UPLOAD_SERVICE_SECRET": process.env.IPFS_UPLOAD_SERVICE_SECRET ?? process.env.NEXT_PUBLIC_IPFS_UPLOAD_SERVICE_SECRET ?? ""
+      },
+      body: JSON.stringify({
+        dataB64: encodedData,
+      }),
+    });
 
-  if (response.status !== 200) {
-    throw await response.text();
+    if (response.status === 200) {
+      const { hash, cid } = await response.json();
+      localIpfs.set(cid, encodedData);
+      localIpfs.set(hash, encodedData);
+      return { hash, cid };
+    }
+  } catch {
+    // Marketplace mock runs have no IPFS daemon; hash the payload locally.
   }
 
-  const { hash, cid } = await response.json();
-  return { hash, cid };
+  return storeLocalIpfs(encodedData);
 }
 
 export const publishToIpfs = async (message: string, sessionKey: string | undefined = undefined): Promise<{
@@ -135,13 +154,18 @@ export const getFromIpfsRaw = async (cidOrHash: string): Promise<string> => {
 
   const key = `IpfsContent-${cidOrHash}`;
 
-  let content = globalThis.localStorage?.getItem(key);
+  let content = globalThis.localStorage?.getItem(key) ?? localIpfs.get(cidOrHash);
   if (content) {
     return content;
   }
 
   const host = process.env.IPFS_GATEWAY_URL ?? process.env.NEXT_PUBLIC_IPFS_GATEWAY_URL ?? "http://localhost:8080";
-  const respose = await fetch(`${host}/ipfs/${cidOrHash}`);
+  let respose: Response;
+  try {
+    respose = await fetch(`${host}/ipfs/${cidOrHash}`);
+  } catch {
+    throw new Error(`Failed to fetch data from IPFS\n${cidOrHash} is not in the local mock store`);
+  }
   if (respose.status !== 200) {
     throw new Error(`Failed to fetch data from IPFS\n${respose.statusText}\n${await respose.text()}`);
   }

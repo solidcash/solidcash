@@ -2214,6 +2214,49 @@ export function relocateJobEventEmitToDest(
   return true;
 }
 
+const SCID_COMMIT_PREFIX = '53434944';
+
+/** True when an output is a proxy-category event NFT (capability none) and not a SCID identity. */
+export function isDelegateEventNftOutput(output: {
+  token?: { nft?: { capability?: string; commitment?: string } };
+} | undefined): boolean {
+  if (output?.token?.nft?.capability !== 'none') return false;
+  const commit = String(output.token?.nft?.commitment ?? '');
+  return commit.length > 0 && !commit.toLowerCase().startsWith(SCID_COMMIT_PREFIX);
+}
+
+/**
+ * Delegate emit verification is `OP_INPUTINDEX + event.offset` of the implementation.
+ * The builder often parks that NFT in the proxy event band; move it onto dest.
+ */
+export function relocateDelegateEventNftToDest(
+  outputs: Array<{
+    to?: Uint8Array | string;
+    amount?: bigint;
+    token?: { amount?: bigint; category?: string; nft?: { capability?: string; commitment?: string } };
+  }>,
+  dest: number,
+): boolean {
+  if (dest < 0) return false;
+  while (outputs.length <= dest) {
+    outputs.push({ to: Uint8Array.of(0x51), amount: 1000n });
+  }
+  if (isDelegateEventNftOutput(outputs[dest])) return true;
+  if (outputs[dest]?.token?.nft?.capability === 'minting') return false;
+  let source = -1;
+  for (let index = 0; index < outputs.length; index++) {
+    if (index === dest) continue;
+    if (!isDelegateEventNftOutput(outputs[index])) continue;
+    source = index;
+    break;
+  }
+  if (source < 0) return false;
+  const moved = outputs[source];
+  outputs[dest] = moved;
+  outputs[source] = { to: Uint8Array.of(0x51), amount: 1000n };
+  return true;
+}
+
 /** JobEvent.type_ from a positional tuple or named struct. */
 export function jobEventTypeOf(event: unknown): number | undefined {
   const raw = Array.isArray(event)
@@ -5001,6 +5044,66 @@ export class StatefulTransactionBuilder {
         persistCloneOk: !persistEmit,
         preferCreated: this._rootIsPublishJobPost(),
       });
+    }
+  }
+
+  /**
+   * Implementation emit verification is `OP_INPUTINDEX + event.offset`. Move a
+   * parked VersionChanged / Paused NFT from the proxy event band onto that dest.
+   */
+  private _reassertDelegateImplEvents(builder: TransactionBuilder): void {
+    for (const group of this.lowLevelCallUtxoGroups) {
+      if (group.callMode !== 'delegatecall') continue;
+      const fn = group.compilerRoute?.abiFunction
+        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((candidate) => candidate.name === (group.logicalFunctionName ?? group.functionName));
+      const eventOffset = fn?.blockLayout?.slots.find((slot) => slot.kind === 'event')?.offset;
+      if (eventOffset === undefined) continue;
+      const master = group.masterUtxo as UnlockableUtxo | undefined;
+      if (!master) continue;
+      const masterLock = binToHex(master.unlocker.generateLockingBytecode());
+      const implIndex = this.allInputs.findIndex((input) => (
+        input && 'unlocker' in input
+        && binToHex(input.unlocker.generateLockingBytecode()) === masterLock
+        && input.token?.category === master.token?.category
+      ));
+      if (implIndex < 0) continue;
+      const dest = implIndex + eventOffset;
+      if (relocateDelegateEventNftToDest(builder.outputs, dest)) continue;
+      const emitInfo = fn?.emits?.[0];
+      if (!emitInfo) continue;
+      const artifact = group.externalContract.inner.artifact;
+      const eventDef = (artifact.events ?? []).find((event: EventDefinitionAbi) => (
+        event.signature === emitInfo.eventSignature
+      ));
+      const locking = this.eventNftLockingBytecodes.get(emitInfo.eventSignature);
+      if (!eventDef || !locking) continue;
+      const args = group.logicalFunctionArgs ?? group.functionArgs ?? [];
+      const visible = args.filter((_value, index) => !fn?.inputs[index]?.name.startsWith('__internal__'));
+      const parts = eventDef.parameters.map((parameter: { type: string }, index: number) => encodePushdataValue(
+        (visible[index] ?? getDefaultStateValue(parameter.type, artifact.structs)) as StateValue,
+        parameter.type,
+        artifact.structs,
+      ));
+      const commitment = new Uint8Array(parts.reduce((sum: number, part: Uint8Array) => sum + part.length, 0));
+      let offset = 0;
+      for (const part of parts) {
+        commitment.set(part, offset);
+        offset += part.length;
+      }
+      while (builder.outputs.length <= dest) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
+      if (builder.outputs[dest]?.token?.nft?.capability === 'minting') continue;
+      builder.outputs[dest] = {
+        to: locking,
+        amount: 1200n,
+        token: {
+          amount: 0n,
+          category: this.categoryId,
+          nft: { capability: 'none', commitment: binToHex(commitment) },
+        },
+      };
     }
   }
 
@@ -9567,12 +9670,14 @@ export class StatefulTransactionBuilder {
     this._reassertNestedSameIndexMutables(builder);
     this._reassertNestedDataNftTwins(builder);
     this._reassertNestedEmitEvents(builder);
+    this._reassertDelegateImplEvents(builder);
     this._reassertMintingOneToOne(builder);
     this._reassertTokenInsertNewLocks(builder);
     reassertScidIdentityOutputs(
       builder.outputs, this.allInputs, this._scidReservedIndices(builder.outputs.length),
     );
     this._reassertNestedEmitEvents(builder);
+    this._reassertDelegateImplEvents(builder);
     if (isPersistedJobEventsReady()) this._packJobsSuffix(builder);
     const chunkBand = this.getPublishJobEventsBand();
     const chunkLock = this.jobEventsRedeemLock
@@ -9596,6 +9701,7 @@ export class StatefulTransactionBuilder {
     this._materializeJobEventsBand(builder);
     this._reassertScaledPreserveOneToOnes(builder);
     this._reassertNestedEmitEvents(builder);
+    this._reassertDelegateImplEvents(builder);
     if (isPersistedJobEventsReady()) {
       this._reassertPersistedJobEventsOneToOnes(
         builder, this._scaledEmitOutputIndex(builder.outputs.length) ?? -1,
@@ -10785,10 +10891,12 @@ export class StatefulTransactionBuilder {
       finalBuilder.outputs, this.allInputs, this._scidReservedIndices(finalBuilder.outputs.length),
     );
     this._reassertNestedEmitEvents(finalBuilder);
+    this._reassertDelegateImplEvents(finalBuilder);
     this._placeTailReturnAfterSwappedTokenBlock(finalBuilder);
     this._materializeJobEventsBand(finalBuilder);
     this._reassertScaledPreserveOneToOnes(finalBuilder);
     this._reassertNestedEmitEvents(finalBuilder);
+    this._reassertDelegateImplEvents(finalBuilder);
     if (isPersistedJobEventsReady()) {
       this._reassertPersistedJobEventsOneToOnes(
         finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
@@ -10875,10 +10983,12 @@ export class StatefulTransactionBuilder {
             || !this._repairComputedChunkOutput(finalBuilder, Number(failedInput))) break;
           this._clearDummyTokenEventCommitments(finalBuilder);
           this._reassertNestedEmitEvents(finalBuilder);
+          this._reassertDelegateImplEvents(finalBuilder);
           this._placeTailReturnAfterSwappedTokenBlock(finalBuilder);
           this._materializeJobEventsBand(finalBuilder);
           this._reassertScaledPreserveOneToOnes(finalBuilder);
           this._reassertNestedEmitEvents(finalBuilder);
+          this._reassertDelegateImplEvents(finalBuilder);
           this._reassertMintingOneToOne(finalBuilder);
           this._reassertNestedDataNftTwins(finalBuilder);
           if (isPersistedJobEventsReady()) {
@@ -10951,8 +11061,10 @@ export class StatefulTransactionBuilder {
       );
     }
     this._reassertNestedEmitEvents(finalBuilder);
+    this._reassertDelegateImplEvents(finalBuilder);
     this._reassertScaledPreserveOneToOnes(finalBuilder);
     this._reassertNestedEmitEvents(finalBuilder);
+    this._reassertDelegateImplEvents(finalBuilder);
     this._reassertNestedDataNftTwins(finalBuilder);
     if (isPersistedJobEventsReady()) {
       this._reassertPersistedJobEventsOneToOnes(

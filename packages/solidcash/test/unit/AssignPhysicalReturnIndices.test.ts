@@ -29,6 +29,8 @@ import {
   isLearnedEventEmitCommitment,
   isCreatedJobEventCommitment,
   relocateJobEventEmitToDest,
+  relocateDelegateEventNftToDest,
+  isDelegateEventNftOutput,
   emitDestCollidesPreservedInput,
   encodeEmptyJobEventEmitCommitment,
   encodeJobEventEmitCommitment,
@@ -889,6 +891,34 @@ describe('assignPhysicalReturnIndices', () => {
       },
     };
     expect(relocateJobEventEmitToDest(parked, 22, { persistCloneOk: true })).toBe(true);
+    const versionEvent = {
+      to: Uint8Array.from([0xaa, 0x20, 0x11]),
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'b2b2b2b2',
+        nft: { capability: 'none' as const, commitment: '0119' },
+      },
+    };
+    const versionParked: Array<{
+      to?: Uint8Array; amount?: bigint;
+      token?: { amount?: bigint; category?: string; nft?: { capability?: string; commitment?: string } };
+    }> = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      versionEvent,
+      {
+        to: Uint8Array.of(0x51),
+        amount: 800n,
+        token: { amount: 0n, category: 'b2b2b2b2', nft: { capability: 'none', commitment: '5343494401000000' } },
+      },
+    ];
+    expect(isDelegateEventNftOutput(versionEvent)).toBe(true);
+    expect(isDelegateEventNftOutput(versionParked[4])).toBe(false);
+    expect(relocateDelegateEventNftToDest(versionParked, 6)).toBe(true);
+    expect(versionParked[6]?.token?.nft?.commitment).toBe('0119');
+    expect(versionParked[3]?.token).toBeUndefined();
     expect(parked[22]?.token?.nft?.commitment).toBe(
       '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000',
     );

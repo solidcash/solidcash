@@ -338,6 +338,14 @@ describe('encodePushdataValue CashAddress bytes', () => {
     expect(encodePushdataValue(address, 'bytes')).toEqual(encodePushdataValue(lock, 'bytes'));
     expect(encodePushdataValue(utf8ToBin(address), 'bytes')).toEqual(encodePushdataValue(lock, 'bytes'));
   });
+
+  it('encodes ethers.ZeroAddress as empty locking bytecode, not UTF-8', () => {
+    const empty = encodePushdataValue(new Uint8Array(0), 'address');
+    expect(encodePushdataValue('0x0000000000000000000000000000000000000000', 'address')).toEqual(empty);
+    expect(encodePushdataValue('0x0', 'address')).toEqual(empty);
+    expect(encodePushdataValue(new Uint8Array(20), 'address')).toEqual(empty);
+    expect(empty).toEqual(new Uint8Array([0x00]));
+  });
 });
 
 describe('encodePushdataValue input validation', () => {

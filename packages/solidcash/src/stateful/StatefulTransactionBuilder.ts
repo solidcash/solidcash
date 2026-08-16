@@ -9,6 +9,7 @@ import {
   parsePushdataCommitment,
   getDefaultStateValue,
   encodePushdataValue,
+  encodeEventCommitment,
   EventDefinitionAbi,
   StateValue,
   FunctionBlockLayout,
@@ -2255,6 +2256,26 @@ export function relocateDelegateEventNftToDest(
   outputs[dest] = moved;
   outputs[source] = { to: Uint8Array.of(0x51), amount: 1000n };
   return true;
+}
+
+/**
+ * Map visible call args onto event parameters by name (`treasuryAddress_` → `treasuryAddress`).
+ * Incomplete mappings return undefined so a later emit pass can fill the slot.
+ */
+export function resolveNamedEventValues(
+  parameters: readonly { name: string }[],
+  visibleInputs: readonly { name: string }[],
+  args: readonly unknown[],
+): unknown[] | undefined {
+  const byName = new Map<string, unknown>();
+  visibleInputs.forEach((input, index) => {
+    byName.set(input.name, args[index]);
+    byName.set(input.name.replace(/_+$/, ''), args[index]);
+  });
+  const values = parameters.map((parameter) => (
+    byName.has(parameter.name) ? byName.get(parameter.name) : undefined
+  ));
+  return values.every((value) => value !== undefined) ? values : undefined;
 }
 
 /** JobEvent.type_ from a positional tuple or named struct. */
@@ -5079,17 +5100,16 @@ export class StatefulTransactionBuilder {
       const locking = this.eventNftLockingBytecodes.get(emitInfo.eventSignature);
       if (!eventDef || !locking) continue;
       const args = group.logicalFunctionArgs ?? group.functionArgs ?? [];
-      const visible = args.filter((_value, index) => !fn?.inputs[index]?.name.startsWith('__internal__'));
-      const parts = eventDef.parameters.map((parameter: { type: string }, index: number) => encodePushdataValue(
-        (visible[index] ?? getDefaultStateValue(parameter.type, artifact.structs)) as StateValue,
-        parameter.type,
-        artifact.structs,
-      ));
-      const commitment = new Uint8Array(parts.reduce((sum: number, part: Uint8Array) => sum + part.length, 0));
-      let offset = 0;
-      for (const part of parts) {
-        commitment.set(part, offset);
-        offset += part.length;
+      const visibleInputs = (fn?.inputs ?? []).filter((input) => !input.name.startsWith('__internal__'));
+      const values = resolveNamedEventValues(eventDef.parameters, visibleInputs, args);
+      if (!values) continue;
+      let commitment: Uint8Array;
+      try {
+        commitment = encodeEventCommitment(
+          eventDef.parameters, values as StateValue[], artifact.structs,
+        );
+      } catch {
+        continue;
       }
       while (builder.outputs.length <= dest) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });

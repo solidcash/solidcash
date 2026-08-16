@@ -31,6 +31,7 @@ import {
   relocateJobEventEmitToDest,
   relocateDelegateEventNftToDest,
   isDelegateEventNftOutput,
+  resolveNamedEventValues,
   emitDestCollidesPreservedInput,
   encodeEmptyJobEventEmitCommitment,
   encodeJobEventEmitCommitment,
@@ -919,6 +920,16 @@ describe('assignPhysicalReturnIndices', () => {
     expect(relocateDelegateEventNftToDest(versionParked, 6)).toBe(true);
     expect(versionParked[6]?.token?.nft?.commitment).toBe('0119');
     expect(versionParked[3]?.token).toBeUndefined();
+    expect(resolveNamedEventValues(
+      [{ name: 'treasuryAddress' }],
+      [{ name: 'treasuryAddress_' }],
+      ['0x0000000000000000000000000000000000000000'],
+    )).toEqual(['0x0000000000000000000000000000000000000000']);
+    expect(resolveNamedEventValues(
+      [{ name: 'arbitrator' }, { name: 'name' }, { name: 'fee' }],
+      [{ name: 'name' }, { name: 'fee' }],
+      ['Alice', 100n],
+    )).toBeUndefined();
     expect(parked[22]?.token?.nft?.commitment).toBe(
       '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000',
     );

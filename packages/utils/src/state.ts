@@ -473,6 +473,22 @@ export function encodePushdataValue(
   if (type === 'bytes' || /^bytes\d+$/.test(type)) {
     primitiveValue = lockingBytecodeFromAddressBytes(primitiveValue);
   }
+  // Solidity address(0) is empty locking bytecode. ethers.ZeroAddress is the 20-zero hex string; encoding
+  // that as UTF-8 or 20 zero bytes fails the emit EQUALVERIFY against the compiler's OP_0.
+  if (type === 'address' || type === 'address payable') {
+    if (typeof primitiveValue === 'string' && /^(0x)?0*$/i.test(primitiveValue)) {
+      primitiveValue = new Uint8Array(0);
+    } else {
+      primitiveValue = lockingBytecodeFromAddressBytes(primitiveValue);
+      if (
+        primitiveValue instanceof Uint8Array
+        && primitiveValue.length > 0
+        && primitiveValue.every((byte) => byte === 0)
+      ) {
+        primitiveValue = new Uint8Array(0);
+      }
+    }
+  }
   if (isIntLikeType(type)) {
     // ethers-parity: accept a JS `number` for an integer state value by coercing a safe integer to bigint, so
     // `deploy({ initialState: { count: 1 } })` works like ethers (numbers for uint/int).

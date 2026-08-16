@@ -5113,7 +5113,9 @@ export class StatefulTransactionBuilder {
     const emitEvent = stampWithdraw
       ? stampEmptyJobEventTimestamp(visibleArgs![1], now)
       : visibleArgs?.[1];
-    const constructedCommit = emptyAddressEvent && emitEvent !== undefined
+    const persistReadyInsert = (jobEventTypeOf(emitEvent) === 14 || jobEventTypeOf(emitEvent) === 15)
+      && isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
+    const constructedCommit = emitEvent !== undefined && (emptyAddressEvent || persistReadyInsert)
       ? encodeJobEventEmitCommitment(visibleArgs![0], emitEvent, structs)
       : undefined;
     const persistEmit = this._shouldRematerializePersistUpdate();
@@ -9441,7 +9443,9 @@ export class StatefulTransactionBuilder {
         const emitEvent = stampWithdraw
           ? stampEmptyJobEventTimestamp(visibleArgs![1], now)
           : visibleArgs?.[1];
-        const constructedCommit = emptyAddressEvent && emitEvent !== undefined
+        const persistReadyInsert = (jobEventTypeOf(emitEvent) === 14 || jobEventTypeOf(emitEvent) === 15)
+          && isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
+        const constructedCommit = emitEvent !== undefined && (emptyAddressEvent || persistReadyInsert)
           ? encodeJobEventEmitCommitment(
             visibleArgs![0],
             emitEvent,

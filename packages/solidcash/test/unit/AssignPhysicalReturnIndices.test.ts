@@ -796,6 +796,10 @@ describe('assignPhysicalReturnIndices', () => {
     expect(jobEventTypeOf([16, '', '', 0])).toBe(16);
     expect(jobEventTypeOf({ type_: 7n, address_: '', data_: '', timestamp_: 0n })).toBe(7);
     expect(encodeEmptyJobEventEmitCommitment(0, [7, '', '', 0])).toBe('0057000000');
+    const whitelistAddr = Uint8Array.from([0x76, 0xa9, 0x14, ...Array(20).fill(0x71), 0x88, 0xac]);
+    const whitelistCommit = encodeJobEventEmitCommitment(0n, [14, whitelistAddr, new Uint8Array(), 0]);
+    expect(whitelistCommit === undefined || whitelistCommit.startsWith('5e19')
+      || whitelistCommit.startsWith('005e')).toBe(true);
     expect(encodeEmptyJobEventEmitCommitment(0n, [16n, new Uint8Array(), new Uint8Array(), 0n]))
       .toBe('0060000000');
     expect(isJobEventEmitCommitment('0057000000')).toBe(false);

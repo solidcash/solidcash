@@ -53,6 +53,9 @@ import {
   persistJobEventsBandFloor,
   isProxyPreserveOutputIndex,
   remapDerivedChunkDests,
+  publishJobEventDataNftDests,
+  selectPublishJobEventDataNftSources,
+  assignPublishJobEventDataNftInputs,
   scaledInputPreserveExclusiveEnd,
   scaledEventOutputIndex,
   liveJobEventsBandWidth,
@@ -776,6 +779,37 @@ describe('assignPhysicalReturnIndices', () => {
     expect(isProxyPreserveOutputIndex(0)).toBe(true);
     expect(isProxyPreserveOutputIndex(1)).toBe(true);
     expect(isProxyPreserveOutputIndex(2)).toBe(false);
+    expect(publishJobEventDataNftDests(11)).toEqual([12, 13]);
+    expect(publishJobEventDataNftDests(-1)).toEqual([]);
+    expect(publishJobEventDataNftDests(0)).toEqual([2]);
+    const mdNft = { token: { category: 'md', nft: { capability: 'mutable' as const, commitment: '0023aa20' } } };
+    const otherNft = { token: { category: 'mv', nft: { capability: 'mutable' as const, commitment: '0023aa20' } } };
+    const pad = { token: undefined };
+    const closeInputs = [
+      pad, otherNft, otherNft, pad, pad, pad, pad, pad, pad, mdNft, { ...mdNft, token: { ...mdNft.token, nft: { capability: 'mutable' as const, commitment: '51210000' } } }, pad, pad, pad,
+    ];
+    expect(selectPublishJobEventDataNftSources(closeInputs, 11, 'md')).toEqual([9, 10]);
+    expect(selectPublishJobEventDataNftSources(closeInputs, 11)).toEqual([9, 10]);
+    const scidPad = [
+      ...closeInputs.slice(0, 12),
+      { token: { category: 'md', nft: { capability: 'mutable' as const, commitment: '53434944' } } },
+      { token: { category: 'md', nft: { capability: 'mutable' as const, commitment: '5343494401050000' } } },
+    ];
+    expect(selectPublishJobEventDataNftSources(scidPad, 11, 'md')).toEqual([9, 10]);
+    const noneCap = [
+      pad, pad, pad, pad, pad, pad, pad, pad, pad,
+      { token: { category: 'md', nft: { capability: 'none' as const, commitment: '0023aa20' } } },
+      { token: { category: 'md', nft: { capability: 'none' as const, commitment: '51210000' } } },
+      pad, pad, pad,
+    ];
+    expect(selectPublishJobEventDataNftSources(noneCap, 11, 'md')).toEqual([9, 10]);
+    expect(selectPublishJobEventDataNftSources(closeInputs, 11, 'other-minting')).toEqual([9, 10]);
+    expect(selectPublishJobEventDataNftSources(closeInputs, 14, 'md')).toEqual([]);
+    expect(assignPublishJobEventDataNftInputs(closeInputs, 11, [9, 10])).toEqual([12, 13]);
+    expect(closeInputs[12]?.token?.nft?.commitment).toBe('0023aa20');
+    expect(closeInputs[13]?.token?.nft?.commitment).toBe('51210000');
+    expect(closeInputs[9]?.token).toBeUndefined();
+    expect(closeInputs[10]?.token).toBeUndefined();
     const remapped = remapDerivedChunkDests(
       new Map([
         [1, { commitment: `0100${'41'.repeat(40)}` }],

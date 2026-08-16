@@ -543,6 +543,70 @@ export function remapDerivedChunkDests<T extends { commitment?: string }>(
   return next;
 }
 
+/** publishJobEvent data-NFT dests: INPUTINDEX+1 and INPUTINDEX+2. Never dest 0/1. */
+export function publishJobEventDataNftDests(implIndex: number, dataNftCount = 2): number[] {
+  if (implIndex < 0 || dataNftCount <= 0) return [];
+  return Array.from({ length: dataNftCount }, (_, offset) => implIndex + 1 + offset)
+    .filter((dest) => dest >= 2 && dest !== implIndex);
+}
+
+/**
+ * Data-NFT inputs that belong at impl+1 / impl+2. Prefer ones already there;
+ * otherwise take the callee category, never dest 0/1.
+ */
+export function selectPublishJobEventDataNftSources(
+  inputs: ReadonlyArray<{
+    token?: { category?: string; nft?: { capability?: string; commitment?: string } };
+  }>,
+  implIndex: number,
+  categoryId?: string,
+): number[] {
+  const dests = publishJobEventDataNftDests(implIndex);
+  if (dests.length === 0) return [];
+  const isSource = (index: number): boolean => {
+    if (isProxyPreserveOutputIndex(index) || index === implIndex) return false;
+    const input = inputs[index];
+    if (!input?.token) return false;
+    const cap = input.token.nft?.capability;
+    if (cap !== 'mutable' && cap !== 'none') return false;
+    if (categoryId && input.token.category !== categoryId) return false;
+    const commit = String(input.token.nft?.commitment ?? '');
+    if (commit.toLowerCase().startsWith('53434944')) return false;
+    return isDataNftIndexCommitment(commit);
+  };
+  if (dests.every((dest) => isSource(dest))) return dests;
+  const adjacent = dests.map((_, offset) => implIndex - dests.length + offset);
+  if (adjacent.every((index) => index >= 2 && index !== implIndex && isSource(index))) {
+    return adjacent;
+  }
+  if (categoryId) {
+    const unfiltered = selectPublishJobEventDataNftSources(inputs, implIndex);
+    if (unfiltered.length === dests.length) return unfiltered;
+  }
+  return [];
+}
+
+/** Swap data-NFT UTXOs onto dest impl+1 / impl+2. Returns the dests that moved. */
+export function assignPublishJobEventDataNftInputs<T>(
+  inputs: T[],
+  implIndex: number,
+  sources: readonly number[],
+): number[] {
+  const dests = publishJobEventDataNftDests(implIndex);
+  const moved: number[] = [];
+  for (let offset = 0; offset < dests.length && offset < sources.length; offset++) {
+    const dest = dests[offset];
+    const source = sources[offset];
+    if (source === dest || source < 0 || dest < 0) continue;
+    if (source >= inputs.length || dest >= inputs.length) continue;
+    const destInput = inputs[dest];
+    inputs[dest] = { ...(inputs[source] as object) } as T;
+    inputs[source] = destInput !== undefined ? { ...(destInput as object) } as T : inputs[source];
+    moved.push(dest);
+  }
+  return moved;
+}
+
 export function computePublishJobEventsBand(parts: {
   implIndex?: number;
   blockSize?: number;
@@ -4114,10 +4178,12 @@ export class StatefulTransactionBuilder {
       }
     }
     const digestDests = new Set(persistDigestLockDests(this._executingPublishJobEventInputIndex(builder)));
+    const dataNftDests = new Set(publishJobEventDataNftDests(this._executingPublishJobEventInputIndex(builder)));
     const restore = (start: number, endExclusive: number): void => {
       for (let index = start; index < endExclusive; index++) {
         if (emitDests.has(index)) continue;
         if (digestDests.has(index)) continue;
+        if (dataNftDests.has(index)) continue;
         if (tokenReturns.has(index)) continue;
         if (persistBand && index >= persistBand.start && index <= persistBand.end) continue;
         const occupantCommit = String(builder.outputs[index]?.token?.nft?.commitment ?? '');
@@ -5375,38 +5441,37 @@ export class StatefulTransactionBuilder {
   /**
    * publishJobEvent dests impl+1 / impl+2 are the callee's data NFTs. Occupancy
    * can leave P2PKH pads there after the NFTs were placed at the proxy block.
+   * Copy proxy-block data-NFT outputs; do not move those UTXOs (dest 8 1:1).
    */
   private _reassertPublishJobEventDataNftOneToOnes(builder: TransactionBuilder): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
     const impl = this._executingPublishJobEventInputIndex(builder);
     if (impl < 0) return;
     const publish = this.externalCallUtxoGroups.find((group) =>
       (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
       ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
     const categoryId = publish?.categoryId;
-    const dataNfts = this.allInputs
-      .map((input, index) => ({ input, index }))
-      .filter(({ input }) => {
-        if (!input?.token || (categoryId && input.token.category !== categoryId)) return false;
-        if (input.token.nft?.capability !== 'mutable') return false;
-        return isDataNftIndexCommitment(String(input.token.nft?.commitment ?? ''));
-      });
-    if (dataNfts.length === 0) return;
-    for (const [offset, source] of dataNfts.entries()) {
-      const dest = impl + 1 + offset;
-      if (dest === impl) continue;
-      if (!source.input.unlocker) continue;
-      const existing = builder.outputs[dest];
-      const existingLock = existing?.to instanceof Uint8Array
-        ? existing.to
-        : existing?.to !== undefined ? addressToLockScript(existing.to) : undefined;
-      const sourceLock = source.input.unlocker.generateLockingBytecode();
-      const same = existingLock !== undefined && binToHex(existingLock) === binToHex(sourceLock)
-        && String(existing?.token?.nft?.commitment ?? '') === String(source.input.token?.nft?.commitment ?? '');
-      if (same) continue;
+    const dests = publishJobEventDataNftDests(impl);
+    if (dests.length === 0) return;
+    let sources = selectPublishJobEventDataNftSources(this.allInputs, impl, categoryId);
+    // Proxy data-NFTs often use a different category than the impl minting NFT.
+    if (sources.length === 0) {
+      sources = selectPublishJobEventDataNftSources(this.allInputs, impl);
+    }
+    if (sources.length === 0) return;
+    const entryDest = persistValueChunkBase(impl, 5, true);
+    const eventDest = entryDest >= 0 ? entryDest + 1 : -1;
+    const band = this.getPublishJobEventsBand();
+    for (let offset = 0; offset < dests.length && offset < sources.length; offset++) {
+      const dest = dests[offset];
+      if (dest === entryDest || dest === eventDest) continue;
+      if (band && dest >= band.start && dest <= band.end) continue;
+      const source = this.allInputs[sources[offset]];
+      if (!source?.token || !('unlocker' in source) || !source.unlocker) continue;
       builder.outputs[dest] = {
-        to: sourceLock,
-        amount: source.input.satoshis,
-        token: cloneToken(source.input.token!),
+        to: source.unlocker.generateLockingBytecode(),
+        amount: source.satoshis,
+        token: cloneToken(source.token),
       };
     }
   }
@@ -11331,6 +11396,26 @@ export class StatefulTransactionBuilder {
             + `equalOk=${outputBytecodeMatches.filter((entry) => entry.matches).length}\n`
             + `band=${JSON.stringify(band)} persistReady=${isPersistedJobEventsReady()}`
             + ` impl=${this._executingPublishJobEventInputIndex()}\n`
+            + `nftSrc=${JSON.stringify({
+              categoryId: this.externalCallUtxoGroups.find((group) =>
+                (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')?.categoryId
+                ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent')
+                  ?.categoryId,
+              sources: selectPublishJobEventDataNftSources(
+                this.allInputs, this._executingPublishJobEventInputIndex(),
+                this.externalCallUtxoGroups.find((group) =>
+                  (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')?.categoryId
+                  ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent')
+                    ?.categoryId,
+              ),
+              dests: publishJobEventDataNftDests(this._executingPublishJobEventInputIndex()),
+              ins: [9, 10, 11, 12, 13].map((index) => ({
+                index,
+                cap: this.allInputs[index]?.token?.nft?.capability ?? '-',
+                commit: String(this.allInputs[index]?.token?.nft?.commitment ?? '').slice(0, 16),
+                cat: String(this.allInputs[index]?.token?.category ?? '').slice(0, 16),
+              })),
+            })}\n`
             + `dest1-in=${dest1In?.unlocker ? binToHex(dest1In.unlocker.generateLockingBytecode()).slice(0, 20) : 'none'}`
             + `:cap=${dest1In?.token?.nft?.capability ?? '-'}`
             + `:commit=${String(dest1In?.token?.nft?.commitment ?? '').slice(0, 24)}\n`

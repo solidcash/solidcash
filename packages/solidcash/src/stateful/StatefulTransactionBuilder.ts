@@ -13010,8 +13010,21 @@ export class StatefulTransactionBuilder {
     this._stampJobsSuffixLock(finalBuilder);
     this._reassertPublishJobEventDataNftOneToOnes(finalBuilder);
     this._reassertProxyPreserveOneToOnes(finalBuilder);
-
-    let rawTx = finalBuilder.build();
+    const finalizePinned = (): string => {
+      const transaction = finalBuilder.buildLibauthTransaction(true);
+      this._pinPersistDigestLocksOnTransaction(transaction);
+      this._pinJobsSuffixLockOnTransaction(finalBuilder, transaction);
+      this._resignLibauthTransaction(finalBuilder, transaction);
+      assertFinalizedTransactionCovenants(finalBuilder, transaction);
+      return binToHex(encodeTransaction(transaction));
+    };
+    let rawTx: string;
+    try {
+      rawTx = finalizePinned();
+    } catch (error) {
+      this._logCovenantFailureTrace(finalBuilder, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
 
     // -- Phase 4: fee sanity checks --
     const { decodeTransactionUnsafe, hash256 } = await import('@bitauth/libauth');
@@ -13053,7 +13066,8 @@ export class StatefulTransactionBuilder {
       finalBuilder.outputs[changeIndex] = { ...current, amount: (current.amount ?? 0n) - shortfall };
       this._repairPublishJobEventDestLocks(finalBuilder);
       this._pinPersistDigestLocks(finalBuilder);
-      rawTx = finalBuilder.build();
+      this._stampJobsSuffixLock(finalBuilder);
+      rawTx = finalizePinned();
       rawTxBin = hexToBin(rawTx);
       decodedTx = decodeTransactionUnsafe(rawTxBin);
       totalOutputSats = (decodedTx as { outputs: Array<{ valueSatoshis: bigint }> }).outputs

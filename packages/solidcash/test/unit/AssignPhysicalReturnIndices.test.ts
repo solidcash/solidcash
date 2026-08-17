@@ -82,6 +82,7 @@ import {
   extractEmbeddedP2sh32Locks,
   pinJobsSuffixInput,
   retargetMintingInputToJobsPin,
+  selectPersistChunkLock,
   matchingValueChunkUnlockerParts,
   matchingTokenContainerUnlockerParts,
   matchingDataNftUnlockerParts,
@@ -108,6 +109,8 @@ import {
   persistUpdatePredecessorDests,
   persistDigestLockDests,
   persistChunkOutputDests,
+  persistUpdateLiveDests,
+  surplusPersistValueDests,
   surplusPersistDigestDests,
   selectPublishJobEventInputIndex,
   recoverPersistValueFromOutputs,
@@ -1468,6 +1471,25 @@ describe('assignPhysicalReturnIndices', () => {
       to: new Uint8Array(35),
       token: { nft: { capability: 'none', commitment: '534349440105' } },
     })).toBe(false);
+    const livePersistVLock = new Uint8Array(35);
+    livePersistVLock[0] = 0xaa; livePersistVLock[1] = 0x20; livePersistVLock[2] = 0x89; livePersistVLock[34] = 0x87;
+    const derivedLock = new Uint8Array(35);
+    derivedLock[0] = 0xaa; derivedLock[1] = 0x20; derivedLock[2] = 0x61; derivedLock[34] = 0x87;
+    const digestLock = new Uint8Array(35);
+    digestLock[0] = 0xaa; digestLock[1] = 0x20; digestLock[2] = 0xb2; digestLock[34] = 0x87;
+    expect(selectPersistChunkLock({
+      digestLock,
+      predecessorLocks: [
+        { lock: digestLock, commitment: 'e3b0c44298fc1c14' },
+        { lock: livePersistVLock, commitment: '00004cb42000437265617465' },
+      ],
+      fallback: derivedLock,
+    })).toEqual(livePersistVLock);
+    expect(selectPersistChunkLock({
+      digestLock,
+      predecessorLocks: [{ lock: digestLock, commitment: 'e3b0c44298fc1c14' }],
+      fallback: derivedLock,
+    })).toEqual(derivedLock);
   });
 
   it('strips extra value-chunk locks past the planned nNew band', () => {
@@ -2316,6 +2338,17 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[19]?.token?.nft?.commitment.startsWith('03000200')).toBe(true);
     expect(outputs[19]?.token?.nft?.capability).toBe('mutable');
     expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 19 })).toEqual([16, 17, 18, 19]);
+    expect(persistUpdateLiveDests({
+      implIndex: 11, bandStart: 16, bandEnd: 18, layoutWidth: 4,
+    })).toEqual([16, 17, 18, 19]);
+    expect(surplusPersistValueDests({
+      persistDests: [16, 17, 18, 19],
+      dests: [
+        { dest: 19, commit: '030002004441000010632d5e', cap: 'mutable' },
+        { dest: 20, commit: '04001a564310000000000000', cap: 'mutable' },
+        { dest: 21, commit: '', cap: 'minting' },
+      ],
+    })).toEqual([20]);
     const chunk3 = persist[3].commitment;
     expect(persistChunkMayOverwriteScid({
       dest: 19, band: { start: 16, end: 19 }, replayWidth: 0, incomingCommitment: chunk3,

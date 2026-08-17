@@ -248,6 +248,25 @@ export function getAnonymousEventNftAddress(
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
+export function getTokenContainerLockingBytecode(
+  categoryId: string, tokenContainerCategoryId: string,
+): Uint8Array {
+  validateCategoryId(categoryId);
+  validateCategoryId(tokenContainerCategoryId, 'tokenContainerCategoryId');
+  return scriptToLockingBytecode(
+    buildTokenContainerCovenantScript(hexToBin(categoryId), hexToBin(tokenContainerCategoryId)),
+    'p2sh32',
+  );
+}
+
+export function getSatoshiContainerLockingBytecode(categoryId: string): Uint8Array {
+  validateCategoryId(categoryId);
+  return scriptToLockingBytecode(
+    buildSatoshiContainerCovenantScript(hexToBin(categoryId)),
+    'p2sh32',
+  );
+}
+
 export function getTokenContainerAddress(
   contract: Contract<any, any>, categoryId: string, tokenContainerCategoryId: string,
 ): string {

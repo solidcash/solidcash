@@ -71,6 +71,8 @@ export {
   resolveLogicalIdentityByCategory, requireMsgSenderIdentity, isZeroMsgSenderCategory,
   resolveSplitLogicalIdentity,
   createLogicalIdentityUnlocker, isScidIdentityCommitment,
+  matchingLogicalIdentityFromCommitments, matchingLogicalIdentityNearby,
+  parseLogicalIdentitySeed,
   logicalIdentityAddressVariants, sameLogicalIdentityAddress, logicalIdentityBandKey,
   type LogicalIdentityCommitment, type ResolvedLogicalIdentity, type ResolvedSplitLogicalIdentity,
 } from './logical-identity.js';
@@ -133,7 +135,9 @@ export {
   getEventNftAddress,
   getAnonymousEventNftAddress,
   getTokenContainerAddress,
+  getTokenContainerLockingBytecode,
   getSatoshiContainerAddress,
+  getSatoshiContainerLockingBytecode,
   getContractState,
   createDataNftUnlocker,
   createMessageBusVerifierUnlocker,

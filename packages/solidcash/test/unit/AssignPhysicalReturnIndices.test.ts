@@ -1,7 +1,18 @@
-import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, encodeCashAddress, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
+import {
+  getTokenContainerLockingBytecode,
+  getDataNftLockingBytecode,
+} from '../../src/stateful/covenant-helpers.js';
+import {
+  createLogicalIdentityUnlocker,
+  encodeLogicalIdentityCommitment,
+  matchingLogicalIdentityFromCommitments,
+  matchingLogicalIdentityNearby,
+  parseLogicalIdentitySeed,
+} from '../../src/stateful/logical-identity.js';
 import {
   assignPhysicalReturnIndices,
   assignedTailEnd,
@@ -70,6 +81,9 @@ import {
   jobsSuffixFungibleToken,
   extractEmbeddedP2sh32Locks,
   pinJobsSuffixInput,
+  matchingValueChunkUnlockerParts,
+  matchingTokenContainerUnlockerParts,
+  matchingDataNftUnlockerParts,
   selectLatestJobEventsChunks,
   persistedJobEventsWidth,
   selectHashedValueForChunkPin,
@@ -1330,6 +1344,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(selectJobsSuffixLock({
       destInputLock: mintingLock,
       destInputCapability: 'minting',
+      derived: wrongScidLock,
       laterLocks: [wrongScidLock],
       embeddedLocks: extractEmbeddedP2sh32Locks(persistBlob),
       skipLockHexes: [binToHex(mintingLock)],
@@ -1357,7 +1372,7 @@ describe('assignPhysicalReturnIndices', () => {
       token: { nft: { capability: 'minting' as const } },
       unlocker: {
         generateLockingBytecode: () => mintingLock,
-        generateUnlockingBytecode: () => Uint8Array.of(0x51),
+        generateUnlockingBytecode: () => Uint8Array.of(0x00),
       },
     };
     const suffixInputs = Array.from({ length: 22 }, () => ({ ...mintingInput }));
@@ -1365,10 +1380,12 @@ describe('assignPhysicalReturnIndices', () => {
       generateLockingBytecode: () => suffixJobsLock,
       generateUnlockingBytecode: () => Uint8Array.of(0x51),
     };
-    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(false);
+    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(true);
+    expect(suffixInputs[21]?.unlocker.generateUnlockingBytecode({} as never)).toEqual(Uint8Array.of(0x00));
     expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock, jobsUnlocker)).toBe(true);
     expect(suffixInputs[21]?.unlocker.generateLockingBytecode()).toEqual(suffixJobsLock);
-    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock, jobsUnlocker)).toBe(false);
+    expect(suffixInputs[21]?.unlocker.generateUnlockingBytecode({} as never)).toEqual(Uint8Array.of(0x51));
+    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(false);
     const persistVLock = new Uint8Array(35);
     persistVLock[0] = 0xaa; persistVLock[1] = 0x20; persistVLock[2] = 0xb2; persistVLock[34] = 0x87;
     const persistBandInputs = Array.from({ length: 22 }, (_, index) => ({
@@ -1730,6 +1747,57 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(computedPersistLock ?? new Uint8Array())).not.toBe(
       binToHex(p2sh32LockFromValueRoot(sha256Sync(persistV))),
     );
+    const persistCategory = 'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0';
+    expect(matchingValueChunkUnlockerParts(computedPersistLock!, {
+      categoryIds: [persistCategory],
+      persistValues: [persistV],
+    })).toEqual({
+      categoryId: persistCategory,
+      collection: expect.stringContaining('jobEvents'),
+      slot: expect.any(Uint8Array),
+      root: sha256Sync(persistV),
+    });
+    const tokenOwner = '3770ad41c0ffee00000000000000000000000000000000000000000000000001';
+    const tokenCategory = 'e5459449dc4974d6d01bfea4bec0a2d483fb767d503f53776cb2403a608891b8';
+    const tokenContainerLock = getTokenContainerLockingBytecode(tokenOwner, tokenCategory);
+    expect(tokenContainerLock.length).toBe(35);
+    expect(matchingTokenContainerUnlockerParts(tokenContainerLock, {
+      ownerCategoryIds: [persistCategory, tokenOwner],
+      tokenCategoryIds: [tokenCategory],
+    })).toEqual({ ownerCategoryId: tokenOwner, tokenCategoryId: tokenCategory });
+    expect(matchingTokenContainerUnlockerParts(computedPersistLock!, {
+      ownerCategoryIds: [tokenOwner],
+      tokenCategoryIds: [tokenCategory],
+    })).toBeUndefined();
+    expect(matchingDataNftUnlockerParts(getDataNftLockingBytecode(tokenOwner), [tokenOwner])).toBe(tokenOwner);
+    expect(matchingDataNftUnlockerParts(tokenContainerLock, [tokenOwner])).toBeUndefined();
+    const deployerPkh = hexToBin('71782e8159265ed94bd35b8e699c08f53a6f38c6');
+    const deployerLock = Uint8Array.from([0x76, 0xa9, 0x14, ...deployerPkh, 0x88, 0xac]);
+    const deployerAddress = encodeCashAddress({
+      prefix: 'bchtest', type: 'p2pkh', payload: deployerPkh, throwErrors: true,
+    }).address;
+    const identityNonce = 7n;
+    const identityUnlocker = createLogicalIdentityUnlocker(deployerAddress, identityNonce);
+    const identityLock = identityUnlocker.generateLockingBytecode();
+    const scid = encodeLogicalIdentityCommitment({
+      deployerLockingBytecode: deployerLock,
+      nonce: identityNonce,
+      rootLockingBytecode: identityLock,
+    });
+    expect(matchingLogicalIdentityFromCommitments(identityLock, [scid])).toEqual({
+      deployer: expect.stringContaining('bchtest:'),
+      nonce: identityNonce,
+    });
+    expect(matchingLogicalIdentityFromCommitments(tokenContainerLock, [scid])).toBeUndefined();
+    expect(matchingLogicalIdentityNearby(identityLock, [deployerAddress])).toEqual({
+      deployer: deployerAddress,
+      nonce: identityNonce,
+    });
+    expect(matchingLogicalIdentityNearby(tokenContainerLock, [deployerAddress])).toBeUndefined();
+    expect(parseLogicalIdentitySeed(identityUnlocker.generateUnlockingBytecode({} as never))).toEqual({
+      deployer: deployerAddress,
+      nonce: identityNonce,
+    });
     expect(isJobEventEmitCommitment('005f1976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac0000')).toBe(true);
     expect(isOverwritableEmitOccupant({
       token: { nft: { capability: 'mutable', commitment: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } },

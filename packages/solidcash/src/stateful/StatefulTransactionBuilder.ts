@@ -43,7 +43,11 @@ import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBui
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import {
   addressToLockScript, scriptToLockingBytecode, generateLibauthSourceOutputs, calculateDust,
+  createUnlockingBytecode,
 } from '../utils.js';
+import {
+  findDeploymentByLockingBytecode, listDeployments,
+} from './deployment-registry.js';
 import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { attachWait } from '../wait.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
@@ -59,10 +63,15 @@ import {
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import {
   createDataNftUnlocker, createRelocatedDataNftUnlocker, createValueChunkUnlocker,
-  getValueChunkLockingBytecode,
+  createEntryNftUnlocker, createTokenContainerUnlocker, createSatoshiContainerUnlocker,
+  getValueChunkLockingBytecode, getTokenContainerLockingBytecode, getDataNftLockingBytecode,
+  getEntryNftLockingBytecode, getSatoshiContainerLockingBytecode,
 } from './covenant-helpers.js';
 import { canApplyRepairedNftCommitment, isRepairableNftOutput } from './computed-output-repair.js';
-import { isScidIdentityCommitment } from './logical-identity.js';
+import {
+  isScidIdentityCommitment, createLogicalIdentityUnlocker, matchingLogicalIdentityFromCommitments,
+  matchingLogicalIdentityNearby, decodeLogicalIdentityCommitment, parseLogicalIdentitySeed,
+} from './logical-identity.js';
 import { encodeEntryCommitment, isEmptyValueEntryCommitment, keyToSlot } from './SortedList.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 
@@ -570,11 +579,12 @@ export function selectJobsSuffixLock(parts: {
   if (parts.destInputCapability === 'mutable' && usable(parts.destInputLock)) {
     return parts.destInputLock;
   }
-  if (usable(parts.derived)) return parts.derived;
-  if (usable(parts.cached)) return parts.cached;
+  // Persist-blob jobs address wins over a later SCID derived pin (aa200ee7).
   for (const lock of parts.embeddedLocks ?? []) {
     if (usable(lock)) return lock;
   }
+  if (usable(parts.derived)) return parts.derived;
+  if (usable(parts.cached)) return parts.cached;
   for (const lock of parts.laterLocks ?? []) {
     if (usable(lock)) return lock;
   }
@@ -603,18 +613,20 @@ export function pinJobsSuffixInput<T extends {
   if (destInput.token?.nft?.capability === 'mutable') return false;
   if (isPersistValueChunkCommitment(String(destInput.token?.nft?.commitment ?? ''))) return false;
   const current = destInput.unlocker.generateLockingBytecode();
-  if (isP2sh32Bytes(current) && binToHex(current) === binToHex(locking)) return false;
+  const lockAlreadyPinned = isP2sh32Bytes(current) && binToHex(current) === binToHex(locking);
   const redeemUnlocker = jobsUnlocker
     && persistLockHex(jobsUnlocker.generateLockingBytecode()) === binToHex(locking)
     ? jobsUnlocker
     : undefined;
-  // Lock-only wrap fails dest 21 P2SH (FakeToken redeem vs jobs lock).
-  if (!redeemUnlocker) return false;
+  // A first lock-only wrap reports the jobs lock, so a later pin must still
+  // replace the foreign redeem when a matching CREATE/jobs unlocker appears.
+  if (lockAlreadyPinned && !redeemUnlocker) return false;
+  const source = redeemUnlocker ?? destInput.unlocker;
   inputs[dest] = {
     ...destInput,
     unlocker: {
       generateLockingBytecode: () => locking,
-      generateUnlockingBytecode: (context) => redeemUnlocker.generateUnlockingBytecode(context),
+      generateUnlockingBytecode: (context) => source.generateUnlockingBytecode(context),
     },
   };
   return true;
@@ -1012,6 +1024,85 @@ export function persistValueChunkLock(
     try {
       return getValueChunkLockingBytecode(categoryId, collection, slot, root);
     } catch { /* collection rejected */ }
+  }
+  return undefined;
+}
+
+const jobEventsCollections = [
+  'jobEvents',
+  'jobEvents:mapping(uint256 => JobEventData[])',
+  'jobEvents:mapping(uint256=>JobEventData[])',
+] as const;
+
+/** Recipe whose value-chunk redeem hashes to the dest 21 jobs lock. */
+export function matchingValueChunkUnlockerParts(locking: Uint8Array, parts: {
+  categoryIds: readonly string[];
+  persistValues: readonly Uint8Array[];
+}): { categoryId: string; collection: string; slot: Uint8Array; root: Uint8Array } | undefined {
+  if (!isP2sh32Bytes(locking)) return undefined;
+  const want = binToHex(locking);
+  const slots = jobEventsSlotCandidates();
+  for (const categoryId of parts.categoryIds) {
+    if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId)) continue;
+    const recipe = persistedJobEventsUnlockRecipe(categoryId);
+    if (recipe) {
+      try {
+        const lock = getValueChunkLockingBytecode(
+          recipe.categoryId, recipe.collection, recipe.slot, recipe.root,
+        );
+        if (binToHex(lock) === want) return recipe;
+      } catch { /* recipe rejected */ }
+    }
+    for (const value of parts.persistValues) {
+      if (!value || value.length === 0) continue;
+      const root = sha256Sync(value);
+      for (const slot of slots) {
+        for (const collection of jobEventsCollections) {
+          try {
+            const lock = getValueChunkLockingBytecode(categoryId, collection, slot, root);
+            if (binToHex(lock) === want) {
+              return { categoryId, collection, slot, root };
+            }
+          } catch { /* collection rejected */ }
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Recipe whose token-container redeem hashes to the dest 21 jobs/token lock. */
+export function matchingTokenContainerUnlockerParts(locking: Uint8Array, parts: {
+  ownerCategoryIds: readonly string[];
+  tokenCategoryIds: readonly string[];
+}): { ownerCategoryId: string; tokenCategoryId: string } | undefined {
+  if (!isP2sh32Bytes(locking)) return undefined;
+  const want = binToHex(locking);
+  for (const ownerCategoryId of parts.ownerCategoryIds) {
+    if (!ownerCategoryId || !/^[0-9a-f]{64}$/i.test(ownerCategoryId)) continue;
+    for (const tokenCategoryId of parts.tokenCategoryIds) {
+      if (!tokenCategoryId || !/^[0-9a-f]{64}$/i.test(tokenCategoryId)) continue;
+      try {
+        const lock = getTokenContainerLockingBytecode(ownerCategoryId, tokenCategoryId);
+        if (binToHex(lock) === want) return { ownerCategoryId, tokenCategoryId };
+      } catch { /* category rejected */ }
+    }
+  }
+  return undefined;
+}
+
+/** Data-NFT redeem whose p2sh32 lock is the dest 21 pin. */
+export function matchingDataNftUnlockerParts(
+  locking: Uint8Array,
+  categoryIds: readonly string[],
+): string | undefined {
+  if (!isP2sh32Bytes(locking)) return undefined;
+  const want = binToHex(locking);
+  for (const categoryId of categoryIds) {
+    if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId)) continue;
+    try {
+      if (binToHex(getDataNftLockingBytecode(categoryId)) === want) return categoryId;
+    } catch { /* category rejected */ }
   }
   return undefined;
 }
@@ -6158,6 +6249,7 @@ export class StatefulTransactionBuilder {
   private _pinJobsSuffixLockOnTransaction(
     builder: TransactionBuilder,
     transaction: {
+      inputs: Array<{ unlockingBytecode: Uint8Array }>;
       outputs: Array<{
         lockingBytecode: Uint8Array;
         valueSatoshis: bigint;
@@ -6210,13 +6302,16 @@ export class StatefulTransactionBuilder {
       ? destInput?.token
       : jobsSuffixFungibleToken(this.jobsSuffixCategory);
     stampJobsSuffixLock(builder.outputs, dest, locking, nextToken);
-    const jobsUnlocker = this.allInputs.find((input) => {
-      if (!('unlocker' in input) || !input.unlocker) return false;
-      const lock = input.unlocker.generateLockingBytecode();
-      return isP2sh32Bytes(lock) && binToHex(lock) === binToHex(locking);
-    })?.unlocker;
-    pinJobsSuffixInput(this.allInputs, dest, locking, jobsUnlocker);
+    pinJobsSuffixInput(this.allInputs, dest, locking, this._jobsSuffixUnlocker(locking, dest));
     this._syncBuilderUnlockers(builder);
+    const destUnlocker = builder.inputs[dest]?.unlocker ?? this.allInputs[dest]?.unlocker;
+    if (destUnlocker && dest < transaction.inputs.length) {
+      transaction.inputs[dest].unlockingBytecode = destUnlocker.generateUnlockingBytecode({
+        transaction: transaction as GenerateUnlockingBytecodeOptions['transaction'],
+        sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+        inputIndex: dest,
+      });
+    }
     transaction.outputs[dest].lockingBytecode = locking;
     const amount = builder.outputs[dest]?.amount;
     if (amount !== undefined && amount >= 1200n) {
@@ -6248,9 +6343,11 @@ export class StatefulTransactionBuilder {
     },
   ): void {
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const jobsDest = jobsSuffixDest(this._executingPublishJobEventInputIndex(builder));
     for (let index = 0; index < transaction.inputs.length && index < builder.inputs.length; index++) {
       const unlocker = builder.inputs[index]?.unlocker;
-      if (!unlocker || !isP2PKHUnlocker(unlocker)) continue;
+      if (!unlocker) continue;
+      if (!isP2PKHUnlocker(unlocker) && index !== jobsDest) continue;
       transaction.inputs[index].unlockingBytecode = unlocker.generateUnlockingBytecode({
         transaction: transaction as GenerateUnlockingBytecodeOptions['transaction'],
         sourceOutputs,
@@ -8032,6 +8129,208 @@ export class StatefulTransactionBuilder {
     if (jobsLock) packJobsAgainstOpReturn(builder.outputs, jobsLock, tailStart);
   }
 
+  /** CREATE-identity unlocker whose p2sh32 lock is the dest 21 jobs pin. */
+  private _jobsSuffixLogicalIdentityUnlocker(locking: Uint8Array): Unlocker | undefined {
+    const want = binToHex(locking);
+    const candidates = [
+      this.logicalIdentityUtxo,
+      ...this.externalIdentityAnchorUtxos,
+    ];
+    for (const candidate of candidates) {
+      if (!candidate?.unlocker) continue;
+      try {
+        if (binToHex(candidate.unlocker.generateLockingBytecode()) === want) return candidate.unlocker;
+      } catch { /* skip */ }
+    }
+    const commitments: string[] = [];
+    const pushCommit = (value?: string): void => {
+      if (!value) return;
+      const hex = value.toLowerCase().replace(/^0x/, '');
+      if (isScidIdentityCommitment(hex)) commitments.push(hex);
+      const index = hex.indexOf('5343494401');
+      if (index >= 0) commitments.push(hex.slice(index));
+    };
+    for (const input of this.allInputs) pushCommit(String(input?.token?.nft?.commitment ?? ''));
+    for (const candidate of candidates) pushCommit(String(candidate?.token?.nft?.commitment ?? ''));
+    for (const value of [
+      ...persistedJobEventsValues.values(),
+      ...stagedJobEventsValues.values(),
+      ...persistedCreatedValues.values(),
+    ]) {
+      pushCommit(binToHex(value));
+    }
+    const prefix = this.builderOptions.provider.network === 'mainnet' ? 'bitcoincash'
+      : this.builderOptions.provider.network === 'regtest' ? 'bchreg' : 'bchtest';
+    const parts = matchingLogicalIdentityFromCommitments(locking, commitments, prefix);
+    if (parts) return createLogicalIdentityUnlocker(parts.deployer, parts.nonce);
+    const deployers: string[] = [];
+    const pushAddress = (bytecode?: Uint8Array): void => {
+      if (!bytecode || bytecode.length === 0) return;
+      try {
+        const encoded = lockingBytecodeToCashAddress({ bytecode, prefix, tokenSupport: false });
+        if (typeof encoded !== 'string' && !deployers.includes(encoded.address)) {
+          deployers.push(encoded.address);
+        }
+      } catch { /* not a cashaddr lock */ }
+    };
+    for (const commitment of commitments) {
+      const decoded = decodeLogicalIdentityCommitment(commitment);
+      if (decoded) pushAddress(decoded.deployerLockingBytecode);
+    }
+    const pushSeed = (bytecode?: Uint8Array): void => {
+      if (!bytecode) return;
+      const parsed = parseLogicalIdentitySeed(bytecode);
+      if (parsed && !deployers.includes(parsed.deployer)) deployers.push(parsed.deployer);
+    };
+    for (const input of this.allInputs) {
+      if (!input?.unlocker) continue;
+      try {
+        pushAddress(input.unlocker.generateLockingBytecode());
+        pushSeed(input.unlocker.generateUnlockingBytecode({} as never));
+      } catch { /* skip */ }
+    }
+    for (const candidate of candidates) {
+      if (!candidate?.unlocker) continue;
+      try {
+        pushSeed(candidate.unlocker.generateUnlockingBytecode({} as never));
+      } catch { /* skip */ }
+    }
+    const nearby = matchingLogicalIdentityNearby(locking, deployers);
+    if (!nearby) return undefined;
+    return createLogicalIdentityUnlocker(nearby.deployer, nearby.nonce);
+  }
+
+  /**
+   * Unlocker whose redeem hashes to the dest 21 jobs/token-container lock.
+   * Prefer an existing matching spend; otherwise rebuild from a known recipe.
+   */
+  private _jobsSuffixUnlocker(locking: Uint8Array, dest?: number): Unlocker | undefined {
+    const want = binToHex(locking);
+    const existing = this.allInputs.find((input, index) => {
+      if (dest !== undefined && index === dest) return false;
+      if (!('unlocker' in input) || !input.unlocker) return false;
+      const lock = input.unlocker.generateLockingBytecode();
+      return isP2sh32Bytes(lock) && binToHex(lock) === want;
+    })?.unlocker;
+    if (existing) return existing;
+    const identityUnlocker = this._jobsSuffixLogicalIdentityUnlocker(locking);
+    if (identityUnlocker) return identityUnlocker;
+    const publish = this.externalCallUtxoGroups.find((group) =>
+      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
+      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
+    const contract = publish?.externalContract?.inner
+      ?? this.externalCallUtxoGroups[0]?.externalContract?.inner
+      ?? this.lowLevelCallUtxoGroups[0]?.externalContract?.inner;
+    const provider = contract?.provider
+      ?? (this.builderOptions.provider as { provider?: unknown } | undefined)?.provider
+      ?? this.builderOptions.provider;
+    if (provider) {
+      const deployment = findDeploymentByLockingBytecode(provider, want)
+        ?? listDeployments(provider).find((entry) => {
+          const lock = String(entry.lockingBytecode ?? '').toLowerCase();
+          if (lock === want) return true;
+          try {
+            return binToHex(addressToLockScript(String(entry.address ?? ''))).toLowerCase() === want;
+          } catch {
+            return false;
+          }
+        });
+      const inner = (deployment?.contract as { inner?: {
+        bytecodeBin?: Uint8Array; addressType?: 'p2sh20' | 'p2sh32' | 'p2s';
+      } } | undefined)?.inner;
+      const redeem = inner?.bytecodeBin;
+      if (redeem && redeem.length > 0) {
+        const addressType = inner?.addressType ?? 'p2sh32';
+        return {
+          generateLockingBytecode: () => locking,
+          generateUnlockingBytecode: () => createUnlockingBytecode(addressType, redeem, []),
+        };
+      }
+    }
+    if (!contract) return undefined;
+    const categoryIds = this._persistDigestCategories();
+    const tokenCategoryIds: string[] = [];
+    const pushToken = (value?: string): void => {
+      const hex = value?.toLowerCase();
+      if (!hex || !/^[0-9a-f]{64}$/.test(hex)) return;
+      if (!tokenCategoryIds.includes(hex)) tokenCategoryIds.push(hex);
+      const reversed = binToHex(hexToBin(hex).slice().reverse());
+      if (!tokenCategoryIds.includes(reversed)) tokenCategoryIds.push(reversed);
+    };
+    pushToken(this.jobsSuffixCategory);
+    for (const input of this.allInputs) pushToken(input?.token?.category);
+    for (const container of this.tokenContainers) pushToken(container.tokenContainerCategoryId);
+    for (const tokenCategoryId of this.tokenContainerLockingBytecodes.keys()) pushToken(tokenCategoryId);
+    for (const categoryId of categoryIds) pushToken(categoryId);
+    const tokenParts = matchingTokenContainerUnlockerParts(locking, {
+      ownerCategoryIds: [...new Set([...categoryIds.map((hex) => hex.toLowerCase()), ...tokenCategoryIds])],
+      tokenCategoryIds,
+    });
+    if (tokenParts) {
+      const master = this.findMintingInputIndex(tokenParts.ownerCategoryId);
+      if (master >= 0) {
+        return createTokenContainerUnlocker(
+          contract, master, tokenParts.ownerCategoryId, tokenParts.tokenCategoryId,
+        );
+      }
+    }
+    const persistValues = [
+      ...persistedJobEventsValues.values(),
+      ...stagedJobEventsValues.values(),
+      ...persistedCreatedValues.values(),
+    ];
+    const parts = matchingValueChunkUnlockerParts(locking, { categoryIds, persistValues });
+    if (parts) {
+      const master = this.findMintingInputIndex(parts.categoryId);
+      if (master >= 0) {
+        return createValueChunkUnlocker(
+          contract, master, parts.categoryId, parts.collection, parts.slot, parts.root,
+        );
+      }
+    }
+    const dataCategory = matchingDataNftUnlockerParts(locking, categoryIds);
+    if (dataCategory) {
+      const master = this.findMintingInputIndex(dataCategory);
+      if (master >= 0) return createDataNftUnlocker(contract, master, dataCategory);
+    }
+    for (const categoryId of categoryIds) {
+      try {
+        if (binToHex(getSatoshiContainerLockingBytecode(categoryId)) !== want) continue;
+        const master = this.findMintingInputIndex(categoryId);
+        if (master >= 0) return createSatoshiContainerUnlocker(contract, master, categoryId);
+      } catch { /* category rejected */ }
+    }
+    const collections = [
+      ...(contract.artifact.stateLayout?.collections ?? []).map((entry: { signature?: string; name?: string }) => (
+        entry.signature ?? entry.name
+      )),
+      'jobEvents:mapping(uint256 => JobEventData[])',
+      'jobs:mapping(uint256 => JobPost)',
+      'jobs',
+    ];
+    for (const categoryId of categoryIds) {
+      const master = this.findMintingInputIndex(categoryId);
+      if (master < 0) continue;
+      const digest = persistUpdateDigestLock(categoryId);
+      if (digest && binToHex(digest) === want) {
+        try {
+          return createEntryNftUnlocker(
+            contract, master, categoryId, 'jobEvents:mapping(uint256 => JobEventData[])',
+          );
+        } catch { /* collection rejected */ }
+      }
+      for (const collection of collections) {
+        if (!collection) continue;
+        try {
+          const lock = getEntryNftLockingBytecode(contract, categoryId, collection);
+          if (binToHex(lock) !== want) continue;
+          return createEntryNftUnlocker(contract, master, categoryId, collection);
+        } catch { /* collection rejected */ }
+      }
+    }
+    return undefined;
+  }
+
   /**
    * Dest band.end+1 EQUALVERIFYs the jobs/message-bus lock. FakeToken minting
    * 1:1 on that dest slides onto the next pad.
@@ -8092,12 +8391,7 @@ export class StatefulTransactionBuilder {
     });
     if (!locking) return;
     this.jobsSuffixLock = locking;
-    const jobsUnlocker = this.allInputs.find((input) => {
-      if (!('unlocker' in input) || !input.unlocker) return false;
-      const lock = input.unlocker.generateLockingBytecode();
-      return isP2sh32Bytes(lock) && binToHex(lock) === binToHex(locking);
-    })?.unlocker;
-    pinJobsSuffixInput(this.allInputs, dest, locking, jobsUnlocker);
+    pinJobsSuffixInput(this.allInputs, dest, locking, this._jobsSuffixUnlocker(locking, dest));
     this._syncBuilderUnlockers(builder);
     const destIsMinting = destInput?.token?.nft?.capability === 'minting';
     const derivedToken = destIsMinting
@@ -11946,7 +12240,50 @@ export class StatefulTransactionBuilder {
             + `:cap=${this.allInputs[21]?.token?.nft?.capability ?? '-'}`
             + `:commit=${String(this.allInputs[21]?.token?.nft?.commitment ?? '').slice(0, 24)}`
             + `:name=${(this.allInputs[21] as { unlocker?: { abiFunction?: { name?: string } } } | undefined)
-              ?.unlocker?.abiFunction?.name ?? '-'}\n`
+              ?.unlocker?.abiFunction?.name ?? '-'}`
+            + `:covenant=${(this.allInputs[21] as { unlocker?: { contract?: { name?: string } } } | undefined)
+              ?.unlocker?.contract?.name ?? '-'}`
+            + `:cat=${String(this.allInputs[21]?.token?.category ?? '')}\n`
+            + `inputCats=${JSON.stringify(this.allInputs.map((input, index) => {
+              const category = String(input?.token?.category ?? '');
+              if (!category) return undefined;
+              return { index, cat: category.slice(0, 16), cap: input?.token?.nft?.capability ?? '-' };
+            }).filter(Boolean))}\n`
+            + `scidMatch=${JSON.stringify((() => {
+              const destLock = this.allInputs[21]?.unlocker
+                ? this.allInputs[21]!.unlocker.generateLockingBytecode() : undefined;
+              if (!destLock) return null;
+              const commits = this.allInputs.map((input) => String(input?.token?.nft?.commitment ?? ''))
+                .filter((hex) => hex.toLowerCase().includes('53434944'));
+              return {
+                commits: commits.map((hex) => hex.slice(0, 24)),
+                match: matchingLogicalIdentityFromCommitments(destLock, commits.map((hex) => {
+                  const index = hex.toLowerCase().indexOf('5343494401');
+                  return index >= 0 ? hex.toLowerCase().slice(index) : hex;
+                })),
+                logical: this.logicalIdentityUtxo?.unlocker
+                  ? binToHex(this.logicalIdentityUtxo.unlocker.generateLockingBytecode()).slice(0, 20)
+                  : '-',
+              };
+            })())}\n`
+            + `tcMatch=${JSON.stringify((() => {
+              const destLock = this.allInputs[21]?.unlocker
+                ? this.allInputs[21]!.unlocker.generateLockingBytecode() : undefined;
+              if (!destLock) return null;
+              const cats = [...new Set(this.allInputs.flatMap((input) => {
+                const hex = String(input?.token?.category ?? '').toLowerCase();
+                if (!/^[0-9a-f]{64}$/.test(hex)) return [];
+                return [hex, binToHex(hexToBin(hex).slice().reverse())];
+              }))];
+              return matchingTokenContainerUnlockerParts(destLock, {
+                ownerCategoryIds: cats, tokenCategoryIds: cats,
+              }) ?? { tried: cats.length, sample: cats.slice(0, 6) };
+            })())}\n`
+            + `deployLocks=${JSON.stringify(listDeployments(this.builderOptions.provider).map((entry) => ({
+              name: entry.contractName,
+              lock: String(entry.lockingBytecode ?? '').slice(0, 20),
+              addr: String(entry.address ?? '').slice(0, 28),
+            })))}\n`
             + `dest21-out=${transaction.outputs[21]
               ? binToHex(transaction.outputs[21].lockingBytecode).slice(0, 24) : 'none'}`
             + `:commit=${binToHex(transaction.outputs[21]?.token?.nft?.commitment ?? new Uint8Array()).slice(0, 24)}\n`

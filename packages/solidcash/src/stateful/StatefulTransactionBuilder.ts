@@ -612,7 +612,8 @@ export function stampJobsSuffixLock<T extends {
     for (let nextIndex = dest + 1; nextIndex < outputs.length; nextIndex++) {
       const next = outputs[nextIndex];
       const nextLock = next?.to instanceof Uint8Array ? next.to : undefined;
-      const nextIsPad = !next?.token && (!nextLock || nextLock[0] === 0x51 || nextLock[0] === 0x76);
+      const nextIsPad = !next?.token && next.amount !== undefined && next.amount <= 1200n
+        && (!nextLock || nextLock[0] === 0x51);
       if (!nextIsPad) continue;
       outputs[nextIndex] = existing;
       break;

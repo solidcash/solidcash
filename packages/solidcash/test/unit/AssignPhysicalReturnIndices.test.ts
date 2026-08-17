@@ -1292,6 +1292,7 @@ describe('assignPhysicalReturnIndices', () => {
       amount: 1200n,
       token: { category: 'ft', nft: { capability: 'minting', commitment: '' } },
     };
+    suffixOuts[22] = { to: Uint8Array.of(0x51), amount: 1000n };
     expect(stampJobsSuffixLock(suffixOuts, 21, suffixLock)).toBe(true);
     expect(suffixOuts[21]?.token).toBeUndefined();
     expect(suffixOuts[22]?.token?.nft?.capability).toBe('minting');

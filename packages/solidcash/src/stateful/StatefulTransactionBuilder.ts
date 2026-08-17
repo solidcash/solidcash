@@ -494,6 +494,22 @@ export function persistUpdatePersistVWidth(): number {
   return 3;
 }
 
+/**
+ * Dest 21 is the jobs suffix. Persist must end at dest 19 (nNew=4). Dest 16-20
+ * (nNew=5) makes dest 21 EQUALVERIFY the persist redeem lock.
+ */
+export function clampPersistBandBeforeJobsDest(
+  band: { start: number; end: number; nNew: number } | undefined,
+  jobsDest: number,
+): { start: number; end: number; nNew: number } | undefined {
+  if (!band) return undefined;
+  if (jobsDest < 0) return band;
+  const maxEnd = jobsDest - 2;
+  if (maxEnd < band.start) return band.end < jobsDest ? band : undefined;
+  if (band.end <= maxEnd) return band;
+  return { start: band.start, end: maxEnd, nNew: maxEnd - band.start + 1 };
+}
+
 /** Jobs/message-bus dest is impl+10 (dest 21 when impl=11), not band.end+1. */
 export function jobsSuffixDest(implIndex?: number, blockSize = 5): number {
   if (implIndex === undefined || implIndex < 0) return -1;
@@ -1571,7 +1587,11 @@ export function persistUpdateLiveDests(parts: {
   return [...dests].filter((dest) => dest >= 2).sort((left, right) => left - right);
 }
 
-/** Leftover persist-v extract past dest 16-19 must not occupy dest 20/21. */
+/**
+ * Leftover persist-v extract past dest 16-19 occupies dest 20 only.
+ * Dest 21 is the jobs pin; dest 22+ FakeToken/jobs NFTs can look persist-v
+ * (`0c00…` parses as chunk 12) and must not be burned.
+ */
 export function surplusPersistValueDests(parts: {
   persistDests: readonly number[];
   dests: ReadonlyArray<{ dest: number; commit?: string; cap?: string }>;
@@ -1579,10 +1599,29 @@ export function surplusPersistValueDests(parts: {
   const maxPersist = Math.max(-1, ...parts.persistDests);
   return parts.dests
     .filter((row) => row.dest > maxPersist
+      && row.dest < 21
       && row.cap !== 'minting'
       && isPersistValueChunkCommitment(String(row.commit ?? ''))
       && !String(row.commit ?? '').startsWith('e3b0c442'))
     .map((row) => row.dest);
+}
+
+/** Persist-v shaped outputs in dest 16-19 after the jobs pin (Updated 3→4). */
+export function persistVOutputDests(parts: {
+  start: number;
+  dests: ReadonlyArray<{ dest: number; commit?: string; cap?: string }>;
+  maxDest?: number;
+}): number[] {
+  const start = parts.start >= 0 ? parts.start : 16;
+  const maxDest = parts.maxDest ?? start + 3;
+  return parts.dests
+    .filter((row) => row.dest >= start && row.dest <= maxDest
+      && row.dest < 21
+      && row.cap !== 'minting'
+      && isPersistValueChunkCommitment(String(row.commit ?? ''))
+      && !String(row.commit ?? '').startsWith('e3b0c442'))
+    .map((row) => row.dest)
+    .sort((left, right) => left - right);
 }
 
 /**
@@ -6282,18 +6321,9 @@ export class StatefulTransactionBuilder {
     const fallback = persistUpdateRedeemLock(categoryId, this.jobEventsRedeemLock)
       ?? persistValueChunkLock(categoryId, persistValue)
       ?? this.jobEventsRedeemLock;
-    if (!persistedJobsPinMinting) return fallback;
-    return selectPersistChunkLock({
-      digestLock: this._persistDigestLocking(),
-      predecessorLocks: this.allInputs.map((input) => {
-        let lock: Uint8Array | undefined;
-        try {
-          lock = input?.unlocker?.generateLockingBytecode();
-        } catch { /* skip */ }
-        return { lock, commitment: String(input?.token?.nft?.commitment ?? '') };
-      }),
-      fallback,
-    });
+    // OUTPUTBYTECODE dest 16-19 EQUALVERIFY the derived redeem lock. Persist-v
+    // predecessor locks stay on the dest inputs (UTXOBYTECODE), not the outputs.
+    return fallback;
   }
 
   private _persistLiveDests(source?: {
@@ -6349,25 +6379,27 @@ export class StatefulTransactionBuilder {
     if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
     const locking = this._persistChunkLocking();
     if (!locking || locking.length !== 35) return;
-    const persistDests = this._persistLiveDests(builder);
+    const persistDests = [...new Set([
+      ...this._persistLiveDests(builder),
+      ...(persistedJobsPinMinting
+        ? persistVOutputDests({
+          start: this.getPublishJobEventsBand()?.start ?? 16,
+          dests: builder.outputs.map((output, dest) => ({
+            dest,
+            commit: String(output?.token?.nft?.commitment ?? ''),
+            cap: output?.token?.nft?.capability,
+          })),
+        })
+        : []),
+    ])].sort((left, right) => left - right);
+    if (persistedJobsPinMinting && persistDests.length > lastPersistLiveDests.length) {
+      lastPersistLiveDests = persistDests;
+    }
     for (const dest of persistDests) {
       const destInput = this.allInputs[dest];
       const inputCommit = String(destInput?.token?.nft?.commitment ?? '');
       if (isDataNftIndexCommitment(inputCommit) && !isPersistValueChunkCommitment(inputCommit)) continue;
-      let destLock = locking;
-      // First persist UPDATE dest 16 must keep the derived redeem lock. After the
-      // jobs pin exists, dest 16–19 1:1 the persist-v predecessor lock.
-      if (persistedJobsPinMinting
-        && isPersistValueChunkCommitment(inputCommit) && !inputCommit.startsWith('e3b0c442')
-        && destInput?.unlocker) {
-        try {
-          const inputLock = destInput.unlocker.generateLockingBytecode();
-          if (inputLock.length === 35 && inputLock[0] === 0xaa && inputLock[34] === 0x87) {
-            destLock = inputLock;
-          }
-        } catch { /* keep derived persist lock */ }
-      }
-      pinPersistDigestLock(builder.outputs, dest, destLock);
+      pinPersistDigestLock(builder.outputs, dest, locking);
     }
     this._stripSurplusPersistDigestLocks(builder, persistDests);
     this._stripSurplusPersistValueDests(builder, persistDests);
@@ -6463,29 +6495,19 @@ export class StatefulTransactionBuilder {
     }
     const chunk = this._persistChunkLocking();
     if (chunk && chunk.length === 35) {
-      for (const dest of this._persistLiveDests(transaction)) {
+      const liveDests = lastPersistLiveDests.length > 0
+        ? lastPersistLiveDests
+        : this._persistLiveDests(transaction);
+      for (const dest of liveDests) {
         if (dest < 0 || dest >= transaction.outputs.length) continue;
-        let destLock = chunk;
-        const destInput = this.allInputs[dest];
-        const inputCommit = String(destInput?.token?.nft?.commitment ?? '');
-        if (persistedJobsPinMinting
-          && isPersistValueChunkCommitment(inputCommit) && !inputCommit.startsWith('e3b0c442')
-          && destInput?.unlocker) {
-          try {
-            const inputLock = destInput.unlocker.generateLockingBytecode();
-            if (inputLock.length === 35 && inputLock[0] === 0xaa && inputLock[34] === 0x87) {
-              destLock = inputLock;
-            }
-          } catch { /* keep derived persist lock */ }
-        }
-        transaction.outputs[dest].lockingBytecode = destLock;
+        transaction.outputs[dest].lockingBytecode = chunk;
       }
       const derived = this.jobEventsRedeemLock;
       const derivedHex = derived && derived.length === 35 ? binToHex(derived) : '';
       const jobsDest = jobsSuffixDest(impl);
-      const maxPersist = Math.max(-1, ...this._persistLiveDests(transaction));
+      const maxPersist = Math.max(-1, ...liveDests);
       if (persistedJobsPinMinting && derivedHex) {
-        for (let dest = maxPersist + 1; dest < transaction.outputs.length && dest < maxPersist + 3; dest++) {
+        for (let dest = maxPersist + 1; dest < transaction.outputs.length && dest < 21; dest++) {
           if (dest === jobsDest) continue;
           const lock = transaction.outputs[dest]?.lockingBytecode;
           if (!lock || lock.length !== 35) continue;
@@ -13407,6 +13429,24 @@ export class StatefulTransactionBuilder {
             );
           }
           this._reassertNestedEmitEvents(finalBuilder);
+        }
+      }
+      if (preflightError !== undefined && persistedJobsPinMinting) {
+        // Last rematerialize can place dest 19 persist-v after the loop's final
+        // pin. One more pin matches the tracer re-eval that then succeeds.
+        this._pinPersistDigestLocks(finalBuilder);
+        this._pinPersistDigestInputLocks(finalBuilder);
+        this._stampJobsSuffixLock(finalBuilder);
+        try {
+          const transaction = finalBuilder.buildLibauthTransaction(true);
+          this._pinPersistDigestLocksOnTransaction(transaction);
+          this._pinJobsSuffixLockOnTransaction(finalBuilder, transaction);
+          const sourceOutputs = generateLibauthSourceOutputs(finalBuilder.inputs);
+          this._resignLibauthTransaction(finalBuilder, transaction, sourceOutputs);
+          assertFinalizedTransactionCovenants(finalBuilder, transaction, sourceOutputs);
+          preflightError = undefined;
+        } catch (error) {
+          preflightError = error;
         }
       }
       if (preflightError !== undefined) {

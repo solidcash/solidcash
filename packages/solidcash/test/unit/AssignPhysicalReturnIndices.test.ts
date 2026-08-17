@@ -73,6 +73,7 @@ import {
   persistUpdateBandWidth,
   persistUpdatePersistVWidth,
   persistLayoutWidth,
+  clampPersistBandBeforeJobsDest,
   jobsSuffixDest,
   stampJobsSuffixLock,
   selectJobsSuffixLock,
@@ -110,6 +111,7 @@ import {
   persistDigestLockDests,
   persistChunkOutputDests,
   persistUpdateLiveDests,
+  persistVOutputDests,
   surplusPersistValueDests,
   surplusPersistDigestDests,
   selectPublishJobEventInputIndex,
@@ -1292,6 +1294,15 @@ describe('assignPhysicalReturnIndices', () => {
       implIndex: 15, blockSize: 5, plannedWidth: 5, liveWidth: 0,
     })).toEqual({ start: 20, end: 24, nNew: 5 });
     expect(persistedJobEventsWidth('missing')).toBe(0);
+    expect(clampPersistBandBeforeJobsDest(
+      { start: 16, end: 19, nNew: 4 }, 21,
+    )).toEqual({ start: 16, end: 19, nNew: 4 });
+    expect(clampPersistBandBeforeJobsDest(
+      { start: 16, end: 20, nNew: 5 }, 21,
+    )).toEqual({ start: 16, end: 19, nNew: 4 });
+    expect(clampPersistBandBeforeJobsDest(
+      { start: 16, end: 21, nNew: 6 }, 21,
+    )).toEqual({ start: 16, end: 19, nNew: 4 });
     expect(persistLayoutWidth({ placedChunks: 3, extractedValueChunks: 5 })).toBe(4);
     expect(persistLayoutWidth({ placedChunks: 3, extractedValueChunks: 3 })).toBe(3);
     expect(persistLayoutWidth({ placedChunks: 0, extractedValueChunks: 5 })).toBe(5);
@@ -2347,8 +2358,18 @@ describe('assignPhysicalReturnIndices', () => {
         { dest: 19, commit: '030002004441000010632d5e', cap: 'mutable' },
         { dest: 20, commit: '04001a564310000000000000', cap: 'mutable' },
         { dest: 21, commit: '', cap: 'minting' },
+        { dest: 22, commit: '0c000000ac782658967827f8', cap: 'mutable' },
       ],
     })).toEqual([20]);
+    expect(persistVOutputDests({
+      start: 16,
+      dests: [
+        { dest: 16, commit: '00004cb42000437265617465', cap: 'mutable' },
+        { dest: 19, commit: '030002004441000010632d5e', cap: 'mutable' },
+        { dest: 20, commit: '04001a564310000000000000', cap: 'mutable' },
+        { dest: 22, commit: '0c000000ac782658967827f8', cap: 'mutable' },
+      ],
+    })).toEqual([16, 19]);
     const chunk3 = persist[3].commitment;
     expect(persistChunkMayOverwriteScid({
       dest: 19, band: { start: 16, end: 19 }, replayWidth: 0, incomingCommitment: chunk3,

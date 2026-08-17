@@ -1368,6 +1368,24 @@ describe('assignPhysicalReturnIndices', () => {
       laterLocks: [wrongScidLock],
       skipLockHexes: [binToHex(mintingLock)],
     })).toEqual(suffixJobsLock);
+    const nonce4Lock = new Uint8Array(35);
+    nonce4Lock[0] = 0xaa; nonce4Lock[1] = 0x20; nonce4Lock[2] = 0x08; nonce4Lock[34] = 0x87;
+    expect(selectJobsSuffixLock({
+      destInputLock: suffixJobsLock,
+      destInputCapability: 'minting',
+      cached: suffixJobsLock,
+      laterLocks: [nonce4Lock],
+      embeddedLocks: extractEmbeddedP2sh32Locks(persistBlob),
+      skipLockHexes: [binToHex(nonce4Lock)],
+    })).toEqual(suffixJobsLock);
+    expect(selectJobsSuffixLock({
+      destInputLock: nonce4Lock,
+      destInputCapability: 'minting',
+      cached: nonce4Lock,
+      laterLocks: [nonce4Lock],
+      embeddedLocks: [nonce4Lock, suffixJobsLock],
+      skipLockHexes: [binToHex(nonce4Lock)],
+    })).toEqual(suffixJobsLock);
     const mintingInput = {
       token: { nft: { capability: 'minting' as const } },
       unlocker: {

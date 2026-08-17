@@ -120,6 +120,8 @@ import {
   rememberJobEventsValue,
   stageJobEventsValue,
   capReadyPersistValue,
+  capPersistValueToWidth,
+  persistUpdatePersistVWidth,
   persistedJobEventsValue,
   persistedJobEventsWidth,
   persistedJobEventsLock,
@@ -920,11 +922,12 @@ function accumulateSharedMappingPush(
     resolved.set(count, 0);
     resolved.set(element, count.length);
   }
-  primary.internalArgs = { ...primary.internalArgs, __internal__leadingPushValue_0: resolved };
+  const persistLeading = capPersistAppendBase(resolved);
+  primary.internalArgs = { ...primary.internalArgs, __internal__leadingPushValue_0: persistLeading };
   if (primary.compilerRoute) {
     primary.compilerRoute.internalArgs = {
       ...primary.compilerRoute.internalArgs,
-      __internal__leadingPushValue_0: resolved,
+      __internal__leadingPushValue_0: persistLeading,
     };
   }
 }
@@ -1103,6 +1106,19 @@ function extractFailingP2sh32OutputPin(
     return { outputIndex, lockingBytecode, commitment: '00' };
   }
   return undefined;
+}
+
+/**
+ * Persist UPDATE dest 16-19 (nNew=4). Drop leftover extract past that width so
+ * the contract appends onto the last committed blob, not a 5-wide leftover.
+ */
+function capPersistAppendBase(value: Uint8Array): Uint8Array {
+  if (!isPersistedJobEventsReady()) return value;
+  return capPersistValueToWidth(value, persistUpdatePersistVWidth() + 1);
+}
+
+function capPersistUnlockingArg(value: FunctionArgument): FunctionArgument {
+  return value instanceof Uint8Array ? capPersistAppendBase(value) : value;
 }
 
 /**
@@ -16378,8 +16394,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                               storedLength,
                             );
                             if (binToHex(sha256Sync(joined)) === binToHex(root)) {
-                              childValueWitnesses.set(slot.slotIndex ?? 0, joined);
-                              childStoredValues.set(slot.slotIndex ?? 0, joined);
+                              const persistV = capPersistAppendBase(joined);
+                              childValueWitnesses.set(slot.slotIndex ?? 0, persistV);
+                              childStoredValues.set(slot.slotIndex ?? 0, persistV);
                             }
                             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                               ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
@@ -16517,8 +16534,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     if (collection.valueType.endsWith('[]')) {
                       const emptyArray = encodePushdataValue([], collection.valueType, structs);
                       let nextValue = childStoredValues.get(routeSlot) ?? emptyArray;
+                      nextValue = capPersistAppendBase(nextValue);
                       if (leadingPush instanceof Uint8Array && leadingPush.length > 0) {
-                        nextValue = concatenateEncodedArrays(nextValue, leadingPush);
+                        nextValue = concatenateEncodedArrays(
+                          nextValue, capPersistAppendBase(leadingPush),
+                        );
                       }
                       const elementType = collection.valueType.slice(0, -2);
                       const elementIndex = visibleInputs.findIndex((input) => input.type === elementType);
@@ -16875,7 +16895,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // arg fill reads them by name. Emitted unconditionally - a route may read a chunkable value
               // without carrying any sorted-batch WRITE.
               for (const [routeSlot, payload] of childValueWitnesses) {
-                childCompilerInternalArgs[`__internal__valueWitness_${routeSlot}`] = payload;
+                childCompilerInternalArgs[`__internal__valueWitness_${routeSlot}`] = capPersistAppendBase(payload);
               }
               const sharedPrimary = sharedGroupIndex >= 0
                 ? externalCallUtxoGroups[sharedGroupIndex] : undefined;
@@ -16885,7 +16905,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ?? sharedDelegate?.internalArgs?.__internal__leadingPushValue_0;
               if (leadingPush instanceof Uint8Array && leadingPush.length > 0
                 && childCompilerInternalArgs.__internal__leadingPushValue_0 === undefined) {
-                childCompilerInternalArgs.__internal__leadingPushValue_0 = leadingPush;
+                childCompilerInternalArgs.__internal__leadingPushValue_0 = capPersistAppendBase(leadingPush);
               }
               const childHasInternalArgs = Object.keys(childCompilerInternalArgs).length > 0;
               if (delegateCallGroupIndex !== undefined && childHasInternalArgs) {
@@ -17887,7 +17907,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   relocatedPredOutBase.get(physicalGroupIndex) ?? physical?.relocatedPredOutBase,
                 );
               }
-              return value;
+              return input.name.startsWith('__internal__valueWitness_')
+                || input.name.startsWith('__internal__leadingPushValue_')
+                ? capPersistUnlockingArg(value) : value;
             }
             if (input.name.startsWith('__internal__valueWitness_')
               || input.name.startsWith('__internal__leadingPushValue_')) return new Uint8Array();
@@ -18484,7 +18506,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // compiler-route seed (often the empty/default value), so preserve it across later input refreshes.
               const routeWitness = group.internalArgs?.[inp.name]
                 ?? group.compilerRoute?.internalArgs?.[inp.name];
-              if (routeWitness !== undefined) return routeWitness;
+              if (routeWitness !== undefined) return capPersistUnlockingArg(routeWitness);
               const valueWitness = entryValueWitnesses[Number(witness[1])] ?? new Uint8Array();
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_COLLECTION_FETCH === '1') {
@@ -18494,12 +18516,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   head: valueWitness instanceof Uint8Array ? binToHex(valueWitness.slice(0, 64)) : '<chunks>',
                 });
               }
-              return valueWitness;
+              return valueWitness instanceof Uint8Array
+                ? capPersistAppendBase(valueWitness) : valueWitness;
             }
             if (/^__internal__leadingPushValue_\d+$/.test(inp.name)) {
-              return group.compilerRoute?.internalArgs?.[inp.name]
+              const leading = group.compilerRoute?.internalArgs?.[inp.name]
                 ?? group.internalArgs?.[inp.name]
                 ?? new Uint8Array();
+              return leading instanceof Uint8Array ? capPersistAppendBase(leading) : leading;
             }
             const anchorWitness = inp.name.match(/^__internal__extcallAnchorIdx(\d+)$/);
             if (anchorWitness) {

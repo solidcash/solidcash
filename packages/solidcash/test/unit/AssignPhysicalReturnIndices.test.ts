@@ -1319,7 +1319,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(persistUpdatePlacementWidth({
       persistReady: true, bandStart: 16, bandNNew: 5, jobsDest: 21,
       placedChunks: 4, extractedValueChunks: 22,
-    })).toBe(4);
+    })).toBe(5);
     expect(persistUpdatePlacementWidth({
       persistReady: false, bandStart: 16, bandNNew: 5, jobsDest: 21,
       placedChunks: 0, extractedValueChunks: 3,
@@ -2390,7 +2390,7 @@ describe('assignPhysicalReturnIndices', () => {
         { dest: 20, commit: '04001a564310000000000000', cap: 'mutable' },
         { dest: 22, commit: '0c000000ac782658967827f8', cap: 'mutable' },
       ],
-    })).toEqual([16, 19]);
+    })).toEqual([16, 19, 20]);
     const chunk3 = persist[3].commitment;
     expect(persistChunkMayOverwriteScid({
       dest: 19, band: { start: 16, end: 19 }, replayWidth: 0, incomingCommitment: chunk3,

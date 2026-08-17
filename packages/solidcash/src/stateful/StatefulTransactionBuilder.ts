@@ -1059,9 +1059,9 @@ export function persistUpdatePlacementWidth(parts: {
     placedChunks: parts.placedChunks,
     extractedValueChunks: parts.extractedValueChunks,
   });
-  // Dest 16-19 when jobs=21. Dest 20 is transferFrom on first update; dest 21 is jobs.
+  // Dest 16-20 when jobs=21. Dest 20 is reserved when minting; dest 21 is jobs.
   const maxWidth = parts.jobsDest >= 0 && parts.bandStart >= 0
-    ? parts.jobsDest - parts.bandStart - 1
+    ? parts.jobsDest - parts.bandStart
     : 0;
   if (parts.persistReady && maxWidth > 0) {
     return Math.min(Math.max(layout, 1), maxWidth);
@@ -1669,14 +1669,14 @@ export function surplusPersistValueDests(parts: {
     .map((row) => row.dest);
 }
 
-/** Persist-v shaped outputs in dest 16-19. Dest 21 is the jobs pin. */
+/** Persist-v shaped outputs in dest 16-20. Dest 21 is the jobs pin. */
 export function persistVOutputDests(parts: {
   start: number;
   dests: ReadonlyArray<{ dest: number; commit?: string; cap?: string }>;
   maxDest?: number;
 }): number[] {
   const start = parts.start >= 0 ? parts.start : 16;
-  const maxDest = parts.maxDest ?? start + 3;
+  const maxDest = parts.maxDest ?? start + 4;
   return parts.dests
     .filter((row) => row.dest >= start && row.dest <= maxDest
       && row.dest < 21

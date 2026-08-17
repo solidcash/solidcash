@@ -494,6 +494,11 @@ export function persistUpdatePersistVWidth(): number {
   return 3;
 }
 
+/** Last committed persist dest count, at least the original persist-v width. */
+function lastPersistPlacedWidth(categoryId?: string): number {
+  return Math.max(persistUpdatePersistVWidth(), persistedJobEventsWidth(categoryId));
+}
+
 /**
  * Dest 21 is the jobs suffix. Persist must end at dest 19 (nNew=4). Dest 16-20
  * (nNew=5) makes dest 21 EQUALVERIFY the persist redeem lock.
@@ -1031,6 +1036,39 @@ export function persistLayoutWidth(parts: {
   return Math.min(32, extracted);
 }
 
+/**
+ * Updated amounts persist dest 16-19 (nNew=4). Second update grows to dest 20
+ * (nNew=5). Dest 21 is the jobs pin and must stay out of the persist band.
+ */
+/** Drop leftover persist bytes past the live persist dests. */
+export function capPersistValueToWidth(value: Uint8Array, width: number): Uint8Array {
+  if (width <= 0 || value.length === 0) return value;
+  const maxLen = VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * width;
+  return value.length > maxLen ? value.slice(0, maxLen) : value;
+}
+
+export function persistUpdatePlacementWidth(parts: {
+  persistReady: boolean;
+  bandStart: number;
+  bandNNew: number;
+  jobsDest: number;
+  placedChunks: number;
+  extractedValueChunks: number;
+}): number {
+  const layout = persistLayoutWidth({
+    placedChunks: parts.placedChunks,
+    extractedValueChunks: parts.extractedValueChunks,
+  });
+  // Dest 16-19 when jobs=21. Dest 20 is transferFrom on first update; dest 21 is jobs.
+  const maxWidth = parts.jobsDest >= 0 && parts.bandStart >= 0
+    ? parts.jobsDest - parts.bandStart - 1
+    : 0;
+  if (parts.persistReady && maxWidth > 0) {
+    return Math.min(Math.max(layout, 1), maxWidth);
+  }
+  return Math.max(parts.bandNNew, layout, 1);
+}
+
 /** Live continuation count of the last Updated extract for `categoryId`. */
 export function persistedJobEventsWidth(categoryId?: string): number {
   if (!categoryId) {
@@ -1211,22 +1249,47 @@ export function matchingDataNftUnlockerParts(
 }
 
 /**
- * Stage the value this tx will write. Do not overwrite persist until send succeeds —
- * withdraw must still spend the previous digest.
+ * Drop leftover persist bytes past dest 16-19 so reconstructed v is 4-wide.
+ * Dest 20/21 must not be EQUALVERIFYed as persist.
  */
-export function stageJobEventsValue(categoryId: string, value: Uint8Array): void {
-  if (value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return;
-  const previous = stagedJobEventsValues.get(categoryId);
-  if (!previous || value.length >= previous.length) stagedJobEventsValues.set(categoryId, value);
+export function capReadyPersistValue(value: Uint8Array): Uint8Array {
+  if (!isPersistedJobEventsReady()) return value;
+  const extracted = valueChunkCountFor(value);
+  const width = persistUpdatePlacementWidth({
+    persistReady: true,
+    bandStart: 16,
+    bandNNew: extracted,
+    jobsDest: 21,
+    placedChunks: lastPersistPlacedWidth(),
+    extractedValueChunks: extracted,
+  });
+  return capPersistValueToWidth(value, width);
 }
 
-/** Full last committed jobEvents blob (not a Created probe). Longer wins. */
+/** Longer blob wins, then drop a 5-wide leftover so dest 16-19 stay persist. */
+function storeCappedPersistValue(
+  map: Map<string, Uint8Array>,
+  categoryId: string,
+  value: Uint8Array,
+): Uint8Array | undefined {
+  const previous = map.get(categoryId);
+  const candidate = !previous || value.length >= previous.length ? value : previous;
+  const next = capReadyPersistValue(candidate);
+  if (next.length <= 60 || next.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return undefined;
+  map.set(categoryId, next);
+  return next;
+}
+
+export function stageJobEventsValue(categoryId: string, value: Uint8Array): void {
+  storeCappedPersistValue(stagedJobEventsValues, categoryId, value);
+}
+
+/** Full last committed jobEvents blob (not a Created probe). Longer wins, then cap. */
 export function rememberJobEventsValue(categoryId: string, value: Uint8Array): void {
-  if (value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return;
-  const previous = persistedJobEventsValues.get(categoryId);
-  if (!previous || value.length >= previous.length) persistedJobEventsValues.set(categoryId, value);
-  if (isCreatedPersistValue(value) && !persistedCreatedValues.has(categoryId)) {
-    persistedCreatedValues.set(categoryId, value);
+  const next = storeCappedPersistValue(persistedJobEventsValues, categoryId, value);
+  if (!next) return;
+  if (isCreatedPersistValue(next) && !persistedCreatedValues.has(categoryId)) {
+    persistedCreatedValues.set(categoryId, next);
   }
   rememberJobEventsUnlockRecipe(categoryId);
 }
@@ -1606,7 +1669,7 @@ export function surplusPersistValueDests(parts: {
     .map((row) => row.dest);
 }
 
-/** Persist-v shaped outputs in dest 16-19 after the jobs pin (Updated 3→4). */
+/** Persist-v shaped outputs in dest 16-19. Dest 21 is the jobs pin. */
 export function persistVOutputDests(parts: {
   start: number;
   dests: ReadonlyArray<{ dest: number; commit?: string; cap?: string }>;
@@ -6340,8 +6403,8 @@ export class StatefulTransactionBuilder {
     const end = band?.end ?? -1;
     let layoutWidth = persistWidth > 0 ? persistWidth : (band?.nNew ?? 0);
     const outputs = source?.outputs;
-    if (persistedJobsPinMinting && start >= 0 && outputs) {
-      let extracted = 0;
+    let extracted = 0;
+    if (start >= 0 && outputs) {
       for (let dest = start; dest <= start + 8 && dest < outputs.length; dest++) {
         const output = outputs[dest];
         if (output?.token?.nft?.capability === 'minting') break;
@@ -6351,20 +6414,21 @@ export class StatefulTransactionBuilder {
           extracted = dest - start + 1;
         }
       }
-      layoutWidth = persistLayoutWidth({
-        placedChunks: layoutWidth,
-        extractedValueChunks: extracted,
-      });
-      // Updated amounts grows 3→4 even when dest 19 is only persist-v on the
-      // builder after rematerialize (libauth tx rows have no token field).
-      if (layoutWidth < 4 && extracted >= 4) layoutWidth = 4;
     }
+    layoutWidth = persistUpdatePlacementWidth({
+      persistReady: isPersistedJobEventsReady() && !this._rootIsPublishJobPost(),
+      bandStart: start,
+      bandNNew: layoutWidth,
+      jobsDest: jobsSuffixDest(impl),
+      placedChunks: lastPersistPlacedWidth(),
+      extractedValueChunks: Math.max(extracted, layoutWidth),
+    });
     const dests = persistUpdateLiveDests({
       implIndex: impl,
       bandStart: start,
       bandEnd: end,
-      persistWidth: persistWidth > 0 ? persistWidth : undefined,
-      layoutWidth: persistedJobsPinMinting ? layoutWidth : undefined,
+      persistWidth: layoutWidth > 0 ? layoutWidth : undefined,
+      layoutWidth,
     });
     if (persistedJobsPinMinting && outputs && dests.length > lastPersistLiveDests.length) {
       lastPersistLiveDests = dests;
@@ -8179,7 +8243,15 @@ export class StatefulTransactionBuilder {
       ?? this.jobEventsRedeemLock
       ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined);
     if (!value || !lock) return 0;
-    this.bumpPublishJobEventsWidth(valueChunkCountFor(value));
+    const seededWidth = persistUpdatePlacementWidth({
+      persistReady: isPersistedJobEventsReady() && !this._rootIsPublishJobPost(),
+      bandStart: band.start,
+      bandNNew: band.nNew,
+      jobsDest: jobsSuffixDest(this._executingPublishJobEventInputIndex()),
+      placedChunks: lastPersistPlacedWidth(categoryId),
+      extractedValueChunks: valueChunkCountFor(value),
+    });
+    this.bumpPublishJobEventsWidth(seededWidth);
     const live = this.getPublishJobEventsBand() ?? band;
     return seedChunksFromPersistedValue(
       (outputIndex, chunk) => this.setDerivedChunkOutput(outputIndex, chunk),
@@ -8398,10 +8470,15 @@ export class StatefulTransactionBuilder {
       }
     }
     if (chunks.length === 0) return;
-    // Never grow past the planned write: a longer Created extract (4) on a
-    // first post (nNew=2) hung derivation. Fill only up to planned nNew so
-    // history (5 of 6) still gets a continuation at slot 25.
-    const liveBand = { start: band.start, nNew: band.nNew };
+    const liveNNew = persistUpdatePlacementWidth({
+      persistReady: isPersistedJobEventsReady() && !this._rootIsPublishJobPost(),
+      bandStart: band.start,
+      bandNNew: band.nNew,
+      jobsDest: jobsSuffixDest(this._executingPublishJobEventInputIndex()),
+      placedChunks: lastPersistPlacedWidth(categoryId),
+      extractedValueChunks: chunks.length,
+    });
+    const liveBand = { start: band.start, nNew: liveNNew };
     const previousDerived = new Map(this.derivedChunkOutputs);
     this.derivedChunkOutputs.clear();
     for (const [offset, chunk] of chunks.entries()) {
@@ -8570,7 +8647,14 @@ export class StatefulTransactionBuilder {
     // replay stays at dest 16-18. Updated (amounts) keeps dest 16-19.
     const liveBand = {
       start: band.start,
-      nNew: persistWidth > 0 ? persistWidth : Math.max(band.nNew, liveN, 1),
+      nNew: persistUpdatePlacementWidth({
+        persistReady: isPersistedJobEventsReady() && !this._rootIsPublishJobPost(),
+        bandStart: band.start,
+        bandNNew: persistWidth > 0 ? persistWidth : Math.max(band.nNew, liveN, 1),
+        jobsDest: jobsSuffixDest(this._executingPublishJobEventInputIndex()),
+        placedChunks: lastPersistPlacedWidth(categoryId),
+        extractedValueChunks: source.length,
+      }),
     };
     const reserved = new Set<number>();
     const liveEnd = liveBand.start + liveBand.nNew - 1;

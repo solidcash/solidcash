@@ -119,6 +119,7 @@ import {
   liveChunkSlotsByOwner,
   rememberJobEventsValue,
   stageJobEventsValue,
+  capReadyPersistValue,
   persistedJobEventsValue,
   persistedJobEventsWidth,
   persistedJobEventsLock,
@@ -1150,7 +1151,7 @@ function extractAllRouteValueChunks(
     };
   }
   if (!selected) return [];
-  lastExtractedJobEventsValue = selected.value;
+  lastExtractedJobEventsValue = capReadyPersistValue(selected.value);
   const nNew = Math.ceil((selected.value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
   if (nNew < 1) return [];
   const chunkIndex = pinChunkIndex ?? 0;
@@ -1165,7 +1166,7 @@ function extractAllRouteValueChunks(
   if (categoryId && redeemLock) rememberJobEventsLock(categoryId, redeemLock);
   const lock = redeemLock ?? selected.lockingBytecode;
   return applyRedeemLockToChunks(
-    chunksFromJobEventsValue(selected.value, lock, categoryId),
+    chunksFromJobEventsValue(lastExtractedJobEventsValue, lock, categoryId),
     lock,
   ).map((chunk, index) => ({
     outputIndex: base + index,
@@ -16533,7 +16534,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       const previousValue = childStoredValues.get(routeSlot);
                       if (previousValue && previousValue.length > VALUE_HEAD_SIZE
                         && nextValue.length > VALUE_HEAD_SIZE) {
-                        stageJobEventsValue(callee.categoryId, nextValue);
+                        stageJobEventsValue(callee.categoryId, capReadyPersistValue(nextValue));
                       }
                     }
                     encodedPayloadBytes = Math.max(encodedPayloadBytes, payloadBytes);

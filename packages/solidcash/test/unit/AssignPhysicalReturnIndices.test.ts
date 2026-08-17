@@ -73,6 +73,9 @@ import {
   persistUpdateBandWidth,
   persistUpdatePersistVWidth,
   persistLayoutWidth,
+  persistUpdatePlacementWidth,
+  capPersistValueToWidth,
+  capReadyPersistValue,
   clampPersistBandBeforeJobsDest,
   jobsSuffixDest,
   stampJobsSuffixLock,
@@ -1303,6 +1306,24 @@ describe('assignPhysicalReturnIndices', () => {
     expect(clampPersistBandBeforeJobsDest(
       { start: 16, end: 21, nNew: 6 }, 21,
     )).toEqual({ start: 16, end: 19, nNew: 4 });
+    const persistHead = 28;
+    const persistChunk = 126;
+    const fiveWide = new Uint8Array(persistHead + persistChunk * 5);
+    expect(capPersistValueToWidth(fiveWide, 4).byteLength).toBe(persistHead + persistChunk * 4);
+    expect(capPersistValueToWidth(fiveWide, 5).byteLength).toBe(fiveWide.byteLength);
+    expect(capReadyPersistValue(fiveWide).byteLength).toBe(fiveWide.byteLength);
+    expect(persistUpdatePlacementWidth({
+      persistReady: true, bandStart: 16, bandNNew: 5, jobsDest: 21,
+      placedChunks: 3, extractedValueChunks: 5,
+    })).toBe(4);
+    expect(persistUpdatePlacementWidth({
+      persistReady: true, bandStart: 16, bandNNew: 5, jobsDest: 21,
+      placedChunks: 4, extractedValueChunks: 22,
+    })).toBe(4);
+    expect(persistUpdatePlacementWidth({
+      persistReady: false, bandStart: 16, bandNNew: 5, jobsDest: 21,
+      placedChunks: 0, extractedValueChunks: 3,
+    })).toBe(5);
     expect(persistLayoutWidth({ placedChunks: 3, extractedValueChunks: 5 })).toBe(4);
     expect(persistLayoutWidth({ placedChunks: 3, extractedValueChunks: 3 })).toBe(3);
     expect(persistLayoutWidth({ placedChunks: 0, extractedValueChunks: 5 })).toBe(5);

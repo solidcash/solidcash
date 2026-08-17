@@ -125,6 +125,14 @@ const persistedJobEventsRecipes = new Map<string, {
 const stagedJobEventsValues = new Map<string, Uint8Array>();
 const createdDigestLocks = new Set<string>();
 const persistedCreatedValues = new Map<string, Uint8Array>();
+let persistedJobsSuffixLock: Uint8Array | undefined;
+let persistedJobsPinMinting: {
+  txid: string;
+  vout: number;
+  satoshis: bigint;
+  token: NonNullable<Utxo['token']>;
+  lockingBytecode: Uint8Array;
+} | undefined;
 let persistedJobEventsSendReady = false;
 /** Persist-v empty root. Dest-18 UPDATE HASH256es redeem(this), not sha256(Created blob). */
 const EMPTY_PERSIST_ROOT = sha256Sync(new Uint8Array());
@@ -640,6 +648,72 @@ export function pinJobsSuffixInput<T extends {
       generateLockingBytecode: () => locking,
       generateUnlockingBytecode: (context) => source.generateUnlockingBytecode(context),
     },
+  };
+  return true;
+}
+
+/**
+ * Dest 21 must spend the jobs-pin minting UTXO (first-send e61fa6), not a
+ * later SCID minting leftover at the same category.
+ */
+export function retargetMintingInputToJobsPin<T extends {
+  txid?: string;
+  vout?: number;
+  satoshis?: bigint;
+  token?: { category?: string; amount?: bigint; nft?: { capability?: string; commitment?: string } };
+}>(
+  inputs: T[],
+  dest: number,
+  jobsLock: Uint8Array,
+  candidates: ReadonlyArray<T & { lockingBytecode?: Uint8Array }>,
+): boolean {
+  if (dest < 0 || dest >= inputs.length || !isP2sh32Bytes(jobsLock)) return false;
+  const destInput = inputs[dest];
+  if (destInput?.token?.nft?.capability !== 'minting') return false;
+  const want = binToHex(jobsLock).toLowerCase();
+  const destCat = destInput.token?.category?.toLowerCase() ?? '';
+  const sameCategory = (category?: string): boolean => {
+    if (!category || !destCat) return true;
+    const hex = category.toLowerCase();
+    if (hex === destCat) return true;
+    try {
+      return binToHex(hexToBin(category).reverse()).toLowerCase() === destCat;
+    } catch {
+      return false;
+    }
+  };
+  const isJobsPin = (lock?: Uint8Array): boolean => (
+    !!lock && isP2sh32Bytes(lock) && binToHex(lock).toLowerCase() === want
+  );
+  const destLock = (destInput as T & { lockingBytecode?: Uint8Array }).lockingBytecode;
+  if (isJobsPin(destLock)) return false;
+  const mintingPins = candidates.filter((candidate) => (
+    candidate.token?.nft?.capability === 'minting'
+    && isJobsPin(candidate.lockingBytecode)
+    && (candidate.txid !== destInput.txid || candidate.vout !== destInput.vout)
+  ));
+  const match = mintingPins.find((candidate) => sameCategory(candidate.token?.category))
+    ?? mintingPins[0];
+  if (!match?.txid || match.vout === undefined) return false;
+  const alreadySpent = inputs.some((input, index) => (
+    index !== dest && input.txid === match.txid && input.vout === match.vout
+  ));
+  if (alreadySpent) {
+    const other = inputs.findIndex((input, index) => (
+      index !== dest && input.txid === match.txid && input.vout === match.vout
+    ));
+    if (other < 0) return false;
+    const displaced = inputs[dest];
+    inputs[dest] = { ...inputs[other] };
+    inputs[other] = displaced;
+    return true;
+  }
+  inputs[dest] = {
+    ...destInput,
+    txid: match.txid,
+    vout: match.vout,
+    satoshis: match.satoshis ?? destInput.satoshis,
+    token: match.token ?? destInput.token,
   };
   return true;
 }
@@ -4457,6 +4531,8 @@ export class StatefulTransactionBuilder {
       createdDigestLocks.clear();
       persistedCreatedValues.clear();
     }
+    persistedJobsSuffixLock = undefined;
+    persistedJobsPinMinting = undefined;
     persistedJobEventsSendReady = false;
   }
 
@@ -6311,7 +6387,7 @@ export class StatefulTransactionBuilder {
       ? builder.outputs[dest]!.to as Uint8Array : undefined;
     const locking = selectJobsSuffixLock({
       derived: builderLock,
-      cached: this.jobsSuffixLock,
+      cached: this.jobsSuffixLock ?? persistedJobsSuffixLock,
       destInputLock,
       destInputCapability: destInput?.token?.nft?.capability,
       embeddedLocks,
@@ -6319,6 +6395,8 @@ export class StatefulTransactionBuilder {
     });
     if (!locking) return;
     this.jobsSuffixLock = locking;
+    persistedJobsSuffixLock = locking;
+    this._retargetDestToJobsPinMinting(builder, dest, locking);
     const destIsMinting = destInput?.token?.nft?.capability === 'minting';
     const nextToken = destIsMinting
       ? destInput?.token
@@ -6394,6 +6472,144 @@ export class StatefulTransactionBuilder {
   /** Source outputs mock send() will evaluate (indexer when present). */
   private _networkSourceOutputs(builder: TransactionBuilder): LibauthOutput[] {
     return generateNetworkSourceOutputs(builder.inputs, this.builderOptions.provider);
+  }
+
+  /** After send, dest 21's minting output is the next jobs-pin spend. */
+  private _rememberJobsPinMinting(builder: TransactionBuilder, txid: string): void {
+    const lock = this.jobsSuffixLock ?? persistedJobsSuffixLock;
+    if (!txid || !lock || !isP2sh32Bytes(lock)) return;
+    const want = binToHex(lock).toLowerCase();
+    let dest = jobsSuffixDest(this._executingPublishJobEventInputIndex(builder));
+    const lockOf = (output?: TransactionBuilder['outputs'][number]): Uint8Array | undefined => (
+      output?.to instanceof Uint8Array ? output.to : undefined
+    );
+    const destLock = dest >= 0 ? lockOf(builder.outputs[dest]) : undefined;
+    if (!destLock || binToHex(destLock).toLowerCase() !== want
+      || builder.outputs[dest]?.token?.nft?.capability !== 'minting') {
+      dest = builder.outputs.findIndex((output) => {
+        const outputLock = lockOf(output);
+        return !!outputLock && binToHex(outputLock).toLowerCase() === want
+          && output.token?.nft?.capability === 'minting';
+      });
+    }
+    const output = dest >= 0 ? builder.outputs[dest] : undefined;
+    if (!output?.token || output.token.nft?.capability !== 'minting') return;
+    persistedJobsPinMinting = {
+      txid,
+      vout: dest,
+      satoshis: output.amount && output.amount >= 1200n ? output.amount : 1200n,
+      token: output.token,
+      lockingBytecode: lock,
+    };
+    const replaceLock = (this.builderOptions.provider as {
+      replaceUtxoLockingBytecode?: (
+        utxo: Utxo, nextLock: Uint8Array,
+      ) => boolean;
+    }).replaceUtxoLockingBytecode;
+    replaceLock?.call(this.builderOptions.provider, {
+      txid,
+      vout: dest,
+      satoshis: persistedJobsPinMinting.satoshis,
+      token: persistedJobsPinMinting.token,
+    }, lock);
+  }
+
+  /** Spend dest 21's jobs-pin minting UTXO instead of a later SCID leftover. */
+  private _retargetDestToJobsPinMinting(
+    builder: TransactionBuilder,
+    dest: number,
+    jobsLock: Uint8Array,
+  ): void {
+    const destInput = this.allInputs[dest];
+    if (destInput?.token?.nft?.capability !== 'minting') return;
+    if (persistedJobsPinMinting) {
+      if (destInput.txid !== persistedJobsPinMinting.txid
+        || destInput.vout !== persistedJobsPinMinting.vout) {
+        this.allInputs[dest] = {
+          ...destInput,
+          txid: persistedJobsPinMinting.txid,
+          vout: persistedJobsPinMinting.vout,
+          satoshis: persistedJobsPinMinting.satoshis,
+          token: persistedJobsPinMinting.token,
+        };
+        this._syncBuilderUnlockers(builder);
+      }
+      const pinned = this.allInputs[dest];
+      const replaceLock = (this.builderOptions.provider as {
+        replaceUtxoLockingBytecode?: (utxo: UnlockableUtxo, lock: Uint8Array) => boolean;
+      }).replaceUtxoLockingBytecode;
+      if (pinned) replaceLock?.call(this.builderOptions.provider, pinned, jobsLock);
+      return;
+    }
+    const category = destInput.token?.category;
+    const candidates = [
+      ...this._indexedMintingCandidates(category),
+      ...this._indexedMintingCandidates(undefined),
+    ];
+    const destPhysical = this._physicalLockingBytecode(destInput);
+    const withLocks = this.allInputs.map((input) => ({
+      ...input,
+      lockingBytecode: this._physicalLockingBytecode(input) ?? input.unlocker?.generateLockingBytecode(),
+    }));
+    if (destPhysical) {
+      (withLocks[dest] as { lockingBytecode?: Uint8Array }).lockingBytecode = destPhysical;
+    }
+    const retargeted = retargetMintingInputToJobsPin(withLocks, dest, jobsLock, [
+      ...withLocks,
+      ...candidates,
+    ]);
+    if (!retargeted) return;
+    this.allInputs.splice(0, this.allInputs.length, ...withLocks);
+    this._syncBuilderUnlockers(builder);
+  }
+
+  private _indexedMintingCandidates(
+    category?: string,
+  ): Array<UnlockableUtxo & { lockingBytecode: Uint8Array }> {
+    const snap = (this.builderOptions.provider as {
+      indexer?: { storage?: { snapshot?: () => {
+        utxos: Map<string, {
+          outpoint: { txid: string; vout: number };
+          satoshis: bigint;
+          lockingBytecode?: Uint8Array;
+          tokenData?: {
+            category: string; amount: bigint;
+            nft?: { capability: string; commitment: string };
+          };
+        }>;
+      } } };
+    }).indexer?.storage?.snapshot?.();
+    if (!snap) return [];
+    const wanted = new Set<string>();
+    if (category) {
+      wanted.add(category.toLowerCase());
+      try {
+        wanted.add(binToHex(hexToBin(category).reverse()).toLowerCase());
+      } catch { /* not hex */ }
+    }
+    const found: Array<UnlockableUtxo & { lockingBytecode: Uint8Array }> = [];
+    for (const utxo of snap.utxos.values()) {
+      if (utxo.tokenData?.nft?.capability !== 'minting') continue;
+      if (wanted.size > 0 && !wanted.has((utxo.tokenData.category ?? '').toLowerCase())) continue;
+      if (!utxo.lockingBytecode || !isP2sh32Bytes(utxo.lockingBytecode)) continue;
+      const capability = utxo.tokenData.nft.capability;
+      found.push({
+        txid: utxo.outpoint.txid,
+        vout: utxo.outpoint.vout,
+        satoshis: utxo.satoshis,
+        token: {
+          category: utxo.tokenData.category,
+          amount: utxo.tokenData.amount,
+          nft: { capability, commitment: utxo.tokenData.nft.commitment ?? '' },
+        },
+        lockingBytecode: utxo.lockingBytecode,
+        unlocker: {
+          generateLockingBytecode: () => utxo.lockingBytecode!,
+          generateUnlockingBytecode: () => new Uint8Array(),
+        },
+      });
+    }
+    return found;
   }
 
   /** Prefer the spent UTXO's real lock over a FakeToken wrap. */
@@ -8484,7 +8700,7 @@ export class StatefulTransactionBuilder {
     }
     const locking = selectJobsSuffixLock({
       derived: derived?.lockingBytecode,
-      cached: this.jobsSuffixLock,
+      cached: this.jobsSuffixLock ?? persistedJobsSuffixLock,
       destInputLock,
       destInputCapability: destInput?.token?.nft?.capability,
       laterLocks,
@@ -8493,6 +8709,8 @@ export class StatefulTransactionBuilder {
     });
     if (!locking) return;
     this.jobsSuffixLock = locking;
+    persistedJobsSuffixLock = locking;
+    this._retargetDestToJobsPinMinting(builder, dest, locking);
     pinJobsSuffixInput(this.allInputs, dest, locking, this._jobsSuffixUnlocker(locking, dest));
     this._syncBuilderUnlockers(builder);
     const destIsMinting = destInput?.token?.nft?.capability === 'minting';
@@ -13039,6 +13257,15 @@ export class StatefulTransactionBuilder {
               return lock ? binToHex(lock).slice(0, 20) : '';
             })(),
             dest21cap: (this.allInputs[dest] ?? this.allInputs[21])?.token?.nft?.capability,
+            dest21cat: String((this.allInputs[dest] ?? this.allInputs[21])?.token?.category ?? '').slice(0, 16),
+            dest21outpoint: `${(this.allInputs[dest] ?? this.allInputs[21])?.txid?.slice(0, 16)}:${
+              (this.allInputs[dest] ?? this.allInputs[21])?.vout}`,
+            jobsPinRemembered: persistedJobsPinMinting && {
+              txid: persistedJobsPinMinting.txid.slice(0, 16),
+              vout: persistedJobsPinMinting.vout,
+              lock: binToHex(persistedJobsPinMinting.lockingBytecode).slice(0, 20),
+              cat: String(persistedJobsPinMinting.token.category ?? '').slice(0, 16),
+            },
             dest21name: ((this.allInputs[dest] ?? this.allInputs[21]) as {
               unlocker?: { abiFunction?: { name?: string } };
             } | undefined)?.unlocker?.abiFunction?.name,
@@ -13405,6 +13632,7 @@ export class StatefulTransactionBuilder {
       );
     }
     this._persistPlacedJobEventsBand(finalBuilder, txid);
+    this._rememberJobsPinMinting(finalBuilder, txid);
 
     const decoded = decodeTransactionUnsafe(rawTxBin);
     const details = attachWait({ ...decoded, txid, hex: rawTx } as TransactionDetails, this.builderOptions.provider);

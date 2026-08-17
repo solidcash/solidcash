@@ -81,6 +81,7 @@ import {
   jobsSuffixFungibleToken,
   extractEmbeddedP2sh32Locks,
   pinJobsSuffixInput,
+  retargetMintingInputToJobsPin,
   matchingValueChunkUnlockerParts,
   matchingTokenContainerUnlockerParts,
   matchingDataNftUnlockerParts,
@@ -1420,6 +1421,25 @@ describe('assignPhysicalReturnIndices', () => {
     expect(pinJobsSuffixInput(persistBandInputs, 21, suffixJobsLock, jobsUnlocker)).toBe(true);
     expect(persistBandInputs[21]?.unlocker.generateLockingBytecode()).toEqual(suffixJobsLock);
     const jobsCategory = 'e5459449dc4974d6d01bfea4bec0a2d483fb767d503f53776cb2403a608891b8';
+    const scidLock = new Uint8Array(35);
+    scidLock[0] = 0xaa; scidLock[1] = 0x20; scidLock[2] = 0x0e; scidLock[3] = 0xe7; scidLock[34] = 0x87;
+    const jobsPinUtxo = {
+      txid: 'aa'.repeat(32),
+      vout: 21,
+      satoshis: 1200n,
+      token: { category: jobsCategory, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+      lockingBytecode: suffixJobsLock,
+    };
+    const destInputs = Array.from({ length: 22 }, (_, index) => ({
+      txid: index === 21 ? 'bb'.repeat(32) : 'cc'.repeat(32),
+      vout: index,
+      satoshis: 1200n,
+      token: { category: jobsCategory, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+      lockingBytecode: index === 21 ? scidLock : mintingLock,
+    }));
+    expect(retargetMintingInputToJobsPin(destInputs, 21, suffixJobsLock, [jobsPinUtxo])).toBe(true);
+    expect(destInputs[21]?.txid).toBe(jobsPinUtxo.txid);
+    expect(destInputs[21]?.vout).toBe(21);
     expect(selectJobsSuffixCategory({
       below: hexToBin(`${jobsCategory}02`),
       top: new Uint8Array(),

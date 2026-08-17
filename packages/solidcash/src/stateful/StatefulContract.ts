@@ -1087,7 +1087,19 @@ function extractFailingP2sh32OutputPin(
     if (!Number.isFinite(outputIndex) || outputIndex < 0) continue;
     if (band && outputIndex !== band.end + 1
       && (outputIndex < band.start || outputIndex > band.end)) continue;
-    return { outputIndex, lockingBytecode: expected, commitment: '00' };
+    let lockingBytecode = expected;
+    // Dest 21 EQUALVERIFY is `[dest, actual, expected]`; stack[-2] is minting.
+    if (band && outputIndex === band.end + 1 && equalStep.stack.length >= 3) {
+      const destItem = equalStep.stack[equalStep.stack.length - 3];
+      const top = equalStep.stack[equalStep.stack.length - 1];
+      const below = equalStep.stack[equalStep.stack.length - 2];
+      if (destItem.length <= 5 && isP2sh32LockingBytecode(top) && isP2sh32LockingBytecode(below)
+        && binToHex(top) !== binToHex(below)
+        && Number(decodeScriptNumber(destItem)) === outputIndex) {
+        lockingBytecode = top;
+      }
+    }
+    return { outputIndex, lockingBytecode, commitment: '00' };
   }
   return undefined;
 }

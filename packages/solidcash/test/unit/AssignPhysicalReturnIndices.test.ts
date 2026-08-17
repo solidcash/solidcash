@@ -64,6 +64,10 @@ import {
   persistLayoutWidth,
   jobsSuffixDest,
   stampJobsSuffixLock,
+  selectJobsSuffixLock,
+  selectJobsSuffixExpectedLock,
+  extractEmbeddedP2sh32Locks,
+  pinJobsSuffixInput,
   selectLatestJobEventsChunks,
   persistedJobEventsWidth,
   selectHashedValueForChunkPin,
@@ -1288,11 +1292,74 @@ describe('assignPhysicalReturnIndices', () => {
       amount: 1200n,
       token: { category: 'ft', nft: { capability: 'minting', commitment: '' } },
     };
-    expect(stampJobsSuffixLock(suffixOuts, 21, suffixLock, {
-      category: 'md', nft: { capability: 'mutable', commitment: '00004c' },
-    })).toBe(true);
-    expect(suffixOuts[21]?.token?.nft?.capability).toBe('mutable');
+    expect(stampJobsSuffixLock(suffixOuts, 21, suffixLock)).toBe(true);
+    expect(suffixOuts[21]?.token).toBeUndefined();
     expect(suffixOuts[22]?.token?.nft?.capability).toBe('minting');
+    const suffixJobsLock = new Uint8Array(35);
+    suffixJobsLock[0] = 0xaa; suffixJobsLock[1] = 0x20; suffixJobsLock[2] = 0xe6; suffixJobsLock[34] = 0x87;
+    const mintingLock = new Uint8Array(35);
+    mintingLock[0] = 0xaa; mintingLock[1] = 0x20; mintingLock[2] = 0xbd; mintingLock[34] = 0x87;
+    const dest1Lock = new Uint8Array(35);
+    dest1Lock[0] = 0xaa; dest1Lock[1] = 0x20; dest1Lock[2] = 0xf2; dest1Lock[34] = 0x87;
+    expect(selectJobsSuffixLock({
+      destInputLock: mintingLock,
+      destInputCapability: 'minting',
+      laterLocks: [dest1Lock, suffixJobsLock],
+      skipLockHexes: [binToHex(dest1Lock), binToHex(mintingLock)],
+    })).toEqual(suffixJobsLock);
+    expect(selectJobsSuffixLock({
+      derived: suffixJobsLock,
+      destInputLock: mintingLock,
+      destInputCapability: 'minting',
+      skipLockHexes: [binToHex(mintingLock)],
+    })).toEqual(suffixJobsLock);
+    expect(selectJobsSuffixLock({
+      derived: dest1Lock,
+      destInputLock: suffixJobsLock,
+      destInputCapability: 'mutable',
+      laterLocks: [dest1Lock],
+    })).toEqual(suffixJobsLock);
+    const wrongScidLock = new Uint8Array(35);
+    wrongScidLock[0] = 0xaa; wrongScidLock[1] = 0x20; wrongScidLock[2] = 0x0e; wrongScidLock[34] = 0x87;
+    const persistBlob = `510023${binToHex(suffixJobsLock)}0002f000076469676974616c`;
+    expect(extractEmbeddedP2sh32Locks(persistBlob)).toEqual([suffixJobsLock]);
+    expect(selectJobsSuffixLock({
+      destInputLock: mintingLock,
+      destInputCapability: 'minting',
+      laterLocks: [wrongScidLock],
+      embeddedLocks: extractEmbeddedP2sh32Locks(persistBlob),
+      skipLockHexes: [binToHex(mintingLock)],
+    })).toEqual(suffixJobsLock);
+    expect(selectJobsSuffixExpectedLock({
+      below: mintingLock,
+      top: suffixJobsLock,
+      actualHex: binToHex(mintingLock),
+      skipLockHexes: [binToHex(mintingLock)],
+    })).toEqual(suffixJobsLock);
+    expect(selectJobsSuffixExpectedLock({
+      below: mintingLock,
+      top: suffixJobsLock,
+      actualHex: binToHex(wrongScidLock),
+      skipLockHexes: [binToHex(mintingLock)],
+    })).toEqual(suffixJobsLock);
+    expect(selectJobsSuffixLock({
+      destInputLock: mintingLock,
+      destInputCapability: 'minting',
+      cached: suffixJobsLock,
+      laterLocks: [wrongScidLock],
+      skipLockHexes: [binToHex(mintingLock)],
+    })).toEqual(suffixJobsLock);
+    const mintingInput = {
+      token: { nft: { capability: 'minting' as const } },
+      unlocker: {
+        generateLockingBytecode: () => mintingLock,
+        generateUnlockingBytecode: () => Uint8Array.of(0x51),
+      },
+    };
+    const suffixInputs = Array.from({ length: 22 }, () => ({ ...mintingInput }));
+    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(true);
+    expect(suffixInputs[21]?.unlocker.generateLockingBytecode()).toEqual(suffixJobsLock);
+    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(false);
     expect(computePublishJobEventsBand({
       implIndex: 15, blockSize: 5, jobEventsCount: 4,
     })).toEqual({ start: 20, end: 23, nNew: 4 });

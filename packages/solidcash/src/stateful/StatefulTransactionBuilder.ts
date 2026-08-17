@@ -481,8 +481,113 @@ export function jobsSuffixDest(implIndex?: number, blockSize = 5): number {
   return implIndex + 2 * blockSize;
 }
 
+function isP2sh32Bytes(lock: Uint8Array | undefined): lock is Uint8Array {
+  return !!lock && lock.length === 35 && lock[0] === 0xaa && lock[1] === 0x20 && lock[34] === 0x87;
+}
+
+/** Length-prefixed p2sh32 (`23aa20…87`) stored inside persist/JobEvent blobs. */
+export function extractEmbeddedP2sh32Locks(hex: string): Uint8Array[] {
+  const body = hex.startsWith('0x') ? hex.slice(2) : hex;
+  const locks: Uint8Array[] = [];
+  const pattern = /23(aa20[0-9a-f]{64}87)/gi;
+  let match: RegExpExecArray | null = pattern.exec(body);
+  while (match) {
+    locks.push(hexToBin(match[1]));
+    match = pattern.exec(body);
+  }
+  return locks;
+}
+
 /**
- * Write the jobs/message-bus lock at band.end+1. FakeToken minting that 1:1'd
+ * Dest 21 EQUALVERIFY is `[dest, actual, expected]`. Skip dest 21's current
+ * output and its minting input lock so the jobs pin is not the FakeToken lock.
+ */
+export function selectJobsSuffixExpectedLock(parts: {
+  below?: Uint8Array;
+  top?: Uint8Array;
+  actualHex?: string;
+  skipLockHexes?: Iterable<string>;
+}): Uint8Array | undefined {
+  const skip = new Set(
+    [...(parts.skipLockHexes ?? [])].map((hex) => hex.toLowerCase()),
+  );
+  if (parts.actualHex) skip.add(parts.actualHex.toLowerCase());
+  const usable = (lock?: Uint8Array): lock is Uint8Array => (
+    isP2sh32Bytes(lock) && !skip.has(binToHex(lock).toLowerCase())
+  );
+  if (usable(parts.top)) return parts.top;
+  if (usable(parts.below)) return parts.below;
+  return undefined;
+}
+
+/**
+ * Jobs/message-bus lock for dest 21. Prefer an extracted pin, then a persist
+ * blob address, then a later SCID lock that is not dest 1 / persist-v / minting.
+ */
+export function selectJobsSuffixLock(parts: {
+  derived?: Uint8Array;
+  cached?: Uint8Array;
+  destInputLock?: Uint8Array;
+  destInputCapability?: string;
+  laterLocks?: readonly Uint8Array[];
+  embeddedLocks?: readonly Uint8Array[];
+  skipLockHexes?: Iterable<string>;
+}): Uint8Array | undefined {
+  const skip = new Set(
+    [...(parts.skipLockHexes ?? [])].map((hex) => hex.toLowerCase()),
+  );
+  const usable = (lock?: Uint8Array): lock is Uint8Array => (
+    isP2sh32Bytes(lock) && !skip.has(binToHex(lock).toLowerCase())
+  );
+  // Dest 21 is already a jobs spend: keep its 1:1. Only replace minting/pads.
+  if (parts.destInputCapability === 'mutable' && usable(parts.destInputLock)) {
+    return parts.destInputLock;
+  }
+  if (usable(parts.derived)) return parts.derived;
+  if (usable(parts.cached)) return parts.cached;
+  for (const lock of parts.embeddedLocks ?? []) {
+    if (usable(lock)) return lock;
+  }
+  for (const lock of parts.laterLocks ?? []) {
+    if (usable(lock)) return lock;
+  }
+  return undefined;
+}
+
+/**
+ * UTXOBYTECODE(21) reads the dest 21 input lock. Minting stays on dest 21
+ * physically; only the reported locking bytecode is the jobs pin.
+ */
+export function pinJobsSuffixInput<T extends {
+  token?: { nft?: { capability?: string } };
+  unlocker?: {
+    generateLockingBytecode: () => Uint8Array;
+    generateUnlockingBytecode: (context: Parameters<Unlocker['generateUnlockingBytecode']>[0]) => Uint8Array;
+  };
+}>(
+  inputs: T[],
+  dest: number,
+  locking: Uint8Array,
+): boolean {
+  if (dest < 0 || dest >= inputs.length || !isP2sh32Bytes(locking)) return false;
+  const destInput = inputs[dest];
+  if (!destInput?.unlocker) return false;
+  if (destInput.token?.nft?.capability === 'mutable') return false;
+  const current = destInput.unlocker.generateLockingBytecode();
+  if (isP2sh32Bytes(current) && binToHex(current) === binToHex(locking)) return false;
+  const inner = destInput.unlocker;
+  inputs[dest] = {
+    ...destInput,
+    unlocker: {
+      generateLockingBytecode: () => locking,
+      generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
+    },
+  };
+  return true;
+}
+
+/**
+ * Write the jobs/message-bus lock at dest 21. FakeToken minting that 1:1'd
  * that dest slides onto the next pad so TXOUTPUTCOUNT stays put.
  */
 export function stampJobsSuffixLock<T extends {
@@ -495,9 +600,7 @@ export function stampJobsSuffixLock<T extends {
   locking: Uint8Array,
   token?: T['token'],
 ): boolean {
-  if (dest < 0 || dest >= outputs.length || locking.length !== 35 || locking[0] !== 0xaa) {
-    return false;
-  }
+  if (dest < 0 || dest >= outputs.length || !isP2sh32Bytes(locking)) return false;
   const existing = outputs[dest];
   const existingLock = existing?.to instanceof Uint8Array ? existing.to : undefined;
   if (existingLock && existingLock.length === locking.length
@@ -505,17 +608,24 @@ export function stampJobsSuffixLock<T extends {
     && existing?.token?.nft?.capability !== 'minting') {
     return false;
   }
-  if (existing?.token?.nft?.capability === 'minting' && dest + 1 < outputs.length) {
-    const next = outputs[dest + 1];
-    const nextLock = next?.to instanceof Uint8Array ? next.to : undefined;
-    const nextIsPad = !next?.token && (!nextLock || nextLock[0] === 0x51 || nextLock[0] === 0x76);
-    if (nextIsPad) outputs[dest + 1] = existing;
+  if (existing?.token?.nft?.capability === 'minting') {
+    for (let nextIndex = dest + 1; nextIndex < outputs.length; nextIndex++) {
+      const next = outputs[nextIndex];
+      const nextLock = next?.to instanceof Uint8Array ? next.to : undefined;
+      const nextIsPad = !next?.token && (!nextLock || nextLock[0] === 0x51 || nextLock[0] === 0x76);
+      if (!nextIsPad) continue;
+      outputs[nextIndex] = existing;
+      break;
+    }
   }
+  const nextToken = token ?? (
+    existing?.token?.nft?.capability === 'minting' ? undefined : existing?.token
+  );
   outputs[dest] = {
     ...(existing as T),
     to: locking,
     amount: existing?.amount && existing.amount >= 1200n ? existing.amount : 1200n,
-    token: token ?? existing?.token,
+    token: nextToken,
   };
   return true;
 }
@@ -572,12 +682,17 @@ export function remapDerivedChunkDests<T extends { commitment?: string }>(
   derived: ReadonlyMap<number, T>,
   band: { start: number; nNew: number },
   persistFloor = -1,
+  jobsDest = -1,
 ): Map<number, T> {
   const next = new Map<number, T>();
   const offBand: T[] = [];
   const bandEnd = band.start + band.nNew - 1;
   const floor = persistFloor >= 0 ? persistFloor : 2;
   for (const [dest, chunk] of [...derived.entries()].sort(([left], [right]) => left - right)) {
+    if (jobsDest >= 0 && dest === jobsDest) {
+      next.set(dest, chunk);
+      continue;
+    }
     const chunkIndex = valueChunkIndexFromCommitment(chunk.commitment ?? '');
     const falseDest = isProxyPreserveOutputIndex(dest)
       || dest < floor
@@ -3624,6 +3739,10 @@ export class StatefulTransactionBuilder {
   }> = [];
   /** Last VM pin redeem lock for the jobEvents band (emitValueChunkP2sh32). */
   private jobEventsRedeemLock?: Uint8Array;
+  /** Dest 21 jobs/message-bus lock extracted from EQUALVERIFY / persist blobs. */
+  private jobsSuffixLock?: Uint8Array;
+  /** Dest 21 OUTPUTTOKENCATEGORY (32-byte jobs category). */
+  private jobsSuffixCategory?: string;
   /** Persist band must start after the executing emit dest (INPUTINDEX+4). */
   private forcedJobEventsBandStart?: number;
 
@@ -4675,7 +4794,7 @@ export class StatefulTransactionBuilder {
       && executingImpl < 0) {
       return undefined;
     }
-    return computePublishJobEventsBand({
+    const band = computePublishJobEventsBand({
       start: forcedLayoutStart ?? layoutStart,
       preserveEndExclusive: Math.max(preserveEndExclusive, forcedStart ?? -1),
       persistFloor,
@@ -4683,6 +4802,11 @@ export class StatefulTransactionBuilder {
       jobEventsCount,
       liveWidth: liveJobEventsBandWidth({ plannedWidth, persistWidth, derivedWidth }),
     });
+    const jobsDest = jobsSuffixDest(executingImpl);
+    if (!band || jobsDest < 0 || band.end < jobsDest) return band;
+    const nNew = jobsDest - band.start;
+    if (nNew <= 0) return undefined;
+    return { start: band.start, end: jobsDest - 1, nNew };
   }
 
   /** Grow publishJobEvent `valueChunkOutputCount` to the extracted continuation width. */
@@ -6022,6 +6146,81 @@ export class StatefulTransactionBuilder {
           transaction.outputs[dest].lockingBytecode = chunk;
         }
       }
+    }
+  }
+
+  /**
+   * Last-write dest 21 OUTPUTBYTECODE onto the libauth tx after minting 1:1.
+   * Unlockers can restore dest 21 minting while generating bytecode, so this
+   * writes the jobs lock onto the transaction itself.
+   */
+  private _pinJobsSuffixLockOnTransaction(
+    builder: TransactionBuilder,
+    transaction: {
+      outputs: Array<{
+        lockingBytecode: Uint8Array;
+        valueSatoshis: bigint;
+        token?: {
+          amount?: bigint;
+          category?: Uint8Array;
+          nft?: { capability?: string; commitment?: Uint8Array };
+        };
+      }>;
+    },
+  ): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    const dest = jobsSuffixDest(this._executingPublishJobEventInputIndex(builder));
+    if (dest < 0 || dest >= transaction.outputs.length) return;
+    const destInput = this.allInputs[dest];
+    if (destInput?.token?.nft?.capability === 'mutable') return;
+    this._stampJobsSuffixLock(builder);
+    const skipLockHexes: string[] = [];
+    const embeddedLocks: Uint8Array[] = [];
+    for (let index = 0; index < dest && index < transaction.outputs.length; index++) {
+      const lock = transaction.outputs[index]?.lockingBytecode;
+      if (lock && lock.length === 35) skipLockHexes.push(binToHex(lock));
+    }
+    if (destInput && 'unlocker' in destInput && destInput.unlocker) {
+      skipLockHexes.push(binToHex(destInput.unlocker.generateLockingBytecode()));
+    }
+    for (const output of transaction.outputs.slice(Math.max(0, dest - 5))) {
+      const commit = output?.token?.nft?.commitment;
+      if (commit && commit.length > 0) embeddedLocks.push(...extractEmbeddedP2sh32Locks(binToHex(commit)));
+    }
+    for (const value of [
+      ...persistedJobEventsValues.values(),
+      ...stagedJobEventsValues.values(),
+    ]) {
+      embeddedLocks.push(...extractEmbeddedP2sh32Locks(binToHex(value)));
+    }
+    const builderLock = builder.outputs[dest]?.to instanceof Uint8Array
+      ? builder.outputs[dest]!.to as Uint8Array : undefined;
+    const locking = selectJobsSuffixLock({
+      derived: builderLock,
+      cached: this.jobsSuffixLock,
+      destInputCapability: destInput?.token?.nft?.capability,
+      embeddedLocks,
+      skipLockHexes,
+    });
+    if (!locking) return;
+    this.jobsSuffixLock = locking;
+    stampJobsSuffixLock(builder.outputs, dest, locking);
+    pinJobsSuffixInput(this.allInputs, dest, locking);
+    this._syncBuilderUnlockers(builder);
+    transaction.outputs[dest].lockingBytecode = locking;
+    const amount = builder.outputs[dest]?.amount;
+    if (amount !== undefined && amount >= 1200n) {
+      transaction.outputs[dest].valueSatoshis = amount;
+    }
+    const categoryHex = this.jobsSuffixCategory
+      ?? (builder.outputs[dest]?.token?.category
+        && /^[0-9a-f]{64}$/i.test(builder.outputs[dest]!.token!.category)
+        ? builder.outputs[dest]!.token!.category : undefined);
+    if (categoryHex) {
+      transaction.outputs[dest].token = {
+        amount: 0n,
+        category: hexToBin(categoryHex),
+      };
     }
   }
 
@@ -7388,6 +7587,7 @@ export class StatefulTransactionBuilder {
         this.derivedChunkOutputs,
         band,
         persistJobEventsBandFloor(this._executingPublishJobEventInputIndex(), persistReady),
+        jobsSuffixDest(this._executingPublishJobEventInputIndex()),
       );
       this.derivedChunkOutputs.clear();
       for (const [index, chunk] of remapped) this.derivedChunkOutputs.set(index, chunk);
@@ -7433,13 +7633,22 @@ export class StatefulTransactionBuilder {
       // publishJobEvent pins often omit categoryId; treating them as
       // `this.categoryId` dropped the 20-25 jobEvents run on the view-only path.
       if (this.delegateDynamicChunksAtSuffix && chunk.categoryId === this.categoryId) continue;
-      if (protectedMasters.has(outputIndex)) continue;
+      const jobsDest = jobsSuffixDest(this._executingPublishJobEventInputIndex());
+      if (protectedMasters.has(outputIndex) && outputIndex !== jobsDest) continue;
       const existing = builder.outputs[outputIndex];
       if (existing) {
         // A minting 1:1 recreation is not an old value-chunk digest. Every
         // P2SH32 used to match `existingIsChunkAddress`, so FakeToken's minting
         // lock was replaced by jobEvents (timeout refund output 24).
-        if (existing.token?.nft?.capability === 'minting') continue;
+        if (existing.token?.nft?.capability === 'minting') {
+          if (outputIndex === jobsDest && isP2sh32Bytes(chunk.lockingBytecode)) {
+            this.jobsSuffixLock = chunk.lockingBytecode;
+            if (stampJobsSuffixLock(builder.outputs, outputIndex, chunk.lockingBytecode)) {
+              changed = true;
+            }
+          }
+          continue;
+        }
         const commitHex = String(existing.token?.nft?.commitment ?? '');
         const commitBytes = commitHex.length / 2;
         const existingLock = existing.to instanceof Uint8Array
@@ -7797,33 +8006,71 @@ export class StatefulTransactionBuilder {
     const dest = jobsSuffixDest(this._executingPublishJobEventInputIndex(builder));
     if (dest < 0) return;
     const derived = this.derivedChunkOutputs.get(dest);
-    let locking = derived?.lockingBytecode;
     const destInput = this.allInputs[dest];
-    if ((!locking || locking.length !== 35 || locking[0] !== 0xaa)
-      && destInput && 'unlocker' in destInput && destInput.unlocker
-      && destInput.token?.nft?.capability === 'mutable') {
-      const destLock = destInput.unlocker.generateLockingBytecode();
-      if (destLock.length === 35 && destLock[0] === 0xaa) locking = destLock;
-    }
-    if (!locking || locking.length !== 35 || locking[0] !== 0xaa) {
-      for (let index = dest + 1; index < this.allInputs.length; index++) {
-        const input = this.allInputs[index];
-        if (!input?.token || !('unlocker' in input) || !input.unlocker) continue;
-        const lock = input.unlocker.generateLockingBytecode();
-        if (lock.length !== 35 || lock[0] !== 0xaa) continue;
-        const commit = String(input.token.nft?.commitment ?? '');
-        if (commit.toLowerCase().startsWith('53434944')) {
-          locking = lock;
-          break;
+    if (destInput?.token?.nft?.capability === 'mutable') return;
+    const destInputLock = destInput && 'unlocker' in destInput && destInput.unlocker
+      ? destInput.unlocker.generateLockingBytecode() : undefined;
+    const skipLockHexes: string[] = [];
+    const laterLocks: Uint8Array[] = [];
+    const embeddedLocks: Uint8Array[] = [];
+    const persistStart = dest >= 5 ? dest - 5 : 0;
+    for (let index = 0; index < Math.max(builder.outputs.length, this.allInputs.length); index++) {
+      const outputLock = builder.outputs[index]?.to instanceof Uint8Array
+        ? builder.outputs[index]!.to as Uint8Array : undefined;
+      const input = this.allInputs[index];
+      const inputLock = input && 'unlocker' in input && input.unlocker
+        ? input.unlocker.generateLockingBytecode() : undefined;
+      const commit = String(
+        builder.outputs[index]?.token?.nft?.commitment ?? input?.token?.nft?.commitment ?? '',
+      );
+      if (index >= persistStart) embeddedLocks.push(...extractEmbeddedP2sh32Locks(commit));
+      if (index < dest) {
+        if (outputLock && outputLock.length === 35) skipLockHexes.push(binToHex(outputLock));
+        if (inputLock && inputLock.length === 35) skipLockHexes.push(binToHex(inputLock));
+        continue;
+      }
+      if (index === dest) {
+        if (destInput?.token?.nft?.capability === 'minting' && destInputLock) {
+          skipLockHexes.push(binToHex(destInputLock));
         }
+        continue;
+      }
+      if (commit.toLowerCase().startsWith('53434944')) {
+        if (outputLock && outputLock.length === 35) laterLocks.push(outputLock);
+        else if (inputLock && inputLock.length === 35) laterLocks.push(inputLock);
       }
     }
+    for (const value of [
+      ...persistedJobEventsValues.values(),
+      ...stagedJobEventsValues.values(),
+    ]) {
+      embeddedLocks.push(...extractEmbeddedP2sh32Locks(binToHex(value)));
+    }
+    const locking = selectJobsSuffixLock({
+      derived: derived?.lockingBytecode,
+      cached: this.jobsSuffixLock,
+      destInputLock,
+      destInputCapability: destInput?.token?.nft?.capability,
+      laterLocks,
+      embeddedLocks,
+      skipLockHexes,
+    });
     if (!locking) return;
-    stampJobsSuffixLock(builder.outputs, dest, locking, derived ? {
-      amount: 0n,
-      category: derived.categoryId ?? this.categoryId,
-      nft: { capability: 'mutable', commitment: derived.commitment },
-    } : undefined);
+    this.jobsSuffixLock = locking;
+    pinJobsSuffixInput(this.allInputs, dest, locking);
+    this._syncBuilderUnlockers(builder);
+    const category = derived?.categoryId ?? this.jobsSuffixCategory;
+    const derivedToken = category === undefined ? undefined
+      : (derived
+        && derived.commitment !== '00'
+        && !isEmptyValueChunkCommitment(derived.commitment)
+        ? {
+          amount: 0n,
+          category,
+          nft: { capability: 'mutable' as const, commitment: derived.commitment },
+        }
+        : { amount: 0n, category });
+    stampJobsSuffixLock(builder.outputs, dest, locking, derivedToken);
   }
 
   /**
@@ -11491,8 +11738,10 @@ export class StatefulTransactionBuilder {
     const verbose = env?.SOLIDC_DEBUG_COVENANT_TRACE === '1';
     this._pinPersistDigestLocks(builder);
     this._pinPersistDigestInputLocks(builder);
+    this._stampJobsSuffixLock(builder);
     const transaction = builder.buildLibauthTransaction(true);
     this._pinPersistDigestLocksOnTransaction(transaction);
+    this._pinJobsSuffixLockOnTransaction(builder, transaction);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const named = reason.match(/input(?: index)? (\d+)/);
     const traceInput = Number(env?.SOLIDC_TRACE_INPUT);
@@ -11784,6 +12033,7 @@ export class StatefulTransactionBuilder {
     const transaction = builder.buildLibauthTransaction(true);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     let repair: { outputIndex: number; lockingBytecode?: Uint8Array; commitment: Uint8Array } | undefined;
+    let jobsLockPinned = false;
     const eventRepairs = new Map<number, Uint8Array>();
     const tokenEventSlots = new Map<number, { categoryId: string; groupIndex: number; eventOrdinal: number }>();
     const tokenReturnSlots = new Set<number>();
@@ -11873,6 +12123,43 @@ export class StatefulTransactionBuilder {
           }
           return;
         }
+        if (state.instructions[state.ip]?.opcode === 0x88 && state.stack.length >= 3) {
+          const destItem = state.stack[state.stack.length - 3];
+          const jobsDest = jobsSuffixDest(this._executingPublishJobEventInputIndex(builder));
+          const destHint = destItem.length <= 5
+            ? Number(decodeVmScriptNumber(destItem)) : Number.NaN;
+          if (destHint === jobsDest || destHint === 21) {
+            const categoryBelow = state.stack[state.stack.length - 2];
+            const categoryTop = state.stack[state.stack.length - 1];
+            if (categoryBelow.length === 32) {
+              this.jobsSuffixCategory = binToHex(categoryBelow);
+              jobsLockPinned = true;
+            } else if (categoryTop.length === 32 && categoryBelow.length === 0) {
+              this.jobsSuffixCategory = binToHex(categoryTop);
+              jobsLockPinned = true;
+            }
+            const destInput = this.allInputs[jobsDest];
+            const destInputLock = destInput && 'unlocker' in destInput && destInput.unlocker
+              ? destInput.unlocker.generateLockingBytecode() : undefined;
+            const actual = builder.outputs[jobsDest]?.to instanceof Uint8Array
+              ? builder.outputs[jobsDest]!.to as Uint8Array : undefined;
+            const expected = selectJobsSuffixExpectedLock({
+              below: state.stack[state.stack.length - 2],
+              top: state.stack[state.stack.length - 1],
+              actualHex: actual ? binToHex(actual) : undefined,
+              skipLockHexes: destInputLock ? [binToHex(destInputLock)] : [],
+            });
+            if (expected) {
+              this.jobsSuffixLock = expected;
+              this.setDerivedChunkOutput(jobsDest, {
+                commitment: '000000',
+                lockingBytecode: expected,
+              });
+              stampJobsSuffixLock(builder.outputs, jobsDest, expected);
+              jobsLockPinned = true;
+            }
+          }
+        }
         if (state.instructions[state.ip]?.opcode !== 0xcd || state.stack.length < 4) return;
         const chunkShaped = state.instructions.some((instruction, at) => instruction.data?.length === 1
           && instruction.data[0] === 126 && state.instructions[at + 1]?.opcode === 0x95
@@ -11959,7 +12246,7 @@ export class StatefulTransactionBuilder {
         }
       }
     }
-    return changed || derivedChanged;
+    return changed || derivedChanged || jobsLockPinned;
   }
 
   /** Evaluate one known repairable participant without rescanning every independent input in the composition. */
@@ -12246,6 +12533,7 @@ export class StatefulTransactionBuilder {
         try {
           const transaction = finalBuilder.buildLibauthTransaction(true);
           this._pinPersistDigestLocksOnTransaction(transaction);
+          this._pinJobsSuffixLockOnTransaction(finalBuilder, transaction);
           assertFinalizedTransactionCovenants(finalBuilder, transaction);
           preflightError = undefined;
           break;

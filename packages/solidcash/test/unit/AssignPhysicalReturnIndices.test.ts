@@ -2080,6 +2080,9 @@ describe('assignPhysicalReturnIndices', () => {
       dest: 19, band: { start: 16, end: 19 }, replayWidth: 0, incomingCommitment: chunk3,
     })).toBe(true);
     expect(persistChunkMayOverwriteScid({
+      dest: 20, band: { start: 16, end: 20 }, replayWidth: 0, incomingCommitment: `04001a56${'55'.repeat(20)}`,
+    })).toBe(false);
+    expect(persistChunkMayOverwriteScid({
       dest: 19, band: { start: 16, end: 20 }, replayWidth: 3, incomingCommitment: chunk3,
     })).toBe(false);
     expect(persistChunkMayOverwriteScid({

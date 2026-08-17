@@ -2221,6 +2221,9 @@ export function persistChunkMayOverwriteScid(parts: {
 }): boolean {
   if (parts.replayWidth > 0) return false;
   if (!parts.band || parts.dest < parts.band.start || parts.dest > parts.band.end) return false;
+  // Only the first dest past persist-v width (dest 19 when start=16). Dest 20+
+  // stay SCID so message-bus / jobs suffix keep their 1:1s.
+  if (parts.dest !== parts.band.start + persistUpdatePersistVWidth()) return false;
   const commit = parts.incomingCommitment ?? '';
   return isPersistValueChunkCommitment(commit) && !isEmptyValueChunkCommitment(commit);
 }
@@ -7512,18 +7515,24 @@ export class StatefulTransactionBuilder {
     }
     const reserved = new Set<number>([0, 1]);
     const replayWidth = this._persistReplayWidth();
+    const scidOverwrite = (index: number, incoming?: string): boolean => persistChunkMayOverwriteScid({
+      dest: index,
+      band: { start: liveBand.start, end: liveEnd },
+      replayWidth,
+      incomingCommitment: incoming ?? this.derivedChunkOutputs.get(index)?.commitment,
+    });
     for (const [index, input] of this.allInputs.entries()) {
       if (input.token?.nft?.capability === 'minting') reserved.add(index);
       const inputCommit = String(input.token?.nft?.commitment ?? '');
+      const outputCommit = String(builder.outputs[index]?.token?.nft?.commitment ?? '');
+      const occupantIsScid = inputCommit.toLowerCase().startsWith('53434944')
+        || outputCommit.toLowerCase().startsWith('53434944');
       if (isDataNftIndexCommitment(inputCommit) && !isPersistValueChunkCommitment(inputCommit)
-        && !persistChunkMayOverwriteScid({
-          dest: index,
-          band: { start: liveBand.start, end: liveEnd },
-          replayWidth,
-          incomingCommitment: this.derivedChunkOutputs.get(index)?.commitment,
-        })) {
+        && !scidOverwrite(index)) {
         reserved.add(index);
       }
+      // Dest 20 SCID is often a recreation on a pad INPUT. Keep it unless dest 19.
+      if (occupantIsScid && !scidOverwrite(index)) reserved.add(index);
     }
     for (const [index, group] of this.externalCallUtxoGroups.entries()) {
       if (groupOwnsInBlockReturnEvent(this.externalCallUtxoGroups, index)) continue;
@@ -7656,8 +7665,21 @@ export class StatefulTransactionBuilder {
       nNew: persistWidth > 0 ? persistWidth : Math.max(band.nNew, liveN, 1),
     };
     const reserved = new Set<number>();
+    const liveEnd = liveBand.start + liveBand.nNew - 1;
     for (const [index, input] of this.allInputs.entries()) {
       if (input.token?.nft?.capability === 'minting') reserved.add(index);
+      const inputCommit = String(input.token?.nft?.commitment ?? '');
+      const outputCommit = String(builder.outputs[index]?.token?.nft?.commitment ?? '');
+      const occupantIsScid = inputCommit.toLowerCase().startsWith('53434944')
+        || outputCommit.toLowerCase().startsWith('53434944');
+      if (occupantIsScid && !persistChunkMayOverwriteScid({
+        dest: index,
+        band: { start: liveBand.start, end: liveEnd },
+        replayWidth: persistWidth,
+        incomingCommitment: source[index - liveBand.start]?.commitment,
+      })) {
+        reserved.add(index);
+      }
     }
     const occupancyEnd = writerBlockOccupancyEnd(
       this.externalCallUtxoGroups,

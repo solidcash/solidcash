@@ -262,6 +262,77 @@ export function generateLibauthSourceOutputs(inputs: UnlockableUtxo[]): LibauthO
   return sourceOutputs;
 }
 
+interface IndexedUtxoLookup {
+  lockingBytecode?: Uint8Array;
+  satoshis: bigint;
+  tokenData?: {
+    category: string;
+    amount: bigint;
+    nft?: { capability: string; commitment: string };
+  };
+}
+
+/** Mock indexer lookup; tries both txid endiannesses. */
+export function lookupIndexedUtxo(
+  provider: unknown,
+  txid: string,
+  vout: number,
+): IndexedUtxoLookup | undefined {
+  const lookup = (provider as {
+    indexer?: { storage?: { getUtxoByOutpoint?: (key: string) => IndexedUtxoLookup | undefined } };
+  })?.indexer?.storage?.getUtxoByOutpoint;
+  if (!lookup) return undefined;
+  const direct = lookup(`${txid}:${vout}`);
+  if (direct) return direct;
+  try {
+    const reversed = binToHex(hexToBin(txid).reverse());
+    if (reversed !== txid) return lookup(`${reversed}:${vout}`);
+  } catch { /* not hex */ }
+  return undefined;
+}
+
+function indexedUtxoToLibauthOutput(
+  indexed: IndexedUtxoLookup,
+  fallback: LibauthOutput,
+): LibauthOutput {
+  if (!indexed.lockingBytecode) return fallback;
+  const capability = indexed.tokenData?.nft?.capability;
+  return {
+    lockingBytecode: indexed.lockingBytecode,
+    valueSatoshis: indexed.satoshis,
+    token: indexed.tokenData
+      ? {
+        category: hexToBin(indexed.tokenData.category),
+        amount: indexed.tokenData.amount,
+        nft: indexed.tokenData.nft && (
+          capability === 'mutable' || capability === 'minting' || capability === 'none'
+        )
+          ? {
+            capability,
+            commitment: hexToBin(indexed.tokenData.nft.commitment ?? ''),
+          }
+          : undefined,
+      }
+      : undefined,
+  };
+}
+
+/**
+ * Source outputs mock send() will evaluate. SIGHASH_UTXOS must commit to this
+ * vector, not the wrap generateLockingBytecode() reports.
+ */
+export function generateNetworkSourceOutputs(
+  inputs: UnlockableUtxo[],
+  provider?: unknown,
+): LibauthOutput[] {
+  const wrap = generateLibauthSourceOutputs(inputs);
+  if (!provider) return wrap;
+  return inputs.map((input, index) => {
+    const indexed = lookupIndexedUtxo(provider, input.txid, input.vout);
+    return indexed ? indexedUtxoToLibauthOutput(indexed, wrap[index]) : wrap[index];
+  });
+}
+
 function isTokenAddress(address: string): boolean {
   const result = decodeCashAddress(address);
   if (typeof result === 'string') throw new Error(result);

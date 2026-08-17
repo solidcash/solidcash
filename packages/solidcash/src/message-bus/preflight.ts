@@ -6,6 +6,7 @@ import {
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
+import type { LibauthOutput } from '../interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import {
   deriveBalancedAssemblyFromInputs, preflightBalancedBlockAssembly,
@@ -850,12 +851,12 @@ export function assertFinalizedBytesWithCovenant(
  */
 const evaluateEveryInput = (
   builder: TransactionBuilder, transaction: Transaction,
+  sourceOutputs = generateLibauthSourceOutputs(builder.inputs),
 ): void => {
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
     console.error('preflight-provider-limits', builder.provider?.consensusLimits);
   }
-  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
   const vm = createVirtualMachineBch2026ForProvider(builder.provider);
 
   transaction.inputs.forEach((_input, inputIndex) => {
@@ -1410,8 +1411,9 @@ export function mapMessageBusVmFailure(
 /** Refuse any covenant failure in an exact, fully assembled transaction. */
 export const assertFinalizedTransactionCovenants = (
   builder: TransactionBuilder, transaction: Transaction,
+  sourceOutputs?: LibauthOutput[],
 ): void => evaluateEveryInput(
-  builder, transaction,
+  builder, transaction, sourceOutputs,
 );
 
 /**

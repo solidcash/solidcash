@@ -42,8 +42,8 @@ import {
 import { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import {
-  addressToLockScript, scriptToLockingBytecode, generateLibauthSourceOutputs, calculateDust,
-  createUnlockingBytecode,
+  addressToLockScript, scriptToLockingBytecode, generateLibauthSourceOutputs, generateNetworkSourceOutputs,
+  lookupIndexedUtxo, calculateDust, createUnlockingBytecode,
 } from '../utils.js';
 import {
   findDeploymentByLockingBytecode, listDeployments,
@@ -6290,8 +6290,7 @@ export class StatefulTransactionBuilder {
       const lock = transaction.outputs[index]?.lockingBytecode;
       if (lock && lock.length === 35) skipLockHexes.push(binToHex(lock));
     }
-    const destInputLock = destInput && 'unlocker' in destInput && destInput.unlocker
-      ? destInput.unlocker.generateLockingBytecode() : undefined;
+    const destInputLock = this._physicalLockingBytecode(destInput);
     if (destInputLock) {
       const destHex = binToHex(destInputLock);
       const alreadyJobs = (!!this.jobsSuffixLock && destHex === binToHex(this.jobsSuffixLock))
@@ -6327,11 +6326,46 @@ export class StatefulTransactionBuilder {
     stampJobsSuffixLock(builder.outputs, dest, locking, nextToken);
     pinJobsSuffixInput(this.allInputs, dest, locking, this._jobsSuffixUnlocker(locking, dest));
     this._syncBuilderUnlockers(builder);
+    const destUtxo = this.allInputs[dest];
+    const replaceLock = (this.builderOptions.provider as {
+      replaceUtxoLockingBytecode?: (utxo: typeof destUtxo, lock: Uint8Array) => boolean;
+    }).replaceUtxoLockingBytecode;
+    if (destUtxo && replaceLock) {
+      replaceLock.call(this.builderOptions.provider, destUtxo, locking);
+      const lookup = (this.builderOptions.provider as {
+        indexer?: { storage?: { getUtxoByOutpoint?: (key: string) => {
+          satoshis: bigint;
+          tokenData?: {
+            category: string; amount: bigint;
+            nft?: { capability: string; commitment: string };
+          };
+        } | undefined } };
+      }).indexer?.storage?.getUtxoByOutpoint;
+      const indexed = lookup?.(`${destUtxo.txid}:${destUtxo.vout}`)
+        ?? lookup?.(`${binToHex(hexToBin(destUtxo.txid).reverse())}:${destUtxo.vout}`);
+      if (indexed) {
+        destUtxo.satoshis = indexed.satoshis;
+        if (indexed.tokenData) {
+          const capability = indexed.tokenData.nft?.capability;
+          destUtxo.token = {
+            category: indexed.tokenData.category,
+            amount: indexed.tokenData.amount,
+            nft: indexed.tokenData.nft && (
+              capability === 'mutable' || capability === 'minting' || capability === 'none'
+            )
+              ? { capability, commitment: indexed.tokenData.nft.commitment ?? '' }
+              : undefined,
+          };
+        }
+        this._syncBuilderUnlockers(builder);
+      }
+    }
+    this._syncIndexerLocksToUnlockers(builder);
     const destUnlocker = builder.inputs[dest]?.unlocker ?? this.allInputs[dest]?.unlocker;
     if (destUnlocker && dest < transaction.inputs.length) {
       transaction.inputs[dest].unlockingBytecode = destUnlocker.generateUnlockingBytecode({
         transaction: transaction as GenerateUnlockingBytecodeOptions['transaction'],
-        sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+        sourceOutputs: this._networkSourceOutputs(builder),
         inputIndex: dest,
       });
     }
@@ -6357,6 +6391,42 @@ export class StatefulTransactionBuilder {
     }
   }
 
+  /** Source outputs mock send() will evaluate (indexer when present). */
+  private _networkSourceOutputs(builder: TransactionBuilder): LibauthOutput[] {
+    return generateNetworkSourceOutputs(builder.inputs, this.builderOptions.provider);
+  }
+
+  /** Prefer the spent UTXO's real lock over a FakeToken wrap. */
+  private _physicalLockingBytecode(input?: UnlockableUtxo): Uint8Array | undefined {
+    if (!input) return undefined;
+    const indexed = lookupIndexedUtxo(this.builderOptions.provider, input.txid, input.vout);
+    if (indexed?.lockingBytecode && isP2sh32Bytes(indexed.lockingBytecode)) {
+      return indexed.lockingBytecode;
+    }
+    try {
+      return input.unlocker?.generateLockingBytecode();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Write every wrap lock onto the spent indexer outpoint so SIGHASH_UTXOS
+   * matches send(). Dual-index keeps FakeToken discoverable after dest 21.
+   */
+  private _syncIndexerLocksToUnlockers(builder: TransactionBuilder): void {
+    const replaceLock = (this.builderOptions.provider as {
+      replaceUtxoLockingBytecode?: (utxo: UnlockableUtxo, lock: Uint8Array) => boolean;
+    }).replaceUtxoLockingBytecode;
+    if (!replaceLock) return;
+    for (const input of builder.inputs) {
+      if (!input?.unlocker) continue;
+      try {
+        replaceLock.call(this.builderOptions.provider, input, input.unlocker.generateLockingBytecode());
+      } catch { /* skip malformed locks */ }
+    }
+  }
+
   /** Pin mutates dest 21 after signatures are taken; P2PKH must re-sign. */
   private _resignLibauthTransaction(
     builder: TransactionBuilder,
@@ -6364,8 +6434,8 @@ export class StatefulTransactionBuilder {
       inputs: Array<{ unlockingBytecode: Uint8Array }>;
       outputs: unknown[];
     },
+    sourceOutputs = this._networkSourceOutputs(builder),
   ): void {
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const jobsDest = jobsSuffixDest(this._executingPublishJobEventInputIndex(builder));
     for (let index = 0; index < transaction.inputs.length && index < builder.inputs.length; index++) {
       const unlocker = builder.inputs[index]?.unlocker;
@@ -8365,8 +8435,7 @@ export class StatefulTransactionBuilder {
     const derived = this.derivedChunkOutputs.get(dest);
     const destInput = this.allInputs[dest];
     if (destInput?.token?.nft?.capability === 'mutable') return;
-    const destInputLock = destInput && 'unlocker' in destInput && destInput.unlocker
-      ? destInput.unlocker.generateLockingBytecode() : undefined;
+    const destInputLock = this._physicalLockingBytecode(destInput);
     const skipLockHexes: string[] = [];
     const laterLocks: Uint8Array[] = [];
     const embeddedLocks: Uint8Array[] = [];
@@ -12102,8 +12171,8 @@ export class StatefulTransactionBuilder {
     const transaction = builder.buildLibauthTransaction(true);
     this._pinPersistDigestLocksOnTransaction(transaction);
     this._pinJobsSuffixLockOnTransaction(builder, transaction);
-    this._resignLibauthTransaction(builder, transaction);
-    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const sourceOutputs = this._networkSourceOutputs(builder);
+    this._resignLibauthTransaction(builder, transaction, sourceOutputs);
     const named = reason.match(/input(?: index)? (\d+)/);
     const traceInput = Number(env?.SOLIDC_TRACE_INPUT);
     const candidates = Number.isInteger(traceInput)
@@ -12280,6 +12349,24 @@ export class StatefulTransactionBuilder {
             + `dest21-out=${transaction.outputs[21]
               ? binToHex(transaction.outputs[21].lockingBytecode).slice(0, 24) : 'none'}`
             + `:commit=${binToHex(transaction.outputs[21]?.token?.nft?.commitment ?? new Uint8Array()).slice(0, 24)}\n`
+            + `wrapVsIndexer=${JSON.stringify(generateLibauthSourceOutputs(builder.inputs).map((wrap, index) => {
+              const net = sourceOutputs[index];
+              if (!net) return { index, missing: true };
+              const wrapLock = binToHex(wrap.lockingBytecode).slice(0, 20);
+              const netLock = binToHex(net.lockingBytecode).slice(0, 20);
+              const wrapTok = wrap.token
+                ? `${wrap.token.amount}:${binToHex(wrap.token.category).slice(0, 16)}:${wrap.token.nft?.capability ?? ''}`
+                : '';
+              const netTok = net.token
+                ? `${net.token.amount}:${binToHex(net.token.category).slice(0, 16)}:${net.token.nft?.capability ?? ''}`
+                : '';
+              if (wrapLock === netLock && wrap.valueSatoshis === net.valueSatoshis && wrapTok === netTok) {
+                return undefined;
+              }
+              return {
+                index, wrapLock, netLock, wrapSats: wrap.valueSatoshis, netSats: net.valueSatoshis, wrapTok, netTok,
+              };
+            }).filter(Boolean))}\n`
             + `jobsVars=${JSON.stringify(this.getValueChunkVars().map((entry) => ({
               collection: entry.collection,
               lock: binToHex(entry.lockingBytecode).slice(0, 20),
@@ -12502,8 +12589,7 @@ export class StatefulTransactionBuilder {
               jobsLockPinned = true;
             }
             const destInput = this.allInputs[jobsDest];
-            const destInputLock = destInput && 'unlocker' in destInput && destInput.unlocker
-              ? destInput.unlocker.generateLockingBytecode() : undefined;
+            const destInputLock = this._physicalLockingBytecode(destInput);
             const actual = builder.outputs[jobsDest]?.to instanceof Uint8Array
               ? builder.outputs[jobsDest]!.to as Uint8Array : undefined;
             const expected = selectJobsSuffixExpectedLock({
@@ -12902,8 +12988,9 @@ export class StatefulTransactionBuilder {
           const transaction = finalBuilder.buildLibauthTransaction(true);
           this._pinPersistDigestLocksOnTransaction(transaction);
           this._pinJobsSuffixLockOnTransaction(finalBuilder, transaction);
-          this._resignLibauthTransaction(finalBuilder, transaction);
-          assertFinalizedTransactionCovenants(finalBuilder, transaction);
+          const sourceOutputs = generateLibauthSourceOutputs(finalBuilder.inputs);
+          this._resignLibauthTransaction(finalBuilder, transaction, sourceOutputs);
+          assertFinalizedTransactionCovenants(finalBuilder, transaction, sourceOutputs);
           preflightError = undefined;
           break;
         } catch (error) {
@@ -12933,6 +13020,48 @@ export class StatefulTransactionBuilder {
       }
       if (preflightError !== undefined) {
         const error = preflightError;
+        try {
+          const dest = jobsSuffixDest(this._executingPublishJobEventInputIndex(finalBuilder));
+          const wrap = generateLibauthSourceOutputs(finalBuilder.inputs);
+          const net = this._networkSourceOutputs(finalBuilder);
+          const lockOf = (input?: UnlockableUtxo): string => {
+            try {
+              return input?.unlocker ? binToHex(input.unlocker.generateLockingBytecode()).slice(0, 20) : '';
+            } catch { return ''; }
+          };
+          console.error('preflight-fail', {
+            reason: error instanceof Error ? error.message : String(error),
+            dest,
+            dest21wrap: lockOf(this.allInputs[dest] ?? this.allInputs[21]),
+            dest21phys: this._physicalLockingBytecode(this.allInputs[dest] ?? this.allInputs[21]),
+            dest21physHex: (() => {
+              const lock = this._physicalLockingBytecode(this.allInputs[dest] ?? this.allInputs[21]);
+              return lock ? binToHex(lock).slice(0, 20) : '';
+            })(),
+            dest21cap: (this.allInputs[dest] ?? this.allInputs[21])?.token?.nft?.capability,
+            dest21name: ((this.allInputs[dest] ?? this.allInputs[21]) as {
+              unlocker?: { abiFunction?: { name?: string } };
+            } | undefined)?.unlocker?.abiFunction?.name,
+            in3: {
+              name: (finalBuilder.inputs[3]?.unlocker as { abiFunction?: { name?: string } } | undefined)
+                ?.abiFunction?.name,
+              contract: (finalBuilder.inputs[3]?.unlocker as { contract?: { artifact?: { contractName?: string } } }
+                | undefined)?.contract?.artifact?.contractName,
+              wrap: wrap[3] ? binToHex(wrap[3].lockingBytecode).slice(0, 20) : '',
+              net: net[3] ? binToHex(net[3].lockingBytecode).slice(0, 20) : '',
+              wrapSats: wrap[3]?.valueSatoshis,
+              netSats: net[3]?.valueSatoshis,
+            },
+            diffs: wrap.map((so, index) => {
+              const other = net[index];
+              if (!other) return { index, missing: true };
+              const a = binToHex(so.lockingBytecode).slice(0, 20);
+              const b = binToHex(other.lockingBytecode).slice(0, 20);
+              if (a === b && so.valueSatoshis === other.valueSatoshis) return undefined;
+              return { index, wrap: a, net: b, wrapSats: so.valueSatoshis, netSats: other.valueSatoshis };
+            }).filter(Boolean),
+          });
+        } catch { /* dump is best-effort */ }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_PREFLIGHT === '1') {
           console.error('final-preflight-inputs', finalBuilder.inputs.map((input, index) => ({
@@ -13014,8 +13143,9 @@ export class StatefulTransactionBuilder {
       const transaction = finalBuilder.buildLibauthTransaction(true);
       this._pinPersistDigestLocksOnTransaction(transaction);
       this._pinJobsSuffixLockOnTransaction(finalBuilder, transaction);
-      this._resignLibauthTransaction(finalBuilder, transaction);
-      assertFinalizedTransactionCovenants(finalBuilder, transaction);
+      const sourceOutputs = this._networkSourceOutputs(finalBuilder);
+      this._resignLibauthTransaction(finalBuilder, transaction, sourceOutputs);
+      assertFinalizedTransactionCovenants(finalBuilder, transaction, sourceOutputs);
       return binToHex(encodeTransaction(transaction));
     };
     let rawTx: string;

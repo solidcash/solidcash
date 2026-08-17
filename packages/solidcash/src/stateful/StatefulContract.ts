@@ -21055,7 +21055,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   private async _getMasterOnlyState(): Promise<OnChainState> {
     const tokenUtxos = await this.inner.provider.getUtxos(this.inner.tokenAddress);
-    const masterUtxo = tokenUtxos.find(
+    const byCategory = typeof this.inner.provider.getUtxosByTokenCategory === 'function'
+      ? await this.inner.provider.getUtxosByTokenCategory(this.categoryId)
+      : [];
+    const masterUtxo = [...tokenUtxos, ...byCategory].find(
       (u) => u.token?.category === this.categoryId && u.token?.nft?.capability === 'minting',
     );
     return {

@@ -258,6 +258,8 @@ export default class MockNetworkProvider implements NetworkProvider {
   private snapshotRestorers = new Map<string, SnapshotRestorer>();
   private signerCache = new Map<string, HDSigner>();
   private fundedSignerKeys = new Set<string>();
+  /** category → original scriptHash, so minting still resolves after dest 21's lock is rewritten. */
+  private mintingDiscoveryScriptHash = new Map<string, string>();
   /**
    * ethers-v5 `provider._network.chainId` surface used by MistSwap digests
    * (`user.provider._network.chainId` in setMasterContractApproval).
@@ -523,8 +525,36 @@ export default class MockNetworkProvider implements NetworkProvider {
     // from the mempool to the confirmed UTXO set and clears mempool spend
     // tracking, matching the old MockNetworkProvider's simple UTXO-array behavior.
     this.indexer.mine();
+    this._reindexDiscoveredMinting();
 
     return result.txid;
+  }
+
+  /** Index minting outputs under the pre-rewrite scriptHash after dest 21 moves. */
+  private _reindexDiscoveredMinting(): void {
+    if (this.mintingDiscoveryScriptHash.size === 0) return;
+    const storage = this.indexer.storage;
+    if (!storage?.snapshot || !storage.restore) return;
+    const snap = storage.snapshot();
+    let changed = false;
+    for (const utxo of snap.utxos.values()) {
+      const category = utxo.tokenData?.category?.toLowerCase();
+      if (!category || utxo.tokenData?.nft?.capability !== 'minting') continue;
+      let discovery = this.mintingDiscoveryScriptHash.get(category);
+      if (!discovery) {
+        try {
+          discovery = this.mintingDiscoveryScriptHash.get(binToHex(hexToBin(category).reverse()));
+        } catch { /* not hex */ }
+      }
+      if (!discovery || utxo.scriptHash === discovery) continue;
+      const outpoint = `${utxo.outpoint.txid}:${utxo.outpoint.vout}` as `${string}:${number}`;
+      const keys = new Set(snap.utxosByScriptHash.get(discovery) ?? []);
+      if (keys.has(outpoint)) continue;
+      keys.add(outpoint);
+      snap.utxosByScriptHash.set(discovery, keys);
+      changed = true;
+    }
+    if (changed) storage.restore(snap);
   }
 
   /**
@@ -536,6 +566,70 @@ export default class MockNetworkProvider implements NetworkProvider {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_FORCE_SDK_PREFLIGHT === '1') return false;
     return this.sendRawTransaction === MockNetworkProvider.prototype.sendRawTransaction;
+  }
+
+  /**
+   * Rewrite one outpoint's locking bytecode in the mock UTXO set, preserving
+   * satoshis/token/height. Preflight reads generateLockingBytecode wraps;
+   * send() reads this indexer, so dest 21 must match both.
+   */
+  replaceUtxoLockingBytecode(utxo: Utxo, lockingBytecode: Uint8Array): boolean {
+    const storage = this.indexer.storage;
+    if (!storage?._test?.utxo) return false;
+    const candidates = [{ txid: utxo.txid, vout: utxo.vout }];
+    try {
+      const reversed = binToHex(hexToBin(utxo.txid).reverse());
+      if (reversed !== utxo.txid) candidates.push({ txid: reversed, vout: utxo.vout });
+    } catch { /* txid not hex */ }
+    let existing: ReturnType<typeof storage.getUtxoByOutpoint> | undefined;
+    let key = candidates[0];
+    for (const candidate of candidates) {
+      const found = storage.getUtxoByOutpoint(`${candidate.txid}:${candidate.vout}`);
+      if (found) {
+        existing = found;
+        key = candidate;
+        break;
+      }
+    }
+    if (existing?.lockingBytecode && existing.lockingBytecode.length === lockingBytecode.length
+      && existing.lockingBytecode.every((byte, offset) => byte === lockingBytecode[offset])) {
+      return false;
+    }
+    const previousScriptHash = existing?.scriptHash;
+    for (const candidate of candidates) {
+      storage._test.utxo.remove({ txid: candidate.txid, vout: candidate.vout });
+    }
+    const tokenData = existing?.tokenData ?? (utxo.token
+      ? {
+        category: utxo.token.category,
+        amount: utxo.token.amount,
+        nft: utxo.token.nft,
+      }
+      : undefined);
+    const nextScriptHash = binToHex(sha256(lockingBytecode));
+    storage._test.utxo.add({
+      txid: key.txid,
+      vout: key.vout,
+      satoshis: existing?.satoshis ?? utxo.satoshis,
+      scriptHash: nextScriptHash,
+      height: existing?.height && existing.height > 0 ? existing.height : 100,
+      lockingBytecode,
+      ...(existing?.isCoinbase ? { isCoinbase: true } : {}),
+      ...(tokenData ? { tokenData } : {}),
+    });
+    // Keep the previous address index so FakeToken (and similar) can still
+    // discover this minting UTXO after dest 21's lock is rewritten.
+    if (previousScriptHash && previousScriptHash !== nextScriptHash) {
+      if (tokenData?.nft?.capability === 'minting' && tokenData.category) {
+        this.mintingDiscoveryScriptHash.set(tokenData.category.toLowerCase(), previousScriptHash);
+      }
+      const snap = storage.snapshot();
+      const keys = new Set(snap.utxosByScriptHash.get(previousScriptHash) ?? []);
+      keys.add(`${key.txid}:${key.vout}` as `${string}:${number}`);
+      snap.utxosByScriptHash.set(previousScriptHash, keys);
+      storage.restore(snap);
+    }
+    return true;
   }
 
   async addUtxo(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {
@@ -599,6 +693,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.indexer.reset();
     this.signerCache.clear();
     this.fundedSignerKeys.clear();
+    this.mintingDiscoveryScriptHash.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
     for (const hook of mockNetworkResetHooks) hook();

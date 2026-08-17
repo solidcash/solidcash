@@ -29,9 +29,13 @@ export class StateReader {
    * Find the master UTXO (minting NFT) for the given category.
    */
   findMasterUtxo(utxos: Utxo[], categoryId: string): Utxo | undefined {
+    const wanted = new Set([categoryId.toLowerCase()]);
+    try {
+      wanted.add(binToHex(hexToBin(categoryId).reverse()).toLowerCase());
+    } catch { /* not hex */ }
     return utxos.find((utxo) => (
       utxo.token
-      && utxo.token.category === categoryId
+      && wanted.has(utxo.token.category.toLowerCase())
       && utxo.token.nft
       && utxo.token.nft.capability === 'minting'
     ));
@@ -43,10 +47,14 @@ export class StateReader {
    * A contract with threading enabled may have multiple minting NFTs.
    */
   findMasterUtxos(utxos: Utxo[], categoryId: string): Utxo[] {
+    const wanted = new Set([categoryId.toLowerCase()]);
+    try {
+      wanted.add(binToHex(hexToBin(categoryId).reverse()).toLowerCase());
+    } catch { /* not hex */ }
     return utxos
       .filter((utxo) => (
         utxo.token
-        && utxo.token.category === categoryId
+        && wanted.has(utxo.token.category.toLowerCase())
         && utxo.token.nft
         && utxo.token.nft.capability === 'minting'
       ))
@@ -224,7 +232,12 @@ export class StateReader {
       utxosByAddress.set(addresses[i], utxoResults[i]);
     }
 
-    const masterUtxo = this.findMasterUtxo(allUtxos, categoryId);
+    let masterUtxo = this.findMasterUtxo(allUtxos, categoryId);
+    // Dest 21 keeps minting on the jobs pin, so the master is not at tokenAddress.
+    if (!masterUtxo && typeof provider.getUtxosByTokenCategory === 'function') {
+      const byCategory = await provider.getUtxosByTokenCategory(categoryId);
+      masterUtxo = this.findMasterUtxo(byCategory, categoryId);
+    }
 
     // When dataNftAddresses are provided, only look for data NFTs at those specific addresses.
     // This prevents entry NFTs (which share the same category) from being misidentified.

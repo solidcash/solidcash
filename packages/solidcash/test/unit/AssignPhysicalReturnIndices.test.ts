@@ -61,6 +61,9 @@ import {
   liveJobEventsBandWidth,
   persistUpdateBandWidth,
   persistUpdatePersistVWidth,
+  persistLayoutWidth,
+  jobsSuffixDest,
+  stampJobsSuffixLock,
   selectLatestJobEventsChunks,
   persistedJobEventsWidth,
   selectHashedValueForChunkPin,
@@ -1265,6 +1268,31 @@ describe('assignPhysicalReturnIndices', () => {
       implIndex: 15, blockSize: 5, plannedWidth: 5, liveWidth: 0,
     })).toEqual({ start: 20, end: 24, nNew: 5 });
     expect(persistedJobEventsWidth('missing')).toBe(0);
+    expect(persistLayoutWidth({ placedChunks: 3, extractedValueChunks: 5 })).toBe(4);
+    expect(persistLayoutWidth({ placedChunks: 3, extractedValueChunks: 3 })).toBe(3);
+    expect(persistLayoutWidth({ placedChunks: 0, extractedValueChunks: 5 })).toBe(5);
+    expect(persistLayoutWidth({ placedChunks: 4, extractedValueChunks: 22 })).toBe(5);
+    expect(jobsSuffixDest(11)).toBe(21);
+    expect(jobsSuffixDest()).toBe(-1);
+    const suffixLock = new Uint8Array(35);
+    suffixLock[0] = 0xaa; suffixLock[1] = 0x20; suffixLock[34] = 0x87;
+    const suffixOuts = Array.from({ length: 23 }, () => (
+      { to: Uint8Array.of(0x51), amount: 1000n } as {
+        to: Uint8Array;
+        amount: bigint;
+        token?: { category?: string; nft?: { capability?: string; commitment?: string } };
+      }
+    ));
+    suffixOuts[21] = {
+      to: suffixLock,
+      amount: 1200n,
+      token: { category: 'ft', nft: { capability: 'minting', commitment: '' } },
+    };
+    expect(stampJobsSuffixLock(suffixOuts, 21, suffixLock, {
+      category: 'md', nft: { capability: 'mutable', commitment: '00004c' },
+    })).toBe(true);
+    expect(suffixOuts[21]?.token?.nft?.capability).toBe('mutable');
+    expect(suffixOuts[22]?.token?.nft?.capability).toBe('minting');
     expect(computePublishJobEventsBand({
       implIndex: 15, blockSize: 5, jobEventsCount: 4,
     })).toEqual({ start: 20, end: 23, nNew: 4 });

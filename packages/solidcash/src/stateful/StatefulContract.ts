@@ -1085,7 +1085,8 @@ function extractFailingP2sh32OutputPin(
     const indexItem = state.stack[state.stack.length - 1];
     const outputIndex = Number(decodeScriptNumber(indexItem));
     if (!Number.isFinite(outputIndex) || outputIndex < 0) continue;
-    if (band && (outputIndex < band.start || outputIndex > band.end)) continue;
+    if (band && outputIndex !== band.end + 1
+      && (outputIndex < band.start || outputIndex > band.end)) continue;
     return { outputIndex, lockingBytecode: expected, commitment: '00' };
   }
   return undefined;

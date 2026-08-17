@@ -475,6 +475,51 @@ export function persistUpdatePersistVWidth(): number {
   return 3;
 }
 
+/** Jobs/message-bus dest is impl+10 (dest 21 when impl=11), not band.end+1. */
+export function jobsSuffixDest(implIndex?: number, blockSize = 5): number {
+  if (implIndex === undefined || implIndex < 0) return -1;
+  return implIndex + 2 * blockSize;
+}
+
+/**
+ * Write the jobs/message-bus lock at band.end+1. FakeToken minting that 1:1'd
+ * that dest slides onto the next pad so TXOUTPUTCOUNT stays put.
+ */
+export function stampJobsSuffixLock<T extends {
+  to?: Uint8Array | string;
+  amount?: bigint;
+  token?: { category?: string; amount?: bigint; nft?: { capability?: string; commitment?: string } };
+}>(
+  outputs: T[],
+  dest: number,
+  locking: Uint8Array,
+  token?: T['token'],
+): boolean {
+  if (dest < 0 || dest >= outputs.length || locking.length !== 35 || locking[0] !== 0xaa) {
+    return false;
+  }
+  const existing = outputs[dest];
+  const existingLock = existing?.to instanceof Uint8Array ? existing.to : undefined;
+  if (existingLock && existingLock.length === locking.length
+    && existingLock.every((byte, offset) => byte === locking[offset])
+    && existing?.token?.nft?.capability !== 'minting') {
+    return false;
+  }
+  if (existing?.token?.nft?.capability === 'minting' && dest + 1 < outputs.length) {
+    const next = outputs[dest + 1];
+    const nextLock = next?.to instanceof Uint8Array ? next.to : undefined;
+    const nextIsPad = !next?.token && (!nextLock || nextLock[0] === 0x51 || nextLock[0] === 0x76);
+    if (nextIsPad) outputs[dest + 1] = existing;
+  }
+  outputs[dest] = {
+    ...(existing as T),
+    to: locking,
+    amount: existing?.amount && existing.amount >= 1200n ? existing.amount : 1200n,
+    token: token ?? existing?.token,
+  };
+  return true;
+}
+
 /**
  * Persist UPDATE dests EQUALVERIFY the previous persist width (closeJob 3).
  * Extracted Closed/Updated blobs are dest 15 emit — do not grow dest 16+ to 5.
@@ -700,6 +745,21 @@ function valueChunkCountFor(value: Uint8Array): number {
   return Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
 }
 
+/**
+ * Persist layout width. An extract blob can be one dest wider than the last
+ * placed run (Updated amounts 3→4). A 5-wide leftover extract must not steal
+ * dest 21 from FakeToken/jobs.
+ */
+export function persistLayoutWidth(parts: {
+  placedChunks: number;
+  extractedValueChunks: number;
+}): number {
+  const placed = Math.max(0, parts.placedChunks);
+  const extracted = Math.max(0, parts.extractedValueChunks);
+  if (placed > 0) return Math.min(32, Math.max(placed, Math.min(extracted, placed + 1)));
+  return Math.min(32, extracted);
+}
+
 /** Live continuation count of the last Updated extract for `categoryId`. */
 export function persistedJobEventsWidth(categoryId?: string): number {
   if (!categoryId) {
@@ -708,13 +768,16 @@ export function persistedJobEventsWidth(categoryId?: string): number {
       widest = Math.max(widest, selectLatestJobEventsChunks([], chunks).length);
     }
     for (const value of persistedJobEventsValues.values()) {
-      widest = Math.max(widest, valueChunkCountFor(value));
+      widest = Math.max(widest, persistLayoutWidth({
+        placedChunks: widest,
+        extractedValueChunks: valueChunkCountFor(value),
+      }));
     }
     return Math.min(32, widest);
   }
   const fromChunks = selectLatestJobEventsChunks([], persistedJobEventsByCategory.get(categoryId) ?? []).length;
   const fromValue = valueChunkCountFor(persistedJobEventsValues.get(categoryId) ?? new Uint8Array());
-  return Math.min(32, Math.max(fromChunks, fromValue));
+  return persistLayoutWidth({ placedChunks: fromChunks, extractedValueChunks: fromValue });
 }
 
 function jobEventsSlotCandidates(): Uint8Array[] {
@@ -4669,6 +4732,8 @@ export class StatefulTransactionBuilder {
     const chunkBase = keepAtLayout && persistStart >= 0
       ? Math.min(jobEventsStart, persistStart) : jobEventsStart;
     const plannedWidth = nNew;
+    // Jobs dest is band.end+1. Minting there steals the message-bus lock
+    // (amounts dest 21). Swap minting past that dest.
     const bandEnd = Math.max(band.end + 1, persistEndExclusive);
     // Count the full consecutive token run (master + data + existing entries).
     // A band-limited width of 1 tries to swap the minting NFT with the data NFT
@@ -7230,7 +7295,8 @@ export class StatefulTransactionBuilder {
     // UPDATE reuses the previous digest's input indexes (20-22) with a new address.
     if (!valueChunkPin) {
       const occupant = this.allInputs[outputIndex];
-      if (occupant?.token?.nft?.capability === 'minting') return false;
+      if (occupant?.token?.nft?.capability === 'minting'
+        && outputIndex !== jobsSuffixDest(this._executingPublishJobEventInputIndex())) return false;
       for (const [llcIndex, llc] of this.lowLevelCallUtxoGroups.entries()) {
         if (llc.callMode !== 'delegatecall') continue;
         if (this.getLowLevelCallMasterInputIndex(llcIndex) === outputIndex) return false;
@@ -7720,6 +7786,44 @@ export class StatefulTransactionBuilder {
       break;
     }
     if (jobsLock) packJobsAgainstOpReturn(builder.outputs, jobsLock, tailStart);
+  }
+
+  /**
+   * Dest band.end+1 EQUALVERIFYs the jobs/message-bus lock. FakeToken minting
+   * 1:1 on that dest slides onto the next pad.
+   */
+  private _stampJobsSuffixLock(builder: TransactionBuilder): void {
+    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
+    const dest = jobsSuffixDest(this._executingPublishJobEventInputIndex(builder));
+    if (dest < 0) return;
+    const derived = this.derivedChunkOutputs.get(dest);
+    let locking = derived?.lockingBytecode;
+    const destInput = this.allInputs[dest];
+    if ((!locking || locking.length !== 35 || locking[0] !== 0xaa)
+      && destInput && 'unlocker' in destInput && destInput.unlocker
+      && destInput.token?.nft?.capability === 'mutable') {
+      const destLock = destInput.unlocker.generateLockingBytecode();
+      if (destLock.length === 35 && destLock[0] === 0xaa) locking = destLock;
+    }
+    if (!locking || locking.length !== 35 || locking[0] !== 0xaa) {
+      for (let index = dest + 1; index < this.allInputs.length; index++) {
+        const input = this.allInputs[index];
+        if (!input?.token || !('unlocker' in input) || !input.unlocker) continue;
+        const lock = input.unlocker.generateLockingBytecode();
+        if (lock.length !== 35 || lock[0] !== 0xaa) continue;
+        const commit = String(input.token.nft?.commitment ?? '');
+        if (commit.toLowerCase().startsWith('53434944')) {
+          locking = lock;
+          break;
+        }
+      }
+    }
+    if (!locking) return;
+    stampJobsSuffixLock(builder.outputs, dest, locking, derived ? {
+      amount: 0n,
+      category: derived.categoryId ?? this.categoryId,
+      nft: { capability: 'mutable', commitment: derived.commitment },
+    } : undefined);
   }
 
   /**
@@ -11553,6 +11657,33 @@ export class StatefulTransactionBuilder {
             + `:commit=${binToHex(dest1Out?.token?.nft?.commitment ?? new Uint8Array()).slice(0, 24)}\n`
             + `dest1-b=${dest1Builder?.to instanceof Uint8Array ? binToHex(dest1Builder.to).slice(0, 20) : String(dest1Builder?.to ?? 'none').slice(0, 20)}`
             + `:commit=${String(dest1Builder?.token?.nft?.commitment ?? '').slice(0, 24)}\n`
+            + `dest21-in=${this.allInputs[21]?.unlocker
+              ? binToHex(this.allInputs[21]!.unlocker.generateLockingBytecode()).slice(0, 24)
+              : 'none'}`
+            + `:cap=${this.allInputs[21]?.token?.nft?.capability ?? '-'}`
+            + `:commit=${String(this.allInputs[21]?.token?.nft?.commitment ?? '').slice(0, 24)}`
+            + `:name=${(this.allInputs[21] as { unlocker?: { abiFunction?: { name?: string } } } | undefined)
+              ?.unlocker?.abiFunction?.name ?? '-'}\n`
+            + `dest21-out=${transaction.outputs[21]
+              ? binToHex(transaction.outputs[21].lockingBytecode).slice(0, 24) : 'none'}`
+            + `:commit=${binToHex(transaction.outputs[21]?.token?.nft?.commitment ?? new Uint8Array()).slice(0, 24)}\n`
+            + `jobsVars=${JSON.stringify(this.getValueChunkVars().map((entry) => ({
+              collection: entry.collection,
+              lock: binToHex(entry.lockingBytecode).slice(0, 20),
+            })))}\n`
+            + `jobsIns=${JSON.stringify(this.allInputs.map((input, index) => {
+              const lock = input?.unlocker ? binToHex(input.unlocker.generateLockingBytecode()) : '';
+              if (!lock.startsWith('aa20e61fa6') && !lock.startsWith('aa205fb1eb')
+                && !lock.startsWith('aa20bda84f')) return undefined;
+              return {
+                index,
+                lock: lock.slice(0, 20),
+                cap: input.token?.nft?.capability ?? '-',
+                commit: String(input.token?.nft?.commitment ?? '').slice(0, 16),
+                name: (input as { unlocker?: { abiFunction?: { name?: string } } })
+                  .unlocker?.abiFunction?.name ?? '-',
+              };
+            }).filter(Boolean))}\n`
             + `wantLockDests=${JSON.stringify(destLocks.filter((row) => row.hit))}\n`
             + `obc=${JSON.stringify(outputBytecodeMatches)}\n`
             + `in11=${(builder.inputs[idx] as { unlocker?: { abiFunction?: { name?: string } } } | undefined)
@@ -12036,6 +12167,7 @@ export class StatefulTransactionBuilder {
       );
     }
     this._reassertMintingOneToOne(finalBuilder);
+    this._stampJobsSuffixLock(finalBuilder);
     this._reassertNestedDataNftTwins(finalBuilder);
     if (isPersistedJobEventsReady()) {
       this._reassertPersistedJobEventsOneToOnes(
@@ -12108,6 +12240,7 @@ export class StatefulTransactionBuilder {
         this._repairPublishJobEventDestLocks(finalBuilder);
         this._pinPersistDigestLocks(finalBuilder);
         this._pinPersistDigestInputLocks(finalBuilder);
+        this._stampJobsSuffixLock(finalBuilder);
         this._reassertPublishJobEventDataNftOneToOnes(finalBuilder);
         this._reassertProxyPreserveOneToOnes(finalBuilder);
         try {
@@ -12131,6 +12264,7 @@ export class StatefulTransactionBuilder {
           this._reassertNestedEmitEvents(finalBuilder);
           this._reassertDelegateImplEvents(finalBuilder);
           this._reassertMintingOneToOne(finalBuilder);
+          this._stampJobsSuffixLock(finalBuilder);
           this._reassertNestedDataNftTwins(finalBuilder);
           if (isPersistedJobEventsReady()) {
             this._reassertPersistedJobEventsOneToOnes(
@@ -12216,6 +12350,7 @@ export class StatefulTransactionBuilder {
     this._refreshPublishJobEventsChunkBase(finalBuilder);
     this._repairPublishJobEventDestLocks(finalBuilder);
     this._pinPersistDigestLocks(finalBuilder);
+    this._stampJobsSuffixLock(finalBuilder);
     this._reassertPublishJobEventDataNftOneToOnes(finalBuilder);
     this._reassertProxyPreserveOneToOnes(finalBuilder);
 

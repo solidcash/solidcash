@@ -66,6 +66,8 @@ import {
   stampJobsSuffixLock,
   selectJobsSuffixLock,
   selectJobsSuffixExpectedLock,
+  selectJobsSuffixCategory,
+  jobsSuffixFungibleToken,
   extractEmbeddedP2sh32Locks,
   pinJobsSuffixInput,
   selectLatestJobEventsChunks,
@@ -1293,11 +1295,12 @@ describe('assignPhysicalReturnIndices', () => {
       token: { category: 'ft', nft: { capability: 'minting', commitment: '' } },
     };
     suffixOuts[22] = { to: Uint8Array.of(0x51), amount: 1000n };
-    expect(stampJobsSuffixLock(suffixOuts, 21, suffixLock)).toBe(true);
-    expect(suffixOuts[21]?.token).toBeUndefined();
-    expect(suffixOuts[22]?.token?.nft?.capability).toBe('minting');
     const suffixJobsLock = new Uint8Array(35);
     suffixJobsLock[0] = 0xaa; suffixJobsLock[1] = 0x20; suffixJobsLock[2] = 0xe6; suffixJobsLock[34] = 0x87;
+    expect(stampJobsSuffixLock(suffixOuts, 21, suffixJobsLock)).toBe(true);
+    expect(suffixOuts[21]?.to).toEqual(suffixJobsLock);
+    expect(suffixOuts[21]?.token?.nft?.capability).toBe('minting');
+    expect(suffixOuts[22]?.token).toBeUndefined();
     const mintingLock = new Uint8Array(35);
     mintingLock[0] = 0xaa; mintingLock[1] = 0x20; mintingLock[2] = 0xbd; mintingLock[34] = 0x87;
     const dest1Lock = new Uint8Array(35);
@@ -1361,6 +1364,22 @@ describe('assignPhysicalReturnIndices', () => {
     expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(true);
     expect(suffixInputs[21]?.unlocker.generateLockingBytecode()).toEqual(suffixJobsLock);
     expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(false);
+    const jobsCategory = 'e5459449dc4974d6d01bfea4bec0a2d483fb767d503f53776cb2403a608891b8';
+    expect(selectJobsSuffixCategory({
+      below: hexToBin(`${jobsCategory}02`),
+      top: new Uint8Array(),
+    })).toBe(jobsCategory);
+    expect(jobsSuffixFungibleToken(jobsCategory)).toEqual({ amount: 0n, category: jobsCategory });
+    expect(stampJobsSuffixLock(
+      suffixOuts, 21, suffixJobsLock, jobsSuffixFungibleToken(jobsCategory),
+    )).toBe(true);
+    expect(suffixOuts[21]?.to).toEqual(suffixJobsLock);
+    expect(suffixOuts[21]?.token).toEqual({ amount: 0n, category: jobsCategory });
+    expect(suffixOuts[21]?.token?.nft).toBeUndefined();
+    expect(suffixOuts[22]?.token?.nft?.capability).toBe('minting');
+    expect(stampJobsSuffixLock(
+      suffixOuts, 21, suffixJobsLock, jobsSuffixFungibleToken(jobsCategory),
+    )).toBe(false);
     expect(computePublishJobEventsBand({
       implIndex: 15, blockSize: 5, jobEventsCount: 4,
     })).toEqual({ start: 20, end: 23, nNew: 4 });

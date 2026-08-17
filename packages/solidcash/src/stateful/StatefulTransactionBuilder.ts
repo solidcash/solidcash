@@ -54,6 +54,7 @@ import {
 import { parseEventCommitment } from './StateReader.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker, Unlocker,
+  GenerateUnlockingBytecodeOptions,
 } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import {
@@ -502,6 +503,32 @@ export function extractEmbeddedP2sh32Locks(hex: string): Uint8Array[] {
  * Dest 21 EQUALVERIFY is `[dest, actual, expected]`. Skip dest 21's current
  * output and its minting input lock so the jobs pin is not the FakeToken lock.
  */
+/**
+ * Dest 21 OUTPUTTOKENCATEGORY is the 32-byte category, or category||01/02 when
+ * dest 21 keeps a mutable/minting NFT.
+ */
+export function selectJobsSuffixCategory(parts: {
+  below?: Uint8Array;
+  top?: Uint8Array;
+}): string | undefined {
+  const pick = (value?: Uint8Array): string | undefined => {
+    if (!value) return undefined;
+    if (value.length === 32) return binToHex(value);
+    if (value.length === 33 && (value[32] === 0x01 || value[32] === 0x02)) {
+      return binToHex(value.subarray(0, 32));
+    }
+    return undefined;
+  };
+  return pick(parts.below) ?? ((parts.below?.length ?? 0) === 0 ? pick(parts.top) : undefined);
+}
+
+export function jobsSuffixFungibleToken(category: string | undefined): {
+  amount: bigint; category: string;
+} | undefined {
+  if (!category || !/^[0-9a-f]{64}$/i.test(category)) return undefined;
+  return { amount: 0n, category: category.toLowerCase() };
+}
+
 export function selectJobsSuffixExpectedLock(parts: {
   below?: Uint8Array;
   top?: Uint8Array;
@@ -603,12 +630,21 @@ export function stampJobsSuffixLock<T extends {
   if (dest < 0 || dest >= outputs.length || !isP2sh32Bytes(locking)) return false;
   const existing = outputs[dest];
   const existingLock = existing?.to instanceof Uint8Array ? existing.to : undefined;
-  if (existingLock && existingLock.length === locking.length
-    && existingLock.every((byte, offset) => byte === locking[offset])
-    && existing?.token?.nft?.capability !== 'minting') {
+  const nextToken = token !== undefined ? token : existing?.token;
+  const lockSame = !!existingLock && existingLock.length === locking.length
+    && existingLock.every((byte, offset) => byte === locking[offset]);
+  const existingCat = existing?.token?.category ?? '';
+  const nextCat = nextToken?.category ?? '';
+  const tokenSame = existingCat.toLowerCase() === nextCat.toLowerCase()
+    && !!existing?.token?.nft === !!nextToken?.nft
+    && (existing?.token?.nft?.capability ?? '') === (nextToken?.nft?.capability ?? '')
+    && (existing?.token?.nft?.commitment ?? '') === (nextToken?.nft?.commitment ?? '');
+  if (lockSame && tokenSame) {
     return false;
   }
-  if (existing?.token?.nft?.capability === 'minting') {
+  // Only slide minting off dest 21 when the replacement token is not minting.
+  if (existing?.token?.nft?.capability === 'minting'
+    && nextToken?.nft?.capability !== 'minting') {
     for (let nextIndex = dest + 1; nextIndex < outputs.length; nextIndex++) {
       const next = outputs[nextIndex];
       const nextLock = next?.to instanceof Uint8Array ? next.to : undefined;
@@ -619,9 +655,6 @@ export function stampJobsSuffixLock<T extends {
       break;
     }
   }
-  const nextToken = token ?? (
-    existing?.token?.nft?.capability === 'minting' ? undefined : existing?.token
-  );
   outputs[dest] = {
     ...(existing as T),
     to: locking,
@@ -6205,7 +6238,11 @@ export class StatefulTransactionBuilder {
     });
     if (!locking) return;
     this.jobsSuffixLock = locking;
-    stampJobsSuffixLock(builder.outputs, dest, locking);
+    const destIsMinting = destInput?.token?.nft?.capability === 'minting';
+    const nextToken = destIsMinting
+      ? destInput?.token
+      : jobsSuffixFungibleToken(this.jobsSuffixCategory);
+    stampJobsSuffixLock(builder.outputs, dest, locking, nextToken);
     pinJobsSuffixInput(this.allInputs, dest, locking);
     this._syncBuilderUnlockers(builder);
     transaction.outputs[dest].lockingBytecode = locking;
@@ -6213,15 +6250,40 @@ export class StatefulTransactionBuilder {
     if (amount !== undefined && amount >= 1200n) {
       transaction.outputs[dest].valueSatoshis = amount;
     }
-    const categoryHex = this.jobsSuffixCategory
-      ?? (builder.outputs[dest]?.token?.category
-        && /^[0-9a-f]{64}$/i.test(builder.outputs[dest]!.token!.category)
-        ? builder.outputs[dest]!.token!.category : undefined);
-    if (categoryHex) {
+    const builderToken = builder.outputs[dest]?.token;
+    if (builderToken?.category && /^[0-9a-f]{64}$/i.test(builderToken.category)) {
       transaction.outputs[dest].token = {
-        amount: 0n,
-        category: hexToBin(categoryHex),
+        amount: builderToken.amount ?? 0n,
+        category: hexToBin(builderToken.category),
+        ...(builderToken.nft
+          ? {
+            nft: {
+              capability: builderToken.nft.capability,
+              commitment: hexToBin(builderToken.nft.commitment ?? ''),
+            },
+          }
+          : {}),
       };
+    }
+  }
+
+  /** Pin mutates dest 21 after signatures are taken; P2PKH must re-sign. */
+  private _resignLibauthTransaction(
+    builder: TransactionBuilder,
+    transaction: {
+      inputs: Array<{ unlockingBytecode: Uint8Array }>;
+      outputs: unknown[];
+    },
+  ): void {
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let index = 0; index < transaction.inputs.length && index < builder.inputs.length; index++) {
+      const unlocker = builder.inputs[index]?.unlocker;
+      if (!unlocker || !isP2PKHUnlocker(unlocker)) continue;
+      transaction.inputs[index].unlockingBytecode = unlocker.generateUnlockingBytecode({
+        transaction: transaction as GenerateUnlockingBytecodeOptions['transaction'],
+        sourceOutputs,
+        inputIndex: index,
+      });
     }
   }
 
@@ -8060,17 +8122,10 @@ export class StatefulTransactionBuilder {
     this.jobsSuffixLock = locking;
     pinJobsSuffixInput(this.allInputs, dest, locking);
     this._syncBuilderUnlockers(builder);
-    const category = derived?.categoryId ?? this.jobsSuffixCategory;
-    const derivedToken = category === undefined ? undefined
-      : (derived
-        && derived.commitment !== '00'
-        && !isEmptyValueChunkCommitment(derived.commitment)
-        ? {
-          amount: 0n,
-          category,
-          nft: { capability: 'mutable' as const, commitment: derived.commitment },
-        }
-        : { amount: 0n, category });
+    const destIsMinting = destInput?.token?.nft?.capability === 'minting';
+    const derivedToken = destIsMinting
+      ? destInput?.token
+      : jobsSuffixFungibleToken(this.jobsSuffixCategory);
     stampJobsSuffixLock(builder.outputs, dest, locking, derivedToken);
   }
 
@@ -11743,6 +11798,7 @@ export class StatefulTransactionBuilder {
     const transaction = builder.buildLibauthTransaction(true);
     this._pinPersistDigestLocksOnTransaction(transaction);
     this._pinJobsSuffixLockOnTransaction(builder, transaction);
+    this._resignLibauthTransaction(builder, transaction);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const named = reason.match(/input(?: index)? (\d+)/);
     const traceInput = Number(env?.SOLIDC_TRACE_INPUT);
@@ -12130,13 +12186,12 @@ export class StatefulTransactionBuilder {
           const destHint = destItem.length <= 5
             ? Number(decodeVmScriptNumber(destItem)) : Number.NaN;
           if (destHint === jobsDest || destHint === 21) {
-            const categoryBelow = state.stack[state.stack.length - 2];
-            const categoryTop = state.stack[state.stack.length - 1];
-            if (categoryBelow.length === 32) {
-              this.jobsSuffixCategory = binToHex(categoryBelow);
-              jobsLockPinned = true;
-            } else if (categoryTop.length === 32 && categoryBelow.length === 0) {
-              this.jobsSuffixCategory = binToHex(categoryTop);
+            const category = selectJobsSuffixCategory({
+              below: state.stack[state.stack.length - 2],
+              top: state.stack[state.stack.length - 1],
+            });
+            if (category) {
+              this.jobsSuffixCategory = category;
               jobsLockPinned = true;
             }
             const destInput = this.allInputs[jobsDest];
@@ -12150,13 +12205,18 @@ export class StatefulTransactionBuilder {
               actualHex: actual ? binToHex(actual) : undefined,
               skipLockHexes: destInputLock ? [binToHex(destInputLock)] : [],
             });
-            if (expected) {
-              this.jobsSuffixLock = expected;
+            if (expected) this.jobsSuffixLock = expected;
+            const locking = this.jobsSuffixLock ?? expected ?? actual;
+            const destIsMinting = destInput?.token?.nft?.capability === 'minting';
+            const nextToken = destIsMinting
+              ? destInput?.token
+              : jobsSuffixFungibleToken(this.jobsSuffixCategory);
+            if (locking && (expected || nextToken)) {
               this.setDerivedChunkOutput(jobsDest, {
                 commitment: '000000',
-                lockingBytecode: expected,
+                lockingBytecode: locking,
               });
-              stampJobsSuffixLock(builder.outputs, jobsDest, expected);
+              stampJobsSuffixLock(builder.outputs, jobsDest, locking, nextToken);
               jobsLockPinned = true;
             }
           }
@@ -12535,6 +12595,7 @@ export class StatefulTransactionBuilder {
           const transaction = finalBuilder.buildLibauthTransaction(true);
           this._pinPersistDigestLocksOnTransaction(transaction);
           this._pinJobsSuffixLockOnTransaction(finalBuilder, transaction);
+          this._resignLibauthTransaction(finalBuilder, transaction);
           assertFinalizedTransactionCovenants(finalBuilder, transaction);
           preflightError = undefined;
           break;

@@ -586,7 +586,7 @@ export function selectJobsSuffixLock(parts: {
  * physically; only the reported locking bytecode is the jobs pin.
  */
 export function pinJobsSuffixInput<T extends {
-  token?: { nft?: { capability?: string } };
+  token?: { nft?: { capability?: string; commitment?: string } };
   unlocker?: {
     generateLockingBytecode: () => Uint8Array;
     generateUnlockingBytecode: (context: Parameters<Unlocker['generateUnlockingBytecode']>[0]) => Uint8Array;
@@ -595,19 +595,26 @@ export function pinJobsSuffixInput<T extends {
   inputs: T[],
   dest: number,
   locking: Uint8Array,
+  jobsUnlocker?: T['unlocker'],
 ): boolean {
   if (dest < 0 || dest >= inputs.length || !isP2sh32Bytes(locking)) return false;
   const destInput = inputs[dest];
   if (!destInput?.unlocker) return false;
   if (destInput.token?.nft?.capability === 'mutable') return false;
+  if (isPersistValueChunkCommitment(String(destInput.token?.nft?.commitment ?? ''))) return false;
   const current = destInput.unlocker.generateLockingBytecode();
   if (isP2sh32Bytes(current) && binToHex(current) === binToHex(locking)) return false;
-  const inner = destInput.unlocker;
+  const redeemUnlocker = jobsUnlocker
+    && persistLockHex(jobsUnlocker.generateLockingBytecode()) === binToHex(locking)
+    ? jobsUnlocker
+    : undefined;
+  // Lock-only wrap fails dest 21 P2SH (FakeToken redeem vs jobs lock).
+  if (!redeemUnlocker) return false;
   inputs[dest] = {
     ...destInput,
     unlocker: {
       generateLockingBytecode: () => locking,
-      generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
+      generateUnlockingBytecode: (context) => redeemUnlocker.generateUnlockingBytecode(context),
     },
   };
   return true;
@@ -2994,41 +3001,22 @@ export function pinPersistDigestInput<T extends {
     const input = inputs[index];
     if (input?.token?.nft?.capability === 'minting' || !input?.unlocker) continue;
     const lockHex = persistLockHex(input.unlocker.generateLockingBytecode());
+    // Only a predecessor whose redeem already matches the digest lock.
+    // Wrapping persist-v redeem with the digest lock fails P2SH at dest 16.
+    if (lockHex !== expected) continue;
     const rank = persistPredecessorRank(String(input.token?.nft?.commitment ?? ''));
-    const matchesLock = lockHex === expected;
-    const persistShaped = rank < 1000;
-    if (!matchesLock && !persistShaped) continue;
-    const score = matchesLock ? rank : rank + 100;
-    if (score < sourceRank) {
-      sourceRank = score;
+    if (rank < sourceRank) {
+      sourceRank = rank;
       source = index;
     }
   }
   if (source >= 0) {
     const sourceInput = inputs[source];
-    const inner = sourceInput.unlocker;
-    inputs[dest] = inner && persistLockHex(inner.generateLockingBytecode()) !== expected
-      ? {
-        ...sourceInput,
-        unlocker: {
-          generateLockingBytecode: () => locking,
-          generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
-        },
-      }
-      : { ...sourceInput };
+    inputs[dest] = { ...sourceInput };
     inputs[source] = destInput !== undefined ? { ...destInput } : sourceInput;
     return true;
   }
-  if (!destInput?.token || !destInput.unlocker) return false;
-  const inner = destInput.unlocker;
-  inputs[dest] = {
-    ...destInput,
-    unlocker: {
-      generateLockingBytecode: () => locking,
-      generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
-    },
-  };
-  return true;
+  return false;
 }
 
 export function persistUpdateDigestLock(
@@ -5109,26 +5097,10 @@ export class StatefulTransactionBuilder {
         this._persistDigestCategories(),
       ) ?? persistLock;
       const entryDest = persistValueChunkBase(impl, 5, true);
-      const digestDests = new Set([
-        dests[0],
-        entryDest,
-      ].filter((dest): dest is number => dest !== undefined && dest >= 0));
-      for (const dest of digestDests) {
-        const input = this.allInputs[dest];
-        if (!recipeLock || recipeLock.length !== 35 || !input?.token || !input.unlocker) continue;
-        const current = input.unlocker.generateLockingBytecode();
-        if (current.length === 35 && binToHex(current) === binToHex(recipeLock)) continue;
-        const inner = input.unlocker;
-        this.allInputs[dest] = {
-          ...input,
-          unlocker: {
-            generateLockingBytecode: () => recipeLock,
-            generateUnlockingBytecode: (context) => inner.generateUnlockingBytecode(context),
-          },
-        };
-      }
-      if (recipeLock && recipeLock.length === 35) {
-        for (const dest of digestDests) pinPersistDigestInput(this.allInputs, dest, recipeLock);
+      // Dest 16 persist-v redeem must keep its own lock. Wrapping dests[0]
+      // with the digest lock fails P2SH (empty/wrong redeem vs dest 16).
+      if (recipeLock && recipeLock.length === 35 && entryDest >= 0) {
+        pinPersistDigestInput(this.allInputs, entryDest, recipeLock);
       }
     }
   }
@@ -5174,18 +5146,13 @@ export class StatefulTransactionBuilder {
       : undefined;
     if (unlocker) {
       for (const spend of spends) {
-        const spendLock = spend.lockingBytecode;
         extras.push({
           txid: spend.txid,
           vout: spend.vout,
           satoshis: spend.satoshis,
           token: spend.token,
-          unlocker: spendLock && spendLock.length === 35
-            ? {
-              generateLockingBytecode: () => spendLock,
-              generateUnlockingBytecode: (context) => unlocker.generateUnlockingBytecode(context),
-            }
-            : unlocker,
+          // Do not wrap spendLock over a different recipe redeem — dest 16 P2SH fails.
+          unlocker,
         });
       }
     }
@@ -6243,7 +6210,12 @@ export class StatefulTransactionBuilder {
       ? destInput?.token
       : jobsSuffixFungibleToken(this.jobsSuffixCategory);
     stampJobsSuffixLock(builder.outputs, dest, locking, nextToken);
-    pinJobsSuffixInput(this.allInputs, dest, locking);
+    const jobsUnlocker = this.allInputs.find((input) => {
+      if (!('unlocker' in input) || !input.unlocker) return false;
+      const lock = input.unlocker.generateLockingBytecode();
+      return isP2sh32Bytes(lock) && binToHex(lock) === binToHex(locking);
+    })?.unlocker;
+    pinJobsSuffixInput(this.allInputs, dest, locking, jobsUnlocker);
     this._syncBuilderUnlockers(builder);
     transaction.outputs[dest].lockingBytecode = locking;
     const amount = builder.outputs[dest]?.amount;
@@ -8120,7 +8092,12 @@ export class StatefulTransactionBuilder {
     });
     if (!locking) return;
     this.jobsSuffixLock = locking;
-    pinJobsSuffixInput(this.allInputs, dest, locking);
+    const jobsUnlocker = this.allInputs.find((input) => {
+      if (!('unlocker' in input) || !input.unlocker) return false;
+      const lock = input.unlocker.generateLockingBytecode();
+      return isP2sh32Bytes(lock) && binToHex(lock) === binToHex(locking);
+    })?.unlocker;
+    pinJobsSuffixInput(this.allInputs, dest, locking, jobsUnlocker);
     this._syncBuilderUnlockers(builder);
     const destIsMinting = destInput?.token?.nft?.capability === 'minting';
     const derivedToken = destIsMinting

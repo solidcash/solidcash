@@ -1361,9 +1361,29 @@ describe('assignPhysicalReturnIndices', () => {
       },
     };
     const suffixInputs = Array.from({ length: 22 }, () => ({ ...mintingInput }));
-    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(true);
-    expect(suffixInputs[21]?.unlocker.generateLockingBytecode()).toEqual(suffixJobsLock);
+    const jobsUnlocker = {
+      generateLockingBytecode: () => suffixJobsLock,
+      generateUnlockingBytecode: () => Uint8Array.of(0x51),
+    };
     expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(false);
+    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock, jobsUnlocker)).toBe(true);
+    expect(suffixInputs[21]?.unlocker.generateLockingBytecode()).toEqual(suffixJobsLock);
+    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock, jobsUnlocker)).toBe(false);
+    const persistVLock = new Uint8Array(35);
+    persistVLock[0] = 0xaa; persistVLock[1] = 0x20; persistVLock[2] = 0xb2; persistVLock[34] = 0x87;
+    const persistBandInputs = Array.from({ length: 22 }, (_, index) => ({
+      token: index === 16
+        ? { nft: { capability: 'mutable' as const, commitment: '00004cb4200043720000' } }
+        : { nft: { capability: 'minting' as const, commitment: '' } },
+      unlocker: {
+        generateLockingBytecode: () => (index === 16 ? persistVLock : mintingLock),
+        generateUnlockingBytecode: () => Uint8Array.of(0x51),
+      },
+    }));
+    expect(pinJobsSuffixInput(persistBandInputs, 16, suffixJobsLock, jobsUnlocker)).toBe(false);
+    expect(persistBandInputs[16]?.unlocker.generateLockingBytecode()).toEqual(persistVLock);
+    expect(pinJobsSuffixInput(persistBandInputs, 21, suffixJobsLock, jobsUnlocker)).toBe(true);
+    expect(persistBandInputs[21]?.unlocker.generateLockingBytecode()).toEqual(suffixJobsLock);
     const jobsCategory = 'e5459449dc4974d6d01bfea4bec0a2d483fb767d503f53776cb2403a608891b8';
     expect(selectJobsSuffixCategory({
       below: hexToBin(`${jobsCategory}02`),
@@ -1530,9 +1550,9 @@ describe('assignPhysicalReturnIndices', () => {
         token: { nft: { capability: 'mutable' as const, commitment: `e3b0c442${'00'.repeat(32)}` } },
       },
     ];
-    expect(pinPersistDigestInput(nativeEntry, 16, digest)).toBe(true);
-    expect(nativeEntry[16]?.unlocker.generateLockingBytecode()).toEqual(digest);
-    expect(String(nativeEntry[16]?.token?.nft?.commitment ?? '').startsWith('e3b0c442')).toBe(true);
+    expect(pinPersistDigestInput(nativeEntry, 16, digest)).toBe(false);
+    expect(nativeEntry[16]?.unlocker.generateLockingBytecode()).toEqual(p2pkh);
+    expect(nativeEntry[18]?.unlocker.generateLockingBytecode()).toEqual(otherLock);
     expect(persistDigestLockDests(13)).toEqual([16, 18]);
     expect(persistDigestLockDests(14)).toEqual([17, 19]);
     expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 18 })).toEqual([16, 17, 18]);

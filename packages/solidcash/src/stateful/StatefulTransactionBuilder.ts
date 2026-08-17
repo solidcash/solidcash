@@ -2208,6 +2208,23 @@ export function isDataNftIndexCommitment(commitment: string): boolean {
   return /^(00|51|52|53)/.test(hex) && !isSortedEntryNodeCommitment(hex);
 }
 
+/**
+ * Updated persist may overwrite a co-spent SCID on dest 19 (chunk 3) when the
+ * live band includes that dest. Closed replay keeps dest 19-20 as SCIDs so
+ * persist-v dests stay 16-18 (3 vs 5).
+ */
+export function persistChunkMayOverwriteScid(parts: {
+  dest: number;
+  band?: { start: number; end: number };
+  replayWidth: number;
+  incomingCommitment?: string;
+}): boolean {
+  if (parts.replayWidth > 0) return false;
+  if (!parts.band || parts.dest < parts.band.start || parts.dest > parts.band.end) return false;
+  const commit = parts.incomingCommitment ?? '';
+  return isPersistValueChunkCommitment(commit) && !isEmptyValueChunkCommitment(commit);
+}
+
 /** True for a 32-byte slot-prefixed entry node, not a data-NFT index tag. */
 export function isSortedEntryNodeCommitment(commitment: string): boolean {
   const hex = commitment.toLowerCase();
@@ -7191,7 +7208,13 @@ export class StatefulTransactionBuilder {
   ): boolean {
     if (isProxyPreserveOutputIndex(outputIndex)) return false;
     const occupantCommit = String(this.allInputs[outputIndex]?.token?.nft?.commitment ?? '');
-    if (isDataNftIndexCommitment(occupantCommit) && !isPersistValueChunkCommitment(occupantCommit)) {
+    if (isDataNftIndexCommitment(occupantCommit) && !isPersistValueChunkCommitment(occupantCommit)
+      && !persistChunkMayOverwriteScid({
+        dest: outputIndex,
+        band: this.getPublishJobEventsBand(),
+        replayWidth: this._persistReplayWidth(),
+        incomingCommitment: chunk.commitment,
+      })) {
       return false;
     }
     const valueChunkPin = chunk.lockingBytecode.length === 35
@@ -7322,7 +7345,13 @@ export class StatefulTransactionBuilder {
         protectedMasters.add(index);
       }
       const inputCommit = String(input?.token?.nft?.commitment ?? '');
-      if (isDataNftIndexCommitment(inputCommit) && !isPersistValueChunkCommitment(inputCommit)) {
+      if (isDataNftIndexCommitment(inputCommit) && !isPersistValueChunkCommitment(inputCommit)
+        && !persistChunkMayOverwriteScid({
+          dest: index,
+          band: this.getPublishJobEventsBand(),
+          replayWidth: this._persistReplayWidth(),
+          incomingCommitment: this.derivedChunkOutputs.get(index)?.commitment,
+        })) {
         protectedMasters.add(index);
       }
     }
@@ -7482,10 +7511,17 @@ export class StatefulTransactionBuilder {
       this.derivedChunkOutputs.set(index, prior);
     }
     const reserved = new Set<number>([0, 1]);
+    const replayWidth = this._persistReplayWidth();
     for (const [index, input] of this.allInputs.entries()) {
       if (input.token?.nft?.capability === 'minting') reserved.add(index);
       const inputCommit = String(input.token?.nft?.commitment ?? '');
-      if (isDataNftIndexCommitment(inputCommit) && !isPersistValueChunkCommitment(inputCommit)) {
+      if (isDataNftIndexCommitment(inputCommit) && !isPersistValueChunkCommitment(inputCommit)
+        && !persistChunkMayOverwriteScid({
+          dest: index,
+          band: { start: liveBand.start, end: liveEnd },
+          replayWidth,
+          incomingCommitment: this.derivedChunkOutputs.get(index)?.commitment,
+        })) {
         reserved.add(index);
       }
     }

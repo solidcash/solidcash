@@ -127,6 +127,7 @@ import {
   isSortedEntryHeadCommitment,
   isSortedEntryNodeCommitment,
   isDataNftIndexCommitment,
+  persistChunkMayOverwriteScid,
   type PhysicalReturnGroup,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
@@ -2043,6 +2044,50 @@ describe('assignPhysicalReturnIndices', () => {
     expect(isDataNftIndexCommitment('0023aa20083560b686fab28b272d2ba1f04128f0af805ff4a827d666730629ff')).toBe(true);
     expect(isDataNftIndexCommitment('5121000000000000000000000000000000000000000000000000000000000000000000')).toBe(true);
     expect(isDataNftIndexCommitment('00'.repeat(32))).toBe(false);
+    // SCID starts with `53` so it still classifies as a data-NFT tag; closeJob
+    // relies on that reservation. Updated dest 19 uses persistChunkMayOverwriteScid.
+    expect(isDataNftIndexCommitment('534349440105000000000000001976a91471')).toBe(true);
+  });
+
+  it('places persist chunk 3 over a dest-19 SCID occupant', () => {
+    const lock = new Uint8Array(35);
+    lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
+    const outputs = Array.from({ length: 21 }, () => (
+      { to: Uint8Array.of(0x51), amount: 1000n } as {
+        to: Uint8Array;
+        amount: bigint;
+        token?: { category?: string; nft?: { capability?: string; commitment?: string } };
+      }
+    ));
+    outputs[19] = {
+      to: lock,
+      amount: 1200n,
+      token: { category: 'id', nft: { capability: 'none', commitment: '5343494401050000' } },
+    };
+    const persist = [
+      { commitment: `00004cb4${'11'.repeat(20)}`, lockingBytecode: lock, categoryId: 'md' },
+      { commitment: `01000000${'22'.repeat(20)}`, lockingBytecode: lock, categoryId: 'md' },
+      { commitment: `02004755${'33'.repeat(20)}`, lockingBytecode: lock, categoryId: 'md' },
+      { commitment: `03000200${'44'.repeat(20)}`, lockingBytecode: lock, categoryId: 'md' },
+    ];
+    expect(selectLatestJobEventsChunks(persist.slice(0, 3), persist)).toHaveLength(4);
+    expect(placeValueChunksOnBand(outputs, { start: 16, nNew: 4 }, persist)).toBe(4);
+    expect(outputs[19]?.token?.nft?.commitment.startsWith('03000200')).toBe(true);
+    expect(outputs[19]?.token?.nft?.capability).toBe('mutable');
+    expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 19 })).toEqual([16, 17, 18, 19]);
+    const chunk3 = persist[3].commitment;
+    expect(persistChunkMayOverwriteScid({
+      dest: 19, band: { start: 16, end: 19 }, replayWidth: 0, incomingCommitment: chunk3,
+    })).toBe(true);
+    expect(persistChunkMayOverwriteScid({
+      dest: 19, band: { start: 16, end: 20 }, replayWidth: 3, incomingCommitment: chunk3,
+    })).toBe(false);
+    expect(persistChunkMayOverwriteScid({
+      dest: 19, band: { start: 16, end: 18 }, replayWidth: 0, incomingCommitment: chunk3,
+    })).toBe(false);
+    expect(persistChunkMayOverwriteScid({
+      dest: 19, band: { start: 16, end: 19 }, replayWidth: 0, incomingCommitment: '01000000',
+    })).toBe(false);
   });
 
   it('synthesizes a 64-byte empty-value P\' from HEAD slot 0 and the NEW slot', () => {

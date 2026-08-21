@@ -59,6 +59,9 @@ flag at all: hex-literal integer coercion, string-literal `bytesN` right-padding
 synthesising type defaults, declaration-only files compiling to an ABI-only artifact, `uint`/`int` aliases,
 relaxed declaration order, and `Library.Type` member types.
 
+See [Solidity Import Compatibility](/docs/compiler/solidity-import-compat) for the mode-specific storage, getter,
+proxy, data-location and validation lowerings, plus a release porting workflow.
+
 ## Where behaviour differs
 
 These compile, but do not mean quite what they mean on the EVM. Each one warns where it matters.

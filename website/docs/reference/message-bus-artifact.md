@@ -13,7 +13,7 @@ after changing message-bus artifact fields or limits.
 | --- | ---: |
 | `ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS` | 8 |
 | `ATOMIC_MESSAGE_BUS_MAX_ROWS` | 24 |
-| `MAX_MESSAGE_BUS_BLOB_BYTES` | 223 bytes |
+| `MAX_MESSAGE_BUS_BLOB_BYTES` | 10_000 bytes |
 | `ATOMIC_MESSAGE_BUS_DOMAIN_HEX` | `4c33425553310000` |
 
 These are admission ceilings. Finalized transaction size and BCH-2026 VM preflight can impose a smaller limit for
@@ -23,7 +23,6 @@ a resource-heavy graph.
 
 | Field | Schema type |
 | --- | --- |
-| `version` | `1` |
 | `selector` | `'53434231'` |
 | `minimumRows` | `number` |
 | `maximumRows` | `number` |

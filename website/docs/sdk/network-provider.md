@@ -34,6 +34,8 @@ interface Utxo {
   vout: number;
   satoshis: bigint;
   token?: TokenDetails;
+  blockHeight?: number;
+  confirmations?: number;
 }
 
 interface TokenDetails {
@@ -50,6 +52,18 @@ interface TokenDetails {
 ```ts
 const userUtxos = await provider.getUtxos(userAddress)
 ```
+
+### getUtxosForLockingBytecode()
+
+```ts
+async provider.getUtxosForLockingBytecode(
+  lockingBytecode: Uint8Array | string,
+): Promise<Utxo[]>;
+```
+
+Queries a raw locking script. `ElectrumNetworkProvider`, mock, and regtest implement this through script hashes or
+address conversion. Legacy FullStack and generic RPC adapters throw because their backends only expose
+address/watch-wallet queries. This method is required for `p2s` and non-addressable covenant resources.
 
 ### getBlockHeight()
 ```ts
@@ -87,7 +101,9 @@ const txId = await provider.sendRawTransaction(txHex)
 
 ## Custom NetworkProviders
 
-A big strength of the NetworkProvider setup is that it allows you to implement custom providers. So if you want to use a new or different BCH indexer for network information, it is simple to add support for it by creating your own `NetworkProvider` adapter by implementing the [NetworkProvider interface](https://github.com/CashScript/cashscript/blob/master/packages/cashscript/src/network/NetworkProvider.ts).
+A custom indexer or node adapter implements the exported `NetworkProvider` interface. Stateful SDK operation
+requires token-aware UTXOs—including category, amount, NFT capability, and commitment—and generally requires raw
+locking-bytecode lookup, so implement those semantics rather than returning token outputs as BCH-only coins.
 
 You can create a PR to add your custom `NetworkProvider` to the SolidCash codebase to share this functionality with others. It is required to have basic automated tests for any new `NetworkProvider`.
 
@@ -95,8 +111,12 @@ You can create a PR to add your custom `NetworkProvider` to the SolidCash codeba
 
 Beyond the standardized `NetworkProvider` interface each provider can have its own provider-specific functionality. This can either be done by extending the `NetworkProvider` interface or by providing a more full-featured networking client to create the `NetworkProvider`.
 
-## Limitations
+## Limits and relay policy
 
-If you look at the [Transaction Lifecycle](guides/lifecycle.md) guide then you'll see there are blockchain edge cases like chain re-organisations or double spends. Ideally the `NetworkProvider` interface would be able to provide more detailed `Utxo` chain information like whether the UTXO is unconfirmed or confirmed, the number of confirmations and the block-hash of the block which included the transaction creating the UTXO.
+Providers may publish `consensusLimits` and `policy` so the builder can preflight script, transaction, NFT
+commitment, operation-density, hash-iteration, and dust boundaries. Omitted profiles use production BCH limits.
+Relaxed mock limits are test-only and do not make an oversized transaction relayable on mainnet.
 
-Currently however the `NetworkProvider` interface does not include the details needed to understand whether blockchain state is confirmed, pending or ended up getting reversed. This means that in the case something does end up being reversed your application might not correctly be in sync with the actual network state.
+`blockHeight` and `confirmations` on a `Utxo` are optional because not every backend returns them. A provider is a
+current UTXO/indexer view, not a finality oracle: applications remain responsible for detecting conflicts,
+reorganizations, and stale cached state. See [Transaction Lifecycle](/docs/guides/lifecycle).

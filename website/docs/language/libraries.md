@@ -8,8 +8,13 @@ which is how expensive primitives like `keccak256` are shared without duplicatin
 
 ## Inline libraries
 
-A library whose functions are `internal` (or unmarked) is a compile-time construct. Its functions are inlined
-at every call site and no artifact is produced, exactly like Solidity's internal library functions.
+A library whose callable functions are explicitly `internal` or `private` is a compile-time construct. Those
+functions are inlined at every call site, exactly like Solidity's internal library functions. An inline-only
+library still has an ABI-only declaration artifact, but its `bytecode` is empty and it cannot be deployed.
+
+Library functions without an explicit visibility are `public`, matching Solidity. A public function which is
+pure with respect to library state remains an inline call when imported; a public function which touches the
+library's declared state takes the deployed delegate-library path described below.
 
 ```solidity
 pragma solidcash ^0.13.0;
@@ -141,11 +146,12 @@ contract Ledger() {
 
 The overloadable operators are `+ - * / % **`, `== != < <= > >=`, and `& | ^ ~`.
 
-## Deployed libraries
+## Deployed delegate libraries
 
-A library with at least one `public` or `external` function compiles to a **deployed, stateless contract** with
-its own artifact. Its public functions run in the calling contract's state context, which is the BCH analogue
-of Solidity's `DELEGATECALL`-linked library.
+A library with a `public` or `external` function compiles to its own executable artifact. When such a function
+touches state declared by the library, it is automatically marked as a delegate entry point. Calls imported as
+`L.f(...)` then run against the consuming contract's state, which is the BCH analogue of a
+Solidity `DELEGATECALL`-linked library.
 
 ```solidity
 pragma solidcash ^0.13.0;
@@ -160,11 +166,37 @@ library Counter {
 ```
 
 The library declares the **state shape** it operates on. A consumer that imports it calls `Counter.incrementBy(n)`,
-and the compiler rewrites that to a delegatecall against a synthesized library-address constructor argument.
-The SDK supplies the deployed library's address and co-spends it automatically.
+and the compiler rewrites that to a delegatecall against a synthesized `address __libAddr_Counter` constructor
+argument. That address becomes part of the consumer's locking bytecode, so a spender cannot substitute a different
+library. The compiler also records the library name, function, selector and reconstructible arguments in the
+consumer ABI.
 
-This split matches Solidity exactly: `internal` library functions are inlined, `public` library functions are
-delegatecalled.
+The SDK co-spends the linked library automatically after the deployed instance has been registered. With a
+manually assembled deployment, link the consumer to the library locking bytecode and register the live instance:
+
+```ts
+import { Contract, StatefulContract } from 'solidcash';
+import { hexToBin } from '@bitauth/libauth';
+
+const library = StatefulContract.withCategory(
+  new Contract(counterArtifact, [], { provider }),
+  counterCategory,
+);
+
+const appInner = new Contract(
+  appArtifact,
+  [hexToBin(library.inner.lockingBytecode)], // __libAddr_Counter
+  { provider },
+);
+const app = StatefulContract.withCategory(appInner, appCategory);
+
+app.registerLibrary('Counter', library);
+await app.call.bumpBy(2n).send();
+```
+
+An SDK `ContractBundle` can carry the whole artifact graph and resolve a deployed library from the linked locking
+bytecode and provider index, avoiding manual `registerLibrary()` for bundle-managed deployments. A missing or
+wrongly linked instance is a build error, not an optional call.
 
 ### Layout compatibility
 
@@ -210,6 +242,21 @@ with the `brandLibrary` option pins the library to its owning consumer's categor
 master to be co-spent. The library then rides the master's existing serialization and adds no marginal
 contention. Shard by minting a per-consumer branded copy.
 
+Construct the linked instance with the helper rather than manually reversing category bytes:
+
+```ts
+const libraryInner = StatefulContract.brandedLibrary(
+  brandedCounterArtifact,
+  appCategory,
+  { provider },
+);
+const library = StatefulContract.withCategory(libraryInner, libraryCategory);
+app.registerLibrary('Counter', library);
+```
+
+`registerLibrary()` checks that a branded artifact carries the calling contract's category. The on-chain library
+covenant independently checks the same brand against the co-spent master.
+
 :::note
 Whoever controls the master can re-mint a branded library, which means swappable logic without changing the
 consumer's address. That is the same trust surface as an EVM upgradeable proxy. Use an immutable,
@@ -219,8 +266,9 @@ non-minting brand for libraries that are meant to be frozen.
 ## External library precompiles
 
 There is a third, lower-level mechanism: a **precompile**, a Script bytecode subroutine invoked with
-`OP_INVOKE` inside the caller's own script. This is how SolidCash provides primitives that are too expensive to
-inline everywhere, most notably `keccak256`.
+`OP_INVOKE` inside the caller's own script. A precompile is described by a function name, a hex-encoded Script
+blob and an input/output ABI. It is pure stack computation: it has no SolidCash state layout, deployment ABI or
+source-level `library` declaration.
 
 | | External library (precompile) | Deployed library contract |
 | --- | --- | --- |
@@ -231,8 +279,81 @@ inline everywhere, most notably `keccak256`.
 | Linking | by hash (content-addressed) | by address / category brand |
 | Returns a value | yes (synchronous subroutine) | no (via shared state) |
 
-You mostly consume these implicitly by calling `keccak256`. See
-[Cryptography](/docs/language/cryptography) for the details.
+### Register a custom precompile
+
+Pass precompiled Script and its ABI through `userLibraries`:
+
+```ts
+import { compileString } from 'solidc';
+
+const incLibrary = {
+  name: 'inc',
+  code: '8b', // OP_1ADD
+  abi: {
+    inputs: [{ name: 'x', type: 'int' }],
+    outputs: [{ type: 'int' }],
+  },
+};
+
+const artifact = compileString(source, {
+  userLibraries: [incLibrary],
+});
+```
+
+The source may then call `inc(x)` like a built-in function. Names cannot shadow a built-in library. The compiler
+type-checks the declared ABI but treats the bytecode as trusted build input: publish and audit the exact blob with
+the artifact.
+
+The current `userLibraries` interface accepts an already compiled hex blob; compiling a `.scash` file directly
+into a precompile blob is not a compiler entry point. This is distinct from compiling a source-level `library`
+into a deployed delegate-library artifact.
+
+### Inline selection and blob side-cars
+
+By default, a blob of at most 256 bytes used at exactly one contract-wide call site is inlined. Otherwise the
+artifact selects a self-preserving blob side-car. Override the choice per name or disable the heuristic:
+
+```ts
+const sidecarArtifact = compileString(source, {
+  userLibraries: [incLibrary],
+  inlineLibraries: { inc: false },
+});
+
+const noAutomaticInlining = compileString(source, {
+  userLibraries: [incLibrary],
+  disableAutoInline: true,
+});
+```
+
+An inline descriptor needs no extra UTXO. For a side-car descriptor, the consuming script reads the last input,
+extracts the blob range published in `artifact.externalLibraries`, and verifies its `hash256` before invoking it.
+The side-car covenant recreates itself as the last output. Stateful consumers salt its address with their category;
+stateless consumers use the shared all-zero salt.
+
+Provision the blob UTXO once before the first call. `send()` discovers, co-spends and recreates it automatically;
+explicit `build()` or `debug()` workflows must resolve the required side-car first:
+
+```ts
+import { resolveLibraryBlob } from '@solidcash/utils';
+import { TransactionBuilder } from 'solidcash';
+
+const descriptor = artifact.externalLibraries!.find((item) => item.name === 'inc')!;
+const blob = resolveLibraryBlob(descriptor);
+
+const deployment = new TransactionBuilder({ provider });
+await deployment.addSidecarDeployIfNeeded(blob); // pass category bytes as salt for a stateful consumer
+// Add a funding input and change as usual, then send the deployment transaction.
+
+await spendBuilder.addRequiredSidecars(); // before synchronous build() or debug()
+```
+
+One transaction currently supports only one distinct blob-side-car identity. Calls which require different blobs
+or different category salts must be separated or the relevant blobs must be inlined.
+
+`keccak256` is registered through the same name/ABI registry, but runtime Keccak uses the stronger
+compute-and-commit result-NFT protocol rather than the blob loader. Literal calls are folded at compile time. See
+[Cryptography](/docs/language/cryptography) and
+[Computation Sidecars & Result NFTs](/docs/language/computation-sidecars) for provisioning and capacity details.
 
 ## Why inline versus deploy is your choice
 

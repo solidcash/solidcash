@@ -46,10 +46,14 @@ contract Token(pubkey admin) {
 
 ### Constructor Arguments
 
-The constructor arguments are provided when initializing a specific instance of a smart contract. The provided constructor arguments are added to the start of the contract's script before the opcode logic. Because the constructor arguments are part of the full smart contract script, they are conceptually similar to hard-coded values in your contract logic. Constructor arguments are a way to create 'global variables' accessible from different functions inside your contract. Note that constructor arguments are variables and can be reassigned inside the contract functions.
+The constructor arguments are provided when initializing a specific instance of a smart contract. The provided
+arguments are added to the start of the contract's script before the opcode logic, so they behave like immutable
+instance configuration accessible from every function. Reassigning the stack value inside one function, where
+accepted, changes only that invocation's local copy; it does not change the baked argument or persist state.
 
 :::info
-The typings for the constructor arguments are only semantic and used when initializing the contract with the SDK. This means when not using the SDK you could still pass a different byte length item to `bytes32 hash`.
+The SDK validates constructor arguments against the artifact ABI. A manually assembled redeem script bypasses
+that SDK check, so its author is responsible for using the canonical encoding and declared byte lengths.
 :::
 
 :::note
@@ -57,7 +61,10 @@ Upon initialization of the contract, constructor parameters are encoded and adde
 :::
 
 ## Functions
-The main construct in a SolidCash contract is the function. A contract can contain one or multiple functions that can be executed to trigger transactions that spend money from the contract. At its core, the result of a function is just a yes or no answer to the question 'Can money be sent out of this contract?'. However, by using 'covenants it's possible to specify additional conditions - like restricting *where* money can be sent. To learn more about covenants, refer to the [SolidCash Covenants Guide](/docs/guides/covenants).
+The main construct in a SolidCash contract is the function. A contract can contain one or multiple functions that
+can be executed to trigger transactions that spend money from the contract. At its core, the result answers the
+question “is this spend valid?” Covenants additionally constrain the transaction itself—for example, where money
+can be sent. To learn more, refer to the [SolidCash Covenants Guide](/docs/guides/covenants).
 
 #### Example
 ```solidity
@@ -89,11 +96,11 @@ Because the arguments are provided by the user when spending from the contract, 
 Function parameters are passed in the reversed order of their declaration. This can be important when debugging, optimizing or when creating transactions manually.
 :::
 
-In SolidCash the types for the function arguments are **not** enforced automatically at the contract level. This can be especially relevant for types like `bool`, `bytesX` and other semantic bytes types. Instead this type information is only used by the SDK to check whether these arguments match the expected type during transaction building.
-
-:::caution
-The typings for the function arguments are only semantic, this means the length of bounded bytes types like `bytes20` are **not** contract enforced automatically. Instead add an explicit length check `require(item.length == 20)`.
-:::
+By default, the covenant enforces the encodings whose range or shape affects type safety: `bool`, `bytesN`,
+bounded signed and unsigned integers, enums, fixed-point values, and value types over those types. The SDK also
+validates every argument against the ABI before building the unlocking bytecode. The compiler option
+`enforceFunctionParameterTypes: false` removes the on-chain entry checks to save bytecode; if you deliberately
+disable it, add equivalent guards wherever malformed input could matter.
 
 ## Statements
 SolidCash functions are made up of a collection of statements that determine whether money may be spent from the contract.

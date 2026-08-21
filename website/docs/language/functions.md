@@ -42,11 +42,10 @@ function spend(pubkey pk, sig s, int amount) {
 }
 ```
 
-:::caution
-Type annotations on entry-point arguments are **semantic only**. The length of a bounded type like `bytes20` is
-not automatically contract-enforced; the SDK uses the annotation to encode arguments correctly. If the length
-matters to your logic, check it explicitly with `require(item.length == 20)`.
-:::
+By default, entry code canonicalizes `bool` and enforces bounded `bytesN`, signed/unsigned integer, enum,
+fixed-point, and matching value-type ranges. The SDK also validates the complete ABI before encoding arguments.
+Setting `enforceFunctionParameterTypes: false` removes those on-chain entry guards to save bytecode; only do so
+when equivalent validation is unnecessary or explicitly implemented in the contract.
 
 :::note
 Function parameters are passed in the reverse order of their declaration. This matters when debugging,
@@ -98,10 +97,11 @@ function compute(int a, int b) internal pure returns (int) {
 receive() external payable { }
 ```
 
-:::caution
-`pure` and `view` are **accepted but not enforced**. Unlike solc, the compiler does not currently reject a
-`view` function that writes state. Treat them as documentation and as porting affordances, not as guarantees.
-:::
+Mutability checking depends on the compilation mode. Native SolidCash always rejects contract-state reads from a
+`pure` function, but some direct state writes from a native `view` function remain accepted. With
+`solidityImportCompat: true`, Solidity's state-effect rules are enforced across state, transient state, contract
+creation, low-level calls, function pointers, and internal/external calls. Treat native `view` as an API contract
+which should still be reviewed; use compatibility mode when compiling imported `.sol` code.
 
 `payable` is largely cosmetic: every BCH address can receive value. It is accepted so Solidity sources compile,
 and it enables `msg.value` in the body.
@@ -171,9 +171,10 @@ function _sum(int a, int b) internal returns (int) { return a + b; }
 function _sum(int a, int b, int c) internal returns (int) { return a + b + c; }
 ```
 
-:::note
-Named arguments cannot be used with an overloaded function, because the call would be ambiguous.
-:::
+Overload resolution uses argument count and types. Named arguments also participate: their field names first
+filter the candidate set and types then select the matching signature. A call is rejected only if no unique
+overload remains. Contextual function-pointer type and, for supported helper inlining, expected return arity can
+also disambiguate otherwise similar overloads.
 
 ### Recursion and loops
 
@@ -286,8 +287,9 @@ contract Token(pubkey admin) {
 ```
 
 :::caution
-Mappings and token containers cannot be accessed in the constructor: no UTXO commitment exists yet at
-deployment time.
+A constructor may create mapping entries, but it cannot read pre-existing mapping state because none exists yet.
+Token containers cannot be read or transferred in a constructor. The SDK evaluates supported constructor effects
+while assembling genesis; see [Contract Deployment](/docs/guides/deployment#deployment-arguments).
 :::
 
 ## See also

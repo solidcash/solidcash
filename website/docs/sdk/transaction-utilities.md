@@ -2,7 +2,9 @@
 title: Transaction Utilities
 ---
 
-When building transactions using the CashScript SDK, there are certain actions that are not directly involved with transaction building, but are still useful to have available. This is the purpose of the Transaction Utilities.
+The SolidCash SDK includes small deterministic UTXO-selection helpers for callers that assemble transactions
+manually. They select from the array you provide; they do not query a provider, estimate fees, create change, or
+lock UTXOs against a concurrent builder.
 
 ## Gathering UTXOs
 
@@ -21,7 +23,8 @@ interface GatherUtxosResult {
 gatherBchUtxos(utxos: Utxo[], amount: bigint): GatherUtxosResult
 ```
 
-Gathers BCH UTXOs from a list of UTXOs until the required amount is reached.
+Filters out every token-bearing UTXO, sorts the remaining UTXOs largest-first, and selects until the requested
+satoshi amount is covered. It throws when the available non-token balance is insufficient.
 
 #### Example
 ```ts
@@ -33,7 +36,9 @@ const { utxos, totalAmount } = gatherBchUtxos(utxos, 100000n);
 gatherFungibleTokenUtxos(utxos: Utxo[], tokenCategory: string, amount: bigint): GatherUtxosResult
 ```
 
-Gathers fungible token UTXOs from a list of UTXOs until the required amount is reached.
+Filters to fungible-only UTXOs of the exact display-order category (NFT-bearing UTXOs are ignored), sorts them
+largest-first by token amount, and selects until the requested amount is covered. It throws when the balance is
+insufficient. BCH carried by the selected token UTXOs is not included in `totalAmount`.
 
 #### Example
 ```ts

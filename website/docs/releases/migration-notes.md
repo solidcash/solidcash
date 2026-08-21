@@ -4,6 +4,73 @@ title: Migration Notes
 
 ## v0.12 to v0.13
 
+Version 0.13.1 is a major protocol and workflow upgrade, not only a syntax update. Existing stateless contracts can
+often be recompiled directly, but existing stateful deployments are not layout-compatible with the new
+self-pinned data/vmap/chunk protocol. Recompile, audit the artifact, and deploy a new category unless an explicitly
+tested native upgrade path preserves the published append-only layout.
+
+### Runtime and project requirements
+
+- Use Node `>=22 <23`, Yarn `>=1.22.22 <2`, and aligned 0.13.1 versions of `solidc`, `solidcash`, and the
+  `@solidcash/*` packages.
+- CI should install with `yarn --frozen-lockfile --ignore-scripts` and then run the explicit root build. Workspace
+  lifecycle compilation during installation is intentionally not the authoritative build.
+- SolidHat projects use `solidcash.config.ts`, the `solidcash` CLI, and artifacts under `artifacts/solidcash`.
+  `solidcash init --from-hardhat` creates a parallel configuration; it does not edit the Hardhat file.
+
+### Stateful storage and deployment
+
+- Stateful contracts now use a category-salted, self-pinned P2SH32 address and a minting master NFT. Treat both the
+  category and the locking bytecode as deployment identity.
+- Ordinary fields use one or more indexed data NFTs. Dynamic strings/bytes and eligible `T[]` values use a length
+  header plus 120-byte chunks. Every mapping is a sorted verified mapping with a HEAD node; large mapping values
+  use a separate 126-byte continuation format.
+- Eligible unbounded arrays select the dense chunk backend by default. Code which relied on a bare `T[]` behaving
+  as a sparse integer mapping should declare `mapping(uint256 => T)` or compile deliberately with
+  `chunkedArrays: false`. Native bounded non-packed arrays remain collection-backed; compatibility-mode bounded
+  arrays may become packed.
+- `external` state variables are isolated into dedicated data NFTs. State layout, array backend, compiler options,
+  and declaration order are deployment compatibility concerns.
+- Prefer `ContractFactory.deploy(...)` with a connected signer. The explicit low-level form is
+  `StatefulContract.deploy(artifact, constructorArgs, options)`, not a single object containing the artifact.
+  Supply funding, change, and initial commitment state deliberately.
+
+### Calls, events, and lifecycle
+
+- Cross-contract calls are composed co-spends, not synchronous account calls. Register deployed targets through
+  the SDK's external registry and let auto-derivation construct the callee blocks and return-event outputs.
+- Event records are immutable NFT commitments and are queried through receipts, filters, or listeners. Do not
+  assume an EVM log bloom or runtime revert-data transport.
+- Native `upgrade` moves the master and rebuilt data NFTs to new bytecode while preserving the category and
+  enforcing append-only state-layout compatibility. It is different from a proxy/delegate deployment.
+- `selfdestruct`, child deployment, and split/merge operations require their dedicated SDK builders and explicit
+  funding/recipient/thread plans.
+
+### ABI and Solidity imports
+
+- Native selectors remain SHA-256-derived and native `abi.*` data uses compact Script framing. Enable `evmCompat`
+  only where EVM-compatible head/tail bytes and Keccak selectors are required, and use `uint160` for an
+  Ethereum-shaped address. A SolidCash `address` is full BCH locking bytecode.
+- Compile imported Solidity with `solidityImportCompat: true`. Canonical EVM storage assembly, `StorageSlot`, and
+  ERC-7201 patterns use the [documented storage bridge](/docs/language/evm-storage-compat); shapes outside that
+  bridge, or outside the supported memory/call/delegate/Yul subset, fail with diagnostics and may require a
+  BCH-specific rewrite.
+- `int` and `uint` are 256-bit checked types in the Solidity-compatible model; use `bigint` for the BCH-native
+  arbitrary-precision integer. Audit arithmetic and packed encodings when migrating older native code.
+
+### SDK and tests
+
+- `Signer`/`ContractFactory` and connected methods are the maintained high-level workflow. Raw `Contract` and
+  `TransactionBuilder` remain available for explicit transaction composition.
+- `MockNetworkProvider` starts empty, updates its UTXO set by default, and supports funded signers, snapshots,
+  block/time control, and a configurable VM target. Tests must create or request their funding explicitly.
+- Use Vitest with `@solidcash/testing` or SolidHat. The maintained Chai-style matchers cover named failures,
+  events, BCH/token balance changes, and common transaction assertions; they are not universal Hardhat plugin
+  compatibility.
+- Multi-contract source files return an `ArtifactMap` from `compileFileMulti`/`compileStringMulti`. Select a
+  primary contract explicitly when using a single-artifact API, and use split-bundle APIs only when deploying the
+  corresponding root/facet topology.
+
 ### solidc compiler
 
 #### bounded bytes casting

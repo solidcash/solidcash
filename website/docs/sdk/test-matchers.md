@@ -2,7 +2,7 @@
 title: Test Matchers
 ---
 
-SolidCash extends Vitest and Jest with custom matchers for testing contract behavior: require failures, event emissions, reverts, and console output.
+SolidCash extends Vitest with custom matchers for testing contract behavior: require failures, event emissions, reverts, and console output.
 
 ## Setup
 
@@ -10,12 +10,6 @@ Add the import to your test setup file:
 
 ```typescript title="vitest.setup.ts"
 import 'solidcash/vitest';
-```
-
-Or for Jest:
-
-```typescript title="jest.setup.ts"
-import 'solidcash/jest';
 ```
 
 In your Vitest config, reference the setup file:
@@ -110,33 +104,30 @@ await expect(contract.call.debug(42).send())
 import { describe, it, expect, beforeAll } from 'vitest';
 import 'solidcash/vitest';
 import {
-    StatefulContract,
+    ContractFactory,
     MockNetworkProvider,
     SignatureTemplate,
-    randomUtxo,
 } from 'solidcash';
 import artifact from './Counter.artifact.js';
 
 describe('Counter', () => {
     const provider = new MockNetworkProvider();
-    const alice = new SignatureTemplate(alicePriv);
+    let alice: any;
+    let bob: any;
     let sc: any;
 
     beforeAll(async () => {
-        const { contract } = await StatefulContract.deploy({
-            artifact,
-            constructorArgs: [alicePub],
-            provider,
-            fundingUtxo: randomUtxo(),
-            funder: alice.unlockP2PKH(),
-            changeAddress: aliceAddress,
+        [alice, bob] = await provider.getSigners(2, { fundingUtxos: 5 });
+        sc = await new ContractFactory(artifact, alice).deploy(alice.publicKey, {
             initialState: { counter: 0n },
         });
-        sc = contract;
     });
 
     it('should increment counter', async () => {
-        const result = await sc.call.increment(alicePub, aliceSig).send();
+        const result = await sc.call.increment(
+            alice.publicKey,
+            new SignatureTemplate(alice.privateKey),
+        ).send();
         expect(result.txid).toBeDefined();
 
         const counter = await sc.state.counter();
@@ -144,16 +135,19 @@ describe('Counter', () => {
     });
 
     it('should emit event on transfer', async () => {
-        const result = await sc.call.transfer(bobPkh, 100n).send();
+        const result = await sc.call.transfer(bob.pkh, 100n).send();
         await expect(result).toEmit(sc, 'Transfer', {
-            to: bobPkh,
+            to: bob.pkh,
             amount: 100n,
         });
     });
 
     it('should fail on unauthorized access', async () => {
         await expect(
-            sc.call.adminOnly(bobPub, bobSig).send()
+            sc.call.adminOnly(
+                bob.publicKey,
+                new SignatureTemplate(bob.privateKey),
+            ).send()
         ).toBeRevertedWith(/Unauthorized/);
     });
 });
@@ -167,7 +161,7 @@ For unit tests, use `MockNetworkProvider` to simulate the network:
 const provider = new MockNetworkProvider();
 
 // Add UTXOs to test addresses
-const utxo = randomUtxo(100_000n);
+const utxo = randomUtxo({ satoshis: 100_000n });
 provider.addUtxo(contractAddress, utxo);
 
 // Mock block height

@@ -76,8 +76,9 @@ bool checkMultiSig(sig[] sigs, pubkey[] pks)
 Performs a multi-signature check over lists of signatures and public keys.
 
 :::note
-This function is not supported by the TypeScript SDK, so it is recommended to simulate it with multiple
-`checkSig()` calls instead.
+The SDK supports fixed and dynamic signature/public-key arrays. `OP_CHECKMULTISIG` uses legacy ECDSA signatures,
+so construct each signature argument with `new SignatureTemplate(key, undefined, SignatureAlgorithm.ECDSA)`;
+the SDK's default Schnorr template is appropriate for `checkSig`, but not `checkMultiSig`.
 :::
 
 ### checkDataSig
@@ -148,6 +149,10 @@ multiplication cannot fit in a single input's operation budget even with GLV opt
 the public key, use `checkDataSig` instead: it is a single opcode.
 :::
 
+`ecrecoverEvm` additionally co-spends a Keccak sidecar to hash the recovered uncompressed public key. Sidecar
+NFTs must be provisioned before use on a real network; see
+[Computation Sidecars and Result NFTs](/docs/language/computation-sidecars).
+
 ### Recovering versus verifying
 
 If the public key is available to the spender, verifying is dramatically cheaper than recovering:
@@ -187,6 +192,7 @@ for real keccak256 selectors.
 ## See also
 
 - [Built-in Functions](/docs/language/builtin-functions) - the full global function catalogue
+- [Computation Sidecars and Result NFTs](/docs/language/computation-sidecars) - provisioning, capacity and security
 - [Libraries & Using-For](/docs/language/libraries#external-library-precompiles) - the precompile mechanism
 - [Platform Differences](/docs/basics/platform-differences#hashing) - the hashing policy rationale
 

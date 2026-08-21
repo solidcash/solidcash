@@ -243,11 +243,11 @@ interface ICounter {
     public int counter;
 }
 
-contract Reader(bytes32 counterCategory) {
+contract Reader(address counter) {
     int lastSeen;
 
     function readCounter() public {
-        this.lastSeen = ICounter(counterCategory).counter;
+        this.lastSeen = ICounter(counter).counter;
     }
 }
 ```

@@ -34,13 +34,14 @@ By default, the `MockNetworkProvider` evaluates transactions locally and updates
 
 ## Automated testing
 
-To make writing automated tests for SolidCash contracts easier, we provide Vitest and Jest extensions that enable easy testing of `console.log` values and `require` error messages. To use the extension, you can import it from `solidcash/vitest` or `solidcash/jest`.
+To make automated tests easier, the SDK provides a Vitest extension for `console.log`, `require`, revert, and event assertions:
 
 ```ts
 import 'solidcash/vitest';
-// or
-import 'solidcash/jest';
 ```
+
+For whole-project compilation, fixtures, pre-funded signers, time travel, and Hardhat/Ethers compatibility, use
+[SolidHat](/docs/tooling/solidhat) and the [Testing Framework](/docs/tooling/testing-framework).
 
 :::note
 If you're using a different testing framework, you can test for `console.log` values by spying on the console output, and test for `require` error messages by asserting that an error is thrown with a specific error message.
@@ -114,7 +115,7 @@ contract Example() {
 
 ```ts title="Example test file"
 import artifact from '../artifacts/example.artifact.js';
-import { Contract, MockNetworkProvider, randomUtxo } from 'solidcash';
+import { Contract, MockNetworkProvider, TransactionBuilder, randomUtxo } from 'solidcash';
 import 'solidcash/vitest';
 
 describe('Example contract', () => {

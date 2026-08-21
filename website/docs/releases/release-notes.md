@@ -4,12 +4,81 @@ title: Release Notes
 
 ## v0.13.1
 
-#### solidc compiler
-- :sparkles: Allow custom `SolidCashErrorListener` to be passed to the compiler.
-- :bug: Fix missing location data in tuple assignment errors.
+SolidCash 0.13.1 is a major language, state protocol, SDK, and development-workflow release. It provides a
+documented Solidity-compatible subset on Bitcoin Cash; it does not claim unrestricted Solidity, EVM, ethers, or
+Hardhat parity. See the [migration notes](./migration-notes.md#v012-to-v013) before upgrading an existing project.
 
-#### SolidCash SDK
-- :sparkles: In the `MockNetworkProvider`, `addUtxo()` now returns the added UTXO.
+#### Language and compiler
+
+- :sparkles: Add Solidity-style source imports, inheritance, abstract contracts, interfaces, libraries,
+  user-defined modifiers, overloads, function pointers, fallback/receive functions, custom errors, events, and
+  the documented lowerable Yul subset.
+- :sparkles: Add Solidity-compatible `intN`/`uintN` checked and `unchecked` arithmetic, BCH-native `bigint`,
+  fixed-point decimals, user-defined value types, enums, nested structs, fixed/dynamic/nested arrays, mappings,
+  tuples, number/time units, and type introspection.
+- :sparkles: Add the complete `abi.encode*`/`abi.decode` family. Native mode uses compact BCH framing and SHA-256
+  selectors; `evmCompat` provides EVM head/tail bytes and Keccak-256 selectors for the supported ABI subset.
+- :sparkles: Add transaction/message/block globals, native absolute and relative timelocks, block-oracle fields,
+  `blockhash`, `keccak256`, and `ecrecover` compute-sidecar integration.
+- :sparkles: Add EVM storage-layout assembly bridges for declared/packed slots, canonical mapping and dynamic-array
+  derivations, arbitrary verified word slots, OpenZeppelin `StorageSlot`, and ERC-7201 namespaces.
+- :sparkles: Adapt constructor external reads to SDK-resolved deploy inputs and fold supported
+  `new Child(); child.initialize(...)` sequences directly into authenticated child genesis state.
+- :sparkles: Add multi-contract artifact maps, Solidity import compatibility, source/debug maps, invocation and
+  block-layout metadata, delegate artifacts, and opt-in large-contract split bundles.
+- :shield: Fail closed when a state, vmap, delegate, external-call, or message-bus transaction shape cannot be
+  authenticated by the generated covenant.
+- :bug: Allow a custom `SolidCashErrorListener` and retain precise tuple/import diagnostic locations.
+
+#### Stateful contract protocol
+
+- :sparkles: Add self-pinned P2SH32 stateful contracts backed by a category master NFT, packed data NFTs, dense
+  120-byte chunks, token/satoshi containers, and transaction-local state journaling.
+- :sparkles: Make every `mapping(K => V)` a verified sorted mapping (vmap), including authenticated absence,
+  nested keys, enumerable key/value/entry loops, batch updates, struct/array values, and 126-byte root-addressed
+  continuation chunks for large values.
+- :sparkles: Make eligible unbounded state arrays dense and chunk-backed by default, including nested and struct
+  arrays. Keep explicit inline `packed` arrays and sparse collection-backed bounded arrays.
+- :sparkles: Add typed external state reads, state/output-state access, calls/static calls, return-event NFTs,
+  loop calls, function-pointer dispatch, and atomic repeated-call composition through the message bus.
+- :sparkles: Add child deployment, native upgrades, self-destruction, split/merge threads, delegate artifacts,
+  and the built-in immutable one-hop proxy profile.
+- :sparkles: Add deterministic CashToken custody containers with authenticated fungible/NFT transfers,
+  permissionless preservation, deposits, post-state aggregates, and SDK accessors.
+- :sparkles: Add typed immutable event NFTs, indexed filters, decoded receipts/listeners, standalone return events,
+  and permissionless event cleanup after the covenant delay.
+
+#### TypeScript SDK
+
+- :sparkles: Add `Signer`, HD signers, `ContractFactory`, connected contract methods, deployment handles,
+  transaction responses/receipts, event filters, listeners, and Hardhat-style funded test signers.
+- :sparkles: Add `StatefulContract` auto-derivation: artifact metadata plus local VM probes discover required state,
+  vmap, chunk, external-call, side-car, and output transitions while the on-chain covenant remains authoritative.
+- :sparkles: Add deployment, upgrade, destruction, child-deploy, threading, proxy, message-bus, block-oracle, and
+  split-bundle helpers.
+- :sparkles: Expand Mock, Electrum, regtest, FullStack, and JSON-RPC provider support, including raw locking-bytecode
+  queries, token-aware UTXOs, confirmation metadata, snapshots, mining/time helpers, and configurable VM targets.
+- :sparkles: Add fee/burn guards, VM resource metrics, preflight diagnostics, BitAuth debugging, and embedded-source
+  artifact debugging.
+- :bug: `MockNetworkProvider.addUtxo()` returns the added UTXO.
+
+#### Testing and tooling
+
+- :sparkles: Add `@solidcash/testing`, SolidHat, and the `solidcash` CLI with compile/test/run/clean tasks,
+  configuration, runtime environment, factories, fixtures, time/network helpers, and maintained Chai matchers.
+- :sparkles: Add JSON and typed TypeScript artifacts under `artifacts/solidcash`, contract-name and fully-qualified
+  factory lookup, generated-project caching, and package-tarball smoke coverage.
+- :hammer_and_wrench: Align all six packages at 0.13.1 and require Node 22 with Yarn 1.22.22 for the maintained
+  release workflow.
+
+#### Supported and experimental boundaries
+
+The built-in proxy profile is supported for scalar/data-NFT state. Custom delegate forwarders, delegate token or
+satoshi movement, fallback-only transparent proxies, and some composed external-state mutations remain
+experimental. Message-bus shapes outside the published protocol/admission envelope likewise fail with a named
+diagnostic rather than weakening covenant checks. See [Solidity Parity](../basics/solidity-parity.md),
+[Cross-Contract Calls](../language/cross-contract-calls.md), and
+[Upgrades, Proxies & Delegatecall](../language/upgrades-proxies.md) for the maintained boundary.
 
 ## v0.13.0
 

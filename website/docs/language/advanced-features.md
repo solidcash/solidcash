@@ -111,14 +111,13 @@ Only applies within the block. Outside `unchecked`, overflow/underflow causes a 
 
 The `abi.encode` / `abi.encodePacked` / `abi.encodeWithSelector` / `abi.encodeWithSignature` /
 `abi.encodeCall` / `abi.decode` / `abi.decodeAt` family is documented in
-[Global Variables](/docs/language/globals#abi-encoding-and-decoding), together with the caution about
-sha256-derived selectors.
+[ABI Encoding & Call Data](/docs/language/abi-encoding), including native versus EVM-compatible wire formats.
 
 ## External Contract Interaction
 
 ### External State Reads
 
-Read another contract's public state variables using an interface and category ID:
+Read another contract's public state variables using an interface and its self-pinned contract address:
 
 ```solidity
 interface ICounter {
@@ -126,22 +125,22 @@ interface ICounter {
     public mapping(bytes20 => int) balances;
 }
 
-contract Reader(bytes32 counterCategory) {
+contract Reader(address counter) {
     int lastSeen;
 
     function sync() public {
         // Read the current state of the external contract
-        this.lastSeen = ICounter(counterCategory).counter;
+        this.lastSeen = ICounter(counter).counter;
     }
 
     function readBalance(bytes20 account) public {
-        this.lastSeen = ICounter(counterCategory).balances[account];
+        this.lastSeen = ICounter(counter).balances[account];
     }
 }
 ```
 
-The compiler emits a covenant that co-spends the target's state UTXOs and verifies their category, so the read
-is trustless. The SDK attaches the required inputs automatically.
+The compiler emits a covenant that co-spends the target's state UTXOs and verifies the self-pinned target address,
+category, and commitment. The SDK attaches the required inputs automatically.
 
 ### Output State Reads
 
@@ -153,11 +152,11 @@ interface ICounter {
     public int counter;
 }
 
-contract Reader(bytes32 counterCategory) {
+contract Reader(address counter) {
     int lastSeen;
 
     function readAfterCall() public {
-        this.lastSeen = ICounter(counterCategory).outState.counter;
+        this.lastSeen = ICounter(counter).outState.counter;
     }
 }
 ```
@@ -169,19 +168,22 @@ interface ITarget {
     function increment(pubkey pk, sig s);
 }
 
-contract Caller(bytes32 targetCategory) {
+contract Caller(address target) {
     function callTarget() {
-        ITarget(targetCategory).increment.call();
+        ITarget(target).increment.call();
     }
 
     function readTarget() {
-        ITarget(targetCategory).increment.staticcall();  // read-only
+        ITarget(target).increment.staticcall();  // read-only
     }
 }
 ```
 
 - `.call()` - stateful call (target can modify its own state)
 - `.staticcall()` - read-only (target state changes are not committed)
+
+Typed returns, low-level calls, SDK target binding, and the authenticated return-event NFT protocol are covered in
+[Cross-Contract Calls & Results](/docs/language/cross-contract-calls).
 
 ## Delegatecall & Proxy Pattern
 

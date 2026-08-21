@@ -3,273 +3,356 @@ title: Contract Deployment
 sidebar_label: Contract Deployment
 ---
 
-Not every SolidCash contract needs a deployment transaction. In the UTXO model, many UTXOs can live on the same contract address and use the same spending rules. For contracts like multisig wallets, vaults, and escrows, you can compile the contract, share the address, and send funds to it. The contract is ready to use as soon as you know its address.
+Deployment means two different things in SolidCash:
 
-Deployment is only needed for **stateful contract systems** where CashTokens authenticate contract state. In these systems, a genesis transaction creates one or more token categories and initializes the contract UTXOs with the right token amounts, NFT capabilities, and NFT commitments.
+- A **stateless** contract needs no deployment transaction. Construct its locking bytecode from the artifact and
+  constructor arguments, then pay one or more outputs to its address.
+- A **stateful** contract needs a CashToken genesis transaction. The genesis category authenticates its master,
+  state, mapping, chunk, event, and other covenant NFTs.
 
-:::tip
-If your contract only enforces spending conditions, use the contract address directly. Deployment is for systems where CashTokens identify and track contract state.
-:::
+This guide covers the stateful path. For the data carried by each generated output, see
+[State Storage and NFT Layout](/docs/language/storage-model).
 
-## Preparing a Deployment
+## Recommended: deploy with a signer
 
-Before constructing the genesis transaction, you need to know which constructor arguments, token IDs, setup UTXOs, initial state, and permanent addresses the deployment will use.
-
-### Contract Addresses
-
-SolidCash contract addresses are deterministic. They are derived from the compiled artifact and the constructor arguments. Given the same artifact and arguments, the SDK produces the same address every time.
-
-```ts
-import { Contract } from 'solidcash';
-import artifact from './my_contract.artifact.js';
-
-const constructorArgs = [oraclePublicKey, startBlockHeight] as const;
-const contract = new Contract(artifact, [...constructorArgs], { provider });
-
-console.log(contract.address);      // same inputs produce the same address
-console.log(contract.tokenAddress); // CashToken-aware address
-```
-
-This means you can reconstruct a contract address on any machine without querying the blockchain, as long as you have the artifact and constructor arguments. This property is essential for [verifying deployments](#verifying-a-deployment).
-
-### Constructor Arguments
-
-Some constructor arguments are simple constants. Others need to be prepared before deployment:
-
-- **Token IDs from other categories**: multi-contract systems often pass other token category IDs as constructor arguments.
-- **Locking bytecodes from other contracts**: one contract may authenticate another by locking bytecode. Instantiate the referenced contract first, then pass its `lockingBytecode` to the dependent contract.
-- **Public keys**: oracle or owner checks often require a public key or public key hash that must be derived before deployment.
+`ContractFactory` is the normal deployment API. A `Signer` supplies the provider, selects and unlocks a plain
+genesis input, creates one when the wallet has no suitable `vout: 0`, sends change back to the signer, and connects
+the returned contract for immediate use.
 
 ```ts
-import { swapEndianness } from '@bitauth/libauth';
-import { Contract } from 'solidcash';
+import {
+  ContractFactory,
+  ElectrumNetworkProvider,
+  Signer,
+} from 'solidcash';
+import counterArtifact from './Counter.artifact.js';
 
-// when using a standard encoded tokenId, swap the endianness of the hex before using it in your contract
-const argsA = [swapEndianness(tokenIdX), swapEndianness(tokenIdY)] as const;
-const contractA = new Contract(artifactA, [...argsA], { provider });
+const provider = new ElectrumNetworkProvider('chipnet');
+const deployer = new Signer(deployerPrivateKey, provider);
+const factory = new ContractFactory(counterArtifact, deployer);
 
-// Pass contractA's locking bytecode to a dependent contract.
-const argsB = [contractA.lockingBytecode, oraclePublicKey, startBlockHeight] as const;
-const contractB = new Contract(artifactB, [...argsB], { provider });
+const counter = await factory.deploy(adminPublicKey, {
+  initialState: { counter: 0n },
+  initialBalance: 20_000n,
+});
+
+await counter.waitForDeployment();
+
+console.log(counter.categoryId);                 // state/token category
+console.log(counter.target);                     // logical CREATE address
+console.log(counter.inner.address);              // physical covenant address
+console.log(counter.deploymentTransaction().txid);
 ```
+
+`getContractFactory(artifact, runner)` creates the same factory. `deployContract(artifact, args, runner,
+overrides)` is a one-call shortcut.
+
+```ts
+import { deployContract, getContractFactory } from 'solidcash';
+
+const sameFactory = getContractFactory(counterArtifact, deployer);
+const sameContract = await deployContract(
+  counterArtifact,
+  [adminPublicKey],
+  deployer,
+  { initialState: { counter: 0n } },
+);
+```
+
+### Deployment arguments
+
+Arguments declared after the contract name are baked into its redeem script:
+
+```solidity
+contract Counter(pubkey admin) {
+    int public counter;
+
+    constructor(int start) {
+        this.counter = start;
+    }
+}
+```
+
+The factory accepts contract parameters first, followed by arguments for the explicit `constructor(...)` block,
+then an optional overrides object:
+
+```ts
+const counter = await factory.deploy(adminPublicKey, 10n, {
+  initialBalance: 5_000n,
+});
+```
+
+For a constructor without `sig` parameters, the SDK executes a local probe and derives its state writes, mapping
+entries, dynamic chunks, transfers, and events before building the real genesis transaction. A constructor with a
+`sig` parameter cannot be probed with a real signature, so pass an explicit `initialState`. `initArgs` is the
+override-object form of the explicit constructor-block arguments.
 
 :::caution
-Double-check all constructor arguments before deploying. Some values, such as fee destination addresses or authority keys, may be permanent once the contract system is live.
+Contract parameters can contain permanent authority keys, oracle identities, or dependent-contract addresses.
+Review them before deployment: changing a contract parameter changes the physical covenant address.
 :::
 
-### Token IDs and vout0 UTXOs
+### Constructor reads from another contract
 
-On Bitcoin Cash, a new token category can be created by spending a UTXO at output index `0`. The token ID equals the txid of that UTXO. If you know which `vout: 0` UTXO will be used for the genesis transaction, you already know the token ID that transaction can create.
+Bitcoin Cash has no on-chain constructor execution, so a Solidity constructor cannot synchronously call a
+deployed contract. SolidCash adapts a zero-argument, single-value read through an interface-typed state field by
+hoisting the result into a generated deploy input:
 
-For deployments with multiple token categories, prepare one `vout: 0` UTXO per token category. This lets you know every token ID before instantiating contracts that reference those IDs. Once the setup UTXOs are prepared, the genesis transactions can be broadcast in parallel if they do not spend from each other.
+```solidity
+interface IPool {
+    function token0() external view returns (address);
+}
 
-### Setup Wallet
+contract RoutedToken() {
+    IPool immutable pool;
+    address immutable token0;
 
-Use a funded setup wallet to create the `vout: 0` UTXOs and broadcast the genesis transaction. Each contract output also needs enough BCH for dust, commonly 1000 sats.
-
-The setup wallet may already have suitable `vout: 0` UTXOs. If not, send BCH from the setup wallet back to itself as the only output of a transaction. Since it is the only output, it will be at index `0`.
-
-```ts
-import { TransactionBuilder, SignatureTemplate, ElectrumNetworkProvider } from 'solidcash';
-import type { Utxo } from 'solidcash';
-
-// Create a vout0 UTXO by sending BCH to yourself.
-async function createVout0(
-  provider: ElectrumNetworkProvider,
-  address: string,
-  utxos: Utxo[],
-  template: SignatureTemplate,
-): Promise<Utxo> {
-  const selectedUtxo = utxos.find(utxo => utxo.vout !== 0 && !utxo.token);
-  if (!selectedUtxo) throw new Error('No eligible UTXO available');
-
-  const amount = selectedUtxo.satoshis - 500n;
-  const txBuilder = new TransactionBuilder({ provider });
-  txBuilder.addInput(selectedUtxo, template.unlockP2PKH());
-  txBuilder.addOutput({ to: address, amount });
-
-  const txDetails = await txBuilder.send();
-  return { satoshis: amount, txid: txDetails.txid, vout: 0 };
+    constructor(address poolAddress) {
+        pool = IPool(poolAddress);
+        token0 = pool.token0();
+    }
 }
 ```
 
-:::tip
-Test the full deployment flow on chipnet before mainnet. This validates your transaction structure, constructor arguments, and state encoding before anything has permanent value.
-:::
-
-## Genesis Transaction
-
-The genesis transaction creates the CashToken category and sends the initial token outputs to the relevant contract addresses. It can include:
-
-- **Fungible tokens**: the initial token supply.
-- **Minting NFTs**: authority for contracts that need to create new NFTs later.
-- **Mutable NFTs**: updatable contract state stored in NFT commitments.
-- **Immutable NFTs**: fixed identifying data.
-
-:::info
-When fungible token supply will be locked inside covenants, it is common to mint the maximum possible amount (`9223372036854775807`). This is only safe when the covenants strictly enforce the actual circulating supply.
-:::
+The compiler warns about the rewrite and records it in `artifact.stateLayout.deployReads`. Resolve those inputs
+from authenticated on-chain state before deployment:
 
 ```ts
-import { TransactionBuilder, SignatureTemplate } from 'solidcash';
+import { resolveDeployReads, StatefulContract } from 'solidcash';
 
-const template = new SignatureTemplate(privateKey);
-const tokenId = genesisUtxo.txid;
+const constructorArgs = await resolveDeployReads(
+  routedTokenArtifact,
+  { poolAddress: pool.inner.address },
+  { runner: provider, artifacts: { IPool: poolArtifact } },
+);
 
-const txBuilder = new TransactionBuilder({ provider });
-txBuilder.addInput(genesisUtxo, template.unlockP2PKH());
-txBuilder.addOutput({
-  to: contractA.tokenAddress,
-  amount: 1000n,
-  token: { category: tokenId, amount: 9223372036854775807n },
-});
-txBuilder.addOutput({
-  to: contractB.tokenAddress,
-  amount: 1000n,
-  token: {
-    category: tokenId,
-    amount: 0n,
-    nft: { capability: 'minting', commitment: initialStateHex },
-  },
-});
-// Add more outputs as needed.
-txBuilder.addBchChangeOutputIfNeeded({ to: changeAddress, feeRate: 1.0 });
-
-const txDetails = await txBuilder.send();
+const deployed = await StatefulContract.deploy(routedTokenArtifact, constructorArgs, deployOptions);
 ```
 
-### Initial State
+`resolveDeployReads()` attaches to the target, decodes its current state with the registered artifact, and returns
+the complete positional constructor list. Reads with arguments and reads in ordinary functions remain real
+co-spent external reads. Supplying the generated values manually is possible, but then the deployer—not the
+target covenant—is responsible for their correctness.
 
-NFT commitments are commonly used to encode the initial state of a contract at deployment. For example, a contract might store a starting counter, block height, or configuration value in the NFT commitment.
+## The three identifiers
 
-Use the same encoding that your contract expects. For VM number values, use `@solidcash/utils` and `@bitauth/libauth` helpers to avoid mismatches.
+A deployed stateful contract has three useful identifiers. They are related, but they are not interchangeable in
+every context.
 
-```ts
-import { binToHex } from '@bitauth/libauth';
-import { encodeIntAsFixedBytes } from '@solidcash/utils';
+| Identifier | Meaning | Stability and use |
+|---|---|---|
+| `categoryId` | Txid of the plain `vout: 0` input spent by genesis | Authenticates every NFT in the state system |
+| `inner.address` | Physical P2SH32 covenant address | Depends on artifact, contract args, category, and optional `salt` |
+| `target` / `getAddress()` | Logical CREATE address | Stable application identity created by a signer-backed factory |
 
-// Encode initial state as 4-byte counter + 4-byte block height.
-function encodeInitialState(counter: bigint, blockHeight: bigint): string {
-  const encodedCounter = encodeIntAsFixedBytes(counter, 4);
-  const encodedBlockHeight = encodeIntAsFixedBytes(blockHeight, 4);
-  return binToHex(encodedCounter) + binToHex(encodedBlockHeight);
-}
-```
+The factory derives the logical address from the deployer's CashAddress and its logical transaction nonce. Genesis
+also creates an immutable category-bearing identity anchor that binds that logical address to the physical root
+covenant. This lets application code keep one identity while implementations or split facets have physical
+addresses of their own.
 
-### Duplicate Contract UTXOs
-
-For systems expecting [concurrent usage](/docs/guides/concurrency), create multiple identical contract UTXOs in the genesis transaction. Each duplicate sits at the same contract address with the same token type, allowing independent transactions to spend different UTXOs without conflicting.
-
-When duplicating UTXOs that hold fungible tokens, distribute the total supply exactly across them:
-
-```ts
-const supplyPerUtxo = MAX_TOKEN_SUPPLY / BigInt(numberOfDuplicates);
-const remainder = MAX_TOKEN_SUPPLY % BigInt(numberOfDuplicates);
-const supplyLastUtxo = supplyPerUtxo + remainder;
-```
-
-### BCMR Metadata
-
-The [Bitcoin Cash Metadata Registry (BCMR)][bcmr] is the standard for associating metadata with CashToken categories, such as name, ticker, decimals, and icon. Wallets and indexers resolve this metadata through an authchain.
-
-To start the authchain during deployment, include a dust output at index `0` to a designated authchain address. This output becomes the starting point for metadata resolution.
-
-```ts
-// Include a dust output for the BCMR authchain.
-txBuilder.addOutput({ to: bcmrAuthchainAddress, amount: 1000n });
-```
-
-Metadata can be published in the genesis transaction with an `OP_RETURN` output containing the BCMR protocol identifier, registry hash, and registry URL. It can also be published later in an authchain transaction. See the [CashTokens guide](/docs/guides/cashtokens#cashtokens-bcmr-metadata) for more on BCMR metadata and tooling.
+Persist all of the category ID, logical address, artifact fingerprint/version, constructor arguments, network, and
+deployment txid. A P2SH address contains only a hash of the redeem script; it cannot recover constructor arguments
+needed to spend the contract later.
 
 :::note
-A two-step deployment can avoid a follow-up authchain update: prepare the `vout: 0` UTXO first, publish the BCMR registry, then broadcast the genesis transaction with the registry hash in the `OP_RETURN`.
+The SDK accepts a displayed category ID and handles the byte order used inside token-aware scripts. Do not
+manually reverse a category returned by a SolidCash deployment API.
 :::
 
-## After Deployment
+## What genesis creates
 
-Once the genesis transaction is broadcast:
+The genesis transaction is assembled from the compiler's artifact metadata. Depending on the contract, it can
+create:
 
-- **Save the deployment configuration**: persist token IDs, constructor arguments, network, artifact version, and other parameters.
-- **Verify BCMR indexing**: check that a BCMR indexer resolves your token metadata correctly.
-- **Verify the deployment**: run a standalone verification script against the live deployment.
-- **Set up infrastructure**: see the [infrastructure guide](/docs/guides/infrastructure) for storing contract details and setting up transaction servers.
+1. One or more **master minting NFTs** at the root covenant.
+2. Mutable **data NFTs** containing the fixed-width state layout.
+3. Mutable **vmap HEAD and entry NFTs** for verified mappings.
+4. Mutable **chunk NFTs** for dynamic strings, bytes, and eligible arrays.
+5. Constructor-created **event NFTs**, plain BCH transfers, and token-container outputs.
+6. Mutable **message-bus verifier NFTs** when the artifact has a composition route.
+7. A plain **satoshi-container output** when `initialBalance` is non-zero.
+8. Immutable **logical identity anchors** for signer/factory deployments.
+9. Change to the selected change address.
 
-## Deployment Configuration
+The SDK calculates these outputs; application code should not manually serialize state commitments. Chunking,
+vmap sentinels, output ordering, and commitment encodings are covenant protocol details.
 
-Capture deployment parameters in a typed configuration object. This makes deployments reproducible and easy to reference from application code, verification scripts, and tests.
+### Deployment options
+
+The factory's trailing overrides object supports:
+
+| Option | Default | Purpose |
+|---|---:|---|
+| `initialState` | zero/default state | Explicit initial variable values |
+| `initArgs` | positional constructor args | Arguments for the explicit `constructor(...)` block |
+| `initialBalance` | `0n` | Initial BCH in the satoshi container |
+| `threadCount` | `1` | Number of master thread NFTs created by genesis |
+| `messageBusVerificationInputCount` | `1` when required | Independently spendable message-bus verifier instances |
+| `fee` | transaction-size derived | Explicit genesis transaction fee |
+| `addressType` | `p2sh32` | Address type; stateful contracts require P2SH32 |
+| `salt` | none | Bytes baked into the script for address separation or operation-density reserve |
+| `fundingUtxo` | signer-selected | Exact plain genesis input |
+| `funder` | signer unlocker | Unlocker for an explicit funding input |
+| `changeAddress` | signer address | Genesis change destination |
+
+The low-level API additionally exposes `masterAmount`, `dataNftAmount`, and `maxFee`. Their normal default is 1200
+satoshis per covenant NFT, with a size-derived transaction fee. Treat custom NFT amounts as an advanced policy
+choice: every later transaction must still satisfy relay and covenant requirements.
+
+### Threads and verifier capacity
+
+`threadCount` creates multiple master NFTs. It does **not** clone one complete copy of every state variable per
+master. Thread discovery partitions the existing data NFTs across those masters, so design the state layout for
+independent partitions before enabling threads. Contracts can also change the master set through `split(n)` and
+`merge(n)` lifecycle functions. See [Contract Concurrency](/docs/guides/concurrency) and
+[Threading and State Management](/docs/sdk/threading).
+
+`messageBusVerificationInputCount` is a separate concurrency control. Each composed transaction consumes and
+recreates one verifier NFT; provisioning more instances permits more message-bus compositions to be in flight.
+
+## Exact-input deployment
+
+Wallet adapters and transaction services can supply the genesis input and unlocker directly:
 
 ```ts
-interface MyDeployment {
-  name: string;
-  network: 'mainnet' | 'chipnet';
-  contractVersion: string;
-  tokenIds: {
-    myTokenId: string;
-  };
-  contractParams: {
-    oraclePublicKey: string;
-    startBlockHeight: bigint;
-    // Add other params here.
-  };
+import { StatefulContract } from 'solidcash';
+
+const { contract, tx, categoryId } = await StatefulContract.deploy(
+  counterArtifact,
+  [adminPublicKey],
+  {
+    provider,
+    fundingUtxo: genesisUtxo,
+    funder: fundingUnlocker,
+    changeAddress,
+    initialState: { counter: 0n },
+    maxFee: 25_000n,
+  },
+);
+```
+
+`genesisUtxo` must be a token-free output with index `0`. Its txid becomes `categoryId`. It must cover all covenant
+outputs, constructor transfers, any initial balance, and the finalized fee. The SDK throws before broadcast if
+the input is unsuitable or underfunded.
+
+Bitcoin Cash token genesis is why an arbitrary wallet coin cannot always be used. A signer-backed factory first
+searches for a suitable coin and, if needed, sends wallet funds to a fresh self-output at index zero before
+deploying.
+
+## Deploying several declarations
+
+A source file can compile to several deployable artifacts. Register the whole `ArtifactMap` with `ContractBundle`
+so child artifacts and interface implementations remain available to deployment and call composition:
+
+```ts
+import { ContractBundle } from 'solidcash';
+import artifacts from './Protocol.artifacts.js';
+
+const bundle = ContractBundle.from(artifacts, { provider, signer: deployer });
+const { contract: market } = await bundle.deploy('Market', [adminPublicKey], {
+  fundingUtxo: marketGenesisUtxo,
+  funder: deployer.unlockP2PKH(),
+  changeAddress: deployer.getAddress(),
+  initialState: { open: true },
+});
+```
+
+Compiler-split contracts use `SplitContractBundle`, which deploys a root plus its facets under one logical
+identity. See [Large and Split Contracts](/docs/compiler/large-contracts).
+
+## Deploying child contracts
+
+A function which creates a stateful child with `new C(...)` is inferred as a deploy route. It spends the parent's
+state and one plain `vout: 0` funding input per child, then creates a self-pinned child category, master, state
+outputs, and identity anchor atomically. `deploy` is artifact metadata, not a source keyword.
+
+```solidity
+contract Vault(address recipient) {
+    bool open;
+
+    function release() {
+        require(msg.sender == recipient);
+        this.open = false;
+    }
+}
+
+contract VaultFactory(pubkey admin) {
+    int created;
+
+    function createVault(address recipient, sig authorization) {
+        require(checkSig(authorization, admin));
+        new Vault(recipient);
+        this.created += 1;
+    }
 }
 ```
 
-Use your deployment configuration as the single source of truth for verification scripts, application code, and documentation.
-
-:::tip
-Maintaining named deployment objects lets you keep production, staging, and testing deployments side by side. This makes it easy to use different parameters, such as testing oracles, while iterating before a mainnet deployment.
-:::
-
-## Verifying a Deployment
-
-A contract system is only trustless if its deployment can be independently verified. Deployment scripts may not be open source, and even if they are, users still need a way to verify what exists on-chain.
-
-Since contract addresses are deterministic, verification works by reconstructing every expected address from the artifacts and deployment parameters, then comparing the result against the genesis transaction outputs.
-
 ```ts
-import { Contract } from 'solidcash';
-import artifact from './my_contract.artifact.js';
+parent.registerArtifacts(artifacts);
 
-const constructorArgs = [
-  deployment.contractParams.oraclePublicKey,
-  deployment.contractParams.startBlockHeight,
-] as const;
+// A connected signer selects/funds the child's vout: 0 genesis input.
+const result = await parent.createVault(recipient, authorization);
 
-const contract = new Contract(artifact, [...constructorArgs], { provider });
-const expectedAddress = contract.tokenAddress;
+// Or select it explicitly:
+const explicit = await parent.createVault(recipient, authorization).deploy({
+  fundingUtxo: childGenesisUtxo,
+  funder: deployer.unlockP2PKH(),
+  changeAddress: deployer.getAddress(),
+});
 ```
 
-:::caution
-Provide verification scripts as part of your project, not bundled into the deployment script itself. They should be runnable independently by anyone with the contract artifacts and deployment configuration.
-:::
+The exact builder method depends on whether the compiler can infer the child artifact and arguments. The explicit
+static API is `StatefulContract.deployFrom(...)`; its options use `factory` for the parent contract and accept a
+child artifact or registered artifact graph. See [Stateful Contracts](/docs/sdk/stateful-contracts#deploying-child-contracts).
 
-### What to Verify
+## Reconnecting after deployment
 
-Verification should inspect every output of the genesis transaction, not just the outputs you expect. If tokens are sent to an unexpected address, such as a regular P2PKH address, that address may hold authority over the token category.
-
-Check at least the following:
-
-1. **Token outputs**: every token output goes to a known contract address or expected authchain address.
-2. **Token category**: each token output uses the expected token ID.
-3. **NFT capability**: each NFT has the expected capability, such as `minting`, `mutable`, or `none`.
-4. **NFT commitment**: commitments contain the expected initial state.
-5. **Fungible token amount**: total supply is distributed correctly.
-6. **Genesis input**: the first input's previous txid matches the expected token ID.
+Connect by logical address, physical address, or category ID:
 
 ```ts
-const expectedAddresses = new Set([
-  contractA.tokenAddress,
-  contractB.tokenAddress,
-  // Add all expected contract addresses.
-]);
+// Resolve an address through its identity/category-bearing UTXOs.
+const byAddress = await StatefulContract.at(
+  savedLogicalAddress,
+  counterArtifact,
+  deployer,
+  { constructorArgs: [adminPublicKey] },
+);
 
-for (const output of genesisTxOutputs) {
-  if (output.tokenData && !expectedAddresses.has(output.address)) {
-    throw new Error(`Unexpected token output to address: ${output.address}`);
-  }
-
-  // Validate capability, commitment, and amount for each known address.
-}
+// A 64-character category ID can be used directly.
+const byCategory = new StatefulContract(
+  savedCategoryId,
+  counterArtifact,
+  deployer,
+  { constructorArgs: [adminPublicKey] },
+);
 ```
+
+A `NetworkProvider` runner is sufficient for reads. A `Signer` runner also funds and signs calls. Address-based
+attachment requires a provider/indexer capable of returning the category-bearing UTXOs at that address.
+
+## Verifying a deployment
+
+Do not verify only the root address. Inspect the complete genesis transaction and current identity records:
+
+1. The spent genesis input is plain, has `vout: 0`, and its txid equals the expected category.
+2. The physical P2SH32 root reconstructed from the exact artifact, arguments, category, and salt matches.
+3. Every token output has the expected category, amount, NFT capability, commitment, and locking bytecode.
+4. The master count, data NFT count, vmap HEADs, chunks, verifier pool, and initial balance match the artifact and
+   deployment configuration.
+5. Every constructor-created transfer and event is expected.
+6. The immutable identity anchor binds the saved logical address to the expected deployer, nonce, and physical
+   root.
+7. There are no unaccounted minting NFTs or category-bearing outputs controlled by an unexpected address.
+
+Keep the verification script independent of the deployment script and publish enough inputs for another party to
+run it. Test the complete flow on chipnet or regtest before using mainnet authority keys or funds.
+
+## CashToken metadata
+
+Application-state NFTs are a SolidCash covenant protocol; user-facing fungible tokens and collectible NFTs can
+also publish [BCMR][bcmr] metadata. Metadata/authchain outputs are application outputs and are not automatically
+created by `ContractFactory`. If your deployment also launches a public token, plan its registry and authchain
+separately and verify that metadata authority is held at the intended address. See
+[CashTokens](/docs/guides/cashtokens#cashtokens-bcmr-metadata).
 
 [bcmr]: https://cashtokens.org/docs/bcmr/chip/

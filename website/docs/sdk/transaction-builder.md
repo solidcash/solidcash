@@ -21,6 +21,8 @@ interface TransactionBuilderOptions {
   maximumFeeSatoshis?: bigint;
   maximumFeeSatsPerByte?: number;
   allowImplicitFungibleTokenBurn?: boolean;
+  allowImplicitNftBurn?: boolean;
+  skipAutomaticCoSpends?: boolean;
 }
 ```
 
@@ -49,6 +51,17 @@ The `maximumFeeSatsPerByte` option is used to specify the maximum fee per byte f
 #### allowImplicitFungibleTokenBurn
 
 The `allowImplicitFungibleTokenBurn` option is used to specify whether implicit burning of fungible tokens is allowed (default: `false`). If this is set to `true`, the transaction builder will not throw an error when burning fungible tokens.
+
+#### allowImplicitNftBurn
+
+Allows an input NFT to be omitted from the outputs. The default is `false`; enable it only for an intentional
+burn after reviewing the complete transaction.
+
+#### skipAutomaticCoSpends
+
+Disables the oracle, computation, recovery, and external-library sidecars normally added by `send()`. This is an
+advanced protocol-composition option for a caller that has already placed every compiler-required co-spend at its
+exact position. It does not make a contract that needs those resources executable without them.
 
 ## Transaction Building
 
@@ -165,6 +178,25 @@ Adds an OP_RETURN output to the transaction with the provided data chunks in str
 transactionBuilder.addOpReturnOutput(['0x6d02', 'Hello World!']);
 ```
 
+### Change outputs
+
+```ts
+transactionBuilder.addTokenChangeOutputIfNeeded({
+  category: tokenCategory,
+  to: tokenAddress,
+});
+
+transactionBuilder.addBchChangeOutputIfNeeded({
+  to: changeAddress,
+  feeRate: 1.0,
+});
+```
+
+`addTokenChangeOutputIfNeeded()` returns the surplus fungible amount of one category and funds that output at its
+calculated dust threshold. It ignores NFTs, which must be preserved explicitly. Add all inputs and explicit token
+outputs first. Then add token change for each category, and add BCH change last. Once change for BCH or a category
+is calculated, later inputs/outputs of that asset are rejected so the computed change cannot silently become stale.
+
 
 ### setLocktime()
 ```ts
@@ -199,6 +231,10 @@ async transactionBuilder.send(): Promise<TransactionDetails>
 ```
 
 After completing a transaction, the `send()` function can be used to send the transaction to the BCH network. An incomplete transaction cannot be sent.
+
+Before signing and broadcasting, `send()` discovers compiler-required block-oracle, keccak, signature-recovery,
+and external-library co-spends unless `skipAutomaticCoSpends` was selected. A synchronous `build()` or `debug()`
+cannot perform network discovery; add the corresponding `addRequired*()` resources first when using those paths.
 
 ```ts
 interface TransactionDetails {

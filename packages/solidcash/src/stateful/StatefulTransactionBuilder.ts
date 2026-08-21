@@ -8768,6 +8768,65 @@ export class StatefulTransactionBuilder {
     }
   }
 
+  /**
+   * Rebind an absolute continuation witness when a participant-owned output is materialized after the route
+   * probe selected its append coordinate. The continuation itself is self-describing: a contiguous run of
+   * mutable P2SH32 outputs in the participant category, with uint16-le indices 0..n-1. Only search forward from
+   * the authenticated provisional base, so an older chunk run cannot be mistaken for the new write.
+   */
+  private _reconcileMaterializedValueChunkWitnesses(builder: TransactionBuilder): boolean {
+    const carriers = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups];
+    const occupiedBases = new Set(carriers.flatMap((carrier) => (
+      carrier.valueChunkOutputBase === undefined ? [] : [carrier.valueChunkOutputBase]
+    )));
+    const changedCarriers = new Set<ExternalCallUtxoGroup>();
+    const isRun = (carrier: ExternalCallUtxoGroup, start: number): boolean => {
+      const count = carrier.valueChunkOutputCount ?? 1;
+      if (count <= 0) return false;
+      let runLock: string | undefined;
+      for (let offset = 0; offset < count; offset += 1) {
+        const output = builder.outputs[start + offset];
+        const lock = output?.to instanceof Uint8Array
+          ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
+        if (!isP2sh32LockScript(lock)
+          || output?.token?.category !== carrier.categoryId
+          || output.token.nft?.capability !== 'mutable'
+          || valueChunkIndexFromCommitment(output.token.nft.commitment ?? '') !== offset) return false;
+        const lockHex = binToHex(lock);
+        if (runLock !== undefined && lockHex !== runLock) return false;
+        runLock = lockHex;
+      }
+      return true;
+    };
+
+    for (const carrier of carriers) {
+      const currentBase = carrier.valueChunkOutputBase;
+      if (currentBase === undefined || isRun(carrier, currentBase)) continue;
+      let materializedBase = -1;
+      for (let candidate = currentBase + 1; candidate < builder.outputs.length; candidate += 1) {
+        if (occupiedBases.has(candidate) || !isRun(carrier, candidate)) continue;
+        materializedBase = candidate;
+        break;
+      }
+      if (materializedBase < 0) continue;
+      occupiedBases.delete(currentBase);
+      occupiedBases.add(materializedBase);
+      carrier.valueChunkOutputBase = materializedBase;
+      carrier.internalArgs = {
+        ...carrier.internalArgs,
+        __internal__valueChunkOutputBase: BigInt(materializedBase),
+      };
+      carrier.refreshInternalArgs?.(
+        { __internal__valueChunkOutputBase: BigInt(materializedBase) },
+        { shiftPredOut: false },
+      );
+      changedCarriers.add(carrier);
+    }
+    if (changedCarriers.size === 0) return false;
+    this._syncRefreshedCarrierMasters(builder, changedCarriers);
+    return true;
+  }
+
   /** Insert a non-covenant output before the authenticated [late chunks][terminal suffix] region. */
   insertBeforeLateValueSuffix(
     builder: TransactionBuilder,
@@ -14177,6 +14236,7 @@ export class StatefulTransactionBuilder {
       rebalanceFunderSurplus();
     };
     const reassertFinalLayout = (): void => {
+      this._reconcileMaterializedValueChunkWitnesses(finalBuilder);
       this._reconcileMaterializedInputWitnesses(finalBuilder);
       this._reconcileMaterializedPredOutWitnesses(finalBuilder);
       this._reassertMaterializedBatchPredecessorOutputs(finalBuilder);

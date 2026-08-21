@@ -214,6 +214,48 @@ describe('StatefulTransactionBuilder', () => {
       ]);
     });
 
+    it('reconciles a continuation witness after a participant output occupies its provisional base', () => {
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x33), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+      const tx = builder.build();
+      const provisionalBase = tx.outputs.length;
+      tx.outputs.push(
+        { to: new Uint8Array([0x51]), amount: 1000n },
+        {
+          to: chunkLock, amount: 1200n,
+          token: { category: categoryId, amount: 0n,
+            nft: { capability: 'mutable', commitment: '0000aa' } },
+        },
+        {
+          to: chunkLock, amount: 1200n,
+          token: { category: categoryId, amount: 0n,
+            nft: { capability: 'mutable', commitment: '0100bb' } },
+        },
+      );
+      const refreshInternalArgs = vi.fn();
+      const carrier = {
+        categoryId,
+        valueChunkOutputBase: provisionalBase,
+        valueChunkOutputCount: 2,
+        internalArgs: { __internal__valueChunkOutputBase: BigInt(provisionalBase) },
+        refreshInternalArgs,
+      };
+      const internals = builder as unknown as {
+        lowLevelCallUtxoGroups: typeof carrier[];
+        _reconcileMaterializedValueChunkWitnesses: (b: typeof tx) => boolean;
+      };
+      internals.lowLevelCallUtxoGroups = [carrier];
+
+      expect(internals._reconcileMaterializedValueChunkWitnesses(tx)).toBe(true);
+      expect(carrier.valueChunkOutputBase).toBe(provisionalBase + 1);
+      expect(carrier.internalArgs.__internal__valueChunkOutputBase).toBe(BigInt(provisionalBase + 1));
+      expect(refreshInternalArgs).toHaveBeenCalledWith(
+        { __internal__valueChunkOutputBase: BigInt(provisionalBase + 1) },
+        { shiftPredOut: false },
+      );
+      expect(internals._reconcileMaterializedValueChunkWitnesses(tx)).toBe(false);
+    });
+
   });
 
   describe('satoshi container underflow guard', () => {

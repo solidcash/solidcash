@@ -10,6 +10,8 @@ export interface CompilerOptions {
   maximumInputBytes?: number;
   /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
   optimizeForCompilationSpeed?: boolean;
+  /** Suppress non-fatal compiler warnings while preserving errors and ordinary command output. */
+  suppressWarnings?: boolean;
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
   __messageBusVerifierProgram?: {
     verifyFunctionId: number;

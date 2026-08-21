@@ -392,6 +392,40 @@ export interface SplitCompileOptions extends CompileOptions {
 const compileCache = new Map<string, Artifact>();
 const diagnosticConsoleLog = console.log;
 const diagnosticConsoleWarn = console.warn;
+let warningSuppressionDepth = 0;
+let warningSuppressionLog: typeof console.log | undefined;
+let warningSuppressionWarn: typeof console.warn | undefined;
+
+/** Keep warning suppression scoped to one synchronous compiler entry point, including its nested variant passes. */
+function withCompilerWarnings<T>(suppress: boolean | undefined, compile: () => T): T {
+  if (!suppress) return compile();
+  if (warningSuppressionDepth === 0) {
+    warningSuppressionLog = console.log;
+    warningSuppressionWarn = console.warn;
+    console.log = (...args: unknown[]): void => {
+      if (typeof args[0] !== 'string' || !args[0].startsWith('Warning:')) {
+        warningSuppressionLog!(...args);
+      }
+    };
+    console.warn = (...args: unknown[]): void => {
+      if (typeof args[0] !== 'string' || !args[0].startsWith('Warning:')) {
+        warningSuppressionWarn!(...args);
+      }
+    };
+  }
+  warningSuppressionDepth += 1;
+  try {
+    return compile();
+  } finally {
+    warningSuppressionDepth -= 1;
+    if (warningSuppressionDepth === 0) {
+      console.log = warningSuppressionLog!;
+      console.warn = warningSuppressionWarn!;
+      warningSuppressionLog = undefined;
+      warningSuppressionWarn = undefined;
+    }
+  }
+}
 
 function compileCacheLimit(): number {
   const configured = Number(process.env.SOLIDC_COMPILE_CACHE_MAX_ENTRIES ?? 128);
@@ -883,7 +917,9 @@ function compileWithExternalAdmissionFallback(
 }
 
 function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
-  const { errorListener, primaryContractName, ...artifactCompilerOptions } = compilerOptions;
+  const {
+    errorListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
+  } = compilerOptions;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
     && !errorListener && !artifactCompilerOptions.importResolver
     // The diagnostic no-outline mode intentionally changes emitted bytecode. Never let it reuse or poison the
@@ -891,7 +927,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     && !process.env.SOLIDCASH_NO_OUTLINE
     // Diagnostic-spy tests and callers observing warnings require the pipeline's side effects on every call.
     // Vitest spies replace these function identities; bypass any existing hit rather than hiding a warning.
-    && console.log === diagnosticConsoleLog && console.warn === diagnosticConsoleWarn;
+    && (suppressWarnings
+      || (console.log === diagnosticConsoleLog && console.warn === diagnosticConsoleWarn));
   let cacheKey = '';
   if (cacheable) {
     // Keep cached artifacts tied to their published shape. Compiler versions can remain unchanged throughout
@@ -959,14 +996,16 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
 }
 
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
-  try {
-    return compileStringUnchecked(code, compilerOptions);
-  } catch (cause) {
-    if (cause instanceof RangeError && cause.message === 'Maximum call stack size exceeded') {
-      throw new CompilerRecursionLimitError();
+  return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
+    try {
+      return compileStringUnchecked(code, compilerOptions);
+    } catch (cause) {
+      if (cause instanceof RangeError && cause.message === 'Maximum call stack size exceeded') {
+        throw new CompilerRecursionLimitError();
+      }
+      throw cause;
     }
-    throw cause;
-  }
+  });
 }
 
 /** Clear the in-process compile memo Map (tests / cold-worker simulation). Does not touch disk. */
@@ -6506,6 +6545,13 @@ function validateInheritedPrivateFunctionAccess(ast: Ast): void {
  * See docs/multi-contract-artifacts.md.
  */
 export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
+  return withCompilerWarnings(
+    compilerOptions.suppressWarnings,
+    () => compileStringMultiUnchecked(code, compilerOptions),
+  );
+}
+
+function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptions): ArtifactMap {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
@@ -6566,6 +6612,15 @@ const LIFECYCLE_MODIFIERS = new Set([
  * every shard, so the normal mutating compiler pipeline remains isolated per artifact.
  */
 export function compileStringSplit(code: string, compilerOptions: SplitCompileOptions = {}): SplitArtifactBundle {
+  return withCompilerWarnings(
+    compilerOptions.suppressWarnings,
+    () => compileStringSplitUnchecked(code, compilerOptions),
+  );
+}
+
+function compileStringSplitUnchecked(
+  code: string, compilerOptions: SplitCompileOptions,
+): SplitArtifactBundle {
   const { maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, errorListener, ...artifactOptions } = compilerOptions;
   // Budget the whole SPEND, not just the redeem script - but only against the real consensus cap. An explicit
   // `maxShardBytes` is a tuning knob expressed in redeem-script bytes and is honoured literally; the default is

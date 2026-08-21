@@ -134,6 +134,7 @@ function copyArtifactTree(sourceDir: string, targetDir: string): void {
 
 task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, Hardhat-style layout)')
   .addFlag('quiet', 'Suppress per-file output')
+  .addFlag('suppress-warnings', 'Suppress non-fatal compiler warnings')
   .addFlag('skip-split', 'Skip split-bundle attempts for oversized contracts')
   .addVariadicPositionalParam(
     'sources',
@@ -163,6 +164,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const maximumNftCommitmentBytes = hre.network.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
     const compilerOptions = {
       ...hre.config.solc,
+      suppressWarnings: args['suppress-warnings'] || hre.config.solc?.suppressWarnings,
       maximumInputBytes: maxShardBytes,
       commitmentLimit: Math.min(
         (hre.config.solc?.commitmentLimit as number | undefined) ?? maximumNftCommitmentBytes,

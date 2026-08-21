@@ -27,6 +27,7 @@ program
   .option('-c, --opcount', 'Display the number of opcodes in the compiled bytecode.')
   .option('-s, --size', 'Display the size in bytes of the compiled bytecode.')
   .option('--split', 'Emit a state-local one-hop root/facet bundle (explicit; never enabled silently).')
+  .option('--suppress-warnings', 'Suppress non-fatal compiler warnings.')
   .option('--no-message-bus', 'Disable inferred atomic message-bus composition (fails if the contract requires it).')
   .option('-S, --skip-enforce-function-parameter-types', 'Do not enforce function parameter types.')
   .option('-L, --skip-enforce-locktime-guard', 'Do not inject a tx.time guard when tx.locktime is used.')
@@ -61,6 +62,7 @@ function run(): void {
     enforceLocktimeGuard: !opts.skipEnforceLocktimeGuard,
     enforceFinalRequire: !opts.allowUnverifiedPaths,
     allowUnsafeOperations: opts.allowUnsafeOperations,
+    suppressWarnings: opts.suppressWarnings,
     // Commander reports true when the default-on `--no-*` option is absent. Leave that implicit so ordinary
     // CLI compilation uses automatic selection rather than turning the absent flag into required mode.
     messageBus: opts.messageBus === false ? false : undefined,
@@ -94,7 +96,7 @@ function run(): void {
     const opcount = countOpcodes(script);
     const bytesize = calculateBytesize(script);
 
-    if (bytesize > MAX_INPUT_BYTESIZE) {
+    if (bytesize > MAX_INPUT_BYTESIZE && !opts.suppressWarnings) {
       console.warn(`Warning: Your contract is ${bytesize} bytes, which is over the limit of ${MAX_INPUT_BYTESIZE} bytes and will not be accepted by the BCH network`);
     }
 

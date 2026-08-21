@@ -54,6 +54,11 @@ export interface PreparedAtomicMessageBusCall {
   executionArtifact?: Artifact;
   /** Pinned delegate executor co-spent inside this participant's block. */
   executor?: StatefulContract;
+  /**
+   * Return-event commitment already derived while discovering this call graph. This is only an optimistic
+   * fixed-point seed: the composed transaction still has to expose the same result and pass every covenant.
+   */
+  provisionalResultCommitment?: Uint8Array;
 }
 
 interface CallDescriptor extends PreparedAtomicMessageBusCall {
@@ -143,6 +148,37 @@ const evmInvocationResultLength = (
   }
   if (cursor + length > vector.length) throw new Error('messageBus: truncated EVM ABI result tail');
   return length;
+};
+
+/** Accept either a raw invocation vector or the one-push aggregate used by participant return events. */
+const preparedInvocationResult = (
+  commitment: Uint8Array | undefined, artifact: Artifact, resultTypes: readonly string[],
+): string | undefined => {
+  if (!commitment) return undefined;
+  const consumesExactly = (candidate: Uint8Array): boolean => {
+    try {
+      if (artifactUsesSolidityAbi(artifact)) {
+        return evmInvocationResultLength(candidate, 0, resultTypes) === candidate.length;
+      }
+      let cursor = 0;
+      for (const type of resultTypes) {
+        cursor += decodePushdataValue(candidate, cursor, type, artifact.structs).bytesConsumed;
+      }
+      return cursor === candidate.length;
+    } catch {
+      return false;
+    }
+  };
+  if (consumesExactly(commitment)) return binToHex(commitment);
+  try {
+    const outer = decodePushdataValue(commitment, 0, 'bytes');
+    if (outer.value instanceof Uint8Array
+      && outer.bytesConsumed === commitment.length
+      && consumesExactly(outer.value)) return binToHex(outer.value);
+  } catch {
+    // The caller below reports one stable error for malformed prepared data.
+  }
+  throw new Error('messageBus: prepared return commitment does not match the invocation result schema');
 };
 
 const delegateParticipantArtifacts = new WeakMap<Artifact, Map<number, Artifact>>();
@@ -671,10 +707,17 @@ export class AtomicMessageBusComposition {
       return contract.categoryId;
     });
     const returning = plan.invocations.filter((invocation) => invocation.resultTypes.length > 0);
-    const provisionalResults = Object.fromEntries(returning.map((invocation) => [
-      invocation.index,
-      provisionalInvocationResult(plan.participants[invocation.callee].artifact, invocation.resultTypes),
-    ]));
+    const provisionalResults = Object.fromEntries(returning.map((invocation) => {
+      const artifact = plan.participants[invocation.callee].artifact;
+      return [
+        invocation.index,
+        preparedInvocationResult(
+          descriptors[invocation.index]?.provisionalResultCommitment,
+          artifact,
+          invocation.resultTypes,
+        ) ?? provisionalInvocationResult(artifact, invocation.resultTypes),
+      ];
+    }));
     const eventSlots = plan.participants.flatMap((participant) =>
       participant.blockLayout!.slots.filter((slot) => slot.kind === 'event').map((slot) => ({
         participant: participant.participant, offset: slot.offset,

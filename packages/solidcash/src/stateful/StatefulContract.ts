@@ -22752,6 +22752,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       (builder as any).__derivedReturnBlob = blob;
     }
 
+    // Ordinary graph discovery has already VM-derived many nested return events. Preserve those exact values as
+    // convergence seeds when this builder is promoted to one atomic transaction. A large participant can stop
+    // its first atomic probe at an unrelated resource claim before reaching the return comparison; starting from
+    // the known value lets downstream calls retain their already-derived arguments. The atomic composer treats
+    // these as provisional and authenticates the completed transaction before admission.
+    if (preparedAtomicNodes?.length) {
+      const returnEvents = builder.getReturnEventOutputs();
+      for (const [groupIndex, nodeIndex] of preparedAtomicNodeByExternalGroup) {
+        const group = externalCallUtxoGroups[groupIndex];
+        const node = preparedAtomicNodes[nodeIndex];
+        if (!group || !node) continue;
+        const identities = new Set([
+          groupIndex,
+          logicalReturnGroupIndex(externalCallUtxoGroups, groupIndex),
+          group.fusedReturnGroupIndex,
+        ].filter((index): index is number => index !== undefined));
+        const event = returnEvents.find((candidate) => candidate.provisional !== true
+          && [...identities].some((index) => candidate.identity === `external-call:${index}`
+            || candidate.identity === `external-call:${index}:0`));
+        if (!event) continue;
+        preparedAtomicNodes[nodeIndex] = {
+          ...node,
+          provisionalResultCommitment: event.commitment,
+        };
+      }
+    }
+
     // A manually-expanded delegate graph normally materializes one physical state block per reached call. Two
     // writes to the same owner cannot both consume its one master UTXO, regardless of whether the logical callers
     // are equal. Collapsing them into the legacy first-call block can also discard the later call's entry layout.
@@ -22834,6 +22861,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(node.callsiteId !== undefined && { callsiteId: node.callsiteId }),
           ...(node.executionArtifact && { executionArtifact: node.executionArtifact }),
           ...(node.executor && { executor: node.executor }),
+          ...(node.provisionalResultCommitment && {
+            provisionalResultCommitment: node.provisionalResultCommitment.slice(),
+          }),
         })));
       }
     }

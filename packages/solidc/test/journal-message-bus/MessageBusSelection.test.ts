@@ -356,4 +356,17 @@ describe('message-bus compilation selection', () => {
     expect(artifacts.Leaf.messageBus).toBeUndefined();
     expect(artifacts.Caller.messageBus).toBeDefined();
   });
+
+  it('binds every multi-artifact message-bus route to its participant verifier', () => {
+    const artifacts = compileStringMulti(`
+      contract First { int value; function set(int next) public { value = next; require(next >= 0); } }
+      contract Second { int value; function set(int next) public { value = next; require(next >= 0); } }
+    `, { messageBus: true });
+
+    for (const artifact of [artifacts.First, artifacts.Second]) {
+      expect(artifact.messageBus?.verifierProgram).toBeDefined();
+      expect(artifact.messageBus?.route.inputs.map((input) => input.name))
+        .toContain('__internal__activeVerifierIndex');
+    }
+  });
 });

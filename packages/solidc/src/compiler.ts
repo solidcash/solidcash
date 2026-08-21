@@ -896,7 +896,12 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   if (cacheable) {
     // Keep cached artifacts tied to their published shape. Compiler versions can remain unchanged throughout
     // local development, so the package version alone cannot invalidate entries after metadata additions.
-    cacheKey = `artifact-v3\x00${COMPILER_CACHE_BUILD_ID}\x00${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
+    // A multi-contract source is compiled once per selected primary declaration. The source and public options
+    // are otherwise identical, so omitting the primary name aliases every declaration to whichever artifact was
+    // cached first. Keep the selected contract in the semantic key; the schema bump also prevents older entries
+    // produced before verifier-bound multi-artifact compilation from being reused.
+    cacheKey = `artifact-v4\x00${COMPILER_CACHE_BUILD_ID}\x00${primaryContractName ?? ''}`
+      + `\x00${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
     const memHit = compileCacheGet(cacheKey);
     if (memHit) return cloneArtifact(memHit);
     const diskHit = diskCacheGet(cacheKey);
@@ -6506,11 +6511,15 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
     if (contract.isAbstract
       || contract.constructorDef?.modifiers.includes(FunctionModifier.INTERNAL)) continue;
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
-    const artifact = compileWithExternalAdmissionFallback(
-      code, mergedCompilerOptions, errorListener, contract.name,
-    );
-    attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener, contract.name);
-    map[contract.name] = artifact;
+    // Use the same complete pipeline as the single-artifact API. In particular, message-bus compilation is a
+    // two-pass operation: the first pass extracts the verifier program and the second binds the compact route to
+    // it. Calling the lower-level admission ladder here published route ABI from pass one beside bytecode that
+    // could not select a participant-local verifier in an atomic graph.
+    map[contract.name] = compileStringUnchecked(code, {
+      ...artifactCompilerOptions,
+      errorListener,
+      primaryContractName: contract.name,
+    });
   }
 
   // Contract-less: each interface -> an ABI-only declaration artifact (function dispatch for external calls).

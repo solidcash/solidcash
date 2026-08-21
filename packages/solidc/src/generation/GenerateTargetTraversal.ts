@@ -1516,6 +1516,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitBlockSlotIndex(
     kind: BlockSlotKind, slotIndex: number | undefined, locationData: SingleLocationData,
+    extraStackOffset = 0,
   ): void {
     // Stateless contract (no block layout): a transfer output sits at the absolute index transferIndex in
     // [0, N) - there is no input-index-relative block to offset from.
@@ -1552,7 +1553,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       offset -= this.countDataNftSlotsBefore(offset);
     }
     if (delegateImplementationRelative) this.emit(Op.OP_INPUTINDEX, locationData);
-    else this.emitMasterInputIndex(locationData);
+    else this.emitMasterInputIndex(locationData, extraStackOffset);
     if (offset > 0) {
       this.emit(encodeInt(BigInt(offset)), locationData);
       this.emit(Op.OP_ADD, locationData);
@@ -18627,7 +18628,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const name = `__internal__vmapBatchProof_${slotIndex}`;
       const depth = this.getStackIndex(this.vmapWitnessName(name), true);
       if (depth >= 0) {
-        this.emitMasterInputIndex(locationData);
+        this.emitMasterInputIndex(locationData, extraStackOffset);
         this.emitPickVMapWitness(name, locationData);
         this.emit(Op.OP_ADD, locationData);
         return;
@@ -18637,7 +18638,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INPUTINDEX, locationData);
       const offset = this.getBlockSlotOffset('entry', slotIndex);
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
-    } else this.emitBlockSlotIndex('entry', slotIndex, locationData);
+    } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
   }
 
   /**
@@ -24536,12 +24537,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.removeFromStack(topIndex);
   }
 
-  private emitMasterInputIndex(locationData: SingleLocationData): void {
+  private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
     if (this.usesMessageBusOwnerBlockBase()) {
       // The owner witness belongs to an invoked handler frame (including detached route-verifier bodies). Its
       // local top-relative model includes every compiler-owned handler operand; a bottom ordinal would cross the
       // caller's still-live route frame and select its oldest value instead.
-      const ownerIndex = this.getStackIndex('__internal__messageBusOwnerInput');
+      const ownerIndex = this.getStackIndex('__internal__messageBusOwnerInput') + extraStackOffset;
       this.emit(encodeInt(BigInt(ownerIndex)), locationData);
       this.emit(Op.OP_PICK, locationData);
     } else if (this.usesProxyStateBlockBase()) {
@@ -24561,7 +24562,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SUB, locationData);
       } else {
         // Compiler-invoked handlers have a locally tracked call frame.
-        const proxyIndex = this.getStackIndex('__internal__proxyMasterIndex');
+        const proxyIndex = this.getStackIndex('__internal__proxyMasterIndex') + extraStackOffset;
         this.emit(encodeInt(BigInt(proxyIndex)), locationData);
         this.emit(Op.OP_PICK, locationData);
       }

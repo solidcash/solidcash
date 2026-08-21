@@ -145,9 +145,15 @@ const resolveArguments = (
     return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(occurrence);
   }
   if (source.kind === 'selfAddress') {
-    // OP_INVOKE can select authenticated delegate bytecode, but it does not change the active input. The exact
-    // OP_UTXOBYTECODE result is always the physical state-owner input locking bytecode.
-    return hexToBin(sourceParticipant.lockingBytecode);
+    // `address(this)` is the exact OP_UTXOBYTECODE result for the input executing this handler. A direct owner
+    // executes at its master; a delegate participant executes the implementation route at its pinned executor
+    // input. Neither identity may be reconstructed from a category or substituted with the public proxy address.
+    const executionLockingBytecode = sourceParticipant.executionKind === 'delegate'
+      ? sourceParticipant.executorLockingBytecode : sourceParticipant.lockingBytecode;
+    if (!executionLockingBytecode) {
+      throw new Error('messageBus: delegate participant has no authenticated execution locking bytecode');
+    }
+    return hexToBin(executionLockingBytecode);
   }
   if (source.kind === 'expression' || source.kind === 'msgSender' || source.kind === 'arrayElement') {
     const value = expressionArgument?.({

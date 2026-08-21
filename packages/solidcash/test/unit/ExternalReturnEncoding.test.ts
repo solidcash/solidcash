@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
 import {
   encodeExternalReturnValue, encodeLeadingRouteArrayPushes, encodeRouteArrayPushResult,
-  isCanonicalEvmScalarReturnVector,
+  isCanonicalEvmScalarReturnVector, selectEvmScalarReturnCommitment,
 } from '../../src/stateful/StatefulContract.js';
 import {
   selectMaterializedTailReturnEvents,
@@ -43,6 +43,17 @@ describe('encodeExternalReturnValue', () => {
     expect(isCanonicalEvmScalarReturnVector(
       vector, ['bool', 'uint256', 'bool', 'uint256'],
     )).toBe(true);
+  });
+
+  it('prefers a framed return vector over an ABI-width state witness', () => {
+    const expected = new Uint8Array(32);
+    expected[31] = 7;
+    const stateWitness = new Uint8Array(32).fill(0xca);
+    const framed = encodePushdataValue(expected, 'bytes');
+
+    expect(selectEvmScalarReturnCommitment(
+      [stateWitness, framed], ['uint256'],
+    )).toBe(`${'00'.repeat(31)}07`);
   });
 });
 

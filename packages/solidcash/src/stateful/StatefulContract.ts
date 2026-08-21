@@ -1791,6 +1791,41 @@ export function isCanonicalEvmScalarReturnVector(
   });
 }
 
+/** Select a complete Solidity return from strongest-to-weakest live stack candidates. */
+export function selectEvmScalarReturnCommitment(
+  candidates: readonly Uint8Array[], expectedTypes: readonly string[],
+): string | undefined {
+  const bytes = expectedTypes.length * 32;
+  // Message-bus routes frame the complete Solidity return vector as one canonical `bytes` field before
+  // publishing it. Prefer that compiler-authored boundary over raw ABI-width values which happen to remain in
+  // the route frame: state hashes, mapping witnesses, and zero placeholders are all valid `uint256` words, but
+  // none of them is a complete framed return. A progressive probe can stop after the frame is assembled and
+  // before its output comparison, so this is also the strongest result available in that state.
+  for (const candidate of candidates) {
+    try {
+      const outer = decodePushdataValue(candidate, 0, 'bytes');
+      if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) continue;
+      if (!isCanonicalEvmScalarReturnVector(outer.value, expectedTypes)) continue;
+      return binToHex(outer.value);
+    } catch {
+      // Ordinary route-frame items are not canonical outer bytes fields.
+    }
+  }
+  for (const candidate of candidates) {
+    if (candidate.length !== bytes) continue;
+    if (!isCanonicalEvmScalarReturnVector(candidate, expectedTypes)) continue;
+    if (expectedTypes.length === 1 && expectedTypes[0] === 'bool') {
+      // A failing probe contains many unrelated ABI-sized zero words (state fields, hashes, placeholders).
+      // They cannot authenticate `false`; the targeted return-output comparison does that when execution
+      // reaches it. `true` remains a useful advancing observation, while precomputed false views are retained
+      // by the fixed-point caller until that stronger output evidence replaces them.
+      if (candidate[31] === 0) continue;
+    }
+    return binToHex(candidate);
+  }
+  return undefined;
+}
+
 /** Recover a Solidity ABI value which is live immediately before a return-output comparison. */
 function extractEvmScalarReturnCommitment(
   fullTrace: AuthenticationProgramStateCommon[], expectedTypes: readonly string[],
@@ -1800,24 +1835,14 @@ function extractEvmScalarReturnCommitment(
     || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
     || type === 'address' || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type)
   ))) return undefined;
-  const bytes = expectedTypes.length * 32;
+  const candidates: Uint8Array[] = [];
   for (let traceIndex = fullTrace.length - 1; traceIndex >= Math.max(0, fullTrace.length - 96); traceIndex--) {
     const stack = fullTrace[traceIndex].stack;
     for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex--) {
-      const candidate = Uint8Array.from(stack[stackIndex]);
-      if (candidate.length !== bytes) continue;
-      if (!isCanonicalEvmScalarReturnVector(candidate, expectedTypes)) continue;
-      if (expectedTypes.length === 1 && expectedTypes[0] === 'bool') {
-        // A failing probe contains many unrelated ABI-sized zero words (state fields, hashes, placeholders).
-        // They cannot authenticate `false`; the targeted return-output comparison does that when execution
-        // reaches it. `true` remains a useful advancing observation, while precomputed false views are retained
-        // by the fixed-point caller until that stronger output evidence replaces them.
-        if (candidate[31] === 0) continue;
-      }
-      return binToHex(candidate);
+      candidates.push(Uint8Array.from(stack[stackIndex]));
     }
   }
-  return undefined;
+  return selectEvmScalarReturnCommitment(candidates, expectedTypes);
 }
 
 /** Encode the scalar Solidity ABI forms used by SDK-side return precomputation. */
@@ -12704,8 +12729,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         add(variant);
         try { add(addressToLockScript(variant)); } catch { /* */ }
       }
-      const deployed = findDeploymentByAddress(this.inner.provider, owner)?.contract as
-        StatefulContract | undefined;
+      const deployment = findDeploymentByAddress(this.inner.provider, owner);
+      const deployed = deployment?.contract as StatefulContract | undefined;
+      if (deployment) {
+        add(deployment.address);
+        if (deployment.lockingBytecode) add(hexToBin(deployment.lockingBytecode));
+      }
       if (deployed) {
         add(deployed._logicalAddress);
         add(deployed.address);
@@ -16731,9 +16760,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const delegateVisibleInputs = (delegateFn?.inputs ?? []).filter(
               (input) => !input.name.startsWith('__internal__'),
             );
-            // OP_INVOKE changes the bytecode being interpreted, not the input under evaluation. Delegate code
-            // therefore observes the proxy/state-owner input through OP_UTXOBYTECODE, exactly like the compiler.
+            // An ordinary proxy OP_INVOKE evaluates the implementation against the proxy/state-owner input. The
+            // atomic graph also evaluates the authenticated implementation route at its own executor input, so
+            // retain both exact OP_UTXOBYTECODE identities rather than reconstructing either from a category.
             const delegateSelfAddress = hexToBin(this.inner.lockingBytecode);
+            const delegateGraphSelfAddress = hexToBin(callInfo.contract.inner.lockingBytecode);
             const nestedExternalCalls: ExternalCallAbi[] = [];
             for (const nested of publishedNestedExternalCalls) {
               if (!nested.condition) {
@@ -16923,6 +16954,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   + 'that cannot yet be resolved by the SDK.',
                 );
               }
+              const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
+                ? await this._resolveExternalExpressionReturns(
+                  nestedSources, delegateVisibleArgs, callInfo.contract, onChainState.state,
+                  delegateVisibleInputs, delegateGraphSelfAddress,
+                )
+                : nestedExpressionReturns;
+              const graphNestedArgs = preparedAtomicNodes
+                ? this._resolveExternalArgs(
+                  nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
+                  delegateVisibleInputs, graphExpressionReturns, 0, false, delegateGraphSelfAddress,
+                ) ?? nestedArgs
+                : nestedArgs;
               const calleeRouteArtifact = proxyCallee?.implementation.inner.artifact.delegateArtifact
                 ?? proxyCallee?.implementation.inner.artifact
                 ?? callee.inner.artifact;
@@ -18414,7 +18457,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 preparedAtomicNodes.push({
                   contract: callee,
                   functionName: resolvedRawFunctionName ?? nested.functionName,
-                  args: nestedArgs,
+                  args: graphNestedArgs,
                   ...(proxyCallee && {
                     executionArtifact: proxyCallee.implementation.inner.artifact,
                     executor: proxyCallee.implementation,
@@ -18460,6 +18503,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     true,
                   );
                   if (!nextLogicalArgs) return false;
+                  const nextGraphArgs = this._resolveExternalArgs(
+                    nestedSources,
+                    delegateVisibleArgs,
+                    callInfo.contract.inner.artifact,
+                    nextState as Record<string, StateValue>,
+                    delegateVisibleInputs,
+                    undefined,
+                    0,
+                    true,
+                    delegateGraphSelfAddress,
+                  );
                   const nextCompilerRoute = currentCompilerRoute
                     ? this._buildRepeatedExternalBatch(
                       nested,
@@ -18521,7 +18575,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   if (preparedAtomicNodes && atomicNodeIndex !== undefined) {
                     preparedAtomicNodes[atomicNodeIndex] = {
                       ...preparedAtomicNodes[atomicNodeIndex],
-                      args: [...nextLogicalArgs],
+                      args: [...(nextGraphArgs ?? nextLogicalArgs)],
                     };
                   }
 
@@ -18613,6 +18667,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const logicalParentArtifact = parent.logicalArtifact ?? logicalParentContract.inner.artifact;
         const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
         const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
+        const parentAtomicNode = preparedAtomicNodeByExternalGroup.get(parentGroupIndex);
+        const graphParentArgs = parentAtomicNode === undefined
+          ? logicalParentArgs : preparedAtomicNodes?.[parentAtomicNode]?.args ?? logicalParentArgs;
         const parentFn = (logicalParentArtifact.abi as readonly AbiFunction[])
           .find((candidate) => candidate.name === logicalParentFunctionName);
         if (!parentFn?.externalCalls?.length) continue;
@@ -18680,6 +18737,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             parentFn.inputs,
           );
           if (childArgs === undefined) continue;
+          const graphChildArgs = graphParentArgs === logicalParentArgs
+            ? childArgs
+            : logicalParentContract._resolveExternalArgs(
+              nested.rawArgSources ?? nested.argSources,
+              graphParentArgs, logicalParentArtifact, parentState,
+              parentFn.inputs,
+            ) ?? childArgs;
           const selectedContract = proxyCallee?.implementation ?? callee;
           const rawFunctionName = nested.interfaceName === '__raw__'
             ? nested.rawFunctionName ?? (selectedContract.inner.artifact.abi as readonly AbiFunction[])
@@ -18937,13 +19001,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
           });
           if (preparedAtomicNodes) {
-            const parentAtomicNode = preparedAtomicNodeByExternalGroup.get(parentGroupIndex);
             if (parentAtomicNode !== undefined) {
               const atomicNodeIndex = preparedAtomicNodes.length;
               preparedAtomicNodes.push({
                 contract: callee,
                 functionName: rawFunctionName ?? nested.functionName,
-                args: childArgs,
+                args: graphChildArgs,
                 ...(proxyCallee && {
                   executionArtifact: proxyCallee.implementation.inner.artifact,
                   executor: proxyCallee.implementation,
@@ -23082,28 +23145,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       && (this.inner.stateLayout?.collections ?? []).some((collection) =>
         collection.name === (functionName === 'balanceOf' ? '_balances' : '_allowances'))) {
       const collection = functionName === 'balanceOf' ? '_balances' : '_allowances';
-      if (functionName === 'balanceOf') {
-        for (const key of this._erc20AddressKeys(args[0])) {
-          const overlay = this._getSoftMapping(collection, [key]);
-          if (overlay !== undefined) return overlay as StateValue;
-        }
-      } else {
-        const overlay = this._getSoftMapping(collection, args);
+      const keyCandidates = functionName === 'balanceOf'
+        ? this._erc20AddressKeys(args[0]).map((owner) => [owner])
+        : this._erc20AddressKeys(args[0]).flatMap((owner) =>
+          this._erc20AddressKeys(args[1]).map((spender) => [owner, spender]));
+      for (const candidate of keyCandidates) {
+        const overlay = this._getSoftMapping(collection, candidate);
         if (overlay !== undefined) return overlay as StateValue;
       }
       const entries = await this.getEntries(collection);
       const keyTypes = functionName === 'balanceOf' ? ['address'] : ['address', 'address'];
-      if (functionName === 'balanceOf') {
-        for (const key of this._erc20AddressKeys(args[0])) {
-          const match = entries.find((entry) => StatefulContract._entryMatchesKeys(entry, [key], keyTypes));
-          if (match) return match.value as StateValue;
-        }
-        return 0n;
+      for (const candidate of keyCandidates) {
+        const match = entries.find((entry) => StatefulContract._entryMatchesKeys(entry, candidate, keyTypes));
+        if (match) return match.value as StateValue;
       }
-      const match = entries.find((entry) => StatefulContract._entryMatchesKeys(
-        entry, args as Array<string | bigint | boolean | Uint8Array>, keyTypes,
-      ));
-      if (match) return match.value as StateValue;
       return 0n;
     }
     const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);

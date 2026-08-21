@@ -109,9 +109,9 @@ describe('atomic compiled invocation graph', () => {
       args: [Uint8Array.of(0x51), payload],
       targets: {},
       occurrence: () => count,
-      // The root owns the active input at 0x52 and publishes logical identity 0x54. OP_INVOKE authenticates and
-      // interprets delegate bytecode at 0x56 without changing OP_UTXOBYTECODE's exact 0x52 result.
-      dynamicCall: () => ({ participant: target, function: 'approve', args: [Uint8Array.of(0x52)] }),
+      // The root owns state at 0x52 and publishes logical identity 0x54, while its handler executes at the
+      // authenticated delegate input 0x56. `address(this)` is that input's exact OP_UTXOBYTECODE result.
+      dynamicCall: () => ({ participant: target, function: 'approve', args: [Uint8Array.of(0x56)] }),
     });
     expect(derive(0).invocations.map((invocation) => invocation.function)).toEqual(['run']);
     expect(derive(1).invocations.map((invocation) => invocation.function)).toEqual(['run', 'approve']);

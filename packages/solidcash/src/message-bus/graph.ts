@@ -19,8 +19,8 @@ export interface CompiledGraphParticipant {
   /**
    * Authenticated public call identity when it differs from the physical state owner, as it does for a
    * proxy/delegate execution or a contract with a published logical CREATE identity. Nested `msg.sender` rows
-   * may use this identity. Source-level `address(this)` always uses `lockingBytecode`: OP_INVOKE does not change
-   * the active input returned by OP_UTXOBYTECODE.
+   * may use this identity. Source-level `address(this)` always uses the exact active execution input returned by
+   * OP_UTXOBYTECODE: `lockingBytecode` for an owner route or `executorLockingBytecode` for a delegate route.
    */
   logicalLockingBytecode?: string;
   /**

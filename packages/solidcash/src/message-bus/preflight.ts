@@ -8,6 +8,7 @@ import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { rememberPreparedCovenantValidation } from '../network/createPreparedTxVerifier.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   deriveBalancedAssemblyFromInputs, preflightBalancedBlockAssembly,
 } from '../stateful/balancedBlocks.js';
@@ -552,6 +553,21 @@ export interface FinalizedByteGateOptions {
 }
 
 /**
+ * Make the finalized-byte gate judge the same profile as its destination provider.
+ *
+ * `consensusLimits` is already the provider's consensus authority, so a second boolean deciding whether those
+ * limits count would be contradictory. A transaction profile wider than the standard relay ceiling identifies
+ * a direct-submit/private profile; policy observations remain in the verdict but do not block that path.
+ */
+export const finalizedByteGateOptionsForProvider = (
+  provider: Pick<NetworkProvider, 'consensusLimits'>,
+): FinalizedByteGateOptions => ({
+  ...(provider.consensusLimits === undefined ? {} : { consensusLimits: provider.consensusLimits }),
+  ...((provider.consensusLimits?.maximumTransactionBytes ?? RELAY_TRANSACTION_SIZE_LIMIT)
+    > RELAY_TRANSACTION_SIZE_LIMIT ? { allowNonRelayable: true } : {}),
+});
+
+/**
  * Read each input's subject off a builder, for the gate's message. X158.
  *
  * A contract input publishes both halves; anything else - a P2PKH input, a side-car, a custom unlocker -
@@ -813,6 +829,12 @@ export function formatFinalizedByteVerdict(verdict: FinalizedByteVerdict): strin
   ].join(' | ');
 }
 
+const enforcedFinalizedByteRefusals = (
+  verdict: FinalizedByteVerdict, allowNonRelayable: boolean | undefined,
+): readonly FinalizedByteRefusal[] => allowNonRelayable === true
+  ? verdict.refusals.filter((row) => row.regime === 'consensus')
+  : verdict.refusals;
+
 /**
  * THE GATE. Refuse a finalized transaction that breaks a byte rule.
  *
@@ -827,9 +849,8 @@ export function assertFinalizedTransactionBytes(
   const verdict = assessFinalizedTransactionBytes(
     transaction, options.inputSubjects ?? [], options.consensusLimits,
   );
-  const consensus = verdict.refusals.filter((row) => row.regime === 'consensus');
   const policy = verdict.refusals.filter((row) => row.regime === 'policy');
-  const enforced = options.allowNonRelayable === true ? consensus : [...consensus, ...policy];
+  const enforced = enforcedFinalizedByteRefusals(verdict, options.allowNonRelayable);
   if (enforced.length === 0) return verdict;
   const lines = enforced.map((row) => `  [${row.regime}] ${row.rule} at ${row.where}: ${row.detail}`);
   const suppressed = options.allowNonRelayable === true && policy.length > 0
@@ -930,23 +951,25 @@ export function covenantObjectionOf(
 export function assertFinalizedBytesWithCovenant(
   builder: TransactionBuilder, transaction: Transaction,
   subjects: readonly (FinalizedByteSubject | undefined)[],
-  options: Pick<FinalizedByteGateOptions, 'consensusLimits'> = {},
+  options: Omit<FinalizedByteGateOptions, 'inputSubjects'> = {},
 ): void {
   const verdict = assessFinalizedTransactionBytes(transaction, subjects, options.consensusLimits);
-  if (verdict.admitted) return;
+  const enforced = enforcedFinalizedByteRefusals(verdict, options.allowNonRelayable);
+  if (enforced.length === 0) return;
   const covenant = covenantObjectionOf(builder, transaction);
   // Byte-only: the one decider that speaks is the one that always spoke, with the message it always produced.
   if (covenant === undefined) {
     assertFinalizedTransactionBytes(transaction, {
       inputSubjects: subjects,
       consensusLimits: options.consensusLimits,
+      allowNonRelayable: options.allowNonRelayable,
     });
   }
   throw new Error(
-    `messageBus: finalized transaction refused by its covenant and ${verdict.refusals.length} byte rule(s) `
+    `messageBus: finalized transaction refused by its covenant and ${enforced.length} byte rule(s) `
     + `(${verdict.serializedBytes} serialized bytes, ${verdict.inputCount} inputs, `
     + `${verdict.outputCount} outputs):\n  [covenant] ${covenant}\n`
-    + verdict.refusals.map((row) => `  [${row.regime}] ${row.rule} at ${row.where}: ${row.detail}`).join('\n'),
+    + enforced.map((row) => `  [${row.regime}] ${row.rule} at ${row.where}: ${row.detail}`).join('\n'),
   );
 }
 

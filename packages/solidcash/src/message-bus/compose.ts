@@ -26,7 +26,9 @@ import {
   type AtomicSidecarSlotEffect, type AtomicTokenSlotEffect, type AtomicValueSlotEffect,
 } from './graph.js';
 import { encodeMessageBatch } from './message-bus.js';
-import { convergeMessageBusFixedStateOutputs, preflightMessageBusTransaction } from './preflight.js';
+import {
+  convergeMessageBusFixedStateOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
+} from './preflight.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 
 export interface AtomicMessageBusFunder {
@@ -1375,12 +1377,7 @@ export class AtomicMessageBusComposition {
           'messageBus: mutable state changed after semantic-manifest convergence; refusing a stale manifest',
         );
       }
-      preflightMessageBusTransaction(
-        builder,
-        builder.provider.policy?.enforceProductionInputLimit === false
-          ? { consensusLimits: builder.provider.consensusLimits }
-          : undefined,
-      );
+      preflightMessageBusTransaction(builder, finalizedByteGateOptionsForProvider(builder.provider));
       return builder;
     };
     const actualSpansMatch = (

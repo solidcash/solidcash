@@ -54,7 +54,8 @@ import { attachWait } from '../wait.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { onMockNetworkProviderReset } from '../network/MockNetworkProvider.js';
 import {
-  assertFinalizedTransactionBytes, assertFinalizedTransactionCovenants, inputSubjectsOfBuilder,
+  assertFinalizedTransactionBytes, assertFinalizedTransactionCovenants,
+  finalizedByteGateOptionsForProvider, inputSubjectsOfBuilder,
 } from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
 import {
@@ -14371,12 +14372,8 @@ export class StatefulTransactionBuilder {
     // X158: the same input subjects as site 2, read off the builder that produced these exact bytes, so an
     // over-limit refusal names the contract rather than only an index.
     assertFinalizedTransactionBytes(decodedTx, {
+      ...finalizedByteGateOptionsForProvider(provider),
       inputSubjects: inputSubjectsOfBuilder(finalBuilder),
-      consensusLimits: provider.consensusLimits,
-      // A provider that explicitly widens the transaction-size consensus profile is also the authority that
-      // will receive these bytes. This is the mock/miner-direct profile: do not apply the production peer-relay
-      // ceiling on top of its advertised limit. Live providers publish no override and remain policy-gated.
-      allowNonRelayable: (provider.consensusLimits?.maximumTransactionBytes ?? 100_000) > 100_000,
     });
     sendTiming('bytes-validated');
 

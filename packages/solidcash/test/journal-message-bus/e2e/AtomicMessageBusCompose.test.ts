@@ -507,7 +507,6 @@ describe('messageBus.compose atomic transaction', () => {
 
   it('preserves a pooled mapping-array return across an event-emitting write', async () => {
     const provider = createMessageBusCapstoneTestProvider();
-    provider.policy = { ...provider.policy, enforceProductionInputLimit: false };
     const calleeArtifact = compileString(`contract ComposePooledArrayCallee() {
       event Appended(uint256 key);
       mapping(bool => bool) earlier;
@@ -934,7 +933,6 @@ describe('messageBus.compose atomic transaction', () => {
   it.skipIf(process.env.TESTS_USE_REGTEST === 'true')(
     'advances past a reached conditional opaque-return row in a delegated root', async () => {
     const provider = createMessageBusCapstoneTestProvider();
-    provider.policy!.enforceProductionInputLimit = false;
     const targetArtifact = compileString(`
       pragma solidity ^0.8.20;
       contract ComposeConditionalRawTarget {

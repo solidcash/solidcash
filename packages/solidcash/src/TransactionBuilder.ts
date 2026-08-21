@@ -1246,9 +1246,7 @@ export class TransactionBuilder {
       this,
       transaction,
       inputSubjectsOfBuilder(this),
-      this.provider.policy?.enforceProductionInputLimit === false
-        ? { consensusLimits: this.provider.consensusLimits }
-        : {},
+      { consensusLimits: this.provider.consensusLimits },
     );
 
     let txid: string;

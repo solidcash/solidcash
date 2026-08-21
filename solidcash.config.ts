@@ -36,7 +36,6 @@ export default defineConfig({
         maximumStackItemBytes: 10_000_000,
         maximumNftCommitmentBytes: 10_000_000,
       },
-      policy: { enforceDust: false },
     },
   },
   defaultNetwork: 'mock',

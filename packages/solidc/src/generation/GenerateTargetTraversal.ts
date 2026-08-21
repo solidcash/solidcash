@@ -18841,9 +18841,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
           if (stackName) {
             // Use already-encoded value from stack
-            const stackIdx = this.getStackIndex(stackName);
-            this.emit(encodeInt(BigInt(stackIdx)), locationData);
-            this.emit(Op.OP_PICK, locationData);
+            // An aggregate message-bus route invokes handlers which return journal slots into the physical
+            // route frame. Their runtime height can grow independently of the route traversal's top-relative
+            // model, but the route's own entry frame remains anchored at the bottom. Copy journal fields by that
+            // stable ordinal when reconstructing the participant state commitment.
+            if (this.isCompilerMessageBusRoute(node)) {
+              this.emitPickTrackedFromBottom(stackName, locationData);
+            } else {
+              const stackIdx = this.getStackIndex(stackName);
+              this.emit(encodeInt(BigInt(stackIdx)), locationData);
+              this.emit(Op.OP_PICK, locationData);
+            }
             this.pushToStack('(value)');
           } else {
             // Read from input commitment, decode, re-encode
@@ -18884,11 +18892,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Clean up pending state write values from the stack
     for (const [, stackName] of this.pendingStateWrites) {
-      const idx = this.getStackIndex(stackName);
-      this.emit(encodeInt(BigInt(idx)), locationData);
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.removeFromStack(idx);
+      if (this.isCompilerMessageBusRoute(node)) {
+        this.emitDropTrackedFromBottom(stackName, locationData);
+      } else {
+        const idx = this.getStackIndex(stackName);
+        this.emit(encodeInt(BigInt(idx)), locationData);
+        this.emit(Op.OP_ROLL, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.removeFromStack(idx);
+      }
     }
   }
 

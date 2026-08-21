@@ -116,6 +116,7 @@ describe('message-bus compilation selection', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract RouteKeys {
         struct Rating { uint32 average; uint count; }
+        uint total;
         mapping(address => uint) fees;
         mapping(address => Rating) ratings;
         function fee(address who) public view returns (uint) { return fees[who]; }
@@ -123,6 +124,7 @@ describe('message-bus compilation selection', () => {
           Rating storage rating = ratings[who];
           rating.average = uint32(score * 10000);
           rating.count++;
+          total++;
           require(score > 0);
         }
       }
@@ -146,6 +148,10 @@ describe('message-bus compilation selection', () => {
     expect(routeAsm).not.toMatch(new RegExp(
       `(?:OP_(?:0|1NEGATE|[1-9]|1[0-6])|[0-9a-f]+) OP_PICK ${maskedKeyHash}`,
     ));
+    // The scalar journal value returned by the handler must use the same stable route-frame addressing before
+    // the route reconstructs its state output. One stable copy above is the mapping key; the second is `total`.
+    expect(routeAsm.match(/OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_PICK/g)?.length ?? 0)
+      .toBeGreaterThanOrEqual(2);
   });
 
   it('co-locates ecrecover sidecars with ordinary participant state and entry slots', () => {

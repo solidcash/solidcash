@@ -1924,6 +1924,25 @@ const compilerRouteEnvelope = (bytecode: Uint8Array): Uint8Array | undefined => 
   return readPush(bytecode, selector.nextOffset)?.data;
 };
 
+/** Validate the framing shared by canonical v1 and v2 route batches without interpreting typed arguments. */
+const isCanonicalCompilerRouteEnvelope = (envelope: Uint8Array): boolean => {
+  if (envelope.length < 7 || binToHex(envelope.slice(0, 4)) !== '53434231'
+    || (envelope[4] !== 1 && envelope[4] !== 2)
+    || (envelope[5] !== 0 && envelope[5] !== 1) || envelope[6] < 1) return false;
+  const version = envelope[4];
+  const valueMode = envelope[5] === 1;
+  let cursor = 7;
+  for (let row = 0; row < envelope[6]; row += 1) {
+    const headerLength = 12 + (version === 2 ? 1 : 0) + (valueMode ? 9 : 0);
+    if (cursor + headerLength > envelope.length) return false;
+    const argsLength = envelope[cursor + 10] | (envelope[cursor + 11] << 8);
+    if (version === 2 && envelope[cursor + 12] > 1) return false;
+    cursor += headerLength + argsLength;
+    if (cursor > envelope.length) return false;
+  }
+  return cursor === envelope.length;
+};
+
 /** Preserve the VM's raw objection while naming malformed compiler-route envelopes at their exact input. */
 export function mapMessageBusVmFailure(
   builder: TransactionBuilder,
@@ -1942,19 +1961,16 @@ export function mapMessageBusVmFailure(
   );
   const context = { inputIndex, rawVmReason, metadataField: 'message-bus batch.envelope' };
   if (envelope && envelope.length >= 5
-    && binToHex(envelope.slice(0, 4)) === '53434231' && envelope[4] !== 1) {
+    && binToHex(envelope.slice(0, 4)) === '53434231'
+    && envelope[4] !== 1 && envelope[4] !== 2) {
     return new MessageBusDiagnosticError(
       'L3_MESSAGE_BUS_VERSION_UNSUPPORTED',
       `BCH-2026 preflight failed at input ${inputIndex}: message-bus batch version ${envelope[4]} is unsupported; `
         + `VM: ${rawVmReason}`,
-      { ...context, metadataField: 'message-bus batch.version', actual: envelope[4], expected: 1 },
+      { ...context, metadataField: 'message-bus batch.version', actual: envelope[4], expected: [1, 2] },
     );
   }
-  const malformed = !envelope || envelope.length < 7
-    || binToHex(envelope.slice(0, 4)) !== '53434231'
-    || envelope[4] !== 1 || envelope[5] !== 0 || envelope[6] < 1
-    || envelope.length < 7 + envelope[6] * 12;
-  if (malformed) {
+  if (!envelope || !isCanonicalCompilerRouteEnvelope(envelope)) {
     return new MessageBusDiagnosticError(
       'L3_MESSAGE_BUS_ENVELOPE_MALFORMED',
       `BCH-2026 preflight failed at input ${inputIndex}: malformed message-bus batch envelope; VM: ${rawVmReason}`,

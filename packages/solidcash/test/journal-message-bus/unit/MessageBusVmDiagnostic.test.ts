@@ -17,7 +17,7 @@ const raw = 'Program failed an OP_VERIFY operation.';
 
 describe('message-bus batch VM refusal attribution', () => {
   it('maps the real preflight VM refusal at the failing route input', () => {
-    const envelope = [0x53, 0x43, 0x42, 0x31, 2, 0, 1, ...Array(12).fill(0)];
+    const envelope = [0x53, 0x43, 0x42, 0x31, 3, 0, 1, ...Array(12).fill(0)];
     const builder = {
       inputs: [{
         txid: '00'.repeat(32), vout: 0, satoshis: 1000n,
@@ -41,14 +41,14 @@ describe('message-bus batch VM refusal attribution', () => {
     expect(() => messageBus.assertFinalizedTransactionCovenants(builder, tx)).toThrow(
       expect.objectContaining({
         code: 'L3_MESSAGE_BUS_VERSION_UNSUPPORTED',
-        context: expect.objectContaining({ inputIndex: 0, actual: 2, expected: 1 }),
+        context: expect.objectContaining({ inputIndex: 0, actual: 3, expected: [1, 2] }),
       }),
     );
   });
 
   it('maps an unknown envelope version to its exact input while preserving the VM reason', () => {
     const error = messageBus.mapMessageBusVmFailure(
-      routeBuilder, transaction([0x53, 0x43, 0x42, 0x31, 2, 0, 1, ...Array(12).fill(0)]), 0, raw,
+      routeBuilder, transaction([0x53, 0x43, 0x42, 0x31, 3, 0, 1, ...Array(12).fill(0)]), 0, raw,
     );
     expect(error).toMatchObject({
       code: 'L3_MESSAGE_BUS_VERSION_UNSUPPORTED',
@@ -56,8 +56,8 @@ describe('message-bus batch VM refusal attribution', () => {
         inputIndex: 0,
         rawVmReason: raw,
         metadataField: 'message-bus batch.version',
-        actual: 2,
-        expected: 1,
+        actual: 3,
+        expected: [1, 2],
       },
     });
     expect(error.message).toContain(raw);
@@ -66,7 +66,7 @@ describe('message-bus batch VM refusal attribution', () => {
   it.each([
     ['bad magic', [0, 0, 0, 0, 1, 0, 1, ...Array(12).fill(0)]],
     ['truncated row', [0x53, 0x43, 0x42, 0x31, 1, 0, 1]],
-    ['invalid flags', [0x53, 0x43, 0x42, 0x31, 1, 1, 1, ...Array(12).fill(0)]],
+    ['invalid flags', [0x53, 0x43, 0x42, 0x31, 1, 2, 1, ...Array(12).fill(0)]],
   ])('maps %s to a malformed-envelope refusal', (_label, payload) => {
     const error = messageBus.mapMessageBusVmFailure(routeBuilder, transaction(payload), 0, raw);
     expect(error).toMatchObject({
@@ -81,11 +81,18 @@ describe('message-bus batch VM refusal attribution', () => {
   });
 
   it('leaves valid message-bus batch and non-route covenant objections byte-compatible', () => {
-    const valid = transaction([0x53, 0x43, 0x42, 0x31, 1, 0, 1, ...Array(12).fill(0)]);
-    expect(messageBus.mapMessageBusVmFailure(routeBuilder, valid, 0, raw).message)
-      .toBe(`messageBus: BCH-2026 preflight failed at input 0: ${raw}`);
-    expect(messageBus.mapMessageBusVmFailure({ inputs: [{}] } as never, valid, 0, raw).message)
-      .toBe(`messageBus: BCH-2026 preflight failed at input 0: ${raw}`);
+    const validEnvelopes = [
+      [0x53, 0x43, 0x42, 0x31, 1, 0, 1, ...Array(12).fill(0)],
+      [0x53, 0x43, 0x42, 0x31, 2, 0, 1, ...Array(13).fill(0)],
+      [0x53, 0x43, 0x42, 0x31, 1, 1, 1, ...Array(21).fill(0)],
+    ];
+    for (const envelope of validEnvelopes) {
+      const valid = transaction(envelope);
+      expect(messageBus.mapMessageBusVmFailure(routeBuilder, valid, 0, raw).message)
+        .toBe(`messageBus: BCH-2026 preflight failed at input 0: ${raw}`);
+      expect(messageBus.mapMessageBusVmFailure({ inputs: [{}] } as never, valid, 0, raw).message)
+        .toBe(`messageBus: BCH-2026 preflight failed at input 0: ${raw}`);
+    }
   });
 
   it('maps a VM-priced resource refusal without discarding its raw reason', () => {

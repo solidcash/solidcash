@@ -791,6 +791,63 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[9].to).toEqual(Uint8Array.of(0x51));
   });
 
+  it('materializes a predecessor over its same-owner empty entry placeholder', () => {
+    const lock = new Uint8Array([0xaa, 0x20, 0x87]);
+    const outputs = Array.from({ length: 9 }, () => ({
+      to: Uint8Array.of(0x51),
+      amount: 1000n,
+    }));
+    outputs[8] = {
+      to: lock,
+      amount: 900n,
+      token: {
+        amount: 0n,
+        category: 'token',
+        nft: { capability: 'mutable' as const, commitment: '00'.repeat(64) },
+      },
+    };
+
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 0, 'token', [{
+      outputBlockSlot: 8,
+      lockingBytecode: lock,
+      commitment: 'abcd',
+    }])).toBe(1);
+    expect(outputs[8]).toEqual({
+      to: lock,
+      amount: 900n,
+      token: {
+        amount: 0n,
+        category: 'token',
+        nft: { capability: 'mutable', commitment: 'abcd' },
+      },
+    });
+  });
+
+  it('does not overwrite an unrelated mutable output at a predecessor coordinate', () => {
+    const lock = new Uint8Array([0xaa, 0x20, 0x87]);
+    const occupant = {
+      to: lock,
+      amount: 900n,
+      token: {
+        amount: 0n,
+        category: 'token',
+        nft: { capability: 'mutable' as const, commitment: '1234' },
+      },
+    };
+    const outputs = Array.from({ length: 9 }, () => ({
+      to: Uint8Array.of(0x51),
+      amount: 1000n,
+    }));
+    outputs[8] = occupant;
+
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 0, 'token', [{
+      outputBlockSlot: 8,
+      lockingBytecode: lock,
+      commitment: 'abcd',
+    }])).toBe(0);
+    expect(outputs[8]).toBe(occupant);
+  });
+
   it('does not pack a view tail onto the writer slot after a 22→26 rotate', () => {
     const groups: PhysicalReturnGroup[] = [
       group({

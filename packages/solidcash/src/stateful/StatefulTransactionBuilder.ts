@@ -1868,6 +1868,16 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
     return lock !== undefined && lock.length === predecessor.lockingBytecode.length
       && lock.every((byte, offset) => byte === predecessor.lockingBytecode[offset]);
   };
+  const sameDeclaredPlaceholder = (
+    output: Output | undefined, predecessor: (typeof predecessors)[number],
+  ): boolean => {
+    if (!output || output.token?.category !== categoryId
+      || output.token.nft?.capability !== 'mutable'
+      || !/^(?:00)+$/.test(commitmentHexOf(output.token.nft.commitment))) return false;
+    const lock = output.to instanceof Uint8Array ? output.to : undefined;
+    return lock !== undefined && lock.length === predecessor.lockingBytecode.length
+      && lock.every((byte, offset) => byte === predecessor.lockingBytecode[offset]);
+  };
 
   for (const predecessor of predecessors) {
     if (!Number.isInteger(predecessor.outputBlockSlot) || predecessor.outputBlockSlot < 0) continue;
@@ -1880,7 +1890,8 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
       index !== destination && samePredecessor(output, predecessor)
     ));
     const occupant = outputs[destination];
-    if (source < 0 && occupant?.token && !isPredOutReusableHole(occupant)) continue;
+    if (source < 0 && occupant?.token && !isPredOutReusableHole(occupant)
+      && !sameDeclaredPlaceholder(occupant, predecessor)) continue;
 
     const replacement = source >= 0 ? outputs[source] : {
       to: predecessor.lockingBytecode,

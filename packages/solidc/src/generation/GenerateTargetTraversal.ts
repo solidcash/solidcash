@@ -7180,10 +7180,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitAddCollectionIterCounts(locationData: SingleLocationData, callsiteDepth = 0): void {
     const iterCount = this.currentFunction.collectionIterations?.length ?? 0;
     for (let j = 0; j < iterCount; j++) {
-      this.emit(encodeInt(BigInt(
-        this.getStackIndex(`__internal__collectionIterCount_${j}`) + 1 + callsiteDepth,
-      )), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      const name = `__internal__collectionIterCount_${j}`;
+      this.emitPickCompilerRouteFrameValue(name, locationData, 1 + callsiteDepth);
       this.emit(Op.OP_ADD, locationData);
     }
   }
@@ -8799,10 +8797,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // journal slot. Without this offset, a returning collection-journal
       // helper which also threads scalar state replaces its first declared
       // return, leaving the scalar context to be captured as an entry value.
-      this.emitReplace(
-        this.getStackIndex(originalName) + targetFunc.returnTypes.length,
-        node,
-      );
+      this.emitReplaceCompilerRouteFrameValue(originalName, node, targetFunc.returnTypes.length);
       this.popFromStack();
     }
     for (let i = 0; i < targetFunc.returnTypes.length; i++) {
@@ -8830,7 +8825,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_OUTPUTVALUE, locationData);
         this.emit(Op.OP_ADD, locationData);
       }
-      this.emitReplace(this.getStackIndex(GRAPH_TRANSFER_REACHED), node);
+      this.emitReplaceCompilerRouteFrameValue(GRAPH_TRANSFER_REACHED, node);
       this.popFromStack();
     }
     // SEC-15. Record WHICH dispatch site reached an event-settling handler, so the epilogue can bind the
@@ -8844,7 +8839,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(1n << BigInt(node.graphEffectSite!)), locationData);
       this.emit(Op.OP_ADD, locationData);
       this.pushToStack('(graph_event_sites_new)');
-      this.emitReplace(this.getStackIndex(GRAPH_EVENT_SITE), node);
+      this.emitReplaceCompilerRouteFrameValue(GRAPH_EVENT_SITE, node);
       this.popFromStack();
     }
 
@@ -20952,8 +20947,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const returnParamName = returningExternalSlots.length === 1
           ? '__internal__externalReturnOutputIdx'
           : `__internal__externalReturnOutputIdx${lastReturnSlot.returnSlotIndex}`;
-        this.emit(encodeInt(BigInt(this.getStackIndex(returnParamName))), loc);
-        this.emit(Op.OP_PICK, loc);
+        this.emitPickCompilerRouteFrameValue(returnParamName, loc);
         this.emit(Op.OP_1ADD, loc);
       } else {
         this.emitTrailingBlockBase(blockSize, loc);
@@ -20970,15 +20964,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitAddCollectionIterCounts(loc); // collection-iter entry outputs precede chunk outputs (W4)
         const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
         if (batchCountIdx >= 0) {
-          this.emit(encodeInt(BigInt(batchCountIdx + 1)), loc);
-          this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+          this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1);
+          this.emit(Op.OP_ADD, loc);
         }
         const valueChunkCountIdx = this.getStackIndex(
           GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, true,
         );
         if (valueChunkCountIdx >= 0) {
-          this.emit(encodeInt(BigInt(valueChunkCountIdx + 1)), loc);
-          this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+          this.emitPickCompilerRouteFrameValue(
+            GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, loc, 1,
+          );
+          this.emit(Op.OP_ADD, loc);
         }
         // Subtract 1 when the reserved returnEvent slot is NOT materialized (returnOutputIdx < 0) - it does not
         // occupy an output, so the trailing chunks sit one lower. One untracked value (the running outIdx-partial)
@@ -20986,8 +20982,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const roiIdx = hasReturnEventSlot && this.currentFunction.blockLayout?.trailingBase === undefined
           ? this.getStackIndex('__internal__returnOutputIdx', true) : -1;
         if (roiIdx >= 0) {
-          this.emit(encodeInt(BigInt(roiIdx + 1)), loc);
-          this.emit(Op.OP_PICK, loc);
+          this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc, 1);
           this.emit(encodeInt(0n), loc);
           this.emit(Op.OP_LESSTHAN, loc);
           this.emit(Op.OP_SUB, loc);
@@ -24507,6 +24502,94 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(bottomOrdinalPlusOne)), locationData);
     this.emit(Op.OP_SUB, locationData);
     this.emit(Op.OP_PICK, locationData);
+  }
+
+  /**
+   * Copy a compiler-route frame value which was allocated before handler execution. Invoked handlers can leave
+   * runtime-only operands above that frame, so route values use their stable bottom ordinal. Ordinary functions
+   * retain the smaller top-relative form and may account for known temporary operands with extraStackOffset.
+   */
+  private emitPickCompilerRouteFrameValue(
+    name: string, locationData: SingleLocationData, extraStackOffset = 0,
+  ): void {
+    if (this.isCompilerMessageBusRoute()) {
+      this.emitPickTrackedFromBottom(name, locationData);
+      return;
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex(name) + extraStackOffset)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+  }
+
+  /**
+   * Replace a compiler-route frame value after an invoked handler returns a new copy on top. Handler-local
+   * runtime operands are intentionally absent from the static stack model, so the old slot is located from the
+   * bottom and the replacement is rotated into that runtime depth. Ordinary calls retain emitReplace's compact
+   * compile-time depth, including any known untracked return tuple.
+   */
+  private emitReplaceCompilerRouteFrameValue(
+    name: string, node: Node, ordinaryExtraStackOffset = 0,
+  ): void {
+    if (!this.isCompilerMessageBusRoute()) {
+      this.emitReplace(this.getStackIndex(name) + ordinaryExtraStackOffset, node);
+      return;
+    }
+
+    const locationData = { location: node.location, positionHint: PositionHint.END };
+    const topIndex = this.getStackIndex(name);
+    const bottomOrdinalPlusOne = this.stack.length - topIndex;
+
+    // Compute the old slot's current depth D, retain D while rolling out the old value, then rotate the returned
+    // replacement down D-1 positions. Retaining D shifts the old slot one position deeper for OP_ROLL.
+    this.emit(Op.OP_DEPTH, locationData);
+    this.emit(encodeInt(BigInt(bottomOrdinalPlusOne)), locationData);
+    this.emit(Op.OP_SUB, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_1ADD, locationData);
+    this.emit(Op.OP_ROLL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+
+    // Reuse emitReplace's deep runtime rotation. A target immediately below the replacement has D-1 == 0 and
+    // needs no rotation; all deeper targets shuttle the intervening values through the alt stack and restore them.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0NOTEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_ROT, locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_OVER, locationData);
+    this.emit(Op.OP_0NOTEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(encodeInt(3n), locationData);
+    this.emit(Op.OP_ROLL, locationData);
+    this.emit(Op.OP_TOALTSTACK, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0NOTEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_FROMALTSTACK, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
   }
 
   /**

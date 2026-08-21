@@ -156,6 +156,12 @@ describe('message-bus compilation selection', () => {
     // route reconstructs its outputs, including the key/value retained for conditional-delete settlement.
     expect(routeAsm.match(/OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_PICK/g)?.length ?? 0)
       .toBeGreaterThanOrEqual(6);
+    // Journal copies returned by an invoked handler are written back to their original route-frame slots by
+    // bottom ordinal too. The retained runtime depth is incremented before OP_ROLL so the depth value itself is
+    // skipped; a literal depth here would address handler-owned operands which are absent from the static model.
+    expect(routeAsm).toMatch(
+      /OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_DUP OP_1ADD OP_ROLL OP_DROP OP_1SUB/,
+    );
   });
 
   it('co-locates ecrecover sidecars with ordinary participant state and entry slots', () => {

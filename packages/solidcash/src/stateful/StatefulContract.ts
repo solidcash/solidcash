@@ -9289,6 +9289,40 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         (group.functionName ?? group.logicalFunctionName) === 'publishJobPost')
       ? persistedJobEventsWidth(publishCategory) : 0;
 
+    // Atomic participant extraction evaluates a compiler-routed delegate in a transaction-local coordinate
+    // system before embedding that participant in the final graph. The graph route intentionally retains final
+    // absolute coordinates, so temporarily rebase only the proxy identity witnesses used by this local probe and
+    // restore them before returning the builder to the composer. Without this, an implementation at local input
+    // `blockSize` can receive its final proxy index (often the same number), point at itself, and stop before any
+    // state or entry commitment can be learned.
+    const probeDelegate = delegatecallInputIndex === undefined ? undefined
+      : stb.getLowLevelCallUtxoGroups().find((group, index) => (
+        group.callMode === 'delegatecall'
+          && stb.getLowLevelCallMasterInputIndex(index) === delegatecallInputIndex
+          && group.compilerRoute?.internalArgs?.__internal__graphFixedSize !== undefined
+      ));
+    const probeRoute = probeDelegate?.compilerRoute?.abiFunction;
+    const probeRouteBlockSize = probeRoute?.blockLayout?.blockSize;
+    const localProxyMasterIndex = delegatecallInputIndex !== undefined && probeRouteBlockSize !== undefined
+      ? delegatecallInputIndex - probeRouteBlockSize : -1;
+    const rebasedProbeWitnesses: Record<string, FunctionArgument> = {};
+    const restoreProbeWitnesses: Record<string, FunctionArgument> = {};
+    if (probeDelegate?.refreshInternalArgs && probeRoute && localProxyMasterIndex >= 0) {
+      for (const name of ['__internal__proxyMasterIndex', '__internal__proxyMasterOutputIndex']) {
+        const argumentIndex = probeRoute.inputs.findIndex((input) => input.name === name);
+        if (argumentIndex < 0) continue;
+        const original = probeDelegate.internalArgs?.[name]
+          ?? probeDelegate.compilerRoute?.internalArgs?.[name]
+          ?? probeDelegate.compilerRoute?.args[argumentIndex];
+        if (original === undefined) continue;
+        restoreProbeWitnesses[name] = original;
+        rebasedProbeWitnesses[name] = BigInt(localProxyMasterIndex);
+      }
+      if (Object.keys(rebasedProbeWitnesses).length > 0) {
+        probeDelegate.refreshInternalArgs(rebasedProbeWitnesses, { shiftPredOut: false });
+        stb._refreshInputs();
+      }
+    }
     try {
       // Wrap the entire derivation body so any error becomes AutoDerivationError.
       // This cleanly separates derivation failures from programming bugs.
@@ -12684,6 +12718,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Wrap unexpected errors from the derivation try-body as AutoDerivationError
       // so that callers get a consistent error type for derivation failures.
       throw e;
+    } finally {
+      if (probeDelegate?.refreshInternalArgs && Object.keys(restoreProbeWitnesses).length > 0) {
+        probeDelegate.refreshInternalArgs(restoreProbeWitnesses, { shiftPredOut: false });
+        stb._refreshInputs();
+      }
     }
   }
 

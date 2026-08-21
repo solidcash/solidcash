@@ -127,6 +127,10 @@ describe('message-bus compilation selection', () => {
           total++;
           require(score > 0);
         }
+        function clear(address who, bool shouldClear) public {
+          if (shouldClear) { delete ratings[who]; }
+          require(!shouldClear || ratings[who].count == 0);
+        }
       }
     `, {
       forceStateful: true,
@@ -148,10 +152,10 @@ describe('message-bus compilation selection', () => {
     expect(routeAsm).not.toMatch(new RegExp(
       `(?:OP_(?:0|1NEGATE|[1-9]|1[0-6])|[0-9a-f]+) OP_PICK ${maskedKeyHash}`,
     ));
-    // The scalar journal value returned by the handler must use the same stable route-frame addressing before
-    // the route reconstructs its state output. One stable copy above is the mapping key; the second is `total`.
+    // Scalar and entry journals returned by handlers must use the same stable route-frame addressing before the
+    // route reconstructs its outputs, including the key/value retained for conditional-delete settlement.
     expect(routeAsm.match(/OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_PICK/g)?.length ?? 0)
-      .toBeGreaterThanOrEqual(2);
+      .toBeGreaterThanOrEqual(6);
   });
 
   it('co-locates ecrecover sidecars with ordinary participant state and entry slots', () => {

@@ -18845,13 +18845,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             // route frame. Their runtime height can grow independently of the route traversal's top-relative
             // model, but the route's own entry frame remains anchored at the bottom. Copy journal fields by that
             // stable ordinal when reconstructing the participant state commitment.
-            if (this.isCompilerMessageBusRoute(node)) {
-              this.emitPickTrackedFromBottom(stackName, locationData);
-            } else {
-              const stackIdx = this.getStackIndex(stackName);
-              this.emit(encodeInt(BigInt(stackIdx)), locationData);
-              this.emit(Op.OP_PICK, locationData);
-            }
+            this.emitPickSettlementValue(stackName, locationData, node);
             this.pushToStack('(value)');
           } else {
             // Read from input commitment, decode, re-encode
@@ -18892,15 +18886,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Clean up pending state write values from the stack
     for (const [, stackName] of this.pendingStateWrites) {
-      if (this.isCompilerMessageBusRoute(node)) {
-        this.emitDropTrackedFromBottom(stackName, locationData);
-      } else {
-        const idx = this.getStackIndex(stackName);
-        this.emit(encodeInt(BigInt(idx)), locationData);
-        this.emit(Op.OP_ROLL, locationData);
-        this.emit(Op.OP_DROP, locationData);
-        this.removeFromStack(idx);
-      }
+      this.emitDropSettlementValue(stackName, locationData, node);
     }
   }
 
@@ -20504,14 +20490,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.isAliasCondWrite(slotIdx)) continue; // gated separately below
 
       // Reconstruct expected commitment: key_enc OP_CAT value_enc
-      const keyStackIdx = this.getStackIndex(writeInfo.keyStackName);
-      this.emit(encodeInt(BigInt(keyStackIdx)), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitPickSettlementValue(writeInfo.keyStackName, locationData, node);
       this.pushToStack('(value)');
 
-      const valueStackIdx = this.getStackIndex(writeInfo.valueStackName);
-      this.emit(encodeInt(BigInt(valueStackIdx)), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitPickSettlementValue(writeInfo.valueStackName, locationData, node);
       this.pushToStack('(value)');
 
       this.emit(Op.OP_CAT, locationData);
@@ -20593,17 +20575,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (emitConditionalDeleteVerification, after read-only preservation) so their key_enc/value_enc stay for now.
     for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
       if (this.condDeleteSlots.has(slotIdx)) continue;
-      const keyIdx = this.getStackIndex(writeInfo.keyStackName);
-      this.emit(encodeInt(BigInt(keyIdx)), locationData);
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.removeFromStack(keyIdx);
-
-      const valIdx = this.getStackIndex(writeInfo.valueStackName);
-      this.emit(encodeInt(BigInt(valIdx)), locationData);
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.removeFromStack(valIdx);
+      this.emitDropSettlementValue(writeInfo.keyStackName, locationData, node);
+      this.emitDropSettlementValue(writeInfo.valueStackName, locationData, node);
     }
   }
 
@@ -20646,10 +20619,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         // gate = current key differs from EVERY canonical prior key
         aliasKeyNames.forEach((aliasKeyName, aliasIndex) => {
-          this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.keyStackName))), loc);
-          this.emit(Op.OP_PICK, loc); this.pushToStack('(aliaschk)');
-          this.emit(encodeInt(BigInt(this.getStackIndex(aliasKeyName))), loc);
-          this.emit(Op.OP_PICK, loc); this.pushToStack('(aliaschk)');
+          this.emitPickSettlementValue(writeInfo.keyStackName, loc);
+          this.pushToStack('(aliaschk)');
+          this.emitPickSettlementValue(aliasKeyName, loc);
+          this.pushToStack('(aliaschk)');
           this.emit(Op.OP_EQUAL, loc); this.popFromStack(2); this.pushToStack('(aliaschk)');
           if (aliasIndex > 0) {
             this.emit(Op.OP_BOOLOR, loc); this.popFromStack(2); this.pushToStack('(aliaschk)');
@@ -20659,11 +20632,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       // (a) commitment: output[slot] == key_enc ++ value_enc
-      this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.keyStackName))), loc);
-      this.emit(Op.OP_PICK, loc);
+      this.emitPickSettlementValue(writeInfo.keyStackName, loc);
       this.pushToStack('(value)');
-      this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.valueStackName))), loc);
-      this.emit(Op.OP_PICK, loc);
+      this.emitPickSettlementValue(writeInfo.valueStackName, loc);
       this.pushToStack('(value)');
       this.emit(Op.OP_CAT, loc);
       this.popFromStack(2);
@@ -20722,11 +20693,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, locationData);
 
       // (a) output commitment == key_enc CAT value_enc
-      this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.keyStackName))), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitPickSettlementValue(writeInfo.keyStackName, locationData, node);
       this.pushToStack('(value)');
-      this.emit(encodeInt(BigInt(this.getStackIndex(writeInfo.valueStackName))), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitPickSettlementValue(writeInfo.valueStackName, locationData, node);
       this.pushToStack('(value)');
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
@@ -20771,16 +20740,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Clean up the soft-delete slots' key_enc/value_enc.
     for (const slotIdx of this.condDeleteSlots) {
       const writeInfo = this.pendingEntryWrites.get(slotIdx)!;
-      const keyIdx = this.getStackIndex(writeInfo.keyStackName);
-      this.emit(encodeInt(BigInt(keyIdx)), locationData);
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.removeFromStack(keyIdx);
-      const valIdx = this.getStackIndex(writeInfo.valueStackName);
-      this.emit(encodeInt(BigInt(valIdx)), locationData);
-      this.emit(Op.OP_ROLL, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.removeFromStack(valIdx);
+      this.emitDropSettlementValue(writeInfo.keyStackName, locationData, node);
+      this.emitDropSettlementValue(writeInfo.valueStackName, locationData, node);
     }
   }
 
@@ -24562,6 +24523,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ROLL, locationData);
     this.emit(Op.OP_DROP, locationData);
     this.removeFromStack(topIndex);
+  }
+
+  /**
+   * Copy a journal value during covenant settlement. Compiler-owned routes can return runtime-only handler
+   * operands above their tracked ABI frame, so their journal identities are stable only from the bottom.
+   * Ordinary entry points retain the smaller top-relative form.
+   */
+  private emitPickSettlementValue(
+    name: string, locationData: SingleLocationData, node = this.currentFunction,
+  ): void {
+    if (this.isCompilerMessageBusRoute(node)) {
+      this.emitPickTrackedFromBottom(name, locationData);
+      return;
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+  }
+
+  /** Drop the original of a value copied by emitPickSettlementValue. */
+  private emitDropSettlementValue(
+    name: string, locationData: SingleLocationData, node = this.currentFunction,
+  ): void {
+    if (this.isCompilerMessageBusRoute(node)) {
+      this.emitDropTrackedFromBottom(name, locationData);
+      return;
+    }
+    const index = this.getStackIndex(name);
+    this.emit(encodeInt(BigInt(index)), locationData);
+    this.emit(Op.OP_ROLL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.removeFromStack(index);
   }
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {

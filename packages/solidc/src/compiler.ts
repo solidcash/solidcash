@@ -2344,8 +2344,7 @@ function synthesizeMessageBusRoute(
       // expands enormous fixed arrays before every fallback rung rejects the generated route. The ordinary entry
       // point is unchanged, so applications that need a larger direct result keep it.
       reason = 'result-route-static-payload-too-large';
-    } else if (!reason && writesArrayStructElement
-      && (compilerOptions as InternalCompilerOptions).__messageBusMode !== 'enabled') {
+    } else if (!reason && writesArrayStructElement && !explicitlyEnabledMessageBus) {
       // Partial array-of-struct writes currently reach a direct-only fallback after every admission rung. Reads
       // of the same struct remain batchable; refuse only the mutation shape until it has a row encoding.
       reason = 'array-struct-element-write-route-not-enabled';

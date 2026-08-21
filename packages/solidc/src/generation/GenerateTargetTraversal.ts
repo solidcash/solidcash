@@ -15965,9 +15965,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             localEntrySlot,
           });
         }
-        // The accumulator is a TRACKED item for i>0, so getStackIndex already counts it - no manual +1.
-        this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName))), loc);
-        this.emit(Op.OP_PICK, loc);
+        // Route parameters are immutable ABI-frame values. Handler invocations can leave runtime-only working
+        // values above that frame, so a top-relative depth may silently select an adjacent route key even though
+        // the compile-time tracker remains internally consistent. Copy route-owned keys by their stable bottom
+        // ordinal, matching the topology/value witness capsule convention. Ordinary functions and synthesized
+        // locals keep the smaller top-relative form because their frames can begin above an OP_INVOKE return item.
+        const routeOwnedParameter = this.isCompilerMessageBusRoute()
+          && this.currentFunction.parameters.some((parameter) => parameter.name === keyParamName);
+        if (routeOwnedParameter) {
+          this.emitPickTrackedFromBottom(keyParamName, loc);
+        } else {
+          // The accumulator is a TRACKED item for i>0, so getStackIndex already counts it - no manual +1.
+          this.emit(encodeInt(BigInt(this.getStackIndex(keyParamName))), loc);
+          this.emit(Op.OP_PICK, loc);
+        }
         this.pushToStack('(__skh_acc)');       // track the picked key copy (becomes / merges into the accumulator)
       } else {
         node.keys[i] = this.visit(node.keys[i]); // pushes + tracks the key value on top

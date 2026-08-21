@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../src/compiler.js';
 
 describe('message-bus compilation selection', () => {
@@ -109,6 +110,42 @@ describe('message-bus compilation selection', () => {
     ]);
     expect(artifact.messageBus?.route.entryAccesses?.flatMap((access) => access.keyParams)
       .some((key) => key.includes('AbiDecodeAtNode'))).toBe(false);
+  });
+
+  it('copies route-owned sorted mapping keys by stable bottom ordinal', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract RouteKeys {
+        struct Rating { uint32 average; uint count; }
+        mapping(address => uint) fees;
+        mapping(address => Rating) ratings;
+        function fee(address who) public view returns (uint) { return fees[who]; }
+        function update(address who, uint8 score) public {
+          Rating storage rating = ratings[who];
+          rating.average = uint32(score * 10000);
+          rating.count++;
+          require(score > 0);
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    const routeBody = artifact.functionBodies?.['53434231'];
+    expect(routeBody).toBeDefined();
+    const routeAsm = bytecodeToAsm(Uint8Array.from(Buffer.from(routeBody!, 'hex')));
+    const maskedKeyHash = 'OP_SHA256 1f OP_SPLIT 7f OP_AND OP_CAT';
+    expect(routeAsm).toMatch(new RegExp(
+      `OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_PICK ${maskedKeyHash}`,
+    ));
+    // A literal/top-relative depth immediately before the hash is the unstable form: handler calls may leave
+    // runtime-only values above the ABI frame and redirect that pick to an adjacent collection key.
+    expect(routeAsm).not.toMatch(new RegExp(
+      `(?:OP_(?:0|1NEGATE|[1-9]|1[0-6])|[0-9a-f]+) OP_PICK ${maskedKeyHash}`,
+    ));
   });
 
   it('co-locates ecrecover sidecars with ordinary participant state and entry slots', () => {

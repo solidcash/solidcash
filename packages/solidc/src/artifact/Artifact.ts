@@ -1,7 +1,7 @@
 import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
-  EnumType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
+  EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
   ValueProvenance, ValueProvenanceKind,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
@@ -13,6 +13,8 @@ import {
   BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
+  StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
+  MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
@@ -724,6 +726,242 @@ function buildFunctionAbiMetadata(
         }
       });
     }
+    if (!func.body || slots.length < 2
+      || !slots.some((slot) => slot.returnTypes?.length === 1)) {
+      return result.sort((left, right) =>
+        left.consumerCallsiteId - right.consumerCallsiteId
+        || left.argument - right.argument
+        || left.producerCallsiteId - right.producerCallsiteId);
+    }
+
+    // A result can flow through state before a later call consumes it:
+    // `items[i].id = producer.make(); consumer.use(items[i].id)`. Pre-transaction state cannot resolve that
+    // consumer argument. Convert only an exact, dominating whole-field write into the external-call expression
+    // form the SDK already knows how to derive. Computed writes remain unsupported rather than substituting a
+    // raw result for an arithmetic or partial expression.
+    type StatePath = { root: string; keys: readonly string[]; fields: readonly string[] };
+    type StatementPosition = { block: BlockNode; index: number };
+    type StateResultWrite = StatePath & {
+      producerCallsiteId: number;
+      producer: typeof slots[number];
+      position: StatementPosition;
+    };
+    const visibleParameters = func.parameters.filter((parameter) =>
+      !parameter.name.startsWith('__internal__'));
+    const expressionKey = (expression: ExpressionNode, seen = new Set<Node>()): string => {
+      if (seen.has(expression)) return `cycle:${expression.constructor.name}`;
+      seen = new Set(seen);
+      seen.add(expression);
+      if (expression instanceof IdentifierNode) {
+        const parameter = visibleParameters.findIndex((candidate) => candidate.name === expression.name);
+        return parameter >= 0 ? `param:${parameter}` : `id:${expression.name}`;
+      }
+      if (expression instanceof LiteralNode) {
+        const value = expression.value instanceof Uint8Array
+          ? binToHex(expression.value) : String(expression.value);
+        return `literal:${value}`;
+      }
+      if (expression instanceof CastNode) {
+        return `cast:${expression.type.toString()}:${expressionKey(expression.expression, seen)}`;
+      }
+      if (expression instanceof BinaryOpNode) {
+        return `binary:${expression.operator}:${expressionKey(expression.left, seen)}`
+          + `:${expressionKey(expression.right, seen)}`;
+      }
+      if (expression instanceof FieldAccessNode) {
+        return `field:${expressionKey(expression.expression, seen)}:${expression.name}`;
+      }
+      if (expression instanceof MappingAccessNode) {
+        return `access:${expression.name}:${expression.keys.map((key) => expressionKey(key, seen)).join('|')}`;
+      }
+      if (expression instanceof ArrayAccessNode) {
+        return `array:${expressionKey(expression.array, seen)}:${expressionKey(expression.index, seen)}`;
+      }
+      if (expression instanceof StateAccessNode) return `state:${expression.name}`;
+      return `${expression.constructor.name}:${expression.location?.start.line ?? 0}`
+        + `:${expression.location?.start.column ?? 0}`;
+    };
+    const serializedKey = (expression: ExternalCallExpression): string => {
+      if (expression.kind === 'source' && expression.source?.kind === 'forward') {
+        return `param:${expression.source.paramIndex}`;
+      }
+      if (expression.kind === 'literal') return `literal:${String(expression.value)}`;
+      if (expression.kind === 'cast' && expression.expression) {
+        return `cast:${expression.type ?? ''}:${serializedKey(expression.expression)}`;
+      }
+      if (expression.kind === 'binary' && expression.left && expression.right) {
+        return `binary:${expression.operator}:${serializedKey(expression.left)}:${serializedKey(expression.right)}`;
+      }
+      if (expression.kind === 'field' && expression.expression && expression.name) {
+        return `field:${serializedKey(expression.expression)}:${expression.name}`;
+      }
+      if (expression.kind === 'stateAccess' && expression.name) {
+        return `access:${expression.name}:${(expression.args ?? []).map(serializedKey).join('|')}`;
+      }
+      if (expression.kind === 'arrayAccess' && expression.left && expression.right) {
+        return `array:${serializedKey(expression.left)}:${serializedKey(expression.right)}`;
+      }
+      if (expression.kind === 'state' && expression.name) return `state:${expression.name}`;
+      return JSON.stringify(expression);
+    };
+    const serializedStatePath = (expression: ExternalCallExpression): StatePath | undefined => {
+      if (expression.kind === 'field' && expression.expression && expression.name) {
+        const base = serializedStatePath(expression.expression);
+        return base && { ...base, fields: [...base.fields, expression.name] };
+      }
+      if (expression.kind === 'stateAccess' && expression.name) {
+        return {
+          root: expression.name,
+          keys: (expression.args ?? []).map(serializedKey),
+          fields: [],
+        };
+      }
+      if (expression.kind === 'arrayAccess' && expression.left && expression.right) {
+        const base = serializedStatePath(expression.left);
+        return base && { ...base, keys: [...base.keys, serializedKey(expression.right)] };
+      }
+      if (expression.kind === 'state' && expression.name) return { root: expression.name, keys: [], fields: [] };
+      return undefined;
+    };
+    const sameStatePath = (left: StatePath, right: StatePath): boolean =>
+      left.root === right.root
+      && left.keys.join('\0') === right.keys.join('\0')
+      && left.fields.join('\0') === right.fields.join('\0');
+    const statementPositions = new Map<Node, StatementPosition>();
+    const indexStatements = (block: BlockNode): void => {
+      (block.statements ?? []).forEach((statement, index) => {
+        const position = { block, index };
+        const indexNode = (value: unknown, seen = new Set<object>()): void => {
+          if (!(value instanceof Node) || seen.has(value)) return;
+          seen.add(value);
+          statementPositions.set(value, position);
+          if (value instanceof BlockNode) {
+            indexStatements(value);
+            return;
+          }
+          for (const [key, child] of Object.entries(value)) {
+            if ([
+              'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+              'referencedContract', 'stateVariable', 'collection',
+            ].includes(key)) continue;
+            if (child instanceof Node) indexNode(child, seen);
+            else if (Array.isArray(child)) for (const item of child) indexNode(item, seen);
+          }
+        };
+        indexNode(statement);
+      });
+    };
+    if (func.body) indexStatements(func.body);
+    const producerLeaves = (
+      expression: ExpressionNode, fields: readonly string[] = [],
+    ): readonly { producer: typeof slots[number]; fields: readonly string[] }[] => {
+      const producerSlot = slotByCall.get(expression);
+      if (producerSlot !== undefined) {
+        const producer = slots.find((slot) => slot.slotIndex === producerSlot);
+        return producer?.returnTypes?.length === 1 ? [{ producer, fields }] : [];
+      }
+      if (!(expression instanceof FunctionCallNode)) return [];
+      const structFields = expression.type instanceof StructType
+        ? expression.type.fields
+        : contract?.structDefinitions.find((candidate) =>
+          candidate.name === expression.identifier.name)?.fields;
+      if (!structFields || structFields.length !== expression.parameters.length) return [];
+      return expression.parameters.flatMap((parameter, index) =>
+        producerLeaves(parameter, [...fields, structFields[index].name]));
+    };
+    const stateWrites: StateResultWrite[] = [];
+    // CacheDynamicArrayInLoop rewrites writes through `__dlcache_<name>` while external-call expression metadata
+    // deliberately keeps the authenticated state name. Both spellings identify the same state collection.
+    const stateRoot = (name: string): string => name.startsWith('__dlcache_')
+      ? name.slice('__dlcache_'.length) : name;
+    visit(func.body, (node) => {
+      let base: StatePath | undefined;
+      let value: ExpressionNode | undefined;
+      if (node instanceof StateAssignNode) {
+        base = { root: stateRoot(node.name), keys: [], fields: [] };
+        value = node.expression;
+      } else if (node instanceof StateArrayAssignNode || node instanceof ArrayAssignNode) {
+        base = { root: stateRoot(node.name), keys: [expressionKey(node.index)], fields: [] };
+        value = node.value;
+      } else if (node instanceof MappingAssignNode) {
+        base = { root: stateRoot(node.name), keys: node.keys.map((key) => expressionKey(key)), fields: [] };
+        value = node.expression;
+      } else if (node instanceof MappingFieldAssignNode) {
+        base = {
+          root: stateRoot(node.name),
+          keys: node.keys.map((key) => expressionKey(key)),
+          fields: [node.fieldName, ...(node.trailingMembers ?? [])],
+        };
+        value = node.expression;
+      }
+      const position = statementPositions.get(node);
+      if (!base || !value || !position) return;
+      for (const leaf of producerLeaves(value)) {
+        stateWrites.push({
+          ...base,
+          fields: [...base.fields, ...leaf.fields],
+          producerCallsiteId: leaf.producer.slotIndex,
+          producer: leaf.producer,
+          position,
+        });
+      }
+    });
+    const sourceExpression = (source: ExternalCallArgSource): ExternalCallExpression =>
+      source.kind === 'expression' && source.expression
+        ? source.expression : { kind: 'source', source };
+    const producerExpression = (write: StateResultWrite): ExternalCallExpression => ({
+      kind: 'externalCall',
+      name: `${write.producer.interfaceName}.${write.producer.functionName}`,
+      args: (write.producer.argSources ?? []).map(sourceExpression),
+      type: write.producer.returnTypes![0].toString(),
+    });
+    const rewriteStateRead = (
+      expression: ExternalCallExpression, write: StateResultWrite,
+    ): { expression: ExternalCallExpression; changed: boolean } => {
+      const path = serializedStatePath(expression);
+      if (path && sameStatePath(path, write)) return { expression: producerExpression(write), changed: true };
+      let changed = false;
+      const rewrite = (child: ExternalCallExpression | undefined): ExternalCallExpression | undefined => {
+        if (!child) return child;
+        const rewrittenChild = rewriteStateRead(child, write);
+        changed ||= rewrittenChild.changed;
+        return rewrittenChild.expression;
+      };
+      const args = expression.args?.map((child) => rewrite(child)!);
+      return {
+        expression: {
+          ...expression,
+          ...(expression.expression && { expression: rewrite(expression.expression) }),
+          ...(expression.left && { left: rewrite(expression.left) }),
+          ...(expression.right && { right: rewrite(expression.right) }),
+          ...(expression.condition && { condition: rewrite(expression.condition) }),
+          ...(expression.ifTrue && { ifTrue: rewrite(expression.ifTrue) }),
+          ...(expression.ifFalse && { ifFalse: rewrite(expression.ifFalse) }),
+          ...(args && { args }),
+        },
+        changed,
+      };
+    };
+    for (const slot of slots) {
+      const consumerPosition = slot.sourceCallNode && statementPositions.get(slot.sourceCallNode);
+      if (!consumerPosition || !slot.argSources) continue;
+      slot.argSources.forEach((source, argument) => {
+        if (source.kind !== 'expression' || !source.expression) return;
+        for (const write of stateWrites) {
+          if (write.position.block !== consumerPosition.block
+            || write.position.index >= consumerPosition.index
+            || write.producerCallsiteId >= slot.slotIndex) continue;
+          const rewritten = rewriteStateRead(source.expression, write);
+          if (!rewritten.changed) continue;
+          source.expression = rewritten.expression;
+          result.push({
+            consumerCallsiteId: slot.slotIndex,
+            argument,
+            producerCallsiteId: write.producerCallsiteId,
+          });
+        }
+      });
+    }
     return result.sort((left, right) =>
       left.consumerCallsiteId - right.consumerCallsiteId
       || left.argument - right.argument
@@ -827,57 +1065,57 @@ function buildFunctionAbiMetadata(
         const resultArrayOutput = !ec.condition && occurrenceInfo.occurrence === 'loop'
           ? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;
         return {
-        callsiteId: ec.slotIndex,
-        ...(ec.sourceCallNode && {
-          sourceLocation: {
-            line: ec.sourceCallNode.location.start.line,
-            column: ec.sourceCallNode.location.start.column,
-          },
-        }),
-        ...occurrenceInfo,
-        ...(ec.condition && { condition: ec.condition }),
-        ...(resultArrayOutput !== undefined && { resultArrayOutput }),
-        interfaceName: ec.interfaceName,
-        functionName: ec.functionName,
-        ...(ec.addressParam && { addressParam: ec.addressParam }),
-        ...(ec.addressStateVar && { addressStateVar: ec.addressStateVar }),
-        ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),
-        ...(ec.loopArrayVar && { loopArrayVar: ec.loopArrayVar }),
-        ...(ec.selectorArrayVar && { selectorArrayVar: ec.selectorArrayVar }),
-        ...(ec.selectorArrayVar && ec.sourceCallNode && {
-          possibleTargets: possibleSelectorTargets(ec.interfaceName, ec.sourceCallNode.parameters),
-        }),
-        ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
-        ...(ec.addressSource && { addressSource: ec.addressSource }),
-        ...(ec.fnPtrCall && { fnPtrCall: true }),
-        // Explicit (true AND false) for regular direct calls so the SDK skips a single-method callee's (absent)
-        // witness selector; call/staticcall/delegatecall inject no selector param.
-        ...(!ec.callMode && { needsSelectorVerification: !!ec.needsSelectorVerification }),
-        requiredDataNftIndices: ec.requiredDataNftIndices,
-        ...(ec.hasReturnValues && { hasReturnValues: true }),
-        ...(ec.returnTypes && ec.returnTypes.length > 0 && {
-          returnTypes: ec.returnTypes.map((t) => t.toString()),
-        }),
-        ...(ec.returnEventSignature && { returnEventSignature: ec.returnEventSignature }),
-        ...(ec.computedOffset !== undefined && ec.computedOffset > 0 && { computedOffset: ec.computedOffset }),
-        ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
-        ...(ec.opaqueReturn && { opaqueReturn: true }),
-        ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
-        ...(ec.rawSelector && { rawSelector: binToHex(ec.rawSelector) }),
-        ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
-        // Publish the empty list too. Omission means legacy/unknown provenance to SDK consumers; a present empty
-        // list is the proof that this call has zero arguments and needs no runtime argument resolution.
-        ...(ec.argSources && { argSources: ec.argSources }),
-        ...(ec.batchInvocations && {
-          batchInvocations: ec.batchInvocations.map((row) => ({
-            selector: binToHex(row.selector),
-            logicalIndex: row.logicalIndex,
-            inputs: row.parameterTypes.map((type, index) => ({
-              name: `arg${index}`, type: abiTypeString(type),
+          callsiteId: ec.slotIndex,
+          ...(ec.sourceCallNode && {
+            sourceLocation: {
+              line: ec.sourceCallNode.location.start.line,
+              column: ec.sourceCallNode.location.start.column,
+            },
+          }),
+          ...occurrenceInfo,
+          ...(ec.condition && { condition: ec.condition }),
+          ...(resultArrayOutput !== undefined && { resultArrayOutput }),
+          interfaceName: ec.interfaceName,
+          functionName: ec.functionName,
+          ...(ec.addressParam && { addressParam: ec.addressParam }),
+          ...(ec.addressStateVar && { addressStateVar: ec.addressStateVar }),
+          ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),
+          ...(ec.loopArrayVar && { loopArrayVar: ec.loopArrayVar }),
+          ...(ec.selectorArrayVar && { selectorArrayVar: ec.selectorArrayVar }),
+          ...(ec.selectorArrayVar && ec.sourceCallNode && {
+            possibleTargets: possibleSelectorTargets(ec.interfaceName, ec.sourceCallNode.parameters),
+          }),
+          ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
+          ...(ec.addressSource && { addressSource: ec.addressSource }),
+          ...(ec.fnPtrCall && { fnPtrCall: true }),
+          // Explicit (true AND false) for regular direct calls so the SDK skips a single-method callee's (absent)
+          // witness selector; call/staticcall/delegatecall inject no selector param.
+          ...(!ec.callMode && { needsSelectorVerification: !!ec.needsSelectorVerification }),
+          requiredDataNftIndices: ec.requiredDataNftIndices,
+          ...(ec.hasReturnValues && { hasReturnValues: true }),
+          ...(ec.returnTypes && ec.returnTypes.length > 0 && {
+            returnTypes: ec.returnTypes.map((t) => t.toString()),
+          }),
+          ...(ec.returnEventSignature && { returnEventSignature: ec.returnEventSignature }),
+          ...(ec.computedOffset !== undefined && ec.computedOffset > 0 && { computedOffset: ec.computedOffset }),
+          ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
+          ...(ec.opaqueReturn && { opaqueReturn: true }),
+          ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
+          ...(ec.rawSelector && { rawSelector: binToHex(ec.rawSelector) }),
+          ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
+          // Publish the empty list too. Omission means legacy/unknown provenance to SDK consumers; a present empty
+          // list is the proof that this call has zero arguments and needs no runtime argument resolution.
+          ...(ec.argSources && { argSources: ec.argSources }),
+          ...(ec.batchInvocations && {
+            batchInvocations: ec.batchInvocations.map((row) => ({
+              selector: binToHex(row.selector),
+              logicalIndex: row.logicalIndex,
+              inputs: row.parameterTypes.map((type, index) => ({
+                name: `arg${index}`, type: abiTypeString(type),
+              })),
+              ...(row.argSources && { argSources: row.argSources }),
             })),
-            ...(row.argSources && { argSources: row.argSources }),
-          })),
-        }),
+          }),
         };
       }),
     }),

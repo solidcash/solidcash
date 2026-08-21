@@ -230,4 +230,34 @@ describe('Release 0 shared invocation analysis', () => {
         { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0 },
       ]);
   });
+
+  it('links a produced result through an exact state-field write to a later call', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProducer { function quote(bigint n) returns (bigint); }
+      interface IConsumer { function settle(bigint quoted); }
+      struct Item { bigint id; }
+      contract StateResultFlow() {
+        Item[] items;
+        function run(address producer, address consumer, bigint i, bigint n) public {
+          if (n > 0) { items[i].id = n; }
+          items[i].id = IProducer(producer).quote(n);
+          IConsumer(consumer).settle(items[i].id);
+          require(n >= 0);
+        }
+      }`, { forceStateful: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'run')!;
+    expect(fn.resultConsumers).toEqual([{
+      consumerCallsiteId: 1,
+      argument: 0,
+      producerCallsiteId: 0,
+    }]);
+    expect(fn.externalCalls?.[1].argSources?.[0]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'externalCall',
+        name: 'IProducer.quote',
+        type: 'bigint',
+      },
+    });
+  });
 });

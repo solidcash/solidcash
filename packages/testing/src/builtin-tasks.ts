@@ -17,10 +17,10 @@ import { generateTypechainTargets, watchTypechainTargets } from './typegen.js';
 import { diagnoseProject } from './doctor.js';
 
 /**
- * Project artifacts depend on the emitted compiler implementation, not only its package version. During local
- * development the version remains stable while compiler passes and artifact metadata change, so version-only
- * keys can silently publish stale artifacts. Hashing the emitted JavaScript tree costs only a few milliseconds
- * and avoids invalidating artifacts for declaration/source-map timestamp churn.
+ * Project artifacts depend on emitted JavaScript implementations, not only package versions. During local
+ * development versions remain stable while compiler passes, shared code-generation constants, and artifact
+ * metadata change, so version-only keys can silently publish stale artifacts. Hashing emitted JavaScript trees
+ * costs only a few milliseconds and avoids invalidating artifacts for declaration/source-map timestamp churn.
  */
 function compilerJavaScriptFingerprint(entryFile: string): string {
   const root = path.dirname(entryFile);
@@ -146,7 +146,9 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       version: compilerVersion,
     } = await import('solidc');
     const compilerEntry = createRequire(import.meta.url).resolve('solidc');
+    const compilerUtilsEntry = createRequire(import.meta.url).resolve('@solidcash/utils');
     const compilerCacheIdentity = `${compilerVersion}:${compilerJavaScriptFingerprint(compilerEntry)}`
+      + `:${compilerJavaScriptFingerprint(compilerUtilsEntry)}`
       + (process.env.SOLIDCASH_NO_OUTLINE ? ':no-outline' : '');
     const { asmToBytecode, formatArtifact, formatSplitArtifactBundle } = await import('@solidcash/utils');
     const contractsDir = path.resolve(hre.config.paths.contracts);

@@ -27,7 +27,7 @@ import {
 } from './graph.js';
 import { encodeMessageBatch } from './message-bus.js';
 import {
-  convergeMessageBusFixedStateOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
+  convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 
@@ -1371,10 +1371,10 @@ export class AtomicMessageBusComposition {
       return { builder: aggregate, actualSizes, incompleteDynamicChunks };
     };
     const admit = (builder: TransactionBuilder): TransactionBuilder => {
-      const convergence = convergeMessageBusFixedStateOutputs(builder);
+      const convergence = convergeMessageBusComputedResourceOutputs(builder);
       if (convergence.repairs > 0) {
         throw new Error(
-          'messageBus: mutable state changed after semantic-manifest convergence; refusing a stale manifest',
+          'messageBus: mutable resources changed after semantic-manifest convergence; refusing a stale manifest',
         );
       }
       preflightMessageBusTransaction(builder, finalizedByteGateOptionsForProvider(builder.provider));
@@ -1637,39 +1637,47 @@ export class AtomicMessageBusComposition {
         }
         // A resource claim learned on the prior pass must seed the new local probe. Otherwise the verifier sees
         // the old local commitment, rejects it against the new manifest before the implementation executes, and
-        // the covenant cannot reach the state pin which originally authenticated the claim. Restrict seeding to
-        // exact in-place mutable data-NFT lineage; every other resource class keeps its ordinary derivation path.
-        let seededFixedState = false;
+        // the covenant cannot reach the pin which originally authenticated the claim. Restrict seeding to exact
+        // mutable data-NFT lineage and compiler-declared entry coordinates; every other resource class keeps its
+        // ordinary derivation path.
+        let seededComputedResource = false;
         for (const slot of resourceSlots) {
-          if (slot.kind !== 'dataNft') continue;
+          if (slot.kind !== 'dataNft' && slot.kind !== 'entry') continue;
           const claim = claimedResourceEffects.find((effect) => effect.participant === slot.participant
-            && effect.offset === slot.offset && effect.mode === 0);
+            && effect.offset === slot.offset
+            && (slot.kind === 'dataNft' ? effect.mode === 0 : effect.mode === 0 || effect.mode === 1));
           if (!claim) continue;
           const absolute = finalized.layout.participantInputs[slot.participant] + slot.offset;
           const input = provisional.inputs[absolute];
           const output = provisional.outputs[absolute];
-          if (input?.token?.nft?.capability !== 'mutable'
-            || output?.token?.nft?.capability !== 'mutable'
+          if (output?.token?.nft?.capability !== 'mutable') continue;
+          if (slot.kind === 'dataNft' && (input?.token?.nft?.capability !== 'mutable'
             || input.token.category !== output.token.category
-            || input.token.nft.commitment !== claim.inputCommitmentHex) continue;
+            || input.token.nft.commitment !== claim.inputCommitmentHex)) continue;
+          if (slot.kind === 'entry') {
+            const inputMutable = input?.token?.nft?.capability === 'mutable';
+            if ((claim.mode === 0 && (!inputMutable || input.token!.category !== output.token.category))
+              || (claim.mode === 1 && inputMutable)) continue;
+          }
           const proposed = hexToBin(claim.outputCommitmentHex);
           const action = canApplyRepairedNftCommitment({
             capability: output.token.nft.capability,
             currentCommitmentHex: output.token.nft.commitment,
             proposed,
             hasLockingBytecode: false,
-            fixedStateSlot: true,
+            fixedStateSlot: slot.kind === 'dataNft',
+            maximumCommitmentBytes: provider.consensusLimits?.maximumNftCommitmentBytes ?? 128,
           });
           if (action === 'skip') continue;
           output.token.nft.commitment = claim.outputCommitmentHex;
-          seededFixedState = true;
+          seededComputedResource = true;
         }
         // State derived by a delegated or cross-participant call is unknowable to the isolated local builders.
         // Converge it on the complete graph before reading resource effects, so the next manifest authenticates
         // the repaired commitment rather than treating the late write as an unclaimed output mutation.
-        const stateConvergence = convergeMessageBusFixedStateOutputs(provisional);
-        if (seededFixedState || stateConvergence.repairs > 0) {
-          rebalanceFeeTail(provisional, 'converged mutable state outputs');
+        const resourceConvergence = convergeMessageBusComputedResourceOutputs(provisional);
+        if (seededComputedResource || resourceConvergence.repairs > 0) {
+          rebalanceFeeTail(provisional, 'converged mutable resource outputs');
         }
         const derivedResourceEffects: AtomicResourceSlotEffect[] = [];
         for (const slot of resourceSlots) {

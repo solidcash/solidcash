@@ -134,7 +134,7 @@ const requireMessageBusBlockAssembly = (builder: TransactionBuilder): BalancedAs
   );
 };
 
-export interface MessageBusFixedStateConvergence {
+export interface MessageBusComputedResourceConvergence {
   /** Number of commitment writes applied to the unsigned builder. */
   repairs: number;
   /** Number of complete-transaction VM passes needed to reach the fixed point. */
@@ -144,39 +144,58 @@ export interface MessageBusFixedStateConvergence {
 }
 
 /**
- * Converge compiler-declared mutable data-NFT outputs against the complete atomic transaction.
+ * Converge compiler-declared mutable outputs against the complete atomic transaction.
  *
  * Participant-local builders cannot derive state whose value depends on another participant: the covenant only
  * sees that value once every block and the verifier tail have been assembled. This recovery therefore runs on
  * the aggregate, before strict preflight and final signing, and accepts only an exact covenant equality witness:
  * `expectedCommitment outputIndex OP_OUTPUTTOKENCOMMITMENT OP_EQUAL[VERIFY]`.
  *
- * The repair authority is deliberately structural. An evaluating input may update only a `dataNft` coordinate
- * declared inside its own balanced participant block, and that coordinate must preserve a mutable NFT's category,
- * value, and locking bytecode in place. Entries, dynamic chunks, events, transfers, read-only state, identities,
- * verifiers, and the fee tail are never candidates. Conflicting covenant observations are refused rather than
- * resolved by evaluation order.
+ * The repair authority is deliberately structural. An evaluating input may update only a mutable `dataNft` or
+ * `entry` coordinate declared inside its own balanced participant block. Data NFTs must preserve category, value,
+ * and locking bytecode in place. Entry targets may also replace a token-free balanced input when the compiler
+ * reserved that exact entry slot. Dynamic chunks, events, transfers, read-only state, identities, verifiers, and
+ * the fee tail are never candidates. Conflicting covenant observations are refused rather than resolved by
+ * evaluation order.
  */
-export const convergeMessageBusFixedStateOutputs = (
+const convergeMessageBusMutableResourceOutputs = (
   builder: TransactionBuilder,
-): MessageBusFixedStateConvergence => {
+  includeEntries: boolean,
+): MessageBusComputedResourceConvergence => {
   const assembly = requireMessageBusBlockAssembly(builder);
   const ownedByBlock = new Map<number, Set<number>>();
+  const fixedStateOutputs = new Set<number>();
   for (const block of assembly.blocks) {
     const owned = new Set<number>();
+    const blockCategory = builder.inputs[block.base]?.token?.category?.toLowerCase();
     for (const slot of block.blockLayout.slots) {
-      if (slot.kind !== 'dataNft') continue;
+      if (slot.kind !== 'dataNft' && (!includeEntries || slot.kind !== 'entry')) continue;
       const outputIndex = block.base + slot.offset;
       const input = builder.inputs[outputIndex];
       const output = builder.outputs[outputIndex];
-      if (input?.token?.nft?.capability !== 'mutable'
-        || output?.token?.nft?.capability !== 'mutable'
-        || input.token.category.toLowerCase() !== output.token.category.toLowerCase()
-        || input.token.amount !== output.token.amount
-        || input.satoshis !== output.amount) continue;
-      const inputLock = input.unlocker.generateLockingBytecode();
-      const outputLock = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
-      if (binToHex(inputLock) !== binToHex(outputLock)) continue;
+      if (!input || output?.token?.nft?.capability !== 'mutable') continue;
+      if (slot.kind === 'dataNft') {
+        if (input.token?.nft?.capability !== 'mutable'
+          || input.token.category.toLowerCase() !== output.token.category.toLowerCase()
+          || input.token.amount !== output.token.amount
+          || input.satoshis !== output.amount) continue;
+        const inputLock = input.unlocker.generateLockingBytecode();
+        const outputLock = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
+        if (binToHex(inputLock) !== binToHex(outputLock)) continue;
+        fixedStateOutputs.add(outputIndex);
+      } else {
+        if (blockCategory === undefined || output.token.category.toLowerCase() !== blockCategory
+          || output.token.amount !== 0n) continue;
+        if (input.token !== undefined) {
+          if (input.token.nft?.capability !== 'mutable'
+            || input.token.category.toLowerCase() !== output.token.category.toLowerCase()
+            || input.token.amount !== output.token.amount
+            || input.satoshis !== output.amount) continue;
+          const inputLock = input.unlocker.generateLockingBytecode();
+          const outputLock = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
+          if (binToHex(inputLock) !== binToHex(outputLock)) continue;
+        }
+      }
       owned.add(outputIndex);
     }
     ownedByBlock.set(block.participant, owned);
@@ -194,7 +213,7 @@ export const convergeMessageBusFixedStateOutputs = (
       .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
       .join('|');
     if (seenStates.has(stateKey)) {
-      throw new Error('messageBus: mutable data-NFT output convergence entered a repeated state');
+      throw new Error('messageBus: mutable resource output convergence entered a repeated state');
     }
     seenStates.add(stateKey);
 
@@ -232,7 +251,7 @@ export const convergeMessageBusFixedStateOutputs = (
           const current = proposals.get(outputIndex);
           if (current !== undefined && binToHex(current) !== binToHex(commitment)) {
             throw new Error(
-              `messageBus: participant ${block.participant} covenants disagree on mutable data-NFT output `
+              `messageBus: participant ${block.participant} covenants disagree on mutable resource output `
               + `${outputIndex}`,
             );
           }
@@ -250,7 +269,8 @@ export const convergeMessageBusFixedStateOutputs = (
         currentCommitmentHex: output.token.nft.commitment,
         proposed,
         hasLockingBytecode: false,
-        fixedStateSlot: true,
+        fixedStateSlot: fixedStateOutputs.has(outputIndex),
+        maximumCommitmentBytes: builder.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128,
       });
       if (action === 'skip') continue;
       output.token.nft.commitment = binToHex(proposed);
@@ -261,9 +281,19 @@ export const convergeMessageBusFixedStateOutputs = (
     if (!changed) return { repairs, rounds: round, outputs: [...changedOutputs].sort((a, b) => a - b) };
   }
   throw new Error(
-    `messageBus: mutable data-NFT outputs did not converge after ${maximumRounds} complete-transaction passes`,
+    `messageBus: mutable resource outputs did not converge after ${maximumRounds} complete-transaction passes`,
   );
 };
+
+/** Complete-graph convergence for fixed state and compiler-declared sorted-entry targets. */
+export const convergeMessageBusComputedResourceOutputs = (
+  builder: TransactionBuilder,
+): MessageBusComputedResourceConvergence => convergeMessageBusMutableResourceOutputs(builder, true);
+
+/** Backwards-compatible fixed-state-only convergence entry point. */
+export const convergeMessageBusFixedStateOutputs = (
+  builder: TransactionBuilder,
+): MessageBusComputedResourceConvergence => convergeMessageBusMutableResourceOutputs(builder, false);
 
 /** Enforce the physical encoding assumed by the generated final-verifier loader. */
 const assertCanonicalMessageEnvelopePush = (

@@ -10977,6 +10977,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const proxyGroup = matchingGroups.find((group) => group.sharedGroupIndex === undefined)
               ?? matchingGroups[0]
               ?? (attachedGroups.length === 1 ? attachedGroups[0] : undefined);
+            const proxyGroupIndex = proxyGroup === undefined
+              ? -1 : stb.getExternalCallUtxoGroups().indexOf(proxyGroup);
+            const proxyPhysicalGroupIndex = proxyGroupIndex < 0
+              ? -1 : (proxyGroup?.sharedGroupIndex ?? proxyGroupIndex);
+            const proxyPhysicalGroup = proxyPhysicalGroupIndex < 0
+              ? undefined : stb.getExternalCallUtxoGroups()[proxyPhysicalGroupIndex];
+            // An implementation embedded in a compiler-routed participant executes from an input in the
+            // delegate band, but its output covenants remain relative to the owning participant block. These
+            // coordinates can be far apart after route fusion (and are intentionally not reconstructible from
+            // the implementation input alone). Use the materialized physical owner for output discovery; legacy
+            // non-embedded delegates continue to own implementation-relative outputs.
+            const nestedOutputBase = proxyPhysicalGroup?.delegateEmbeddedInBlock && proxyGroupIndex >= 0
+              ? stb.getExternalCallOutputBase(proxyGroupIndex)
+              : implInputIndex;
             const nestedTraceStartedAt = debugTargetsThisDerivation ? Date.now() : 0;
             const nestedTrace = evaluateProbeTrace(this.inner.provider, {
               inputIndex: implInputIndex,
@@ -10996,6 +11010,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               implInputIndex,
               denseImplInputIndex: stb.getLowLevelCallMasterInputIndex(llcIndex),
               proxyGroupFunctionName: proxyGroup && groupFunctionName(proxyGroup),
+              proxyPhysicalGroupIndex,
+              nestedOutputBase,
               externalGroups: stb.getExternalCallUtxoGroups().map((group, groupIndex) => ({
                 groupIndex,
                 functionName: groupFunctionName(group),
@@ -11186,8 +11202,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // carrier's `SCID` commitment as the event and made the final delegate fail against its real blob.
               const nestedEventCommitments = extractCommitmentMapFromTrace(
                 nestedTrace, {
-                  min: implInputIndex + nestedEventSlots[0].offset,
-                  max: implInputIndex + nestedEventSlots[nestedEventSlots.length - 1].offset + 1,
+                  min: nestedOutputBase + nestedEventSlots[0].offset,
+                  max: nestedOutputBase + nestedEventSlots[nestedEventSlots.length - 1].offset + 1,
                 }, true, false, true,
               );
               const existingEventOutputs = llc.eventOutputs ?? proxyGroup.eventOutputs;
@@ -11199,7 +11215,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               for (let eventIndex = 0; eventIndex < nestedEventSlots.length; eventIndex++) {
                 const emitInfo = nestedEmits[eventIndex];
                 if (!emitInfo) continue;
-                const absoluteIndex = implInputIndex + nestedEventSlots[eventIndex].offset;
+                const absoluteIndex = nestedOutputBase + nestedEventSlots[eventIndex].offset;
                 let commitment = nestedEventCommitments.get(absoluteIndex);
                 const materializedCommitment = String(
                   probeBuilder2.outputs[absoluteIndex]?.token?.nft?.commitment ?? '',
@@ -11248,8 +11264,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const implBand = extractCommitmentMapFromTrace(
                 nestedTrace,
                 {
-                  min: Math.max(0, implInputIndex - 2),
-                  max: implInputIndex + (nestedFn?.blockLayout?.blockSize ?? 8) + 2,
+                  min: Math.max(0, nestedOutputBase - 2),
+                  max: nestedOutputBase + (nestedFn?.blockLayout?.blockSize ?? 8) + 2,
                 },
                 true,
               );
@@ -11259,7 +11275,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
               }
               for (const slot of nestedEntrySlots) {
-                const absoluteIndex = implInputIndex + slot.offset;
+                const absoluteIndex = nestedOutputBase + slot.offset;
                 let commitment = implBand.get(absoluteIndex) ?? commits.get(absoluteIndex);
                 const rawMaterializedCommitment = probeBuilder2.outputs[absoluteIndex]?.token?.nft?.commitment;
                 const materializedCommitment = String(rawMaterializedCommitment ?? '');

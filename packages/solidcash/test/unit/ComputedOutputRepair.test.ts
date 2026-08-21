@@ -180,4 +180,20 @@ describe('canApplyRepairedNftCommitment', () => {
       fixedStateSlot: false,
     })).toBe('skip');
   });
+
+  it('uses the active provider commitment ceiling for authenticated resource updates', () => {
+    const proposed = new Uint8Array(381).fill(0x42);
+    const candidate = {
+      capability: 'mutable',
+      currentCommitmentHex: '00'.repeat(64),
+      proposed,
+      hasLockingBytecode: false,
+      fixedStateSlot: false,
+    } as const;
+    expect(canApplyRepairedNftCommitment(candidate)).toBe('skip');
+    expect(canApplyRepairedNftCommitment({
+      ...candidate,
+      maximumCommitmentBytes: 10_000,
+    })).toBe('apply-commit');
+  });
 });

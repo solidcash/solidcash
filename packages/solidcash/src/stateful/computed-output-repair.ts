@@ -103,9 +103,11 @@ export function canApplyRepairedNftCommitment(args: {
   proposed: Uint8Array;
   hasLockingBytecode: boolean;
   fixedStateSlot: boolean;
+  maximumCommitmentBytes?: number;
 }): RepairedNftApply {
   const {
     capability, currentCommitmentHex, proposed, hasLockingBytecode, fixedStateSlot,
+    maximumCommitmentBytes = 128,
   } = args;
   if (capability !== 'mutable' && capability !== 'none') return 'skip';
   if (isScidIdentityCommitment(currentCommitmentHex) || isScidIdentityCommitment(proposed)) {
@@ -116,7 +118,8 @@ export function canApplyRepairedNftCommitment(args: {
   // OUTPUTTOKENCOMMITMENT equality authenticate the coordinate, and scalar state legitimately encodes to one or
   // two bytes (for example 0 -> 00 and 100 -> 0164). Do not impose the entry/chunk shape floor on that state.
   const authenticatedScalarState = capability === 'mutable' && fixedStateSlot && proposed.length > 0;
-  if ((!authenticatedScalarState && proposed.length < 3) || proposed.length > 128) return 'skip';
+  if ((!authenticatedScalarState && proposed.length < 3)
+    || proposed.length > maximumCommitmentBytes) return 'skip';
   const proposedHex = binToHex(proposed);
   if (capability === 'mutable') {
     const currentLen = currentCommitmentHex.length === 0 ? 0 : hexToBin(currentCommitmentHex).length;

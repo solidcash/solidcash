@@ -1630,7 +1630,7 @@ export function planCompiledGraph(
       );
     if (hasIdentified) {
       for (const callsite of publishedCallsites) {
-        const count = bindings.filter((binding) => binding.callsiteId === callsite.callsiteId).length;
+        const count = bindings.filter((binding) => binding?.callsiteId === callsite.callsiteId).length;
         if (callsite.batchInvocations !== undefined) {
           if (count !== callsite.batchInvocations.length) {
             throw new Error(

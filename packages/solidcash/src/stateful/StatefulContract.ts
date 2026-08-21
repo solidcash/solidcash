@@ -15697,7 +15697,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (let directIdx = 0; directIdx < directGroupCount; directIdx++) {
         const directGroup = externalCallUtxoGroups[directIdx];
         const bContract = directGroup.externalContract as StatefulContract;
-        const bAbi = bContract.inner.artifact.abi as readonly { externalCalls?: readonly ExternalCallAbi[]; name: string }[];
+        const bAbi = bContract.inner.artifact.abi as readonly {
+          externalCalls?: readonly ExternalCallAbi[];
+          inputs: AbiFunction['inputs'];
+          name: string;
+        }[];
         const bAbiFunc = bAbi.find((f) => f.name === directGroup.functionName);
 
         if (!bAbiFunc?.externalCalls?.length) continue;
@@ -18741,7 +18745,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? childArgs
             : logicalParentContract._resolveExternalArgs(
               nested.rawArgSources ?? nested.argSources,
-              graphParentArgs, logicalParentArtifact, parentState,
+              [...graphParentArgs], logicalParentArtifact, parentState,
               parentFn.inputs,
             ) ?? childArgs;
           const selectedContract = proxyCallee?.implementation ?? callee;

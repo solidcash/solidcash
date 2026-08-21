@@ -3474,6 +3474,42 @@ export function inheritWriterBatchWitnesses<T>(
 }
 
 /**
+ * Promote a logical writer's complete sorted-batch plan onto the carrier that owns the physical unlocker.
+ * A fused read may be the first logical callsite and therefore retain the carrier identity, but it must not
+ * retain stale read-only topology witnesses after a sibling call writes the same participant.
+ */
+export function inheritWriterBatchPlan<T, P>(
+  target: {
+    internalArgs?: Record<string, T>;
+    compilerRoute?: { internalArgs?: Record<string, T> };
+    batchPredecessorOutputs?: P[];
+  },
+  writer: {
+    internalArgs?: Record<string, T>;
+    compilerRoute?: { internalArgs?: Record<string, T> };
+    batchPredecessorOutputs?: P[];
+  } | undefined,
+): boolean {
+  if (!writer) return false;
+  let changed = false;
+  if ((target.batchPredecessorOutputs?.length ?? 0) === 0
+    && (writer.batchPredecessorOutputs?.length ?? 0) > 0) {
+    target.batchPredecessorOutputs = writer.batchPredecessorOutputs;
+    changed = true;
+  }
+  const writerArgs = { ...writer.compilerRoute?.internalArgs, ...writer.internalArgs };
+  if (!Object.keys(writerArgs).some(isWriterBatchWitnessName)) return changed;
+  target.internalArgs = inheritWriterBatchWitnesses(target.internalArgs, writerArgs);
+  if (target.compilerRoute) {
+    target.compilerRoute.internalArgs = inheritWriterBatchWitnesses(
+      target.compilerRoute.internalArgs,
+      writerArgs,
+    );
+  }
+  return true;
+}
+
+/**
  * Own-category none-cap NFTs are event-pin candidates. Only the layout event
  * slots and the witnessed in-block return may carry that shape. Logical
  * identity carriers use the disjoint SCID envelope and are ignored here.
@@ -7224,11 +7260,10 @@ export class StatefulTransactionBuilder {
     const tokenGroup = tokenGroupIndex >= 0 ? this.externalCallUtxoGroups[tokenGroupIndex] : undefined;
     const tokenWriter = this.externalCallUtxoGroups.find((group, index) =>
       (group.sharedGroupIndex ?? index) === tokenGroupIndex
-      && (group.batchPredecessorOutputs?.length ?? 0) > 0) ?? tokenGroup;
-    if (tokenGroup && tokenWriter?.batchPredecessorOutputs
-      && (tokenGroup.batchPredecessorOutputs?.length ?? 0) === 0) {
-      tokenGroup.batchPredecessorOutputs = tokenWriter.batchPredecessorOutputs;
-    }
+      && ((group.batchPredecessorOutputs?.length ?? 0) > 0
+        || Object.entries({ ...group.compilerRoute?.internalArgs, ...group.internalArgs })
+          .some(([name]) => isWriterBatchWitnessName(name)))) ?? tokenGroup;
+    if (tokenGroup) inheritWriterBatchPlan(tokenGroup, tokenWriter);
     const after = master + (tokenGroup?.blockLayout?.blockSize ?? 8);
     const jobsCount = this.delegateDynamicChunksAtSuffix ? this._dynamicChunkOutputCount() : 0;
     const tailReturns = this.tailReturnEventOutputs();

@@ -27,6 +27,7 @@ import {
   groupOwnsInBlockReturnEvent,
   constrainOwnCategoryImmutableOutputs,
   inheritWriterBatchWitnesses,
+  inheritWriterBatchPlan,
   isPredOutReusableHole,
   reassertBatchPredecessorOutputsAtDeclaredSlots,
   remapInsertPredOuts,
@@ -720,6 +721,44 @@ describe('assignPhysicalReturnIndices', () => {
     expect(inherited.__internal__vmapBatchPredOut_2).toBe(-1n);
     expect(inherited.__internal__vmapBatchTrailingCount).toBe(1n);
     expect(inherited.__internal__returnOutputIdx).toBe(33n);
+  });
+
+  it('promotes a fused writer batch plan onto the physical read carrier', () => {
+    const predecessor = { outputBlockSlot: 8 };
+    const carrier = {
+      internalArgs: {
+        __internal__vmapBatchPredOut_0: -1n,
+        __internal__returnOutputIdx: 33n,
+      },
+      compilerRoute: {
+        internalArgs: { __internal__vmapBatchSlot_0: new Uint8Array(32) as bigint | Uint8Array },
+      },
+      batchPredecessorOutputs: [] as Array<{ outputBlockSlot: number }>,
+    };
+    const writer = {
+      internalArgs: {
+        __internal__vmapBatchPredOut_0: 8n,
+        __internal__vmapBatchTrailingCount: 1n,
+      },
+      compilerRoute: {
+        internalArgs: { __internal__vmapBatchNext_0: new Uint8Array([1]) as bigint | Uint8Array },
+      },
+      batchPredecessorOutputs: [predecessor],
+    };
+
+    expect(inheritWriterBatchPlan<bigint | Uint8Array, { outputBlockSlot: number }>(carrier, writer)).toBe(true);
+    expect(carrier.batchPredecessorOutputs).toBe(writer.batchPredecessorOutputs);
+    expect(carrier.internalArgs).toMatchObject({
+      __internal__vmapBatchPredOut_0: 8n,
+      __internal__vmapBatchTrailingCount: 1n,
+      __internal__returnOutputIdx: 33n,
+      __internal__vmapBatchNext_0: new Uint8Array([1]),
+    });
+    expect(carrier.compilerRoute.internalArgs).toMatchObject({
+      __internal__vmapBatchPredOut_0: 8n,
+      __internal__vmapBatchTrailingCount: 1n,
+      __internal__vmapBatchNext_0: new Uint8Array([1]),
+    });
   });
 
   it('relocates only the planned INSERT PredOut and keeps leftover UPDATE sentinels', () => {

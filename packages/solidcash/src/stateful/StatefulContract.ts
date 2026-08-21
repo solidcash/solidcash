@@ -115,6 +115,8 @@ import {
   groupLayoutBlockSize,
   materializedPredOutBase,
   inheritWriterBatchWitnesses,
+  inheritWriterBatchPlan,
+  isWriterBatchWitnessName,
   remapInsertPredOuts,
   resolveAbsolutePredOut,
   lastCollidingMutableWriterIndex,
@@ -19578,12 +19580,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         for (const groupIdx of swappedTokenGroups) {
           const group = externalCallUtxoGroups[groupIdx];
-          const writerPreds = externalCallUtxoGroups.find((candidate, index) =>
+          const writer = externalCallUtxoGroups.find((candidate, index) =>
             (candidate.sharedGroupIndex ?? index) === groupIdx
-            && (candidate.batchPredecessorOutputs?.length ?? 0) > 0)?.batchPredecessorOutputs;
-          if ((group?.batchPredecessorOutputs?.length ?? 0) === 0 && writerPreds) {
-            group.batchPredecessorOutputs = writerPreds;
-          }
+            && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
+              || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
+                .some(([name]) => isWriterBatchWitnessName(name))));
+          inheritWriterBatchPlan(group, writer);
           if ((group?.batchPredecessorOutputs?.length ?? 0) === 0) continue;
           const postMaster = nestedMasterIndices[groupIdx];
           if (postMaster === undefined) continue;
@@ -22191,12 +22193,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const tokenMaster = builder.findMintingInputIndex(fill.tokenGroup.categoryId);
           const tokenBlockSize = fill.tokenGroup.blockLayout?.blockSize ?? 8;
           const physicalIdx = externalCallUtxoGroups.indexOf(fill.tokenGroup);
-          const writerPreds = externalCallUtxoGroups.find((candidate, index) =>
+          const writer = externalCallUtxoGroups.find((candidate, index) =>
             (candidate.sharedGroupIndex ?? index) === physicalIdx
-            && (candidate.batchPredecessorOutputs?.length ?? 0) > 0)?.batchPredecessorOutputs;
-          if ((fill.tokenGroup.batchPredecessorOutputs?.length ?? 0) === 0 && writerPreds) {
-            fill.tokenGroup.batchPredecessorOutputs = writerPreds;
-          }
+            && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
+              || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
+                .some(([name]) => isWriterBatchWitnessName(name))));
+          inheritWriterBatchPlan(fill.tokenGroup, writer);
           const hasPred = (fill.tokenGroup.batchPredecessorOutputs?.length ?? 0) > 0
             || Object.entries({
               ...fill.tokenGroup.internalArgs,
@@ -22306,10 +22308,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (group.sharedGroupIndex !== undefined) continue;
         const writer = externalCallUtxoGroups.find((candidate, index) =>
           (candidate.sharedGroupIndex ?? index) === groupIdx
-          && (candidate.batchPredecessorOutputs?.length ?? 0) > 0);
-        if ((group.batchPredecessorOutputs?.length ?? 0) === 0 && writer?.batchPredecessorOutputs) {
-          group.batchPredecessorOutputs = writer.batchPredecessorOutputs;
-        }
+          && ((candidate.batchPredecessorOutputs?.length ?? 0) > 0
+            || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
+              .some(([name]) => isWriterBatchWitnessName(name))));
+        inheritWriterBatchPlan(group, writer);
         const hasPred = (group.batchPredecessorOutputs?.length ?? 0) > 0
           || Object.entries({ ...group.internalArgs, ...group.compilerRoute?.internalArgs })
             .some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
@@ -22317,9 +22319,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           || Object.entries({ ...writer?.internalArgs, ...writer?.compilerRoute?.internalArgs })
             .some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
               && typeof value === 'bigint' && value >= 0n);
-        const tokenName = group.functionName ?? group.compilerRoute?.abiFunction.name
-          ?? group.logicalFunctionName;
-        if (!hasPred && tokenName !== 'transferFrom') continue;
+        if (!hasPred) continue;
         const master = builder.findMintingInputIndex(group.categoryId);
         if (master < 0) continue;
         group.relocatedPredOutBase = materializedPredOutBase(group, master);

@@ -1019,9 +1019,10 @@ function attachDelegateVariant(
   if (!couldBeImplementation) return;
 
   const buildVariant = (): Artifact | undefined => {
-    // Proxy implementation bytecode is selected by the SDK for delegate execution, not dispatched through the
-    // atomic message-bus route. Keeping route synthesis enabled here can clone the soon-to-be-delegate handlers
-    // before AutoMarkDelegateFunctions rewrites their covenant shape, producing an invalid hybrid artifact.
+    // Proxy implementation bytecode is selected by the SDK for delegate execution. Atomic composition can also
+    // dispatch that implementation through its participant route, so the lazy variant must receive the same
+    // verifier-binding continuation as a primary artifact; otherwise its ABI omits the active verifier input
+    // while its participant verifier still authenticates the executing OP_UTXOBYTECODE identity.
     const variantOptions = {
       ...mergedCompilerOptions,
       autoDelegate: true,
@@ -1036,9 +1037,27 @@ function attachDelegateVariant(
     console.warn = (): void => {};
     try {
       const variantAst = parseAndResolve(code, variantOptions, errorListener, primaryName);
-      const variant = compileResolvedAst(
+      let variant = compileResolvedAst(
         variantAst, code, variantOptions, false, true, true, true, true, true, undefined, false, out,
       );
+      if (out.delegateFunctionsMarked > 0 && variant.messageBus?.verifierProgram) {
+        const verifierProgram = variant.messageBus.verifierProgram;
+        const admittedMessageBusHandlers = variant.messageBus.handlers
+          .filter((handler) => handler.eligible)
+          .map((handler) => handler.name);
+        const bindingOptions = normalizeCompilerOptions({
+          ...variantOptions,
+          messageBusHandlers: admittedMessageBusHandlers,
+          __messageBusVerifierProgram: verifierProgram,
+        });
+        const boundOut = { delegateFunctionsMarked: 0 };
+        variant = compileResolvedAst(
+          parseAndResolve(code, bindingOptions, errorListener, primaryName),
+          code, bindingOptions, false, true, true, true, true, true, undefined, false, boundOut,
+        );
+        if (variant.messageBus) variant.messageBus.verifierProgram = verifierProgram;
+        if (variant.compiler.options) delete variant.compiler.options.__messageBusVerifierProgram;
+      }
       if (out.delegateFunctionsMarked > 0) {
         built = variant;
       }

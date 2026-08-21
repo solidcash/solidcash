@@ -34,6 +34,18 @@ describe('message-bus compilation selection', () => {
       .some((input) => input.name === 'suppliedCallers')).toBe(true);
   });
 
+  it('binds a lazy delegate participant route to its own verifier', () => {
+    const artifact = compileString(`contract DelegateLeaf {
+      bigint counter;
+      function set(bigint next) public { this.counter = next; require(next >= 0); }
+    }`, { messageBus: true });
+    const delegate = artifact.delegateArtifact;
+    expect(delegate?.abi.find((fn) => fn.name === 'set')?.modifiers).toContain('delegate');
+    expect(delegate?.messageBus?.verifierProgram).toBeDefined();
+    expect(delegate?.messageBus?.route.inputs.map((input) => input.name))
+      .toContain('__internal__activeVerifierIndex');
+  });
+
   // Explicit true is a request, not an assertion: it opts out of graph-edge narrowing but keeps the direct-only
   // fallback, so a contract with no possible route still compiles. Only the internal verifier-program mode
   // (`required`) treats a missing route as fatal.

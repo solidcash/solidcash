@@ -498,7 +498,7 @@ function diskCacheSet(cacheKey: string, artifact: Artifact): void {
  * Keep the cache's artifact as the single variant owner; each returned clone materializes its own cloned variant
  * only when a consumer actually reads `delegateArtifact`.
  */
-function cloneArtifact(artifact: Artifact): Artifact {
+function cloneArtifact(artifact: Artifact, suppressWarnings = false): Artifact {
   const delegateDescriptor = Object.getOwnPropertyDescriptor(artifact, 'delegateArtifact');
   if (!delegateDescriptor?.get) return structuredClone(artifact);
 
@@ -511,7 +511,10 @@ function cloneArtifact(artifact: Artifact): Artifact {
     configurable: true,
     get(): Artifact | undefined {
       if (!built) {
-        const variant = delegateDescriptor.get!.call(artifact) as Artifact | undefined;
+        const variant = withCompilerWarnings(
+          suppressWarnings,
+          () => delegateDescriptor.get!.call(artifact) as Artifact | undefined,
+        );
         memo = variant ? structuredClone(variant) : undefined;
         built = true;
       }
@@ -940,16 +943,16 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     cacheKey = `artifact-v4\x00${COMPILER_CACHE_BUILD_ID}\x00${primaryContractName ?? ''}`
       + `\x00${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
     const memHit = compileCacheGet(cacheKey);
-    if (memHit) return cloneArtifact(memHit);
+    if (memHit) return cloneArtifact(memHit, suppressWarnings);
     const diskHit = diskCacheGet(cacheKey);
     if (diskHit) {
       // Disk stores the primary artifact only (JSON cannot preserve the lazy getter).
       // Re-attach delegateArtifact before promoting so a cold worker matches a warm one.
       const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
       diskOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
-      attachDelegateVariant(diskHit, code, diskOptions, errorListener, primaryContractName);
+      attachDelegateVariant(diskHit, code, diskOptions, errorListener, primaryContractName, true);
       compileCacheSet(cacheKey, diskHit);
-      return cloneArtifact(diskHit);
+      return cloneArtifact(diskHit, suppressWarnings);
     }
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
@@ -987,12 +990,15 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     if (artifact.messageBus) artifact.messageBus.verifierProgram = verifierProgram;
     if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
   }
-  attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener, primaryContractName);
+  attachDelegateVariant(
+    artifact, code, mergedCompilerOptions, errorListener, primaryContractName,
+    cacheable || !suppressWarnings,
+  );
   if (cacheable) {
     compileCacheSet(cacheKey, artifact);
     diskCacheSet(cacheKey, artifact);
   }
-  return cacheable ? cloneArtifact(artifact) : artifact;
+  return cacheable ? cloneArtifact(artifact, suppressWarnings) : artifact;
 }
 
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
@@ -1033,7 +1039,7 @@ const DELEGATE_INELIGIBLE_MODIFIERS: string[] = [
 
 function attachDelegateVariant(
   artifact: Artifact, code: string, mergedCompilerOptions: CompilerOptions,
-  errorListener?: SolidCashErrorListener, primaryName?: string,
+  errorListener?: SolidCashErrorListener, primaryName?: string, reportVariantFailure = true,
 ): void {
   if (mergedCompilerOptions.autoDelegate || artifact.isLibrary) return;
   // Solidity initializer inference marks the primary artifact itself as a proxy implementation. Do not attach a
@@ -1108,7 +1114,7 @@ function attachDelegateVariant(
       console.log = log;
       console.warn = warn;
     }
-    if (variantFailure !== undefined) {
+    if (variantFailure !== undefined && reportVariantFailure) {
       console.log(
         `Warning: could not build the delegate (proxy-implementation) variant of '${artifact.contractName}': `
         + `${variantFailure}. The contract itself compiled; it just cannot be used behind a proxy.`,

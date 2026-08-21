@@ -8828,6 +8828,84 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
+  /**
+   * Bind compiler-owned continuation witnesses after every output in an isolated composition block has been
+   * materialized. Graph routes can represent several logical calls with one low-level carrier, so discovery is
+   * based on ABI/state-layout metadata and the self-describing output run rather than a source function name.
+   * @internal
+   */
+  bindMaterializedValueChunkWitnesses(builder: TransactionBuilder, coordinateBase = 0): boolean {
+    const carriers = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups];
+    const changedCarriers = new Set<ExternalCallUtxoGroup>();
+    const occupiedBases = new Set<number>();
+
+    for (const [carrierIndex, carrier] of carriers.entries()) {
+      const abiFunction = carrier.compilerRoute?.abiFunction
+        ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
+          ?.find((candidate) => candidate.name === carrier.functionName);
+      if (!abiFunction?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')) continue;
+      const writesChunkableArray = (abiFunction.entryAccesses ?? []).some((access) => {
+        if (!access.operations.includes('write')) return false;
+        const collection = carrier.stateLayout.collections?.find((candidate) => (
+          candidate.name === access.collection || candidate.signature === access.collection
+        ));
+        return collection?.chunkableValue === true && collection.valueType.endsWith('[]');
+      });
+      if (!writesChunkableArray) continue;
+
+      const lowLevelIndex = carrierIndex - this.externalCallUtxoGroups.length;
+      const delegatedProxy = lowLevelIndex < 0 ? undefined : this.externalCallUtxoGroups.find(
+        (group) => group.delegateCallGroupIndex === lowLevelIndex,
+      );
+      const outputCategoryId = carrier.callMode === 'delegatecall'
+        ? delegatedProxy?.categoryId ?? this.categoryId
+        : carrier.categoryId;
+      let selectedStart = -1;
+      for (let start = 0; start < builder.outputs.length; start += 1) {
+        const first = builder.outputs[start];
+        const firstLock = first?.to instanceof Uint8Array
+          ? first.to : first?.to !== undefined ? addressToLockScript(first.to) : undefined;
+        if (!isP2sh32LockScript(firstLock)
+          || first.token?.category !== outputCategoryId
+          || first.token.nft?.capability !== 'mutable'
+          || valueChunkIndexFromCommitment(first.token.nft.commitment ?? '') !== 0) continue;
+        const lockHex = binToHex(firstLock);
+        let width = 1;
+        while (start + width < builder.outputs.length) {
+          const output = builder.outputs[start + width];
+          const lock = output?.to instanceof Uint8Array
+            ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
+          if (!isP2sh32LockScript(lock)
+            || binToHex(lock) !== lockHex
+            || output.token?.category !== outputCategoryId
+            || output.token.nft?.capability !== 'mutable'
+            || valueChunkIndexFromCommitment(output.token.nft.commitment ?? '') !== width) break;
+          width += 1;
+        }
+        const absoluteStart = coordinateBase + start;
+        if (!occupiedBases.has(absoluteStart)) selectedStart = start;
+        start += width - 1;
+      }
+      if (selectedStart < 0) continue;
+      const absoluteStart = coordinateBase + selectedStart;
+      occupiedBases.add(absoluteStart);
+      if (carrier.valueChunkOutputBase === absoluteStart) continue;
+      carrier.valueChunkOutputBase = absoluteStart;
+      carrier.internalArgs = {
+        ...carrier.internalArgs,
+        __internal__valueChunkOutputBase: BigInt(absoluteStart),
+      };
+      carrier.refreshInternalArgs?.(
+        { __internal__valueChunkOutputBase: BigInt(absoluteStart) },
+        { shiftPredOut: false },
+      );
+      changedCarriers.add(carrier);
+    }
+    if (changedCarriers.size === 0) return false;
+    this._syncRefreshedCarrierMasters(builder, changedCarriers);
+    return true;
+  }
+
   /** Insert a non-covenant output before the authenticated [late chunks][terminal suffix] region. */
   insertBeforeLateValueSuffix(
     builder: TransactionBuilder,

@@ -25609,7 +25609,12 @@ export class StatefulFunctionCall {
     const splitMergeBuilder = await this._trySplitMergeBuild();
     if (splitMergeBuilder) return splitMergeBuilder;
     const stb = await this._applyOverrides();
-    const builder = stb.build();
+    const buildFinalized = (): TransactionBuilder => {
+      const built = stb.build();
+      stb.bindMaterializedValueChunkWitnesses(built, this.compilerRoute?.blockBase ?? 0);
+      return built;
+    };
+    const builder = buildFinalized();
     if (stb.hasUnresolvedDeferredKeccakPreimages() || stb.hasUnresolvedDeferredEcrecoverArguments()) {
       const provider = builder.provider;
       Object.defineProperty(builder, '__messageBusDeferredCompute', {
@@ -25728,7 +25733,7 @@ export class StatefulFunctionCall {
             }
             return progressed;
           },
-          refresh: (): TransactionBuilder => stb.build(),
+          refresh: buildFinalized,
         }),
       });
     }

@@ -256,6 +256,53 @@ describe('StatefulTransactionBuilder', () => {
       expect(internals._reconcileMaterializedValueChunkWitnesses(tx)).toBe(false);
     });
 
+    it('binds an unowned routed continuation run in absolute composition coordinates', () => {
+      const stateLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x33), 0x87]);
+      const valueLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x44), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+      const tx = builder.build();
+      const blockBase = 121;
+      const stateStart = tx.outputs.length;
+      const chunk = (to: Uint8Array, index: number) => ({
+        to, amount: 1200n,
+        token: { category: categoryId, amount: 0n,
+          nft: { capability: 'mutable' as const, commitment: `${index.toString(16).padStart(2, '0')}00aa` } },
+      });
+      tx.outputs.push(
+        chunk(stateLock, 0), chunk(stateLock, 1),
+        chunk(valueLock, 0), chunk(valueLock, 1), chunk(valueLock, 2),
+      );
+      const refreshInternalArgs = vi.fn();
+      const carrier = {
+        categoryId: '44'.repeat(32),
+        callMode: 'delegatecall' as const,
+        stateLayout: {
+          collections: [{
+            name: 'records', signature: 'records:mapping(bytes32 => Record[])', kind: 'mapping',
+            keyType: 'bytes32', valueType: 'Record[]', sorted: true, chunkableValue: true,
+          }],
+        },
+        // The prior value occupied four chunks; this update shrinks to the three materialized below.
+        valueChunkOutputCount: 4,
+        internalArgs: {},
+        compilerRoute: {
+          abiFunction: {
+            name: '__route', inputs: [{ name: '__internal__valueChunkOutputBase', type: 'bigint' }],
+            outputs: [], entryAccesses: [{ collection: 'records', keyParams: [], operations: ['write'] }],
+          },
+        },
+        refreshInternalArgs,
+      };
+      (builder as unknown as { lowLevelCallUtxoGroups: typeof carrier[] }).lowLevelCallUtxoGroups = [carrier];
+
+      expect(builder.bindMaterializedValueChunkWitnesses(tx, blockBase)).toBe(true);
+      expect(carrier.valueChunkOutputBase).toBe(blockBase + stateStart + 2);
+      expect(refreshInternalArgs).toHaveBeenCalledWith(
+        { __internal__valueChunkOutputBase: BigInt(blockBase + stateStart + 2) },
+        { shiftPredOut: false },
+      );
+    });
+
   });
 
   describe('satoshi container underflow guard', () => {

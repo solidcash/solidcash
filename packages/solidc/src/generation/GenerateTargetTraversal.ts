@@ -1488,6 +1488,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return this.isCompilerMessageBusRoute(node) || this.hasMessageBusParticipantOwner(node);
   }
 
+  /** Legacy delegate entries place dynamic continuations at the transaction suffix; routed delegates do not. */
+  private usesDelegateTransactionSuffix(): boolean {
+    return this.currentFunctionIsDelegate && !this.ownsMessageBusParticipantBlock();
+  }
+
   /**
    * Compiler-owned batch routes are identified by their physical ABI frame, not only the transient AST marker.
    * Delegate-artifact cloning preserves the route name/ABI but may intentionally discard analysis-only fields.
@@ -20803,11 +20808,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     const CHUNK = 120;
-    // The trailing chunk output index is blockSize+i, but blockSize COUNTS the returnEvent slot, which a plain
-    // send does NOT materialize (only .emitReturn(), i.e. __internal__returnOutputIdx >= 0, creates it). An
-    // unmaterialized returnEvent shifts the trailing chunks down by 1, so subtract 1 at runtime when
-    // returnOutputIdx < 0. The SDK's getChunkOutputBase() makes the SAME adjustment (they must agree - the SDK's
-    // no-emit case is exactly returnOutputIdx = -1). Same family as the return-event x deploy fix (5a691a9a).
+    // A compact layout counts a returnEvent slot which a plain send does not materialize, so its trailing chunks
+    // shift down when returnOutputIdx < 0. A balanced layout with an explicit trailingBase retains that slot as
+    // padding; compiler and SDK must both leave its trailing resources at trailingBase.
     const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
 
     // A persisted read of a DIFFERENT var (one not also written) co-spends that var's chunks read-only; the
@@ -20942,10 +20945,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const returningExternalSlots = this.externalCallSlots
         .filter((slot) => slot.hasReturnValues && !slot.inlineLoopDispatch
           && !this.isExternalCallSlotLoopNested(slot));
-      if (this.currentFunctionIsDelegate) {
-        // Delegate chunks are the last covenant-managed output family, immediately before the mandatory change
-        // output. Earlier vmap continuations are runtime-sized, so anchor this region from the suffix rather than
-        // attempting to predict every preceding family from the delegate's local block layout.
+      if (this.usesDelegateTransactionSuffix()) {
+        // Legacy delegate chunks are the last covenant-managed output family, immediately before the mandatory
+        // change output. A compiler-owned route instead publishes a balanced participant block, so its chunks use
+        // the authenticated owner-relative trailing base in the ordinary branch below.
         this.emit(Op.OP_TXOUTPUTCOUNT, loc);
         this.emit(Op.OP_1SUB, loc);
         for (const [, write] of writesInDeclOrder) {
@@ -20979,7 +20982,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_ADD, loc);
         }
       }
-      if (!this.currentFunctionIsDelegate) {
+      if (!this.usesDelegateTransactionSuffix()) {
         this.emitAddCollectionIterCounts(loc); // collection-iter entry outputs precede chunk outputs (W4)
         const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
         if (batchCountIdx >= 0) {
@@ -20996,7 +20999,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Subtract 1 when the reserved returnEvent slot is NOT materialized (returnOutputIdx < 0) - it does not
         // occupy an output, so the trailing chunks sit one lower. One untracked value (the running outIdx-partial)
         // is above the tracked stack here, hence the +1 pick offset.
-        const roiIdx = hasReturnEventSlot ? this.getStackIndex('__internal__returnOutputIdx', true) : -1;
+        const roiIdx = hasReturnEventSlot && this.currentFunction.blockLayout?.trailingBase === undefined
+          ? this.getStackIndex('__internal__returnOutputIdx', true) : -1;
         if (roiIdx >= 0) {
           this.emit(encodeInt(BigInt(roiIdx + 1)), loc);
           this.emit(Op.OP_PICK, loc);

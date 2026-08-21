@@ -269,6 +269,57 @@ describe('delegate inference', () => {
     }
   });
 
+  it('bases routed dynamic outputs on the participant block while address(this) reads the executor bytecode', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const artifact = compileString(`pragma solidity ^0.8.20;
+        interface Sink { function ping(address who) external; }
+        contract RoutedDynamic {
+          bytes public payload;
+          address public sink;
+          modifier initializer() { _; }
+          function initialize(address value) public initializer { sink = value; }
+          function apply(bytes memory value) public {
+            payload = value;
+            Sink(sink).ping(address(this));
+          }
+        }
+      `, { messageBus: true, solidityImportCompat: true, maximumInputBytes: 100_000 });
+
+      expect(artifact.messageBus?.route?.modifiers).toContain('delegate');
+      const route = decodeAuthenticationInstructions(hexToBin(
+        artifact.functionBodies?.[artifact.messageBus!.route!.selector]!,
+      ));
+      // A legacy delegate owns the transaction suffix, but a compiler route owns a balanced participant block.
+      // Reject the legacy `TXOUTPUTCOUNT - 1 - ceil(size/120)` dynamic-write anchor in that routed body.
+      const suffixAnchoredWrite = route.some((instruction, index) =>
+        instruction.opcode === OpcodesBCH.OP_TXOUTPUTCOUNT
+        && route[index + 1]?.opcode === OpcodesBCH.OP_1SUB
+        && route.slice(index + 2, index + 7).some((candidate, offset) =>
+          candidate.opcode === OpcodesBCH.OP_PICK
+          && route[index + 3 + offset]?.opcode === OpcodesBCH.OP_SIZE));
+      expect(suffixAnchoredWrite).toBe(false);
+      // An explicit trailingBase retains the reserved return slot as padding even when the call emits no return
+      // event. Reject the compact-layout `returnOutputIdx < 0` adjustment in this balanced route.
+      expect(route.some((instruction, index) =>
+        instruction.opcode === OpcodesBCH.OP_0
+        && route[index + 1]?.opcode === OpcodesBCH.OP_LESSTHAN
+        && route[index + 2]?.opcode === OpcodesBCH.OP_SUB)).toBe(false);
+
+      const routedHandler = Object.values(artifact.debug?.invokeDebug ?? {})
+        .find((candidate) => candidate.name === '__message_bus_graph_apply');
+      expect(routedHandler).toBeDefined();
+      const handler = decodeAuthenticationInstructions(hexToBin(routedHandler!.bytecode));
+      expect(handler.some((instruction, index) =>
+        instruction.opcode === OpcodesBCH.OP_INPUTINDEX
+        && handler[index + 1]?.opcode === OpcodesBCH.OP_UTXOBYTECODE)).toBe(true);
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
+
   it('stays lazy when the compile cache clones the artifact', () => {
     const previous = process.env.SOLIDC_COMPILE_CACHE;
     process.env.SOLIDC_COMPILE_CACHE = '1';

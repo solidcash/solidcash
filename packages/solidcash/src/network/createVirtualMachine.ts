@@ -1,11 +1,229 @@
 import {
-  conditionallyEvaluate, createVirtualMachine, createVirtualMachineBch2026, pushToStackChecked,
-  pushToStackVmNumber, ripemd160, secp256k1, sha1, sha256, useTransactionOutput, useTransactionUtxo,
+  applyError, authenticationInstructionsAreMalformed, AuthenticationErrorCommon, binToHex,
+  conditionallyEvaluate, createVirtualMachine, createVirtualMachineBch2026, decodeAuthenticationInstructions,
+  disassembleAuthenticationInstructionMalformed, isPayToScriptHash20, isPayToScriptHash32, isPushOnly,
+  isWitnessProgram, pushToStackChecked, pushToStackVmNumber, ripemd160, secp256k1, sha1, sha256,
+  stackItemIsTruthy, useTransactionOutput, useTransactionUtxo,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
 import { OpcodesBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import type NetworkProvider from './NetworkProvider.js';
+
+type DecodedInstructions = ReturnType<typeof decodeAuthenticationInstructions>;
+
+/** Decode immutable program bytecode without copying each pushed item. */
+function decodeAuthenticationInstructionViews(bytecode: Uint8Array): DecodedInstructions {
+  const instructions: Array<DecodedInstructions[number]> = [];
+  const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
+  let index = 0;
+  while (index < bytecode.length) {
+    const opcode = bytecode[index]!;
+    if (opcode > 0x4e) {
+      instructions.push({ opcode });
+      index += 1;
+      continue;
+    }
+    const lengthBytes = opcode === 0x4c ? 1 : opcode === 0x4d ? 2 : opcode === 0x4e ? 4 : 0;
+    if (lengthBytes !== 0 && index + lengthBytes >= bytecode.length) {
+      const lengthStart = index + 1;
+      instructions.push({
+        expectedLengthBytes: lengthBytes as 1 | 2 | 4,
+        length: bytecode.slice(lengthStart, lengthStart + lengthBytes),
+        malformed: true,
+        opcode,
+      });
+      break;
+    }
+    const dataLength = lengthBytes === 0
+      ? opcode
+      : lengthBytes === 1
+        ? view.getUint8(index + 1)
+        : lengthBytes === 2
+          ? view.getUint16(index + 1, true)
+          : view.getUint32(index + 1, true);
+    const dataStart = index + 1 + lengthBytes;
+    const dataEnd = dataStart + dataLength;
+    instructions.push({
+      data: bytecode.subarray(dataStart, dataEnd),
+      ...(dataEnd > bytecode.length ? { expectedDataBytes: dataLength, malformed: true as const } : undefined),
+      opcode,
+    });
+    index = dataEnd;
+  }
+  return instructions as DecodedInstructions;
+}
+
+// Oversized private-network contracts repeatedly spend the same P2SH scripts while changing only arguments and
+// transaction state. libauth decodes the complete redeem script on every evaluation; for generated contracts the
+// script can be several megabytes of function definitions, so decoding alone can take longer than execution.
+// The P2SH locking bytecode authenticates the exact redeem script, making it a stable cache key. Scope the cache to
+// the provider lifetime and bound it so long-running mock/miner-direct processes cannot retain every script seen.
+const decodedP2shByProvider = new WeakMap<NetworkProvider, Map<string, DecodedInstructions>>();
+const MAX_CACHED_P2SH_SCRIPTS = 64;
+
+function decodeCachedP2sh(
+  provider: NetworkProvider,
+  lockingBytecode: Uint8Array,
+  redeemBytecode: Uint8Array,
+): DecodedInstructions {
+  let cache = decodedP2shByProvider.get(provider);
+  if (!cache) {
+    cache = new Map();
+    decodedP2shByProvider.set(provider, cache);
+  }
+  const key = binToHex(lockingBytecode);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const decoded = decodeAuthenticationInstructions(redeemBytecode);
+  if (cache.size >= MAX_CACHED_P2SH_SCRIPTS) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, decoded);
+  return decoded;
+}
+
+/** Install libauth's BCH evaluator with only its authenticated P2SH decode step cached. */
+function installCachedP2shEvaluator(
+  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
+  provider: NetworkProvider,
+  maximumBytecodeLength: number,
+): void {
+  type State = Parameters<(typeof instructionSet.operations)[number]>[0];
+  instructionSet.evaluate = (program, { stateEvaluate, stateInitialize, stateOverride }) => {
+    const { unlockingBytecode } = program.transaction.inputs[program.inputIndex]!;
+    const { lockingBytecode } = program.sourceOutputs[program.inputIndex]!;
+    // The final P2SH push can be several megabytes. The VM treats program bytecode as immutable, and the actual
+    // argument stack is cloned below before redeem evaluation, so copying every pushed byte here is unnecessary.
+    const unlockingInstructions = decodeAuthenticationInstructionViews(unlockingBytecode);
+    const lockingInstructions = decodeAuthenticationInstructions(lockingBytecode);
+    const initialState = {
+      ...stateInitialize(program),
+      ...stateOverride,
+      instructions: unlockingInstructions,
+      program,
+      stack: [],
+    } as State;
+    if (unlockingBytecode.length > maximumBytecodeLength) {
+      return applyError(
+        initialState,
+        AuthenticationErrorCommon.exceededMaximumBytecodeLengthUnlocking,
+        `Maximum bytecode length: ${maximumBytecodeLength} bytes. Unlocking bytecode length: ${unlockingBytecode.length} bytes.`,
+      );
+    }
+    if (authenticationInstructionsAreMalformed(unlockingInstructions)) {
+      return applyError(
+        initialState,
+        AuthenticationErrorCommon.malformedUnlockingBytecode,
+        `Malformed instruction: ${disassembleAuthenticationInstructionMalformed(
+          OpcodesBch2026,
+          (unlockingInstructions[unlockingInstructions.length - 1]! as
+            Parameters<typeof disassembleAuthenticationInstructionMalformed>[1]),
+        )}.`,
+      );
+    }
+    if (!isPushOnly(unlockingBytecode)) {
+      return applyError(initialState, AuthenticationErrorCommon.requiresPushOnly);
+    }
+    if (lockingBytecode.length > maximumBytecodeLength) {
+      return applyError(
+        initialState,
+        AuthenticationErrorCommon.exceededMaximumBytecodeLengthLocking,
+        `Maximum bytecode length: ${maximumBytecodeLength} bytes. Locking bytecode length: ${lockingBytecode.length} bytes.`,
+      );
+    }
+    if (authenticationInstructionsAreMalformed(lockingInstructions)) {
+      return applyError(
+        initialState,
+        AuthenticationErrorCommon.malformedLockingBytecode,
+        `Malformed instruction: ${disassembleAuthenticationInstructionMalformed(
+          OpcodesBch2026,
+          (lockingInstructions[lockingInstructions.length - 1]! as
+            Parameters<typeof disassembleAuthenticationInstructionMalformed>[1]),
+        )}.`,
+      );
+    }
+    const unlockingResult = stateEvaluate(initialState);
+    if (unlockingResult.error !== undefined) return unlockingResult;
+    if (unlockingResult.controlStack.length !== 0) {
+      return applyError(
+        unlockingResult,
+        AuthenticationErrorCommon.nonEmptyControlStackUnlockingBytecode,
+        `Remaining control stack depth: ${unlockingResult.controlStack.length}.`,
+      );
+    }
+    const lockingResult = stateEvaluate({
+      ...stateInitialize(program),
+      ...stateOverride,
+      instructions: lockingInstructions,
+      metrics: unlockingResult.metrics,
+      program,
+      stack: unlockingResult.stack,
+    } as State);
+    if (lockingResult.error !== undefined) return lockingResult;
+    if (lockingResult.controlStack.length !== 0) {
+      return applyError(
+        lockingResult,
+        AuthenticationErrorCommon.nonEmptyControlStackLockingBytecode,
+        `Remaining control stack depth: ${lockingResult.controlStack.length}.`,
+      );
+    }
+    const p2sh20 = isPayToScriptHash20(lockingBytecode);
+    const p2sh32 = isPayToScriptHash32(lockingBytecode);
+    if (!p2sh20 && !p2sh32) {
+      if (lockingResult.stack.length !== 1) {
+        return applyError(
+          lockingResult,
+          AuthenticationErrorCommon.requiresCleanStackLockingBytecode,
+          `Remaining stack depth: ${lockingResult.stack.length}.`,
+        );
+      }
+      return lockingResult;
+    }
+    const top = lockingResult.stack[lockingResult.stack.length - 1]!;
+    if (!stackItemIsTruthy(top)) {
+      return applyError(
+        lockingResult,
+        AuthenticationErrorCommon.unmatchedP2shRedeemBytecode,
+        `Top stack item: "${binToHex(top)}".`,
+      );
+    }
+    // Exclude the authenticated redeem script before deep-cloning the argument stack. Cloning it only to pop it
+    // immediately is particularly expensive for generated contracts, while cloning the evaluated arguments keeps
+    // libauth's isolation semantics for the P2SH execution.
+    const unlockingStack = [...unlockingResult.stack];
+    const p2shScript = unlockingStack.pop() ?? Uint8Array.of();
+    const p2shStack = structuredClone(unlockingStack);
+    if (p2sh20 && p2shStack.length === 0 && isWitnessProgram(p2shScript)) return lockingResult;
+    const p2shInstructions = decodeCachedP2sh(provider, lockingBytecode, p2shScript);
+    const p2shResult = authenticationInstructionsAreMalformed(p2shInstructions)
+      ? { ...lockingResult, error: AuthenticationErrorCommon.malformedP2shBytecode }
+      : stateEvaluate({
+        ...stateInitialize(program),
+        ...stateOverride,
+        instructions: p2shInstructions,
+        metrics: lockingResult.metrics,
+        program,
+        stack: p2shStack,
+      } as State);
+    if (p2shResult.controlStack.length !== 0) {
+      return applyError(
+        p2shResult,
+        AuthenticationErrorCommon.nonEmptyControlStackRedeemBytecode,
+        `Remaining control stack depth: ${p2shResult.controlStack.length}.`,
+      );
+    }
+    if (p2shResult.stack.length !== 1) {
+      return applyError(
+        p2shResult,
+        AuthenticationErrorCommon.requiresCleanStackRedeemBytecode,
+        `Remaining stack depth: ${p2shResult.stack.length}.`,
+      );
+    }
+    return p2shResult;
+  };
+}
 
 /**
  * Build the SDK's probe VM with the active private-network limits, if any.
@@ -37,7 +255,14 @@ import type NetworkProvider from './NetworkProvider.js';
  */
 export function createVirtualMachineBch2026ForProvider(
   provider?: NetworkProvider,
-  observer?: { opcodes: ReadonlySet<number>; beforeOperation: (state: unknown) => void },
+  observer?: {
+    opcodes: ReadonlySet<number>;
+    beforeOperation: (state: unknown) => void;
+    /** Probe-only operation wrapper. Consensus callers must omit this; their operation remains byte-for-byte stock. */
+    operation?: (
+      opcode: number, state: unknown, operation: (state: never) => unknown,
+    ) => unknown;
+  },
   options?: { standard?: boolean },
 ): ReturnType<typeof createVirtualMachineBch2026> {
   const standard = options?.standard ?? true;
@@ -64,6 +289,9 @@ export function createVirtualMachineBch2026ForProvider(
   const instructionSet = createInstructionSetBch2026(standard, {
     consensus, ripemd160, secp256k1, sha1, sha256,
   } as never);
+  if (limits !== undefined && limits.maximumInputBytes > 10_000) {
+    installCachedP2shEvaluator(instructionSet, provider!, limits.maximumInputBytes);
+  }
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
   if (limits !== undefined) {
     const maximumStackItemLength = limits.maximumStackItemBytes;
@@ -94,7 +322,9 @@ export function createVirtualMachineBch2026ForProvider(
       }
       instructionSet.operations[opcode] = (state: State) => {
         observer.beforeOperation(state);
-        return operation(state);
+        return (observer.operation
+          ? observer.operation(opcode, state, operation as (state: never) => unknown)
+          : operation(state)) as State;
       };
     }
     if (observesUndefined) {

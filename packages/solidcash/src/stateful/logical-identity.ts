@@ -101,62 +101,6 @@ export function encodeLogicalIdentityCommitment(value: LogicalIdentityCommitment
   return binToHex(out);
 }
 
-/** Parse `create:<deployer>:<nonce>` out of a logical-identity unlocking or redeem. */
-export function parseLogicalIdentitySeed(
-  bytecode: Uint8Array,
-): { deployer: string; nonce: bigint } | undefined {
-  let text = '';
-  try {
-    text = new TextDecoder().decode(bytecode);
-  } catch {
-    return undefined;
-  }
-  const match = /create:((?:bitcoincash|bchtest|bchreg):[0-9a-z]{20,}):(\d+)/i.exec(text);
-  if (!match) return undefined;
-  return { deployer: match[1], nonce: BigInt(match[2]) };
-}
-
-/** Nearby CREATE nonces of known deployers whose lock matches dest 21. */
-export function matchingLogicalIdentityNearby(
-  locking: Uint8Array,
-  deployers: Iterable<string>,
-  maxNonce = 32,
-): { deployer: string; nonce: bigint } | undefined {
-  const want = binToHex(locking);
-  const seen = new Set<string>();
-  for (const deployer of deployers) {
-    if (!deployer || seen.has(deployer)) continue;
-    seen.add(deployer);
-    for (let nonce = 0; nonce <= maxNonce; nonce++) {
-      try {
-        const lock = createLogicalIdentityUnlocker(deployer, nonce).generateLockingBytecode();
-        if (binToHex(lock) === want) return { deployer, nonce: BigInt(nonce) };
-      } catch { /* not a cashaddr deployer */ }
-    }
-  }
-  return undefined;
-}
-
-/** Deployer + nonce whose CREATE lock matches `locking`. */
-export function matchingLogicalIdentityFromCommitments(
-  locking: Uint8Array,
-  commitments: Iterable<string>,
-  prefix: LogicalIdentityPrefix = 'bchtest',
-): { deployer: string; nonce: bigint } | undefined {
-  const want = binToHex(locking);
-  for (const commitment of commitments) {
-    if (!isScidIdentityCommitment(commitment)) continue;
-    const decoded = decodeLogicalIdentityCommitment(commitment);
-    if (!decoded) continue;
-    try {
-      const deployer = addressFromDeployerLockingBytecode(decoded.deployerLockingBytecode, prefix);
-      const lock = addressToLockScript(deriveLogicalCreateAddress(deployer, decoded.nonce));
-      if (binToHex(lock) === want) return { deployer, nonce: decoded.nonce };
-    } catch { /* non-canonical deployer or prefix */ }
-  }
-  return undefined;
-}
-
 /** Lock script of the CREATE identity encoded in a SCID v1 commitment, if decodable. */
 export function logicalLockFromScidCommitment(
   commitment: string, prefix: LogicalIdentityPrefix = 'bitcoincash',

@@ -49,6 +49,7 @@
     "spellcheck": "git ls-files -z | xargs -0 cspell lint --no-progress --no-gitignore",
     "update-version": "tsx update-version.ts",
     "publish-all": "lerna publish from-package",
+    "solidcash": "node packages/testing/dist/cli.js",
     "build": "tsc -b tsconfig.packages.json && yarn workspace testing-suite compile",
     "build:watch": "tsc -b tsconfig.packages.json --watch --preserveWatchOutput --assumeChangesOnlyAffectDirectDependencies",
     "test:compiler:watch": "yarn workspace solidc test:watch",

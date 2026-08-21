@@ -86,4 +86,47 @@ describe('incremental compile task', () => {
     expect(fs.existsSync(path.join(root, 'artifacts', 'solidcash'))).toBe(false);
     expect(fs.existsSync(path.join(root, 'cache', 'solidcash'))).toBe(false);
   });
+
+  it('recompiles selected declarations without replacing unrelated canonical artifacts', async () => {
+    const root = tempProject();
+    fs.writeFileSync(path.join(root, 'contracts', 'Unrelated.sol'), 'contract Unrelated {}');
+    const config = resolveConfig({
+      paths: {
+        contracts: './contracts',
+        artifacts: './artifacts',
+        cache: './cache',
+        tests: './test',
+      },
+      compiler: { solidityImportCompat: true },
+    }, root);
+    const hre = createHardhatRuntimeEnvironment(config);
+    await runTask('compile', { quiet: true, 'skip-split': true }, hre);
+
+    const artifactDir = path.join(root, 'artifacts', 'solidcash');
+    const artifactDirectoryInode = fs.statSync(artifactDir).ino;
+    const dependencyBefore = fs.readFileSync(path.join(artifactDir, 'Dependency.json'), 'utf8');
+    const rootBefore = fs.readFileSync(path.join(artifactDir, 'Root.json'), 'utf8');
+    const unrelatedBefore = fs.readFileSync(path.join(artifactDir, 'Unrelated.json'), 'utf8');
+    fs.writeFileSync(
+      path.join(root, 'contracts', 'Dependency.sol'),
+      'contract Dependency { function changedDependency() public {} }',
+    );
+    fs.writeFileSync(
+      path.join(root, 'contracts', 'Root.sol'),
+      'import "./Dependency.sol"; contract Root { function changed() public {} }',
+    );
+
+    const result = await runTask('compile', {
+      quiet: true,
+      'skip-split': true,
+      sources: ['Root.sol'],
+    }, hre) as { compilerJobs: number; total: number };
+    expect(result.compilerJobs).toBe(1);
+    expect(result.total).toBe(1);
+    expect(fs.readFileSync(path.join(artifactDir, 'Dependency.json'), 'utf8')).not.toBe(dependencyBefore);
+    expect(fs.readFileSync(path.join(artifactDir, 'Root.json'), 'utf8')).not.toBe(rootBefore);
+    expect(fs.readFileSync(path.join(artifactDir, 'Unrelated.json'), 'utf8')).toBe(unrelatedBefore);
+    expect(fs.statSync(artifactDir).ino).toBe(artifactDirectoryInode);
+    expect(fs.statSync(path.join(artifactDir, 'Dependency.json')).mode & 0o400).not.toBe(0);
+  });
 });

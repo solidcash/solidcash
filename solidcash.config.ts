@@ -9,7 +9,16 @@ export default defineConfig({
   },
   // This project composes graph-free ERC-20 leaves into caller-authenticated atomic routes. Explicitly request
   // leaf participant routes; no marketplace source or test changes are required.
-  compiler: { solidityImportCompat: true, messageBus: true },
+  compiler: {
+    solidityImportCompat: true,
+    messageBus: true,
+    messageBusGraphContext: true,
+    // SolidCash addresses are locking bytecode. Recover the native P2PKH identity so an imported Solidity
+    // `ecrecover(...) == msg.sender` comparison stays in one address domain and needs no EVM-keccak sidecar.
+    ecrecover: 'p2pkh',
+    // Skip speculative external-handler fallback rungs in this large imported call graph during development.
+    optimizeForCompilationSpeed: true,
+  },
   // Same mnemonic/path as the EffectiveAcceleration Hardhat project so getSigners() and
   // config.networks.hardhat.accounts.mnemonic stay aligned with marketplace.test.ts.
   mnemonic: 'rebuild always symbol rabbit sunset napkin laundry diary doll chalk valid train',

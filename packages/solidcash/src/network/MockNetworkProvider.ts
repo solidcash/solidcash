@@ -4,10 +4,11 @@ import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { Utxo, Network, VmTarget, TokenDetails } from '../interfaces.js';
-import NetworkProvider, { ConsensusLimits, NetworkPolicy } from './NetworkProvider.js';
+import NetworkProvider, { ConsensusLimits, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
+import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
 
 export interface TokenGenesisOutput {
   address: string;
@@ -25,7 +26,7 @@ export interface MockNetworkProviderOptions {
 
 const mockNetworkResetHooks: Array<() => void> = [];
 
-/** Process-global caches (jobEvents persist) must drop when the mock chain is wiped. */
+/** Process-global, chain-derived caches must drop when the mock chain is wiped or rewound. */
 export function onMockNetworkProviderReset(hook: () => void): void {
   mockNetworkResetHooks.push(hook);
 }
@@ -258,8 +259,7 @@ export default class MockNetworkProvider implements NetworkProvider {
   private snapshotRestorers = new Map<string, SnapshotRestorer>();
   private signerCache = new Map<string, HDSigner>();
   private fundedSignerKeys = new Set<string>();
-  /** category → original scriptHash, so minting still resolves after dest 21's lock is rewritten. */
-  private mintingDiscoveryScriptHash = new Map<string, string>();
+  private preparedTransaction?: PreparedTransaction;
   /**
    * ethers-v5 `provider._network.chainId` surface used by MistSwap digests
    * (`user.provider._network.chainId` in setMasterContractApproval).
@@ -309,14 +309,21 @@ export default class MockNetworkProvider implements NetworkProvider {
       hashDigestIterationsPerByteNonstandard:
         this.consensusLimits.hashDigestIterationsPerByteNonstandard ?? this.consensusLimits.hashDigestIterationsPerByte,
     };
-    const verifier = createTxVerifier({
+    const verifierConfig = {
       // Libauth's standard VM applies its own fixed dust policy after mem-cash's configurable check. Use the
       // consensus VM when dust is disabled; mem-cash still applies fee/value/finality validation and every
       // configured consensus override. Opting back into dust also restores the full production policy VM.
       vmVersion: this.vmTarget, standard: this.policy.enforceDust, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
       dustRelayFeePerKb: this.policy.enforceDust ? undefined : 0n,
       consensus: overrides,
-    } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides });
+    } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides };
+    const stockVerifier = createTxVerifier(verifierConfig);
+    const verifier = this.vmTarget === VmTarget.BCH_2026_05
+      && this.consensusLimits.maximumInputBytes > 10_000
+      ? createPreparedBch2026TxVerifier(
+        this, verifierConfig, () => this.preparedTransaction, stockVerifier,
+      )
+      : stockVerifier;
     this.indexer = createIndexer({ verifier });
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
@@ -433,6 +440,9 @@ export default class MockNetworkProvider implements NetworkProvider {
       this.blockHeight = height;
       this.fundingNonce = fundingNonce;
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
+      // Snapshot restoration can abandon transactions just as completely as reset(). Any process-local cache
+      // derived from the prior chain tip is stale after this point and must be rebuilt from the restored UTXO set.
+      for (const hook of mockNetworkResetHooks) hook();
     };
     return { snapshotId, restore };
   }
@@ -497,6 +507,28 @@ export default class MockNetworkProvider implements NetworkProvider {
     return this.indexer.getRawTx(txid)!;
   }
 
+  async sendPreparedTransaction(prepared: PreparedTransaction): Promise<string> {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_COLLECTION_FETCH === '1') {
+      console.error('mock-prepared-transaction', {
+        inputs: prepared.transaction.inputs.length,
+        outputs: prepared.transaction.outputs.map((output, index) => ({
+          index,
+          lockingBytecode: binToHex(output.lockingBytecode),
+          category: output.token?.category && binToHex(output.token.category),
+          capability: output.token?.nft?.capability,
+          commitment: output.token?.nft?.commitment && binToHex(output.token.nft.commitment),
+        })),
+      });
+    }
+    this.preparedTransaction = prepared;
+    try {
+      return await this.sendRawTransaction(prepared.rawHex);
+    } finally {
+      if (this.preparedTransaction === prepared) this.preparedTransaction = undefined;
+    }
+  }
+
   async sendRawTransaction(txHex: string): Promise<string> {
     if (!this.options.updateUtxoSet) {
       const bin = hexToBin(txHex);
@@ -511,12 +543,18 @@ export default class MockNetworkProvider implements NetworkProvider {
     const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
     const previousStackItemLength = commonConsensus.maximumStackItemLength;
     commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;
+    const debugTiming = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_PREFLIGHT_TIMING === '1';
+    const submitStartedAt = debugTiming ? Date.now() : 0;
     let result;
     try {
       result = this.indexer.submitTransaction(txHex);
     } finally {
       commonConsensus.maximumStackItemLength = previousStackItemLength;
     }
+    if (debugTiming) console.error('mock-provider-timing', {
+      stage: 'submit-transaction', ms: Date.now() - submitStartedAt, success: result.success,
+    });
     if (!result.success) {
       throw new Error(result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error);
     }
@@ -524,112 +562,13 @@ export default class MockNetworkProvider implements NetworkProvider {
     // Mine a block to confirm the transaction immediately. This moves outputs
     // from the mempool to the confirmed UTXO set and clears mempool spend
     // tracking, matching the old MockNetworkProvider's simple UTXO-array behavior.
+    const mineStartedAt = debugTiming ? Date.now() : 0;
     this.indexer.mine();
-    this._reindexDiscoveredMinting();
+    if (debugTiming) console.error('mock-provider-timing', {
+      stage: 'mine', ms: Date.now() - mineStartedAt,
+    });
 
     return result.txid;
-  }
-
-  /** Index minting outputs under the pre-rewrite scriptHash after dest 21 moves. */
-  private _reindexDiscoveredMinting(): void {
-    if (this.mintingDiscoveryScriptHash.size === 0) return;
-    const storage = this.indexer.storage;
-    if (!storage?.snapshot || !storage.restore) return;
-    const snap = storage.snapshot();
-    let changed = false;
-    for (const utxo of snap.utxos.values()) {
-      const category = utxo.tokenData?.category?.toLowerCase();
-      if (!category || utxo.tokenData?.nft?.capability !== 'minting') continue;
-      let discovery = this.mintingDiscoveryScriptHash.get(category);
-      if (!discovery) {
-        try {
-          discovery = this.mintingDiscoveryScriptHash.get(binToHex(hexToBin(category).reverse()));
-        } catch { /* not hex */ }
-      }
-      if (!discovery || utxo.scriptHash === discovery) continue;
-      const outpoint = `${utxo.outpoint.txid}:${utxo.outpoint.vout}` as `${string}:${number}`;
-      const keys = new Set(snap.utxosByScriptHash.get(discovery) ?? []);
-      if (keys.has(outpoint)) continue;
-      keys.add(outpoint);
-      snap.utxosByScriptHash.set(discovery, keys);
-      changed = true;
-    }
-    if (changed) storage.restore(snap);
-  }
-
-  /**
-   * Whether the ordinary submission method still performs mem-cash's authoritative full validation.
-   * Stateful builders use this to avoid evaluating every finalized input twice. An instance patch or subclass
-   * override makes the answer false, preserving the SDK gate for failure-injection and hostile-provider tests.
-   */
-  canValidateFinalizedTransaction(): boolean {
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_FORCE_SDK_PREFLIGHT === '1') return false;
-    return this.sendRawTransaction === MockNetworkProvider.prototype.sendRawTransaction;
-  }
-
-  /**
-   * Rewrite one outpoint's locking bytecode in the mock UTXO set, preserving
-   * satoshis/token/height. Preflight reads generateLockingBytecode wraps;
-   * send() reads this indexer, so dest 21 must match both.
-   */
-  replaceUtxoLockingBytecode(utxo: Utxo, lockingBytecode: Uint8Array): boolean {
-    const storage = this.indexer.storage;
-    if (!storage?._test?.utxo) return false;
-    const candidates = [{ txid: utxo.txid, vout: utxo.vout }];
-    try {
-      const reversed = binToHex(hexToBin(utxo.txid).reverse());
-      if (reversed !== utxo.txid) candidates.push({ txid: reversed, vout: utxo.vout });
-    } catch { /* txid not hex */ }
-    let existing: ReturnType<typeof storage.getUtxoByOutpoint> | undefined;
-    let key = candidates[0];
-    for (const candidate of candidates) {
-      const found = storage.getUtxoByOutpoint(`${candidate.txid}:${candidate.vout}`);
-      if (found) {
-        existing = found;
-        key = candidate;
-        break;
-      }
-    }
-    if (existing?.lockingBytecode && existing.lockingBytecode.length === lockingBytecode.length
-      && existing.lockingBytecode.every((byte, offset) => byte === lockingBytecode[offset])) {
-      return false;
-    }
-    const previousScriptHash = existing?.scriptHash;
-    for (const candidate of candidates) {
-      storage._test.utxo.remove({ txid: candidate.txid, vout: candidate.vout });
-    }
-    const tokenData = existing?.tokenData ?? (utxo.token
-      ? {
-        category: utxo.token.category,
-        amount: utxo.token.amount,
-        nft: utxo.token.nft,
-      }
-      : undefined);
-    const nextScriptHash = binToHex(sha256(lockingBytecode));
-    storage._test.utxo.add({
-      txid: key.txid,
-      vout: key.vout,
-      satoshis: existing?.satoshis ?? utxo.satoshis,
-      scriptHash: nextScriptHash,
-      height: existing?.height && existing.height > 0 ? existing.height : 100,
-      lockingBytecode,
-      ...(existing?.isCoinbase ? { isCoinbase: true } : {}),
-      ...(tokenData ? { tokenData } : {}),
-    });
-    // Keep the previous address index so FakeToken (and similar) can still
-    // discover this minting UTXO after dest 21's lock is rewritten.
-    if (previousScriptHash && previousScriptHash !== nextScriptHash) {
-      if (tokenData?.nft?.capability === 'minting' && tokenData.category) {
-        this.mintingDiscoveryScriptHash.set(tokenData.category.toLowerCase(), previousScriptHash);
-      }
-      const snap = storage.snapshot();
-      const keys = new Set(snap.utxosByScriptHash.get(previousScriptHash) ?? []);
-      keys.add(`${key.txid}:${key.vout}` as `${string}:${number}`);
-      snap.utxosByScriptHash.set(previousScriptHash, keys);
-      storage.restore(snap);
-    }
-    return true;
   }
 
   async addUtxo(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {
@@ -693,7 +632,6 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.indexer.reset();
     this.signerCache.clear();
     this.fundedSignerKeys.clear();
-    this.mintingDiscoveryScriptHash.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
     for (const hook of mockNetworkResetHooks) hook();

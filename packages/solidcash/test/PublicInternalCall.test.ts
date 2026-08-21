@@ -21,6 +21,15 @@ const CASES: Record<string, string> = {
     function split(int a) public pure returns (int, int) { return (a, a + 1); }
     function check() { int x; int y; (x, y) = split(5); require(x == 5); require(y == 6); }
   }`,
+  'forwarded-multi-return': `contract C() {
+    function values(int a) internal pure returns (int, int, int) { return (a, a + 1, a + 2); }
+    function forward(int a) internal pure returns (int, int, int) { return values(a); }
+    function check() {
+      int x; int y; int z;
+      (x, y, z) = forward(5);
+      require(x == 5); require(y == 6); require(z == 7);
+    }
+  }`,
 };
 
 describe('public function called internally with a return value (VM-verified)', () => {

@@ -63,11 +63,6 @@ export default defineConfig(solidhatPreset(
       testTimeout: 600_000,
       hookTimeout: 600_000,
       fileParallelism: false,
-      server: {
-        deps: {
-          inline: true,
-        },
-      },
     },
   },
 ));

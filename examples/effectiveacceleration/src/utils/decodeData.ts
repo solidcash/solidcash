@@ -122,7 +122,7 @@ export const decodeAddress = (ptr: {bytes: Uint8Array, index: number}): string =
 }
 
 export const decodeUint256 = (ptr: {bytes: Uint8Array, index: number}): bigint => {
-  const result = toBigInt(Uint8Array.from(ptr.bytes.slice(ptr.index, ptr.index + 32)).reverse());
+  const result = toBigInt(ptr.bytes.slice(ptr.index, ptr.index + 32));
   ptr.index += 32;
 
   return result;
@@ -131,8 +131,8 @@ export const decodeUint256 = (ptr: {bytes: Uint8Array, index: number}): bigint =
 export const decodeUint32 = (ptr: {bytes: Uint8Array, index: number}): number => {
   const result = new DataView(
     ptr.bytes.buffer, ptr.bytes.byteOffset + ptr.index, 4,
-  ).getUint32(0, true);
-  ptr.index += 5;
+  ).getUint32(0);
+  ptr.index += 4;
 
   return result;
 }
@@ -140,7 +140,7 @@ export const decodeUint32 = (ptr: {bytes: Uint8Array, index: number}): number =>
 export const decodeUint16 = (ptr: {bytes: Uint8Array, index: number}): number => {
   const result = new DataView(
     ptr.bytes.buffer, ptr.bytes.byteOffset + ptr.index, 4,
-  ).getUint32(0, true);
+  ).getUint32(0);
   // The source assignment widens maxTime into the uint32 state field before the event reads it.
   ptr.index += 4;
 

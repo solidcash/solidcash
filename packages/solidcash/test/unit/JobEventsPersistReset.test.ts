@@ -7,6 +7,7 @@ import {
   isDisposableAlignmentPad,
   jobEventsEntryOneToOneIndices,
   persistedJobEventsLock,
+  persistedJobEventsValue,
   persistedJobEventsUnlockRecipe,
   rememberJobEventsLock,
   rememberJobEventsUnlockRecipe,
@@ -26,6 +27,21 @@ describe('jobEvents persist vs mock reset', () => {
     new MockNetworkProvider().reset();
     expect(persistedJobEventsLock('ee643a16')).toBeUndefined();
     StatefulTransactionBuilder.clearPersistedJobEvents();
+  });
+
+  it('invalidates chain-derived caches when a mock snapshot is restored', async () => {
+    const provider = new MockNetworkProvider();
+    const snapshot = await provider.takeSnapshot();
+    const lock = new Uint8Array(35);
+    lock[0] = 0xaa;
+    lock[1] = 0x20;
+    lock[34] = 0x87;
+
+    rememberJobEventsLock('ab'.repeat(32), lock);
+    expect(persistedJobEventsLock('ab'.repeat(32))).toEqual(lock);
+
+    await snapshot.restore();
+    expect(persistedJobEventsLock('ab'.repeat(32))).toBeUndefined();
   });
 
   it('treats token-free p2pkh occupants as disposable alignment pads', () => {
@@ -73,5 +89,20 @@ describe('jobEvents persist vs mock reset', () => {
     expect(recipe?.root).toEqual(sha256(value));
     StatefulTransactionBuilder.clearPersistedJobEvents();
     expect(persistedJobEventsUnlockRecipe(categoryId)).toBeUndefined();
+  });
+
+  it('keeps a staged write authoritative over speculative predecessor observations', () => {
+    const categoryId = 'aa'.repeat(32);
+    const longer = new Uint8Array(120).fill(0x11);
+    const shorter = new Uint8Array(80).fill(0x22);
+
+    stageJobEventsValue(categoryId, longer);
+    rememberJobEventsValue(categoryId, shorter);
+    expect(persistedJobEventsValue(categoryId)).toEqual(longer);
+
+    stageJobEventsValue(categoryId, shorter);
+    rememberJobEventsValue(categoryId, longer);
+    expect(persistedJobEventsValue(categoryId)).toEqual(shorter);
+    StatefulTransactionBuilder.clearPersistedJobEvents();
   });
 });

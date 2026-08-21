@@ -1026,6 +1026,22 @@ describe('internal forwarding of chunked mapping value witnesses', () => {
   });
 });
 
+describe('chunkable mapping output-base witness', () => {
+  it('is selected by the storage effect rather than a function name', () => {
+    const artifact = compileString('contract C { mapping(uint256 => bytes) values;'
+      + ' function store(uint256 key, bytes calldata value) public {'
+      + ' values[key] = value; require(true); }'
+      + ' function publishJobEvent() public { require(true); } }',
+    { solidityImportCompat: true });
+    const store = artifact.abi.find((entry) => entry.name === 'store');
+    const sameHistoricalNameWithoutWrite = artifact.abi.find((entry) => entry.name === 'publishJobEvent');
+    expect(store?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')).toBe(true);
+    expect(sameHistoricalNameWithoutWrite?.inputs.some(
+      (input) => input.name === '__internal__valueChunkOutputBase',
+    )).toBe(false);
+  });
+});
+
 describe('synthesizes __extaddr for IFoo(<self-pinned state chain>).method() (EACC IERC20(job.token) shape)', () => {
   const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   const iface = 'interface ITok { function transfer(address to, uint256 v) external returns (bool); }';

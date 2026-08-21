@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { formatArtifact } from '@solidcash/utils';
+import {
+  decodeAuthenticationInstructions, hexToBin, OpcodesBCH, vmNumberToBigInt,
+} from '@bitauth/libauth';
 import { compileString } from '../src/index.js';
 
 // Compiler-side rules for inferring the proxy-implementation (delegate) build. Source never writes `delegate`;
@@ -168,6 +171,102 @@ describe('delegate inference', () => {
       .toBe(true);
     expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'registered')?.eligible)
       .toBe(true);
+  });
+
+  it('bases routed recovery sidecars on the authenticated participant owner, not the delegate executor', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      // The initializer marks the Solidity-compatible public surface as a proxy implementation. The outgoing
+      // edge forces a compiler-owned graph handler. Recovery is deliberately outlined into a file-level helper:
+      // that helper is shared by the ordinary entry and the route, whose compute-block bases differ.
+      const artifact = compileString(`pragma solidity ^0.8.20;
+        interface Sink { function ping(address who) external; }
+        function recoverForRoute(bytes32 h, uint8 v, bytes32 r, bytes32 s) returns (address) {
+          return ecrecover(h, v, r, s);
+        }
+        contract RoutedRecovery {
+          address public last;
+          address public sink;
+          modifier initializer() { _; }
+          function initialize(address value) public initializer { sink = value; }
+          function apply(bytes32 h, uint8 v, bytes32 r, bytes32 s) public {
+            bytes32 digest = keccak256(abi.encode(h, v));
+            address who = recoverForRoute(digest, v, r, s);
+            last = who;
+            Sink(sink).ping(who);
+          }
+        }
+      `, { messageBus: true, solidityImportCompat: true });
+
+      expect(artifact.messageBus?.route?.modifiers).toContain('delegate');
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply')?.keccakPreimageParams)
+        .toEqual([null]);
+      // File-level helpers are code-generated OP_INVOKE bodies, but intentionally are not contract invocation
+      // summaries. Inspect the stable debug record emitted for the actual outlined body.
+      const helper = Object.values(artifact.debug?.invokeDebug ?? {})
+        .find((candidate) => candidate.name === 'recoverForRoute');
+      expect(helper).toBeDefined();
+      const body = helper?.bytecode;
+      expect(body).toBeTypeOf('string');
+      const opcodes = decodeAuthenticationInstructions(hexToBin(body!)).map((instruction) => instruction.opcode);
+      expect(opcodes).toContain(OpcodesBCH.OP_INPUTBYTECODE);
+      // OP_INPUTINDEX would make the handler read executor+slot. Its hidden owner argument is selected with PICK.
+      expect(opcodes).not.toContain(OpcodesBCH.OP_INPUTINDEX);
+
+      const helperEntry = Object.entries(artifact.debug?.invokeDebug ?? {})
+        .find(([, candidate]) => candidate.name === 'recoverForRoute');
+      expect(helperEntry).toBeDefined();
+      const helperId = BigInt(helperEntry![0]);
+      const readNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
+        if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
+        if (instruction.opcode === OpcodesBCH.OP_1NEGATE) return -1n;
+        if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
+          return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
+        }
+        if (!instruction.data) return undefined;
+        const decoded = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
+        return typeof decoded === 'bigint' ? decoded : undefined;
+      };
+      const findHelperInvoke = (bytecode: string) => {
+        const instructions = decodeAuthenticationInstructions(hexToBin(bytecode));
+        const index = instructions.findIndex((instruction, i) => i > 0
+          && instruction.opcode === OpcodesBCH.OP_INVOKE
+          && readNumber(instructions[i - 1]) === helperId);
+        expect(index).toBeGreaterThan(0);
+        return { index, instructions };
+      };
+
+      // The route handler copies four declared arguments and, immediately beneath them, its authenticated
+      // participant owner. This checks the call edge as well as the helper body: widening only the callee frame
+      // leaves its parameters shifted even though the helper itself contains no OP_INPUTINDEX.
+      const routedHandler = Object.values(artifact.debug?.invokeDebug ?? {})
+        .find((candidate) => candidate.name === '__message_bus_graph_apply');
+      expect(routedHandler).toBeDefined();
+      const routedCall = findHelperInvoke(routedHandler!.bytecode);
+      let routedCursor = routedCall.index - 2;
+      for (let argument = 0; argument < 4; argument += 1) {
+        expect(routedCall.instructions[routedCursor].opcode).toBe(OpcodesBCH.OP_ROLL);
+        expect(readNumber(routedCall.instructions[routedCursor - 1])).toBeDefined();
+        routedCursor -= 2;
+      }
+      expect(routedCall.instructions[routedCursor].opcode).toBe(OpcodesBCH.OP_PICK);
+
+      // The independently compiled ABI entry invokes that same widened helper. Its compute block starts beside
+      // the active delegate executor, so the fifth hidden argument is OP_INPUTINDEX rather than a participant
+      // owner PICK. Entry-point sub-traversals must retain the contract-wide outlined-call ABI to emit it.
+      const applySelector = artifact.abi.find((entry) => entry.name === 'apply')?.selector;
+      expect(applySelector).toBeDefined();
+      const directCall = findHelperInvoke(artifact.functionBodies?.[applySelector!]!);
+      const precedingInvoke = directCall.instructions
+        .findLastIndex((instruction, i) => i < directCall.index
+          && instruction.opcode === OpcodesBCH.OP_INVOKE);
+      expect(directCall.instructions.slice(precedingInvoke + 1, directCall.index - 1)
+        .some((instruction) => instruction.opcode === OpcodesBCH.OP_INPUTINDEX)).toBe(true);
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
   });
 
   it('stays lazy when the compile cache clones the artifact', () => {

@@ -141,7 +141,14 @@ const resolveArguments = (
     return value;
   }
   if (source.kind === 'literal') return literal(source);
-  if (source.kind === 'selfAddress') return hexToBin(sourceParticipant.lockingBytecode);
+  if (source.kind === 'loopIndex' && source.initialValue !== undefined && source.stepValue !== undefined) {
+    return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(occurrence);
+  }
+  if (source.kind === 'selfAddress') {
+    // OP_INVOKE can select authenticated delegate bytecode, but it does not change the active input. The exact
+    // OP_UTXOBYTECODE result is always the physical state-owner input locking bytecode.
+    return hexToBin(sourceParticipant.lockingBytecode);
+  }
   if (source.kind === 'expression' || source.kind === 'msgSender' || source.kind === 'arrayElement') {
     const value = expressionArgument?.({
       participant: sourceParticipant,
@@ -199,6 +206,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             + `${diagnosticContext().callChain?.join(' -> ') || 'the root invocation'}`,
           { ...diagnosticContext(), ownerIdentity: lbc },
         );
+      }
+      const priorLogical = participants[existing].logicalLockingBytecode ?? lbc;
+      const nextLogical = participant.logicalLockingBytecode ?? lbc;
+      if (priorLogical.toLowerCase() !== nextLogical.toLowerCase()) {
+        throw new Error(`messageBus: one physical owner '${lbc}' was registered with different logical identities`);
       }
       return existing;
     }
@@ -273,7 +285,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     const structs = source.artifact.structs ?? source.artifact.stateLayout?.structs;
     const encoded = encodeFunctionArgument(supplied as FunctionArgument, 'address', structs);
     if (!(encoded instanceof Uint8Array)
-      || binToHex(encoded) !== target.lockingBytecode.toLowerCase()) {
+      || binToHex(encoded) !== (target.logicalLockingBytecode ?? target.lockingBytecode).toLowerCase()) {
       throw new Error(`messageBus: callsite ${call.callsiteId} target proof disagrees with registered owner`);
     }
   };
@@ -286,6 +298,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     parent: number | null,
     callMode?: 'call' | 'staticcall',
     boundedRecursiveEdge = false,
+    consumerCallsiteId?: number,
   ): void => {
     if (invocations.length >= maximum) {
       throw new MessageBusDiagnosticError(
@@ -309,6 +322,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     const invocation = invocations.length;
     invocations.push({
       parent, callee: owner, function: functionName, args, ...(callMode && { callMode }),
+      ...(consumerCallsiteId !== undefined && { consumerCallsiteId }),
       ...(parent === null && options.rootCaller !== undefined && { logicalCaller: options.rootCaller }),
     });
     activeInvocations.push(invocation);
@@ -449,6 +463,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             resolved.args,
             invocation,
             edgeCallMode(call),
+            false,
+            call.callsiteId,
           );
         }
         continue;
@@ -484,6 +500,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             ),
             invocation,
             edgeCallMode(call),
+            false,
+            call.callsiteId,
           );
         });
         continue;
@@ -547,6 +565,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             invocation,
             edgeCallMode(call),
             occurrenceKind !== 'once' && occurrenceBoundOf(call).maximum !== undefined,
+            call.callsiteId,
           );
         }
         continue;
@@ -563,6 +582,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           invocation,
           edgeCallMode(call),
           occurrenceKind !== 'once' && occurrenceBoundOf(call).maximum !== undefined,
+          call.callsiteId,
         );
       }
     }

@@ -201,8 +201,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return node;
   }
 
-  // Cheap gate pre-scan: does any function make a method call on an interface-CAST of a non-identifier
-  // (`IFoo(pairFor(..)).m()`)? Such a computed target needs this pass even in a state-var-less contract.
+    // Cheap gate pre-scan: does any function make a method call on an interface-CAST of a non-identifier
+    // (`IFoo(param.field).m()` / `IFoo(pairFor(..)).m()`)? Such a target needs this pass even in a
+    // state-var-less contract. The individual target recognizers below still decide whether the value is a
+    // caller-selected parameter path, self-pinned state, or a body-top-safe computation.
   private hasComputedCastTarget(node: ContractNode): boolean {
     let found = false;
     const walk = (n: unknown): void => {
@@ -214,11 +216,11 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       }
       if (n instanceof MethodCallNode && n.object instanceof FunctionCallNode
         && n.object.parameters.length === 1 && this.typeNames.has(n.object.identifier.name)) {
-        // Unwrap cast wrappers to match castComputedTarget: `IFoo(address(uint(keccak256(..))))` wraps the
-        // computed call in numeric/address casts (the create2 address form).
+        // A bare identifier already has a stable ABI source. Every structured path/computation must be hoisted so
+        // codegen can bind the physical co-spend to the runtime-derived address.
         let inner: Node = n.object.parameters[0];
         while (inner instanceof CastNode) inner = inner.expression;
-        if (inner instanceof FunctionCallNode) { found = true; return; }
+        if (!(inner instanceof IdentifierNode)) { found = true; return; }
       }
       for (const k of Object.keys(n)) {
         if (k === 'type' || k === 'symbolTable' || k === 'location') continue;

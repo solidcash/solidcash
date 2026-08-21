@@ -132,6 +132,29 @@ describe('logical CREATE identity at getAddress()', () => {
     }])).toBe(0);
   });
 
+  it('does not overwrite one restored SCID while restoring another', () => {
+    const firstCommitment = '5343494401aaaa';
+    const secondCommitment = '5343494401bbbb';
+    const firstLock = Uint8Array.of(0xaa, 0x20, 0x01);
+    const secondLock = Uint8Array.of(0xaa, 0x20, 0x02);
+    const outputs: Array<{ to?: Uint8Array; amount?: bigint; token?: object }> = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+    ];
+    expect(reassertScidIdentityOutputs(outputs, [{
+      satoshis: 1200n,
+      token: { category: 'aa'.repeat(32), amount: 0n, nft: { capability: 'none', commitment: firstCommitment } },
+      unlocker: { generateLockingBytecode: () => firstLock },
+    }, {
+      satoshis: 1200n,
+      token: { category: 'bb'.repeat(32), amount: 0n, nft: { capability: 'none', commitment: secondCommitment } },
+      unlocker: { generateLockingBytecode: () => secondLock },
+    }])).toBe(2);
+    expect(outputs).toHaveLength(2);
+    expect(outputs.map((output) => (
+      output.token as { nft?: { commitment?: string } }
+    ).nft?.commitment)).toEqual([firstCommitment, secondCommitment]);
+  });
+
   it('requires the unique SCID of a non-zero msg.sender category', async () => {
     const { signer } = await fundedSigner('ae');
     const token = await new ContractFactory(compileString(TOKEN), signer).deploy();

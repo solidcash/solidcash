@@ -1,0 +1,218 @@
+import { describe, expect, it } from 'vitest';
+import { hash160 } from '@solidcash/utils';
+import type {
+  ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression, FunctionArgument,
+} from '@solidcash/utils';
+import { compileString } from '../direct-compile.js';
+import { StatefulContract } from '../../src/index.js';
+import {
+  canRefreshReachedCallFromPostState,
+  externalReturnParamSlot,
+  groupIndexForExternalCallSlot,
+  inactiveMessageBusRouteWitness,
+  isSdkResolvedExternalCallTopologyWitness,
+} from '../../src/stateful/StatefulContract.js';
+import { createTestProvider } from '../test-util.js';
+import { hexToBin } from '@bitauth/libauth';
+
+type PredicateEvaluator = {
+  _evaluateExternalExpression: (
+    expression: ExternalCallExpression,
+    args: FunctionArgument[],
+    artifact: Artifact,
+    state?: Record<string, unknown>,
+    inputs?: readonly { type: string }[],
+  ) => FunctionArgument | undefined;
+  _resolveExternalArgs: (
+    sources: ArgSource[],
+    args: FunctionArgument[],
+    artifact: Artifact,
+    state?: Record<string, unknown>,
+    inputs?: readonly { type: string }[],
+    returns?: ReadonlyMap<string, FunctionArgument>,
+    occurrenceIndex?: number,
+    stateIncludesPriorWrites?: boolean,
+    executionSelfAddress?: FunctionArgument,
+  ) => FunctionArgument[] | undefined;
+};
+
+const artifact = compileString(`
+  pragma solidcash >=0.8.0;
+  contract PredicateHost {
+    function keep(address target, bytes32 expected, sig s, pubkey pk) {
+      require(target != address(0) && expected == expected);
+      require(checkSig(s, pk));
+    }
+  }
+`, { solidityImportCompat: true, forceStateful: true });
+
+const evaluator = new StatefulContract(
+  '00'.repeat(32), artifact, createTestProvider(),
+) as unknown as PredicateEvaluator;
+
+const source = (paramIndex: number): ExternalCallExpression => ({
+  kind: 'source', source: { kind: 'forward', paramIndex },
+});
+
+describe('compiler-published external-call predicate evaluation', () => {
+  it('resolves loop-index sources relative to the reached occurrence', () => {
+    expect(evaluator._resolveExternalArgs(
+      [{ kind: 'loopIndex', initialValue: '2', stepValue: '3' }],
+      [], artifact, undefined, undefined, undefined, 4,
+    )).toEqual([14n]);
+  });
+
+  it('resolves address(this) from the authenticated execution context', () => {
+    const executionAddress = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87);
+    expect(evaluator._resolveExternalArgs(
+      [{ kind: 'selfAddress' }], [], artifact, undefined, undefined, undefined, 0, false,
+      executionAddress,
+    )).toEqual([executionAddress]);
+  });
+
+  it('uses the physical active input rather than a logical deployment identity by default', () => {
+    const contract = evaluator as unknown as StatefulContract;
+    const originalLogicalAddress = contract._logicalAddress;
+    contract._logicalAddress = 'logical-identity-is-not-the-active-input';
+    try {
+      expect(evaluator._resolveExternalArgs(
+        [{ kind: 'selfAddress' }], [], artifact,
+      )).toEqual([hexToBin(contract.inner.lockingBytecode)]);
+    } finally {
+      contract._logicalAddress = originalLogicalAddress;
+    }
+  });
+
+  it('compares address(0) against ethers-style zero addresses by value', () => {
+    const expression: ExternalCallExpression = {
+      kind: 'binary',
+      operator: '!=',
+      left: source(0),
+      right: {
+        kind: 'cast', type: 'address',
+        expression: { kind: 'literal', type: 'bigint', value: '0' },
+      },
+    };
+    const evaluate = (target: string): FunctionArgument | undefined => evaluator._evaluateExternalExpression(
+      expression, [target], artifact, undefined, [{ type: 'address' }],
+    );
+
+    expect(evaluate(`0x${'00'.repeat(20)}`)).toBe(false);
+    expect(evaluate(`0x${'01'.repeat(20)}`)).toBe(true);
+  });
+
+  it('compares separately allocated byte arrays by contents', () => {
+    const expression: ExternalCallExpression = {
+      kind: 'binary', operator: '==', left: source(0), right: source(1),
+    };
+    const value = new Uint8Array([1, 2, 3]);
+
+    expect(evaluator._evaluateExternalExpression(
+      expression, [value, value.slice()], artifact, undefined,
+      [{ type: 'bytes32' }, { type: 'bytes32' }],
+    )).toBe(true);
+  });
+
+  it('packs Solidity addresses and arbitrarily long hex bytes like the compiler', () => {
+    const addressHash = new Uint8Array(20).fill(0x47);
+    const lockingBytecode = Uint8Array.of(0x76, 0xa9, 0x14, ...addressHash, 0x88, 0xac);
+    const signature = `0x${'ab'.repeat(65)}`;
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['', ''], args: [source(0), source(1)],
+    };
+
+    const packed = evaluator._evaluateExternalExpression(
+      expression, [lockingBytecode, signature], artifact, undefined,
+      [{ type: 'address' }, { type: 'bytes' }],
+    );
+
+    expect(packed).toBeInstanceOf(Uint8Array);
+    expect(packed).toEqual(Uint8Array.of(...addressHash, ...new Uint8Array(65).fill(0xab)));
+  });
+
+  it('uses the compiler address narrowing rule for Solidity P2SH32 values', () => {
+    const lockingBytecode = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x23), 0x87);
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: [''], args: [source(0)],
+    };
+
+    expect(evaluator._evaluateExternalExpression(
+      expression, [lockingBytecode], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(hash160(lockingBytecode));
+  });
+
+  it('packs typed Solidity integers at natural width in big-endian order', () => {
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint16', 'int16'],
+      args: [source(0), source(1)],
+    };
+
+    expect(evaluator._evaluateExternalExpression(
+      expression, [2n, -2n], artifact, undefined,
+      [{ type: 'uint16' }, { type: 'int16' }],
+    )).toEqual(Uint8Array.of(0x00, 0x02, 0xff, 0xfe));
+  });
+});
+
+describe('conditional external-call topology', () => {
+  it('retains a reached call when completed caller state invalidates its earlier guard', () => {
+    const guard: ExternalCallExpression = {
+      kind: 'binary',
+      operator: '>',
+      left: source(0),
+      right: { kind: 'state', name: 'amount' },
+    };
+    const initialReachability = evaluator._evaluateExternalExpression(
+      guard, [200n], artifact, { amount: 100n }, [{ type: 'uint256' }],
+    );
+    const postStateReachability = evaluator._evaluateExternalExpression(
+      guard, [200n], artifact, { amount: 200n }, [{ type: 'uint256' }],
+    );
+
+    expect(initialReachability).toBe(true);
+    expect(canRefreshReachedCallFromPostState(postStateReachability)).toBe(false);
+  });
+
+  it('uses ABI-valid placeholders for inactive fixed route bands', () => {
+    expect(inactiveMessageBusRouteWitness('string')).toBe('');
+    expect(inactiveMessageBusRouteWitness('uint256')).toBe(0n);
+    expect(inactiveMessageBusRouteWitness('bytes4')).toEqual(new Uint8Array(4));
+    expect(inactiveMessageBusRouteWitness('bool[2]')).toEqual([false, false]);
+    expect(inactiveMessageBusRouteWitness('address')).toHaveLength(25);
+  });
+
+  it('maps stable callsite slots after an earlier conditional call is omitted', () => {
+    const externalCalls = [
+      { callsiteId: 4, occurrence: 'conditional' },
+      { callsiteId: 7, occurrence: 'conditional' },
+    ];
+    const groupByCallsite = new Map([[7, 22]]);
+
+    expect(groupIndexForExternalCallSlot({
+      slot: 0, externalCalls, groupByCallsite, compactGroups: [22],
+    })).toBeUndefined();
+    expect(groupIndexForExternalCallSlot({
+      slot: 1, externalCalls, groupByCallsite, compactGroups: [22],
+    })).toBe(22);
+  });
+
+  it('maps compact return-witness ordinals across non-returning call slots', () => {
+    const externalCalls = [
+      { hasReturnValues: true },
+      { hasReturnValues: false },
+      { hasReturnValues: true },
+      { hasReturnValues: true },
+    ];
+
+    expect(externalReturnParamSlot('__internal__externalReturnOutputIdx0', externalCalls)).toBe(0);
+    expect(externalReturnParamSlot('__internal__externalReturnOutputIdx1', externalCalls)).toBe(2);
+    expect(externalReturnParamSlot('__internal__externalReturnOutputIdx2', externalCalls)).toBe(3);
+  });
+
+  it('treats physical call bases and master indices as SDK-owned route witnesses', () => {
+    expect(isSdkResolvedExternalCallTopologyWitness('__internal__externalCallInputBase')).toBe(true);
+    expect(isSdkResolvedExternalCallTopologyWitness('__internal__extcallMasterIdx6')).toBe(true);
+    expect(isSdkResolvedExternalCallTopologyWitness('__internal__extcallAnchorIdx6')).toBe(true);
+    expect(isSdkResolvedExternalCallTopologyWitness('__internal__vmapBatchProof_0')).toBe(false);
+  });
+});

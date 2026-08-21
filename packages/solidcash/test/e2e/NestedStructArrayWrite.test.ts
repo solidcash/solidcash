@@ -23,13 +23,44 @@ async function mk(src: string, reserve?: Uint8Array): Promise<StatefulContract> 
 // them. Drove MarketplaceV1 `JobPost storage jobPost = jobs[jobId]; jobPost.roles.creator = msg.sender`.
 const SRC = `contract C {
   struct Roles { address creator; address arbitrator; address worker; }
-  struct Post { uint8 state; Roles roles; uint256 amount; }
+  struct Post {
+    uint8 state;
+    bool whitelistWorkers;
+    Roles roles;
+    string title;
+    string[] tags;
+    bytes32 contentHash;
+    bool multipleApplicants;
+    uint256 amount;
+    address token;
+    uint32 timestamp;
+    uint32 maxTime;
+    string deliveryMethod;
+    uint256 collateralOwed;
+    uint256 escrowId;
+    bytes32 resultHash;
+    uint8 rating;
+    bool disputed;
+  }
   Post[] jobs;
   function w(address a, address b) public {
     jobs.push();
     jobs[0].amount = 100;
     jobs[0].roles.arbitrator = a;
     jobs[0].roles.creator = b;
+  }
+  function wConditional(address a, address b) public {
+    jobs.push();
+    uint256 one = 1;
+    uint256 two = 2;
+    uint256 three = 3;
+    uint256 four = 4;
+    if (a != address(0) && one + two + three + four == 10) {
+      jobs[0].state = 1;
+      jobs[0].roles.worker = b;
+      jobs[0].roles.arbitrator = a;
+      jobs[0].amount = 100;
+    }
   }
   function chk(address a, address b) public view {
     require(jobs[0].roles.creator == b);
@@ -39,6 +70,13 @@ const SRC = `contract C {
   }
   function chkWrong(address a, address b) public view {
     require(jobs[0].roles.arbitrator == b);
+  }
+  function chkConditional(address a, address b) public view {
+    require(jobs[0].state == 1);
+    require(jobs[0].roles.creator == address(0));
+    require(jobs[0].roles.arbitrator == a);
+    require(jobs[0].roles.worker == b);
+    require(jobs[0].amount == 100);
   }
 }`;
 
@@ -61,5 +99,10 @@ describe('nested struct-array element write (runtime, sibling preservation)', ()
     const sc = await mk(SRC);
     await expect(sc.w(A, B).send()).resolves.toBeDefined();
     await expect(sc.chk(A, B).send()).resolves.toBeDefined();
+  });
+  it('preserves a variable-width struct array across sequential conditional field writes', async () => {
+    const sc = await mk(SRC);
+    await expect(sc.wConditional(A, B).send()).resolves.toBeDefined();
+    await expect(sc.chkConditional(A, B).send()).resolves.toBeDefined();
   });
 });

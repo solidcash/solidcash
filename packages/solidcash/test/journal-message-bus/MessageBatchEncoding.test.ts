@@ -3,6 +3,7 @@ import { scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { messageBus } from '../../src/index.js';
+import { encodeFunctionArgument } from '../../src/Argument.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract MessageBatchEncoding() {
@@ -16,6 +17,14 @@ contract MessageBusReturningBatch() {
   function twice(int n) public pure returns (int) { return n * 2; }
   function positive(int n) public pure returns (bool) { return n > 0; }
   function pair(int n) public pure returns (int, bool) { return (n + 1, n > 0); }
+}`;
+
+const COMPOSITE_SOURCE = `pragma solidcash >=0.8.0;
+contract MessageBusCompositeEncoding() {
+  struct Payload { uint8 kind; bytes note; bytes32[] tags; }
+  function publish(address target, Payload memory payload) public {
+    require(target == address(0) && payload.kind > 0);
+  }
 }`;
 
 const artifact = compileString(SOURCE, {
@@ -87,6 +96,28 @@ describe('messageBus.encodeMessageBatch', () => {
     expect(() => messageBus.decodeMessageBusResults(
       returning, encoded, scriptToBytecode([Uint8Array.from([...packed, 0])]),
     )).toThrow(/unchecked suffix/);
+  });
+
+  it('uses one canonical inline representation for composite row arguments', () => {
+    const composite = compileString(COMPOSITE_SOURCE, {
+      forceStateful: true,
+      messageBus: true,
+      solidityImportCompat: true,
+    });
+    const payload = {
+      kind: 4n,
+      note: Uint8Array.of(0xaa, 0xbb),
+      tags: [new Uint8Array(32).fill(0x11), new Uint8Array(32).fill(0x22)],
+    };
+    const payloadBytes = encodeFunctionArgument(payload, 'Payload', composite.structs) as Uint8Array;
+    const encoded = messageBus.encodeMessageBatch(composite, [{
+      function: 'publish', args: [new Uint8Array(), payload],
+    }]);
+
+    // The zero address is a scalar OP_0 field. The struct follows inline and begins with its own first field
+    // (OP_4), not an SDK-path-dependent outer pushdata frame.
+    expect(encoded.rows[0].argsHex).toBe(`00${binToHex(payloadBytes)}`);
+    expect(payloadBytes[0]).toBe(0x54);
   });
 
   it('rejects non-advertised, ineligible, and malformed invocation plans', () => {

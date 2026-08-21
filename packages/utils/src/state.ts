@@ -1309,6 +1309,17 @@ export const VALUE_HEAD_SIZE = 28;
 export const VALUE_CHUNK_INDEX_SIZE = 2;
 export const VALUE_CHUNK_SIZE = 128 - VALUE_CHUNK_INDEX_SIZE;
 export const VALUE_CHUNK_MAX_COUNT = 1 << 15;
+export const VALUE_INLINE_LIMIT = 60;
+
+/** Encode the value portion of a sorted-map entry: len4 || inline, or len4 || root || head28. */
+export function encodeChunkableValueTail(value: Uint8Array): Uint8Array {
+  if (value.length > 0xffffffff) throw new RangeError('vmap value exceeds uint32 length');
+  const length = new Uint8Array(4);
+  new DataView(length.buffer).setUint32(0, value.length, true);
+  return value.length > VALUE_INLINE_LIMIT
+    ? new Uint8Array([...length, ...sha256(value), ...value.slice(0, VALUE_HEAD_SIZE)])
+    : new Uint8Array([...length, ...value]);
+}
 
 /** Split only the bytes after the VALUE_HEAD_SIZE-byte entry prefix into full 126-byte continuation chunks. */
 export function splitValueIntoValueChunks(value: Uint8Array): Uint8Array[] {
@@ -1350,7 +1361,9 @@ export function parseValueChunkCommitment(hex: string): { chunkIndex: number; ch
 export function joinValueChunks(
   headData: Uint8Array, chunks: readonly { chunkIndex: number; chunkData: Uint8Array }[], totalLength: number,
 ): Uint8Array {
-  if (!Number.isInteger(totalLength) || totalLength <= 60) throw new RangeError('chunked vmap value length must exceed 60');
+  if (!Number.isInteger(totalLength) || totalLength <= VALUE_INLINE_LIMIT) {
+    throw new RangeError(`chunked vmap value length must exceed ${VALUE_INLINE_LIMIT}`);
+  }
   if (headData.length !== VALUE_HEAD_SIZE) throw new RangeError(`vmap value head must contain exactly ${VALUE_HEAD_SIZE} bytes`);
   const remaining = totalLength - VALUE_HEAD_SIZE;
   const expectedCount = Math.ceil(remaining / VALUE_CHUNK_SIZE);

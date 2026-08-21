@@ -83,43 +83,6 @@ describe('MockNetworkProvider consensus limits', () => {
     await expect(provider.sendRawTransaction(binToHex(raw))).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('replaces an outpoint lock so send() spends the preflight wrap', async () => {
-    const provider = new MockNetworkProvider();
-    const parentTxid = 'ee'.repeat(32);
-    const originalLock = Uint8Array.of(0x51);
-    const jobsLock = new Uint8Array(35);
-    jobsLock[0] = 0xaa; jobsLock[1] = 0x20; jobsLock[34] = 0x87;
-    const token = {
-      category: 'b8'.repeat(32),
-      amount: 0n,
-      nft: { capability: 'minting' as const, commitment: '' },
-    };
-    await provider.addUtxo(binToHex(originalLock), {
-      txid: parentTxid, vout: 7, satoshis: 1200n, token,
-    });
-    expect((await provider.getUtxosForLockingBytecode(originalLock)).map((utxo) => utxo.vout)).toContain(7);
-    expect(provider.replaceUtxoLockingBytecode(
-      { txid: parentTxid, vout: 7, satoshis: 1200n, token },
-      jobsLock,
-    )).toBe(true);
-    const replaced = await provider.getUtxosForLockingBytecode(jobsLock);
-    expect((await provider.getUtxosForLockingBytecode(originalLock)).map((utxo) => utxo.vout)).toContain(7);
-    expect(replaced).toEqual([expect.objectContaining({
-      txid: parentTxid, vout: 7, satoshis: 1200n, token,
-    })]);
-    const raw = encodeTransactionBch({
-      version: 2,
-      inputs: [{
-        outpointTransactionHash: hexToBin(parentTxid), outpointIndex: 7,
-        sequenceNumber: 0xffffffff,
-        unlockingBytecode: Uint8Array.from({ length: 8 }, () => 0x00),
-      }],
-      outputs: [{ lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 1000n }],
-      locktime: 0,
-    });
-    await expect(provider.sendRawTransaction(binToHex(raw))).rejects.toThrow(/P2SH|redeem|hash|script-verify/i);
-  });
-
   it('evaluates token commitment introspection above the legacy 520-byte stack-item limit', async () => {
     const provider = new MockNetworkProvider();
     const parentTxid = 'bb'.repeat(32);

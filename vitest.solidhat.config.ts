@@ -10,7 +10,7 @@ export default defineConfig(solidhatPreset(
   { hardhat: 2, ethers: 6 },
   {
     root: projectRoot,
-    cacheDir: '../../.marketplace/vite-cache-utils',
+    cacheDir: '../../.marketplace/vite-cache-marketplace',
     resolve: {
       alias: {
         '@noble/ciphers/chacha': cipher('chacha'),
@@ -20,14 +20,9 @@ export default defineConfig(solidhatPreset(
       },
     },
     test: {
-      include: ['test/utils.test.ts'],
+      include: ['test/marketplace.test.ts'],
       testTimeout: 120_000,
       hookTimeout: 120_000,
-      server: {
-        deps: {
-          inline: true,
-        },
-      },
     },
   },
 ));

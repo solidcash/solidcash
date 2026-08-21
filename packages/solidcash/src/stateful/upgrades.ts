@@ -6,7 +6,10 @@ import {
 import {
   ContractFactory, DeployedContract, DeployContractOptions,
 } from './ContractFactory.js';
-import { StatefulContract, StatefulFunctionCall, ContractRunner } from './StatefulContract.js';
+import {
+  StatefulContract, StatefulFunctionCall, ContractRunner, type ContractEventName, type EventListener,
+  type EventLog, type StatefulContractEvent,
+} from './StatefulContract.js';
 import Signer from '../Signer.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import { FunctionArgument } from '../Argument.js';
@@ -14,7 +17,7 @@ import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
-import { findDeploymentByAddress, findDeploymentByName, registerDeployment } from './deployment-registry.js';
+import { findDeploymentByAddress, registerDeployment } from './deployment-registry.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -30,6 +33,11 @@ interface ForwardShape {
   name: string;
   mode: ForwardMode;
 }
+
+// Event metadata belongs to the implementation, while event UTXOs belong to the proxy category. Keep a shared,
+// read-only facade per state holder rather than mutating the operational proxy artifact (which would also change
+// delegate transaction planning). Connected ProxyContract handles therefore observe the same subscriptions.
+const proxyEventFacades = new WeakMap<object, StatefulContract>();
 
 /**
  * Extra CREATE2 salt bytes the default mock proxy carries as a BCH-2026 density reserve.
@@ -212,6 +220,85 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
     return this.proxy.deploymentTransaction();
   }
 
+  private _events(): StatefulContract {
+    const existing = proxyEventFacades.get(this.proxy as object);
+    if (existing) return existing;
+    const implementationStructs = this.implementation.inner.artifact.structs
+      ?? this.implementation.inner.artifact.stateLayout?.structs;
+    const eventArtifact: Artifact = {
+      ...this.proxy.inner.artifact,
+      events: this.implementation.inner.artifact.events,
+      // Event arguments are decoded with the implementation ABI, including user-defined structs. Retain the
+      // proxy's operational state layout and bytecode, but give this read-only facade the matching struct table.
+      // Copy it in both artifact locations because older artifacts/consumers can use either representation.
+      structs: implementationStructs,
+      ...(this.proxy.inner.artifact.stateLayout && {
+        stateLayout: {
+          ...this.proxy.inner.artifact.stateLayout,
+          structs: implementationStructs,
+        },
+      }),
+    };
+    const facade = new StatefulContract(
+      this.proxy.categoryId,
+      eventArtifact,
+      this.proxy.inner.provider,
+      {
+        constructorArgs: this.proxy.inner.constructorArgs,
+        addressType: this.proxy.inner.addressType,
+      },
+    );
+    proxyEventFacades.set(this.proxy as object, facade);
+    return facade;
+  }
+
+  /** Event filter builders use the proxy's category, with definitions grafted from the implementation. */
+  get filters(): Record<string, StatefulContractEvent> { return this._events().filters; }
+
+  getEvent(nameOrSignature: string): StatefulContractEvent { return this._events().getEvent(nameOrSignature); }
+
+  queryFilter(
+    event: ContractEventName, fromBlock?: number | string, toBlock?: number | string,
+  ): Promise<EventLog[]> {
+    return this._events().queryFilter(event, fromBlock, toBlock);
+  }
+
+  get pollingInterval(): number { return this._events().pollingInterval; }
+
+  set pollingInterval(value: number) { this._events().pollingInterval = value; }
+
+  async on(event: ContractEventName, listener: EventListener): Promise<this> {
+    await this._events().on(event, listener);
+    return this;
+  }
+
+  async once(event: ContractEventName, listener: EventListener): Promise<this> {
+    await this._events().once(event, listener);
+    return this;
+  }
+
+  async off(event: ContractEventName, listener?: EventListener): Promise<this> {
+    await this._events().off(event, listener);
+    return this;
+  }
+
+  async removeAllListeners(event?: ContractEventName): Promise<this> {
+    await this._events().removeAllListeners(event);
+    return this;
+  }
+
+  listenerCount(event?: ContractEventName): Promise<number> { return this._events().listenerCount(event); }
+
+  listeners(event?: ContractEventName): Promise<EventListener[]> { return this._events().listeners(event); }
+
+  async addListener(event: ContractEventName, listener: EventListener): Promise<this> {
+    return this.on(event, listener);
+  }
+
+  async removeListener(event: ContractEventName, listener: EventListener): Promise<this> {
+    return this.off(event, listener);
+  }
+
   /** Rebind to a different runner for authorizing forwarded calls (ethers `connect`). */
   connect(runner: ContractRunner): ProxyContract<TImpl> {
     // Re-wrap so the connected handle keeps dispatching implementation functions (e.g. proxy.connect(s).fn()).
@@ -328,29 +415,10 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
         const paged = prop.match(/^get([A-Z].*)$/)?.[1];
         if (paged) {
           const collectionName = paged[0].toLowerCase() + paged.slice(1);
-          if (stateVars.has(collectionName) || (prop === 'getJobs' && !stateVars.has('jobs'))) {
+          if (stateVars.has(collectionName)) {
             return async (indexValue: bigint | number, limitValue: bigint | number) => {
               const index = Number(indexValue);
               const limit = Number(limitValue);
-              if (prop === 'getJobs' && !stateVars.has('jobs')) {
-                const marketplace = findDeploymentByName(target.proxy.inner.provider, 'MarketplaceV1')
-                  ?? findDeploymentByName(target.proxy.inner.provider, 'Marketplace');
-                const handle = marketplace?.contract as {
-                  proxy?: { getState: () => Promise<Record<string, unknown>> };
-                } | undefined;
-                const jobs = handle?.proxy
-                  ? ((await handle.proxy.getState()).jobs as unknown[])
-                  : undefined;
-                const list = Array.isArray(jobs) ? jobs : [];
-                if (!Number.isSafeInteger(index) || index < 0 || index >= list.length) {
-                  throw new Error('index out of bounds');
-                }
-                const selectedJobs = list.slice(index, limit === 0 ? undefined : index + limit);
-                for (const value of selectedJobs) {
-                  attachDecodedAccessors(value as Parameters<typeof attachDecodedAccessors>[0]);
-                }
-                return selectedJobs;
-              }
               const entries = await target.proxy.getEntries(collectionName);
               if (!Number.isSafeInteger(index) || index < 0 || index >= entries.length) {
                 throw new Error('index out of bounds');
@@ -426,22 +494,6 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
                 return (async () => {
                   const state = await target.proxy.getState();
                   const value = state[lengthOf];
-                  return BigInt(Array.isArray(value) ? value.length : 0);
-                })();
-              }
-              // MarketplaceData.jobsLength() is `return marketplace.jobsLength()`.
-              if (prop === 'jobsLength') {
-                return (async () => {
-                  const marketplace = findDeploymentByName(target.proxy.inner.provider, 'MarketplaceV1')
-                    ?? findDeploymentByName(target.proxy.inner.provider, 'Marketplace');
-                  const handle = marketplace?.contract as {
-                    proxy?: { getState: () => Promise<Record<string, unknown>> };
-                    getState?: () => Promise<Record<string, unknown>>;
-                  } | undefined;
-                  const state = handle?.proxy
-                    ? await handle.proxy.getState()
-                    : await handle?.getState?.();
-                  const value = state?.jobs;
                   return BigInt(Array.isArray(value) ? value.length : 0);
                 })();
               }
@@ -541,27 +593,27 @@ function graftDefaultProxy(impl: Artifact): Artifact {
       },
     };
   });
-  // The shipped proxy remains strictly conserving. Current compiler-produced delegates additionally pin the
-  // exact proxy master/data output population, so their per-storage covenants can safely authorize mapping and
-  // dynamic-storage cardinality changes. Use a derived forwarder only for that explicitly certified artifact.
-  // The graft is a pure COMPARISON swap: strict equality of the proxy's output count becomes
-  // less-than-or-equal so a delegate may grow mapping / dynamic-storage cardinality. Pin the comparison
-  // suffix, not the operand that precedes it - the operand used to be a literal `OP_0` and is now
+  // The shipped proxy remains strictly conserving. Certified compiler-produced delegates additionally pin the
+  // exact proxy master/data output population, while their per-storage covenants authorize each dynamic-resource
+  // insertion, replacement, and deletion. For those artifacts the proxy's aggregate mutable-NFT count is both
+  // redundant and too strict: a one-way relaxation admits insertion but still rejects authenticated deletion.
+  // Derive a forwarder which consumes the two count operands without comparing them, only when the compiler's
+  // `delegateProxyStateOutputCountPinned` certificate is present. Pin the comparison suffix, not the operand that
+  // precedes it - the operand used to be a literal `OP_0` and is now
   // `... OP_1 OP_CAT OP_1 OP_INVOKE` since the outliner extracted the counting loop into a helper. Pinning
   // the operand made this fail closed on a shape change that does not affect the swap, while pinning the
   // suffix keeps the guarantee that actually matters: that slicing this tail off and appending the relaxed
   // one yields a well-formed script whose ONLY difference is the comparison.
   const strictTail = 'OP_NUMEQUALVERIFY OP_2DROP OP_1';
-  const relaxedTail = 'OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
-  const canDelegateCardinality = impl.delegateProxyStateOutputCountPinned === true
-    || impl.abi.some((fn) => fn.modifiers?.includes('delegate'));
+  const delegatedCardinalityTail = 'OP_2DROP OP_2DROP OP_1';
+  const canDelegateCardinality = impl.delegateProxyStateOutputCountPinned === true;
   if (canDelegateCardinality && !defaultProxyArtifact.bytecode.endsWith(strictTail)) {
     throw new Error('Built-in proxy covenant shape changed; refusing to derive the delegate-authorized variant.');
   }
   return {
     ...defaultProxyArtifact,
     ...(canDelegateCardinality && {
-      bytecode: defaultProxyArtifact.bytecode.slice(0, -strictTail.length) + relaxedTail,
+      bytecode: defaultProxyArtifact.bytecode.slice(0, -strictTail.length) + delegatedCardinalityTail,
       debug: undefined,
       fingerprint: undefined,
     }),

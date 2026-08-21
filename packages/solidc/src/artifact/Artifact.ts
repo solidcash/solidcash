@@ -10,8 +10,8 @@ import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   ExpressionNode, TransferStatementNode, BlockNode, WhileNode, VariableDefinitionNode,
-  BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode,
-  ArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
+  BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode,
+  ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
@@ -44,6 +44,100 @@ const STATE_WRITING_MODIFIERS = [
 /** Multiply two reached-count factors, where undefined means "not proven" and poisons the product. */
 const composeCount = (outer: number | undefined, inner: number | undefined): number | undefined =>
   outer === undefined || inner === undefined ? undefined : outer * inner;
+
+/**
+ * Link a rolled external-call loop to the ABI array it directly fills. This is deliberately structural: the SDK
+ * may use the provisional parent return's authenticated array length as the reached occurrence count only when
+ * the call result is written into that exact array and that exact array is returned.
+ */
+export const resultArrayOutputOf = (
+  body: BlockNode | undefined, target: ExternalFunctionCallNode | undefined,
+): number | undefined => {
+  if (!body || !target || !body.statements) return undefined;
+  const containsTarget = (value: unknown, seen = new Set<object>()): boolean => {
+    if (value === target) return true;
+    if (!(value instanceof Node) || seen.has(value)) return false;
+    seen.add(value);
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
+      if (child instanceof Node && containsTarget(child, seen)) return true;
+      if (Array.isArray(child) && child.some((item) => containsTarget(item, seen))) return true;
+    }
+    return false;
+  };
+
+  // A for-loop is desugared to adjacent `{ loopVariable; while (...) { ...; update; } }` statements. Require
+  // the array assignment to be a direct statement of that loop: a nested if/switch would make the number of
+  // reached calls smaller than the authenticated returned-array length.
+  let assignment: ArrayAssignNode | undefined;
+  let loop: WhileNode | undefined;
+  let loopVariable: VariableDefinitionNode | undefined;
+  for (const block of [body, ...body.statements.filter((statement): statement is BlockNode =>
+    statement instanceof BlockNode)]) {
+    const statements = block.statements ?? [];
+    for (let index = 1; index < statements.length; index += 1) {
+      const candidateLoop = statements[index];
+      const candidateVariable = statements[index - 1];
+      if (!(candidateLoop instanceof WhileNode) || !(candidateVariable instanceof VariableDefinitionNode)) continue;
+      const directAssignments = (candidateLoop.block.statements ?? []).filter((statement): statement is ArrayAssignNode =>
+        statement instanceof ArrayAssignNode && statement.value === target);
+      if (directAssignments.length !== 1) continue;
+      if (assignment) return undefined;
+      [assignment] = directAssignments;
+      loop = candidateLoop;
+      loopVariable = candidateVariable;
+    }
+  }
+  if (!assignment || !loop || !loopVariable
+    || loopVariable.loopInitialValue !== 0n || loopVariable.loopStepValue !== 1n
+    || !(assignment.index instanceof IdentifierNode) || assignment.index.name !== loopVariable.name
+    || !(loop.condition instanceof BinaryOpNode) || loop.condition.operator !== BinaryOperator.LT
+    || !(loop.condition.left instanceof IdentifierNode) || loop.condition.left.name !== loopVariable.name) {
+    return undefined;
+  }
+
+  const resultName = assignment.name;
+  const sameBound = (left: ExpressionNode, right: ExpressionNode): boolean =>
+    left === right || (left instanceof IdentifierNode && right instanceof IdentifierNode && left.name === right.name)
+    || (left instanceof LiteralNode && right instanceof LiteralNode && left.value === right.value);
+  const declarations = body.statements.filter((statement): statement is VariableDefinitionNode =>
+    statement instanceof VariableDefinitionNode && statement.name === resultName
+      && statement.expression instanceof NewArrayNode
+      && sameBound(statement.expression.size, loop!.condition instanceof BinaryOpNode
+        ? loop!.condition.right : statement.expression.size));
+  if (declarations.length !== 1) return undefined;
+
+  let targetWrites = 0;
+  let competingWrite = false;
+  const auditWrites = (value: unknown, seen = new Set<object>()): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    const named = value as unknown as { name?: string; identifier?: { name?: string } };
+    if (value instanceof ArrayAssignNode && value.name === resultName) {
+      if (containsTarget(value.value)) targetWrites += 1;
+      else competingWrite = true;
+    } else if (named.name === resultName
+      && /^(ArrayPushNode|ArrayPopNode|ArrayDeleteNode)$/.test(value.constructor.name)) {
+      competingWrite = true;
+    } else if (value instanceof AssignNode && named.identifier?.name === resultName) {
+      competingWrite = true;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
+      if (child instanceof Node) auditWrites(child, seen);
+      else if (Array.isArray(child)) for (const item of child) auditWrites(item, seen);
+    }
+  };
+  auditWrites(body);
+  if (targetWrites !== 1 || competingWrite) return undefined;
+  const returns = body.statements.filter((statement): statement is ReturnNode => statement instanceof ReturnNode);
+  if (returns.length !== 1 || body.statements.at(-1) !== returns[0]) return undefined;
+  const output = returns[0].expressions.findIndex((expression) =>
+    expression instanceof IdentifierNode && expression.name === resultName);
+  return output < 0 ? undefined : output;
+};
 
 /**
  * True when a loop body can stop short of its trip count.
@@ -728,7 +822,11 @@ function buildFunctionAbiMetadata(
       })),
     }),
     ...(func.externalCalls && func.externalCalls.length > 0 && {
-      externalCalls: func.externalCalls.map((ec) => ({
+      externalCalls: func.externalCalls.map((ec) => {
+        const occurrenceInfo = occurrenceInfoOf(func, ec.sourceCallNode);
+        const resultArrayOutput = !ec.condition && occurrenceInfo.occurrence === 'loop'
+          ? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;
+        return {
         callsiteId: ec.slotIndex,
         ...(ec.sourceCallNode && {
           sourceLocation: {
@@ -736,7 +834,9 @@ function buildFunctionAbiMetadata(
             column: ec.sourceCallNode.location.start.column,
           },
         }),
-        ...occurrenceInfoOf(func, ec.sourceCallNode),
+        ...occurrenceInfo,
+        ...(ec.condition && { condition: ec.condition }),
+        ...(resultArrayOutput !== undefined && { resultArrayOutput }),
         interfaceName: ec.interfaceName,
         functionName: ec.functionName,
         ...(ec.addressParam && { addressParam: ec.addressParam }),
@@ -765,7 +865,9 @@ function buildFunctionAbiMetadata(
         ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
         ...(ec.rawSelector && { rawSelector: binToHex(ec.rawSelector) }),
         ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
-        ...(ec.argSources && ec.argSources.length > 0 && { argSources: ec.argSources }),
+        // Publish the empty list too. Omission means legacy/unknown provenance to SDK consumers; a present empty
+        // list is the proof that this call has zero arguments and needs no runtime argument resolution.
+        ...(ec.argSources && { argSources: ec.argSources }),
         ...(ec.batchInvocations && {
           batchInvocations: ec.batchInvocations.map((row) => ({
             selector: binToHex(row.selector),
@@ -776,7 +878,8 @@ function buildFunctionAbiMetadata(
             ...(row.argSources && { argSources: row.argSources }),
           })),
         }),
-      })),
+        };
+      }),
     }),
     ...(consumers.length > 0 && { resultConsumers: consumers }),
     ...(func.externalOutStateReads && func.externalOutStateReads.length > 0 && {
@@ -811,8 +914,12 @@ function buildFunctionAbiMetadata(
     ...(func.ecrecoverCompute && { ecrecoverCompute: true }),
     ...(func.ecrecoverArgParams && func.ecrecoverArgParams.length > 0
       && { ecrecoverArgParams: func.ecrecoverArgParams }),
-    ...(func.ecrecoverEvmFlags && func.ecrecoverEvmFlags.some(Boolean)
-      && { ecrecoverEvmFlags: func.ecrecoverEvmFlags }),
+    ...((func.ecrecoverEvmFlags?.length || func.ecrecoverClosureEvmFlags?.length) && {
+      // Preserve the full vector, including an all-false native/P2PKH plan. Consumers need its length to
+      // distinguish one non-EVM recovery call from no recovery call at all.
+      ecrecoverEvmFlags: func.ecrecoverEvmFlags?.length
+        ? func.ecrecoverEvmFlags : func.ecrecoverClosureEvmFlags,
+    }),
     ...(func.ecrecoverLoopReads && { ecrecoverLoopReads: true }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {

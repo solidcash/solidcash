@@ -7,11 +7,10 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// Cross-contract callee sorted writes support scalar UPDATE/INSERT/msg.sender (see CrossContractSortedWrite) and
-// LOOP writes (see CrossContractLoopWrite). A CHUNKED (>60 B) callee value is NOT wired yet and MUST stay fail-closed
-// (the VM rejects the tx), never a silent wrong write. This locks that in - "fail-closed OR correct, never
-// silent-wrong": a throw passes; a sent tx must read back the CORRECT value (so an accidental silent write is caught).
-describe('cross-contract callee subcase soundness (fail-closed, never silent-wrong)', () => {
+// Cross-contract callee sorted writes support scalar UPDATE/INSERT/msg.sender (see CrossContractSortedWrite),
+// loop writes (see CrossContractLoopWrite), and long values whose continuation NFTs are placed after all fixed
+// participants. The function name is intentionally ordinary: chunk placement is selected from ABI/storage metadata.
+describe('cross-contract callee chunkable sorted writes', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -25,11 +24,7 @@ describe('cross-contract callee subcase soundness (fail-closed, never silent-wro
       provider, fundingUtxo: f, funder: p2pkh.unlock.spend(alicePub, sig), initialState: {}, changeAddress: p2pkh.address,
     });
   };
-  const sent = async (fn: () => Promise<any>): Promise<boolean> => {
-    try { await fn(); return true; } catch { return false; }
-  };
-
-  it('(A) chunked (>60 B) value cross-contract is fail-closed or correct', async () => {
+  it('persists a chunked (>60 B) value through an ordinary external call', async () => {
     const IBANK = 'interface IBank { function setBlob(int k, bytes v); }';
     const BANK = `pragma solidcash >=0.8.0;\n${IBANK}\ncontract Bank() is IBank {
       mapping(int => bytes) blob;
@@ -46,12 +41,10 @@ describe('cross-contract callee subcase soundness (fail-closed, never silent-wro
     const { contract: caller } = await deploy(artCaller, [bankAddr]);
     await fund(caller.address);
     const big = new Uint8Array(80).fill(0x5a);
-    const didSend = await sent(() => caller.poke(9n, big, alicePub, sig).withExternalCall(bank, 'setBlob', [9n, big]).send());
-    if (didSend) {
-      // NOT fail-closed -> the write MUST be correct (chk reverts on a wrong value, failing this test).
-      await fund(bank.address);
-      expect((await bank.chk(9n, big, alicePub, sig).send()).txid).toBeDefined();
-    } // else: fail-closed (VM rejected), which is the currently-expected, sound outcome.
-    expect(true).toBe(true);
+    const write = await caller.poke(9n, big, alicePub, sig)
+      .withExternalCall(bank, 'setBlob', [9n, big]).send();
+    expect(write.txid).toBeDefined();
+    await fund(bank.address);
+    expect((await bank.chk(9n, big, alicePub, sig).send()).txid).toBeDefined();
   });
 });

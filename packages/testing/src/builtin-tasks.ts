@@ -50,26 +50,109 @@ function findSolSources(dir: string, out: string[] = []): string[] {
     if (entry.isDirectory()) {
       if (entry.name === 'node_modules' || entry.name.startsWith('@')) continue;
       findSolSources(path.join(dir, entry.name), out);
-    } else if (entry.name.endsWith('.sol')) {
+    } else if (entry.name.endsWith('.sol') && (entry.isFile()
+      || (entry.isSymbolicLink() && fs.statSync(path.join(dir, entry.name)).isFile()))) {
       out.push(path.join(dir, entry.name));
     }
   }
   return out;
 }
 
+function selectCompileSources(available: readonly string[], requested: readonly string[], contractsDir: string): string[] {
+  if (requested.length === 0) return [...available];
+  const selected = new Set<string>();
+  for (const request of requested) {
+    const normalized = request.replaceAll('\\', '/').replace(/^\.\//, '');
+    const matches = available.filter((file) => {
+      const relative = path.relative(contractsDir, file).replaceAll('\\', '/');
+      return relative === normalized || path.basename(file) === normalized
+        || path.resolve(file) === path.resolve(request);
+    });
+    if (matches.length === 0) {
+      throw new Error(`Compile source not found under ${contractsDir}: ${request}`);
+    }
+    if (matches.length > 1) {
+      throw new Error(`Compile source is ambiguous; use a path relative to ${contractsDir}: ${request}`);
+    }
+    selected.add(matches[0]);
+  }
+  return [...selected];
+}
+
+function solidityDeclarations(file: string): string[] {
+  const source = fs.readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  return [...source.matchAll(/\b(?:abstract\s+)?(?:contract|interface|library)\s+([A-Za-z_$][\w$]*)/g)]
+    .map((match) => match[1]);
+}
+
+/**
+ * Publish a fully-built artifact tree without replacing the canonical directory itself.
+ *
+ * Some host-backed filesystems leave existing file watchers attached to an unusable directory after a
+ * remove-and-rename directory swap. On those filesystems, renaming individual files can leave the directory with
+ * equally unusable ghost entries, so keep both directory and file entries stable by copying the validated staged
+ * files over their destinations. Compilation failures never reach this function.
+ */
+function publishArtifactTree(stagingDir: string, artifactsDir: string): void {
+  const stagedFiles: string[] = [];
+  const collectFiles = (directory: string, root: string, out: string[]): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) collectFiles(absolute, root, out);
+      else if (entry.isFile()) out.push(path.relative(root, absolute));
+    }
+  };
+  collectFiles(stagingDir, stagingDir, stagedFiles);
+  const stagedSet = new Set(stagedFiles);
+  fs.mkdirSync(artifactsDir, { recursive: true });
+  for (const relative of stagedFiles) {
+    const target = path.join(artifactsDir, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(stagingDir, relative), target);
+  }
+
+  const previousFiles: string[] = [];
+  collectFiles(artifactsDir, artifactsDir, previousFiles);
+  for (const relative of previousFiles) {
+    if (!stagedSet.has(relative)) {
+      fs.rmSync(path.join(artifactsDir, relative), { force: true });
+    }
+  }
+  fs.rmSync(stagingDir, { recursive: true, force: true });
+}
+
+/** Copy the last-known-good tree into staging without `fs.cpSync`'s mode corruption on fake-owner mounts. */
+function copyArtifactTree(sourceDir: string, targetDir: string): void {
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    const source = path.join(sourceDir, entry.name);
+    const target = path.join(targetDir, entry.name);
+    if (entry.isDirectory()) copyArtifactTree(source, target);
+    else if (entry.isFile()) fs.copyFileSync(source, target);
+  }
+}
+
 task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, Hardhat-style layout)')
   .addFlag('quiet', 'Suppress per-file output')
+  .addFlag('skip-split', 'Skip split-bundle attempts for oversized contracts')
+  .addVariadicPositionalParam(
+    'sources',
+    'Optional source paths to recompile while preserving artifacts from the last complete build',
+  )
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
     const {
       compileString, compileStringMulti, compileStringSplit, compileFileMulti, compileFileSplit,
       version: compilerVersion,
     } = await import('solidc');
     const compilerEntry = createRequire(import.meta.url).resolve('solidc');
-    const compilerCacheIdentity = `${compilerVersion}:${compilerJavaScriptFingerprint(compilerEntry)}`;
+    const compilerCacheIdentity = `${compilerVersion}:${compilerJavaScriptFingerprint(compilerEntry)}`
+      + (process.env.SOLIDCASH_NO_OUTLINE ? ':no-outline' : '');
     const { asmToBytecode, formatArtifact, formatSplitArtifactBundle } = await import('@solidcash/utils');
     const contractsDir = path.resolve(hre.config.paths.contracts);
     const artifactsDir = solidcashArtifactsPath(hre.config.paths.artifacts);
     const outputDir = `${artifactsDir}.tmp-${process.pid}`;
+    const requestedSources = (args.sources as string[] | undefined) ?? [];
+    const focused = requestedSources.length > 0;
     const contractsBase = path.basename(contractsDir); // mirror hardhat's `artifacts/<sources>/<File>/<Contract>.json`
     // Split when the unsplit redeem script exceeds the active provider's input-script ceiling. MistSwap's
     // mock publishes 100KB so the suite can exercise CONTRACT behaviour past the real 10KB frontier; the
@@ -95,15 +178,24 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     );
     if (!fs.existsSync(contractsDir)) throw new Error(`Contracts dir not found: ${contractsDir}`);
     fs.rmSync(outputDir, { recursive: true, force: true });
-    fs.mkdirSync(outputDir, { recursive: true });
+    if (focused && fs.existsSync(artifactsDir)) copyArtifactTree(artifactsDir, outputDir);
+    else fs.mkdirSync(outputDir, { recursive: true });
 
-    const files = fs.readdirSync(contractsDir).filter((f) => f.endsWith('.scash'));
+    const allScashFiles = fs.readdirSync(contractsDir)
+      .filter((file) => file.endsWith('.scash'))
+      .map((file) => path.join(contractsDir, file));
+    const allSolFiles = findSolSources(contractsDir);
+    const selectedSources = selectCompileSources(
+      [...allScashFiles, ...allSolFiles], requestedSources, contractsDir,
+    );
+    const files = selectedSources.filter((file) => file.endsWith('.scash'));
     const failures: Error[] = [];
     let ok = 0;
     let contracts = 0;
-    for (const fn of files) {
+    for (const full of files) {
+      const fn = path.basename(full);
       try {
-        const source = fs.readFileSync(path.join(contractsDir, fn), 'utf-8');
+        const source = fs.readFileSync(full, 'utf-8');
         // Hardhat mirror: one artifact JSON per CONTRACT (by contract name), nested under the source file dir.
         // This is what `getContractFactory("Name")` resolves against.
         const map = compileStringMulti(source, compilerOptions);
@@ -143,7 +235,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     // resolves imports (OZ, interfaces) from the source's own node_modules, so `paths.contracts` may point at the real
     // Hardhat project. solidityImportCompat is forced on for `.sol`; other solc opts (ecrecover: 'p2pkh', ...) flow
     // through. Each file's import graph yields many contracts; a name is written once (first compile wins).
-    const solFiles = findSolSources(contractsDir);
+    const solFiles = selectedSources.filter((file) => file.endsWith('.sol'));
     const writtenNames = new Set<string>();
     let solOk = 0;
     let compilerJobs = 0;
@@ -169,10 +261,9 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       // Splitting is needed only for roots whose normal artifact exceeds the consensus script limit. Preserve the
       // project DAG/cache fast path for ordinary contracts rather than independently recompiling every source.
       const shardFailures: string[] = [];
-      for (const full of solFiles) {
+      for (const full of args['skip-split'] ? [] : solFiles) {
         const source = fs.readFileSync(full, 'utf8');
-        const declarations = [...source.matchAll(/\b(?:abstract\s+)?contract\s+([A-Za-z_$][\w$]*)/g)]
-          .map((match) => match[1]);
+        const declarations = solidityDeclarations(full);
         const needsSplit = declarations.some((name) => {
           const artifact = result.artifacts[name];
           // The lightweight declaration scan can see prose in comments (for example, "contract constructor").
@@ -237,8 +328,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       fs.rmSync(outputDir, { recursive: true, force: true });
       throw new AggregateError(failures, `Compilation failed for ${failures.length} source group(s)`);
     }
-    fs.rmSync(artifactsDir, { recursive: true, force: true });
-    fs.renameSync(outputDir, artifactsDir);
+    publishArtifactTree(outputDir, artifactsDir);
     const typegen = generateTypechainTargets({
       artifactsDir,
       contractsDir,

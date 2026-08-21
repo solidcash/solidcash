@@ -586,46 +586,29 @@ export class Contract<
       // Preserve the historical positional frame without carrying the callManifest in the master. The
       // artifact-specialized verifier inputs carry the canonical callManifest.
       const messageEnvelopePlaceholder = scriptToBytecode([new Uint8Array()]);
+      let cachedOrdinary: Uint8Array | undefined;
+      let cachedCompilerRoute: Uint8Array | undefined;
       const generateUnlockingBytecode = (
         options: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
         const ordinary = unlocker.generateUnlockingBytecode(options);
-        const proxyMasterIndex = abiFunction.inputs.findIndex(
-          (input) => input.name === '__internal__proxyMasterIndex',
-        );
-        if (proxyMasterIndex === abiFunction.inputs.length - 1
-          && args.length === abiFunction.inputs.length) {
-          // createUnlockingBytecode reverses ABI arguments, so the final proxy-master witness is the first
-          // argument push after the selector. Delegate prologues address that witness from the physical bottom
-          // of their declared argument frame. Keep it below the message-bus positional blob/envelope; inserting
-          // those two values first would make OP_DEPTH-based lookup select the positional blob as a UTXO index.
-          const firstArgOffset = 5; // canonical push4 selector
-          const opcode = ordinary[firstArgOffset];
-          const firstArgLength = opcode === 0 || opcode > 78 ? 1
-            : opcode <= 75 ? 1 + opcode
-              : opcode === 76 ? 2 + ordinary[firstArgOffset + 1]
-                : opcode === 77
-                  ? 3 + ordinary[firstArgOffset + 1] + ordinary[firstArgOffset + 2] * 0x100
-                  : 5 + ordinary[firstArgOffset + 1] + ordinary[firstArgOffset + 2] * 0x100
-                    + ordinary[firstArgOffset + 3] * 0x10000
-                    + ordinary[firstArgOffset + 4] * 0x1000000;
-          const firstArgEnd = firstArgOffset + firstArgLength;
-          return new Uint8Array([
-            ...ordinary.slice(0, firstArgEnd),
-            ...positionalPush,
-            ...messageEnvelopePlaceholder,
-            ...ordinary.slice(firstArgEnd),
-          ]);
-        }
+        // The base unlocker returns the same byte-array instance when its witnesses are transaction-independent.
+        // Reuse the corresponding compiler-route frame too; otherwise every probe recopies the complete P2SH
+        // redeem script merely to insert two small positional pushes.
+        if (ordinary === cachedOrdinary && cachedCompilerRoute !== undefined) return cachedCompilerRoute;
         // The selector is always the minimal push4 frame (5 bytes). Duplicate
         // the executable blob here as the canonical positional second push;
-        // the message-bus batch covenant proves this copy equals its decoded batchBlob arg.
-        return new Uint8Array([
+        // the message-bus batch covenant proves this copy equals its decoded batchBlob arg. Both historical
+        // positional items stay below the complete ABI frame, so the route can discard them uniformly before
+        // any hidden argument is addressed.
+        cachedOrdinary = ordinary;
+        cachedCompilerRoute = new Uint8Array([
           ...ordinary.slice(0, 5),
           ...positionalPush,
           ...messageEnvelopePlaceholder,
           ...ordinary.slice(5),
         ]);
+        return cachedCompilerRoute;
       };
       // message-bus batch is a compiler-owned covenant even when the source handler has no state slots. Mark the master
       // unlocker itself so zero-state participant blocks receive the same best-effort artifact-debug treatment

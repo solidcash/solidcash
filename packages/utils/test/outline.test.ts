@@ -118,9 +118,10 @@ describe('cross-function bytecode outlining', () => {
     }
   });
 
-  it('never relocates invocation, bytecode-relative, or defining opcodes', () => {
+  it('never relocates invocation, bytecode-relative, defining, or alternate-stack opcodes', () => {
     for (const barrier of [
       Op.OP_INVOKE, Op.OP_ACTIVEBYTECODE, Op.OP_DEFINE, Op.OP_CHECKSIG, Op.OP_CODESEPARATOR,
+      Op.OP_TOALTSTACK, Op.OP_FROMALTSTACK,
     ]) {
       const guarded: Script = [...REPEATED, barrier, ...REPEATED];
       const result = outlineSharedSpans([body(guarded), body([...FILLER, ...guarded])], allocateId);

@@ -1,4 +1,12 @@
+import type { Transaction as LibauthTransaction } from '@bitauth/libauth';
 import { Utxo, Network } from '../interfaces.js';
+
+/** Exact transaction forms already materialized by an SDK builder. */
+export interface PreparedTransaction {
+  rawHex: string;
+  rawBytes: Uint8Array;
+  transaction: LibauthTransaction;
+}
 
 export interface ConsensusLimits {
   /** Maximum serialized unlocking/locking bytecode for one input script. */
@@ -92,4 +100,10 @@ export default interface NetworkProvider {
    * @returns The transaction ID corresponding to the broadcast transaction.
    */
   sendRawTransaction(txHex: string): Promise<string>;
+
+  /**
+   * Optional in-process fast path. Implementations must apply the same validation and acceptance semantics as
+   * `sendRawTransaction`; the extra forms only avoid decoding bytes the builder has just encoded.
+   */
+  sendPreparedTransaction?(prepared: PreparedTransaction): Promise<string>;
 }

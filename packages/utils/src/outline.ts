@@ -24,15 +24,23 @@ import { FullLocationData } from './types.js';
  *    enclosing script; OP_CODESEPARATOR moves the signing checkpoint; and OP_CHECKSIG and friends sign the
  *    active bytecode, so moving one would change both the sighash preimage and the body the SDK reports as
  *    that function's signing bytecode. All are excluded.
+ * 5. It does not participate in an alternate-stack handoff. The VM preserves the alternate stack across
+ *    OP_INVOKE, but compiler-generated bodies use unbalanced TOALTSTACK/FROMALTSTACK sequences as a private
+ *    protocol between surrounding fragments. Extracting either half gives a shared helper a caller-dependent
+ *    alternate-stack ABI, and later outlining rounds can nest that helper in a different frame. Keep those
+ *    protocol boundaries visible in their owning body.
  *
  * Spans are relocatable byte-wise because each Script element encodes independently, so the emitted bytes of a
  * span are the same wherever they appear.
  */
 
-// Never relocate: see properties (2) and (3) above.
+// Never relocate: see properties (2) through (5) above. Treating alternate-stack operations as barriers also
+// splits large candidate regions at natural compiler-frame boundaries, avoiding expensive and unsafe extension
+// work while retaining ordinary sharing on both sides.
 const BARRIER_OPS = [
   Op.OP_DEFINE, Op.OP_INVOKE, Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
   Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
+  Op.OP_TOALTSTACK, Op.OP_FROMALTSTACK,
 ];
 // Candidate balancing scans the same elements across many overlapping regions and outlining strategies. Dense
 // opcode tables keep those inner-loop classifications at indexed reads rather than repeated Set lookups.

@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 describe('compileSolidityProject', () => {
-  it('compiles an import DAG once from its root when transitive artifacts resolve dependencies', () => {
+  it('publishes canonical declarations while compiling an import DAG', () => {
     const files = project({
       'Leaf.sol': 'contract Leaf {}',
       'Middle.sol': 'import "./Leaf.sol"; contract Middle {}',
@@ -33,7 +33,7 @@ describe('compileSolidityProject', () => {
     };
     const result = compileSolidityProject(files, { solidityImportCompat: true }, compile);
     expect(calls).toEqual(['Root.sol', 'Leaf.sol', 'Middle.sol']);
-    expect(Object.keys(result.artifacts)).toEqual(['Root', 'Middle', 'Leaf']);
+    expect(Object.keys(result.artifacts)).toEqual(['Root', 'Leaf', 'Middle']);
   });
 
   it('lets a declaring file overwrite the artifact imported from another root', () => {
@@ -50,6 +50,21 @@ describe('compileSolidityProject', () => {
     const result = compileSolidityProject(files, { solidityImportCompat: true }, compile);
     expect(result.artifacts.Leaf).toEqual({ from: 'leaf-file' });
     expect(result.artifacts.Root).toEqual({ from: 'root' });
+  });
+
+  it('publishes only declarations owned by a focused source', () => {
+    const [root] = project({
+      'Root.sol': 'import "./Leaf.sol"; contract Root {}',
+      'Leaf.sol': 'contract Leaf {}',
+    });
+    const compile = (): any => ({
+      Root: { abi: [], from: 'root' },
+      Leaf: { abi: [], from: 'import' },
+    });
+
+    const result = compileSolidityProject([root], {}, compile);
+
+    expect(result.artifacts).toEqual({ Root: { abi: [], from: 'root' } });
   });
 
   it('compiles a dependency when selective imports leave one of its declarations unresolved', () => {

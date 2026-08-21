@@ -46,18 +46,31 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 
 describe('atomic compiled invocation graph', () => {
   it('uses a runtime occurrence proof for a bounded conditional raw edge', () => {
-    const capability = (name: string, selector: string, inputs: { name: string; type: string }[]) => ({
+    const capability = (
+      name: string,
+      selector: string,
+      inputs: { name: string; type: string }[],
+      delegated = false,
+    ) => ({
       version: 1 as const,
       selector: '53434231' as const,
       maximumRows: 2,
       maximumBlobBytes: 256,
       route: {
         name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
-        blockLayout: { blockSize: 1, slots: [{ kind: 'master' as const, offset: 0 }] },
+        blockLayout: delegated
+          ? {
+            blockSize: 2,
+            slots: [
+              { kind: 'master' as const, offset: 0 },
+              { kind: 'lowLevelCall' as const, offset: 1 },
+            ],
+          }
+          : { blockSize: 1, slots: [{ kind: 'master' as const, offset: 0 }] },
       },
       handlers: [{ name, selector, inputs, outputs: [], eligible: true }],
     });
-    const approveInputs = [{ name: 'amount', type: 'int' }];
+    const approveInputs = [{ name: 'owner', type: 'address' }];
     const targetArtifact = {
       contractName: 'Target',
       abi: [{
@@ -78,14 +91,17 @@ describe('atomic compiled invocation graph', () => {
           externalCalls: [{
             callsiteId: 1, occurrence: 'conditional', maximumOccurrences: 1,
             interfaceName: '__raw__', functionName: '__raw__', rawSelector: '01020304',
-            rawArgSources: [{ kind: 'literal', value: '1', type: 'int' }],
+            rawArgSources: [{ kind: 'selfAddress' }],
             addressParam: 'target', argSources: [{ kind: 'forward', paramIndex: 1 }],
           }],
         }],
-        messageBus: capability('run', '11111111', runInputs),
+        messageBus: capability('run', '11111111', runInputs, true),
         invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
       } as unknown as Artifact,
       lockingBytecode: '52',
+      logicalLockingBytecode: '54',
+      executionKind: 'delegate' as const,
+      executorLockingBytecode: '56',
     };
     const derive = (count: number) => messageBus.deriveCompiledGraphPlan({
       root,
@@ -93,10 +109,85 @@ describe('atomic compiled invocation graph', () => {
       args: [Uint8Array.of(0x51), payload],
       targets: {},
       occurrence: () => count,
-      dynamicCall: () => ({ participant: target, function: 'approve', args: [1n] }),
+      // The root owns the active input at 0x52 and publishes logical identity 0x54. OP_INVOKE authenticates and
+      // interprets delegate bytecode at 0x56 without changing OP_UTXOBYTECODE's exact 0x52 result.
+      dynamicCall: () => ({ participant: target, function: 'approve', args: [Uint8Array.of(0x52)] }),
     });
     expect(derive(0).invocations.map((invocation) => invocation.function)).toEqual(['run']);
     expect(derive(1).invocations.map((invocation) => invocation.function)).toEqual(['run', 'approve']);
+  });
+
+  it('preserves exact identities for omitted conditional siblings calling the same method', () => {
+    const capability = (name: string, selector: string, inputs: { name: string; type: string }[]) => ({
+      version: 1 as const,
+      selector: '53434231' as const,
+      maximumRows: 3,
+      maximumBlobBytes: 256,
+      route: {
+        name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
+        blockLayout: { blockSize: 1, slots: [{ kind: 'master' as const, offset: 0 }] },
+      },
+      handlers: [{ name, selector, inputs, outputs: [], eligible: true }],
+    });
+    const pingInputs = [{ name: 'value', type: 'int' }];
+    const sink = {
+      artifact: {
+        contractName: 'RepeatedConditionalSink',
+        abi: [{ name: 'ping', selector: '01020304', inputs: pingInputs, outputs: [] }],
+        messageBus: capability('ping', '01020304', pingInputs),
+        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+      } as unknown as Artifact,
+      lockingBytecode: '51',
+    };
+    const root = {
+      artifact: {
+        contractName: 'RepeatedConditionalRoot',
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [], outputs: [],
+          externalCalls: [1, 2, 3].map((callsiteId) => ({
+            callsiteId, occurrence: 'conditional' as const, maximumOccurrences: 1,
+            interfaceName: 'ISink', functionName: 'ping',
+            argSources: [{ kind: 'literal' as const, type: 'int', value: String(callsiteId) }],
+          })),
+        }],
+        messageBus: capability('run', '11111111', []),
+        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+      } as unknown as Artifact,
+      lockingBytecode: '52',
+    };
+    const planned = messageBus.deriveCompiledGraphPlan({
+      root,
+      function: 'run',
+      targets: {},
+      target: () => sink,
+      occurrence: ({ callsiteId }) => callsiteId === 2 ? 1 : 0,
+    });
+    expect(planned.invocations.map((invocation) => ({
+      function: invocation.function, callsiteId: invocation.consumerCallsiteId,
+    }))).toEqual([
+      { function: 'run', callsiteId: undefined },
+      { function: 'ping', callsiteId: 2 },
+    ]);
+  });
+
+  it('uses logical call identity for nested callers while retaining physical owner identity', () => {
+    const withLogicalCaller = plan();
+    withLogicalCaller.participants[0].logicalLockingBytecode = '54';
+    withLogicalCaller.participants[1] = {
+      ...withLogicalCaller.participants[1],
+      logicalLockingBytecode: '55',
+      logicalIdentityOffset: 1,
+      blockLayout: {
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
+      },
+    };
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    );
+    expect(finalized.callManifest.participants[0].lockingBytecode).toBe('51'.repeat(64));
+    expect(finalized.callManifest.rows[1].subjectHex).toBe('54');
+    expect(finalized.callManifest.rows[1].targetOffset).toBe(1);
   });
 
   it('derives participant bases, identities, policies, and exact invocation rows', () => {
@@ -118,6 +209,25 @@ describe('atomic compiled invocation graph', () => {
       },
     ]);
     expect(messageBus.decodeAtomicMessageEnvelope(finalized.messageEnvelope)).toEqual(finalized.callManifest);
+  });
+
+  it('activates a published return slot only for a selected returning invocation', () => {
+    const base = plan();
+    const withUnionReturnSlots: messageBus.CompiledGraphPlan = {
+      ...base,
+      participants: base.participants.map((participant) => ({
+        ...participant,
+        blockLayout: {
+          blockSize: 2,
+          slots: [{ kind: 'master' as const, offset: 0 }, { kind: 'returnEvent' as const, offset: 1 }],
+        },
+      })),
+    };
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      withUnionReturnSlots, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    );
+    expect(finalized.callManifest.participants.map((participant) => participant.returnOffset))
+      .toEqual([0xffff, 1]);
   });
 
   it('changes the participant identity table when code identity or category changes', () => {
@@ -207,5 +317,52 @@ describe('atomic compiled invocation graph', () => {
       kind: 4, mode: 0, sourceOffset: 2, targetOffset: 2, argsHex: 'cc'.repeat(32),
       effectHex: '1900000000000000',
     }]);
+  });
+
+  it('encodes a mutable-resource replacement with independent input and output covenants', () => {
+    const base = plan();
+    const replacementPlan: messageBus.CompiledGraphPlan = {
+      ...base,
+      participants: [base.participants[0], {
+        ...base.participants[1],
+        blockLayout: {
+          blockSize: 2,
+          trailingBase: 1,
+          trailingCapacity: 1,
+          slots: [{ kind: 'master', offset: 0 }, { kind: 'trailing', offset: 1, slotIndex: 0 }],
+        },
+      }],
+    };
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      replacementPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [], [{
+        participant: 1,
+        offset: 1,
+        mode: 5,
+        lockingBytecodeHex: '51',
+        outputLockingBytecodeHex: '52',
+        tokenCategoryHex: `${'cc'.repeat(32)}01`,
+        inputCommitmentHex: 'aa',
+        outputCommitmentHex: 'bb',
+      }],
+    );
+    expect(finalized.callManifest.rows[2]).toMatchObject({
+      kind: 1,
+      mode: 5,
+      subjectHex: '51',
+      argsHex: `${'cc'.repeat(32)}01`,
+      resultHex: 'aa',
+      effectHex: '010052bb',
+    });
+    expect(() => messageBus.finalizeAtomicInvocationGraph(
+      replacementPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [], [{
+        participant: 1,
+        offset: 1,
+        mode: 5,
+        lockingBytecodeHex: '51',
+        tokenCategoryHex: `${'cc'.repeat(32)}01`,
+        inputCommitmentHex: 'aa',
+        outputCommitmentHex: 'bb',
+      }],
+    )).toThrow(/not a mutable NFT/);
   });
 });

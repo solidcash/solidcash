@@ -27,6 +27,8 @@ import {
   buildValueChunkCommitment,
   parseValueChunkCommitment,
   joinValueChunks,
+  encodeChunkableValueTail,
+  sha256,
   packFixedWidthArray,
   unpackFixedWidthArray,
   packFixedWidthElement,
@@ -936,6 +938,21 @@ describe('attachDecodedAccessors (typechain .toObject() / .toArray() at the user
 
 describe('root-addressed vmap value chunk codec', () => {
   const bytesOf = (n: number): Uint8Array => Uint8Array.from({ length: n }, (_v, i) => (i * 13 + 7) & 0xff);
+
+  it('encodes inline and long entry tails with their authoritative full length', () => {
+    const inline = bytesOf(60);
+    const inlineTail = encodeChunkableValueTail(inline);
+    expect(inlineTail).toHaveLength(64);
+    expect(new DataView(inlineTail.buffer).getUint32(0, true)).toBe(60);
+    expect(inlineTail.slice(4)).toEqual(inline);
+
+    const long = bytesOf(200);
+    const longTail = encodeChunkableValueTail(long);
+    expect(longTail).toHaveLength(4 + 32 + VALUE_HEAD_SIZE);
+    expect(new DataView(longTail.buffer).getUint32(0, true)).toBe(200);
+    expect(longTail.slice(4, 36)).toEqual(sha256(long));
+    expect(longTail.slice(36)).toEqual(long.slice(0, VALUE_HEAD_SIZE));
+  });
 
   it('keeps 28 bytes in the head and packs continuation commitments to 128 bytes', () => {
     const value = bytesOf(VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * 2 + 9);

@@ -1,6 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   ArrayType, decodePushdataValue, parseType, type Artifact, type StateValue, scriptToBytecode,
+  type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, isSignatureTemplateArray, type FunctionArgument } from '../Argument.js';
 import SignatureTemplate from '../SignatureTemplate.js';
@@ -55,6 +56,30 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
   }
   return result;
 };
+
+/**
+ * Encode a message-bus row's canonical argument vector.
+ *
+ * Scalars need a pushdata field frame. Structs and arrays already are self-delimiting canonical blobs, so an
+ * additional outer frame would make the wire format depend on which SDK path assembled the row and would be
+ * ambiguous with a composite's first field.
+ */
+export function encodeMessageBusArguments(
+  encoded: readonly Uint8Array[],
+  inputTypes: readonly string[],
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  if (encoded.length !== inputTypes.length) {
+    throw new Error(`Message-bus argument vector has ${encoded.length} values for ${inputTypes.length} types`);
+  }
+  return concat(...encoded.map((argument, index) => {
+    const typeName = inputTypes[index];
+    const type = parseType(typeName);
+    const composite = type instanceof ArrayType
+      || structs?.some((definition) => definition.name === typeName);
+    return composite ? argument : scriptToBytecode([argument]);
+  }));
+}
 
 const uintLe = (value: bigint, width: number): Uint8Array => {
   if (value < 0n || value >= (1n << BigInt(width * 8))) {
@@ -304,15 +329,11 @@ export function encodeMessageBatch(
       }
       if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
     }
-    const argsBlob = concat(...rowEncoded.map((argument, index) => {
-      const typeName = handler.inputs[index].type;
-      const type = parseType(typeName);
-      // Arrays and structs are already canonical composite blobs. Scalar
-      // arguments are raw VM values and require one field push.
-      const composite = type instanceof ArrayType
-        || structs?.some((definition) => definition.name === typeName);
-      return composite ? argument : scriptToBytecode([argument]);
-    }));
+    const argsBlob = encodeMessageBusArguments(
+      rowEncoded,
+      handler.inputs.map((input) => input.type),
+      structs,
+    );
     if (argsBlob.length > 0xffff) {
       throw new Error(`message-bus batch arguments for '${handler.name}' exceed 65535 bytes`);
     }
@@ -387,10 +408,14 @@ export function encodeMessageBatch(
       const supplied = unboundRouteWitnesses[input.name];
       const inactiveSwappable = [...swappableGlobals.values()].find((candidate) =>
         input.name.startsWith(`${candidate.rowBase}_r`));
-      // The graph composer allocates a distinct, real entry key to every inactive physical slot. Prefer that
-      // collision-free witness; repeating the selected shared key here would co-spend one entry NFT at several
-      // offsets. Direct callers without an explicit filler may still reuse the shared value because the row is
-      // unreachable and only ABI typing is required during their isolated construction.
+      // Collection-journal caches are initialized before the row dispatch. Reuse an active value from the same
+      // unrolled witness family for unused row capacity, making every inactive cache a true same-target alias of
+      // one authenticated entry. Distinct random targets can share a predecessor proof but cannot co-spend that
+      // UTXO, and they are not semantically aliases, so manufacturing one filler per row is unsound.
+      const family = input.name.replace(/_r\d+$/, '');
+      const activeFamily = [...keyWitnessValues.entries()].find(([name]) =>
+        name.replace(/_r\d+$/, '') === family)?.[1];
+      if (activeFamily) return activeFamily.value;
       if (supplied !== undefined) return supplied;
       if (inactiveSwappable) return inactiveSwappable.value;
       throw new MessageBusDiagnosticError(

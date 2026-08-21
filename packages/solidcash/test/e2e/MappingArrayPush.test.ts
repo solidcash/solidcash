@@ -21,10 +21,33 @@ contract C() {
   function pop(address k, pubkey pk, sig s) { require(checkSig(s, pk)); m[k].pop(); }
 }`;
 
+const LONG_SRC = `pragma solidcash >=0.8.0;
+struct Record { uint8 kind; bytes payload; }
+contract LongRecords() {
+  mapping(address => Record[]) records;
+  function push(address key, Record record, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    records[key].push(record);
+  }
+  function requireLength(address key, uint256 expected, pubkey pk, sig s) view {
+    require(checkSig(s, pk));
+    require(records[key].length == expected);
+  }
+}`;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function dep(): Promise<any> {
   const provider = createTestProvider();
   const art = compileString(SRC, { solidityImportCompat: true });
+  const contract = new Contract(art, [], { provider });
+  const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
+  return StatefulContract.withCategory(contract, categoryId);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function longDep(): Promise<any> {
+  const provider = createTestProvider();
+  const art = compileString(LONG_SRC, { solidityImportCompat: true });
   const contract = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(contract, categoryId);
@@ -59,5 +82,26 @@ describe('mapping(K => T[]) .push() / .pop()', () => {
     await sc.push(aliceAddress, 0x37n, alicePub, sig()).send();
     await sc.pop(aliceAddress, alicePub, sig()).send();
     expect((await sc.getEntries('m'))[0].value).toEqual([0x42n]);
+  });
+
+  it('preserves long struct-array values across sequential pushes', async () => {
+    const sc = await longDep();
+    const first = new Uint8Array(177).fill(0x41);
+    const second = new Uint8Array(117).fill(0x42);
+    await sc.push(aliceAddress, [1n, first], alicePub, sig()).send();
+    await sc.push(aliceAddress, [2n, second], alicePub, sig()).send();
+    expect((await sc.getEntries('records'))[0].value).toEqual([
+      { kind: 1n, payload: first },
+      { kind: 2n, payload: second },
+    ]);
+  });
+
+  it('decodes the element count of a mapping-backed variable-width array', async () => {
+    const sc = await longDep();
+    await sc.push(aliceAddress, [1n, new Uint8Array([0x41])], alicePub, sig()).send();
+    await sc.push(aliceAddress, [2n, new Uint8Array([0x42])], alicePub, sig()).send();
+    await expect(sc.requireLength(aliceAddress, 2n, alicePub, sig()).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
   });
 });

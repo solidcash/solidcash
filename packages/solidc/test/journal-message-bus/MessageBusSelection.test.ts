@@ -59,6 +59,102 @@ describe('message-bus compilation selection', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'takeJob')).toEqual(
       expect.objectContaining({ eligible: true }),
     );
+    const routeInputs = artifact.messageBus?.route.inputs.map((input) => input.name) ?? [];
+    expect(routeInputs.some((name) => name.includes('_sender_'))).toBe(false);
+    expect(routeInputs).toContain('__message_bus_key_whitelistWorkers_1');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'takeJob')?.batchKeyWitnesses)
+      .toContainEqual(expect.objectContaining({
+        routeInput: '__message_bus_key_whitelistWorkers_1',
+        source: 'msgSender',
+      }));
+  });
+
+  it('journals pooled collection getters through the same canonical route entries as sibling writes', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract PooledReturns {
+        struct Item { uint value; }
+        mapping(uint => Item[]) items;
+        mapping(uint => uint) values;
+        function itemsLength(uint key) public view returns (uint) { return items[key].length; }
+        function valueAt(uint key) public view returns (uint) { return values[key]; }
+        function append(uint key, uint value) public { items[key].push(Item(value)); }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'itemsLength'))
+      .toEqual(expect.objectContaining({ eligible: true, physicalEntrySlots: [0] }));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'valueAt'))
+      .toEqual(expect.objectContaining({ eligible: true, physicalEntrySlots: [1] }));
+    expect(artifact.messageBus?.route.entryAccesses).toEqual([
+      expect.objectContaining({ collection: 'items', keyParams: ['__message_bus_key_items_0'] }),
+      expect.objectContaining({ collection: 'values', keyParams: ['__message_bus_key_values_0'] }),
+    ]);
+    expect(artifact.messageBus?.route.entryAccesses?.flatMap((access) => access.keyParams)
+      .some((key) => key.includes('AbiDecodeAtNode'))).toBe(false);
+  });
+
+  it('co-locates ecrecover sidecars with ordinary participant state and entry slots', () => {
+    const artifact = compileString(`contract RecoverWithState {
+      int counter;
+      mapping(uint => bool) allowed;
+      function recover(uint id, bytes32 h, int v, bytes32 r, bytes32 s) public {
+        require(allowed[id]);
+        pubkey signer = ecrecoverPubKey(h, v, r, s);
+        counter = counter + 1;
+        require(signer.length == 33);
+      }
+    }`, { messageBus: true, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'recover');
+    expect(handler).toEqual(expect.objectContaining({ eligible: true }));
+    const layout = artifact.messageBus?.route.blockLayout;
+    expect(layout?.slots.some((slot) => slot.kind === 'dataNft')).toBe(true);
+    expect(layout?.slots.some((slot) => slot.kind === 'entry')).toBe(true);
+    const recovery = layout?.slots.filter((slot) => slot.kind === 'ecrecoverSideCar') ?? [];
+    expect(recovery).toHaveLength(2);
+    expect(new Set(layout?.slots.map((slot) => slot.offset)).size).toBe(layout?.slots.length);
+    expect(layout?.blockSize).toBe(Math.max(...layout!.slots.map((slot) => slot.offset)) + 1);
+  });
+
+  it('publishes selected recovery presence and transitive projection vectors for message-bus handlers', () => {
+    const artifact = compileString(`contract RecoverySelection {
+      int counter;
+      function recoverEvm(bytes32 h, int v, bytes32 r, bytes32 s) internal returns (bytes20) {
+        return ecrecoverEvm(h, v, r, s);
+      }
+      function recoverNative(bytes32 h, int v, bytes32 r, bytes32 s) internal returns (bytes) {
+        return ecrecoverP2pkh(h, v, r, s);
+      }
+      function verifyEvm(bytes32 h, int v, bytes32 r, bytes32 s, bytes20 expected) public {
+        counter = counter + 1;
+        require(recoverEvm(h, v, r, s) == expected);
+      }
+      function verifyNative(bytes32 h, int v, bytes32 r, bytes32 s, bytes expected) public {
+        counter = counter + 1;
+        require(recoverNative(h, v, r, s) == expected);
+      }
+      function plain() public { counter = counter + 1; require(counter > 0); }
+    }`, {
+      forceStateful: true,
+      messageBus: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'verifyEvm'))
+      .toEqual(expect.objectContaining({
+        eligible: true, ecrecoverCompute: true, ecrecoverEvmFlags: [true],
+      }));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'verifyNative'))
+      .toEqual(expect.objectContaining({
+        eligible: true, ecrecoverCompute: true, ecrecoverEvmFlags: [false],
+      }));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'plain'))
+      .toEqual(expect.objectContaining({ eligible: true, ecrecoverCompute: false }));
   });
 
   it('binds a state-derived collection key while preserving a bounded graph result', () => {
@@ -102,6 +198,34 @@ describe('message-bus compilation selection', () => {
         })],
       }),
     );
+  });
+
+  it('keeps valid external siblings when the fast route attributes one generated clone failure', () => {
+    const artifact = compileString(`contract SelectiveRoute {
+      struct Record { int value; }
+      mapping(int => Record) records;
+      int current;
+      // A field update currently reaches a generated entry-clone layout gap. The admission fallback must
+      // refuse only this handler; it is deliberately beside a route-safe external handler.
+      function unsupported(int key) external {
+        records[key].value = 1;
+        require(records[key].value == 1);
+      }
+      function supported(int next) external {
+        current = next;
+        require(current == next);
+      }
+    }`, {
+      messageBus: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    // This also exercises the verifier-binding pass: it must compile the exact admitted set instead of
+    // resurrecting `unsupported` after the speculative pass successfully excluded it.
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'supported'))
+      .toEqual(expect.objectContaining({ eligible: true }));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'unsupported')?.eligible)
+      .not.toBe(true);
   });
 
   it('threads the logical caller into a no-argument delegate route handler', () => {
@@ -163,6 +287,41 @@ describe('message-bus compilation selection', () => {
     });
     expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'renounce'))
       .toEqual(expect.objectContaining({ eligible: true }));
+  });
+
+  it('allocates one route slot per wide event rather than phantom commitment chunks', () => {
+    const artifact = compileString(`contract WideEvents {
+      int last;
+      event Wide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e);
+      event Narrow(int value);
+      function emitWide(bytes32 a, bytes32 b, bytes32 c, bytes32 d, bytes32 e) public {
+        last = 1;
+        emit Wide(a, b, c, d, e);
+        require(last == 1);
+      }
+      function emitNarrow(int value) public {
+        last = value;
+        emit Narrow(value);
+        require(last == value);
+      }
+    }`, {
+      forceStateful: true,
+      messageBus: true,
+      maximumInputBytes: 1_000_000,
+      commitmentLimit: 1_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus?.handlers.filter((handler) =>
+      handler.name === 'emitWide' || handler.name === 'emitNarrow'))
+      .toEqual([
+        expect.objectContaining({ name: 'emitWide', eligible: true }),
+        expect.objectContaining({ name: 'emitNarrow', eligible: true }),
+      ]);
+    const eventSlots = artifact.messageBus?.route.blockLayout?.slots
+      .filter((slot) => slot.kind === 'event') ?? [];
+    expect(eventSlots).toHaveLength(artifact.messageBus!.maximumRows);
+    expect(eventSlots.map((slot) => slot.slotIndex))
+      .toEqual(Array.from({ length: artifact.messageBus!.maximumRows }, (_unused, index) => index));
   });
 
   it('automatically selects message-bus planning for an external call graph', () => {

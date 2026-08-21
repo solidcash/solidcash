@@ -32,6 +32,7 @@ import {
   memWordStore,
   memWordLoad,
   memByteStore,
+  memZeroBytes,
   memGrowTo,
 } from './YulMemPrimitives.js';
 
@@ -1284,8 +1285,10 @@ function parseBytesPtr(memArg: YulExpressionNode): { name: string; start: bigint
   if (!(memArg instanceof YulFunctionCallNode) || memArg.name !== 'add' || memArg.args.length !== 2) return undefined;
   const [base, offArg] = memArg.args;
   if (!(base instanceof YulPathNode) || base.members.length > 0 || !isIntLiteral(offArg)) return undefined;
-  const param = currentParams.find((p) => p.name === base.base && p.type instanceof BytesType);
-  if (!param) return undefined;
+  // LowerMemoryModel materializes a bytes-memory parameter referenced from assembly as `__memb_*`. The Yul tree
+  // intentionally follows that buffer alias, so resolve against every typed in-scope value rather than only the
+  // ABI parameter's original name.
+  if (!(currentVars.get(base.base) instanceof BytesType)) return undefined;
   const start = BigInt(offArg.raw) - 32n; // skip the length word
   if (start < 0n) return undefined;
   return { name: base.base, start };
@@ -2226,19 +2229,34 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   if (name === 'byte' && args.length === 2 && isIntLiteral(args[0])) {
     const n = BigInt(args[0].raw);
     if (n < 0n || n > 31n) throw new YulNotLowerable();
-    // byte(n, mload(add(param, off))) needs only ONE byte (param[off-32+n]); fold to it so a full 32-byte word
-    // read past the end of a short value (the v byte of a 65-byte sig reads word [64:96]) never happens.
+    // byte(n, mload(add(param, off))) needs only ONE byte (param[off-32+n]); fold to an element read so a full
+    // 32-byte word past the end of a short value (the v byte of a 65-byte sig reads word [64:96]) is unnecessary.
+    // A SliceNode is calldata-only in codegen and silently produced an empty value for a `bytes memory` parameter;
+    // ArrayAccessNode is the representation-independent single-byte operation this Yul expression requires.
     const inner = args[1];
     if (inner instanceof YulFunctionCallNode && inner.name === 'mload' && inner.args.length === 1) {
       const ptr = parseBytesPtr(inner.args[0]);
       if (ptr) {
         const at = ptr.start + n;
-        const byte = loc(
-          new SliceNode(loc(new IdentifierNode(ptr.name), call), intLit(at, call), intLit(at + 1n, call)), call,
-        );
+        const byte = loc(new ArrayAccessNode(
+          loc(new IdentifierNode(ptr.name), call), intLit(at, call),
+        ), call);
         // Preserve the raw one-byte result: the surrounding assignment supplies exactly the destination cast,
         // avoiding an otherwise duplicated uint8 (or unnecessary uint256) range check.
         return byte;
+      }
+      if (runtimeMem) {
+        // LowerMemoryModel rewrites assembly-observed `bytes memory` values to pointers in __yulmem. Reading the
+        // selected byte directly preserves EVM's big-endian `byte(n, mload(p)) == mem[p+n]` rule; round-tripping
+        // the word through BCH-native numeric encoding reverses the selection (byte 0 became byte 31). A zero word
+        // covers reads which straddle the current high-water mark, matching EVM's zero-filled memory.
+        yulMemUsed = true;
+        const padded = loc(new BytesConcatNode([
+          yulmem(call), memZeroBytes(intLit(32n, call), call),
+        ]), call);
+        return loc(new ArrayAccessNode(
+          padded, addE(lowerValue(inner.args[0]), intLit(n, call), call),
+        ), call);
       }
     }
     const word = loc(new CastNode(BYTES32, lowerValue(args[1]), false), call);

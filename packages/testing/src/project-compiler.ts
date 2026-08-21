@@ -185,6 +185,7 @@ export function compileSolidityProject(
     if (!isCanonicalDeclaringFile
       && source.declarations.length > 0 && source.declarations.every((name) => artifacts[name])) continue;
     const jobId = hash(stableStringify({
+      artifactCacheVersion: 2,
       compilerVersion: cache?.compilerVersion ?? '',
       options,
       sources: dependencyHashes(source, allSources),
@@ -208,13 +209,18 @@ export function compileSolidityProject(
       compiledRoots.push(source.path);
       if (jobFile) writeAtomic(jobFile, serialize(compiled));
     }
+    const ownedDeclarations = new Set(source.declarations);
     for (const [name, artifact] of Object.entries(compiled)) {
+      // compileFileMulti returns artifacts for the root and every imported declaration. Only the source that
+      // declares a contract owns its published artifact: an importing root can be compiled with a different
+      // primary-contract context, and publishing that imported copy makes focused compiles overwrite canonical
+      // dependency artifacts. Filtering here also keeps one-file iteration proportional to the selected source.
+      if (!ownedDeclarations.has(name)) continue;
       patchProjectArtifactUpsertKeys(artifact);
-      if (artifact.abi.some((fn) => fn.modifiers?.includes('delegate'))) {
+      if (artifact.abi?.some((fn) => fn.modifiers?.includes('delegate'))) {
         artifact.delegateProxyStateOutputCountPinned = true;
       }
-      if (name === stem) artifacts[name] = artifact;
-      else artifacts[name] ??= artifact;
+      artifacts[name] = artifact;
     }
   }
   if (cache) writeAtomic(path.join(cache.directory, 'manifest.json'), JSON.stringify(manifest, null, 2));

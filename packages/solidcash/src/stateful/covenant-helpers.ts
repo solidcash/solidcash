@@ -165,11 +165,21 @@ export function getMessageBusVerifierLockingBytecode(
   contract: Contract<any, any>, categoryId: string, _addressType: AddressType = 'p2sh32',
 ): Uint8Array {
   validateCategoryId(categoryId);
-  const program = contract.artifact.messageBus?.verifierProgram;
-  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no message bus verifier program`);
-  return scriptToLockingBytecode(buildMessageBusVerifierCovenantScript(
-    program, contract.provider.consensusLimits?.maximumInputBytes ?? 10_000,
-  ), 'p2sh32');
+  return getMessageBusVerifierLockingBytecodeForArtifact(
+    contract.artifact, contract.provider.consensusLimits?.maximumInputBytes ?? 10_000,
+  );
+}
+
+/** Resolve a verifier from the artifact which executes a participant route. For delegate execution this is the
+ * implementation artifact, while the verifier NFT remains branded to and deployed under the physical owner. */
+export function getMessageBusVerifierLockingBytecodeForArtifact(
+  artifact: Artifact, maximumInputBytes = 10_000,
+): Uint8Array {
+  const program = artifact.messageBus?.verifierProgram;
+  if (!program) throw new Error(`Contract '${artifact.contractName}' publishes no message bus verifier program`);
+  return scriptToLockingBytecode(
+    buildMessageBusVerifierCovenantScript(program, maximumInputBytes), 'p2sh32',
+  );
 }
 
 export function getEntryNftAddress(
@@ -246,25 +256,6 @@ export function getAnonymousEventNftAddress(
   validateCategoryId(categoryId);
   const covenantScript = buildAnonymousEventNftCovenantScript(hexToBin(categoryId));
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
-}
-
-export function getTokenContainerLockingBytecode(
-  categoryId: string, tokenContainerCategoryId: string,
-): Uint8Array {
-  validateCategoryId(categoryId);
-  validateCategoryId(tokenContainerCategoryId, 'tokenContainerCategoryId');
-  return scriptToLockingBytecode(
-    buildTokenContainerCovenantScript(hexToBin(categoryId), hexToBin(tokenContainerCategoryId)),
-    'p2sh32',
-  );
-}
-
-export function getSatoshiContainerLockingBytecode(categoryId: string): Uint8Array {
-  validateCategoryId(categoryId);
-  return scriptToLockingBytecode(
-    buildSatoshiContainerCovenantScript(hexToBin(categoryId)),
-    'p2sh32',
-  );
 }
 
 export function getTokenContainerAddress(
@@ -352,10 +343,11 @@ export const MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES = 9_000;
 
 export function createMessageBusVerifierUnlocker(
   contract: Contract<any, any>, categoryId: string, messageEnvelope: Uint8Array, verifierArgs: FunctionArgument[],
+  executionArtifact: Artifact = contract.artifact,
 ): ContractUnlocker {
   validateCategoryId(categoryId);
-  const program = contract.artifact.messageBus?.verifierProgram;
-  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no message bus verifier program`);
+  const program = executionArtifact.messageBus?.verifierProgram;
+  if (!program) throw new Error(`Contract '${executionArtifact.contractName}' publishes no message bus verifier program`);
   if (verifierArgs.length !== program.inputs.length) {
     throw new Error(`message bus verifier expects ${program.inputs.length} arguments, got ${verifierArgs.length}`);
   }

@@ -1,33 +1,34 @@
-import { binToHex, encodeCashAddress, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import { sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
 import {
-  getTokenContainerLockingBytecode,
-  getDataNftLockingBytecode,
-} from '../../src/stateful/covenant-helpers.js';
-import {
-  createLogicalIdentityUnlocker,
-  encodeLogicalIdentityCommitment,
-  matchingLogicalIdentityFromCommitments,
-  matchingLogicalIdentityNearby,
-  parseLogicalIdentitySeed,
-} from '../../src/stateful/logical-identity.js';
-import {
   assignPhysicalReturnIndices,
   assignedTailEnd,
+  returnWitnessOutputIndices,
   lastCollidingMutableWriterIndex,
   findViewTailDestinations,
   valueChunkBandWidth,
+  continuationOutputBaseBeforeSuffix,
+  selectValueChunkOutputBase,
   mintingSwapShift,
   chooseMintingSwapShift,
   isEmptyValueChunkCommitment,
   predOutBaseAfterOccupancy,
+  materializedPredOutBase,
+  matchMaterializedReturnOutputs,
+  collidingParticipantGroupIndex,
+  physicalParticipantWidth,
+  materializedParticipantWidth,
+  gatherContiguousPlainFunders,
   groupLayoutBlockSize,
+  blockOutputOwnsSlotKind,
+  blockOutputOwnsFixedDataNft,
   groupOwnsInBlockReturnEvent,
   constrainOwnCategoryImmutableOutputs,
   inheritWriterBatchWitnesses,
   isPredOutReusableHole,
+  reassertBatchPredecessorOutputsAtDeclaredSlots,
   remapInsertPredOuts,
   resolveAbsolutePredOut,
   logicalReturnGroupIndex,
@@ -42,9 +43,8 @@ import {
   relocateJobEventEmitToDest,
   relocateDelegateEventNftToDest,
   isDelegateEventNftOutput,
+  isMaterializedImmutableNftOutput,
   resolveNamedEventValues,
-  isPublishJobEventEmitDest,
-  repairJobEventDestLock,
   emitDestCollidesPreservedInput,
   encodeEmptyJobEventEmitCommitment,
   encodeJobEventEmitCommitment,
@@ -54,43 +54,23 @@ import {
   isMintingBandTokenWriter,
   isMintingBandSwapFunction,
   tokenWriterReturnIndex,
-  tokenWriterReturnCommitment,
+  canonicalWriterReturnCommitment,
+  shouldReplaceReturnEventCommitment,
+  hasEquivalentMutableNftOutput,
+  stripRelocatedMutableDuplicates,
+  reassertReadOnlyMutableOneToOnes,
   tokenWriterOccupiedDests,
   persistAndTokenWriterOccupancy,
-  mintingSwapExtraFunders,
+  participantRelocationExtraFunders,
+  chooseParticipantRelocationShift,
   proxyValueChunkPadCount,
   liveChunkSlotsByOwner,
+  liveChunkWidthForGroup,
   computePublishJobEventsBand,
-  persistJobEventsBandFloor,
-  isProxyPreserveOutputIndex,
-  remapDerivedChunkDests,
-  publishJobEventDataNftDests,
-  selectPublishJobEventDataNftSources,
-  assignPublishJobEventDataNftInputs,
   scaledInputPreserveExclusiveEnd,
   scaledEventOutputIndex,
   liveJobEventsBandWidth,
-  persistUpdateBandWidth,
-  persistUpdatePersistVWidth,
-  persistLayoutWidth,
-  persistUpdatePlacementWidth,
-  capPersistValueToWidth,
-  capReadyPersistValue,
-  clampPersistBandBeforeJobsDest,
-  jobsSuffixDest,
-  stampJobsSuffixLock,
-  selectJobsSuffixLock,
-  selectJobsSuffixExpectedLock,
-  selectJobsSuffixCategory,
-  jobsSuffixFungibleToken,
-  extractEmbeddedP2sh32Locks,
-  pinJobsSuffixInput,
-  retargetMintingInputToJobsPin,
-  selectPersistChunkLock,
-  matchingValueChunkUnlockerParts,
-  matchingTokenContainerUnlockerParts,
-  matchingDataNftUnlockerParts,
-  selectLatestJobEventsChunks,
+  selectObservedValueChunkRun,
   persistedJobEventsWidth,
   selectHashedValueForChunkPin,
   chunksFromJobEventsValue,
@@ -111,14 +91,6 @@ import {
   shouldKeepPersistAtLayoutBase,
   persistPredecessorPlaceCount,
   persistUpdatePredecessorDests,
-  persistDigestLockDests,
-  persistChunkOutputDests,
-  persistUpdateLiveDests,
-  persistVOutputDests,
-  surplusPersistValueDests,
-  surplusPersistDigestDests,
-  selectPublishJobEventInputIndex,
-  recoverPersistValueFromOutputs,
   persistOccupantDisplaceable,
   persistPredecessorRank,
   persistPredecessorWantedRank,
@@ -138,13 +110,9 @@ import {
   stripSurplusValueChunkLocks,
   persistUpdateRedeemLock,
   persistUpdateDigestLock,
-  pinPersistDigestLock,
-  pinPersistDigestInput,
-  persistUpdateEntryCommitment,
   persistUpdateDestLock,
   persistValueChunkLock,
   isWithdrawShapedJobEvent,
-  isPersistReplayJobEvent,
   isInsertShapedJobEvent,
   shouldRematerializePersistUpdate,
   shouldStampPersistUpdateDigestLock,
@@ -159,7 +127,6 @@ import {
   isSortedEntryHeadCommitment,
   isSortedEntryNodeCommitment,
   isDataNftIndexCommitment,
-  persistChunkMayOverwriteScid,
   type PhysicalReturnGroup,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
@@ -178,6 +145,54 @@ function group(partial: Partial<PhysicalReturnGroup> & Pick<PhysicalReturnGroup,
 }
 
 describe('assignPhysicalReturnIndices', () => {
+  it('distinguishes fixed entry outputs from other mutable participant slots', () => {
+    const layout = {
+      blockSize: 4,
+      slots: [
+        { kind: 'master' as const, offset: 0 },
+        { kind: 'dataNft' as const, offset: 1 },
+        { kind: 'entry' as const, offset: 2 },
+        { kind: 'returnEvent' as const, offset: 3 },
+      ],
+    };
+
+    expect(blockOutputOwnsSlotKind(12, 10, layout, 'entry')).toBe(true);
+    expect(blockOutputOwnsSlotKind(11, 10, layout, 'entry')).toBe(false);
+    expect(blockOutputOwnsSlotKind(13, 10, layout, 'entry')).toBe(false);
+  });
+
+  it('protects exact and legacy fixed data-NFT outputs from dynamic replay', () => {
+    const sparse = {
+      blockSize: 8,
+      slots: [
+        { kind: 'master' as const, offset: 0 },
+        { kind: 'dataNft' as const, offset: 1 },
+        { kind: 'entry' as const, offset: 2 },
+        { kind: 'dataNft' as const, offset: 4 },
+      ],
+    };
+    expect(blockOutputOwnsFixedDataNft(11, 10, sparse, 2)).toBe(true);
+    expect(blockOutputOwnsFixedDataNft(12, 10, sparse, 2)).toBe(false);
+    expect(blockOutputOwnsFixedDataNft(14, 10, sparse, 2)).toBe(true);
+    expect(blockOutputOwnsFixedDataNft(21, 20, undefined, 2)).toBe(true);
+    expect(blockOutputOwnsFixedDataNft(22, 20, undefined, 2)).toBe(true);
+    expect(blockOutputOwnsFixedDataNft(23, 20, undefined, 2)).toBe(false);
+  });
+
+  it('reserves every output in assigned scalar and loop return witnesses', () => {
+    const groups: PhysicalReturnGroup[] = [
+      group({ categoryId: 'alpha', returnOutputIndex: 20 }),
+      group({
+        categoryId: 'beta',
+        returnOutputIndex: 21,
+        loopReturnCommitments: { length: 3 } as Uint8Array[],
+      }),
+      group({ categoryId: 'gamma' }),
+    ];
+
+    expect([...returnWitnessOutputIndices(groups)]).toEqual([20, 21, 22, 23]);
+  });
+
   it('keeps planned tails when they already sit after every participant block', () => {
     const groups: PhysicalReturnGroup[] = [
       group({
@@ -336,6 +351,143 @@ describe('assignPhysicalReturnIndices', () => {
     ));
     expect(assigned.get(0)).toBe(33);
     expect(assigned.get(1)).toBe(34);
+  });
+
+  it('counts a sparse participant master and its data NFTs without optional block metadata', () => {
+    const groups: PhysicalReturnGroup[] = [
+      group({
+        categoryId: 'view',
+        returnOutputIndex: 36,
+      }),
+      group({
+        categoryId: 'late-participant',
+        dataNftUtxos: { length: 1 },
+      }),
+    ];
+
+    const assigned = assignPhysicalReturnIndices(groups, (categoryId) => (
+      categoryId === 'late-participant' ? 36 : -1
+    ));
+
+    expect(assigned.get(0)).toBe(38);
+  });
+
+  it('rebinds stale return witnesses from final output content without moving valid witnesses', () => {
+    const tail = (category: string, commitment: string) => ({
+      to: Uint8Array.of(0x51),
+      token: { category, nft: { capability: 'none' as const, commitment } },
+    });
+    const outputs = Array.from({ length: 50 }, () => ({ to: Uint8Array.of(0x51) }));
+    outputs[34] = tail('state', '01');
+    outputs[35] = tail('state', '02');
+    outputs[36] = {
+      to: new Uint8Array(35),
+      token: { category: 'identity', nft: { capability: 'none' as const, commitment: '53434944' } },
+    };
+    outputs[38] = tail('token', '00');
+    outputs[47] = tail('state', '64');
+    outputs[48] = tail('token', '00');
+    outputs[49] = tail('token', '00');
+
+    const assigned = matchMaterializedReturnOutputs(outputs, [
+      { groupIndex: 0, categoryId: 'state', commitment: '01', currentIndex: 34 },
+      { groupIndex: 1, categoryId: 'state', commitment: '02', currentIndex: 35 },
+      { groupIndex: 6, categoryId: 'state', commitment: '64', currentIndex: 36 },
+      { groupIndex: 9, categoryId: 'token', commitment: '00', currentIndex: 37 },
+      { groupIndex: 10, categoryId: 'token', commitment: '00', currentIndex: 38 },
+    ]);
+
+    expect([...assigned]).toEqual([
+      [0, 34], [1, 35], [10, 38], [6, 47], [9, 48],
+    ]);
+  });
+
+  it('finds a participant block colliding with a dynamic-output band by layout rather than function name', () => {
+    const groups: PhysicalReturnGroup[] = [
+      group({
+        categoryId: 'state-owner',
+        blockLayout: { blockSize: 8, slots: [] },
+        valueChunkOutputCount: 2,
+      }),
+      group({
+        categoryId: 'independent-writer',
+        functionName: 'arbitraryWriter',
+        blockLayout: { blockSize: 5, slots: [] },
+      }),
+    ];
+
+    expect(collidingParticipantGroupIndex(
+      groups,
+      (categoryId) => categoryId === 'state-owner' ? 12 : 20,
+      { start: 20, end: 21 },
+    )).toBe(1);
+  });
+
+  it('reserves output-only slots when a physical block has fewer token inputs than coordinates', () => {
+    expect(physicalParticipantWidth(group({
+      categoryId: 'sparse-writer',
+      dataNftUtxos: { length: 1 },
+      blockInputs: { length: 2 },
+      blockLayout: {
+        blockSize: 3,
+        slots: [{ kind: 'returnEvent', offset: 3 }],
+      },
+    }))).toBe(4);
+  });
+
+  it('includes an in-block return slid past a dynamic output band in materialized width', () => {
+    expect(materializedParticipantWidth(group({
+      categoryId: 'writer',
+      returnEventInBlock: true,
+      blockLayout: {
+        blockSize: 3,
+        slots: [{ kind: 'returnEvent', offset: 2 }],
+      },
+    }), 24, { start: 20, end: 26 })).toBe(4);
+  });
+
+  it('gathers serialized tail funders next to a colliding block without adding inputs', () => {
+    const input = (txid: string, token = false) => ({
+      txid, vout: 0, ...(token ? { token: {} } : {}),
+    });
+    const inputs = [
+      input('writer-master', true), input('writer-data', true), input('funder-a'),
+      input('later-master', true), input('funder-b'), input('funder-c'),
+    ];
+    const funders = new Set(['funder-a:0', 'funder-b:0', 'funder-c:0']);
+
+    expect(gatherContiguousPlainFunders(inputs, funders, 2, 3)).toBe(3);
+    expect(inputs).toHaveLength(6);
+    expect(inputs.slice(2, 5).map(({ txid }) => txid)).toEqual([
+      'funder-a', 'funder-c', 'funder-b',
+    ]);
+    expect(inputs[5].txid).toBe('later-master');
+  });
+
+  it('does not use a token-free P2SH covenant input as output-only block funding', () => {
+    const input = (txid: string, lock: Uint8Array, token = false) => ({
+      txid,
+      vout: 0,
+      ...(token ? { token: {} } : {}),
+      unlocker: { generateLockingBytecode: () => lock },
+    });
+    const p2sh = new Uint8Array([0xaa, 0x20, ...new Uint8Array(32), 0x87]);
+    const p2pkh = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20), 0x88, 0xac]);
+    const inputs = [
+      input('writer-master', p2sh, true),
+      input('covenant-participant', p2sh),
+      input('funder-a', p2pkh),
+      input('funder-b', p2pkh),
+    ];
+
+    expect(gatherContiguousPlainFunders(
+      inputs,
+      new Set(['funder-a:0', 'funder-b:0']),
+      1,
+      2,
+    )).toBe(2);
+    expect(inputs.slice(1, 3).map(({ txid }) => txid)).toEqual(['funder-b', 'funder-a']);
+    expect(inputs[3].txid).toBe('covenant-participant');
   });
 
   it('gives a shared physical group the in-block slot when functionName writes state', () => {
@@ -503,6 +655,18 @@ describe('assignPhysicalReturnIndices', () => {
     expect(resolveAbsolutePredOut(-2n, 26, 8)).toBe(-2n);
   });
 
+  it('uses the batch planner output slot instead of provisional return-tail occupancy', () => {
+    expect(materializedPredOutBase({
+      blockLayout: { blockSize: 8 },
+      batchPredecessorOutputs: [{ outputBlockSlot: 8 }],
+    }, 26)).toBe(34);
+    expect(materializedPredOutBase({
+      blockLayout: { blockSize: 8 },
+      batchPredecessorOutputs: [{ outputBlockSlot: 10 }, { outputBlockSlot: 11 }],
+    }, 26)).toBe(36);
+    expect(materializedPredOutBase({ blockLayout: { blockSize: 8 } }, 26)).toBe(34);
+  });
+
   it('strips extra own-category none-cap tails outside event and return slots', () => {
     const outputs = [
       { token: { category: 'ft', nft: { capability: 'minting', commitment: '' } } },
@@ -518,9 +682,11 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[4].token?.nft?.capability).toBe('mutable');
     const eventLike = [
       { to: new Uint8Array([0xaa, 0x20]), token: { category: 'ft', nft: { capability: 'none', commitment: 'abcd' } } },
+      { to: new Uint8Array([0xaa, 0x20]), token: { category: 'ft', nft: { capability: 'none', commitment: '534349440100' } } },
     ];
     expect(constrainOwnCategoryImmutableOutputs(eventLike, 'ft', new Set())).toBe(1);
     expect(eventLike[0].token).toBeUndefined();
+    expect(eventLike[1].token?.nft?.commitment).toBe('534349440100');
   });
 
   it('rebases a proxy-delegated initializer PredOut from the impl master, not minting+implSize', () => {
@@ -587,6 +753,42 @@ describe('assignPhysicalReturnIndices', () => {
       to: new Uint8Array(35),
       token: { nft: { capability: 'mutable', commitment: '9c63' } },
     })).toBe(false);
+  });
+
+  it('moves a sorted-batch predecessor clone to its compiler-declared output slot', () => {
+    const lock = new Uint8Array([0xaa, 0x20, 0x87]);
+    const predecessor = {
+      to: lock,
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'token',
+        nft: { capability: 'mutable' as const, commitment: 'abcd' },
+      },
+    };
+    const outputs = Array.from({ length: 12 }, () => ({
+      to: Uint8Array.of(0x51),
+      amount: 1000n,
+    }));
+    outputs[8] = {
+      to: Uint8Array.of(0x51),
+      amount: 800n,
+      token: {
+        amount: 0n,
+        category: 'token',
+        nft: { capability: 'none' as const, commitment: '01' },
+      },
+    };
+    outputs[9] = predecessor;
+
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 0, 'token', [{
+      outputBlockSlot: 8,
+      lockingBytecode: lock,
+      commitment: 'abcd',
+    }])).toBe(1);
+    expect(outputs[8]).toBe(predecessor);
+    expect(outputs[9].token).toBeUndefined();
+    expect(outputs[9].to).toEqual(Uint8Array.of(0x51));
   });
 
   it('does not pack a view tail onto the writer slot after a 22→26 rotate', () => {
@@ -801,113 +1003,11 @@ describe('assignPhysicalReturnIndices', () => {
     expect(viewTailOccupancyCap([17, 20], { start: 20, end: 22 })).toBe(22);
     expect(viewTailOccupancyCap([17, 19])).toBe(-1);
     expect(computePublishJobEventsBand({ implIndex: -1, plannedWidth: 6 })).toBeUndefined();
-    expect(persistJobEventsBandFloor(11, true)).toBe(16);
-    expect(persistJobEventsBandFloor(-1, true)).toBe(2);
-    expect(persistJobEventsBandFloor(11, false)).toBe(-1);
-    expect(computePublishJobEventsBand({
-      start: 1, plannedWidth: 5, persistFloor: 16,
-    })).toEqual({ start: 16, end: 20, nNew: 5 });
-    expect(computePublishJobEventsBand({
-      plannedWidth: 5, preserveEndExclusive: 1, persistFloor: 2,
-    })).toEqual({ start: 2, end: 6, nNew: 5 });
-    expect(persistUpdatePredecessorDests({
-      implIndex: -1, persistUpdate: true, keepAtLayout: false, bandStart: 1, nNew: 5,
-    })).toEqual([]);
-    expect(isProxyPreserveOutputIndex(0)).toBe(true);
-    expect(isProxyPreserveOutputIndex(1)).toBe(true);
-    expect(isProxyPreserveOutputIndex(2)).toBe(false);
-    expect(publishJobEventDataNftDests(11)).toEqual([12, 13]);
-    expect(publishJobEventDataNftDests(-1)).toEqual([]);
-    expect(publishJobEventDataNftDests(0)).toEqual([2]);
-    // Live last-writer must not clone dest 9-10 onto dest 12-13: publishJobEvent
-    // NUMEQUALVERIFYs dests-with-that-lock == 2 (dest 9-10 only).
-    const mdNft = { token: { category: 'md', nft: { capability: 'mutable' as const, commitment: '0023aa20' } } };
-    const otherNft = { token: { category: 'mv', nft: { capability: 'mutable' as const, commitment: '0023aa20' } } };
-    const pad = { token: undefined };
-    const closeInputs = [
-      pad, otherNft, otherNft, pad, pad, pad, pad, pad, pad, mdNft, { ...mdNft, token: { ...mdNft.token, nft: { capability: 'mutable' as const, commitment: '51210000' } } }, pad, pad, pad,
-    ];
-    expect(selectPublishJobEventDataNftSources(closeInputs, 11, 'md')).toEqual([9, 10]);
-    expect(selectPublishJobEventDataNftSources(closeInputs, 11)).toEqual([9, 10]);
-    const scidPad = [
-      ...closeInputs.slice(0, 12),
-      { token: { category: 'md', nft: { capability: 'mutable' as const, commitment: '53434944' } } },
-      { token: { category: 'md', nft: { capability: 'mutable' as const, commitment: '5343494401050000' } } },
-    ];
-    expect(selectPublishJobEventDataNftSources(scidPad, 11, 'md')).toEqual([9, 10]);
-    const noneCap = [
-      pad, pad, pad, pad, pad, pad, pad, pad, pad,
-      { token: { category: 'md', nft: { capability: 'none' as const, commitment: '0023aa20' } } },
-      { token: { category: 'md', nft: { capability: 'none' as const, commitment: '51210000' } } },
-      pad, pad, pad,
-    ];
-    expect(selectPublishJobEventDataNftSources(noneCap, 11, 'md')).toEqual([9, 10]);
-    expect(selectPublishJobEventDataNftSources(closeInputs, 11, 'other-minting')).toEqual([9, 10]);
-    expect(selectPublishJobEventDataNftSources(closeInputs, 14, 'md')).toEqual([]);
-    expect(assignPublishJobEventDataNftInputs(closeInputs, 11, [9, 10])).toEqual([12, 13]);
-    expect(closeInputs[12]?.token?.nft?.commitment).toBe('0023aa20');
-    expect(closeInputs[13]?.token?.nft?.commitment).toBe('51210000');
-    expect(closeInputs[9]?.token).toBeUndefined();
-    expect(closeInputs[10]?.token).toBeUndefined();
-    const remapped = remapDerivedChunkDests(
-      new Map([
-        [1, { commitment: `0100${'41'.repeat(40)}` }],
-        [17, { commitment: `0100${'41'.repeat(40)}` }],
-      ]),
-      { start: 16, nNew: 2 },
-      6,
-    );
-    expect([...remapped.keys()].sort((left, right) => left - right)).toEqual([17]);
-    expect(remapped.get(1)).toBeUndefined();
-    expect(remapDerivedChunkDests(
-      new Map([
-        [1, { commitment: `0100${'41'.repeat(40)}` }],
-        [16, { commitment: `0000${'42'.repeat(40)}` }],
-      ]),
-      { start: 16, nNew: 2 },
-      6,
-    )).toEqual(new Map([
-      [16, { commitment: `0000${'42'.repeat(40)}` }],
-      [17, { commitment: `0100${'41'.repeat(40)}` }],
-    ]));
     expect(scaledInputPreserveExclusiveEnd(5, 5)).toBe(25);
     expect(scaledEventOutputIndex(5, 5)).toBe(24);
     expect(publishJobEventOutputIndex(15, 4)).toBe(19);
     expect(publishJobEventOutputIndex(17)).toBe(21);
     expect(publishJobEventOutputIndex(18)).toBe(22);
-    expect(isPublishJobEventEmitDest(10, 6)).toBe(true);
-    expect(isPublishJobEventEmitDest(9, 6)).toBe(false);
-    const publishEventLock = Uint8Array.from([0xaa, 0x20, ...Array(32).fill(0x11), 0x87]);
-    const p2pkhDest = Array.from({ length: 11 }, () => ({
-      to: Uint8Array.from([0x76, 0xa9, 0x14, ...Array(20).fill(0x71), 0x88, 0xac]),
-      amount: 1000n,
-    }));
-    expect(placePublishJobEventOutput(p2pkhDest, 10, {
-      to: publishEventLock,
-      amount: 1200n,
-      token: {
-        amount: 0n,
-        category: 'aabbccdd',
-        nft: { capability: 'none', commitment: '5e1976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac0000' },
-      },
-    })).toBe(true);
-    expect(p2pkhDest[10]?.to).toEqual(publishEventLock);
-    expect(p2pkhDest[10]?.token?.nft?.commitment?.startsWith('5e19')).toBe(true);
-    const parkedP2pkh = {
-      to: Uint8Array.from([0x76, 0xa9, 0x14, ...Array(20).fill(0x71), 0x88, 0xac]),
-      amount: 1000n,
-      token: {
-        amount: 0n,
-        category: 'aabbccdd',
-        nft: { capability: 'none' as const, commitment: '5e1976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac0000' },
-      },
-    };
-    const parkedOutputs = Array.from({ length: 11 }, (_, index) => (
-      index === 10 ? parkedP2pkh : { to: Uint8Array.of(0x51), amount: 1000n }
-    ));
-    expect(repairJobEventDestLock(parkedOutputs, 10, publishEventLock)).toBe(true);
-    expect(parkedOutputs[10]?.to).toEqual(publishEventLock);
-    expect(parkedOutputs[10]?.token?.nft?.commitment?.startsWith('5e19')).toBe(true);
     expect(isJobEventEmitCommitment(
       '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000',
     )).toBe(true);
@@ -915,10 +1015,6 @@ describe('assignPhysicalReturnIndices', () => {
     expect(jobEventTypeOf([16, '', '', 0])).toBe(16);
     expect(jobEventTypeOf({ type_: 7n, address_: '', data_: '', timestamp_: 0n })).toBe(7);
     expect(encodeEmptyJobEventEmitCommitment(0, [7, '', '', 0])).toBe('0057000000');
-    const whitelistAddr = Uint8Array.from([0x76, 0xa9, 0x14, ...Array(20).fill(0x71), 0x88, 0xac]);
-    const whitelistCommit = encodeJobEventEmitCommitment(0n, [14, whitelistAddr, new Uint8Array(), 0]);
-    expect(whitelistCommit === undefined || whitelistCommit.startsWith('5e19')
-      || whitelistCommit.startsWith('005e')).toBe(true);
     expect(encodeEmptyJobEventEmitCommitment(0n, [16n, new Uint8Array(), new Uint8Array(), 0n]))
       .toBe('0060000000');
     expect(isJobEventEmitCommitment('0057000000')).toBe(false);
@@ -943,6 +1039,21 @@ describe('assignPhysicalReturnIndices', () => {
     })).toBe(true);
     expect(isOverwritableEmitOccupant({
       token: { nft: { capability: 'minting', commitment: '' } },
+    })).toBe(false);
+    expect(isMaterializedImmutableNftOutput({
+      token: { nft: { capability: 'none', commitment: '005e1976a91447d9fe52d462' } },
+    })).toBe(true);
+    expect(isMaterializedImmutableNftOutput({
+      token: { nft: { capability: 'none', commitment: hexToBin('005e1976a91447d9fe52d462') } },
+    })).toBe(true);
+    expect(isMaterializedImmutableNftOutput({
+      token: { nft: { capability: 'none', commitment: '00'.repeat(32) } },
+    })).toBe(false);
+    expect(isMaterializedImmutableNftOutput({
+      token: { nft: { capability: 'none', commitment: '5343494401' } },
+    })).toBe(false);
+    expect(isMaterializedImmutableNftOutput({
+      token: { nft: { capability: 'mutable', commitment: '005e1976a91447d9fe52d462' } },
     })).toBe(false);
     const mintingOutputs: Array<{
       to?: Uint8Array; amount?: bigint;
@@ -981,6 +1092,24 @@ describe('assignPhysicalReturnIndices', () => {
     expect(emitOutputs[19]?.token?.nft?.capability).toBe('none');
     expect(emitOutputs[19]?.token?.nft?.commitment).toBe('005e1976a91447d9fe52d462');
     expect(emitOutputs[20]?.token).toBeUndefined();
+    const consumedPredecessor = [{
+      to: Uint8Array.from([0xaa, 0x20]),
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'ee64',
+        nft: { capability: 'mutable', commitment: '11'.repeat(64) },
+      },
+    }];
+    expect(placePublishJobEventOutput(consumedPredecessor, 0, {
+      to: eventLock,
+      amount: 1200n,
+      token: { amount: 0n, category: 'ee64', nft: { capability: 'none', commitment: '005e1976a91447d9fe52d462' } },
+    }, {
+      consumedMutableOk: true,
+      destInput: { token: { nft: { capability: 'mutable' } } },
+    })).toBe(true);
+    expect(consumedPredecessor[0]?.token?.nft?.capability).toBe('none');
     emitOutputs[21] = {
       to: Uint8Array.from([0xaa, 0x22]),
       amount: 1200n,
@@ -1049,7 +1178,7 @@ describe('assignPhysicalReturnIndices', () => {
         nft: { capability: 'mutable', commitment: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
       },
     };
-    expect(relocateJobEventEmitToDest(parked, 22, { persistCloneOk: true })).toBe(true);
+    expect(relocateJobEventEmitToDest(parked, 22, { consumedMutableOk: true })).toBe(true);
     const versionEvent = {
       to: Uint8Array.from([0xaa, 0x20, 0x11]),
       amount: 1200n,
@@ -1145,8 +1274,22 @@ describe('assignPhysicalReturnIndices', () => {
       ...created,
       { commitment: '020047', lockingBytecode: lock },
     ];
-    expect(selectLatestJobEventsChunks(created, updated)).toHaveLength(3);
-    expect(selectLatestJobEventsChunks(updated, created)).toHaveLength(3);
+    expect(selectObservedValueChunkRun(created, updated)).toEqual(updated);
+    expect(selectObservedValueChunkRun(updated, created)).toEqual(created);
+    expect(selectObservedValueChunkRun(updated, [{
+      commitment: '00', lockingBytecode: lock,
+    }])).toEqual(updated);
+    const nextLock = new Uint8Array(lock);
+    nextLock[2] = 0x44;
+    const shortenedObservation = [
+      { commitment: '00004c', lockingBytecode: nextLock },
+      { commitment: '010000', lockingBytecode: nextLock },
+      // A stale suffix from the prior root is not a coherent run by itself.
+      { commitment: '020047', lockingBytecode: lock },
+    ];
+    expect(selectObservedValueChunkRun(updated, shortenedObservation)).toEqual(
+      shortenedObservation.slice(0, 2),
+    );
     const holeOutputs = Array.from({ length: 26 }, () => (
       { to: Uint8Array.of(0x76, 0xa9), amount: 1000n }
     ));
@@ -1277,16 +1420,9 @@ describe('assignPhysicalReturnIndices', () => {
       !output.token && (output.amount ?? 0n) >= 499_000n
     ))).toBe(true);
     expect(liveJobEventsBandWidth({ plannedWidth: 2, persistWidth: 3 })).toBe(3);
-    expect(persistUpdatePersistVWidth()).toBe(3);
-    expect(persistUpdateBandWidth({
-      persistReady: true, persistWidth: persistUpdatePersistVWidth(), plannedWidth: 5, derivedWidth: 5,
+    expect(liveJobEventsBandWidth({
+      plannedWidth: 2, persistWidth: 5, derivedWidth: 3,
     })).toBe(3);
-    expect(persistUpdateBandWidth({
-      persistReady: false, persistWidth: 0, plannedWidth: 5, derivedWidth: 2,
-    })).toBe(5);
-    expect(persistUpdateBandWidth({
-      persistReady: true, persistWidth: 0, plannedWidth: 2,
-    })).toBe(2);
     expect(computePublishJobEventsBand({
       implIndex: 18, blockSize: 5, plannedWidth: 2, insertShift: 1,
     })).toEqual({ start: 24, end: 25, nNew: 2 });
@@ -1297,199 +1433,6 @@ describe('assignPhysicalReturnIndices', () => {
       implIndex: 15, blockSize: 5, plannedWidth: 5, liveWidth: 0,
     })).toEqual({ start: 20, end: 24, nNew: 5 });
     expect(persistedJobEventsWidth('missing')).toBe(0);
-    expect(clampPersistBandBeforeJobsDest(
-      { start: 16, end: 19, nNew: 4 }, 21,
-    )).toEqual({ start: 16, end: 19, nNew: 4 });
-    expect(clampPersistBandBeforeJobsDest(
-      { start: 16, end: 20, nNew: 5 }, 21,
-    )).toEqual({ start: 16, end: 19, nNew: 4 });
-    expect(clampPersistBandBeforeJobsDest(
-      { start: 16, end: 21, nNew: 6 }, 21,
-    )).toEqual({ start: 16, end: 19, nNew: 4 });
-    const persistHead = 28;
-    const persistChunk = 126;
-    const fiveWide = new Uint8Array(persistHead + persistChunk * 5);
-    expect(capPersistValueToWidth(fiveWide, 4).byteLength).toBe(persistHead + persistChunk * 4);
-    expect(capPersistValueToWidth(fiveWide, 5).byteLength).toBe(fiveWide.byteLength);
-    expect(capReadyPersistValue(fiveWide).byteLength).toBe(fiveWide.byteLength);
-    expect(persistUpdatePlacementWidth({
-      persistReady: true, bandStart: 16, bandNNew: 5, jobsDest: 21,
-      placedChunks: 3, extractedValueChunks: 5,
-    })).toBe(4);
-    expect(persistUpdatePlacementWidth({
-      persistReady: true, bandStart: 16, bandNNew: 5, jobsDest: 21,
-      placedChunks: 4, extractedValueChunks: 22,
-    })).toBe(5);
-    expect(persistUpdatePlacementWidth({
-      persistReady: false, bandStart: 16, bandNNew: 5, jobsDest: 21,
-      placedChunks: 0, extractedValueChunks: 3,
-    })).toBe(5);
-    expect(persistLayoutWidth({ placedChunks: 3, extractedValueChunks: 5 })).toBe(4);
-    expect(persistLayoutWidth({ placedChunks: 3, extractedValueChunks: 3 })).toBe(3);
-    expect(persistLayoutWidth({ placedChunks: 0, extractedValueChunks: 5 })).toBe(5);
-    expect(persistLayoutWidth({ placedChunks: 4, extractedValueChunks: 22 })).toBe(5);
-    expect(jobsSuffixDest(11)).toBe(21);
-    expect(jobsSuffixDest()).toBe(-1);
-    const suffixLock = new Uint8Array(35);
-    suffixLock[0] = 0xaa; suffixLock[1] = 0x20; suffixLock[34] = 0x87;
-    const suffixOuts = Array.from({ length: 23 }, () => (
-      { to: Uint8Array.of(0x51), amount: 1000n } as {
-        to: Uint8Array;
-        amount: bigint;
-        token?: { category?: string; nft?: { capability?: string; commitment?: string } };
-      }
-    ));
-    suffixOuts[21] = {
-      to: suffixLock,
-      amount: 1200n,
-      token: { category: 'ft', nft: { capability: 'minting', commitment: '' } },
-    };
-    suffixOuts[22] = { to: Uint8Array.of(0x51), amount: 1000n };
-    const suffixJobsLock = new Uint8Array(35);
-    suffixJobsLock[0] = 0xaa; suffixJobsLock[1] = 0x20; suffixJobsLock[2] = 0xe6; suffixJobsLock[34] = 0x87;
-    expect(stampJobsSuffixLock(suffixOuts, 21, suffixJobsLock)).toBe(true);
-    expect(suffixOuts[21]?.to).toEqual(suffixJobsLock);
-    expect(suffixOuts[21]?.token?.nft?.capability).toBe('minting');
-    expect(suffixOuts[22]?.token).toBeUndefined();
-    const mintingLock = new Uint8Array(35);
-    mintingLock[0] = 0xaa; mintingLock[1] = 0x20; mintingLock[2] = 0xbd; mintingLock[34] = 0x87;
-    const dest1Lock = new Uint8Array(35);
-    dest1Lock[0] = 0xaa; dest1Lock[1] = 0x20; dest1Lock[2] = 0xf2; dest1Lock[34] = 0x87;
-    expect(selectJobsSuffixLock({
-      destInputLock: mintingLock,
-      destInputCapability: 'minting',
-      laterLocks: [dest1Lock, suffixJobsLock],
-      skipLockHexes: [binToHex(dest1Lock), binToHex(mintingLock)],
-    })).toEqual(suffixJobsLock);
-    expect(selectJobsSuffixLock({
-      derived: suffixJobsLock,
-      destInputLock: mintingLock,
-      destInputCapability: 'minting',
-      skipLockHexes: [binToHex(mintingLock)],
-    })).toEqual(suffixJobsLock);
-    expect(selectJobsSuffixLock({
-      derived: dest1Lock,
-      destInputLock: suffixJobsLock,
-      destInputCapability: 'mutable',
-      laterLocks: [dest1Lock],
-    })).toEqual(suffixJobsLock);
-    const wrongScidLock = new Uint8Array(35);
-    wrongScidLock[0] = 0xaa; wrongScidLock[1] = 0x20; wrongScidLock[2] = 0x0e; wrongScidLock[34] = 0x87;
-    const persistBlob = `510023${binToHex(suffixJobsLock)}0002f000076469676974616c`;
-    expect(extractEmbeddedP2sh32Locks(persistBlob)).toEqual([suffixJobsLock]);
-    expect(selectJobsSuffixLock({
-      destInputLock: mintingLock,
-      destInputCapability: 'minting',
-      derived: wrongScidLock,
-      laterLocks: [wrongScidLock],
-      embeddedLocks: extractEmbeddedP2sh32Locks(persistBlob),
-      skipLockHexes: [binToHex(mintingLock)],
-    })).toEqual(suffixJobsLock);
-    expect(selectJobsSuffixExpectedLock({
-      below: mintingLock,
-      top: suffixJobsLock,
-      actualHex: binToHex(mintingLock),
-      skipLockHexes: [binToHex(mintingLock)],
-    })).toEqual(suffixJobsLock);
-    expect(selectJobsSuffixExpectedLock({
-      below: mintingLock,
-      top: suffixJobsLock,
-      actualHex: binToHex(wrongScidLock),
-      skipLockHexes: [binToHex(mintingLock)],
-    })).toEqual(suffixJobsLock);
-    expect(selectJobsSuffixLock({
-      destInputLock: mintingLock,
-      destInputCapability: 'minting',
-      cached: suffixJobsLock,
-      laterLocks: [wrongScidLock],
-      skipLockHexes: [binToHex(mintingLock)],
-    })).toEqual(suffixJobsLock);
-    const nonce4Lock = new Uint8Array(35);
-    nonce4Lock[0] = 0xaa; nonce4Lock[1] = 0x20; nonce4Lock[2] = 0x08; nonce4Lock[34] = 0x87;
-    expect(selectJobsSuffixLock({
-      destInputLock: suffixJobsLock,
-      destInputCapability: 'minting',
-      cached: suffixJobsLock,
-      laterLocks: [nonce4Lock],
-      embeddedLocks: extractEmbeddedP2sh32Locks(persistBlob),
-      skipLockHexes: [binToHex(nonce4Lock)],
-    })).toEqual(suffixJobsLock);
-    expect(selectJobsSuffixLock({
-      destInputLock: nonce4Lock,
-      destInputCapability: 'minting',
-      cached: nonce4Lock,
-      laterLocks: [nonce4Lock],
-      embeddedLocks: [nonce4Lock, suffixJobsLock],
-      skipLockHexes: [binToHex(nonce4Lock)],
-    })).toEqual(suffixJobsLock);
-    const mintingInput = {
-      token: { nft: { capability: 'minting' as const } },
-      unlocker: {
-        generateLockingBytecode: () => mintingLock,
-        generateUnlockingBytecode: () => Uint8Array.of(0x00),
-      },
-    };
-    const suffixInputs = Array.from({ length: 22 }, () => ({ ...mintingInput }));
-    const jobsUnlocker = {
-      generateLockingBytecode: () => suffixJobsLock,
-      generateUnlockingBytecode: () => Uint8Array.of(0x51),
-    };
-    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(true);
-    expect(suffixInputs[21]?.unlocker.generateUnlockingBytecode({} as never)).toEqual(Uint8Array.of(0x00));
-    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock, jobsUnlocker)).toBe(true);
-    expect(suffixInputs[21]?.unlocker.generateLockingBytecode()).toEqual(suffixJobsLock);
-    expect(suffixInputs[21]?.unlocker.generateUnlockingBytecode({} as never)).toEqual(Uint8Array.of(0x51));
-    expect(pinJobsSuffixInput(suffixInputs, 21, suffixJobsLock)).toBe(false);
-    const persistVLock = new Uint8Array(35);
-    persistVLock[0] = 0xaa; persistVLock[1] = 0x20; persistVLock[2] = 0xb2; persistVLock[34] = 0x87;
-    const persistBandInputs = Array.from({ length: 22 }, (_, index) => ({
-      token: index === 16
-        ? { nft: { capability: 'mutable' as const, commitment: '00004cb4200043720000' } }
-        : { nft: { capability: 'minting' as const, commitment: '' } },
-      unlocker: {
-        generateLockingBytecode: () => (index === 16 ? persistVLock : mintingLock),
-        generateUnlockingBytecode: () => Uint8Array.of(0x51),
-      },
-    }));
-    expect(pinJobsSuffixInput(persistBandInputs, 16, suffixJobsLock, jobsUnlocker)).toBe(false);
-    expect(persistBandInputs[16]?.unlocker.generateLockingBytecode()).toEqual(persistVLock);
-    expect(pinJobsSuffixInput(persistBandInputs, 21, suffixJobsLock, jobsUnlocker)).toBe(true);
-    expect(persistBandInputs[21]?.unlocker.generateLockingBytecode()).toEqual(suffixJobsLock);
-    const jobsCategory = 'e5459449dc4974d6d01bfea4bec0a2d483fb767d503f53776cb2403a608891b8';
-    const scidLock = new Uint8Array(35);
-    scidLock[0] = 0xaa; scidLock[1] = 0x20; scidLock[2] = 0x0e; scidLock[3] = 0xe7; scidLock[34] = 0x87;
-    const jobsPinUtxo = {
-      txid: 'aa'.repeat(32),
-      vout: 21,
-      satoshis: 1200n,
-      token: { category: jobsCategory, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-      lockingBytecode: suffixJobsLock,
-    };
-    const destInputs = Array.from({ length: 22 }, (_, index) => ({
-      txid: index === 21 ? 'bb'.repeat(32) : 'cc'.repeat(32),
-      vout: index,
-      satoshis: 1200n,
-      token: { category: jobsCategory, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
-      lockingBytecode: index === 21 ? scidLock : mintingLock,
-    }));
-    expect(retargetMintingInputToJobsPin(destInputs, 21, suffixJobsLock, [jobsPinUtxo])).toBe(true);
-    expect(destInputs[21]?.txid).toBe(jobsPinUtxo.txid);
-    expect(destInputs[21]?.vout).toBe(21);
-    expect(selectJobsSuffixCategory({
-      below: hexToBin(`${jobsCategory}02`),
-      top: new Uint8Array(),
-    })).toBe(jobsCategory);
-    expect(jobsSuffixFungibleToken(jobsCategory)).toEqual({ amount: 0n, category: jobsCategory });
-    expect(stampJobsSuffixLock(
-      suffixOuts, 21, suffixJobsLock, jobsSuffixFungibleToken(jobsCategory),
-    )).toBe(true);
-    expect(suffixOuts[21]?.to).toEqual(suffixJobsLock);
-    expect(suffixOuts[21]?.token).toEqual({ amount: 0n, category: jobsCategory });
-    expect(suffixOuts[21]?.token?.nft).toBeUndefined();
-    expect(suffixOuts[22]?.token?.nft?.capability).toBe('minting');
-    expect(stampJobsSuffixLock(
-      suffixOuts, 21, suffixJobsLock, jobsSuffixFungibleToken(jobsCategory),
-    )).toBe(false);
     expect(computePublishJobEventsBand({
       implIndex: 15, blockSize: 5, jobEventsCount: 4,
     })).toEqual({ start: 20, end: 23, nNew: 4 });
@@ -1503,25 +1446,6 @@ describe('assignPhysicalReturnIndices', () => {
       to: new Uint8Array(35),
       token: { nft: { capability: 'none', commitment: '534349440105' } },
     })).toBe(false);
-    const livePersistVLock = new Uint8Array(35);
-    livePersistVLock[0] = 0xaa; livePersistVLock[1] = 0x20; livePersistVLock[2] = 0x89; livePersistVLock[34] = 0x87;
-    const derivedLock = new Uint8Array(35);
-    derivedLock[0] = 0xaa; derivedLock[1] = 0x20; derivedLock[2] = 0x61; derivedLock[34] = 0x87;
-    const digestLock = new Uint8Array(35);
-    digestLock[0] = 0xaa; digestLock[1] = 0x20; digestLock[2] = 0xb2; digestLock[34] = 0x87;
-    expect(selectPersistChunkLock({
-      digestLock,
-      predecessorLocks: [
-        { lock: digestLock, commitment: 'e3b0c44298fc1c14' },
-        { lock: livePersistVLock, commitment: '00004cb42000437265617465' },
-      ],
-      fallback: derivedLock,
-    })).toEqual(livePersistVLock);
-    expect(selectPersistChunkLock({
-      digestLock,
-      predecessorLocks: [{ lock: digestLock, commitment: 'e3b0c44298fc1c14' }],
-      fallback: derivedLock,
-    })).toEqual(derivedLock);
   });
 
   it('strips extra value-chunk locks past the planned nNew band', () => {
@@ -1578,9 +1502,6 @@ describe('assignPhysicalReturnIndices', () => {
   it('rematerializes persist UPDATE only for empty-address dest, not Created or Whitelisted', () => {
     expect(isWithdrawShapedJobEvent([16, '', '', 0])).toBe(true);
     expect(isWithdrawShapedJobEvent([7, '', '', 0])).toBe(true);
-    expect(isPersistReplayJobEvent([7, '', '', 0])).toBe(true);
-    expect(isPersistReplayJobEvent([16, '', '', 0])).toBe(true);
-    expect(isPersistReplayJobEvent([3, '', '', 0])).toBe(false);
     expect(isWithdrawShapedJobEvent([0, '76a914', '', 0])).toBe(false);
     expect(isWithdrawShapedJobEvent({ type_: 15, address_: '76a914', data_: '', timestamp_: 0 })).toBe(false);
     expect(shouldRematerializePersistUpdate({
@@ -1604,7 +1525,6 @@ describe('assignPhysicalReturnIndices', () => {
     expect(isPersistValueChunkCommitment('0023aa20083560b686fab28b')).toBe(false);
     expect(isPersistValueChunkCommitment('0000000000')).toBe(false);
     expect(persistValueChunkBase(15)).toBe(20);
-    expect(persistValueChunkBase(15, 5, true)).toBe(18);
     expect(persistValueChunkBase(18, 5)).toBe(23);
     expect(persistValueChunkBase(-1)).toBe(-1);
     expect(shouldKeepPersistAtLayoutBase({
@@ -1618,128 +1538,15 @@ describe('assignPhysicalReturnIndices', () => {
     expect(persistPredecessorPlaceCount(3, 5, true)).toBe(3);
     expect(persistPredecessorPlaceCount(2, 5, false)).toBe(5);
     expect(persistPredecessorPlaceCount(0, 2, true)).toBe(0);
-    const p2pkh = Uint8Array.from([0x76, 0xa9, 0x14, ...Array(20).fill(0x71), 0x88, 0xac]);
-    const digest = hexToBin('aa2047362c5b4a0c597c12b75c90f68f6933b2e86c63eb6ce7ed46e083407361b7b587');
-    const padded = Array.from({ length: 17 }, () => ({ to: p2pkh, amount: 1000n }));
-    expect(pinPersistDigestLock(padded, 16, digest)).toBe(true);
-    expect(padded[16]?.to).toEqual(digest);
-    expect(padded[16]?.amount).toBe(1200n);
-    const padUnlocker = {
-      generateLockingBytecode: () => p2pkh,
-      generateUnlockingBytecode: () => new Uint8Array(),
-    };
-    const persistUnlocker = {
-      generateLockingBytecode: () => digest,
-      generateUnlockingBytecode: () => new Uint8Array(),
-    };
-    const persistInputs = [
-      ...Array.from({ length: 16 }, () => ({ unlocker: padUnlocker })),
-      { unlocker: padUnlocker },
-      { unlocker: padUnlocker },
-      {
-        unlocker: persistUnlocker,
-        token: { nft: { capability: 'mutable' as const, commitment: `e3b0c442${'00'.repeat(32)}` } },
-      },
-    ];
-    expect(pinPersistDigestInput(persistInputs, 16, digest)).toBe(true);
-    expect(persistInputs[16]?.unlocker.generateLockingBytecode()).toEqual(digest);
-    expect(String(persistInputs[16]?.token?.nft?.commitment ?? '').startsWith('e3b0c442')).toBe(true);
-    expect(persistInputs[18]?.unlocker.generateLockingBytecode()).toEqual(p2pkh);
-    expect(pinPersistDigestInput(persistInputs, 16, digest)).toBe(false);
-    const otherLock = Uint8Array.from([0xaa, 0x20, ...Array(32).fill(0x11), 0x87]);
-    const nativeEntry = [
-      ...Array.from({ length: 16 }, () => ({ unlocker: padUnlocker })),
-      { unlocker: padUnlocker },
-      { unlocker: padUnlocker },
-      {
-        unlocker: {
-          generateLockingBytecode: () => otherLock,
-          generateUnlockingBytecode: () => new Uint8Array(),
-        },
-        token: { nft: { capability: 'mutable' as const, commitment: `e3b0c442${'00'.repeat(32)}` } },
-      },
-    ];
-    expect(pinPersistDigestInput(nativeEntry, 16, digest)).toBe(false);
-    expect(nativeEntry[16]?.unlocker.generateLockingBytecode()).toEqual(p2pkh);
-    expect(nativeEntry[18]?.unlocker.generateLockingBytecode()).toEqual(otherLock);
-    expect(persistDigestLockDests(13)).toEqual([16, 18]);
-    expect(persistDigestLockDests(14)).toEqual([17, 19]);
-    expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 18 })).toEqual([16, 17, 18]);
-    expect(persistChunkOutputDests({ implIndex: 13, bandStart: 18, bandEnd: 19 })).toEqual([18, 19]);
-    expect(persistChunkOutputDests({ implIndex: 3, bandStart: 1, bandEnd: 5 })).toEqual([8]);
-    expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 20 })).toEqual([16, 17, 18, 19, 20]);
-    expect(persistChunkOutputDests({
-      implIndex: 11, bandStart: 16, bandEnd: 20, persistWidth: 3,
-    })).toEqual([16, 17, 18]);
-    expect(surplusPersistDigestDests({
-      entryDest: 14,
-      persistDests: [16, 17, 18],
-      destLocks: [
-        { dest: 14, lock: 'aa2047362c5b4a0c597c' },
-        { dest: 16, lock: 'aa20a8ff6e94d0a3199b' },
-        { dest: 19, lock: 'aa2047362c5b4a0c597c' },
-      ],
-      digestLock: 'aa2047362c5b4a0c597c',
-    })).toEqual([19]);
-    expect(persistChunkOutputDests({ implIndex: 11, bandStart: 1, bandEnd: 5 })).not.toContain(1);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: true, bandStart: 20, nNew: 3,
-    })).toEqual([18, 20]);
+    })).toEqual([20, 21, 22]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: true, keepAtLayout: false, bandStart: 25, nNew: 2,
-    })).toEqual([18, 25, 26, 20]);
-    expect(persistUpdatePredecessorDests({
-      implIndex: 13, persistUpdate: true, keepAtLayout: false, bandStart: 18, nNew: 2,
-    })).toEqual([16, 18, 19]);
-    expect(persistUpdatePredecessorDests({
-      implIndex: 14, persistUpdate: true, keepAtLayout: false, bandStart: 18, nNew: 2,
-    })).toEqual([17, 19]);
-    expect(persistUpdatePredecessorDests({
-      implIndex: 11, persistUpdate: true, keepAtLayout: false, bandStart: 14, nNew: 3,
-    })).toEqual([14, 16]);
-    expect(persistUpdatePredecessorDests({
-      implIndex: 11, persistUpdate: true, keepAtLayout: false, bandStart: 1, nNew: 3,
-    })).toEqual([14, 16]);
+    })).toEqual([25, 26]);
     expect(persistUpdatePredecessorDests({
       implIndex: 15, persistUpdate: false, keepAtLayout: false, bandStart: 20, nNew: 2,
     })).toEqual([20, 21]);
-    expect(binToHex(recoverPersistValueFromOutputs([
-      { token: { nft: { commitment: '00004142' } } },
-      { token: { nft: { commitment: '01004344' } } },
-    ], [0, 1]) ?? new Uint8Array())).toBe('41424344');
-    const persistHead = utf8ToBin('Create a marketplace in solidity');
-    const entryCommit = persistUpdateEntryCommitment(persistHead);
-    expect(entryCommit).toBeDefined();
-    expect(entryCommit!.startsWith('e3b0c442')).toBe(true);
-    expect(entryCommit!.slice(64, 128)).toBe('00'.repeat(32));
-    expect(entryCommit!.slice(128)).toBe(binToHex(persistHead.slice(0, 28)));
-    const forced = [{
-      to: hexToBin('aa207bfacc17406829dd9ccc78306f099dc6905493f8c1d567e8c832bc8c1a05723b87'),
-      amount: 1200n,
-      token: { nft: { capability: 'none' as const, commitment: '005e1976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac0000' } },
-    }];
-    const proxyEventLock = Uint8Array.from([0xaa, 0x20, ...Array(32).fill(0x12), 0x87]);
-    expect(repairJobEventDestLock(forced, 0, proxyEventLock)).toBe(false);
-    expect(repairJobEventDestLock(forced, 0, proxyEventLock, true)).toBe(true);
-    expect(forced[0]?.to).toEqual(proxyEventLock);
-    expect(selectPublishJobEventInputIndex({
-      namedUnlockers: [13], llcMasters: [6, 13], persistReady: true, firstPublish: false,
-    })).toBe(13);
-    expect(selectPublishJobEventInputIndex({
-      namedUnlockers: [13], llcMasters: [6, 13], persistReady: false, firstPublish: true,
-    })).toBe(6);
-    expect(selectPublishJobEventInputIndex({
-      namedUnlockers: [13], llcMasters: [6], persistReady: false, firstPublish: false,
-    })).toBe(6);
-    expect(selectPublishJobEventInputIndex({
-      namedUnlockers: [], llcMasters: [6], implMintingInputs: [13], persistReady: true, firstPublish: false,
-    })).toBe(13);
-    expect(selectPublishJobEventInputIndex({
-      namedUnlockers: [], llcMasters: [6, 13], persistReady: true, firstPublish: false,
-    })).toBe(13);
-    expect(selectPublishJobEventInputIndex({
-      namedUnlockers: [], llcMasters: [6], persistReady: true, firstPublish: false,
-    })).toBe(6);
     expect(persistOccupantDisplaceable({
       occupantIsPad: true, persistUpdate: true, keepAtLayout: true, occupantCapability: 'minting',
     })).toBe(true);
@@ -1782,11 +1589,11 @@ describe('assignPhysicalReturnIndices', () => {
     ], false).map((item) => String(item.token?.nft?.commitment ?? '').slice(0, 8))).toEqual([
       '00004cb4', 'e3b0c442',
     ]);
-    expect(persistPredecessorWantedRank(18, 15)).toBe(0);
-    expect(persistPredecessorWantedRank(20, 15)).toBe(10);
-    expect(persistPredecessorWantedRank(19, 15)).toBe(11);
+    expect(persistPredecessorWantedRank(20, 15)).toBe(0);
+    expect(persistPredecessorWantedRank(21, 15)).toBe(10);
+    expect(persistPredecessorWantedRank(22, 15)).toBe(11);
     expect(assignPersistPredecessors(
-      [18, 19, 20],
+      [20, 21, 22],
       [
         { token: { nft: { commitment: '00004cb42000437265617465' } } },
         { token: { nft: { commitment: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85500000000' } } },
@@ -1795,7 +1602,7 @@ describe('assignPhysicalReturnIndices', () => {
       15,
       true,
     ).map((item) => `${item.dest}:${String(item.candidate.token?.nft?.commitment ?? '').slice(0, 8)}`)).toEqual([
-      '18:e3b0c442', '19:01000000', '20:00004cb4',
+      '20:e3b0c442', '21:00004cb4', '22:01000000',
     ]);
     expect(syncBuilderInputsFromAllInputs(
       [{ id: 'ft' }, { id: 'pad' }, { id: 'sidecar' }],
@@ -1839,64 +1646,13 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(computedPersistLock ?? new Uint8Array())).not.toBe(
       binToHex(p2sh32LockFromValueRoot(sha256Sync(persistV))),
     );
-    const persistCategory = 'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0';
-    expect(matchingValueChunkUnlockerParts(computedPersistLock!, {
-      categoryIds: [persistCategory],
-      persistValues: [persistV],
-    })).toEqual({
-      categoryId: persistCategory,
-      collection: expect.stringContaining('jobEvents'),
-      slot: expect.any(Uint8Array),
-      root: sha256Sync(persistV),
-    });
-    const tokenOwner = '3770ad41c0ffee00000000000000000000000000000000000000000000000001';
-    const tokenCategory = 'e5459449dc4974d6d01bfea4bec0a2d483fb767d503f53776cb2403a608891b8';
-    const tokenContainerLock = getTokenContainerLockingBytecode(tokenOwner, tokenCategory);
-    expect(tokenContainerLock.length).toBe(35);
-    expect(matchingTokenContainerUnlockerParts(tokenContainerLock, {
-      ownerCategoryIds: [persistCategory, tokenOwner],
-      tokenCategoryIds: [tokenCategory],
-    })).toEqual({ ownerCategoryId: tokenOwner, tokenCategoryId: tokenCategory });
-    expect(matchingTokenContainerUnlockerParts(computedPersistLock!, {
-      ownerCategoryIds: [tokenOwner],
-      tokenCategoryIds: [tokenCategory],
-    })).toBeUndefined();
-    expect(matchingDataNftUnlockerParts(getDataNftLockingBytecode(tokenOwner), [tokenOwner])).toBe(tokenOwner);
-    expect(matchingDataNftUnlockerParts(tokenContainerLock, [tokenOwner])).toBeUndefined();
-    const deployerPkh = hexToBin('71782e8159265ed94bd35b8e699c08f53a6f38c6');
-    const deployerLock = Uint8Array.from([0x76, 0xa9, 0x14, ...deployerPkh, 0x88, 0xac]);
-    const deployerAddress = encodeCashAddress({
-      prefix: 'bchtest', type: 'p2pkh', payload: deployerPkh, throwErrors: true,
-    }).address;
-    const identityNonce = 7n;
-    const identityUnlocker = createLogicalIdentityUnlocker(deployerAddress, identityNonce);
-    const identityLock = identityUnlocker.generateLockingBytecode();
-    const scid = encodeLogicalIdentityCommitment({
-      deployerLockingBytecode: deployerLock,
-      nonce: identityNonce,
-      rootLockingBytecode: identityLock,
-    });
-    expect(matchingLogicalIdentityFromCommitments(identityLock, [scid])).toEqual({
-      deployer: expect.stringContaining('bchtest:'),
-      nonce: identityNonce,
-    });
-    expect(matchingLogicalIdentityFromCommitments(tokenContainerLock, [scid])).toBeUndefined();
-    expect(matchingLogicalIdentityNearby(identityLock, [deployerAddress])).toEqual({
-      deployer: deployerAddress,
-      nonce: identityNonce,
-    });
-    expect(matchingLogicalIdentityNearby(tokenContainerLock, [deployerAddress])).toBeUndefined();
-    expect(parseLogicalIdentitySeed(identityUnlocker.generateUnlockingBytecode({} as never))).toEqual({
-      deployer: deployerAddress,
-      nonce: identityNonce,
-    });
     expect(isJobEventEmitCommitment('005f1976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac0000')).toBe(true);
     expect(isOverwritableEmitOccupant({
       token: { nft: { capability: 'mutable', commitment: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } },
     })).toBe(false);
     expect(isOverwritableEmitOccupant({
       token: { nft: { capability: 'mutable', commitment: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } },
-    }, { persistCloneOk: true })).toBe(true);
+    }, { consumedMutableOk: true })).toBe(true);
   });
 
   it('encodes CollateralWithdrawn with the stamped timestamp the impl EQUALVERIFYs', () => {
@@ -1960,6 +1716,26 @@ describe('assignPhysicalReturnIndices', () => {
     expect(start >= chunkBase && start < chunkBase + nNew).toBe(true);
     expect(mintingSwapShift(start, chunkBase, nNew)).toBe(4);
     expect(start + mintingSwapShift(start, chunkBase, nNew)).toBe(28);
+  });
+
+  it('places append-only continuations before an authenticated reverse suffix', () => {
+    expect(continuationOutputBaseBeforeSuffix(25, 0)).toBe(25);
+    // One authenticated output and its terminal anchor occupy [23, 25).
+    expect(continuationOutputBaseBeforeSuffix(25, 1)).toBe(23);
+    expect(continuationOutputBaseBeforeSuffix(25, 6)).toBe(18);
+  });
+
+  it('reuses a planner-owned value-chunk band before allocating an append-only run', () => {
+    expect(selectValueChunkOutputBase({
+      plannedBandStart: 17,
+      usesPlannedBand: true,
+      fallbackBase: 21,
+    })).toBe(17);
+    expect(selectValueChunkOutputBase({
+      plannedBandStart: 17,
+      usesPlannedBand: false,
+      fallbackBase: 21,
+    })).toBe(21);
   });
 
   it('does not treat OP_TRUE none-cap view tails as colliding writers', () => {
@@ -2074,14 +1850,20 @@ describe('assignPhysicalReturnIndices', () => {
   });
 
   it('folds shared jobEvents nNew onto the physical owner group', () => {
-    const byOwner = liveChunkSlotsByOwner([
+    const groups = [
       { functionName: '__forward', valueChunkOutputCount: 0 },
       { functionName: 'publishJobEvent', sharedGroupIndex: 0, valueChunkOutputCount: 8 },
       { functionName: 'transferFrom', valueChunkOutputCount: 3 },
-    ]);
+      { functionName: 'unrelatedWrite', valueChunkOutputCount: 12 },
+    ];
+    const byOwner = liveChunkSlotsByOwner(groups);
     expect(byOwner.get(0)).toBe(8);
     expect(byOwner.has(1)).toBe(false);
     expect(byOwner.has(2)).toBe(false);
+    expect(byOwner.get(3)).toBe(12);
+    expect(liveChunkWidthForGroup(groups, 1)).toBe(8);
+    expect(liveChunkWidthForGroup(groups, 3)).toBe(12);
+    expect(liveChunkWidthForGroup(groups, -1)).toBe(0);
   });
 
   it('reserves proxy pads so FakeToken starts after the live jobEvents band', () => {
@@ -2091,18 +1873,15 @@ describe('assignPhysicalReturnIndices', () => {
     expect(proxyValueChunkPadCount({ insertBase: 5, chunkSlots: 1, prefixLength: 8 })).toBe(0);
   });
 
-  it('reserves extra real funders when jobEvents is wider than the 4-wide rotate', () => {
-    expect(mintingSwapExtraFunders({
-      hasTokenWriter: true, hasPublishJobEvent: true, predictedBandWidth: 6,
-    })).toBe(2);
-    expect(mintingSwapExtraFunders({
-      hasTokenWriter: true, hasPublishJobEvent: true, predictedBandWidth: 4,
-    })).toBe(0);
-    expect(mintingSwapExtraFunders({
-      hasTokenWriter: true, hasPublishJobEvent: true, predictedBandWidth: 2, minShift: 5,
+  it('reserves the shift and complete post-relocation participant span', () => {
+    expect(participantRelocationExtraFunders({
+      active: true, requiredShift: 2, participantPadding: 3,
     })).toBe(5);
-    expect(mintingSwapExtraFunders({
-      hasTokenWriter: false, hasPublishJobEvent: true, predictedBandWidth: 6,
+    expect(participantRelocationExtraFunders({
+      active: true, requiredShift: 0, participantPadding: 3,
+    })).toBe(3);
+    expect(participantRelocationExtraFunders({
+      active: false, requiredShift: 6, participantPadding: 3,
     })).toBe(0);
   });
 
@@ -2111,29 +1890,127 @@ describe('assignPhysicalReturnIndices', () => {
     expect(chooseMintingSwapShift(5, 5)).toBe(5);
     expect(chooseMintingSwapShift(6, 5)).toBe(5);
     expect(chooseMintingSwapShift(4, 6)).toBe(0);
+    expect(chooseParticipantRelocationShift(4, 1, 4)).toBe(0);
+    expect(chooseParticipantRelocationShift(8, 1, 4)).toBe(4);
+    expect(chooseParticipantRelocationShift(6, 2, 4)).toBe(2);
     expect(isEmptyValueChunkCommitment('050000000000000000000000')).toBe(true);
     expect(isEmptyValueChunkCommitment('00004cb42000437265617465')).toBe(false);
   });
 
-  it('treats a fused zero seed as unset for state-writing bool returns', () => {
-    expect(tokenWriterReturnCommitment({
+  it('canonicalizes writer bool returns according to their declared ABI framing', () => {
+    expect(canonicalWriterReturnCommitment({
       pendingHex: '00', writesState: true, evmBool: true, returnsBool: true,
     })).toBe(`${'00'.repeat(31)}01`);
-    expect(tokenWriterReturnCommitment({
+    expect(canonicalWriterReturnCommitment({
       pendingHex: '00', writesState: true, evmBool: false, returnsBool: true,
-    })).toBe('01');
-    expect(tokenWriterReturnCommitment({
+    })).toBe('51');
+    expect(canonicalWriterReturnCommitment({
       pendingHex: '', writesState: true, evmBool: false, returnsBool: true,
-    })).toBe('01');
-    expect(tokenWriterReturnCommitment({
+    })).toBe('51');
+    expect(canonicalWriterReturnCommitment({
+      pendingHex: '01', writesState: true, evmBool: false, returnsBool: true,
+    })).toBe('51');
+    expect(canonicalWriterReturnCommitment({
       pendingHex: `${'00'.repeat(32)}`, writesState: true, evmBool: true, returnsBool: true,
     })).toBe(`${'00'.repeat(31)}01`);
-    expect(tokenWriterReturnCommitment({
+    expect(canonicalWriterReturnCommitment({
       pendingHex: `${'00'.repeat(31)}00`, writesState: false, evmBool: true, returnsBool: true,
     })).toBe(`${'00'.repeat(31)}00`);
-    expect(tokenWriterReturnCommitment({
+    expect(canonicalWriterReturnCommitment({
       pendingHex: `${'00'.repeat(31)}01`, writesState: true, evmBool: true, returnsBool: true,
     })).toBe(`${'00'.repeat(31)}01`);
+  });
+
+  it('ranks return observations by authentication, not commitment byte length', () => {
+    expect(shouldReplaceReturnEventCommitment(true, false)).toBe(true);
+    expect(shouldReplaceReturnEventCommitment(false, true)).toBe(false);
+    expect(shouldReplaceReturnEventCommitment(false, false)).toBe(true);
+    expect(shouldReplaceReturnEventCommitment(true, true)).toBe(true);
+  });
+
+  it('recognizes only exact mutable NFT duplicates when reclaiming a return slot', () => {
+    const lock = Uint8Array.of(0xaa, 0x20, 0x01, 0x87);
+    const otherLock = Uint8Array.of(0xaa, 0x20, 0x02, 0x87);
+    const outputs = [
+      { to: lock, token: { category: 'owner', nft: { capability: 'mutable', commitment: 'abcd' } } },
+      { to: lock.slice(), token: { category: 'owner', nft: { capability: 'mutable', commitment: 'abcd' } } },
+      { to: lock, token: { category: 'owner', nft: { capability: 'mutable', commitment: 'abce' } } },
+      { to: otherLock, token: { category: 'owner', nft: { capability: 'mutable', commitment: 'abcd' } } },
+    ];
+    expect(hasEquivalentMutableNftOutput(outputs, 0)).toBe(true);
+    expect(hasEquivalentMutableNftOutput(outputs, 2)).toBe(false);
+    expect(hasEquivalentMutableNftOutput(outputs, 3)).toBe(false);
+    expect(stripRelocatedMutableDuplicates(outputs, [{
+      token: { category: 'owner', nft: { capability: 'mutable' } },
+      unlocker: { generateLockingBytecode: () => lock },
+    }], 1)).toBe(1);
+    expect(outputs[1].token).toBeUndefined();
+    expect(outputs[2].token?.nft?.commitment).toBe('abce');
+    expect(outputs[3].token?.nft?.commitment).toBe('abcd');
+  });
+
+  it('removes relocated mutable copies before their canonical coordinate without merging canonical inputs', () => {
+    const lock = Uint8Array.of(0xaa, 0x20, 0x01, 0x87);
+    const token = { category: 'owner', nft: { capability: 'mutable', commitment: 'abcd' } };
+    const outputs = [
+      { to: lock.slice(), amount: 1000n, token },
+      { to: lock.slice(), amount: 1000n, token },
+      { to: lock.slice(), amount: 1000n, token },
+    ];
+    const inputs = [
+      { token: { category: 'other', nft: { capability: 'mutable' } },
+        unlocker: { generateLockingBytecode: () => lock } },
+      { token: { category: 'owner', nft: { capability: 'mutable' } },
+        unlocker: { generateLockingBytecode: () => lock } },
+      { token: { category: 'owner', nft: { capability: 'mutable' } },
+        unlocker: { generateLockingBytecode: () => lock } },
+    ];
+
+    expect(stripRelocatedMutableDuplicates(outputs, inputs, 0)).toBe(1);
+    expect(outputs[0].token).toBeUndefined();
+    expect(outputs[1].token?.nft?.commitment).toBe('abcd');
+    expect(outputs[2].token?.nft?.commitment).toBe('abcd');
+  });
+
+  it('restores read-only mutable twins to their authenticated input coordinates', () => {
+    const lock = Uint8Array.of(0xaa, 0x20, 0x01, 0x87);
+    const first = {
+      txid: '11'.repeat(32), vout: 0, satoshis: 1200n,
+      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment: '00aa' } },
+      unlocker: { generateLockingBytecode: () => lock },
+    };
+    const second = {
+      txid: '22'.repeat(32), vout: 1, satoshis: 1200n,
+      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment: '01bb' } },
+      unlocker: { generateLockingBytecode: () => lock },
+    };
+    const outputs = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: lock, amount: 1200n, token: second.token },
+    ];
+
+    expect(reassertReadOnlyMutableOneToOnes(outputs, [first, second], [first, second])).toBe(2);
+    expect(outputs[0].token?.nft?.commitment).toBe('00aa');
+    expect(outputs[1].token?.nft?.commitment).toBe('01bb');
+    expect(outputs[2].token).toBeUndefined();
+  });
+
+  it('does not overwrite a conflicting owned output without a relocated twin', () => {
+    const lock = Uint8Array.of(0xaa, 0x20, 0x01, 0x87);
+    const input = {
+      txid: '33'.repeat(32), vout: 0, satoshis: 1200n,
+      token: { amount: 0n, category: 'owner', nft: { capability: 'mutable' as const, commitment: '00aa' } },
+      unlocker: { generateLockingBytecode: () => lock },
+    };
+    const output = {
+      to: Uint8Array.of(0xaa, 0x20, 0x02, 0x87), amount: 1200n,
+      token: { amount: 0n, category: 'other', nft: { capability: 'mutable' as const, commitment: 'beef' } },
+    };
+    const outputs = [output];
+
+    expect(reassertReadOnlyMutableOneToOnes(outputs, [input], [input])).toBe(0);
+    expect(outputs[0]).toBe(output);
   });
 
   it('places the extraTransfer return at the post-rotate minting master', () => {
@@ -2339,74 +2216,6 @@ describe('assignPhysicalReturnIndices', () => {
     expect(isDataNftIndexCommitment('0023aa20083560b686fab28b272d2ba1f04128f0af805ff4a827d666730629ff')).toBe(true);
     expect(isDataNftIndexCommitment('5121000000000000000000000000000000000000000000000000000000000000000000')).toBe(true);
     expect(isDataNftIndexCommitment('00'.repeat(32))).toBe(false);
-    // SCID starts with `53` so it still classifies as a data-NFT tag; closeJob
-    // relies on that reservation. Updated dest 19 uses persistChunkMayOverwriteScid.
-    expect(isDataNftIndexCommitment('534349440105000000000000001976a91471')).toBe(true);
-  });
-
-  it('places persist chunk 3 over a dest-19 SCID occupant', () => {
-    const lock = new Uint8Array(35);
-    lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
-    const outputs = Array.from({ length: 21 }, () => (
-      { to: Uint8Array.of(0x51), amount: 1000n } as {
-        to: Uint8Array;
-        amount: bigint;
-        token?: { category?: string; nft?: { capability?: string; commitment?: string } };
-      }
-    ));
-    outputs[19] = {
-      to: lock,
-      amount: 1200n,
-      token: { category: 'id', nft: { capability: 'none', commitment: '5343494401050000' } },
-    };
-    const persist = [
-      { commitment: `00004cb4${'11'.repeat(20)}`, lockingBytecode: lock, categoryId: 'md' },
-      { commitment: `01000000${'22'.repeat(20)}`, lockingBytecode: lock, categoryId: 'md' },
-      { commitment: `02004755${'33'.repeat(20)}`, lockingBytecode: lock, categoryId: 'md' },
-      { commitment: `03000200${'44'.repeat(20)}`, lockingBytecode: lock, categoryId: 'md' },
-    ];
-    expect(selectLatestJobEventsChunks(persist.slice(0, 3), persist)).toHaveLength(4);
-    expect(placeValueChunksOnBand(outputs, { start: 16, nNew: 4 }, persist)).toBe(4);
-    expect(outputs[19]?.token?.nft?.commitment.startsWith('03000200')).toBe(true);
-    expect(outputs[19]?.token?.nft?.capability).toBe('mutable');
-    expect(persistChunkOutputDests({ implIndex: 11, bandStart: 16, bandEnd: 19 })).toEqual([16, 17, 18, 19]);
-    expect(persistUpdateLiveDests({
-      implIndex: 11, bandStart: 16, bandEnd: 18, layoutWidth: 4,
-    })).toEqual([16, 17, 18, 19]);
-    expect(surplusPersistValueDests({
-      persistDests: [16, 17, 18, 19],
-      dests: [
-        { dest: 19, commit: '030002004441000010632d5e', cap: 'mutable' },
-        { dest: 20, commit: '04001a564310000000000000', cap: 'mutable' },
-        { dest: 21, commit: '', cap: 'minting' },
-        { dest: 22, commit: '0c000000ac782658967827f8', cap: 'mutable' },
-      ],
-    })).toEqual([20]);
-    expect(persistVOutputDests({
-      start: 16,
-      dests: [
-        { dest: 16, commit: '00004cb42000437265617465', cap: 'mutable' },
-        { dest: 19, commit: '030002004441000010632d5e', cap: 'mutable' },
-        { dest: 20, commit: '04001a564310000000000000', cap: 'mutable' },
-        { dest: 22, commit: '0c000000ac782658967827f8', cap: 'mutable' },
-      ],
-    })).toEqual([16, 19, 20]);
-    const chunk3 = persist[3].commitment;
-    expect(persistChunkMayOverwriteScid({
-      dest: 19, band: { start: 16, end: 19 }, replayWidth: 0, incomingCommitment: chunk3,
-    })).toBe(true);
-    expect(persistChunkMayOverwriteScid({
-      dest: 20, band: { start: 16, end: 20 }, replayWidth: 0, incomingCommitment: `04001a56${'55'.repeat(20)}`,
-    })).toBe(false);
-    expect(persistChunkMayOverwriteScid({
-      dest: 19, band: { start: 16, end: 20 }, replayWidth: 3, incomingCommitment: chunk3,
-    })).toBe(false);
-    expect(persistChunkMayOverwriteScid({
-      dest: 19, band: { start: 16, end: 18 }, replayWidth: 0, incomingCommitment: chunk3,
-    })).toBe(false);
-    expect(persistChunkMayOverwriteScid({
-      dest: 19, band: { start: 16, end: 19 }, replayWidth: 0, incomingCommitment: '01000000',
-    })).toBe(false);
   });
 
   it('synthesizes a 64-byte empty-value P\' from HEAD slot 0 and the NEW slot', () => {
@@ -2495,7 +2304,7 @@ describe('assignPhysicalReturnIndices', () => {
     })).toBe(true);
     expect(stripSurplusEmptyCollectionEntries(outputs, jobEventsLock, 2)).toBe(1);
     const newNode = outputs[22];
-    expect(placeInsertNewAt(outputs, 21, newNode, {
+    expect(placeInsertNewAt(outputs, 23, newNode, {
       tailStart: 38,
       suffixStart: 45,
       skipLocks: [jobEventsLock],

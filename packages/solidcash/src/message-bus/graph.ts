@@ -14,7 +14,20 @@ import {
 
 export interface CompiledGraphParticipant {
   artifact: Artifact;
+  /** Physical covenant identity used to intern and position the participant's state-owner block. */
   lockingBytecode: string;
+  /**
+   * Authenticated public call identity when it differs from the physical state owner, as it does for a
+   * proxy/delegate execution or a contract with a published logical CREATE identity. Nested `msg.sender` rows
+   * may use this identity. Source-level `address(this)` always uses `lockingBytecode`: OP_INVOKE does not change
+   * the active input returned by OP_UTXOBYTECODE.
+   */
+  logicalLockingBytecode?: string;
+  /**
+   * Local balanced-block offset which authenticates `logicalLockingBytecode`. Offset zero is the physical
+   * state owner; proxy executors and immutable CREATE identity anchors occupy explicit non-zero offsets.
+   */
+  logicalIdentityOffset?: number;
   /** V1 authority mode. Omitted preserves the legacy/direct-owner participant route. */
   executionKind?: 'owner' | 'delegate';
   /** Immutable executor identity for the pinned one-hop delegate class. */
@@ -37,6 +50,8 @@ export interface CompiledGraphInvocation {
   callee: number;
   function: string;
   args?: readonly FunctionArgument[];
+  /** Compiler-stable identity of the parent callsite reached by this invocation. */
+  consumerCallsiteId?: number;
   /**
    * Transaction-origin caller for the root row. This is required when the root handler derives a collection
    * key from `msg.sender`; nested callers remain compiler-derived from the authenticated parent participant.
@@ -86,6 +101,9 @@ export interface CompiledParticipantExecution {
   /** Exact artifact whose route and state layout this physical owner executes. */
   artifact: Artifact;
   lockingBytecode: string;
+  logicalLockingBytecode?: string;
+  /** Local balanced-block offset of the Solidity-visible caller identity. */
+  logicalIdentityOffset: number;
   executionKind: 0 | 1;
   /** Local balanced-block offset of the distinct delegate executor input. */
   executorOffset: number | null;
@@ -202,9 +220,11 @@ export interface AtomicEventSlotEffect {
 export interface AtomicResourceSlotEffect {
   participant: number;
   offset: number;
-  /** 0 transition/preserve, 1 create, 2 delete. */
+  /** 0 transition/preserve, 1 create, 2 delete, 3 satoshi container, 4 token container, 5 replace. */
   mode: number;
   lockingBytecodeHex: string;
+  /** Required by mode 5, where one authenticated mutable resource replaces another at the same coordinate. */
+  outputLockingBytecodeHex?: string;
   tokenCategoryHex: string;
   outputTokenCategoryHex?: string;
   inputCommitmentHex: string;
@@ -242,6 +262,13 @@ export interface AtomicSidecarSlotEffect {
 }
 
 const uint8Hex = (value: number): string => value.toString(16).padStart(2, '0');
+
+const uint16LeHex = (value: number, field: string): string => {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff) {
+    throw new Error(`messageBus: ${field} does not fit uint16`);
+  }
+  return `${uint8Hex(value & 0xff)}${uint8Hex(value >>> 8)}`;
+};
 
 const uint64LeHex = (value: bigint, field: string): string => {
   if (value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new Error(`messageBus: ${field} is outside uint64`);
@@ -307,7 +334,7 @@ export function finalizeAtomicInvocationGraph(
     return slots.some((slot) => ![
       'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer',
       'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'keccakSideCar',
-      'ecrecoverSideCar', 'trailing', 'lowLevelCall',
+      'ecrecoverSideCar', 'trailing', 'lowLevelCall', 'identityAnchor',
     ].includes(slot.kind));
   });
   if (unsupported) {
@@ -327,13 +354,18 @@ export function finalizeAtomicInvocationGraph(
       ? maximumSize : participant.blockLayout!.trailingBase ?? maximumSize;
     const actualSize = spans[index];
     const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
+    const publishesResult = participant.invocations.some((invocation) =>
+      plan.invocations[invocation].resultTypes.length > 0);
     const lockingBytecode = participant.lockingBytecode.toLowerCase();
     const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
       lockingBytecode, stateCategory: internalCategory,
       fixedSize, actualSize, maximumSize,
       trailingUsed: actualSize - fixedSize,
-      returnOffset: returnSlot === undefined ? 0xffff : returnSlot.offset,
+      // Route layouts publish the union of every eligible handler, so a void selected batch can retain a physical
+      // return coordinate without activating it. Advertising that inactive coordinate makes the verifier demand
+      // the canonical encoded empty vector (`00`) from a deliberately token-free balanced output.
+      returnOffset: !publishesResult || returnSlot === undefined ? 0xffff : returnSlot.offset,
     };
   });
   const invocationRows = plan.invocations.map((invocation) => {
@@ -350,7 +382,8 @@ export function finalizeAtomicInvocationGraph(
     const caller = invocation.caller === null ? 0xff : invocation.caller;
     const subjectHex = invocation.caller === null
       ? plan.rootCallerLockingBytecode ?? ''
-      : plan.participants[invocation.caller].lockingBytecode;
+      : plan.participants[invocation.caller].logicalLockingBytecode
+        ?? plan.participants[invocation.caller].lockingBytecode;
     const completion = plan.participants[invocation.callee].completionPositions[invocation.localRow];
     if (completion === undefined) {
       throw new Error(`messageBus: invocation ${invocation.index} has no compiler-authored completion position`);
@@ -358,8 +391,15 @@ export function finalizeAtomicInvocationGraph(
     return {
       kind: 0, owner: caller === 0xff ? invocation.callee : caller, consumer: invocation.callee,
       slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
-      sourceOffset: invocation.caller === null ? 0xffff : 0,
-      targetOffset: 0, selectorHex: invocation.selectorHex,
+      sourceOffset: invocation.caller === null
+        ? 0xffff : plan.participants[invocation.caller].logicalIdentityOffset ?? 0,
+      // Invocation rows bind the address used by the source-level call, not necessarily the state owner's
+      // physical master at offset zero. Proxies and explicit identity anchors authenticate that logical callee
+      // at `logicalIdentityOffset`; using zero here makes the SDK transcript name the logical address while the
+      // on-chain verifier reconstructs the physical owner address.
+      targetOffset: invocation.parent === null
+        ? 0 : plan.participants[invocation.callee].logicalIdentityOffset ?? 0,
+      selectorHex: invocation.selectorHex,
       position: completion, parent: invocation.parent ?? 0xffff, depth: invocation.depth,
       subtreeEnd: invocation.subtreeEnd, subjectHex, argsHex: invocation.argsHex, resultHex: result.toLowerCase(),
       effectHex: '',
@@ -375,22 +415,27 @@ export function finalizeAtomicInvocationGraph(
       const participant = plan.participants[effect.participant];
       if (!participant) throw new Error(`messageBus: resource effect names participant ${effect.participant}`);
       const slot = participant.blockLayout!.slots.find((candidate) =>
-        ['dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer', 'trailing']
+        ['dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer', 'trailing', 'lowLevelCall']
           .includes(candidate.kind)
         && candidate.offset === effect.offset);
       if (!slot) {
         throw new Error(`messageBus: participant ${effect.participant} has no resource slot ${effect.offset}`);
       }
       const satoshiContainer = slot.kind === 'satoshiContainer';
-      const tokenContainer = slot.kind === 'tokenContainer';
-      if (effect.mode < 0 || effect.mode > 4
+      // A co-spent delegate executor is a token-bearing covenant resource in the participant block. Model it
+      // through the same fully-authenticated input/output token row as a source-level token container; the SDK
+      // additionally requires exact preservation, and the executor's own master covenant independently binds it.
+      const tokenContainer = slot.kind === 'tokenContainer' || slot.kind === 'lowLevelCall';
+      if (effect.mode < 0 || effect.mode > 5
         || (satoshiContainer ? effect.mode !== 3 : effect.mode === 3)
         || (tokenContainer ? effect.mode !== 4 : effect.mode === 4)
-        || (!satoshiContainer && !tokenContainer && slot.kind !== 'trailing' && effect.mode !== 0)) {
+        || (!satoshiContainer && !tokenContainer
+          && slot.kind !== 'entry' && slot.kind !== 'trailing' && effect.mode !== 0)) {
         throw new Error(`messageBus: participant ${effect.participant} resource slot ${effect.offset} has invalid mode`);
       }
       for (const [field, value] of [
         ['locking bytecode', effect.lockingBytecodeHex], ['token category', effect.tokenCategoryHex],
+        ['output locking bytecode', effect.outputLockingBytecodeHex ?? ''],
         ['output token category', effect.outputTokenCategoryHex ?? ''],
         ['input commitment', effect.inputCommitmentHex], ['output commitment', effect.outputCommitmentHex],
       ] as const) {
@@ -410,7 +455,8 @@ export function finalizeAtomicInvocationGraph(
           || effect.inputValue === undefined || effect.outputValue === undefined
           : effect.tokenCategoryHex.length !== 66 || !effect.tokenCategoryHex.endsWith('01')
           || (effect.mode === 1 && effect.inputCommitmentHex.length !== 0)
-          || (effect.mode === 2 && effect.outputCommitmentHex.length !== 0)) {
+          || (effect.mode === 2 && effect.outputCommitmentHex.length !== 0)
+          || (effect.mode === 5 && !(effect.outputLockingBytecodeHex?.length))) {
         throw new Error(`messageBus: participant ${effect.participant} resource is not a mutable NFT`);
       }
       return {
@@ -432,7 +478,12 @@ export function finalizeAtomicInvocationGraph(
             + ((effect.outputTokenCategoryHex?.length ?? 0) === 0 ? ''
               : uint64LeHex(effect.outputValue!, 'token-container output amount')
                 + effect.outputCommitmentHex.toLowerCase())
-            : effect.outputCommitmentHex.toLowerCase(),
+            : effect.mode === 5
+              ? uint16LeHex(
+                (effect.outputLockingBytecodeHex?.length ?? 0) / 2,
+                'replacement output locking bytecode length',
+              ) + effect.outputLockingBytecodeHex!.toLowerCase() + effect.outputCommitmentHex.toLowerCase()
+              : effect.outputCommitmentHex.toLowerCase(),
       };
     });
   const effectKeys = new Set(eventEffects.map((effect) => `${effect.participant}:${effect.offset}`));
@@ -1219,6 +1270,10 @@ export function planCompiledGraph(
     if (!/^([0-9a-f]{2})+$/.test(lbc)) {
       throw new Error(`messageBus: participant ${index} locking bytecode must be hex bytes`);
     }
+    if (participant.logicalLockingBytecode !== undefined
+      && !/^([0-9a-f]{2})+$/.test(participant.logicalLockingBytecode.toLowerCase())) {
+      throw new Error(`messageBus: participant ${index} logical locking bytecode must be hex bytes`);
+    }
     if (identities.has(lbc)) {
       throw new Error('messageBus: two participant rows name the same physical locking bytecode');
     }
@@ -1245,7 +1300,9 @@ export function planCompiledGraph(
       participants[parentInvocation.callee].artifact, parentInvocation.function,
     );
     const modes = [...new Set((parentFunction?.externalCalls ?? [])
-      .filter((call) => call.functionName === invocation.function)
+      .filter((call) => invocation.consumerCallsiteId !== undefined
+        ? call.callsiteId === invocation.consumerCallsiteId
+        : call.functionName === invocation.function)
       .map((call) => call.callMode ?? 'call'))];
     return modes.length === 1 && modes[0] === 'staticcall' ? 'staticcall' : 'call';
   };
@@ -1300,7 +1357,12 @@ export function planCompiledGraph(
       ...(invocation.parent !== null && { callMode: encodedCallMode(invocation) }),
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
-        : { logicalCaller: hexToBin(participants[invocations[invocation.parent].callee].lockingBytecode) }),
+        : {
+          logicalCaller: hexToBin(
+            participants[invocations[invocation.parent].callee].logicalLockingBytecode
+              ?? participants[invocations[invocation.parent].callee].lockingBytecode,
+          ),
+        }),
     });
     globalByOwner[invocation.callee].push(index);
   });
@@ -1369,6 +1431,15 @@ export function planCompiledGraph(
       ? participant.artifact.messageBus?.route.blockLayout?.slots
         .filter((slot) => slot.kind === 'lowLevelCall') ?? []
       : [];
+    const logicalIdentityOffset = participant.logicalIdentityOffset ?? 0;
+    const participantBlockSize = participant.artifact.messageBus?.route.blockLayout?.blockSize ?? 0;
+    if (!Number.isInteger(logicalIdentityOffset)
+      || logicalIdentityOffset < 0 || logicalIdentityOffset >= participantBlockSize) {
+      throw new Error(`messageBus: participant ${owner} logical identity offset is outside its balanced block`);
+    }
+    if (participant.logicalLockingBytecode === undefined && logicalIdentityOffset !== 0) {
+      throw new Error(`messageBus: participant ${owner} cannot offset an undeclared logical identity`);
+    }
     if (executionKind === 1) {
       if (!/^([0-9a-fA-F]{2})+$/.test(participant.executorLockingBytecode ?? '')) {
         throw new Error(`messageBus: delegate participant ${owner} lacks canonical executor locking bytecode`);
@@ -1383,6 +1454,10 @@ export function planCompiledGraph(
       participant: owner,
       artifact: participant.artifact,
       lockingBytecode: participant.lockingBytecode.toLowerCase(),
+      ...(participant.logicalLockingBytecode !== undefined && {
+        logicalLockingBytecode: participant.logicalLockingBytecode.toLowerCase(),
+      }),
+      logicalIdentityOffset,
       executionKind,
       executorOffset: executionKind === 1 ? executorSlots[0].offset : null,
       executorInputIndex: executionKind === 1
@@ -1431,7 +1506,9 @@ export function planCompiledGraph(
       const parentArtifact = participants[parentInvocation.callee].artifact;
       const parentFunction = resolveGraphAbiFunction(parentArtifact, parentInvocation.function);
       const candidates = parentFunction?.externalCalls?.filter((call) =>
-        call.functionName === invocation.function) ?? [];
+        invocation.consumerCallsiteId !== undefined
+          ? call.callsiteId === invocation.consumerCallsiteId
+          : call.functionName === invocation.function) ?? [];
       const modes = [...new Set(candidates.map((call) => call.callMode ?? 'call'))];
       // The compiler-authored mode is read whether or not the caller supplied one. Reading it only on the
       // INFERENCE path meant an explicit `callMode: 'call'` executed a delegate edge as an ordinary call,
@@ -1524,10 +1601,48 @@ export function planCompiledGraph(
     // this entry point is handed instead. Ordered before the binding so a row count the handler cannot have
     // emitted is named as such rather than surfacing as a result-schema or covenant partition mismatch.
     assertHandlerRowCapacity(parentFunction?.externalCalls ?? [], children.length);
-    const bindings = bindConsumerCallsites(
-      parent, parentFunction?.externalCalls ?? [],
-      children.map((child) => invocations[child].function),
-    );
+    const publishedCallsites = parentFunction?.externalCalls ?? [];
+    const identified = children.map((child) => invocations[child].consumerCallsiteId);
+    const hasIdentified = identified.some((callsiteId) => callsiteId !== undefined);
+    if (hasIdentified && identified.some((callsiteId) => callsiteId === undefined)) {
+      throw new Error(`messageBus: invocation ${parent} mixes identified and unidentified child callsites`);
+    }
+    const bindings = hasIdentified
+      ? identified.map((callsiteId, position) => {
+        const callsite = publishedCallsites.find((candidate) => candidate.callsiteId === callsiteId);
+        if (!callsite) {
+          throw new Error(
+            `messageBus: invocation ${parent} names absent compiler callsite ${callsiteId}`,
+          );
+        }
+        const reachedFunction = invocations[children[position]].function;
+        const expectedFunction = callsite.rawFunctionName ?? callsite.functionName;
+        if (!isRuntimeResolvedCallsite(callsite) && expectedFunction !== reachedFunction) {
+          throw new Error(
+            `messageBus: invocation ${parent} binds callsite ${callsiteId} to '${reachedFunction}', `
+            + `but the compiler publishes '${expectedFunction}'`,
+          );
+        }
+        return callsite;
+      })
+      : bindConsumerCallsites(
+        parent, publishedCallsites, children.map((child) => invocations[child].function),
+      );
+    if (hasIdentified) {
+      for (const callsite of publishedCallsites) {
+        const count = bindings.filter((binding) => binding.callsiteId === callsite.callsiteId).length;
+        if (callsite.batchInvocations !== undefined) {
+          if (count !== callsite.batchInvocations.length) {
+            throw new Error(
+              `messageBus: callsite ${callsite.callsiteId ?? '?'} identifies `
+              + `${callsite.batchInvocations.length} batched rows, but ${count} were planned`,
+            );
+          }
+          continue;
+        }
+        assertPlannedOccurrenceCount(callsite, count);
+      }
+    }
     children.forEach((child, position) => {
       const callsite = bindings[position];
       consumerCallsites[child] = callsite?.callsiteId;

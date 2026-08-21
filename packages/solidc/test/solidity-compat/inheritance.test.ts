@@ -592,6 +592,31 @@ describe('vmap-default: an inherited method accessing its OWN contract private m
       + ' contract Derived is Base { function poke(address a, uint256 v) public { _balances[a] = v; } }',
     { solidityImportCompat: true })).toThrow(/Cannot access private collection '_balances'/);
   });
+
+  it('preserves the base scope when a generated batch route journals inherited private mappings', () => {
+    const artifact = compileString(`pragma solidity ^0.8.20;
+      contract Base {
+        mapping(address => uint256) private balances;
+        event Changed(address account, uint256 value);
+        function balanceOf(address account) public view returns (uint256) { return balances[account]; }
+        function set(address account, uint256 value) public {
+          balances[account] = value;
+          emit Changed(account, value);
+          require(balanceOf(account) == value);
+        }
+      }
+      contract Derived is Base {}
+    `, {
+      solidityImportCompat: true,
+      forceStateful: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toEqual(expect.objectContaining({ eligible: true }));
+  });
 });
 
 describe('same-named PRIVATE state var in different ancestors is origin-mangled, not a collision (EACCToken EIP712+ERC20 _name)', () => {

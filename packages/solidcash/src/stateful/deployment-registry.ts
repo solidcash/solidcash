@@ -93,8 +93,17 @@ export function findDeploymentByLockingBytecode(
   provider: NetworkProvider, lockingBytecode: string,
 ): RegisteredDeployment | undefined {
   const current = deployments.get(provider) ?? [];
+  const wanted = lockingBytecode.replace(/^0x/, '').toLowerCase();
   for (let index = current.length - 1; index >= 0; index--) {
-    if (current[index].lockingBytecode === lockingBytecode) return current[index];
+    if (current[index].lockingBytecode?.replace(/^0x/, '').toLowerCase() === wanted) {
+      return current[index];
+    }
+    // Stateful registrations may use a physical covenant bytecode internally while exposing a stable logical
+    // address to other contracts. Resolve either identity through this bytecode-oriented API so every external
+    // call path follows the same registry semantics.
+    try {
+      if (binToHex(addressToLockScript(current[index].address)) === wanted) return current[index];
+    } catch { /* the registered address is not a cashaddr */ }
   }
   return undefined;
 }

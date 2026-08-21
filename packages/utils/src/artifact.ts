@@ -138,6 +138,8 @@ export type BlockSlotKind =
   /** Child data-NFT genesis outputs that follow a `deploy` slot (factory createPair-style). */
   | 'deployDataNft'
   | 'lowLevelCall'
+  /** SDK-authenticated logical contract identity which is distinct from the physical participant master. */
+  | 'identityAnchor'
   | 'trailing';
 
 /** A single slot in the function's block layout. */
@@ -517,10 +519,13 @@ export interface ExternalReadAbi {
 }
 
 export interface ArgSource {
-  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'expression';
+  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'loopIndex'
+    | 'expression';
   paramIndex?: number;     // for 'forward': index into the user-visible function args
   indexParamIndex?: number; // for 'arrayElement': optional function parameter containing the element index
   indexValue?: number;     // for 'arrayElement': fixed index (loop call sites commonly begin at zero)
+  initialValue?: string;   // for 'loopIndex': value at occurrence zero
+  stepValue?: string;      // for 'loopIndex': delta per reached occurrence
   paramName?: string;      // for 'constructorArg': name of the constructor parameter
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string
@@ -551,6 +556,10 @@ export interface ExternalCallAbi {
   sourceLocation?: { line: number; column: number };
   /** Source reachability class; loop/conditional rows require runtime occurrence proof. */
   occurrence?: 'once' | 'conditional' | 'loop';
+  /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
+  condition?: ExternalCallExpression;
+  /** ABI output array directly populated by this loop call (`result[i] = call(); return result`). */
+  resultArrayOutput?: number;
   /** Compiler-proven ceiling on reached rows. Absent means no ceiling was proven for this callsite. */
   maximumOccurrences?: number;
   /**
@@ -841,7 +850,14 @@ export interface Artifact {
       usesMsgValue?: boolean;
       emits?: readonly EmitAbi[];
       tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+      /** Per selected handler call, the visible parameter feeding keccak256 or null for a computed preimage. */
+      keccakPreimageParams?: readonly (string | null)[];
+      /** Explicit for every newly compiled handler, so an inactive recovery sibling is distinguishable from
+       * an older artifact which did not publish handler-local compute metadata. */
+      ecrecoverCompute?: boolean;
       ecrecoverArgParams?: readonly (readonly (string | null)[])[];
+      /** One entry per transitive recovery call, including `false` for native/P2PKH projections. */
+      ecrecoverEvmFlags?: readonly boolean[];
       transfers?: readonly {
         transferIndex: number;
         recipient: ArgSource;
@@ -876,6 +892,9 @@ export interface Artifact {
         /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
         swappable?: boolean;
       }[];
+      /** Route entry-slot ordinals which can be consumed by this selected handler. Used by composers to leave
+       * every other union-route entry coordinate as an inactive balanced slot. */
+      physicalEntrySlots?: readonly number[];
     }[];
   };
   diagnostics?: readonly {

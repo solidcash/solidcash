@@ -5,16 +5,6 @@ import type { ContractRunner, DeployContractOptions, DeployedContract, Signature
 
 import MarketplaceDataV1Artifact from '../../artifacts/solidcash/MarketplaceDataV1.artifact.js';
 
-export type JobEventDataStruct = { type_: bigint; address_: Uint8Array | string; data_: Uint8Array | string; timestamp_: bigint; };
-export type JobEventDataStructOutput = [type_: bigint, address_: Uint8Array | string, data_: Uint8Array | string, timestamp_: bigint] & { type_: bigint; address_: Uint8Array | string; data_: Uint8Array | string; timestamp_: bigint; };
-export type JobArbitratorStruct = { address_: Uint8Array | string; publicKey: Uint8Array | string; name: string; bio: string; avatar: string; fee: bigint; settledCount: bigint; refusedCount: bigint; };
-export type JobArbitratorStructOutput = [address_: Uint8Array | string, publicKey: Uint8Array | string, name: string, bio: string, avatar: string, fee: bigint, settledCount: bigint, refusedCount: bigint] & { address_: Uint8Array | string; publicKey: Uint8Array | string; name: string; bio: string; avatar: string; fee: bigint; settledCount: bigint; refusedCount: bigint; };
-export type UserStruct = { address_: Uint8Array | string; publicKey: Uint8Array | string; name: string; bio: string; avatar: string; reputationUp: bigint; reputationDown: bigint; };
-export type UserStructOutput = [address_: Uint8Array | string, publicKey: Uint8Array | string, name: string, bio: string, avatar: string, reputationUp: bigint, reputationDown: bigint] & { address_: Uint8Array | string; publicKey: Uint8Array | string; name: string; bio: string; avatar: string; reputationUp: bigint; reputationDown: bigint; };
-export type UserRatingStruct = { averageRating: bigint; numberOfReviews: bigint; };
-export type UserRatingStructOutput = [averageRating: bigint, numberOfReviews: bigint] & { averageRating: bigint; numberOfReviews: bigint; };
-export type ReviewStruct = { reviewer: Uint8Array | string; jobId: bigint; rating: bigint; text: string; timestamp: bigint; };
-export type ReviewStructOutput = [reviewer: Uint8Array | string, jobId: bigint, rating: bigint, text: string, timestamp: bigint] & { reviewer: Uint8Array | string; jobId: bigint; rating: bigint; text: string; timestamp: bigint; };
 export type JobRolesStruct = { creator: Uint8Array | string; arbitrator: Uint8Array | string; worker: Uint8Array | string; };
 export type JobRolesStructOutput = [creator: Uint8Array | string, arbitrator: Uint8Array | string, worker: Uint8Array | string] & { creator: Uint8Array | string; arbitrator: Uint8Array | string; worker: Uint8Array | string; };
 export type JobPostStruct = { state: bigint; whitelistWorkers: boolean; roles: JobRolesStruct; title: string; tags: readonly string[]; contentHash: Uint8Array | string; multipleApplicants: boolean; amount: bigint; token: Uint8Array | string; timestamp: bigint; maxTime: bigint; deliveryMethod: string; collateralOwed: bigint; escrowId: bigint; resultHash: Uint8Array | string; rating: bigint; disputed: boolean; };
@@ -31,15 +21,25 @@ export type TokenStruct = { address_: Uint8Array | string; decimals: bigint; sym
 export type TokenStructOutput = [address_: Uint8Array | string, decimals: bigint, symbol: string] & { address_: Uint8Array | string; decimals: bigint; symbol: string; };
 export type DataStruct = { escrow: EscrowStruct; arbitrator: ArbitratorStruct; settlement: SettlementStruct; token: TokenStruct; };
 export type DataStructOutput = [escrow: EscrowStructOutput, arbitrator: ArbitratorStructOutput, settlement: SettlementStructOutput, token: TokenStructOutput] & { escrow: EscrowStruct; arbitrator: ArbitratorStruct; settlement: SettlementStruct; token: TokenStruct; };
+export type JobEventDataStruct = { type_: bigint; address_: Uint8Array | string; data_: Uint8Array | string; timestamp_: bigint; };
+export type JobEventDataStructOutput = [type_: bigint, address_: Uint8Array | string, data_: Uint8Array | string, timestamp_: bigint] & { type_: bigint; address_: Uint8Array | string; data_: Uint8Array | string; timestamp_: bigint; };
+export type JobArbitratorStruct = { address_: Uint8Array | string; publicKey: Uint8Array | string; name: string; bio: string; avatar: string; fee: bigint; settledCount: bigint; refusedCount: bigint; };
+export type JobArbitratorStructOutput = [address_: Uint8Array | string, publicKey: Uint8Array | string, name: string, bio: string, avatar: string, fee: bigint, settledCount: bigint, refusedCount: bigint] & { address_: Uint8Array | string; publicKey: Uint8Array | string; name: string; bio: string; avatar: string; fee: bigint; settledCount: bigint; refusedCount: bigint; };
+export type UserStruct = { address_: Uint8Array | string; publicKey: Uint8Array | string; name: string; bio: string; avatar: string; reputationUp: bigint; reputationDown: bigint; };
+export type UserStructOutput = [address_: Uint8Array | string, publicKey: Uint8Array | string, name: string, bio: string, avatar: string, reputationUp: bigint, reputationDown: bigint] & { address_: Uint8Array | string; publicKey: Uint8Array | string; name: string; bio: string; avatar: string; reputationUp: bigint; reputationDown: bigint; };
+export type UserRatingStruct = { averageRating: bigint; numberOfReviews: bigint; };
+export type UserRatingStructOutput = [averageRating: bigint, numberOfReviews: bigint] & { averageRating: bigint; numberOfReviews: bigint; };
+export type ReviewStruct = { reviewer: Uint8Array | string; jobId: bigint; rating: bigint; text: string; timestamp: bigint; };
+export type ReviewStructOutput = [reviewer: Uint8Array | string, jobId: bigint, rating: bigint, text: string, timestamp: bigint] & { reviewer: Uint8Array | string; jobId: bigint; rating: bigint; text: string; timestamp: bigint; };
 export type PausableStorageStruct = { _paused: boolean; };
 export type PausableStorageStructOutput = [_paused: boolean] & { _paused: boolean; };
 export type InitializableStorageStruct = { _initialized: bigint; _initializing: boolean; };
 export type InitializableStorageStructOutput = [_initialized: bigint, _initializing: boolean] & { _initialized: bigint; _initializing: boolean; };
 export type OwnableStorageStruct = { _owner: Uint8Array | string; };
 export type OwnableStorageStructOutput = [_owner: Uint8Array | string] & { _owner: Uint8Array | string; };
-export type JobEventType = 0n | 1n | 2n | 3n | 4n | 5n | 6n | 7n | 8n | 9n | 10n | 11n | 12n | 13n | 14n | 15n | 16n | 17n | 18n;
 export type JobState = 0n | 1n | 2n;
 export type RecoverError = 0n | 1n | 2n | 3n;
+export type JobEventType = 0n | 1n | 2n | 3n | 4n | 5n | 6n | 7n | 8n | 9n | 10n | 11n | 12n | 13n | 14n | 15n | 16n | 17n | 18n;
 
 export type MarketplaceDataV1 = StatefulContract<typeof MarketplaceDataV1Artifact>;
 export type MarketplaceDataV1ConstructorArgs = [];

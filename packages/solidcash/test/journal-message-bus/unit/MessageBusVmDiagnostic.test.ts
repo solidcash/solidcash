@@ -2,12 +2,16 @@
 import { describe, expect, it } from 'vitest';
 import { messageBus } from '../../../src/index.js';
 
-const push = (payload: number[]): Uint8Array => Uint8Array.from([payload.length, ...payload]);
+const push = (payload: number[]): number[] => [payload.length, ...payload];
+const routeUnlock = (payload: number[]): Uint8Array => Uint8Array.from([
+  ...push([0x53, 0x43, 0x42, 0x31]),
+  ...push(payload),
+]);
 const routeBuilder = {
   inputs: [{ unlocker: { abiFunction: { selector: '53434231' } } }],
 } as never;
 const transaction = (payload: number[]) => ({
-  inputs: [{ unlockingBytecode: push(payload) }],
+  inputs: [{ unlockingBytecode: routeUnlock(payload) }],
 }) as never;
 const raw = 'Program failed an OP_VERIFY operation.';
 
@@ -30,7 +34,7 @@ describe('message-bus batch VM refusal attribution', () => {
         outpointTransactionHash: new Uint8Array(32),
         outpointIndex: 0,
         sequenceNumber: 0xffff_ffff,
-        unlockingBytecode: push(envelope),
+        unlockingBytecode: routeUnlock(envelope),
       }],
       outputs: [{ valueSatoshis: 900n, lockingBytecode: Uint8Array.of(0x51) }],
     } as never;

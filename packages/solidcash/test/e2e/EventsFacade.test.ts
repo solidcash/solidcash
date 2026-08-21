@@ -129,7 +129,7 @@ describe('StatefulContract event listeners (ethers on / once / off)', () => {
   it('on() fires for events that appear after subscribing (driven by a manual poll)', async () => {
     const { sc } = await deploy();
     const seen: EventLog[] = [];
-    await sc.on('Transfer', (log) => seen.push(log));
+    await sc.on('Transfer', (_from, _to, _amount, log: EventLog) => seen.push(log));
     expect(await sc.listenerCount('Transfer')).toBe(1);
 
     await sc.fire(7n, 8n, 300n).send();
@@ -142,7 +142,7 @@ describe('StatefulContract event listeners (ethers on / once / off)', () => {
   it('once() fires a single time then unsubscribes', async () => {
     const { sc } = await deploy();
     const seen: EventLog[] = [];
-    await sc.once('Transfer', (log) => seen.push(log));
+    await sc.once('Transfer', (_from, _to, _amount, log: EventLog) => seen.push(log));
 
     await sc.fire(1n, 1n, 1n).send();
     await (sc as unknown as { _pollEvents(): Promise<void> })._pollEvents();
@@ -156,7 +156,7 @@ describe('StatefulContract event listeners (ethers on / once / off)', () => {
   it('off() / removeAllListeners() stop delivery', async () => {
     const { sc } = await deploy();
     const seen: EventLog[] = [];
-    const cb = (log: EventLog): void => { seen.push(log); };
+    const cb = (_from: bigint, _to: bigint, _amount: bigint, log: EventLog): void => { seen.push(log); };
     await sc.on('Transfer', cb);
     await sc.off('Transfer', cb);
     expect(await sc.listenerCount('Transfer')).toBe(0);

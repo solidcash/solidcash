@@ -436,6 +436,29 @@ describe('external-call target through a single-assignment local intermediary (E
       kind: 'expression', expression: { kind: 'state', name: 'unicrowAddress' },
     });
   });
+
+  it('publishes the address provenance of an interface cast over a struct parameter field', () => {
+    const src = 'pragma solidity ^0.8.0; interface IERC20 { function balanceOf(address a) external view returns (uint256); }'
+      + ' struct Payment { address currency; } contract C { int calls;'
+      + ' function f(Payment calldata input) public returns (uint256) {'
+      + ' calls++; return IERC20(input.currency).balanceOf(address(this)); } }';
+    const ec = compileString(src, { solidityImportCompat: true }).abi
+      .find((f) => f.name === 'f')?.externalCalls?.[0];
+    expect(ec?.addressParam).toBe('__extaddr_input_currency_IERC20');
+    expect(ec?.addressStateVar).toBeUndefined();
+    expect(ec?.addressSource).toEqual({
+      kind: 'expression',
+      expression: {
+        kind: 'cast',
+        type: 'address',
+        expression: {
+          kind: 'field',
+          name: 'currency',
+          expression: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+        },
+      },
+    });
+  });
 });
 
 describe('clearer diagnostic for an external call on an interface-typed struct-field receiver', () => {

@@ -1040,10 +1040,15 @@ export class TransactionBuilder {
     }
   }
 
+  /** Validate token conservation without regenerating unlocking bytecode. */
+  validateTokenConservation(): void {
+    this.checkFungibleTokenBurn();
+    this.checkNftBurn();
+  }
+
   buildLibauthTransaction(skipChecks: boolean = false): LibauthTransaction {
     if (!skipChecks) {
-      this.checkFungibleTokenBurn();
-      this.checkNftBurn();
+      this.validateTokenConservation();
     }
 
     const inputs: LibauthTransaction['inputs'] = this.inputs.map((utxo) => ({
@@ -1193,7 +1198,8 @@ export class TransactionBuilder {
     }
 
     this.checkMaxFee(transaction);
-    const tx = binToHex(encodeTransaction(transaction));
+    const txBin = encodeTransaction(transaction);
+    const tx = binToHex(txBin);
 
     // X131, the finalized-bytes gate at `TransactionBuilder.send`, one of the seven live broadcast sites in
     // `src/`. It reads the DECODED broadcast bytes rather than a
@@ -1238,7 +1244,7 @@ export class TransactionBuilder {
     // through this site are byte-for-byte unaffected.
     assertFinalizedBytesWithCovenant(
       this,
-      decodeTransactionUnsafe(hexToBin(tx)),
+      transaction,
       inputSubjectsOfBuilder(this),
       this.provider.policy?.enforceProductionInputLimit === false
         ? { consensusLimits: this.provider.consensusLimits }
@@ -1247,7 +1253,9 @@ export class TransactionBuilder {
 
     let txid: string;
     try {
-      txid = await this.provider.sendRawTransaction(tx);
+      txid = this.provider.sendPreparedTransaction
+        ? await this.provider.sendPreparedTransaction({ rawHex: tx, rawBytes: txBin, transaction })
+        : await this.provider.sendRawTransaction(tx);
     } catch (e: any) {
       const reason = e.error ?? e.message;
       let bitauthUri: string;
@@ -1257,7 +1265,6 @@ export class TransactionBuilder {
 
     // Verify the returned txid matches the locally computed hash (outside try/catch
     // so mismatch errors are not swallowed into FailedTransactionError with bitauthUri)
-    const txBin = hexToBin(tx);
     const expectedTxid = binToHex(hash256(txBin).reverse());
     if (txid !== expectedTxid) {
       throw new Error(

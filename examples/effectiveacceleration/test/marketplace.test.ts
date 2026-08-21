@@ -1474,8 +1474,6 @@ describe("Marketplace Unit Tests", () => {
         whitelistWorkers,
       )).to.be.revertedWith("arbitrator not registered");
 
-      registerPublicKey(marketplaceData, arbitrator, wallet3);
-
       await expect(marketplace.connect(user1).updateJobPost(
         jobId,
         title,

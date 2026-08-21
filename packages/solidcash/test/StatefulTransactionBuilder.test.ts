@@ -165,6 +165,55 @@ describe('StatefulTransactionBuilder', () => {
       ]);
     });
 
+    it('rebinds absolute continuation witnesses when final change shifts the suffix', () => {
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x22), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        delegateDynamicChunksAtSuffix: true,
+        dynamicChunkVars: [{ name: 'records', type: 'Record[]', lockingBytecode: chunkLock }],
+      }));
+      builder.setChunkRawCommitments('records', ['0001', '0002']);
+      const tx = builder.build();
+      const originalBase = tx.outputs.length - 3;
+      const refreshInternalArgs = vi.fn();
+      const carrier = {
+        valueChunkOutputBase: originalBase,
+        internalArgs: { __internal__valueChunkOutputBase: BigInt(originalBase) },
+        refreshInternalArgs,
+      };
+      const internals = builder as unknown as {
+        lowLevelCallUtxoGroups: typeof carrier[];
+        derivedChunkOutputs: Map<number, { commitment: string; lockingBytecode: Uint8Array }>;
+        insertBeforeLateValueSuffix: (
+          b: typeof tx,
+          o: { to: Uint8Array; amount: bigint },
+          options: { rebindAbsoluteWitnesses: boolean },
+        ) => void;
+      };
+      internals.lowLevelCallUtxoGroups = [carrier];
+      internals.derivedChunkOutputs = new Map([
+        [originalBase, { commitment: '0001', lockingBytecode: chunkLock }],
+        [originalBase + 1, { commitment: '0002', lockingBytecode: chunkLock }],
+      ]);
+
+      internals.insertBeforeLateValueSuffix(
+        tx,
+        { to: change, amount: 1000n },
+        { rebindAbsoluteWitnesses: true },
+      );
+
+      expect(carrier.valueChunkOutputBase).toBe(originalBase + 1);
+      expect(carrier.internalArgs.__internal__valueChunkOutputBase).toBe(BigInt(originalBase + 1));
+      expect(refreshInternalArgs).toHaveBeenCalledWith(
+        { __internal__valueChunkOutputBase: BigInt(originalBase + 1) },
+        { shiftPredOut: false },
+      );
+      expect([...internals.derivedChunkOutputs.keys()]).toEqual([originalBase + 1, originalBase + 2]);
+      expect(tx.outputs.slice(-4).map((output) => output.to)).toEqual([
+        change, chunkLock, chunkLock, new Uint8Array([0x6a]),
+      ]);
+    });
+
   });
 
   describe('satoshi container underflow guard', () => {

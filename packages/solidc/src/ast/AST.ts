@@ -547,6 +547,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   ecrecoverEvmCallCount?: number; // number of ecrecoverEvm calls; each ALSO co-spends a keccak side-car (over the
   // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
   ecrecoverEvmFlags?: boolean[]; // per ecrecover call (emission order): is it the evm projection? (SDK keccak co-spend)
+  // Exact transitive recovery order for an entry point. Codegen-local ecrecoverEvmFlags is reset while emitting
+  // outlined helpers, so this closure copy remains available to artifact/SDK resource planning.
+  ecrecoverClosureEvmFlags?: boolean[];
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   impliedSelfdestruct = false;  // body-level selfdestruct(...) inferred the lifecycle modifier
   splitCountParam?: string;     // parameter name for split count
@@ -747,6 +750,11 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // The init of a C-style `for` loop. Block-scoped in Solidity but the for desugars to a flattened
   // `{ init; while }`, so a sequential loop reusing the same name may re-declare (overwrite) it.
   isLoopVariable?: boolean;
+  // Canonical arithmetic progression of a C-style for-loop variable. Published for consumers which must
+  // materialize one external-call argument frame per reached loop occurrence. Undefined for non-canonical
+  // updates, so metadata generation fails closed rather than guessing how a mutable local evolves.
+  loopInitialValue?: bigint;
+  loopStepValue?: bigint;
   // Exact method carried by a statically known external-function-pointer value whose runtime expression is not
   // itself a direct function reference (for example `function() external f = callbacks[1]`).
   functionPointerMethodAlias?: string;
@@ -2186,10 +2194,13 @@ export class ExternalFunctionCallNode extends ExpressionNode {
 }
 
 export interface ExternalCallArgSource {
-  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'expression';
+  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'loopIndex'
+    | 'expression';
   paramIndex?: number;
   indexParamIndex?: number;
   indexValue?: number;
+  initialValue?: string;
+  stepValue?: string;
   paramName?: string;
   value?: string;
   type?: string;
@@ -2265,6 +2276,10 @@ export interface ExternalCallSlot {
   selectorArrayVar?: string;
   callMode?: ExternalCallMode;
   argSources?: ExternalCallArgSource[];
+  /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
+  condition?: ExternalCallExpression;
+  /** ABI output array directly populated by this loop call (`result[i] = call(); return result`). */
+  resultArrayOutput?: number;
   rawFunctionName?: string;
   rawArgSources?: ExternalCallArgSource[];
   /** Decoded arguments/types for an `abi.encodeCall` low-level payload. Compiler-internal only. */

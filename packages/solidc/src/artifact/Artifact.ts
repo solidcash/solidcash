@@ -912,6 +912,10 @@ function buildFunctionAbiMetadata(
     const producerExpression = (write: StateResultWrite): ExternalCallExpression => ({
       kind: 'externalCall',
       name: `${write.producer.interfaceName}.${write.producer.functionName}`,
+      callsiteId: write.producer.slotIndex,
+      ...(write.producer.addressSource && {
+        target: sourceExpression(write.producer.addressSource),
+      }),
       args: (write.producer.argSources ?? []).map(sourceExpression),
       type: write.producer.returnTypes![0].toString(),
     });

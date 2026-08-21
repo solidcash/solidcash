@@ -6267,9 +6267,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         if (expression instanceof ExternalFunctionCallNode) {
           const values = serializeArgs(expression.parameters);
+          const target = serializeExpression(expression.addressExpression, seen);
           return values && {
             kind: 'externalCall',
             name: `${expression.interfaceName}.${expression.functionName}`,
+            ...(expression.callInfo?.externalCallSlotIndex !== undefined && {
+              callsiteId: expression.callInfo.externalCallSlotIndex,
+            }),
+            ...(target && { target }),
             args: values,
             ...(expression.type && { type: expression.type.toString() }),
           };

@@ -2210,6 +2210,10 @@ export interface ExternalCallArgSource {
 export interface ExternalCallExpression {
   kind: string;
   name?: string;
+  /** Compiler-stable producer identity within the containing function. */
+  callsiteId?: number;
+  /** Authenticated receiver expression for a returning external call. */
+  target?: ExternalCallExpression;
   type?: string;
   value?: string | boolean;
   operator?: string;

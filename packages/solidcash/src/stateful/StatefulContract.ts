@@ -1918,7 +1918,7 @@ export function probeRequireMessage(
 }
 
 /** Decode the single-word Solidity ABI scalar forms emitted by imported Solidity contracts. */
-function decodeEvmScalarReturn(value: Uint8Array, type: string): StateValue | undefined {
+export function decodeEvmScalarReturn(value: Uint8Array, type: string): FunctionArgument | undefined {
   if (value.length !== 32) return undefined;
   if (type === 'bool') {
     if (!value.slice(0, 31).every((byte) => byte === 0) || value[31] > 1) return undefined;
@@ -1931,6 +1931,25 @@ function decodeEvmScalarReturn(value: Uint8Array, type: string): StateValue | un
     decoded -= 1n << 256n;
   }
   return decoded;
+}
+
+/** Bind compiler-identified returning call expressions to already authenticated invocation results. */
+function externalReturnsForCallsites(
+  argSources: readonly ArgSource[] | undefined,
+  results: ReadonlyMap<number, FunctionArgument>,
+): Map<string, FunctionArgument> {
+  const resolved = new Map<string, FunctionArgument>();
+  const visit = (expression: ExternalCallExpression | undefined): void => {
+    if (!expression) return;
+    for (const child of [expression.target, expression.expression, expression.left, expression.right,
+      expression.condition, expression.ifTrue, expression.ifFalse]) visit(child);
+    for (const child of expression.args ?? []) visit(child);
+    if (expression.kind !== 'externalCall' || expression.callsiteId === undefined) return;
+    const result = results.get(expression.callsiteId);
+    if (result !== undefined) resolved.set(JSON.stringify(expression), result);
+  };
+  for (const source of argSources ?? []) visit(source.expression);
+  return resolved;
 }
 
 
@@ -15796,7 +15815,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // physical width, not the number of resolved oracle UTXOs, when assigning the first participant base.
       externalCallInputBase += abiFunction?.graphBlockhashOracle?.slotCount ?? 0;
       if (iterationEntryInputs.length > 0) externalCallInputBase += iterationEntryInputs.length;
-      finalArgs = [...finalArgs, BigInt(externalCallInputBase)];
+      const externalCallInputBasePosition = abiFunction?.inputs.findIndex((input) =>
+        input.name === '__internal__externalCallInputBase') ?? -1;
+      if (externalCallInputBasePosition >= 0) {
+        // Compiler-owned witnesses are not always adjacent: a chunkable vmap write can inject a leading-value
+        // witness between its batch/value proofs and the external-call region. Fill any intervening ABI slots by
+        // declared type before placing the base, otherwise every later witness silently shifts left.
+        while (finalArgs.length < externalCallInputBasePosition) {
+          const input = abiFunction!.inputs[finalArgs.length];
+          if (!input.name.startsWith('__internal__')) {
+            throw new Error(
+              `Internal error: missing user argument '${input.name}' before external-call witnesses.`,
+            );
+          }
+          finalArgs = [...finalArgs, defaultInternalFunctionArg(input)];
+        }
+        for (let position = 0; position < externalCallInputBasePosition; position++) {
+          const input = abiFunction!.inputs[position];
+          if (!input.name.startsWith('__internal__leadingPushValue_')) continue;
+          const value = finalArgs[position];
+          if (!(value instanceof Uint8Array) && typeof value !== 'string') {
+            finalArgs[position] = defaultInternalFunctionArg(input);
+          }
+        }
+        if (finalArgs.length === externalCallInputBasePosition) {
+          finalArgs = [...finalArgs, BigInt(externalCallInputBase)];
+        } else {
+          finalArgs[externalCallInputBasePosition] = BigInt(externalCallInputBase);
+        }
+      }
 
       // Fill each synthesized `__internal__loopTargets<n>` witness (a per-iteration COMPUTED target
       // `IFoo(pairFor(.., path[i], ..)).m()` the compiler rewrote to read a witness address[] param) with the
@@ -16641,6 +16688,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       parent: number | null;
       callsiteId?: number;
       active: boolean;
+      /** Re-evaluate complete argument expressions after sibling return commitments are authenticated. */
+      resolveArgsFromResults?: (
+        results: ReadonlyMap<number, FunctionArgument>,
+      ) => FunctionArgument[] | undefined;
     };
     let preparedAtomicNodes: PreparedAtomicNode[] | undefined;
     const preparedAtomicNodeByExternalGroup = new Map<number, number>();
@@ -16929,6 +16980,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   nestedSources, delegateVisibleArgs, callInfo.contract, onChainState.state,
                   delegateVisibleInputs,
                   delegateSelfAddress,
+                  preparedAtomicNodes !== undefined,
                 )
                 : undefined;
               const nestedArgs = nestedExpressionReturns
@@ -16958,6 +17010,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ? await this._resolveExternalExpressionReturns(
                   nestedSources, delegateVisibleArgs, callInfo.contract, onChainState.state,
                   delegateVisibleInputs, delegateGraphSelfAddress,
+                  true,
                 )
                 : nestedExpressionReturns;
               const graphNestedArgs = preparedAtomicNodes
@@ -16966,6 +17019,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   delegateVisibleInputs, graphExpressionReturns, 0, false, delegateGraphSelfAddress,
                 ) ?? nestedArgs
                 : nestedArgs;
+              const resolveGraphNestedArgs = preparedAtomicNodes && nestedSources
+                ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined => {
+                  const externalReturns = externalReturnsForCallsites(nestedSources, results);
+                  if (externalReturns.size === 0) return undefined;
+                  return this._resolveExternalArgs(
+                    nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
+                    delegateVisibleInputs, externalReturns, 0, false, delegateGraphSelfAddress,
+                  );
+                }
+                : undefined;
               const calleeRouteArtifact = proxyCallee?.implementation.inner.artifact.delegateArtifact
                 ?? proxyCallee?.implementation.inner.artifact
                 ?? callee.inner.artifact;
@@ -18464,6 +18527,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   }),
                   parent: 0,
                   ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
+                  ...(resolveGraphNestedArgs && { resolveArgsFromResults: resolveGraphNestedArgs }),
                   // Mutually-exclusive SafeERC20 fallback writers share one physical owner. The ordinary
                   // composition has already selected the first reached writer; do not tell the atomic planner
                   // that an untaken fallback row executed merely because its arguments were statically resolvable.
@@ -18741,9 +18805,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? childArgs
             : logicalParentContract._resolveExternalArgs(
               nested.rawArgSources ?? nested.argSources,
-              graphParentArgs, logicalParentArtifact, parentState,
+              [...graphParentArgs], logicalParentArtifact, parentState,
               parentFn.inputs,
             ) ?? childArgs;
+          const graphChildSources = nested.rawArgSources ?? nested.argSources;
+          const resolveGraphChildArgs = preparedAtomicNodes && graphChildSources
+            ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined => {
+              const externalReturns = externalReturnsForCallsites(graphChildSources, results);
+              if (externalReturns.size === 0) return undefined;
+              return logicalParentContract._resolveExternalArgs(
+                graphChildSources, [...graphParentArgs], logicalParentArtifact, parentState,
+                parentFn.inputs, externalReturns,
+              );
+            }
+            : undefined;
           const selectedContract = proxyCallee?.implementation ?? callee;
           const rawFunctionName = nested.interfaceName === '__raw__'
             ? nested.rawFunctionName ?? (selectedContract.inner.artifact.abi as readonly AbiFunction[])
@@ -19013,6 +19088,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }),
                 parent: parentAtomicNode,
                 ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
+                ...(resolveGraphChildArgs && { resolveArgsFromResults: resolveGraphChildArgs }),
                 active: true,
               });
               preparedAtomicNodeByExternalGroup.set(childGroupIndex, atomicNodeIndex);
@@ -20828,6 +20904,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
+    // A return probe can intentionally continue without resolving the probed function's own external groups.
+    // In that mode the group-assembly branch above does not run, but the ABI still contains its named internal
+    // call-base and chunk-leading witnesses. Reconcile those positions after all provisional appends so an earlier
+    // synthetic scalar cannot occupy a bytes slot and every later witness remains aligned.
+    if (abiFunction) {
+      const externalCallInputBasePosition = abiFunction.inputs.findIndex((input) =>
+        input.name === '__internal__externalCallInputBase');
+      if (externalCallInputBasePosition >= 0) {
+        for (let position = 0; position < externalCallInputBasePosition; position++) {
+          const input = abiFunction.inputs[position];
+          if (!input.name.startsWith('__internal__leadingPushValue_')) continue;
+          const value = finalArgs[position];
+          if (!(value instanceof Uint8Array) && typeof value !== 'string') {
+            finalArgs[position] = defaultInternalFunctionArg(input);
+          }
+        }
+        finalArgs[externalCallInputBasePosition] = BigInt(
+          1 + requiredNftIndices.length + externalReadUtxos.length + outStateInputCount
+          + (abiFunction.graphBlockhashOracle?.slotCount ?? 0) + iterationEntryInputs.length,
+        );
+      }
+    }
+
     // Earlier synthetic insertions can leave a placeholder in an already-present
     // slot, so overwrite all call witnesses after finalArgs is complete.
     if (abiFunction) {
@@ -20848,8 +20947,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_FORWARD_ARGS === '1' && functionName === '__forward' && overrides?.emitReturn && abiFunction) {
-      console.error('direct-forward-args', abiFunction.inputs.map((input, index) => {
+      ?.SOLIDC_DEBUG_FORWARD_ARGS === '1' && overrides?.emitReturn && abiFunction) {
+      console.error('direct-return-probe-args', { functionName, args: abiFunction.inputs.map((input, index) => {
         const value = finalArgs[index];
         return {
           name: input.name,
@@ -20858,7 +20957,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? `${value.length}:${binToHex(value.slice(0, 96))}`
             : typeof value === 'bigint' ? value.toString() : String(value),
         };
-      }));
+      }) });
     }
 
     // Create unlockable UTXOs (after all synthetic params are appended to finalArgs)
@@ -22777,6 +22876,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           provisionalResultCommitment: event.commitment,
         };
       }
+
     }
 
     // A manually-expanded delegate graph normally materializes one physical state block per reached call. Two
@@ -22843,6 +22943,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             contract: (node.executionArtifact ?? node.contract.inner.artifact).contractName,
             owner: node.contract.inner.lockingBytecode,
             parent: node.parent,
+            args: node.args.map((value) => value instanceof Uint8Array
+              ? `${value.length}:${binToHex(value).slice(0, 96)}`
+              : Array.isArray(value) ? `array:${value.length}` : String(value)),
+            provisionalResult: node.provisionalResultCommitment
+              ? binToHex(node.provisionalResultCommitment) : undefined,
             route: (node.executionArtifact ?? node.contract.inner.artifact).messageBus?.handlers.find(
               (handler) => handler.name === node.functionName,
             )?.eligible,
@@ -22863,6 +22968,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(node.executor && { executor: node.executor }),
           ...(node.provisionalResultCommitment && {
             provisionalResultCommitment: node.provisionalResultCommitment.slice(),
+          }),
+          ...(node.resolveArgsFromResults && {
+            resolveArgsFromResults: node.resolveArgsFromResults,
           }),
         })));
       }
@@ -23478,11 +23586,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     state?: Record<string, unknown>,
     callerInputs?: readonly { type: string }[],
     executionSelfAddress?: FunctionArgument,
+    allowProvisional = false,
   ): Promise<Map<string, FunctionArgument>> {
     const resolved = new Map<string, FunctionArgument>();
     const visit = async (expression: ExternalCallExpression | undefined): Promise<void> => {
       if (!expression) return;
-      for (const child of [expression.expression, expression.left, expression.right,
+      for (const child of [expression.target, expression.expression, expression.left, expression.right,
         expression.condition, expression.ifTrue, expression.ifFalse]) await visit(child);
       for (const child of expression.args ?? []) await visit(child);
       if (expression.kind !== 'externalCall' || !expression.name) return;
@@ -23495,20 +23604,41 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         0, false, executionSelfAddress,
       ));
       if (values.some((value) => value === undefined)) return;
-      const registered = registryOwner._externalRegistry.get(interfaceName)
+      const target = expression.target && this._evaluateExternalExpression(
+        expression.target, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
+        0, false, executionSelfAddress,
+      );
+      const deploymentAtTarget = typeof target === 'string'
+        ? (findDeploymentByAddress(this.inner.provider, target)
+          ?? findDeploymentByLockingBytecode(this.inner.provider, target))?.contract
+        : target instanceof Uint8Array
+          ? findDeploymentByLockingBytecode(this.inner.provider, binToHex(target))?.contract
+          : undefined;
+      const registered = deploymentAtTarget
+        ?? registryOwner._externalRegistry.get(interfaceName)
         ?? this._externalRegistry.get(interfaceName)
         ?? findDeploymentByName(this.inner.provider, interfaceName)?.contract;
       if (!registered) return;
       let value: StateValue;
-      if (typeof registered === 'object' && 'forward' in registered
-        && typeof (registered as { forward?: unknown }).forward === 'function') {
-        value = await (registered as {
-          forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
-        }).forward(functionName, values as FunctionArgument[]).staticCall();
-      } else {
-        value = await (registered as StatefulContract)._deriveReturnValue(
-          functionName, values as FunctionArgument[],
-        );
+      try {
+        if (typeof registered === 'object' && 'forward' in registered
+          && typeof (registered as { forward?: unknown }).forward === 'function') {
+          value = await (registered as {
+            forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
+          }).forward(functionName, values as FunctionArgument[]).staticCall();
+        } else {
+          value = await (registered as StatefulContract)._deriveReturnValue(
+            functionName, values as FunctionArgument[],
+          );
+        }
+      } catch (error) {
+        if (!allowProvisional || !(error instanceof Error)
+          || !error.message.includes('Could not derive the return value')) throw error;
+        value = expression.type === 'bool' ? false
+          : expression.type === 'string' ? ''
+            : expression.type?.startsWith('bytes') || expression.type?.startsWith('address')
+              ? new Uint8Array()
+              : 0n;
       }
       resolved.set(JSON.stringify(expression), value as FunctionArgument);
     };

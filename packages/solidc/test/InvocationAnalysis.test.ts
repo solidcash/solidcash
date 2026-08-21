@@ -256,7 +256,12 @@ describe('Release 0 shared invocation analysis', () => {
       expression: {
         kind: 'externalCall',
         name: 'IProducer.quote',
+        callsiteId: 0,
         type: 'bigint',
+        target: {
+          kind: 'source',
+          source: { kind: 'forward', paramIndex: 0 },
+        },
       },
     });
   });

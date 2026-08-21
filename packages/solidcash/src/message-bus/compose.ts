@@ -11,7 +11,8 @@ import type {
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import {
-  evalComputedKey, isCanonicalEvmScalarReturnVector, StatefulContract, StatefulFunctionCall,
+  decodeEvmScalarReturn, evalComputedKey, isCanonicalEvmScalarReturnVector,
+  StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
@@ -59,6 +60,10 @@ export interface PreparedAtomicMessageBusCall {
    * fixed-point seed: the composed transaction still has to expose the same result and pass every covenant.
    */
   provisionalResultCommitment?: Uint8Array;
+  /** @internal Rebuild complete arguments from authenticated sibling results, keyed by parent-local callsite. */
+  resolveArgsFromResults?: (
+    results: ReadonlyMap<number, FunctionArgument>,
+  ) => readonly FunctionArgument[] | undefined;
 }
 
 interface CallDescriptor extends PreparedAtomicMessageBusCall {
@@ -422,7 +427,10 @@ const graphRouteContext = (
 
 /** One atomic message bus transaction, still mutable only through its explicit build/send methods. */
 export class AtomicMessageBusComposition {
-  public constructor(private readonly options: ComposeAtomicMessageBusOptions) {}
+  public constructor(
+    private readonly options: ComposeAtomicMessageBusOptions,
+    private readonly resultPropagationDepth = 0,
+  ) {}
 
   private async _build(): Promise<TransactionBuilder> {
     const descriptors: CallDescriptor[] = this.options.preparedCalls
@@ -1551,6 +1559,82 @@ export class AtomicMessageBusComposition {
         );
         if (returning.some((invocation) =>
           derivedResults[invocation.index] !== claimedResults[invocation.index])) {
+          // Some compiler-authored arguments contain an earlier invocation's result inside a larger expression
+          // (for example a struct field or abi.encodePacked). Once the VM exposes an updated authenticated result,
+          // rebuild those complete expressions and restart planning: argsHex, route-key witnesses, participant
+          // batches, and the call manifest all depend on the argument bytes and must change atomically.
+          const resultsByParent = new Map<number, Map<number, FunctionArgument>>();
+          for (const invocation of returning) {
+            if (invocation.parent === null || invocation.consumerCallsiteId === undefined) continue;
+            const resultHex = derivedResults[invocation.index];
+            if (resultHex === undefined || invocation.resultTypes.length !== 1) continue;
+            const artifact = plan.participants[invocation.callee].artifact;
+            let value: FunctionArgument | undefined;
+            if (artifactUsesSolidityAbi(artifact)) {
+              value = decodeEvmScalarReturn(hexToBin(resultHex), invocation.resultTypes[0]);
+            } else {
+              try {
+                const bytes = hexToBin(resultHex);
+                const decoded = decodePushdataValue(bytes, 0, invocation.resultTypes[0], artifact.structs);
+                if (decoded.bytesConsumed === bytes.length) value = decoded.value as FunctionArgument;
+              } catch {
+                // Unsupported result shapes remain ordinary fixed-point claims; no argument is guessed.
+              }
+            }
+            if (value === undefined) continue;
+            const siblings = resultsByParent.get(invocation.parent) ?? new Map<number, FunctionArgument>();
+            siblings.set(invocation.consumerCallsiteId, value);
+            resultsByParent.set(invocation.parent, siblings);
+          }
+          let propagated = false;
+          const nextCalls = descriptors.map((descriptor, index): PreparedAtomicMessageBusCall => {
+            const invocation = plan.invocations[index];
+            const siblingResults = invocation.parent === null
+              ? undefined : resultsByParent.get(invocation.parent);
+            const resolved = siblingResults && descriptor.resolveArgsFromResults?.(siblingResults);
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1' && siblingResults
+              && descriptor.resolveArgsFromResults) {
+              console.error('atomic-result-argument-resolution', {
+                invocation: index,
+                functionName: descriptor.functionName,
+                callsites: [...siblingResults.keys()],
+                resolved: resolved !== undefined,
+                changed: resolved !== undefined
+                  && semanticJson(resolved) !== semanticJson(descriptor.args),
+              });
+            }
+            let args = descriptor.args;
+            if (resolved && semanticJson(resolved) !== semanticJson(descriptor.args)) {
+              propagated = true;
+              args = resolved;
+            }
+            return {
+              contract: descriptor.contract,
+              functionName: descriptor.functionName,
+              args,
+              ...(descriptor.callsiteId !== undefined && { callsiteId: descriptor.callsiteId }),
+              ...(descriptor.executionArtifact && { executionArtifact: descriptor.executionArtifact }),
+              ...(descriptor.executor && { executor: descriptor.executor }),
+              ...(derivedResults[index] !== undefined
+                ? { provisionalResultCommitment: hexToBin(derivedResults[index]) }
+                : descriptor.provisionalResultCommitment && {
+                  provisionalResultCommitment: descriptor.provisionalResultCommitment,
+                }),
+              ...(descriptor.resolveArgsFromResults && {
+                resolveArgsFromResults: descriptor.resolveArgsFromResults,
+              }),
+            };
+          });
+          if (propagated) {
+            if (this.resultPropagationDepth >= descriptors.length) {
+              throw new Error('messageBus: authenticated result arguments did not converge');
+            }
+            return new AtomicMessageBusComposition(
+              { ...this.options, preparedCalls: nextCalls },
+              this.resultPropagationDepth + 1,
+            )._build();
+          }
           claimedResults = derivedResults;
           continue;
         }

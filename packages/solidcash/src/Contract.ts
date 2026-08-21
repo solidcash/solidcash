@@ -514,8 +514,17 @@ export class Contract<
         if (Array.isArray(arg)) return arg.map(coerceArg);
         return arg;
       };
-      const encodedArgs = args
-        .map((arg, i) => encodeFunctionArgument(coerceArg(arg) as never, argInputs[i].type, structs));
+      const encodedArgs = args.map((arg, i) => {
+        try {
+          return encodeFunctionArgument(coerceArg(arg) as never, argInputs[i].type, structs);
+        } catch (error) {
+          throw new Error(
+            `Could not encode argument '${argInputs[i].name}' at index ${i} as ${argInputs[i].type}: `
+            + `${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
+          );
+        }
+      });
 
       // Transaction builders call each unlocker repeatedly while deriving state commitments, fees, and the
       // finalized transaction. Most covenant inputs have no signatures and already include every synthesized

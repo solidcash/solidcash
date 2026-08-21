@@ -114,8 +114,15 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
     throw new Error(`messageBus: participant count must be in [2, ${ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS}]`);
   }
   if (rows.length > ATOMIC_MESSAGE_BUS_MAX_ROWS) {
+    const rowCounts = rows.reduce<Record<number, number>>((counts, row) => {
+      counts[row.kind] = (counts[row.kind] ?? 0) + 1;
+      return counts;
+    }, {});
+    const breakdown = [
+      ['invocations', 0], ['resources', 1], ['events', 2], ['values', 3], ['tokens', 4], ['sidecars', 6],
+    ].map(([label, kind]) => `${label}=${rowCounts[kind as number] ?? 0}`).join(', ');
     throw new Error(
-      `messageBus: callManifest row count ${rows.length} exceeds ${ATOMIC_MESSAGE_BUS_MAX_ROWS}`,
+      `messageBus: callManifest row count ${rows.length} exceeds ${ATOMIC_MESSAGE_BUS_MAX_ROWS} (${breakdown})`,
     );
   }
   const participantParts = participants.map((participant, index) => {

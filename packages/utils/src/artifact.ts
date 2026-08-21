@@ -781,9 +781,10 @@ export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 /** Shared wire constants for the atomic single-transaction message bus. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
 export const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;
-// The wire stores row count as uint16. Sixty-four covers bounded multi-effect DAGs while finalized-byte and VM
-// preflight remain the authoritative production admission gates (notably the stock 520-byte stack-item limit).
-export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 64;
+// This is a wire-format bound, not an independent production policy: finalized-byte and VM preflight are the
+// authoritative network admission gates. Keeping a smaller arbitrary ceiling rejects otherwise valid graphs
+// before those exact checks (and makes the limit depend on how many authenticated resource rows a contract uses).
+export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 0xffff;
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
 export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
   'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';

@@ -6,6 +6,7 @@ import {
   isFixedStateRepairSlot,
   isForwardOutputOnlyRepairSlot,
   isForwardStateRepairCoordinate,
+  isOwnedStateRepairCoordinate,
   isRepairableNftOutput,
   isScidPlaceholderCommitment,
 } from '../../src/stateful/computed-output-repair.js';
@@ -61,6 +62,20 @@ describe('isForwardStateRepairCoordinate', () => {
   it('allows physical state updates in the forward band only', () => {
     expect(isForwardStateRepairCoordinate({ inputIndex: 26, outputIndex: 28 })).toBe(true);
     expect(isForwardStateRepairCoordinate({ inputIndex: 26, outputIndex: 25 })).toBe(false);
+  });
+});
+
+describe('isOwnedStateRepairCoordinate', () => {
+  it('allows an authenticated delegate to repair its earlier fixed proxy state', () => {
+    expect(isOwnedStateRepairCoordinate({
+      inputIndex: 3, outputIndex: 1, delegateOwnedFixedState: true,
+    })).toBe(true);
+  });
+
+  it('keeps unrelated predecessor outputs protected', () => {
+    expect(isOwnedStateRepairCoordinate({
+      inputIndex: 3, outputIndex: 1, delegateOwnedFixedState: false,
+    })).toBe(false);
   });
 });
 
@@ -179,6 +194,36 @@ describe('canApplyRepairedNftCommitment', () => {
       hasLockingBytecode: false,
       fixedStateSlot: false,
     })).toBe('skip');
+  });
+
+  it('uses an advertised larger ceiling only for authenticated physical state', () => {
+    const proposed = new Uint8Array(246).fill(0xab);
+    expect(canApplyRepairedNftCommitment({
+      capability: 'mutable',
+      currentCommitmentHex: 'cd'.repeat(248),
+      proposed,
+      hasLockingBytecode: false,
+      fixedStateSlot: true,
+      maximumCommitmentBytes: 256,
+    })).toBe('apply-commit');
+    expect(canApplyRepairedNftCommitment({
+      capability: 'mutable',
+      currentCommitmentHex: 'cd'.repeat(248),
+      proposed,
+      hasLockingBytecode: false,
+      fixedStateSlot: false,
+    })).toBe('skip');
+  });
+
+  it('allows a short exact update at an authenticated mutable chunk slot', () => {
+    expect(canApplyRepairedNftCommitment({
+      capability: 'mutable',
+      currentCommitmentHex: '52080000000000000000',
+      proposed: hexToBin('5206000000000000'),
+      hasLockingBytecode: false,
+      fixedStateSlot: false,
+      authenticatedMutableSlot: true,
+    })).toBe('apply-commit');
   });
 
   it('uses the active provider commitment ceiling for authenticated resource updates', () => {

@@ -1830,6 +1830,20 @@ export function selectEvmScalarReturnCommitment(
   return undefined;
 }
 
+/** Validate the canonical outer bytes field used by message-bus Solidity return channels. */
+export function isCanonicalEvmScalarReturnBlob(
+  candidate: Uint8Array, expectedTypes: readonly string[],
+): boolean {
+  try {
+    const outer = decodePushdataValue(candidate, 0, 'bytes');
+    return outer.value instanceof Uint8Array
+      && outer.bytesConsumed === candidate.length
+      && isCanonicalEvmScalarReturnVector(outer.value, expectedTypes);
+  } catch {
+    return false;
+  }
+}
+
 /** Recover a Solidity ABI value which is live immediately before a return-output comparison. */
 function extractEvmScalarReturnCommitment(
   fullTrace: AuthenticationProgramStateCommon[], expectedTypes: readonly string[], allowRaw = true,
@@ -10144,8 +10158,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 returnCommitments = [expectedCommitment];
               }
             }
-            if (evmScalar && (returnCommitments?.length
-              || !fullTraceRet.at(-1)?.error || !/^0+$/.test(evmScalar))) {
+            // An exact return-output comparison binds the result to the compiler-assigned channel. A schema-shaped
+            // stack value is only fallback evidence: mappings and state serialization can leave canonical pushdata
+            // wrappers around unrelated ABI-width words (for example a hashed key) in the same route frame.
+            // Never let that weaker scan replace an authenticated output observation.
+            if (evmScalar && !returnCommitments?.length
+              && (!fullTraceRet.at(-1)?.error || !/^0+$/.test(evmScalar))) {
               const boolReturn = calleeReturnTypes.length === 1 && calleeReturnTypes[0] === 'bool';
               const logicalName = group.logicalFunctionName ?? group.functionName;
               const writerAbi = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
@@ -23180,6 +23198,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     });
     let commitment = commitments?.[0]
       ?? extractPendingReturnCommitmentAtOutput(trace, returnOutputIndex);
+    if (commitment !== undefined && resultSchema?.solidityAbi
+      && !isCanonicalEvmScalarReturnBlob(hexToBin(commitment), resultSchema.resultTypes)) {
+      commitment = undefined;
+    }
     const materializedReturn = transaction.outputs[returnOutputIndex]?.token?.nft?.commitment;
     const materializedReturnHex = materializedReturn === undefined ? undefined : binToHex(materializedReturn);
     const extractSchemaFallback = (candidateTrace: AuthenticationProgramStateCommon[]): string | undefined => {
@@ -23223,6 +23245,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       relaxedCommitment = relaxedCommitments?.[0]
         ?? extractPendingReturnCommitmentAtOutput(relaxedTrace, returnOutputIndex)
         ?? extractSchemaFallback(relaxedTrace);
+      if (relaxedCommitment !== undefined && resultSchema?.solidityAbi
+        && !isCanonicalEvmScalarReturnBlob(hexToBin(relaxedCommitment), resultSchema.resultTypes)) {
+        relaxedCommitment = undefined;
+      }
       const relaxedSchemaFallback = extractSchemaFallback(relaxedTrace);
       if (relaxedSchemaFallback !== undefined
         && (relaxedCommitment === undefined || relaxedCommitment === materializedReturnHex)) {

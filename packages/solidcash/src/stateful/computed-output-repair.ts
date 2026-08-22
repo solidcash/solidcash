@@ -61,6 +61,19 @@ export function isForwardStateRepairCoordinate(args: {
 }
 
 /**
+ * A delegate executes against its proxy's physical state, which can precede the implementation input in the
+ * composed block. The caller must authenticate both fixed lineage and category ownership before setting
+ * `delegateOwnedFixedState`; ordinary participants retain the forward-only rule.
+ */
+export function isOwnedStateRepairCoordinate(args: {
+  inputIndex: number;
+  outputIndex: number;
+  delegateOwnedFixedState: boolean;
+}): boolean {
+  return isForwardStateRepairCoordinate(args) || args.delegateOwnedFixedState;
+}
+
+/**
  * A covenant-authenticated continuation may materialize onto an unowned
  * alignment pad. This is deliberately narrower than commitment repair: it
  * creates a new token output, so an existing token, physical state slot, real
@@ -103,10 +116,12 @@ export function canApplyRepairedNftCommitment(args: {
   proposed: Uint8Array;
   hasLockingBytecode: boolean;
   fixedStateSlot: boolean;
+  authenticatedMutableSlot?: boolean;
   maximumCommitmentBytes?: number;
 }): RepairedNftApply {
   const {
     capability, currentCommitmentHex, proposed, hasLockingBytecode, fixedStateSlot,
+    authenticatedMutableSlot = false,
     maximumCommitmentBytes = 128,
   } = args;
   if (capability !== 'mutable' && capability !== 'none') return 'skip';
@@ -117,7 +132,8 @@ export function canApplyRepairedNftCommitment(args: {
   // coordinate. A compiler-owned mutable data NFT is different: its exact physical lineage and
   // OUTPUTTOKENCOMMITMENT equality authenticate the coordinate, and scalar state legitimately encodes to one or
   // two bytes (for example 0 -> 00 and 100 -> 0164). Do not impose the entry/chunk shape floor on that state.
-  const authenticatedScalarState = capability === 'mutable' && fixedStateSlot && proposed.length > 0;
+  const authenticatedScalarState = capability === 'mutable'
+    && (fixedStateSlot || authenticatedMutableSlot) && proposed.length > 0;
   if ((!authenticatedScalarState && proposed.length < 3)
     || proposed.length > maximumCommitmentBytes) return 'skip';
   const proposedHex = binToHex(proposed);
@@ -125,7 +141,8 @@ export function canApplyRepairedNftCommitment(args: {
     const currentLen = currentCommitmentHex.length === 0 ? 0 : hexToBin(currentCommitmentHex).length;
     if (isEmptyValueEntryCommitment(proposed) && currentLen > 128) return 'skip';
     if (hasLockingBytecode) return 'apply-lock-and-commit';
-    if ((fixedStateSlot || proposed.length >= 32) && proposedHex !== currentCommitmentHex) {
+    if ((fixedStateSlot || authenticatedMutableSlot || proposed.length >= 32)
+      && proposedHex !== currentCommitmentHex) {
       return 'apply-commit';
     }
     return 'skip';

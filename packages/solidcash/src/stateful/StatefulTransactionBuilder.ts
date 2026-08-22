@@ -72,6 +72,7 @@ import {
   isFixedStateRepairSlot,
   isForwardOutputOnlyRepairSlot,
   isForwardStateRepairCoordinate,
+  isOwnedStateRepairCoordinate,
   isRepairableNftOutput,
 } from './computed-output-repair.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
@@ -13522,6 +13523,7 @@ export class StatefulTransactionBuilder {
     reportRepairTiming('repair-slots-indexed');
     const failingCategory = builder.inputs[inputIndex]?.token?.category;
     let repairOwnerCategory = failingCategory;
+    let delegateRepairOwnerCategory: string | undefined;
     const associatedCategories = new Set<string>();
     if (failingCategory) associatedCategories.add(failingCategory);
     for (const [llcIndex, llc] of this.lowLevelCallUtxoGroups.entries()) {
@@ -13533,6 +13535,7 @@ export class StatefulTransactionBuilder {
       // this builder's root proxy. Including the implementation category alone either blocks valid root-state
       // repair or, without the same-category gate below, lets a nested implementation overwrite unrelated state.
       repairOwnerCategory = proxyGroup?.categoryId ?? this.categoryId;
+      delegateRepairOwnerCategory = repairOwnerCategory;
       associatedCategories.add(repairOwnerCategory);
     }
     const vm = createVirtualMachineBch2026ForProvider(this.builderOptions.provider, {
@@ -13554,18 +13557,26 @@ export class StatefulTransactionBuilder {
             ? builder.outputs[outputIndex] : undefined;
           const sameCategory = output?.token?.category !== undefined
             && associatedCategories.has(output.token.category);
-          const maxBytes = output?.token?.nft?.capability === 'none'
-            ? (this.builderOptions.provider?.consensusLimits?.maximumNftCommitmentBytes ?? 128)
-            : 128;
           const eventSlot = tokenEventSlots.get(outputIndex);
           const isReturnSlot = tokenReturnSlots.has(outputIndex);
           const fixedStateSlot = fixedStateSlots.has(outputIndex);
+          // Inferred entries/chunks retain the native 128-byte structural ceiling. An exact OTC equality on
+          // physical state lineage may use the larger commitment ceiling explicitly advertised by the provider.
+          const maxBytes = output?.token?.nft?.capability === 'none' || fixedStateSlot
+            ? (this.builderOptions.provider?.consensusLimits?.maximumNftCommitmentBytes ?? 128)
+            : 128;
           const forwardOutputOnlySlot = isForwardOutputOnlyRepairSlot({
             inputIndex,
             outputIndex,
             fixedStateSlot,
           });
-          const forwardStateCoordinate = isForwardStateRepairCoordinate({ inputIndex, outputIndex });
+          const stateRepairCoordinate = isOwnedStateRepairCoordinate({
+            inputIndex,
+            outputIndex,
+            delegateOwnedFixedState: fixedStateSlot
+              && delegateRepairOwnerCategory !== undefined
+              && output?.token?.category === delegateRepairOwnerCategory,
+          });
           const layoutWitnessSlot = forwardOutputOnlySlot
             && (eventSlot !== undefined || isReturnSlot || delegateEventSlots.has(outputIndex));
           // Structured events are typically wider than a hash, while learned typed events can be short script
@@ -13584,10 +13595,10 @@ export class StatefulTransactionBuilder {
             && isRepairableNftOutput('none', commitment.length, maxBytes)
             && realEvent) {
             eventRepairs.set(outputIndex, commitment);
-          } else if (forwardStateCoordinate
+          } else if (stateRepairCoordinate
             && sameCategory && !eventSlot && !isReturnSlot
             && !delegateEventSlots.has(outputIndex)
-            && commitment.length <= 128 && outputIndex >= 0
+            && commitment.length <= maxBytes && outputIndex >= 0
             && outputIndex < builder.outputs.length
             && !isScidIdentityCommitment(output?.token?.nft?.commitment)) {
             repairs.set(outputIndex, {
@@ -13811,12 +13822,21 @@ export class StatefulTransactionBuilder {
       if (output?.token?.nft) {
         const proposedHex = binToHex(found.commitment);
         const currentHex = String(output.token.nft.commitment ?? '');
+        const outputLockingBytecode = output.to instanceof Uint8Array
+          ? output.to : addressToLockScript(output.to);
+        const authenticatedDynamicChunkSlot = this.dynamicChunkVars.some((variable) => (
+          binToHex(variable.lockingBytecode) === binToHex(outputLockingBytecode)
+        ));
         const action = canApplyRepairedNftCommitment({
           capability: output.token.nft.capability,
           currentCommitmentHex: currentHex,
           proposed: found.commitment,
           hasLockingBytecode: found.lockingBytecode !== undefined,
           fixedStateSlot: fixedStateSlots.has(found.outputIndex),
+          authenticatedMutableSlot: authenticatedDynamicChunkSlot,
+          maximumCommitmentBytes: fixedStateSlots.has(found.outputIndex)
+            ? (this.builderOptions.provider?.consensusLimits?.maximumNftCommitmentBytes ?? 128)
+            : 128,
         });
         if (action !== 'skip') {
           repairDetails.push({

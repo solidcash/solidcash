@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
 import {
   encodeExternalReturnValue, encodeLeadingRouteArrayPushes, encodeRouteArrayPushResult,
-  isCanonicalEvmScalarReturnVector, selectEvmScalarReturnCommitment,
+  isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector, selectEvmScalarReturnCommitment,
 } from '../../src/stateful/StatefulContract.js';
 import {
   selectMaterializedTailReturnEvents,
@@ -59,6 +59,11 @@ describe('encodeExternalReturnValue', () => {
   it('can require compiler framing when raw ABI words are ambiguous', () => {
     const stateHash = new Uint8Array(32).fill(0xca);
     expect(selectEvmScalarReturnCommitment([stateHash], ['uint256'], false)).toBeUndefined();
+  });
+
+  it('rejects a state-entry commitment from a framed Solidity return channel', () => {
+    const entryCommitment = new Uint8Array(64).fill(0xca);
+    expect(isCanonicalEvmScalarReturnBlob(entryCommitment, ['uint256'])).toBe(false);
   });
 });
 

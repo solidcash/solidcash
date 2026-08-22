@@ -18125,6 +18125,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_TOALTSTACK, loc);
           copy(`__internal__vmapBatchProof_${priors[i]}`);
           this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc);
+          // A non-zero proof can also belong to an inactive capacity row: the SDK deliberately reuses an active
+          // family witness there to avoid inventing another absent-key predecessor. Such a row still publishes
+          // predOut=-2 and must not become the owner of a later active write. Require the prior itself to settle a
+          // real write; runtimeAliasPriorSlots includes every earlier structural candidate, including read-only and
+          // inactive rows, while the current writer may alias only an earlier active writer.
+          this.emit(Op.OP_TOALTSTACK, loc);
+          copy(`__internal__vmapBatchPredOut_${priors[i]}`);
+          this.emit(encodeInt(-2n), loc); this.emit(Op.OP_NUMNOTEQUAL, loc);
+          this.emit(Op.OP_FROMALTSTACK, loc);
+          this.emit(Op.OP_BOOLAND, loc);
           this.emit(Op.OP_FROMALTSTACK, loc);
           this.emit(Op.OP_BOOLAND, loc);
           if (i === 0) this.emit(Op.OP_TOALTSTACK, loc);
@@ -18133,7 +18143,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }
         }
         // Proof offset zero is the canonical inactive-row sentinel. Such a row has no physical entry and may
-        // publish predOut=-2 without naming an alias owner. For an active row, only an earlier ACTIVE proof with
+        // publish predOut=-2 without naming an alias owner. For an active row, only an earlier active WRITE with
         // the same authenticated target can justify the alias sentinel.
         copy(`__internal__vmapBatchProof_${slot}`);
         this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
@@ -18625,7 +18635,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bin(Op.OP_ELSE); this.emit(encodeInt(BigInt(targets.length)), loc); bin(Op.OP_ENDIF);
       } else {
         this.emit(encodeInt(BigInt(targets.length)), loc);
-        for (const slot of runtimeAliases) {
+        // `-2` excludes both a later same-target alias and an inactive fixed-route row. The first row of a
+        // route family has no runtimeAliasPriorSlots, but it can still be inactive; counting only alias-capable
+        // rows therefore invents one output whenever the first admitted handler is absent from the envelope.
+        for (const slot of targets) {
           arg(`__internal__vmapBatchPredOut_${slot}`, 1);
           this.emit(encodeInt(-2n), loc); bin(Op.OP_NUMEQUAL); bin(Op.OP_SUB);
         }
@@ -20654,8 +20667,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // True for a write slot marked alias-conditional (verified via a runtime key-inequality gate, not the main loops).
   private isAliasCondWrite(slotIdx: number): boolean {
-    return (this.entrySlots[slotIdx]?.aliasCondDeleteSlot !== undefined
-      || (this.entrySlots[slotIdx]?.runtimeAliasPriorSlots?.length ?? 0) > 0)
+    const entry = this.entrySlots[slotIdx];
+    return !this.sortedWrittenCollections.has(entry?.collection)
+      && (entry?.aliasCondDeleteSlot !== undefined
+        || (entry?.runtimeAliasPriorSlots?.length ?? 0) > 0)
       && this.pendingEntryWrites.has(slotIdx)
       && !this.pendingEntryDeletes.has(slotIdx) && !this.condDeleteSlots.has(slotIdx);
   }

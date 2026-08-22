@@ -219,14 +219,14 @@ const convergeMessageBusMutableResourceOutputs = (
 
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    const proposals = new Map<number, Uint8Array>();
+    const proposals = new Map<number, { commitment: Uint8Array; inputIndex: number; ip: number }>();
     for (const block of assembly.blocks) {
       const owned = ownedByBlock.get(block.participant)!;
       if (owned.size === 0) continue;
       for (let inputIndex = block.base;
         inputIndex < block.base + block.blockLayout.blockSize;
         inputIndex += 1) {
-        const observed = new Map<number, Uint8Array>();
+        const observed = new Map<number, { commitment: Uint8Array; ip: number }>();
         const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
           opcodes: new Set([Op.OP_OUTPUTTOKENCOMMITMENT]),
           beforeOperation: (unknownState) => {
@@ -242,26 +242,45 @@ const convergeMessageBusMutableResourceOutputs = (
               return;
             }
             if (!Number.isSafeInteger(outputIndex) || !owned.has(outputIndex)) return;
-            observed.set(outputIndex, state.stack[state.stack.length - 2].slice());
+            observed.set(outputIndex, {
+              commitment: state.stack[state.stack.length - 2].slice(), ip: state.ip,
+            });
           },
         });
         const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
         if (vm.stateSuccess(evaluated) === true) continue;
-        for (const [outputIndex, commitment] of observed) {
+        for (const [outputIndex, { commitment, ip }] of observed) {
           const current = proposals.get(outputIndex);
-          if (current !== undefined && binToHex(current) !== binToHex(commitment)) {
+          if (current !== undefined && binToHex(current.commitment) !== binToHex(commitment)) {
+            const witnessSummary = (index: number): string => {
+              const unlocker = builder.inputs[index]?.unlocker as unknown as {
+                abiFunction?: { inputs?: readonly { name: string }[] };
+                params?: readonly unknown[];
+              };
+              const rows = unlocker?.abiFunction?.inputs?.flatMap((input, paramIndex) => {
+                if (!/^__internal__vmapBatch(?:Proof|PredOut)_\d+$/.test(input.name)) return [];
+                const value = unlocker.params?.[paramIndex];
+                if (input.name.includes('PredOut') && value === -2n) return [];
+                return [`${input.name}=${value instanceof Uint8Array ? binToHex(value) : String(value)}`];
+              }) ?? [];
+              return rows.length === 0 ? 'no active batch witnesses' : rows.join(', ');
+            };
             throw new Error(
               `messageBus: participant ${block.participant} covenants disagree on mutable resource output `
-              + `${outputIndex}`,
+              + `${outputIndex}: input ${current.inputIndex} proposes ${binToHex(current.commitment)}, `
+              + `input ${inputIndex} proposes ${binToHex(commitment)} `
+              + `(instruction offsets ${current.ip} and ${ip}); `
+              + `input ${current.inputIndex}: ${witnessSummary(current.inputIndex)}; `
+              + `input ${inputIndex}: ${witnessSummary(inputIndex)}`,
             );
           }
-          proposals.set(outputIndex, commitment);
+          proposals.set(outputIndex, { commitment, inputIndex, ip });
         }
       }
     }
 
     let changed = false;
-    for (const [outputIndex, proposed] of proposals) {
+    for (const [outputIndex, { commitment: proposed }] of proposals) {
       const output = builder.outputs[outputIndex];
       if (!output?.token?.nft) continue;
       const action = canApplyRepairedNftCommitment({

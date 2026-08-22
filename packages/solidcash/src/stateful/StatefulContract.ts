@@ -16964,11 +16964,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const delegateVisibleInputs = (delegateFn?.inputs ?? []).filter(
               (input) => !input.name.startsWith('__internal__'),
             );
-            // An ordinary proxy OP_INVOKE evaluates the implementation against the proxy/state-owner input. The
-            // atomic graph also evaluates the authenticated implementation route at its own executor input, so
-            // retain both exact OP_UTXOBYTECODE identities rather than reconstructing either from a category.
-            const delegateSelfAddress = hexToBin(this.inner.lockingBytecode);
-            const delegateGraphSelfAddress = hexToBin(callInfo.contract.inner.lockingBytecode);
+            // Delegate handlers are validated by the co-spent implementation input. Resolve `address(this)` from
+            // that exact input's P2SH32 locking bytecode in both ordinary and atomic construction, matching the
+            // handler's OP_INPUTINDEX OP_UTXOBYTECODE execution context rather than the proxy state owner.
+            const delegateSelfAddress = hexToBin(callInfo.contract.inner.lockingBytecode);
             const nestedExternalCalls: ExternalCallAbi[] = [];
             for (const nested of publishedNestedExternalCalls) {
               if (!nested.condition) {
@@ -17162,14 +17161,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
                 ? await this._resolveExternalExpressionReturns(
                   nestedSources, delegateVisibleArgs, callInfo.contract, onChainState.state,
-                  delegateVisibleInputs, delegateGraphSelfAddress,
+                  delegateVisibleInputs, delegateSelfAddress,
                   true,
                 )
                 : nestedExpressionReturns;
               const graphNestedArgs = preparedAtomicNodes
                 ? this._resolveExternalArgs(
                   nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-                  delegateVisibleInputs, graphExpressionReturns, 0, false, delegateGraphSelfAddress,
+                  delegateVisibleInputs, graphExpressionReturns, 0, false, delegateSelfAddress,
                 ) ?? nestedArgs
                 : nestedArgs;
               const resolveGraphNestedArgs = preparedAtomicNodes && nestedSources
@@ -17178,7 +17177,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   if (externalReturns.size === 0) return undefined;
                   return this._resolveExternalArgs(
                     nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-                    delegateVisibleInputs, externalReturns, 0, false, delegateGraphSelfAddress,
+                    delegateVisibleInputs, externalReturns, 0, false, delegateSelfAddress,
                   );
                 }
                 : undefined;
@@ -17574,6 +17573,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     delegateVisibleInputs,
                     undefined,
                     index,
+                    false,
+                    delegateSelfAddress,
                   );
                   let nextValue: StateValue | undefined;
                   if (nextArgs) {
@@ -18750,6 +18751,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       undefined,
                       0,
                       true,
+                      delegateSelfAddress,
                     );
                   if (!canRefreshReachedCallFromPostState(remainsReachable)) return false;
                   const nextLogicalArgs = this._resolveExternalArgs(
@@ -18761,6 +18763,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     undefined,
                     0,
                     true,
+                    delegateSelfAddress,
                   );
                   if (!nextLogicalArgs) return false;
                   const nextGraphArgs = this._resolveExternalArgs(
@@ -18772,7 +18775,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     undefined,
                     0,
                     true,
-                    delegateGraphSelfAddress,
+                    delegateSelfAddress,
                   );
                   const physicalGroupIndex = logicalGroup.sharedGroupIndex ?? childExternalGroupIndex;
                   const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];
@@ -18789,6 +18792,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         ?? proxyCallee?.implementation.inner.artifact,
                       delegateVisibleInputs,
                       true,
+                      delegateSelfAddress,
                     )
                     : undefined;
                   const logicalArgsChanged = !functionArgumentListsEqual(
@@ -18931,7 +18935,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     if (!nextLogicalArgs) return false;
                     const nextGraphArgs = this._resolveExternalArgs(
                       nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-                      delegateVisibleInputs, externalReturns, 0, false, delegateGraphSelfAddress,
+                      delegateVisibleInputs, externalReturns, 0, false, delegateSelfAddress,
                     ) ?? nextLogicalArgs;
                     const physicalGroupIndex = logicalGroup.sharedGroupIndex ?? childExternalGroupIndex;
                     const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];

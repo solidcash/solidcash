@@ -18,6 +18,7 @@ export default defineConfig({
     ecrecover: 'p2pkh',
     // Skip speculative external-handler fallback rungs in this large imported call graph during development.
     optimizeForCompilationSpeed: true,
+    suppressWarnings: true,
   },
   // Same mnemonic/path as the EffectiveAcceleration Hardhat project so getSigners() and
   // config.networks.hardhat.accounts.mnemonic stay aligned with marketplace.test.ts.

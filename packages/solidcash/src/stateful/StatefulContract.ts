@@ -2,6 +2,7 @@
 import {
   Artifact,
   ArtifactMap,
+  AbiInput,
   AbiFunction,
   ArgSource,
   ExternalCallExpression,
@@ -3870,7 +3871,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     });
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_ROUTE_ENTRY_PLAN === '1') {
-      console.error('message-bus-active-entry-operations', {
+      console.error('message-bus-active-entry-operations', JSON.stringify({
         handlers: reachedHandlers.map((handler) => handler.name),
         entries: [...activeRouteEntryOperations.entries()].map(([slotIndex, operations]) => ({
           slotIndex,
@@ -3879,7 +3880,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           operations,
         })),
         inactiveRouteEntrySlots,
-      });
+      }));
     }
     // Route entry metadata is the union of every admitted handler. In particular, a collection read in the
     // selected envelope can still advertise `write` because a sibling handler writes the same physical journal.
@@ -11823,9 +11824,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (valueChunkVars.length > 0) {
             let vcOffset = stb.getValueChunkOutputBase();
             for (const vcv of valueChunkVars) {
-              const existing = stb.getValueChunkRawCommitments(vcv.collection);
+              const existing = stb.getValueChunkRawCommitments(vcv.id);
               if (existing.length === 0) {
-                stb.setValueChunkRawCommitments(vcv.collection, ['00']); // seed so the covenant's chunk 0 has an output
+                stb.setValueChunkRawCommitments(vcv.id, ['00']); // seed so the covenant's chunk 0 has an output
                 continue;
               }
               const range = { min: vcOffset, max: vcOffset + LOOP_ENTRY_MAX_ITERATIONS };
@@ -11836,7 +11837,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // exists, the address is fixed; later families may inspect the same output index and must not replace
               // this collection's already-authenticated address.
               if (derivedBytecodes.length > 0 && existing.every((commitment) => commitment === '00')) {
-                stb.setValueChunkLockingBytecode(vcv.collection, derivedBytecodes[0]);
+                stb.setValueChunkLockingBytecode(vcv.id, derivedBytecodes[0]);
                 commitmentProgress += 1;
               }
               // The complete computed value and its SHA-256 root are already present in the write trace. Recover
@@ -11869,7 +11870,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
                 if (exact.some((commitment, index) => commitment !== existing[index])
                   || exact.length !== existing.length) {
-                  stb.setValueChunkRawCommitments(vcv.collection, exact);
+                  stb.setValueChunkRawCommitments(vcv.id, exact);
                   commitmentProgress += exact.length;
                 }
                 vcOffset += exact.length;
@@ -11916,7 +11917,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const next: string[] = [];
               for (let i = 0; i < derivedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
               if (stillLearning) next.push('00');
-              stb.setValueChunkRawCommitments(vcv.collection, next);
+              stb.setValueChunkRawCommitments(vcv.id, next);
               commitmentProgress += derivedCount;
               vcOffset += next.length;
             }
@@ -12322,8 +12323,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               count: stb.getLoopEntryCommitments(variable.collection).length,
             })),
             valueChunks: stb.getValueChunkVars().map((variable) => ({
+              id: variable.id,
               collection: variable.collection,
-              count: stb.getValueChunkRawCommitments(variable.collection).length,
+              count: stb.getValueChunkRawCommitments(variable.id).length,
             })),
             derivedChunks: [...stb.getDerivedChunkOutputs()].map(([outputIndex, chunk]) => ({
               outputIndex,
@@ -12367,9 +12369,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Minting it would leave a garbage chunk NFT that a later chunked read of the same slot fails to parse.
         let removedValueChunkPlaceholder = false;
         for (const vcv of stb.getValueChunkVars()) {
-          const commits = stb.getValueChunkRawCommitments(vcv.collection).filter((c) => c !== '00');
-          if (commits.length !== stb.getValueChunkRawCommitments(vcv.collection).length) {
-            stb.setValueChunkRawCommitments(vcv.collection, commits);
+          const commits = stb.getValueChunkRawCommitments(vcv.id).filter((c) => c !== '00');
+          if (commits.length !== stb.getValueChunkRawCommitments(vcv.id).length) {
+            stb.setValueChunkRawCommitments(vcv.id, commits);
             removedValueChunkPlaceholder = true;
           }
         }
@@ -13111,9 +13113,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }> = [];
     // P5b COMPUTED chunkable writes (no resolvable value param): the covenant pins the chunks, so the SDK derives
     // their commitments from the trace (registered as valueChunkVars after the builder is created).
-    const computedValueChunkCollections = new Set<string>();
-    const computedValueChunkValues = new Map<string, { slot: Uint8Array; value: Uint8Array }>();
-    const ambiguousComputedValueChunkCollections = new Set<string>();
+    const computedValueChunkRuns: Array<{ id: string; collection: string }> = [];
+    const addComputedValueChunkRun = (collection: string): void => {
+      computedValueChunkRuns.push({ id: `${collection}#${computedValueChunkRuns.length}`, collection });
+    };
     // Computed UPDATES (present key, no NEW node): pin the loop entry empty so it is not phantom-derived.
     const computedValueUpdateCollections = new Set<string>();
     const runtimeLoopDerivedCounts = new Map<string, number>();
@@ -13507,9 +13510,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // sorted-batch lanes still need their authenticated zero-key journal above, but their gated write
               // never emits value continuations. Registering those collections as computed values shifts the
               // selected handler's shared continuation band by one slot per inactive collection.
-              computedValueChunkCollections.add(access.collection); // derive chunk commitments from the trace
               const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
                 ?.messageBusRowArguments;
+              let exactComputedValue: Uint8Array | undefined;
               if (selectedRows && authenticatedChunkableValue) {
                 const timestamp = typeof onChainState.state.__block_timestamp === 'bigint'
                   ? onChainState.state.__block_timestamp : undefined;
@@ -13530,7 +13533,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     entryCompilerRoute.internalArgs = { ...entryCompilerRoute.internalArgs, [name]: leadingValue };
                   }
                 }
-                const exactValue = encodeRouteArrayPushResult({
+                exactComputedValue = encodeRouteArrayPushResult({
                   rowArguments: selectedRows,
                   collection: access.collection,
                   valueType: collection.valueType,
@@ -13538,15 +13541,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   initialValue: authenticatedChunkableValue,
                   timestamp,
                 });
-                if (exactValue) {
-                  const prior = computedValueChunkValues.get(access.collection);
-                  if (prior && binToHex(prior.slot) !== binToHex(slot)) {
-                    ambiguousComputedValueChunkCollections.add(access.collection);
-                    computedValueChunkValues.delete(access.collection);
-                  } else if (!ambiguousComputedValueChunkCollections.has(access.collection)) {
-                    computedValueChunkValues.set(access.collection, { slot, value: exactValue });
-                  }
+                if (exactComputedValue && exactComputedValue.length > VALUE_INLINE_LIMIT) {
+                  // Keep each write as its own physical run. Keying these by collection collapsed two writes to
+                  // different keys into one continuation family, even though their slot/root-derived covenants
+                  // are necessarily distinct. Entry-access order is also the compiler's pin order.
+                  valueChunkMints.push({
+                    collection: access.collection,
+                    slot,
+                    digest: sha256Sync(exactComputedValue),
+                    chunks: splitValueIntoValueChunks(exactComputedValue),
+                  });
                 }
+              }
+              if (!exactComputedValue) {
+                // No deterministic SDK reconstruction is available; learn this run from the authenticated VM pin.
+                addComputedValueChunkRun(access.collection);
               }
               // A computed UPDATE (present key) mints no NEW node; pin its loop entry EMPTY so the loop-entry
               // derivation does not misread the value-chunk pin's OP_OUTPUTTOKENCOMMITMENT calls as a phantom NEW.
@@ -13851,6 +13860,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (const batch of entryAbiFunction?.sortedBatchInfo ?? []) {
         const collection = stateLayout.collections.find((c) => c.name === batch.collection);
         if (!collection) throw new Error(`Unknown vmap batch collection: ${batch.collection}`);
+        const inactiveBatchSlots = new Set(batch.slotIndices.filter((slotIndex) =>
+          inactiveMessageBusEntrySlots.has(slotIndex)));
+        if (batch.linear && inactiveBatchSlots.size > 0) {
+          throw new Error(`Linear vmap batch '${batch.collection}' cannot contain inactive message-bus slots`);
+        }
         if (batchNoOp) {
           const noOpRows = batch.linear ? batch.slotIndices.map((slotIndex) => ({
             slotIndex, slot: batchTargetSlots.get(slotIndex)!, next: new Uint8Array(32),
@@ -13871,9 +13885,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const collectionEntries = await collectionEntriesFor(collection.signature);
         const list = SortedList.fromUtxos(collectionEntries);
-        const writes = batch.slotIndices.filter((slotIndex) => !batchAliasSkips.has(slotIndex)).map((slotIndex) => ({
-          slot: batchTargetSlots.get(slotIndex)!, value: new Uint8Array(),
-        }));
+        const writes = batch.slotIndices
+          .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex))
+          .map((slotIndex) => ({ slot: batchTargetSlots.get(slotIndex)!, value: new Uint8Array() }));
         if (writes.some((w) => !w.slot)) throw new Error(`vmap batch '${batch.collection}' is missing a target slot`);
         const plan = list.planBatchUpsert(writes);
         const targetValues = new Set(writes.map((w) => bytesToSlotValue(w.slot).toString()));
@@ -13897,6 +13911,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const ownerByUtxo = new Map<string, number>();
         for (const slotIndex of batch.slotIndices) {
+          if (inactiveBatchSlots.has(slotIndex)) {
+            const raw = this._rawVMapBatchWitness?.get(slotIndex);
+            batchWitnesses.push(raw?.slot ?? batchTargetSlots.get(slotIndex)!, raw?.proof ?? 0n,
+              raw?.next ?? new Uint8Array(32), raw?.predOut ?? -2n);
+            continue;
+          }
           if (batchAliasSkips.has(slotIndex)) {
             const ownerSlot = batchAliasOwners.get(slotIndex);
             if (ownerSlot === undefined) throw new Error(`vmap alias slot has no canonical owner ${slotIndex}`);
@@ -14625,7 +14645,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         finalArgs[witnessIndex] = oldWitnesses;
         insertLoopPredecessors.push(...runtimeInputs);
         runtimeLoopDerivedCounts.set(info.collection, keysArr.length);
-        if (collection.chunkableValue) computedValueChunkCollections.add(info.collection);
+        if (collection.chunkableValue) addComputedValueChunkRun(info.collection);
         continue;
       }
       if (info.mutation) {
@@ -15812,7 +15832,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (let directIdx = 0; directIdx < directGroupCount; directIdx++) {
         const directGroup = externalCallUtxoGroups[directIdx];
         const bContract = directGroup.externalContract as StatefulContract;
-        const bAbi = bContract.inner.artifact.abi as readonly { externalCalls?: readonly ExternalCallAbi[]; name: string }[];
+        const bAbi = bContract.inner.artifact.abi as readonly {
+          externalCalls?: readonly ExternalCallAbi[]; inputs: readonly AbiInput[]; name: string;
+        }[];
         const bAbiFunc = bAbi.find((f) => f.name === directGroup.functionName);
 
         if (!bAbiFunc?.externalCalls?.length) continue;
@@ -21683,21 +21705,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // P5b COMPUTED values: register the collections whose value chunks must be DERIVED from the trace (the covenant
     // pins them but the SDK has no value param to build them). The auto-derivation reads nNew from the entry's len4
     // and progressively extracts the pinned chunk commitments (like dynamicChunkVars).
-    for (const collectionName of computedValueChunkCollections) {
-      builder.registerValueChunkVar(collectionName, DUMMY_FUNDER_LOCKING_BYTECODE);
-      const exact = computedValueChunkValues.get(collectionName);
-      if (!exact) continue;
-      const commitments = exact.value.length > VALUE_INLINE_LIMIT
-        ? splitValueIntoValueChunks(exact.value)
-          .map((chunk, index) => buildValueChunkCommitment(index, chunk))
-        : [];
-      builder.setValueChunkRawCommitments(collectionName, commitments);
-      if (commitments.length > 0) {
-        const address = getValueChunkAddress(
-          this.inner, this.categoryId, collectionName, exact.slot, sha256Sync(exact.value),
-        );
-        builder.setValueChunkLockingBytecode(collectionName, addressToLockScript(address));
-      }
+    for (const run of computedValueChunkRuns) {
+      builder.registerValueChunkVar(run.collection, DUMMY_FUNDER_LOCKING_BYTECODE, run.id);
     }
     for (const collectionName of computedValueUpdateCollections) {
       builder.setLoopEntryCommitments(collectionName, []);

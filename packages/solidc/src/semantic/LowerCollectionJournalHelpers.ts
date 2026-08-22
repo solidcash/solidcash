@@ -920,10 +920,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         this.at(new IdentifierNode(name), body),
       ), body);
       write.fromModifier = entry.sourceScope;
-      return this.at(new BranchNode(
+      const flush = this.at(new BranchNode(
         this.cacheMaskIsSet(COLLECTION_CACHE_DIRTY_MASK, index, body),
         this.at(new BlockNode([write]), body),
       ), body);
+      flush.preserveConditionalEntryWrites = true;
+      return flush;
       }));
     const statements = body.statements ?? [];
     // Keep a top-level tail return structurally visible to the later all-paths-return analysis. Its flush is

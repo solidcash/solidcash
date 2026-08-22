@@ -246,6 +246,31 @@ describe('Release 3 collection journal lowering', () => {
       ]));
   });
 
+  it('keeps lazy multi-entry journal flushes conditional for chunk-backed values', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract LazyChunkJournal() {
+        mapping(bytes20 => string) names;
+        mapping(bytes20 => string) bios;
+        function update(bytes20 who, string name, string bio) internal {
+          this.names[who] = name;
+          this.bios[who] = bio;
+        }
+        function apply(bool selected, bytes20 who, string name, string bio) {
+          if (selected) { update(who, name, bio); }
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+
+    const apply = artifact.abi.find((entry) => entry.name === 'apply');
+    expect(apply?.entryAccesses).toHaveLength(2);
+    expect(apply?.blockLayout?.slots.filter((slot) => slot.kind === 'entry'))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ conditional: true }),
+        expect.objectContaining({ conditional: true }),
+      ]));
+  });
+
   it('threads MasterChef-style dependent pool accumulators as one tuple journal', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract Chef() {

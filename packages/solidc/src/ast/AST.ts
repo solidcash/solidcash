@@ -870,6 +870,13 @@ export class BranchNode extends StatementNode {
   // Populated by SymbolTableTraversal: operations that need pre-allocation
   branchOps?: BranchOps;
 
+  /**
+   * Compiler-owned entry flush whose absent arm must remain physically inactive. Ordinary source branches may be
+   * if-converted to an unconditional preserve/write, but doing that to a lazy journal flush creates trailing
+   * resources (notably chunk NFTs) for handlers which were never selected.
+   */
+  preserveConditionalEntryWrites?: boolean;
+
   constructor(
     public condition: ExpressionNode,
     public ifBlock: BlockNode,

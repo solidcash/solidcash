@@ -28,9 +28,10 @@ import {
   FunctionCallNode,
   LiteralNode,
   TupleAssignmentNode,
+  BoolLiteralNode,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
-import { MappingType, ArrayType, StructType, Type } from '@solidcash/utils';
+import { MappingType, ArrayType, StructType, Type, PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
@@ -143,17 +144,22 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private transformFunction(fn: FunctionDefinitionNode): void {
     for (const e of this.collectCacheableEntries(fn.body)) {
       const local = `${PREFIX}${e.mapping}_${this.counter++}`;
-      new EntryRedirect(e.mapping, e.key, local, e.valueType).visit(fn.body);
+      const dirty = `${local}_dirty`;
+      new EntryRedirect(e.mapping, e.key, local, dirty, e.valueType).visit(fn.body);
       const cacheRead = new MappingAccessNode(e.mapping, [buildKeyNode(e.key, fn.body.location)]); // T[] local = m[k];
       cacheRead.fromModifier = e.fromModifier;
       cacheRead.location = fn.body.location;
       const cache = new VariableDefinitionNode(e.valueType, [], local, cacheRead);
       cache.location = fn.body.location;
-      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], e.mapping, e.key, local);
+      const dirtyInit = new BoolLiteralNode(false);
+      dirtyInit.location = fn.body.location;
+      const dirtyLocal = new VariableDefinitionNode(PrimitiveType.BOOL, [], dirty, dirtyInit);
+      dirtyLocal.location = fn.body.location;
+      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], e.mapping, e.key, local, dirty);
       if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
-        stmts = [...stmts, this.makeFlush(e.mapping, e.key, local, fn.body.location, e.fromModifier)];
+        stmts = [...stmts, this.makeFlush(e.mapping, e.key, local, dirty, fn.body.location, e.fromModifier)];
       }
-      fn.body.statements = [cache, ...stmts];
+      fn.body.statements = [cache, dirtyLocal, ...stmts];
     }
   }
 
@@ -270,7 +276,11 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     scan(body, false);
     const out: Array<{ mapping: string; key: KeyKind; valueType: Type; fromModifier?: string }> = [];
     for (const e of info.values()) {
-      if (e.bad || !(e.inLoop || e.count >= 2 || e.readAfterWrite || this.structMappings.has(e.mapping))) continue;
+      // A struct entry needs the local rebuild path for even one field write, but a read-only struct access must
+      // stay read-only. Treating every struct entry as cacheable synthesized an unconditional whole-entry flush
+      // for plain reads, widening their ABI operation from `read` to `read,write` and requiring phantom outputs.
+      if (e.bad || !(e.inLoop || e.count >= 2 || e.readAfterWrite
+        || (e.written && this.structMappings.has(e.mapping)))) continue;
       // key must be invariant across the function: an identifier must not be reassigned; nullary keys always are.
       if (e.key.kind === 'id'
         && (this.assignsName(body, e.key.name) || this.declaresNameInsideLoop(body, e.key.name))) continue;
@@ -313,27 +323,37 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   }
 
   private makeFlush(
-    mapping: string, key: KeyKind, local: string, loc: Node['location'], fromModifier?: string,
-  ): MappingAssignNode {
+    mapping: string, key: KeyKind, local: string, dirty: string, loc: Node['location'], fromModifier?: string,
+  ): BranchNode {
     const rhs = new IdentifierNode(local);
     rhs.location = loc;
     const keyNode = buildKeyNode(key, loc);
     const flush = new MappingAssignNode(mapping, [keyNode], rhs); // m[k] = local
     flush.fromModifier = fromModifier;
     flush.location = loc;
-    return flush;
+    const flushBlock = new BlockNode([flush]);
+    flushBlock.location = loc;
+    const condition = new IdentifierNode(dirty);
+    condition.location = loc;
+    const branch = new BranchNode(condition, flushBlock);
+    branch.location = loc;
+    // The not-dirty arm is a physical no-op. If-converting it to a preserve write would still consume and recreate
+    // chunk-backed resources, defeating the dirty bit and forcing outputs for paths which never changed the entry.
+    branch.preserveConditionalEntryWrites = true;
+    return branch;
   }
 
   // Insert a `m[k] = local` flush before every return (recursing into if/switch/try/blocks, NOT loops - in-loop
   // returns were already rewritten to flag+break by DesugarReturnInLoop). Mirrors CacheDynamicArrayInLoop.
   private insertFlushesBeforeReturns(
-    stmts: StatementNode[], mapping: string, key: KeyKind, local: string,
+    stmts: StatementNode[], mapping: string, key: KeyKind, local: string, dirty: string,
   ): StatementNode[] {
-    const rec = (s: StatementNode[]): StatementNode[] => this.insertFlushesBeforeReturns(s ?? [], mapping, key, local);
+    const rec = (s: StatementNode[]): StatementNode[] =>
+      this.insertFlushesBeforeReturns(s ?? [], mapping, key, local, dirty);
     const out: StatementNode[] = [];
     for (const stmt of stmts) {
       if (stmt instanceof ReturnNode) {
-        out.push(this.makeFlush(mapping, key, local, stmt.location));
+        out.push(this.makeFlush(mapping, key, local, dirty, stmt.location));
         out.push(stmt);
         continue;
       }
@@ -381,8 +401,21 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 // (bottoming out at IdentifierNode(m)) -> local / local[j].
 class EntryRedirect extends AstTraversal {
   constructor(
-    private mapping: string, private key: KeyKind, private local: string, private valueType: Type,
+    private mapping: string, private key: KeyKind, private local: string, private dirty: string,
+    private valueType: Type,
   ) { super(); }
+
+  private withDirty(write: StatementNode, loc: Node['location']): BlockNode {
+    const dirty = new IdentifierNode(this.dirty);
+    dirty.location = loc;
+    const value = new BoolLiteralNode(true);
+    value.location = loc;
+    const mark = new AssignNode(dirty, value);
+    mark.location = loc;
+    const block = new BlockNode([write, mark]);
+    block.location = loc;
+    return block;
+  }
 
   private entryIndex(node: MappingAccessNode | MappingAssignNode): Node | undefined {
     if (node.arrayIndex) return node.arrayIndex;
@@ -425,25 +458,25 @@ class EntryRedirect extends AstTraversal {
         const p = new ArrayPushNode(this.local, visited.expression);
         p.noArg = visited.noArg;
         p.location = visited.location;
-        return p;
+        return this.withDirty(p, visited.location);
       }
       if (visited.arrayPop) {
         const p = new ArrayPopNode(this.local);
         p.location = visited.location;
-        return p;
+        return this.withDirty(p, visited.location);
       }
       const idx = this.entryIndex(visited);
       if (idx) {
         const a = new ArrayAssignNode(this.local, idx, visited.expression);
         a.location = visited.location;
-        return a;
+        return this.withDirty(a, visited.location);
       }
       // Whole-entry write `m[k] = expr` -> `local = expr`. Only fires for a CACHED SCALAR entry: an array entry with
       // a whole write is marked `bad` (never cached), so an array EntryRedirect never reaches here for its own m[k].
       const id = new IdentifierNode(this.local); id.location = visited.location;
       const asgn = new AssignNode(id, visited.expression);
       asgn.location = visited.location;
-      return asgn;
+      return this.withDirty(asgn, visited.location);
     }
     return visited;
   }
@@ -462,7 +495,7 @@ class EntryRedirect extends AstTraversal {
     const rebuilt = new FunctionCallNode(ctorName, args); rebuilt.location = visited.location;
     const local = new IdentifierNode(this.local); local.location = visited.location;
     const write = new AssignNode(local, rebuilt); write.location = visited.location;
-    return write;
+    return this.withDirty(write, visited.location);
   }
 
   visitArrayAssign(node: ArrayAssignNode): Node {
@@ -471,7 +504,7 @@ class EntryRedirect extends AstTraversal {
       const id = new IdentifierNode(this.local); id.location = visited.location;
       const asgn = new AssignNode(id, visited.value);
       asgn.location = visited.location;
-      return asgn;
+      return this.withDirty(asgn, visited.location);
     }
     return visited;
   }

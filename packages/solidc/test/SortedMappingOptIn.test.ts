@@ -87,6 +87,17 @@ describe('sorted mapping opt-in (vmap)', () => {
     assertSortedCompile(`${MAP} function f(int k) { pos[k] = P(1, 2); } }`, 'pos');
   });
 
+  it('keeps a struct-valued mapping field read read-only', () => {
+    const artifact = compileString(
+      'contract C() { struct P { int x; int y; } mapping(int => P) pos; '
+        + 'function f(int k) { require(pos[k].x >= 0); } }',
+      { forceStateful: true },
+    );
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses).toMatchObject([{
+      collection: 'pos', operations: ['read'],
+    }]);
+  });
+
   it('compiles an unbounded bytes value type (P5a: value in the 64 B tail; >64 B fails closed at the VM)', () => {
     const MAP = 'contract C() { mapping(int => bytes) blob;';
     assertSortedCompile(`${MAP} function f(int k, bytes b) { blob[k] = b; } }`, 'blob');

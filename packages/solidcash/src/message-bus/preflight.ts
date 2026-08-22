@@ -1301,7 +1301,7 @@ const evaluateEveryInput = (
           };
         }).unlocker;
         console.error('message-bus-graph-params', JSON.stringify(
-          unlocker?.abiFunction?.inputs?.flatMap((input, index) => {
+          unlocker?.abiFunction?.inputs?.flatMap<Record<string, unknown>>((input, index) => {
             if (!input.name.startsWith('__internal__graph')) return [];
             const value = unlocker.params?.[index];
             if (input.name === '__internal__graphEmissions' && value instanceof Uint8Array) {
@@ -1416,7 +1416,7 @@ const evaluateEveryInput = (
             capability: transaction.outputs[26].token?.nft?.capability,
             amount: transaction.outputs[26].token?.amount,
           },
-          outputs: debugEnv.SOLIDC_DEBUG_FAILURE_POINT_FULL === '1'
+          outputs: debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_FULL === '1'
             ? transaction.outputs.map((output, outputIndex) => ({
               outputIndex,
               lockingBytecode: binToHex(output.lockingBytecode).slice(0, 16),
@@ -1440,7 +1440,7 @@ const evaluateEveryInput = (
               value: value instanceof Uint8Array ? binToHex(value) : String(value),
             }];
           }),
-          inputs: debugEnv.SOLIDC_DEBUG_FAILURE_POINT_FULL === '1'
+          inputs: debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_FULL === '1'
             ? builder.inputs.map((input, index) => ({
               index,
               category: input.token?.category,

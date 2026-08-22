@@ -16431,15 +16431,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(vc_nnew)');
 
     if (this.valueChunkTrailingCountActive) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('(vc_nnew)'))), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(BigInt(this.getStackIndex(
-        GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT,
-      ) + 1)), loc); this.emit(Op.OP_PICK, loc);
+      // Preserve the offset of this write's run before adding its chunk count to the function-wide total. The SDK
+      // publishes one base for the complete mapping-value chunk family; every later write starts after the chunks
+      // emitted by earlier writes, while the final total also shifts the following dynamic-state continuations.
+      this.emitPickSettlementValue(GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, loc);
+      this.pushToStack('(vc_prior_chunks)');
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex('(vc_nnew)') + 1)), loc); this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
       this.pushToStack('(vc_total_updated)');
-      this.emitReplace(this.getStackIndex(
-        GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT,
-      ), node);
+      this.emitReplaceCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, node,
+      );
       this.popFromStack();
     }
 
@@ -16453,7 +16456,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (hasReturnEventSlot) {
       const roiIdx = this.getStackIndex('__internal__returnOutputIdx', true);
       if (roiIdx >= 0) {
-        this.emit(encodeInt(BigInt(roiIdx + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: base on top
+        this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc, 1);
         this.emit(encodeInt(0n), loc); this.emit(Op.OP_LESSTHAN, loc);
         this.emit(Op.OP_SUB, loc); // base -= (returnOutputIdx < 0 ? 1 : 0)
       }
@@ -16463,8 +16466,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // value-chunk covenants cannot both claim blockSize. This mirrors emitDynamicWriteVerification's ordering.
     const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
     if (batchCountIdx >= 0) {
-      this.emit(encodeInt(BigInt(batchCountIdx + 1)), loc); // +1: layout base is untracked on top
-      this.emit(Op.OP_PICK, loc);
+      this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1);
       this.emit(Op.OP_ADD, loc);
     }
     this.emit(encodeInt(BigInt(this.getStackIndex('(vc_isinsert)') + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: base on top
@@ -16473,8 +16475,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (witnessedBaseIdx >= 0) {
       // Occupancy may reserve a 1:1 preserve band before the live chunks. A
       // non-negative witness replaces the layout-relative base.
-      this.emit(encodeInt(BigInt(witnessedBaseIdx + 1)), loc);
-      this.emit(Op.OP_PICK, loc);
+      this.emitPickCompilerRouteFrameValue('__internal__valueChunkOutputBase', loc, 1);
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(0n), loc);
       this.emit(Op.OP_GREATERTHANOREQUAL, loc);
@@ -16483,6 +16484,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ELSE, loc);
       this.emit(Op.OP_DROP, loc); // drop -1, keep layout base
       this.emit(Op.OP_ENDIF, loc);
+    }
+    if (this.valueChunkTrailingCountActive) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('(vc_prior_chunks)') + 1)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
     }
     this.pushToStack('(vc_base)');
 
@@ -16717,7 +16723,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitVerifySortedValueOutput(loc, 2, 3, 1, 4);
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // next, addr, H
       this.emit(Op.OP_DROP, loc); this.popFromStack(); // v
-      if (aliasOwner !== undefined || runtimeAliasOwners.length > 0) this.emit(Op.OP_ENDIF, loc);
+      if (aliasOwner !== undefined) {
+        this.emit(Op.OP_ENDIF, loc);
+      } else if (runtimeAliasOwners.length > 0) {
+        // The runtime-alias guard is emitted after H(k) has been computed. Its inactive arm therefore still owns
+        // that hash even though the write body (which normally consumes it) is skipped. Leaving it behind makes
+        // every aliased batch target widen an OP_INVOKE result by one runtime-only cell and eventually corrupts
+        // the caller's frame. Balance the guard at its source; no epilogue residue cleanup is required.
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.emit(Op.OP_ENDIF, loc);
+      }
       return node;
     }
 
@@ -18001,25 +18017,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const runtimeAliasSlots = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices)
       .filter((slot) => (this.entrySlots[slot]?.runtimeAliasPriorSlots?.length ?? 0) > 0);
     if (runtimeAliasSlots.length > 0) {
-      // The self-alias journal clone has the same declared tuple arity as the ordinary clone, but OP_INVOKE
-      // retains one empty route-frame item on an alias arm. Authenticate that this is the only stack-shape
-      // divergence, then remove the bottom item before normal covenant settlement. This is deliberately not a
-      // permissive "clean whatever remains" operation: both arms assert their exact expected depth first.
-      runtimeAliasSlots.forEach((slot, index) => {
-        const name = this.vmapWitnessName(`__internal__vmapBatchPredOut_${slot}`);
-        void index;
-        this.emitPickTrackedFromBottom(name, loc);
-        this.emit(encodeInt(-2n), loc); this.emit(Op.OP_NUMEQUAL, loc);
-        if (index > 0) this.emit(Op.OP_BOOLOR, loc);
-      });
-      this.emit(Op.OP_IF, loc);
-      this.emit(Op.OP_DEPTH, loc); this.emit(encodeInt(BigInt(this.stack.length + 1)), loc);
-      this.emit(Op.OP_NUMEQUALVERIFY, loc);
-      this.emit(Op.OP_DEPTH, loc); this.emit(Op.OP_1SUB, loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
-      this.emit(Op.OP_ELSE, loc);
+      // Alias arms must be stack-neutral at their producer. Never "repair" a discrepancy here by deleting an
+      // absolute-bottom item: the bottom of a compiler route is ordinary ABI data, not disposable padding.
       this.emit(Op.OP_DEPTH, loc); this.emit(encodeInt(BigInt(this.stack.length)), loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
-      this.emit(Op.OP_ENDIF, loc);
     }
     if (guard?.slotIndex !== undefined) {
       this.emitBlockSlotIndex('entry', guard.slotIndex, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
@@ -18300,6 +18301,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
           commitmentField(() => { proofIndex(slot, extra); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); }, field);
         };
+        // Message-bus routes expose the union of all handlers in one ABI. A target unused by the selected handler
+        // has no proof input or output and is authenticated by the same -2 sentinel as a general batch target.
+        arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
+        bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
         // One logical target has no intra-batch topology: its final next must equal the authenticated old next.
         directProofField('next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
         directProofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
@@ -18319,6 +18324,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
         directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
         directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
+        bin(Op.OP_ENDIF);
         bin(Op.OP_ENDIF);
       } else if (batch.linear) {
         const rowsName = `__internal__vmapBatchRows_${batch.collection}`;

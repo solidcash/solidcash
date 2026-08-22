@@ -4045,8 +4045,8 @@ export class StatefulTransactionBuilder {
   private lateValueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
   // P5b (computed values): collections whose value chunks are DERIVED from the trace (the SDK has no value param to
   // build them). The covenant pins them, so their commitments come from auto-derivation like dynamicChunkVars.
-  private valueChunkVars: Map<string, Uint8Array> = new Map(); // collection -> chunk-address locking bytecode
-  private valueChunkRawCommitments: Map<string, string[]> = new Map(); // collection -> ordered chunk commitments (hex)
+  private valueChunkVars: Map<string, { collection: string; lockingBytecode: Uint8Array }> = new Map();
+  private valueChunkRawCommitments: Map<string, string[]> = new Map(); // run id -> ordered chunk commitments (hex)
   private eventRawCommitments: Map<number, string> = new Map(); // emitIndex -> hex commitment (from auto-derivation)
   private pendingEventPlaceholders: Array<{ eventSignature: string; emitIndex: number }> = [];
   /** Covenant-authenticated event outputs keyed by their physical coordinate. */
@@ -8444,11 +8444,11 @@ export class StatefulTransactionBuilder {
       return leftIndex - rightIndex;
     });
     if (chunks.length === 0) {
-      for (const { collection, lockingBytecode } of this.getValueChunkVars()) {
+      for (const { id, lockingBytecode } of this.getValueChunkVars()) {
         if (lockingBytecode.length !== 35 || lockingBytecode[0] !== 0xaa || lockingBytecode[1] !== 0x20) {
           continue;
         }
-        for (const commitment of this.getValueChunkRawCommitments(collection)) {
+        for (const commitment of this.getValueChunkRawCommitments(id)) {
           if (!commitment || commitment === '00') continue;
           chunks.push({ commitment, lockingBytecode, categoryId: stateOwnerCategory ?? this.categoryId });
         }
@@ -8995,28 +8995,29 @@ export class StatefulTransactionBuilder {
   }
 
   /** Register a collection whose value chunks are DERIVED from the trace (computed value, no direct param). */
-  registerValueChunkVar(collection: string, lockingBytecode: Uint8Array): this {
-    this.valueChunkVars.set(collection, lockingBytecode);
+  registerValueChunkVar(collection: string, lockingBytecode: Uint8Array, id = collection): this {
+    this.valueChunkVars.set(id, { collection, lockingBytecode });
     return this;
   }
 
-  setValueChunkLockingBytecode(collection: string, lockingBytecode: Uint8Array): this {
-    if (!this.valueChunkVars.has(collection)) throw new Error(`value chunk collection not registered: ${collection}`);
-    this.valueChunkVars.set(collection, lockingBytecode);
+  setValueChunkLockingBytecode(id: string, lockingBytecode: Uint8Array): this {
+    const value = this.valueChunkVars.get(id);
+    if (!value) throw new Error(`value chunk run not registered: ${id}`);
+    this.valueChunkVars.set(id, { ...value, lockingBytecode });
     return this;
   }
 
-  getValueChunkVars(): Array<{ collection: string; lockingBytecode: Uint8Array }> {
-    return [...this.valueChunkVars.entries()].map(([collection, lockingBytecode]) => ({ collection, lockingBytecode }));
+  getValueChunkVars(): Array<{ id: string; collection: string; lockingBytecode: Uint8Array }> {
+    return [...this.valueChunkVars.entries()].map(([id, value]) => ({ id, ...value }));
   }
 
-  setValueChunkRawCommitments(collection: string, commitments: string[]): this {
-    this.valueChunkRawCommitments.set(collection, commitments);
+  setValueChunkRawCommitments(id: string, commitments: string[]): this {
+    this.valueChunkRawCommitments.set(id, commitments);
     return this;
   }
 
-  getValueChunkRawCommitments(collection: string): string[] {
-    return this.valueChunkRawCommitments.get(collection) ?? [];
+  getValueChunkRawCommitments(id: string): string[] {
+    return this.valueChunkRawCommitments.get(id) ?? [];
   }
 
   /** Output index where value chunks begin: after the block, dynamic chunks, and loop-entry (NEW) outputs. */
@@ -11423,8 +11424,8 @@ export class StatefulTransactionBuilder {
         chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
         builder.addOutput(chunkOutput);
       }
-      for (const { collection, lockingBytecode } of this.getValueChunkVars()) {
-        for (const commitment of this.valueChunkRawCommitments.get(collection) ?? []) {
+      for (const { id, lockingBytecode } of this.getValueChunkVars()) {
+        for (const commitment of this.valueChunkRawCommitments.get(id) ?? []) {
           const chunkOutput = {
             to: lockingBytecode, amount: 1200n,
             token: { amount: 0n, category: this.categoryId,
@@ -11559,7 +11560,7 @@ export class StatefulTransactionBuilder {
         loopEntries: this._localLoopEntryOutputCount(),
         literalValueChunks: this.valueChunkOutputs.length,
         derivedValueChunks: [...this.getValueChunkVars()].reduce(
-          (sum, value) => sum + (this.valueChunkRawCommitments.get(value.collection) ?? []).length,
+          (sum, value) => sum + (this.valueChunkRawCommitments.get(value.id) ?? []).length,
           0,
         ),
       };
@@ -11576,8 +11577,9 @@ export class StatefulTransactionBuilder {
               commitments: this.loopEntryCommitments.get(value.collection)?.length ?? 0,
             })),
             valueChunks: [...this.getValueChunkVars()].map((value) => ({
+              id: value.id,
               collection: value.collection,
-              commitments: (this.valueChunkRawCommitments.get(value.collection) ?? []).map((commitment) => ({
+              commitments: (this.valueChunkRawCommitments.get(value.id) ?? []).map((commitment) => ({
                 bytes: commitment.length / 2,
                 head: commitment.slice(0, 20),
               })),

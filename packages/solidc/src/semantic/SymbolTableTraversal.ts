@@ -2351,7 +2351,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           .map(([collection, slotIndices]) => ({
             collection,
             slotIndices,
-            ...(slotIndices.length > 1 && slotIndices.every((batchSlot) => {
+            // A message-bus route describes the union of every handler's writes. At runtime some of those slots
+            // can be inactive, so its batch cardinality is not fixed and cannot use the dense linear row witness.
+            // The general batch proof accepts the -2 inactive sentinel on a per-target basis.
+            ...(!node.messageBusRoute && slotIndices.length > 1 && slotIndices.every((batchSlot) => {
               const info = ordered.find((candidate) => candidate.slotIndex === batchSlot);
               return info?.aliasCondDeleteSlot === undefined && (info?.runtimeAliasPriorSlots?.length ?? 0) === 0;
             }) && { linear: true }),

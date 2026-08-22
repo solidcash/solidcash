@@ -140,6 +140,11 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
 
   // Returns the replacement statements if the branch is a convertible conditional entry op, else undefined.
   private tryConvertBranch(node: BranchNode): StatementNode[] | undefined {
+    // Lazy collection-journal flushes encode physical handler reachability. Replacing one with
+    // `m[k] = dirty ? pending : m[k]` is value-equivalent only for inline entries: a chunk-backed preserve arm
+    // still emits and pins a fresh trailing chunk run. Keep the compiler-authored branch so inactive handlers
+    // consume and produce no write-only resources.
+    if (node.preserveConditionalEntryWrites) return undefined;
     // A vmap write whose key varies in a runtime loop has its own counter-indexed conditional output protocol.
     // Preserve the branch: predicating it into `cond ? value : old` would force an ordinary fixed-slot read for
     // the not-taken arm, but this entry deliberately has no fixed block slot.

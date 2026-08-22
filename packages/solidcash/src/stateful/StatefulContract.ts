@@ -16829,6 +16829,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       resolveArgsFromResults?: (
         results: ReadonlyMap<number, FunctionArgument>,
       ) => FunctionArgument[] | undefined;
+      /** Apply authenticated sibling returns to this physical legacy call group. */
+      refreshArgsFromResults?: (
+        results: ReadonlyMap<number, FunctionArgument>,
+      ) => boolean;
     };
     let preparedAtomicNodes: PreparedAtomicNode[] | undefined;
     const preparedAtomicNodeByExternalGroup = new Map<number, number>();
@@ -18697,7 +18701,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const logicalGroup = externalCallUtxoGroups[childExternalGroupIndex];
               if (nestedSources && !needsExpressionReturns) {
                 let currentLogicalArgs = nestedArgs;
-                let currentCompilerRoute = childCompilerRoute;
+                let currentCompilerRoute: NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined =
+                  childCompilerRoute;
                 logicalGroup.refreshFromCallerState = (nextState, apply = true) => {
                   // This group represents a callsite already proven reachable against the caller's input state.
                   // If the completed caller state makes that guard false, it cannot be the state at this callsite:
@@ -18846,6 +18851,100 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   }
                   return true;
                 };
+              }
+              if (nestedSources && needsExpressionReturns && preparedAtomicNodes) {
+                const atomicNodeIndex = preparedAtomicNodeByExternalGroup.get(childExternalGroupIndex);
+                let currentLogicalArgs = nestedArgs;
+                let currentCompilerRoute: NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined =
+                  childCompilerRoute;
+                if (atomicNodeIndex !== undefined) {
+                  preparedAtomicNodes[atomicNodeIndex].refreshArgsFromResults = (results) => {
+                    const externalReturns = externalReturnsForCallsites(nestedSources, results);
+                    if (externalReturns.size === 0) return false;
+                    const nextLogicalArgs = this._resolveExternalArgs(
+                      nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
+                      delegateVisibleInputs, externalReturns, 0, false, delegateSelfAddress,
+                    );
+                    if (!nextLogicalArgs) return false;
+                    const nextGraphArgs = this._resolveExternalArgs(
+                      nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
+                      delegateVisibleInputs, externalReturns, 0, false, delegateGraphSelfAddress,
+                    ) ?? nextLogicalArgs;
+                    const physicalGroupIndex = logicalGroup.sharedGroupIndex ?? childExternalGroupIndex;
+                    const activeCompilerRoute = currentCompilerRoute
+                      ?? (proxyCallee && delegateCallGroupIndex !== undefined
+                        ? lowLevelCallUtxoGroups[delegateCallGroupIndex]?.compilerRoute
+                        : externalCallUtxoGroups[physicalGroupIndex]?.compilerRoute);
+                    const nextCompilerRoute = currentCompilerRoute
+                      ? this._buildRepeatedExternalBatch(
+                        nested, delegateVisibleArgs, callee, callInfo.contract.inner.artifact,
+                        onChainState.state, calleeRouteArtifact, delegateVisibleInputs, false,
+                        delegateSelfAddress, externalReturns,
+                      )
+                      : activeCompilerRoute
+                        ? this._replaceRepeatedExternalBatchRow(
+                          activeCompilerRoute, currentLogicalArgs, nextLogicalArgs,
+                          calleeRouteArtifact, delegateSelfAddress,
+                        )
+                        : undefined;
+                    const logicalArgsChanged = !functionArgumentListsEqual(
+                      currentLogicalArgs, nextLogicalArgs,
+                    );
+                    const routeChanged = nextCompilerRoute !== undefined && activeCompilerRoute !== undefined
+                      && (!binsAreEqual(nextCompilerRoute.blob, activeCompilerRoute.blob)
+                        || !functionArgumentListsEqual(nextCompilerRoute.args, activeCompilerRoute.args));
+                    if (!logicalArgsChanged && !routeChanged) return false;
+
+                    currentLogicalArgs = nextLogicalArgs;
+                    logicalGroup.logicalFunctionArgs = [...nextLogicalArgs];
+                    preparedAtomicNodes![atomicNodeIndex] = {
+                      ...preparedAtomicNodes![atomicNodeIndex],
+                      args: [...nextGraphArgs],
+                    };
+                    if (nextCompilerRoute) {
+                      currentCompilerRoute = nextCompilerRoute;
+                      const logicalInternalArgs = logicalGroup.compilerRoute?.internalArgs
+                        ?? logicalGroup.internalArgs;
+                      logicalGroup.compilerRoute = {
+                        ...nextCompilerRoute,
+                        ...(logicalInternalArgs && { internalArgs: logicalInternalArgs }),
+                      };
+                    }
+
+                    const selectedFunctionName = nextCompilerRoute?.abiFunction.name
+                      ?? resolvedRawFunctionName ?? nested.functionName;
+                    if (proxyCallee && delegateCallGroupIndex !== undefined) {
+                      const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
+                      if (nextCompilerRoute) {
+                        const internalArgs = delegate.compilerRoute?.internalArgs ?? delegate.internalArgs;
+                        delegate.functionName = selectedFunctionName;
+                        delegate.compilerRoute = {
+                          ...nextCompilerRoute,
+                          ...(internalArgs && { internalArgs }),
+                        };
+                        delegate.refreshFunctionArgs?.(nextCompilerRoute.args);
+                      } else if (delegate.functionName === selectedFunctionName) {
+                        delegate.refreshFunctionArgs?.(nextLogicalArgs);
+                      }
+                    } else {
+                      const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];
+                      if (nextCompilerRoute) {
+                        const internalArgs = physicalGroup.compilerRoute?.internalArgs
+                          ?? physicalGroup.internalArgs;
+                        physicalGroup.functionName = selectedFunctionName;
+                        physicalGroup.compilerRoute = {
+                          ...nextCompilerRoute,
+                          ...(internalArgs && { internalArgs }),
+                        };
+                        physicalGroup.refreshFunctionArgs?.(nextCompilerRoute.args);
+                      } else if (physicalGroup.functionName === selectedFunctionName
+                        || physicalGroup.logicalFunctionName === selectedFunctionName) {
+                        physicalGroup.refreshFunctionArgs?.(nextLogicalArgs);
+                      }
+                    }
+                    return true;
+                  };
+                }
               }
               allGroupEcSlots = [...allGroupEcSlots, nested];
               // Delegate-composed children use the callsite map below rather than the direct/transitive parent
@@ -23015,10 +23114,84 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && [...identities].some((index) => candidate.identity === `external-call:${index}`
             || candidate.identity === `external-call:${index}:0`));
         if (!event) continue;
+        const returnArtifact = node.executionArtifact ?? node.contract.inner.artifact;
+        const returnTypes = (returnArtifact.abi as readonly AbiFunction[])
+          .find((candidate) => candidate.name === node.functionName)?.outputs?.map((output) => output.type) ?? [];
+        const canonicalSeed = artifactUsesSolidityAbi(returnArtifact)
+          ? returnTypes.length > 0 && isCanonicalEvmScalarReturnVector(event.commitment, returnTypes)
+          : (() => {
+            try {
+              let offset = 0;
+              for (const type of returnTypes) {
+                offset += decodePushdataValue(
+                  event.commitment,
+                  offset,
+                  type,
+                  returnArtifact.structs ?? returnArtifact.stateLayout?.structs,
+                ).bytesConsumed;
+              }
+              return returnTypes.length > 0 && offset === event.commitment.length;
+            } catch {
+              return false;
+            }
+          })();
+        // Graph discovery can stop at an intermediate native stack value before a Solidity return is framed.
+        // Such observations are useful to the legacy fixed-point repair, but an atomic seed must already match
+        // the callee's complete result schema. Otherwise it changes execution mode only to fail before probing.
+        if (!canonicalSeed) continue;
         preparedAtomicNodes[nodeIndex] = {
           ...node,
           provisionalResultCommitment: event.commitment,
         };
+      }
+
+      if (preparedAtomicNodes.some((node) => node.refreshArgsFromResults !== undefined)) {
+        builder._setResultDependentArgumentRefresher((transactionBuilder) => {
+          const resultsByParent = new Map<number, Map<number, FunctionArgument>>();
+          for (const [groupIndex, nodeIndex] of preparedAtomicNodeByExternalGroup) {
+            const node = preparedAtomicNodes![nodeIndex];
+            if (node?.parent === null || node?.callsiteId === undefined) continue;
+            const group = externalCallUtxoGroups[groupIndex];
+            const outputIndex = group?.returnOutputIndex
+              ?? builder.getBuiltExternalCallReturnEventOutputIndex(groupIndex);
+            if (outputIndex === undefined || outputIndex < 0) continue;
+            const commitmentHex = transactionBuilder.outputs[outputIndex]?.token?.nft?.commitment;
+            if (typeof commitmentHex !== 'string' || commitmentHex.length === 0) continue;
+            const artifact = node.executionArtifact ?? node.contract.inner.artifact;
+            const output = (artifact.abi as readonly AbiFunction[])
+              .find((candidate) => candidate.name === node.functionName)?.outputs;
+            if (output?.length !== 1) continue;
+            const commitment = hexToBin(commitmentHex);
+            let value: FunctionArgument | undefined;
+            if (artifactUsesSolidityAbi(artifact)) {
+              if (isCanonicalEvmScalarReturnVector(commitment, [output[0].type])) {
+                value = decodeEvmScalarReturn(commitment, output[0].type);
+              }
+            } else {
+              try {
+                const decoded = decodePushdataValue(
+                  commitment, 0, output[0].type, artifact.structs ?? artifact.stateLayout?.structs,
+                );
+                if (decoded.bytesConsumed === commitment.length) {
+                  value = decoded.value as FunctionArgument;
+                }
+              } catch {
+                // A provisional or composite return is not an authenticated scalar result.
+              }
+            }
+            if (value === undefined) continue;
+            const siblings = resultsByParent.get(node.parent) ?? new Map<number, FunctionArgument>();
+            siblings.set(node.callsiteId, value);
+            resultsByParent.set(node.parent, siblings);
+          }
+          let changed = false;
+          for (const node of preparedAtomicNodes!) {
+            if (node.parent === null || !node.refreshArgsFromResults) continue;
+            const results = resultsByParent.get(node.parent);
+            if (results && node.refreshArgsFromResults(results)) changed = true;
+          }
+          return changed;
+        });
       }
 
     }
@@ -24373,6 +24546,88 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * logical selector must resolve to an advertised eligible handler with the
    * same input types before any transaction is built.
    */
+  private _replaceRepeatedExternalBatchRow(
+    route: NonNullable<ExternalCallUtxoGroup['compilerRoute']>,
+    previousArgs: readonly FunctionArgument[],
+    nextArgs: readonly FunctionArgument[],
+    calleeArtifact: Artifact,
+    routeMsgSender: FunctionArgument,
+  ): NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined {
+    const capability = calleeArtifact.messageBus;
+    if (!capability || !route.rowArguments) return undefined;
+    const rowIndex = route.rowArguments.findLastIndex((row) => (
+      functionArgumentListsEqual(row.args, previousArgs)
+    ));
+    if (rowIndex < 0) return undefined;
+    const rowArguments = route.rowArguments.map((row, index) => (
+      index === rowIndex ? { ...row, args: [...nextArgs] } : row
+    ));
+    const structs = calleeArtifact.structs ?? calleeArtifact.stateLayout?.structs;
+    const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
+    const keyWitnessValues = new Map<string, FunctionArgument>();
+    const encodedRows = rowArguments.map((row, logicalIndex) => {
+      const handler = capability.handlers.find((candidate) => candidate.selector === row.selector);
+      if (!handler?.eligible || handler.inputs.length !== row.args.length) return undefined;
+      const encoded = row.args.map((argument, index) => (
+        encodeFunctionArgument(argument, handler.inputs[index].type, structs)
+      ));
+      if (encoded.some((argument) => !(argument instanceof Uint8Array))) return undefined;
+      for (const binding of handler.batchKeyWitnesses ?? []) {
+        const routeInput = binding.perRow ? `${binding.routeInput}_r${logicalIndex}` : binding.routeInput;
+        keyWitnessValues.set(
+          routeInput,
+          binding.source === 'msgSender' ? routeMsgSender : row.args[binding.inputIndex],
+        );
+      }
+      let logicalValue = 0n;
+      if (handler.usesMsgValue) {
+        for (const transfer of handler.transfers ?? []) {
+          if (transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
+            && typeof row.args[transfer.amount.paramIndex] === 'bigint') {
+            logicalValue -= row.args[transfer.amount.paramIndex] as bigint;
+          } else if (transfer.amount.kind === 'literal' && transfer.amount.value !== undefined) {
+            logicalValue -= BigInt(transfer.amount.value);
+          } else {
+            return undefined;
+          }
+        }
+      }
+      const argsBlob = encodeMessageBusArguments(
+        encoded as Uint8Array[], handler.inputs.map((input) => input.type), structs,
+      );
+      return StatefulContract._concatBytes(
+        hexToBin(row.selector),
+        StatefulContract._uintLe(BigInt(logicalIndex), 4),
+        StatefulContract._uintLe(0n, 2),
+        StatefulContract._uintLe(BigInt(argsBlob.length), 2),
+        ...(valueMode ? [StatefulContract._signedLogicalValue(logicalValue)] : []),
+        argsBlob,
+      );
+    });
+    if (encodedRows.some((row) => row === undefined)) return undefined;
+    const blob = StatefulContract._concatBytes(
+      hexToBin('53434231'),
+      Uint8Array.from([1, valueMode ? 1 : 0, rowArguments.length]),
+      ...encodedRows as Uint8Array[],
+    );
+    if (blob.length > capability.maximumBlobBytes) return undefined;
+    const witnessInputs = capability.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const previousWitnesses = new Map(witnessInputs.map(
+      (input, index) => [input.name, route.args[index + 1]],
+    ));
+    const witnesses = witnessInputs.map((input) => (
+      keyWitnessValues.get(input.name) ?? previousWitnesses.get(input.name)
+      ?? inactiveMessageBusRouteWitness(input.type)
+    ));
+    return {
+      ...route,
+      blob,
+      args: [blob, ...witnesses],
+      rowArguments,
+    };
+  }
+
   private _buildRepeatedExternalBatch(
     externalCall: ExternalCallAbi,
     functionArgs: FunctionArgument[],
@@ -24383,6 +24638,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     callerInputs?: readonly { type: string }[],
     callerStateIncludesPriorWrites = false,
     callerSelfAddress?: FunctionArgument,
+    externalReturns?: ReadonlyMap<string, FunctionArgument>,
   ): {
       abiFunction: AbiFunction;
       selector: Uint8Array;
@@ -24457,7 +24713,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ? []
         : this._resolveExternalArgs(
           row.argSources, functionArgs, callerArtifact, callerState, resolvedCallerInputs,
-          undefined, 0, callerStateIncludesPriorWrites, callerSelfAddress,
+          externalReturns, 0, callerStateIncludesPriorWrites, callerSelfAddress,
         );
       if (!args || args.length !== row.inputs.length) {
         throw new Error(`Could not resolve every argument for external message-bus batch row ${rowIndex}`);

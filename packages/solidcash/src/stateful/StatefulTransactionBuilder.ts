@@ -3889,6 +3889,7 @@ export class StatefulTransactionBuilder {
   private _minRelayFeePerKb: bigint;
   private _maximumFeeSatoshis?: bigint;
   private strictVmPreflight = false;
+  private resultDependentArgumentRefresher?: (builder: TransactionBuilder) => boolean;
   private allInputs: UnlockableUtxo[];
   // External-library side-car UTXO, co-spent as the LAST input so the covenant's library loader can read
   // it (via OP_INPUTBYTECODE) during both auto-derivation probes and the final tx. Set by _applyOverrides.
@@ -4227,6 +4228,13 @@ export class StatefulTransactionBuilder {
     if (this.messageBusProbeMasterVout === undefined) return;
     this.masterUtxo.vout = this.messageBusProbeMasterVout;
     this.messageBusProbeMasterVout = undefined;
+  }
+
+  /** @internal Rebind later callee arguments after an authenticated return channel converges. */
+  _setResultDependentArgumentRefresher(
+    refresher: (builder: TransactionBuilder) => boolean,
+  ): void {
+    this.resultDependentArgumentRefresher = refresher;
   }
 
   /** @internal Replace the caller unlocker after tail identity-anchor indices become known. */
@@ -12529,7 +12537,7 @@ export class StatefulTransactionBuilder {
         ? carrier.plannedEntryInserts ?? [] : [])
         .flatMap((planned) => {
         const input = carrier.blockInputs?.[planned.blockSlot];
-        if (!input?.unlocker || planned.outputBlockSlot < 0) return [];
+        if (!input?.unlocker || planned.outputBlockSlot < 0 || planned.commitment === undefined) return [];
         return [{
           outputBlockSlot: planned.outputBlockSlot,
           lockingBytecode: input.unlocker.generateLockingBytecode(),
@@ -14100,7 +14108,12 @@ export class StatefulTransactionBuilder {
           reportConvergenceTiming('conditional-events-cleared');
           if (result.passed) break;
         }
-        if (changed) afterRepairs?.();
+        if (changed) {
+          if (this.resultDependentArgumentRefresher?.(builder)) {
+            this._syncBuilderUnlockers(builder);
+          }
+          afterRepairs?.();
+        }
         if (cycleDetected && failFastOnCycle) break;
         if (!changed) break;
       }

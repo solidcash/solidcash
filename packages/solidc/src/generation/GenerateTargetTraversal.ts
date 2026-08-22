@@ -16080,7 +16080,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Several absent keys in one verified map can share a single predecessor outpoint. A fixed route slot that
     // received a placeholder may use an earlier aliased slot, but the selected input is still authenticated
     // against this collection's entry covenant below.
-    for (const prior of this.entrySlots[slotIndex]?.runtimeAliasPriorSlots ?? []) {
+    // A sorted-batch proof is already the authenticated physical-input offset selected by the SDK, including
+    // same-target and shared-predecessor aliases. Re-scanning every earlier logical slot here is redundant and
+    // makes an aggregate route quadratic in its bounded row count. Only non-batch read aliases still address a
+    // fixed placeholder slot and therefore need this compact guarded fallback.
+    const runtimeAliasPriors = routeBatch
+      ? [] : (this.entrySlots[slotIndex]?.runtimeAliasPriorSlots ?? []).filter((prior) =>
+        this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchSlot_${prior}`), true) >= 0
+        && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${prior}`), true) >= 0);
+    for (const prior of runtimeAliasPriors) {
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_UTXOBYTECODE, loc);
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);

@@ -3690,6 +3690,13 @@ export interface ExternalCallUtxoGroup {
   ) => void;
   /** Rebuild the physical unlocker after compiler-derived visible arguments change during dependency convergence. */
   refreshFunctionArgs?: (args: any[]) => void;
+  /** Recompute hidden witnesses derived from a route's visible row arguments (for example, replayed array pushes). */
+  refreshRouteDerivedArguments?: (
+    rowArguments: readonly { selector: string; args: any[]; handler: AbiFunction }[] | undefined,
+    finalVisibleArgs: readonly any[],
+  ) => { internalArgs: Record<string, any>; payloadBytes: number };
+  /** The carrier master unlocker changed during the current dependency-convergence pass. */
+  argumentsRefreshedDuringConvergence?: boolean;
   /** Re-evaluate source-level arguments against a newer authenticated caller-state snapshot. */
   refreshFromCallerState?: (
     state: Readonly<Record<string, StateValue>>,
@@ -14109,10 +14116,18 @@ export class StatefulTransactionBuilder {
           if (result.passed) break;
         }
         if (changed) {
-          if (this.resultDependentArgumentRefresher?.(builder)) {
-            this._syncBuilderUnlockers(builder);
-          }
           afterRepairs?.();
+          if (this.resultDependentArgumentRefresher?.(builder)) {
+            const refreshedCarriers = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+              .filter((carrier) => carrier.argumentsRefreshedDuringConvergence === true);
+            this._syncRefreshedCarrierMasters(
+              builder,
+              refreshedCarriers,
+            );
+            for (const carrier of refreshedCarriers) {
+              carrier.argumentsRefreshedDuringConvergence = false;
+            }
+          }
         }
         if (cycleDetected && failFastOnCycle) break;
         if (!changed) break;

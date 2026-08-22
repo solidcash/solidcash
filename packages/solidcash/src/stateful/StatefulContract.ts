@@ -17676,6 +17676,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const selectedLayout = selectedFn?.blockLayout;
               const routePlanningArgs = proxyTargetFn
                 ? nestedArgs : (childCompilerRoute?.args ?? childFunctionArgs);
+              let refreshChunkableRouteWitnesses: ((
+                rowArguments: readonly RouteExpressionKeyRow[] | undefined,
+                finalVisibleArgs: readonly FunctionArgument[],
+              ) => { internalArgs: Record<string, FunctionArgument>; payloadBytes: number }) | undefined;
               if (timingEnabled) console.error('nested-callsite-layout', {
                 callsiteId: nested.callsiteId, sharedGroupIndex, childWritesState,
                 selected: selectedFn?.name, blockSize: selectedLayout?.blockSize,
@@ -18126,14 +18130,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   const structs = (proxyCallee as { implementation?: { inner: { artifact: Artifact } } } | undefined)
                     ?.implementation?.inner.artifact.structs
                     ?? callee.inner.artifact.structs ?? childLayout.structs;
-                  const fallbackPayloadBytes = visibleInputs.reduce((largest, input, index) => {
-                    const encoded = encodeFunctionArgument(routePlanningArgs[index], input.type, structs);
-                    return encoded instanceof Uint8Array ? Math.max(largest, encoded.length) : largest;
-                  }, 0);
                   const sharedPrimary = sharedGroupIndex >= 0
                     ? externalCallUtxoGroups[sharedGroupIndex] : undefined;
                   const sharedDelegate = delegateCallGroupIndex !== undefined
                     ? lowLevelCallUtxoGroups[delegateCallGroupIndex] : undefined;
+                  const inheritedRouteInternalArgs = {
+                    ...(sharedPrimary?.compilerRoute?.internalArgs ?? sharedPrimary?.internalArgs),
+                    ...(sharedDelegate?.compilerRoute?.internalArgs ?? sharedDelegate?.internalArgs),
+                  };
                   const priorFunctionName = sharedPriorDelegateFunctionName ?? sharedPriorFunctionName;
                   const priorFunctionArgs = sharedPriorDelegateFunctionArgs ?? sharedPriorFunctionArgs;
                   const sequentialRows = !childCompilerRoute && priorFunctionName
@@ -18153,58 +18157,71 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     if (typeof raw === 'number') return BigInt(raw);
                     return undefined;
                   })();
-                  let encodedPayloadBytes = 0;
-                  for (const [routeSlot, access] of (selectedFn?.entryAccesses ?? []).entries()) {
-                    if (!access.operations.includes('write')) continue;
-                    const collection = childLayout.collections?.find((candidate) =>
-                      candidate.name === access.collection || candidate.signature === access.collection);
-                    if (!collection?.chunkableValue) continue;
-                    let payloadBytes = fallbackPayloadBytes;
-                    if (collection.valueType.endsWith('[]')) {
-                      const leadingName = `__internal__leadingPushValue_${routeSlot}`;
-                      const inheritedLeading = sharedPrimary?.internalArgs?.[leadingName]
-                        ?? sharedDelegate?.internalArgs?.[leadingName];
-                      const leadingRows = childCompilerRoute?.rowArguments ?? sequentialRows;
-                      const routeLeading = leadingRows
-                        ? encodeLeadingRouteArrayPushes({
-                          rowArguments: leadingRows,
-                          collection: access.collection,
-                          valueType: collection.valueType,
-                          structs,
-                          timestamp: oracleTimestamp,
-                        }) : undefined;
-                      const leadingPush = inheritedLeading instanceof Uint8Array
-                        && inheritedLeading.length > 0 && routeLeading
-                        ? concatenateEncodedArrays(inheritedLeading, routeLeading)
-                        : routeLeading ?? (inheritedLeading instanceof Uint8Array
-                          ? inheritedLeading : undefined);
-                      if (leadingPush && leadingPush.length > 0) {
-                        childCompilerInternalArgs[leadingName] = leadingPush;
+                  refreshChunkableRouteWitnesses = (rowArguments, finalVisibleArgs) => {
+                    const internalArgs: Record<string, FunctionArgument> = {};
+                    const effectiveRowArguments = rowArguments ?? sequentialRows?.map((row, index, rows) => (
+                      index === rows.length - 1 ? { ...row, args: finalVisibleArgs } : row
+                    ));
+                    const fallbackPayloadBytes = visibleInputs.reduce((largest, input, index) => {
+                      const encoded = encodeFunctionArgument(finalVisibleArgs[index], input.type, structs);
+                      return encoded instanceof Uint8Array ? Math.max(largest, encoded.length) : largest;
+                    }, 0);
+                    let encodedPayloadBytes = 0;
+                    for (const [routeSlot, access] of (selectedFn?.entryAccesses ?? []).entries()) {
+                      if (!access.operations.includes('write')) continue;
+                      const collection = childLayout.collections?.find((candidate) =>
+                        candidate.name === access.collection || candidate.signature === access.collection);
+                      if (!collection?.chunkableValue) continue;
+                      let payloadBytes = fallbackPayloadBytes;
+                      if (collection.valueType.endsWith('[]')) {
+                        const leadingName = `__internal__leadingPushValue_${routeSlot}`;
+                        const inheritedLeading = inheritedRouteInternalArgs[leadingName];
+                        const routeLeading = effectiveRowArguments
+                          ? encodeLeadingRouteArrayPushes({
+                            rowArguments: effectiveRowArguments,
+                            collection: access.collection,
+                            valueType: collection.valueType,
+                            structs,
+                            timestamp: oracleTimestamp,
+                          }) : undefined;
+                        const leadingPush = inheritedLeading instanceof Uint8Array
+                          && inheritedLeading.length > 0 && routeLeading
+                          ? concatenateEncodedArrays(inheritedLeading, routeLeading)
+                          : routeLeading ?? (inheritedLeading instanceof Uint8Array
+                            ? inheritedLeading : undefined);
+                        if (leadingPush && leadingPush.length > 0) internalArgs[leadingName] = leadingPush;
+                        const emptyArray = encodePushdataValue([], collection.valueType, structs);
+                        let nextValue = childStoredValues.get(routeSlot) ?? emptyArray;
+                        if (leadingPush instanceof Uint8Array && leadingPush.length > 0) {
+                          nextValue = concatenateEncodedArrays(nextValue, leadingPush);
+                        }
+                        const elementType = collection.valueType.slice(0, -2);
+                        const elementIndex = visibleInputs.findIndex((input) => input.type === elementType);
+                        if (elementIndex >= 0) {
+                          const element = encodeStructArgument(
+                            finalVisibleArgs[elementIndex], elementType, structs, oracleTimestamp,
+                          );
+                          nextValue = appendEncodedArrayElement(nextValue, element);
+                          payloadBytes = nextValue.length;
+                        } else {
+                          payloadBytes = nextValue.length + fallbackPayloadBytes + VALUE_CHUNK_SIZE;
+                        }
+                        const previousValue = childStoredValues.get(routeSlot);
+                        if (previousValue && previousValue.length > VALUE_HEAD_SIZE
+                          && nextValue.length > VALUE_HEAD_SIZE) {
+                          stageJobEventsValue(callee.categoryId, nextValue);
+                        }
                       }
-                      const emptyArray = encodePushdataValue([], collection.valueType, structs);
-                      let nextValue = childStoredValues.get(routeSlot) ?? emptyArray;
-                      if (leadingPush instanceof Uint8Array && leadingPush.length > 0) {
-                        nextValue = concatenateEncodedArrays(nextValue, leadingPush);
-                      }
-                      const elementType = collection.valueType.slice(0, -2);
-                      const elementIndex = visibleInputs.findIndex((input) => input.type === elementType);
-                      if (elementIndex >= 0) {
-                        const element = encodeStructArgument(
-                          routePlanningArgs[elementIndex], elementType, structs, oracleTimestamp,
-                        );
-                        nextValue = appendEncodedArrayElement(nextValue, element);
-                        payloadBytes = nextValue.length;
-                      } else {
-                        payloadBytes = nextValue.length + fallbackPayloadBytes + VALUE_CHUNK_SIZE;
-                      }
-                      const previousValue = childStoredValues.get(routeSlot);
-                      if (previousValue && previousValue.length > VALUE_HEAD_SIZE
-                        && nextValue.length > VALUE_HEAD_SIZE) {
-                        stageJobEventsValue(callee.categoryId, nextValue);
-                      }
+                      encodedPayloadBytes = Math.max(encodedPayloadBytes, payloadBytes);
                     }
-                    encodedPayloadBytes = Math.max(encodedPayloadBytes, payloadBytes);
-                  }
+                    return { internalArgs, payloadBytes: encodedPayloadBytes };
+                  };
+                  const refreshed = refreshChunkableRouteWitnesses(
+                    childCompilerRoute?.rowArguments ?? sequentialRows,
+                    routePlanningArgs,
+                  );
+                  Object.assign(childCompilerInternalArgs, refreshed.internalArgs);
+                  const encodedPayloadBytes = refreshed.payloadBytes;
                   childValueChunkSlots = encodedPayloadBytes > VALUE_HEAD_SIZE
                     ? Math.ceil((encodedPayloadBytes - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE) : 0;
                   if (!proxyCallee) {
@@ -18218,7 +18235,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       ?.implementation?.inner.artifact.contractName
                       ?? callee.inner.artifact.contractName) === 'Unicrow') {
                     console.error('unicrow-pay-value-chunk-reservation', {
-                      fallbackPayloadBytes, encodedPayloadBytes, childValueChunkSlots,
+                      encodedPayloadBytes, childValueChunkSlots,
                     });
                   }
                 }
@@ -18677,6 +18694,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ...(resolveLoopReturnCommitment && { resolveLoopReturnCommitment }),
                 ...(resolveLoopReturnValue && { resolveLoopReturnValue }),
                 ...(childValueChunkSlots > 0 && { valueChunkOutputCount: childValueChunkSlots }),
+                ...(refreshChunkableRouteWitnesses && {
+                  refreshRouteDerivedArguments: refreshChunkableRouteWitnesses,
+                }),
               });
               if (preparedAtomicNodes) {
                 const atomicNodeIndex = preparedAtomicNodes.length;
@@ -18742,6 +18762,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     true,
                     delegateGraphSelfAddress,
                   );
+                  const physicalGroupIndex = logicalGroup.sharedGroupIndex ?? childExternalGroupIndex;
+                  const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];
+                  const routeDerivedRefresher = refreshChunkableRouteWitnesses
+                    ?? physicalGroup?.refreshRouteDerivedArguments;
                   const nextCompilerRoute = currentCompilerRoute
                     ? this._buildRepeatedExternalBatch(
                       nested,
@@ -18763,6 +18787,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       || !functionArgumentListsEqual(nextCompilerRoute.args, currentCompilerRoute.args));
                   if (!logicalArgsChanged && !routeChanged) return false;
                   if (!apply) return true;
+                  const refreshedRouteInternalArgs = routeDerivedRefresher
+                    ? routeDerivedRefresher(
+                      nextCompilerRoute?.rowArguments, nextLogicalArgs,
+                    ).internalArgs
+                    : {};
                   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                     ?.SOLIDC_DEBUG_REPAIR_CONVERGENCE === '1') {
                     const firstDifference = (
@@ -18799,6 +18828,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
                   currentLogicalArgs = nextLogicalArgs;
                   logicalGroup.logicalFunctionArgs = [...nextLogicalArgs];
+                  if (Object.keys(refreshedRouteInternalArgs).length > 0) {
+                    logicalGroup.internalArgs = {
+                      ...logicalGroup.internalArgs,
+                      ...refreshedRouteInternalArgs,
+                    };
+                  }
                   const atomicNodeIndex = preparedAtomicNodeByExternalGroup.get(childExternalGroupIndex);
                   if (preparedAtomicNodes && atomicNodeIndex !== undefined) {
                     preparedAtomicNodes[atomicNodeIndex] = {
@@ -18809,11 +18844,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
                   if (nextCompilerRoute) {
                     currentCompilerRoute = nextCompilerRoute;
-                    const logicalInternalArgs = logicalGroup.compilerRoute?.internalArgs
-                      ?? logicalGroup.internalArgs;
+                    const logicalInternalArgs = {
+                      ...(logicalGroup.compilerRoute?.internalArgs ?? logicalGroup.internalArgs),
+                      ...refreshedRouteInternalArgs,
+                    };
                     logicalGroup.compilerRoute = {
                       ...nextCompilerRoute,
-                      ...(logicalInternalArgs && { internalArgs: logicalInternalArgs }),
+                      ...(Object.keys(logicalInternalArgs).length > 0 && { internalArgs: logicalInternalArgs }),
                     };
                   }
 
@@ -18822,33 +18859,47 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   if (proxyCallee && delegateCallGroupIndex !== undefined) {
                     const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
                     if (nextCompilerRoute) {
-                      const internalArgs = delegate.compilerRoute?.internalArgs ?? delegate.internalArgs;
+                      const internalArgs = {
+                        ...(delegate.compilerRoute?.internalArgs ?? delegate.internalArgs),
+                        ...refreshedRouteInternalArgs,
+                      };
                       delegate.functionName = selectedFunctionName;
                       delegate.compilerRoute = {
                         ...nextCompilerRoute,
                         ...(internalArgs && { internalArgs }),
                       };
                       delegate.refreshFunctionArgs?.(nextCompilerRoute.args);
+                      delegate.refreshInternalArgs?.(refreshedRouteInternalArgs);
                     } else if (delegate.functionName === selectedFunctionName) {
                       delegate.refreshFunctionArgs?.(nextLogicalArgs);
+                      if (Object.keys(refreshedRouteInternalArgs).length > 0) {
+                        delegate.refreshInternalArgs?.(refreshedRouteInternalArgs);
+                      }
                     }
                   } else {
-                    const physicalGroupIndex = logicalGroup.sharedGroupIndex ?? childExternalGroupIndex;
-                    const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];
                     if (nextCompilerRoute) {
-                      const internalArgs = physicalGroup.compilerRoute?.internalArgs
-                        ?? physicalGroup.internalArgs;
+                      const internalArgs = {
+                        ...(physicalGroup.compilerRoute?.internalArgs ?? physicalGroup.internalArgs),
+                        ...refreshedRouteInternalArgs,
+                      };
                       physicalGroup.functionName = selectedFunctionName;
                       physicalGroup.compilerRoute = {
                         ...nextCompilerRoute,
                         ...(internalArgs && { internalArgs }),
                       };
                       physicalGroup.refreshFunctionArgs?.(nextCompilerRoute.args);
+                      physicalGroup.refreshInternalArgs?.(refreshedRouteInternalArgs);
                     } else if (physicalGroup.functionName === selectedFunctionName
                       || physicalGroup.logicalFunctionName === selectedFunctionName) {
                       physicalGroup.refreshFunctionArgs?.(nextLogicalArgs);
+                      if (Object.keys(refreshedRouteInternalArgs).length > 0) {
+                        physicalGroup.refreshInternalArgs?.(refreshedRouteInternalArgs);
+                      }
                     }
                   }
+                  const refreshedCarrier = proxyCallee && delegateCallGroupIndex !== undefined
+                    ? lowLevelCallUtxoGroups[delegateCallGroupIndex] : physicalGroup;
+                  refreshedCarrier.argumentsRefreshedDuringConvergence = true;
                   return true;
                 };
               }
@@ -18871,6 +18922,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       delegateVisibleInputs, externalReturns, 0, false, delegateGraphSelfAddress,
                     ) ?? nextLogicalArgs;
                     const physicalGroupIndex = logicalGroup.sharedGroupIndex ?? childExternalGroupIndex;
+                    const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];
                     const activeCompilerRoute = currentCompilerRoute
                       ?? (proxyCallee && delegateCallGroupIndex !== undefined
                         ? lowLevelCallUtxoGroups[delegateCallGroupIndex]?.compilerRoute
@@ -18887,6 +18939,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                           calleeRouteArtifact, delegateSelfAddress,
                         )
                         : undefined;
+                    const routeDerivedRefresher = refreshChunkableRouteWitnesses
+                      ?? physicalGroup?.refreshRouteDerivedArguments;
                     const logicalArgsChanged = !functionArgumentListsEqual(
                       currentLogicalArgs, nextLogicalArgs,
                     );
@@ -18894,20 +18948,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       && (!binsAreEqual(nextCompilerRoute.blob, activeCompilerRoute.blob)
                         || !functionArgumentListsEqual(nextCompilerRoute.args, activeCompilerRoute.args));
                     if (!logicalArgsChanged && !routeChanged) return false;
+                    const refreshedRouteInternalArgs = routeDerivedRefresher
+                      ? routeDerivedRefresher(
+                        nextCompilerRoute?.rowArguments, nextLogicalArgs,
+                      ).internalArgs
+                      : {};
 
                     currentLogicalArgs = nextLogicalArgs;
                     logicalGroup.logicalFunctionArgs = [...nextLogicalArgs];
+                    if (Object.keys(refreshedRouteInternalArgs).length > 0) {
+                      logicalGroup.internalArgs = {
+                        ...logicalGroup.internalArgs,
+                        ...refreshedRouteInternalArgs,
+                      };
+                    }
                     preparedAtomicNodes![atomicNodeIndex] = {
                       ...preparedAtomicNodes![atomicNodeIndex],
                       args: [...nextGraphArgs],
                     };
                     if (nextCompilerRoute) {
                       currentCompilerRoute = nextCompilerRoute;
-                      const logicalInternalArgs = logicalGroup.compilerRoute?.internalArgs
-                        ?? logicalGroup.internalArgs;
+                      const logicalInternalArgs = {
+                        ...(logicalGroup.compilerRoute?.internalArgs ?? logicalGroup.internalArgs),
+                        ...refreshedRouteInternalArgs,
+                      };
                       logicalGroup.compilerRoute = {
                         ...nextCompilerRoute,
-                        ...(logicalInternalArgs && { internalArgs: logicalInternalArgs }),
+                        ...(Object.keys(logicalInternalArgs).length > 0 && { internalArgs: logicalInternalArgs }),
                       };
                     }
 
@@ -18916,32 +18983,47 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     if (proxyCallee && delegateCallGroupIndex !== undefined) {
                       const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
                       if (nextCompilerRoute) {
-                        const internalArgs = delegate.compilerRoute?.internalArgs ?? delegate.internalArgs;
+                        const internalArgs = {
+                          ...(delegate.compilerRoute?.internalArgs ?? delegate.internalArgs),
+                          ...refreshedRouteInternalArgs,
+                        };
                         delegate.functionName = selectedFunctionName;
                         delegate.compilerRoute = {
                           ...nextCompilerRoute,
                           ...(internalArgs && { internalArgs }),
                         };
                         delegate.refreshFunctionArgs?.(nextCompilerRoute.args);
+                        delegate.refreshInternalArgs?.(refreshedRouteInternalArgs);
                       } else if (delegate.functionName === selectedFunctionName) {
                         delegate.refreshFunctionArgs?.(nextLogicalArgs);
+                        if (Object.keys(refreshedRouteInternalArgs).length > 0) {
+                          delegate.refreshInternalArgs?.(refreshedRouteInternalArgs);
+                        }
                       }
                     } else {
-                      const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];
                       if (nextCompilerRoute) {
-                        const internalArgs = physicalGroup.compilerRoute?.internalArgs
-                          ?? physicalGroup.internalArgs;
+                        const internalArgs = {
+                          ...(physicalGroup.compilerRoute?.internalArgs ?? physicalGroup.internalArgs),
+                          ...refreshedRouteInternalArgs,
+                        };
                         physicalGroup.functionName = selectedFunctionName;
                         physicalGroup.compilerRoute = {
                           ...nextCompilerRoute,
                           ...(internalArgs && { internalArgs }),
                         };
                         physicalGroup.refreshFunctionArgs?.(nextCompilerRoute.args);
+                        physicalGroup.refreshInternalArgs?.(refreshedRouteInternalArgs);
                       } else if (physicalGroup.functionName === selectedFunctionName
                         || physicalGroup.logicalFunctionName === selectedFunctionName) {
                         physicalGroup.refreshFunctionArgs?.(nextLogicalArgs);
+                        if (Object.keys(refreshedRouteInternalArgs).length > 0) {
+                          physicalGroup.refreshInternalArgs?.(refreshedRouteInternalArgs);
+                        }
                       }
                     }
+                    const refreshedCarrier = proxyCallee && delegateCallGroupIndex !== undefined
+                      ? lowLevelCallUtxoGroups[delegateCallGroupIndex] : physicalGroup;
+                    refreshedCarrier.argumentsRefreshedDuringConvergence = true;
                     return true;
                   };
                 }

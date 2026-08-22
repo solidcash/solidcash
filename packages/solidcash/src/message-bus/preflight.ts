@@ -1433,7 +1433,8 @@ const evaluateEveryInput = (
             unlocker?: { abiFunction?: { selector?: string } };
           }).unlocker?.abiFunction?.selector,
           routeParams: failedUnlocker?.abiFunction?.inputs?.flatMap((input, index) => {
-            if (!input.name.startsWith('__internal__graph')) return [];
+            if (!input.name.startsWith('__internal__graph')
+              && !input.name.startsWith('__internal__vmapBatch')) return [];
             const value = failedUnlocker.params?.[index];
             return [{
               name: input.name,

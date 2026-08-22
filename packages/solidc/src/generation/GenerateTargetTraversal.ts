@@ -16080,14 +16080,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Several absent keys in one verified map can share a single predecessor outpoint. A fixed route slot that
     // received a placeholder may use an earlier aliased slot, but the selected input is still authenticated
     // against this collection's entry covenant below.
-    // A sorted-batch proof is already the authenticated physical-input offset selected by the SDK, including
-    // same-target and shared-predecessor aliases. Re-scanning every earlier logical slot here is redundant and
-    // makes an aggregate route quadratic in its bounded row count. Only non-batch read aliases still address a
-    // fixed placeholder slot and therefore need this compact guarded fallback.
-    const runtimeAliasPriors = routeBatch
-      ? [] : (this.entrySlots[slotIndex]?.runtimeAliasPriorSlots ?? []).filter((prior) =>
-        this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchSlot_${prior}`), true) >= 0
-        && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${prior}`), true) >= 0);
+    // A synthesized handler can retain source-level alias metadata for slots outside its admitted ABI frame.
+    // Only witnesses actually present in the current frame are candidates; attempting to PICK a pruned prior
+    // makes route generation fail, while treating it as a physical alias would be unauthenticated in any case.
+    const runtimeAliasPriors = (this.entrySlots[slotIndex]?.runtimeAliasPriorSlots ?? []).filter((prior) =>
+      this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchSlot_${prior}`), true) >= 0
+      && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${prior}`), true) >= 0);
     for (const prior of runtimeAliasPriors) {
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_UTXOBYTECODE, loc);
@@ -18121,11 +18119,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           copy(`__internal__vmapBatchSlot_${slot}`); this.emit(Op.OP_TOALTSTACK, loc);
           copy(`__internal__vmapBatchSlot_${priors[i]}`); this.emit(Op.OP_FROMALTSTACK, loc);
           this.emit(Op.OP_EQUAL, loc);
+          // Keep the equality result off the main stack while resolving the proof witness. `copy` computes
+          // its PICK depth from the tracked compiler stack; leaving an untracked boolean above that frame
+          // would select the adjacent witness instead of this prior row's proof offset.
+          this.emit(Op.OP_TOALTSTACK, loc);
+          copy(`__internal__vmapBatchProof_${priors[i]}`);
+          this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc);
+          this.emit(Op.OP_FROMALTSTACK, loc);
+          this.emit(Op.OP_BOOLAND, loc);
           if (i === 0) this.emit(Op.OP_TOALTSTACK, loc);
           else {
             this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_TOALTSTACK, loc);
           }
         }
+        // Proof offset zero is the canonical inactive-row sentinel. Such a row has no physical entry and may
+        // publish predOut=-2 without naming an alias owner. For an active row, only an earlier ACTIVE proof with
+        // the same authenticated target can justify the alias sentinel.
+        copy(`__internal__vmapBatchProof_${slot}`);
+        this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_TOALTSTACK, loc);
         copy(`__internal__vmapBatchPredOut_${slot}`);
         this.emit(encodeInt(-2n), loc); this.emit(Op.OP_NUMEQUAL, loc);
         this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_EQUALVERIFY, loc);

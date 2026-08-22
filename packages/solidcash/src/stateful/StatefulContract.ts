@@ -13808,7 +13808,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // same predecessor UTXO, but both writes must still execute and produce their own target outputs. A
           // read-only access can safely reuse that proof: its covenant recomputes the requested key and proves
           // membership/non-membership against an authorized earlier same-collection slot.
-          if (owner && entry.collection === owner.collection
+          if (owner?.utxo && !inactiveMessageBusEntrySlots.has(ownerSlot)
+            && entry.collection === owner.collection
             && (sameSortedTarget || (readOnly && sameProof))) {
             batchAliasSkips.add(entry.slotIndex);
             batchAliasOwners.set(entry.slotIndex, ownerSlot);

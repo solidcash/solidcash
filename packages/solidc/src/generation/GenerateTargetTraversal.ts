@@ -16086,8 +16086,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_NOTIF, loc);
+      // A prior slot is only a physical alias when its authenticated target hash equals this read's H(k).
+      // Merely seeing a placeholder at the current slot is insufficient: an aggregate route also publishes
+      // inactive predecessors whose proof offset is zero (the participant master). Falling back to one of those
+      // would reinterpret the master as an entry input. Require a non-zero prior proof as well as key equality;
+      // active entries can never occupy relative offset zero because that position is reserved for the master.
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); // H(k)
+      this.emitPickVMapWitness(`__internal__vmapBatchSlot_${prior}`, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emitPickVMapWitness(`__internal__vmapBatchProof_${prior}`, loc);
+      this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc);
+      this.emit(Op.OP_BOOLAND, loc);
+      this.emit(Op.OP_IF, loc);
       this.emit(Op.OP_DROP, loc);
       this.emitEntryInputIndex(prior, loc, 2);
+      this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_ENDIF, loc);
     }
     this.emit(Op.OP_2DUP, loc);                       // [Hk32, entryAddr, idx, entryAddr, idx]

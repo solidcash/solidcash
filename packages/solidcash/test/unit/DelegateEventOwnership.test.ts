@@ -6,6 +6,7 @@ import {
   demoteUnclaimedDelegateEventClones,
   externalCallEventDestinations,
   isAuthenticatedEventRepairCommitment,
+  lowLevelCallImmutableEventDestinations,
   reassertDeclaredMutableSlotLock,
   type DelegateEventClaim,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
@@ -44,6 +45,38 @@ describe('externalCallEventDestinations', () => {
     }];
 
     expect(externalCallEventDestinations(groups, (index) => [20, 40][index])).toEqual([25, 26]);
+  });
+});
+
+describe('lowLevelCallImmutableEventDestinations', () => {
+  it('uses the implementation coordinate and proxy execution category for delegate events', () => {
+    const implementationCategory = '55'.repeat(32);
+    const proxyCategory = '66'.repeat(32);
+    const groups = [{
+      categoryId: implementationCategory,
+      callMode: 'delegatecall' as const,
+      blockLayout: {
+        blockSize: 8,
+        slots: [
+          { kind: 'event' as const, offset: 4 },
+          { kind: 'returnEvent' as const, offset: 6 },
+        ],
+      },
+    }, {
+      categoryId: implementationCategory,
+      callMode: 'call' as const,
+      blockLayout: {
+        blockSize: 4,
+        slots: [{ kind: 'event' as const, offset: 2 }],
+      },
+    }];
+    const proxies = [{ categoryId: proxyCategory, delegateCallGroupIndex: 0 }];
+
+    expect(lowLevelCallImmutableEventDestinations(groups, proxies, (index) => [13, 30][index])).toEqual([
+      { categoryId: proxyCategory, destination: 17 },
+      { categoryId: proxyCategory, destination: 19 },
+      { categoryId: implementationCategory, destination: 32 },
+    ]);
   });
 });
 

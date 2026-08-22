@@ -3908,6 +3908,41 @@ export function externalCallEventDestinations(
   return destinations;
 }
 
+export type ParticipantImmutableEventDestination = {
+  categoryId: string;
+  destination: number;
+};
+
+/**
+ * Absolute immutable-event coordinates owned by low-level execution frames.
+ *
+ * A delegate implementation authenticates the physical coordinate relative to its own input, while the NFT is
+ * branded with the proxy's state category. Ordinary calls use the callee's category for both roles.
+ */
+export function lowLevelCallImmutableEventDestinations(
+  groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
+  'categoryId' | 'callMode' | 'blockLayout' | 'compilerRoute'>>,
+  proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup, 'categoryId' | 'delegateCallGroupIndex'>>,
+  inputBaseForGroup: (groupIndex: number) => number,
+): ParticipantImmutableEventDestination[] {
+  const destinations: ParticipantImmutableEventDestination[] = [];
+  for (const [groupIndex, group] of groups.entries()) {
+    const base = inputBaseForGroup(groupIndex);
+    if (base < 0) continue;
+    const proxyGroup = group.callMode === 'delegatecall'
+      ? proxyGroups.find((candidate) => candidate.delegateCallGroupIndex === groupIndex)
+      : undefined;
+    const categoryId = proxyGroup?.categoryId ?? group.categoryId;
+    const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
+    for (const slot of layout?.slots ?? []) {
+      if (slot.kind === 'event' || slot.kind === 'returnEvent') {
+        destinations.push({ categoryId, destination: base + slot.offset });
+      }
+    }
+  }
+  return destinations;
+}
+
 /**
  * A transaction builder that wraps TransactionBuilder with the stateful
  * contract input/output convention:
@@ -5810,6 +5845,15 @@ export class StatefulTransactionBuilder {
         if (slot.kind === 'event' || slot.kind === 'returnEvent') allowed.add(master + slot.offset);
       }
       allowedByCategory.set(group.categoryId, allowed);
+    }
+    for (const claim of lowLevelCallImmutableEventDestinations(
+      this.lowLevelCallUtxoGroups,
+      this.externalCallUtxoGroups,
+      (groupIndex) => this.getLowLevelCallMasterInputIndex(groupIndex),
+    )) {
+      const allowed = allowedByCategory.get(claim.categoryId) ?? new Set<number>();
+      allowed.add(claim.destination);
+      allowedByCategory.set(claim.categoryId, allowed);
     }
     for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
       if (!group.categoryId || !groupOwnsInBlockReturnEvent(this.externalCallUtxoGroups, groupIndex)) continue;

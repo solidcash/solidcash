@@ -10663,14 +10663,6 @@ export class StatefulTransactionBuilder {
           // read-only entry (or an absent-key funder placeholder) has no stored commitment -> mirror the input.
           if (slot?.kind === 'entry') {
             const bEntryOut = this.externalCallEntryOutputs.get(group.categoryId)?.get(si);
-            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-              ?.SOLIDC_DEBUG_APPROVE_ENTRY === '1' && group.functionName === 'approve') {
-              console.error('builder-approve-entry-output', {
-                groupIndex, si, absoluteOutput: builder.outputs.length,
-                hasCommitment: bEntryOut !== undefined,
-                commitment: bEntryOut,
-              });
-            }
             const embeddedEntry = this.entryNfts.find((entry) => entry.utxo !== undefined
               && entry.utxo.txid.toLowerCase() === input.txid.toLowerCase()
               && entry.utxo.vout === input.vout);

@@ -19,9 +19,10 @@ export interface CompiledGraphParticipant {
   /**
    * Authenticated public target identity when it differs from the physical state owner, as it does for a
    * proxy/delegate execution or a contract with a published logical CREATE identity. This is the address a
-   * source-level call targets and the authenticated caller identity of an owner route. A delegate route instead
-   * calls as its distinct executor input. Source-level `address(this)` remains the exact active input returned by
-   * OP_UTXOBYTECODE in both cases; it is never reconstructed from this logical identity.
+   * source-level call targets and the authenticated caller identity of an ordinary high-level call. A raw
+   * low-level call from a delegate route instead originates at its distinct executor input. Source-level
+   * `address(this)` remains the exact active input returned by OP_UTXOBYTECODE in both cases; it is never
+   * reconstructed from this logical identity.
    */
   logicalLockingBytecode?: string;
   /**
@@ -381,12 +382,11 @@ export function finalizeAtomicInvocationGraph(
       throw new Error(`messageBus: void invocation ${invocation.index} cannot carry a result`);
     }
     const caller = invocation.caller === null ? 0xff : invocation.caller;
-    const callerExecution = invocation.caller === null ? undefined : plan.participants[invocation.caller];
+    const callerIdentity = invocation.parent === null
+      ? undefined : graphInvocationCallerIdentity(plan.participants, plan.invocations, invocation);
     const subjectHex = invocation.caller === null
       ? plan.rootCallerLockingBytecode ?? ''
-      : callerExecution!.executionKind === 1
-        ? callerExecution!.executorLockingBytecode
-        : callerExecution!.logicalLockingBytecode ?? callerExecution!.lockingBytecode;
+      : callerIdentity!.lockingBytecode;
     const completion = plan.participants[invocation.callee].completionPositions[invocation.localRow];
     if (completion === undefined) {
       throw new Error(`messageBus: invocation ${invocation.index} has no compiler-authored completion position`);
@@ -395,9 +395,7 @@ export function finalizeAtomicInvocationGraph(
       kind: 0, owner: caller === 0xff ? invocation.callee : caller, consumer: invocation.callee,
       slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
       sourceOffset: invocation.caller === null
-        ? 0xffff : callerExecution!.executionKind === 1
-          ? callerExecution!.executorOffset!
-          : callerExecution!.logicalIdentityOffset ?? 0,
+        ? 0xffff : callerIdentity!.offset,
       // Invocation rows bind the address used by the source-level call, not necessarily the state owner's
       // physical master at offset zero. Proxies and explicit identity anchors authenticate that logical callee
       // at `logicalIdentityOffset`; using zero here makes the SDK transcript name the logical address while the
@@ -1195,6 +1193,65 @@ export function resolveGraphAbiFunction(artifact: Artifact, name: string): AbiFu
   return matches[0];
 }
 
+type GraphCallerParticipant = Pick<CompiledGraphParticipant,
+'artifact' | 'lockingBytecode' | 'logicalLockingBytecode' | 'logicalIdentityOffset'> & {
+  executionKind?: 'owner' | 'delegate' | 0 | 1;
+  executorLockingBytecode?: string;
+  executorOffset?: number | null;
+};
+
+type GraphCallerInvocation = Pick<CompiledGraphInvocation,
+'parent' | 'callee' | 'function' | 'consumerCallsiteId'>;
+
+/**
+ * Raw address calls originate at the exact covenant input executing the caller. Ordinary interface calls retain
+ * the caller's authenticated public identity, which is stable across proxy upgrades. Keeping this distinction
+ * explicit prevents `msg.sender` from silently changing for every high-level call merely because its caller is
+ * currently executing through a delegate, while preserving OP_UTXOBYTECODE identity for low-level calls.
+ */
+export function graphInvocationUsesExecutorCaller(
+  participants: readonly GraphCallerParticipant[],
+  invocations: readonly GraphCallerInvocation[],
+  invocation: GraphCallerInvocation,
+): boolean {
+  if (invocation.parent === null) return false;
+  const caller = participants[invocations[invocation.parent].callee];
+  if (caller.executionKind !== 'delegate' && caller.executionKind !== 1) return false;
+  const parent = invocations[invocation.parent];
+  const parentFunction = caller.artifact.abi
+    ? resolveGraphAbiFunction(caller.artifact, parent.function) : undefined;
+  const callsite = parentFunction?.externalCalls?.find((candidate) =>
+    invocation.consumerCallsiteId !== undefined
+      ? candidate.callsiteId === invocation.consumerCallsiteId
+      : candidate.functionName === invocation.function);
+  return callsite?.interfaceName === '__raw__' && callsite.functionName === '__raw__';
+}
+
+export function graphInvocationCallerIdentity(
+  participants: readonly GraphCallerParticipant[],
+  invocations: readonly GraphCallerInvocation[],
+  invocation: GraphCallerInvocation,
+): { lockingBytecode: string; offset: number } {
+  if (invocation.parent === null) {
+    throw new Error('messageBus: transaction-origin invocation has no participant caller identity');
+  }
+  const caller = participants[invocations[invocation.parent].callee];
+  if (graphInvocationUsesExecutorCaller(participants, invocations, invocation)) {
+    const executorOffset = caller.executorOffset
+      ?? caller.artifact.messageBus?.route.blockLayout?.slots.find(
+        (slot) => slot.kind === 'lowLevelCall',
+      )?.offset;
+    if (!caller.executorLockingBytecode || executorOffset === undefined || executorOffset === null) {
+      throw new Error('messageBus: raw delegate caller has no authenticated executor identity');
+    }
+    return { lockingBytecode: caller.executorLockingBytecode, offset: executorOffset };
+  }
+  return {
+    lockingBytecode: caller.logicalLockingBytecode ?? caller.lockingBytecode,
+    offset: caller.logicalIdentityOffset ?? 0,
+  };
+}
+
 /**
  * Measure the call options one graph invocation's function carries that the executed message-bus batch route does not.
  *
@@ -1380,16 +1437,9 @@ export function planCompiledGraph(
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
         : {
-          logicalCaller: hexToBin((() => {
-            const caller = participants[invocations[invocation.parent].callee];
-            // A nested call is made by the input executing the parent handler. In a delegate participant this
-            // is the pinned implementation input, not the proxy's public target identity. This mirrors the
-            // compiler's OP_UTXOBYTECODE implementation of `address(this)` and keeps msg.sender-keyed state
-            // identical to an explicit `address(this)` argument across the edge.
-            return caller.executionKind === 'delegate'
-              ? caller.executorLockingBytecode!
-              : caller.logicalLockingBytecode ?? caller.lockingBytecode;
-          })()),
+          logicalCaller: hexToBin(graphInvocationCallerIdentity(
+            participants, invocations, invocation,
+          ).lockingBytecode),
         }),
     });
     globalByOwner[invocation.callee].push(index);

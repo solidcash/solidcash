@@ -190,10 +190,41 @@ describe('atomic compiled invocation graph', () => {
     expect(finalized.callManifest.rows[1].targetOffset).toBe(1);
   });
 
-  it('uses a delegate executor input as the nested caller identity', () => {
+  it('uses a delegate public identity as the nested high-level caller identity', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],
+      logicalLockingBytecode: '54',
+      logicalIdentityOffset: 0,
+      executionKind: 1,
+      executorOffset: 1,
+      executorInputIndex: 1,
+      executorLockingBytecode: '56',
+      blockLayout: {
+        blockSize: 2,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'lowLevelCall', offset: 1 }],
+      },
+    };
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      delegatedCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    );
+    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '54', sourceOffset: 0 });
+  });
+
+  it('uses a delegate executor input as the nested raw-call identity', () => {
+    const delegatedCaller = plan();
+    delegatedCaller.participants[0] = {
+      ...delegatedCaller.participants[0],
+      artifact: {
+        ...delegatedCaller.participants[0].artifact,
+        abi: [{
+          name: 'run', inputs: [{ name: 'n', type: 'int' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, interfaceName: '__raw__', functionName: '__raw__',
+            rawSelector: '22222222', occurrence: 'once',
+          }],
+        }],
+      },
       logicalLockingBytecode: '54',
       logicalIdentityOffset: 0,
       executionKind: 1,

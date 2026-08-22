@@ -23,7 +23,8 @@ import {
 import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
 import { assertAtomicParticipantCapacity } from './capacity.js';
 import {
-  finalizeAtomicInvocationGraph, type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
+  finalizeAtomicInvocationGraph, graphInvocationCallerIdentity,
+  type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
   type AtomicSidecarSlotEffect, type AtomicTokenSlotEffect, type AtomicValueSlotEffect,
 } from './graph.js';
 import { encodeMessageBatch } from './message-bus.js';
@@ -668,6 +669,14 @@ export class AtomicMessageBusComposition {
       }));
     }
     assertAtomicParticipantCapacity(plan.participants.length);
+    const hasResultDependentAncestor = (invocationIndex: number): boolean => {
+      let parent = plan.invocations[invocationIndex]?.parent;
+      while (parent !== null && parent !== undefined) {
+        if (descriptors[parent]?.resolveArgsFromResults !== undefined) return true;
+        parent = plan.invocations[parent]?.parent;
+      }
+      return false;
+    };
     plan.invocations.forEach((invocation, index) => {
       const supplied = descriptors[index];
       if (!supplied || supplied.functionName !== invocation.function) {
@@ -694,16 +703,18 @@ export class AtomicMessageBusComposition {
         callMode: invocation.callMode,
         ...(invocation.caller !== null && handler?.usesMsgValue && { msgValue: 0n }),
         logicalCaller: invocation.caller === null
-          ? rootCaller : hexToBin(
-            plan.participants[invocation.caller].executionKind === 1
-              ? plan.participants[invocation.caller].executorLockingBytecode
-              : plan.participants[invocation.caller].logicalLockingBytecode
-                ?? plan.participants[invocation.caller].lockingBytecode,
-          ),
+          ? rootCaller : hexToBin(graphInvocationCallerIdentity(
+            plan.participants, plan.invocations, invocation,
+          ).lockingBytecode),
       }], { ...plannedWitnesses, ...validationWitnesses }).rows[0];
-      if (suppliedRow.argsHex !== invocation.argsHex) {
+      // Once an ancestor's arguments are rebuilt from authenticated sibling returns, ordinary forwarded
+      // descendants are re-derived by the compiler worklist too. Their discovery descriptors still describe the
+      // preceding fixed-point pass, so comparing those stale bytes here would stop convergence before the
+      // participant covenant can expose the next result. Calls outside such a dependency subtree remain strict.
+      if (suppliedRow.argsHex !== invocation.argsHex && !hasResultDependentAncestor(index)) {
         throw new Error(
-          `messageBus: prepared call ${index} arguments disagree with compiler-derived invocation arguments`,
+          `messageBus: prepared call ${index} '${invocation.function}' arguments disagree with compiler-derived `
+          + `invocation arguments (prepared ${suppliedRow.argsHex}, derived ${invocation.argsHex})`,
         );
       }
     });

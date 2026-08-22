@@ -63,6 +63,10 @@ export default defineConfig(solidhatPreset(
       testTimeout: 600_000,
       hookTimeout: 600_000,
       fileParallelism: false,
+      // The fixture retains several multi-megabyte covenant transactions. Avoid spending most of a full run in
+      // major GC at Node's default ~4 GB worker ceiling, and expose per-test progress without SDK debug logging.
+      execArgv: ['--max-old-space-size=8192'],
+      reporters: ['verbose'],
     },
   },
 ));

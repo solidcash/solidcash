@@ -274,20 +274,26 @@ describe('delegate inference', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const artifact = compileString(`pragma solidity ^0.8.20;
-        interface Sink { function ping(address who) external; }
+        interface Sink { function ping(address who) external returns (uint); }
         contract RoutedDynamic {
           bytes public payload;
+          mapping(address => bytes) public notes;
           address public sink;
           modifier initializer() { _; }
           function initialize(address value) public initializer { sink = value; }
           function apply(bytes memory value) public {
+            uint pong = Sink(sink).ping(address(this));
             payload = value;
-            Sink(sink).ping(address(this));
+            notes[msg.sender] = value;
+            require(pong >= 0);
           }
         }
       `, { messageBus: true, solidityImportCompat: true, maximumInputBytes: 100_000 });
 
       expect(artifact.messageBus?.route?.modifiers).toContain('delegate');
+      expect(artifact.messageBus?.route?.inputs.some((input) => (
+        input.name === '__internal__valueChunkOutputBase'
+      ))).toBe(true);
       const route = decodeAuthenticationInstructions(hexToBin(
         artifact.functionBodies?.[artifact.messageBus!.route!.selector]!,
       ));
@@ -306,7 +312,6 @@ describe('delegate inference', () => {
         instruction.opcode === OpcodesBCH.OP_0
         && route[index + 1]?.opcode === OpcodesBCH.OP_LESSTHAN
         && route[index + 2]?.opcode === OpcodesBCH.OP_SUB)).toBe(false);
-
       const routedHandler = Object.values(artifact.debug?.invokeDebug ?? {})
         .find((candidate) => candidate.name === '__message_bus_graph_apply');
       expect(routedHandler).toBeDefined();

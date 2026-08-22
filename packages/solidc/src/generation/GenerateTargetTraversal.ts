@@ -20967,15 +20967,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1);
           this.emit(Op.OP_ADD, loc);
         }
-        const valueChunkCountIdx = this.getStackIndex(
-          GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, true,
-        );
-        if (valueChunkCountIdx >= 0) {
-          this.emitPickCompilerRouteFrameValue(
-            GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, loc, 1,
-          );
-          this.emit(Op.OP_ADD, loc);
-        }
+        // Dynamic continuations are emitted before chunkable mapping-value continuations. The latter's running
+        // count therefore does not shift this base; adding it redirects a dynamic variable into the following
+        // value-chunk run whenever both output families are active in one balanced route.
         // Subtract 1 when the reserved returnEvent slot is NOT materialized (returnOutputIdx < 0) - it does not
         // occupy an output, so the trailing chunks sit one lower. One untracked value (the running outIdx-partial)
         // is above the tracked stack here, hence the +1 pick offset.

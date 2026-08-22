@@ -1991,6 +1991,54 @@ function storedChunkableValueRoots(
   return roots;
 }
 
+function authenticatedCollectionValueSelector(
+  valueType: string | undefined, structs: StateLayout['structs'],
+): (
+  items: readonly Uint8Array[], roots: ReadonlySet<string>, preferredRoots: ReadonlySet<string>,
+) => Uint8Array | undefined {
+  // Sparse probe states share immutable stack items by reference. Cache their two pure classifications across
+  // states so a long collection is not decoded and hashed hundreds of times during one witness search.
+  const digests = new WeakMap<Uint8Array, string>();
+  const completeness = new WeakMap<Uint8Array, boolean>();
+  const digest = (item: Uint8Array): string => {
+    const cached = digests.get(item);
+    if (cached !== undefined) return cached;
+    const computed = binToHex(sha256Sync(item));
+    digests.set(item, computed);
+    return computed;
+  };
+  const complete = (item: Uint8Array): boolean => {
+    const cached = completeness.get(item);
+    if (cached !== undefined) return cached;
+    const computed = isCompleteCollectionValue(item, valueType, structs);
+    completeness.set(item, computed);
+    return computed;
+  };
+  const newestRooted = (
+    items: readonly Uint8Array[], candidateRoots: ReadonlySet<string>,
+  ): Uint8Array | undefined => {
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item = items[index];
+      if (item.length <= VALUE_HEAD_SIZE || item.length > 10_000) continue;
+      // Almost every large stack item is unrelated. Hashing first limits the substantially more expensive typed
+      // decode to candidates that are actually authenticated by a root observed in this probe state.
+      if (!candidateRoots.has(digest(item)) || !complete(item)) continue;
+      return item;
+    }
+    return undefined;
+  };
+  return (items, roots, preferredRoots) => {
+    // A repeated route can expose several authenticated values for one collection: each logical row leaves its
+    // intermediate value/root in the chronological trace, while only the final row owns the transaction output.
+    // Recover from the end so the SDK materializes the last-write continuation run rather than a valid prefix.
+    if (preferredRoots.size > 0) {
+      const stored = newestRooted(items, preferredRoots);
+      if (stored) return stored;
+    }
+    return newestRooted(items, roots);
+  };
+}
+
 export function selectAuthenticatedCollectionValue(
   items: readonly Uint8Array[],
   roots: ReadonlySet<string>,
@@ -1998,17 +2046,7 @@ export function selectAuthenticatedCollectionValue(
   valueType: string | undefined,
   structs: StateLayout['structs'],
 ): Uint8Array | undefined {
-  const complete = items.filter((item) => item.length > VALUE_HEAD_SIZE && item.length <= 10_000)
-    .filter((item) => isCompleteCollectionValue(item, valueType, structs));
-  // A repeated route can expose several authenticated values for one collection: each logical row leaves its
-  // intermediate value/root in the chronological trace, while only the final row owns the transaction output.
-  // Recover from the end so the SDK materializes the last-write continuation run rather than a valid prefix.
-  const newestFirst = complete.reverse();
-  if (preferredRoots.size > 0) {
-    const stored = newestFirst.find((item) => preferredRoots.has(binToHex(sha256Sync(item))));
-    if (stored) return stored;
-  }
-  return newestFirst.find((item) => roots.has(binToHex(sha256Sync(item))));
+  return authenticatedCollectionValueSelector(valueType, structs)(items, roots, preferredRoots);
 }
 
 /** Recover a dynamic array whose element blob and authenticated whole-value root occur in different trace states. */
@@ -9651,12 +9689,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const storedRoots = storedChunkableValueRoots(
               delegateGroup?.blockInputs ?? group.blockInputs,
             );
+            const selectLearnedValue = authenticatedCollectionValueSelector(
+              witnessValueType, witnessLayout?.structs,
+            );
             for (let stateIndex = fullTrace.length - 1; stateIndex >= 0 && !learnedValue; stateIndex--) {
               const stack = fullTrace[stateIndex].stack;
               const roots = new Set(stack.filter((item) => item.length === 32).map(binToHex));
-              learnedValue = selectAuthenticatedCollectionValue(
-                stack, roots, storedRoots, witnessValueType, witnessLayout?.structs,
-              );
+              learnedValue = selectLearnedValue(stack, roots, storedRoots);
             }
             const currentWitness = witnessInputs.length === 1
               ? delegateGroup?.internalArgs?.[witnessInputs[0].name]

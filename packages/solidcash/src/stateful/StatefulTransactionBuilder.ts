@@ -987,6 +987,31 @@ export function boundedDerivationIterations(parts: {
   return parts.defaultIterations;
 }
 
+/**
+ * Speculative chunk growth is only useful after the probe observed a mismatched output pin.
+ * A source-level revert can otherwise satisfy the same coarse "no commitments learned" shape,
+ * causing every rejected call on a contract with dynamic storage to allocate the full probe band.
+ */
+export function shouldGrowSpeculativeChunkRegion(parts: {
+  commitmentProgress: number;
+  hasDerivedState: boolean;
+  chunkVariableCount: number;
+  loopEntryVariableCount: number;
+  outputVerificationMismatchObserved: boolean;
+  totalRegionWidth: number;
+  maximumRegionWidth: number;
+  allCommitmentsArePlaceholders: boolean;
+}): boolean {
+  return parts.commitmentProgress === 0
+    && !parts.hasDerivedState
+    && parts.chunkVariableCount > 0
+    && parts.loopEntryVariableCount > 0
+    && parts.outputVerificationMismatchObserved
+    && parts.totalRegionWidth > 0
+    && parts.totalRegionWidth < parts.maximumRegionWidth
+    && parts.allCommitmentsArePlaceholders;
+}
+
 /** Materialize persist/compose `v` onto the live jobEvents band. */
 export function seedChunksFromPersistedValue(
   setChunk: (

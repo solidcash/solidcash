@@ -137,6 +137,7 @@ import {
   persistedJobEventsLock,
   isPersistedJobEventsReady,
   boundedDerivationIterations,
+  shouldGrowSpeculativeChunkRegion,
   rememberJobEventsLock,
   applyRedeemLockToChunks,
   selectHashedValueForChunkPin,
@@ -10956,8 +10957,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const fullTrace2 = evaluateProbeTrace(
             this.inner.provider, probeProgram, hasLoopOrChunkVars,
           );
+          const outputVerificationMismatchObserved = hasLoopOrChunkVars
+            && cachedProbeVm(this.inner.provider, true).relaxationApplied;
           const faithfulProbeHadError = fullTrace2.some((state) => state.error !== undefined)
-            || (hasLoopOrChunkVars && cachedProbeVm(this.inner.provider, true).relaxationApplied);
+            || outputVerificationMismatchObserved;
           if (debugTargetsThisDerivation) {
             const last = fullTrace2.at(-1);
             const instruction = last?.instructions[last.ip];
@@ -12283,12 +12286,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // is WRONG (right total): the very next probe reads every $len off the data NFT and the block above
           // snaps each var to its exact count. Grow the first so the single-var path stays byte-identical. The
           // bound is on the TOTAL region, so several vars cannot multiply it.
-          if (commitmentProgress === 0 && !derivedAState && chunkVars.length >= 1
-            && stb.getLoopEntryVars().length > 0 && fullTrace2.some((s: any) => s.error)) {
+          if (chunkVars.length > 0) {
             const regions = chunkVars.map((cv) => stb.getChunkRawCommitments(cv.name));
             const total = regions.reduce((n, r) => n + r.length, 0);
-            if (total > 0 && total < MAX_SPECULATIVE_CHUNK_OUTPUTS
-              && regions.every((r) => r.every((c) => c === '00'))) {
+            if (shouldGrowSpeculativeChunkRegion({
+              commitmentProgress,
+              hasDerivedState: derivedAState !== undefined,
+              chunkVariableCount: chunkVars.length,
+              loopEntryVariableCount: stb.getLoopEntryVars().length,
+              outputVerificationMismatchObserved,
+              totalRegionWidth: total,
+              maximumRegionWidth: MAX_SPECULATIVE_CHUNK_OUTPUTS,
+              allCommitmentsArePlaceholders: regions.every((region) =>
+                region.every((commitment) => commitment === '00')),
+            })) {
               stb.setChunkRawCommitments(chunkVars[0].name, [...regions[0], '00']);
             }
           }

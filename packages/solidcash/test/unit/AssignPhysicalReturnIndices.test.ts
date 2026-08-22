@@ -99,6 +99,7 @@ import {
   assignPersistPredecessors,
   syncBuilderInputsFromAllInputs,
   boundedDerivationIterations,
+  shouldGrowSpeculativeChunkRegion,
   seedChunksFromPersistedValue,
   isPersistedJobEventsReady,
   isOverwritableValueChunkOccupant,
@@ -1520,6 +1521,25 @@ describe('assignPhysicalReturnIndices', () => {
     expect(boundedDerivationIterations({
       defaultIterations: 20, persistWidth: 0, hasLoopOrChunkVars: false,
     })).toBe(20);
+    const speculativeGrowth = {
+      commitmentProgress: 0,
+      hasDerivedState: false,
+      chunkVariableCount: 1,
+      loopEntryVariableCount: 1,
+      outputVerificationMismatchObserved: true,
+      totalRegionWidth: 1,
+      maximumRegionWidth: 32,
+      allCommitmentsArePlaceholders: true,
+    };
+    expect(shouldGrowSpeculativeChunkRegion(speculativeGrowth)).toBe(true);
+    expect(shouldGrowSpeculativeChunkRegion({
+      ...speculativeGrowth,
+      outputVerificationMismatchObserved: false,
+    })).toBe(false);
+    expect(shouldGrowSpeculativeChunkRegion({
+      ...speculativeGrowth,
+      commitmentProgress: 1,
+    })).toBe(false);
     const seeded = new Map<number, { commitment: string }>();
     const persistValue = new Uint8Array(VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE + 4);
     persistValue.fill(7, VALUE_HEAD_SIZE);

@@ -1857,6 +1857,7 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
     lockingBytecode: Uint8Array;
     commitment: string;
   }>,
+  replaceDeclaredOwner = false,
 ): number {
   if (masterIndex < 0) return 0;
   let changed = 0;
@@ -1868,12 +1869,13 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
     return lock !== undefined && lock.length === predecessor.lockingBytecode.length
       && lock.every((byte, offset) => byte === predecessor.lockingBytecode[offset]);
   };
-  const sameDeclaredPlaceholder = (
+  const sameDeclaredOwner = (
     output: Output | undefined, predecessor: (typeof predecessors)[number],
   ): boolean => {
     if (!output || output.token?.category !== categoryId
       || output.token.nft?.capability !== 'mutable'
-      || !/^(?:00)+$/.test(commitmentHexOf(output.token.nft.commitment))) return false;
+      || (!replaceDeclaredOwner
+        && !/^(?:00)+$/.test(commitmentHexOf(output.token.nft.commitment)))) return false;
     const lock = output.to instanceof Uint8Array ? output.to : undefined;
     return lock !== undefined && lock.length === predecessor.lockingBytecode.length
       && lock.every((byte, offset) => byte === predecessor.lockingBytecode[offset]);
@@ -1891,7 +1893,7 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
     ));
     const occupant = outputs[destination];
     if (source < 0 && occupant?.token && !isPredOutReusableHole(occupant)
-      && !sameDeclaredPlaceholder(occupant, predecessor)) continue;
+      && !sameDeclaredOwner(occupant, predecessor)) continue;
 
     const replacement = source >= 0 ? outputs[source] : {
       to: predecessor.lockingBytecode,
@@ -1973,6 +1975,7 @@ export function stripRelocatedMutableDuplicates(
     unlocker?: { generateLockingBytecode: () => Uint8Array };
   }>,
   scanStart: number,
+  protectedIndices: ReadonlySet<number> = new Set(),
 ): number {
   if (scanStart < 0) return 0;
   const canonicalByIdentity = new Map<string, Set<number>>();
@@ -1993,6 +1996,12 @@ export function stripRelocatedMutableDuplicates(
   }
   let stripped = 0;
   for (let index = scanStart; index < outputs.length; index++) {
+    // A cold sorted-map insert has two compiler-owned outputs: the new node at
+    // the fixed entry slot and the rewritten predecessor at a trailing slot.
+    // During fixed-point discovery their provisional commitments can briefly
+    // be identical. Both coordinates must survive so the next VM pass can
+    // authenticate their distinct final commitments.
+    if (protectedIndices.has(index)) continue;
     const candidate = outputs[index];
     const candidateLock = candidate?.to instanceof Uint8Array ? candidate.to : undefined;
     if (!candidateLock || candidate.token?.nft?.capability !== 'mutable') continue;
@@ -7133,6 +7142,25 @@ export class StatefulTransactionBuilder {
 
   private _declaredMutableEntrySlotIndices(): number[] {
     return this._declaredMutableEntrySlots().map(({ outputIndex }) => outputIndex);
+  }
+
+  /** Output-only collection coordinates which duplicate cleanup must not reclaim while they are provisional. */
+  private _compilerOwnedTrailingEntryOutputIndices(): Set<number> {
+    const indices = new Set<number>();
+    const add = (base: number, group: ExternalCallUtxoGroup): void => {
+      if (base < 0) return;
+      for (const planned of group.plannedEntryInserts ?? []) {
+        if (planned.outputBlockSlot >= 0) indices.add(base + planned.outputBlockSlot);
+      }
+      for (const predecessor of group.batchPredecessorOutputs ?? []) {
+        if (predecessor.outputBlockSlot >= 0) indices.add(base + predecessor.outputBlockSlot);
+      }
+    };
+    for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
+      if (group.sharedGroupIndex !== undefined || group.delegateCallGroupIndex !== undefined) continue;
+      add(this.getExternalCallOutputBase(groupIndex), group);
+    }
+    return indices;
   }
 
   /** Restore compiler-declared entry ownership after output-only materializers. */
@@ -12482,19 +12510,48 @@ export class StatefulTransactionBuilder {
   /** Reconcile materialized predecessor outputs with the same final physical masters as their witnesses. */
   private _reassertMaterializedBatchPredecessorOutputs(builder: TransactionBuilder): boolean {
     let changed = 0;
-    for (const carrier of [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]) {
-      if (!carrier.categoryId || (carrier.batchPredecessorOutputs?.length ?? 0) === 0) continue;
+    const carriers = [
+      ...this.externalCallUtxoGroups.map((carrier) => ({ carrier, directParticipant: true })),
+      ...this.lowLevelCallUtxoGroups.map((carrier) => ({ carrier, directParticipant: false })),
+    ];
+    for (const { carrier, directParticipant } of carriers) {
+      if (!carrier.categoryId) continue;
       const master = carrier.masterUtxo as UnlockableUtxo | undefined;
       if (!master) continue;
       const masterIndex = this.allInputs.findIndex((input) => (
         input.txid.toLowerCase() === master.txid.toLowerCase() && input.vout === master.vout
       ));
-      changed += reassertBatchPredecessorOutputsAtDeclaredSlots(
-        builder.outputs,
-        masterIndex,
-        carrier.categoryId,
-        carrier.batchPredecessorOutputs!,
-      );
+      // Direct participant INSERTs place NEW at the fixed entry slot and P' at the declared trailing slot.
+      // A delegate's compiler uses its co-spent fixed slot for P' and the trailing slot for NEW, so its planned
+      // insertion must remain trace-derived and must not use this direct-participant reassertion.
+      const plannedPredecessors = (directParticipant && carrier.delegateCallGroupIndex === undefined
+        ? carrier.plannedEntryInserts ?? [] : [])
+        .flatMap((planned) => {
+        const input = carrier.blockInputs?.[planned.blockSlot];
+        if (!input?.unlocker || planned.outputBlockSlot < 0) return [];
+        return [{
+          outputBlockSlot: planned.outputBlockSlot,
+          lockingBytecode: input.unlocker.generateLockingBytecode(),
+          commitment: planned.commitment,
+        }];
+        });
+      if ((carrier.batchPredecessorOutputs?.length ?? 0) > 0) {
+        changed += reassertBatchPredecessorOutputsAtDeclaredSlots(
+          builder.outputs,
+          masterIndex,
+          carrier.categoryId,
+          carrier.batchPredecessorOutputs!,
+        );
+      }
+      if (plannedPredecessors.length > 0) {
+        changed += reassertBatchPredecessorOutputsAtDeclaredSlots(
+          builder.outputs,
+          masterIndex,
+          carrier.categoryId,
+          plannedPredecessors,
+          true,
+        );
+      }
     }
     return changed > 0;
   }
@@ -14000,7 +14057,12 @@ export class StatefulTransactionBuilder {
           if (!result.changed) break;
           changed = true;
           repairsRemaining -= 1;
-          stripRelocatedMutableDuplicates(builder.outputs, this.allInputs, 0);
+          stripRelocatedMutableDuplicates(
+            builder.outputs,
+            this.allInputs,
+            0,
+            this._compilerOwnedTrailingEntryOutputIndices(),
+          );
           reportConvergenceTiming('duplicates-stripped');
           // Computed-output recovery observes one failing participant at a time.
           // A repair for an earlier participant may therefore write through a
@@ -14288,6 +14350,7 @@ export class StatefulTransactionBuilder {
       finalBuilder.outputs,
       this.allInputs,
       0,
+      this._compilerOwnedTrailingEntryOutputIndices(),
     );
 
     // Materialization and computed-output repair can replace provisional

@@ -887,6 +887,30 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[8]).toBe(occupant);
   });
 
+  it('restores an authoritative planned predecessor over its provisional same-owner node', () => {
+    const lock = new Uint8Array([0xaa, 0x20, 0x87]);
+    const outputs = Array.from({ length: 9 }, () => ({
+      to: Uint8Array.of(0x51),
+      amount: 1000n,
+    }));
+    outputs[8] = {
+      to: lock,
+      amount: 900n,
+      token: {
+        amount: 0n,
+        category: 'token',
+        nft: { capability: 'mutable' as const, commitment: '1234' },
+      },
+    };
+
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 0, 'token', [{
+      outputBlockSlot: 8,
+      lockingBytecode: lock,
+      commitment: 'abcd',
+    }], true)).toBe(1);
+    expect(outputs[8].token?.nft?.commitment).toBe('abcd');
+  });
+
   it('does not pack a view tail onto the writer slot after a 22→26 rotate', () => {
     const groups: PhysicalReturnGroup[] = [
       group({
@@ -2066,6 +2090,22 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[0].token).toBeUndefined();
     expect(outputs[1].token?.nft?.commitment).toBe('abcd');
     expect(outputs[2].token?.nft?.commitment).toBe('abcd');
+  });
+
+  it('preserves compiler-owned trailing entry outputs while their commitments are provisional', () => {
+    const lock = Uint8Array.of(0xaa, 0x20, 0x01, 0x87);
+    const token = { category: 'owner', nft: { capability: 'mutable', commitment: 'abcd' } };
+    const outputs = [
+      { to: lock.slice(), amount: 1000n, token },
+      { to: lock.slice(), amount: 1000n, token },
+    ];
+    const inputs = [{
+      token: { category: 'owner', nft: { capability: 'mutable' } },
+      unlocker: { generateLockingBytecode: () => lock },
+    }];
+
+    expect(stripRelocatedMutableDuplicates(outputs, inputs, 0, new Set([1]))).toBe(0);
+    expect(outputs[1].token?.nft?.commitment).toBe('abcd');
   });
 
   it('restores read-only mutable twins to their authenticated input coordinates', () => {

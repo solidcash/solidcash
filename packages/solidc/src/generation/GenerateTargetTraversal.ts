@@ -18236,15 +18236,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Copy a batch-topology witness from the compiler-tracked top frame. */
   private emitPickVMapWitness(name: string, loc: SingleLocationData, extraStackOffset = 0): void {
     const resolved = this.vmapWitnessName(name);
-    if (resolved.startsWith('__vmap_snapshot_')) {
+    if (resolved.startsWith('__vmap_snapshot_') && this.isCompilerMessageBusRoute()) {
       // Restored snapshots are pushed only after every invoked handler has returned, so they sit above any
-      // runtime-only handler residue. Their top-relative depth is stable; a bottom ordinal would incorrectly count
-      // that untracked residue as part of the compiler frame and select an adjacent ABI value.
+      // runtime-only handler residue in a compiler-owned route. Their top-relative depth is stable there; a bottom
+      // ordinal would incorrectly count the route's untracked caller frame and select an adjacent ABI value.
       this.emit(encodeInt(BigInt(this.getStackIndex(resolved) + extraStackOffset)), loc);
       this.emit(Op.OP_PICK, loc);
       return;
     }
-    // Before restoration, the original ABI witness sits below handler working values and is stable from bottom.
+    // Before restoration, and in an ordinary direct entry after restoration, the witness sits below untracked
+    // epilogue working values and is stable from bottom. Direct sorted-batch settlement can otherwise read the
+    // adjacent slot hash as its proof ordinal after an internal helper returns.
     this.emitPickTrackedFromBottom(resolved, loc);
   }
 

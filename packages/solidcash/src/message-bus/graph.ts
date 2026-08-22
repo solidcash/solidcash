@@ -509,10 +509,6 @@ export function finalizeAtomicInvocationGraph(
       if (!effect.active) throw new Error('messageBus: inactive event slots must not produce callManifest rows');
       const eventSlotCount = participant.blockLayout!.slots.filter((candidate) => candidate.kind === 'event').length;
       const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
-      if (maximumRows < 1 || eventSlotCount % maximumRows !== 0 || slot.slotIndex === undefined) {
-        throw new Error(`messageBus: participant ${effect.participant} has a non-canonical event frame`);
-      }
-      const frameWidth = eventSlotCount / maximumRows;
       const eventOrdinal = eventOrdinals.get(effect.participant) ?? 0;
       eventOrdinals.set(effect.participant, eventOrdinal + 1);
       const emittingInvocations = participant.invocations.flatMap((invocationIndex) => {
@@ -521,13 +517,19 @@ export function finalizeAtomicInvocationGraph(
           candidate.name === invocation.function);
         return Array.from({ length: handler?.emits?.length ?? 0 }, () => invocationIndex);
       });
+      if (maximumRows < 1 || slot.slotIndex === undefined
+        || (emittingInvocations.length === 0 && eventSlotCount % maximumRows !== 0)) {
+        throw new Error(`messageBus: participant ${effect.participant} has a non-canonical event frame`);
+      }
+      const frameWidth = maximumRows > 0 && eventSlotCount % maximumRows === 0
+        ? eventSlotCount / maximumRows : 0;
       // Physical event sites belong to the compiler's unrolled selector dispatcher and need not be compact row
       // ordinals. Bind each discovered active event to the corresponding emitting invocation in execution order;
       // the slot itself remains authenticated independently by sourceOffset/targetOffset.
       // Older/minimal artifacts do not publish handler-level emit metadata. Keep their canonical physical-frame
       // binding as a compatibility fallback; full artifacts use the reached emitting invocation sequence above.
       const parent = emittingInvocations[eventOrdinal]
-        ?? participant.invocations[Math.floor(slot.slotIndex / frameWidth)];
+        ?? (frameWidth > 0 ? participant.invocations[Math.floor(slot.slotIndex / frameWidth)] : undefined);
       if (!/^(?:[0-9a-fA-F]{2})*$/.test(effect.lockingBytecodeHex)
         || !/^(?:[0-9a-fA-F]{2})*$/.test(effect.commitmentHex)) {
         throw new Error(`messageBus: participant ${participant.participant} event slot ${slot.offset} is not byte hex`);

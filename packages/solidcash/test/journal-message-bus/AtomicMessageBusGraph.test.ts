@@ -340,6 +340,40 @@ describe('atomic compiled invocation graph', () => {
     }]);
   });
 
+  it('binds compiler-published sparse event sites without requiring a rectangular row frame', () => {
+    const base = plan();
+    const sparseArtifact = artifact('22222222');
+    sparseArtifact.messageBus!.maximumRows = 8;
+    sparseArtifact.messageBus!.handlers[0].emits = [{
+      eventName: 'Changed', eventSignature: 'Changed(int)', emitIndex: 0,
+    }];
+    const sparseEventPlan: messageBus.CompiledGraphPlan = {
+      ...base,
+      participants: [base.participants[0], {
+        ...base.participants[1],
+        artifact: sparseArtifact,
+        blockLayout: {
+          blockSize: 4,
+          slots: [
+            { kind: 'master', offset: 0 },
+            { kind: 'event', offset: 1, slotIndex: 0, conditional: true },
+            { kind: 'event', offset: 2, slotIndex: 1, conditional: true },
+            { kind: 'event', offset: 3, slotIndex: 2, conditional: true },
+          ],
+        },
+      }],
+    };
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      sparseEventPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [{
+        participant: 1, offset: 2, active: true, lockingBytecodeHex: '51', commitmentHex: '012a',
+      }],
+    );
+    expect(finalized.callManifest.rows[2]).toMatchObject({
+      kind: 2, owner: 1, consumer: 1, sourceOffset: 2, targetOffset: 2, parent: 1,
+      subjectHex: '51', effectHex: '012a',
+    });
+  });
+
   it('encodes a mutable-resource replacement with independent input and output covenants', () => {
     const base = plan();
     const replacementPlan: messageBus.CompiledGraphPlan = {

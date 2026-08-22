@@ -24724,7 +24724,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
     if (this.usesMessageBusOwnerBlockBase()) {
-      if (!this.usesProxyStateBlockBase()) {
+      if (!this.currentFunction.messageBusDelegatedOwner) {
         // A direct route executes in its physical owner input. OP_INPUTINDEX is the consensus authority and avoids
         // copying an equivalent hidden witness out of the still-live route frame.
         this.emit(Op.OP_INPUTINDEX, locationData);

@@ -330,4 +330,45 @@ describe('Release 1 scalar journal lowering', () => {
     expect(normal.messageBus?.maximumRows).toBe(8);
     expect(fast.messageBus?.maximumRows).toBe(8);
   });
+
+  it('composes independent cross-row aliases for an ERC-20 approve and transferFrom route', () => {
+    const artifact = compileMessageBusString(`pragma solidity ^0.8.0;
+      contract Token {
+        mapping(address => uint) balances;
+        mapping(address => mapping(address => uint)) allowances;
+        event Approval(address indexed owner, address indexed spender, uint value);
+        function approve(address spender, uint value) public returns (bool) {
+          allowances[msg.sender][spender] = value;
+          emit Approval(msg.sender, spender, value);
+          return true;
+        }
+        function transferFrom(address from, address to, uint value) public returns (bool) {
+          uint allowed = allowances[from][msg.sender];
+          require(allowed >= value);
+          allowances[from][msg.sender] = allowed - value;
+          balances[from] = balances[from] - value;
+          balances[to] = balances[to] + value;
+          return true;
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      maximumInputBytes: 10_000_000,
+      optimizeForCompilationSpeed: true,
+      suppressWarnings: true,
+    });
+
+    expect(artifact.messageBus?.maximumRows).toBe(8);
+    expect(artifact.messageBus?.handlers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'approve', eligible: true }),
+      expect.objectContaining({ name: 'transferFrom', eligible: true }),
+    ]));
+    expect(artifact.messageBus?.route.entryAccesses?.map((access) => access.collection))
+      .toEqual(expect.arrayContaining(['allowances', 'balances']));
+    // Runtime cache selection must stay linear in independently aliasable entries. Expanding every alias choice
+    // into a Cartesian dispatcher produced tens of megabytes for the corresponding production ERC-20 route.
+    expect(artifact.debug.bytecode.length).toBeLessThan(2_000_000);
+  });
 });

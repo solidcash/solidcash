@@ -13931,6 +13931,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const ownerByUtxo = new Map<string, number>();
         for (const slotIndex of batch.slotIndices) {
           if (inactiveBatchSlots.has(slotIndex)) {
+            // Sorted batches retain every bounded route lane so their hidden witness vector stays positional,
+            // but an inactive selector/row lane is still a balanced funder slot. Its provisional key lookup can
+            // resolve to a real entry or to a predecessor also used by an active lane; carrying that UTXO forward
+            // spends the same state input twice even though the route gates this lane off before collection use.
+            const inactive = entryNfts.find((entry) => entry.slotIndex === slotIndex);
+            if (inactive) {
+              inactive.exists = false;
+              inactive.utxo = undefined;
+            }
             const raw = this._rawVMapBatchWitness?.get(slotIndex);
             batchWitnesses.push(raw?.slot ?? batchTargetSlots.get(slotIndex)!, raw?.proof ?? 0n,
               raw?.next ?? new Uint8Array(32), raw?.predOut ?? -2n);
@@ -15108,8 +15117,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let externalCallUtxoGroups: ExternalCallUtxoGroup[] = [];
     // Total return event count including transitive chains (updated in external call block)
     // Combined metadata for all groups (direct + transitive); used by _deriveFullTransactionState
-    let allGroupEcSlots: readonly { hasReturnValues?: boolean; requiredDataNftIndices: number[] }[] = externalCalls ?? [];
-    let allGroupParentIndices: readonly number[] = (externalCalls ?? []).map(() => -1);
+    let allGroupEcSlots: { hasReturnValues?: boolean; requiredDataNftIndices: number[] }[] = [
+      ...(externalCalls ?? []),
+    ];
+    let allGroupParentIndices: number[] = (externalCalls ?? []).map(() => -1);
 
     // Auto-resolve external calls from the registry when not explicitly provided.
     // The registry provides the contract object for UTXO/state lookup.
@@ -19184,15 +19195,45 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const existingPhysicalIndex = externalCallUtxoGroups.findIndex(
             (candidate) => candidate.categoryId === callee.categoryId,
           );
+          const physicalOwnerIndex = existingPhysicalIndex < 0 ? -1
+            : (externalCallUtxoGroups[existingPhysicalIndex].sharedGroupIndex ?? existingPhysicalIndex);
+          const physicalOwner = physicalOwnerIndex < 0
+            ? undefined : externalCallUtxoGroups[physicalOwnerIndex];
+          const physicalOwnerFn = physicalOwner === undefined ? undefined
+            : (physicalOwner.externalContract.inner.artifact.abi as readonly AbiFunction[])
+              .find((candidate) => candidate.name === physicalOwner.functionName);
+          const physicalRouteCoversCall = selectedFn.selector !== undefined
+            && physicalOwner?.compilerRoute?.logicalSelectors.includes(selectedFn.selector) === true;
+          // Late graph expansion discovers callees of already-composed callees (A -> B -> C). If C's master
+          // was provisionally owned by an earlier read or conditional alternative, the state-writing edge is
+          // the physical transition which must execute. Apply the same ownership rule as direct composition:
+          // repeated conditional alternatives selecting one handler keep their first carrier, while a distinct
+          // writer replaces an ordinary (non-routed) carrier. A compiler route already owns all selectors it
+          // advertises and must not be dismantled here.
+          const preserveConditionalOwner = nested.occurrence === 'conditional'
+            && selectedFn.writesState === true
+            && physicalOwnerFn?.selector === selectedFn.selector
+            && physicalOwnerFn?.writesState === true;
+          const retargetPhysicalOwner = physicalOwner !== undefined
+            && selectedFn.writesState === true
+            && physicalOwner.compilerRoute === undefined
+            && !physicalRouteCoversCall
+            && !preserveConditionalOwner;
           const lateInternalArgs: Record<string, FunctionArgument> = {};
           const lateRelativeOutputInternalArgs = new Set<string>();
           const latePlannedEntryInserts: Array<{
             slotIndex: number; blockSlot: number; outputBlockSlot: number;
             commitment: string; newCommitment: string;
           }> = [];
+          const lateBatchTargets = new Map<number, Uint8Array>();
+          const lateBatchLists = new Map<string, SortedList>();
+          const lateBatchPredecessorOutputs: Array<{
+            outputBlockSlot: number; lockingBytecode: Uint8Array; commitment: string;
+          }> = [];
+          const lateBatchEntryLockingBytecodes = new Map<number, Uint8Array>();
           let lateBlockInputs: UnlockableUtxo[] | undefined;
           const lateLayout = selectedFn.blockLayout;
-          if (existingPhysicalIndex < 0 && !proxyCallee && lateLayout) {
+          if ((existingPhysicalIndex < 0 || retargetPhysicalOwner) && !proxyCallee && lateLayout) {
             const needsDenseBlock = lateLayout.slots.some((slot) => (
               slot.kind !== 'master' && slot.kind !== 'dataNft'
             ));
@@ -19312,6 +19353,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       && !!utxo.token.nft.commitment
                   )));
                   const targetSlot = keyToSlotMulti(encodedKeys);
+                  lateBatchTargets.set(routeSlot, targetSlot);
+                  lateBatchLists.set(access.collection, list);
                   const exact = list.find(targetSlot);
                   const proof = exact ?? list.predecessorOf(targetSlot);
                   if (!proof) {
@@ -19327,25 +19370,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       selectedContract.inner, blockOffset, callee.categoryId, access.collection,
                     ),
                   });
-                  if (selectedFn.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(routeSlot))) {
+                  const batchOwned = selectedFn.sortedBatchInfo
+                    ?.some((batch) => batch.slotIndices.includes(routeSlot)) === true;
+                  if (!batchOwned && access.operations.includes('write') && !exact) {
+                    const plan = list.planInsert(targetSlot);
+                    latePlannedEntryInserts.push({
+                      slotIndex: routeSlot,
+                      blockSlot: blockOffset,
+                      outputBlockSlot: -1,
+                      commitment: binToHex(plan.predNewCommitment),
+                      newCommitment: binToHex(plan.newNodeCommitment),
+                    });
+                  }
+                  if (batchOwned) {
                     lateInternalArgs[`__internal__vmapBatchSlot_${routeSlot}`] = targetSlot;
                     lateInternalArgs[`__internal__vmapBatchProof_${routeSlot}`] = BigInt(blockOffset);
                     if (exact) {
                       lateInternalArgs[`__internal__vmapBatchNext_${routeSlot}`] = exact.nextKey;
                       lateInternalArgs[`__internal__vmapBatchPredOut_${routeSlot}`] = -1n;
-                    } else {
-                      const plan = list.planInsert(targetSlot);
-                      const predOutName = `__internal__vmapBatchPredOut_${routeSlot}`;
-                      lateInternalArgs[`__internal__vmapBatchNext_${routeSlot}`] =
-                        decodeEntryCommitment(plan.newNodeCommitment).nextKey;
-                      lateRelativeOutputInternalArgs.add(predOutName);
-                      latePlannedEntryInserts.push({
-                        slotIndex: routeSlot,
-                        blockSlot: blockOffset,
-                        outputBlockSlot: -1,
-                        commitment: binToHex(plan.predNewCommitment),
-                        newCommitment: binToHex(plan.newNodeCommitment),
-                      });
                     }
                   }
                   continue;
@@ -19359,19 +19401,159 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   + `resource '${slot.kind}'.`,
                 );
               }
+              const batchInsertBase = lateLayout.trailingBase ?? lateLayout.blockSize;
+              let batchTrailingCount = 0;
+              for (const batch of selectedFn.sortedBatchInfo ?? []) {
+                const list = lateBatchLists.get(batch.collection);
+                if (!list) throw new Error(
+                  `Nested vmap batch '${batch.collection}' has no sorted-list snapshot`,
+                );
+                const canonicalSlots: number[] = [];
+                const canonicalByTarget = new Map<string, number>();
+                const aliasOwner = new Map<number, number>();
+                for (const slotIndex of batch.slotIndices) {
+                  const target = lateBatchTargets.get(slotIndex);
+                  if (!target) throw new Error(
+                    `Nested vmap batch '${batch.collection}' is missing slot ${slotIndex}`,
+                  );
+                  const prior = canonicalByTarget.get(binToHex(target));
+                  if (prior === undefined) {
+                    canonicalByTarget.set(binToHex(target), slotIndex);
+                    canonicalSlots.push(slotIndex);
+                  } else {
+                    aliasOwner.set(slotIndex, prior);
+                  }
+                }
+                const writes = canonicalSlots.map((slotIndex) => ({
+                  slot: lateBatchTargets.get(slotIndex)!, value: new Uint8Array(),
+                }));
+                const plan = list.planBatchUpsert(writes);
+                const targets = new Set(writes.map((write) => bytesToSlotValue(write.slot).toString()));
+                const predecessorOutputs = plan.outputs.filter(
+                  (output) => !targets.has(bytesToSlotValue(output.slot).toString()),
+                );
+                const lockingBytecode = createEntryNftUnlocker(
+                  selectedContract.inner, 0, callee.categoryId, batch.collection,
+                ).generateLockingBytecode();
+                for (const [ordinal, output] of predecessorOutputs.entries()) {
+                  const outputBlockSlot = batchInsertBase + batchTrailingCount + ordinal;
+                  lateBatchPredecessorOutputs.push({
+                    outputBlockSlot,
+                    lockingBytecode,
+                    commitment: binToHex(output.commitment),
+                  });
+                  while (lateBlockInputs.length <= outputBlockSlot) {
+                    lateBlockInputs.push(makeLateFunder());
+                  }
+                }
+                const proofOwnerByOutpoint = new Map<string, number>();
+                for (const slotIndex of batch.slotIndices) {
+                  const alias = aliasOwner.get(slotIndex);
+                  if (alias !== undefined) {
+                    const ownerOffset = lateLayout.slots.find((candidate) =>
+                      candidate.kind === 'entry' && candidate.slotIndex === alias)?.offset;
+                    if (ownerOffset === undefined) throw new Error(
+                      `Nested vmap alias owner has no block slot ${alias}`,
+                    );
+                    lateInternalArgs[`__internal__vmapBatchSlot_${slotIndex}`] = lateBatchTargets.get(alias)!;
+                    lateInternalArgs[`__internal__vmapBatchProof_${slotIndex}`] = BigInt(ownerOffset);
+                    lateInternalArgs[`__internal__vmapBatchNext_${slotIndex}`] = new Uint8Array(32);
+                    lateInternalArgs[`__internal__vmapBatchPredOut_${slotIndex}`] = -2n;
+                    continue;
+                  }
+                  const target = lateBatchTargets.get(slotIndex)!;
+                  const proof = list.find(target) ?? list.predecessorOf(target);
+                  if (!proof) throw new Error(
+                    `Nested vmap batch '${batch.collection}' has no proof for slot ${slotIndex}`,
+                  );
+                  const outpoint = `${proof.utxo.txid}:${proof.utxo.vout}`;
+                  let proofOwner = proofOwnerByOutpoint.get(outpoint);
+                  if (proofOwner === undefined) {
+                    proofOwner = slotIndex;
+                    proofOwnerByOutpoint.set(outpoint, slotIndex);
+                  } else {
+                    const duplicateOffset = lateLayout.slots.find((candidate) =>
+                      candidate.kind === 'entry' && candidate.slotIndex === slotIndex)?.offset;
+                    if (duplicateOffset !== undefined) {
+                      lateBlockInputs[duplicateOffset] = makeLateFunder();
+                      lateBatchEntryLockingBytecodes.set(duplicateOffset, lockingBytecode);
+                    }
+                  }
+                  const proofOffset = lateLayout.slots.find((candidate) =>
+                    candidate.kind === 'entry' && candidate.slotIndex === proofOwner)?.offset;
+                  if (proofOffset === undefined) throw new Error(
+                    `Nested vmap proof owner has no block slot ${proofOwner}`,
+                  );
+                  const output = plan.outputs.find(
+                    (candidate) => bytesToSlotValue(candidate.slot) === bytesToSlotValue(target),
+                  );
+                  if (!output) throw new Error(
+                    `Nested vmap batch '${batch.collection}' has no target output`,
+                  );
+                  const predecessorOrdinal = predecessorOutputs.findIndex((candidate) =>
+                    bytesToSlotValue(candidate.slot) === bytesToSlotValue(proof.slot));
+                  const predOutName = `__internal__vmapBatchPredOut_${slotIndex}`;
+                  lateInternalArgs[`__internal__vmapBatchSlot_${slotIndex}`] = target;
+                  lateInternalArgs[`__internal__vmapBatchProof_${slotIndex}`] = BigInt(proofOffset);
+                  lateInternalArgs[`__internal__vmapBatchNext_${slotIndex}`] =
+                    decodeEntryCommitment(output.commitment).nextKey;
+                  lateInternalArgs[predOutName] = predecessorOrdinal < 0
+                    ? -1n : BigInt(batchInsertBase + batchTrailingCount + predecessorOrdinal);
+                  if (predecessorOrdinal >= 0) lateRelativeOutputInternalArgs.add(predOutName);
+                }
+                batchTrailingCount += predecessorOutputs.length;
+                const rows = batch.slotIndices
+                  .filter((slotIndex) => lateInternalArgs[`__internal__vmapBatchPredOut_${slotIndex}`] !== -2n)
+                  .map((slotIndex) => ({
+                    slotIndex,
+                    slot: lateBatchTargets.get(slotIndex)!,
+                    next: lateInternalArgs[`__internal__vmapBatchNext_${slotIndex}`] as Uint8Array
+                      ?? new Uint8Array(32),
+                  }))
+                  .sort((left, right) => bytesToSlotValue(left.slot) < bytesToSlotValue(right.slot) ? -1 : 1);
+                rows.forEach((row, rank) => {
+                  lateInternalArgs[`__internal__vmapBatchRank_${row.slotIndex}`] = BigInt(rank);
+                });
+                if (batch.linear) {
+                  lateInternalArgs[`__internal__vmapBatchRows_${batch.collection}`] = Uint8Array.from(
+                    rows.flatMap((row) => [...row.slot, ...row.next]),
+                  );
+                }
+              }
               for (const planned of latePlannedEntryInserts) {
                 planned.outputBlockSlot = Math.max(lateBlockInputs.length, lateLayout.blockSize);
-                const predOutName = `__internal__vmapBatchPredOut_${planned.slotIndex}`;
-                lateInternalArgs[predOutName] = BigInt(planned.outputBlockSlot);
                 while (lateBlockInputs.length < planned.outputBlockSlot) {
                   lateBlockInputs.push(makeLateFunder());
                 }
                 lateBlockInputs.push(makeLateFunder());
               }
               if (selectedFn.sortedBatchInfo?.length) {
-                lateInternalArgs.__internal__vmapBatchTrailingCount = BigInt(latePlannedEntryInserts.length);
+                lateInternalArgs.__internal__vmapBatchTrailingCount = BigInt(batchTrailingCount);
               }
             }
+          }
+          if (retargetPhysicalOwner && physicalOwner) {
+            physicalOwner.stateLayout = callee.inner.stateLayout!;
+            physicalOwner.masterUtxo = childState.masterUtxo;
+            physicalOwner.dataNftUtxos = dataNftUtxos;
+            physicalOwner.requiredDataNftIndices = requiredDataNftIndices;
+            physicalOwner.functionName = proxyCallee ? '__forward' : (rawFunctionName ?? nested.functionName);
+            physicalOwner.functionArgs = proxyCallee && selectedFn.selector
+              ? [hexToBin(selectedFn.selector)] : childArgs;
+            physicalOwner.callMode = nested.callMode;
+            physicalOwner.internalArgs = lateInternalArgs;
+            physicalOwner.relativeOutputInternalArgs = [...lateRelativeOutputInternalArgs];
+            physicalOwner.blockInputs = lateBlockInputs;
+            physicalOwner.blockLayout = lateLayout;
+            physicalOwner.plannedEntryInserts = latePlannedEntryInserts;
+            physicalOwner.batchPredecessorOutputs = lateBatchPredecessorOutputs;
+            physicalOwner.batchEntryLockingBytecodes = lateBatchEntryLockingBytecodes;
+            physicalOwner.returnEventInBlock = lateLayout?.slots
+              .some((slot) => slot.kind === 'returnEvent');
+            // Hidden sender identity is derived from the physical edge's parent. Once a later writer owns the
+            // carrier, retaining the provisional edge would make C observe A as msg.sender in A -> B -> C.
+            allGroupEcSlots[physicalOwnerIndex] = nested;
+            allGroupParentIndices[physicalOwnerIndex] = parentGroupIndex;
           }
           let precomputedReturnCommitment: Uint8Array | undefined;
           if (nested.hasReturnValues && selectedFn.writesState !== true && selectedFn.outputs?.length === 1) {
@@ -19406,6 +19588,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ...(lateBlockInputs && { blockInputs: lateBlockInputs, blockLayout: lateLayout }),
             ...(latePlannedEntryInserts.length > 0 && {
               plannedEntryInserts: latePlannedEntryInserts,
+            }),
+            ...(lateBatchPredecessorOutputs.length > 0 && {
+              batchPredecessorOutputs: lateBatchPredecessorOutputs,
+            }),
+            ...(lateBatchEntryLockingBytecodes.size > 0 && {
+              batchEntryLockingBytecodes: lateBatchEntryLockingBytecodes,
             }),
             ...(nested.callMode && { callMode: nested.callMode }),
             ...(existingPhysicalIndex >= 0 && {

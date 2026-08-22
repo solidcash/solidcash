@@ -3660,8 +3660,9 @@ function synthesizeMessageBusRoute(
     .filter((candidate) => MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix)))
     .map((candidate) => candidate.name));
   for (const handler of contract.functions) {
-    if (!routeOwnedCloneNames.has(handler.name)
-      || handler.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) continue;
+    if (!routeOwnedCloneNames.has(handler.name)) continue;
+    handler.messageBusDelegatedOwner = isDelegateRoute;
+    if (handler.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) continue;
     handler.parameters.push(Object.assign(
       new ParameterNode(PrimitiveType.BIGINT, MESSAGE_BUS_OWNER_INPUT), { location: handler.location },
     ));
@@ -3882,24 +3883,29 @@ function synthesizeMessageBusRoute(
           }
           start += Math.max(1, indices.length);
         }
-        // Multiple independently aliasable entry groups would require a product of branches. Keep the emitted
-        // route linear and fail closed until the journal grows a first-class runtime cache selector.
         if (crossRowGroups.length > 1) {
-          throw new Error(
-            `Message-bus handler '${fn.name}' has multiple independently row-aliasable collection entries`,
+          // Expanding independent alias choices here produces their Cartesian product (and made an eight-row
+          // ERC-20 route several megabytes). Mark the pooled helper for LowerCollectionJournalHelpers' linear
+          // runtime cache selection instead: it chooses one physical cache per entry, invokes the handler once,
+          // then writes each result back to its independently selected owner.
+          const runtimeAliasHandler = contract.functions.find((candidate) => candidate.name === invokeName);
+          if (!runtimeAliasHandler) throw new Error(
+            `Message-bus runtime-alias handler '${invokeName}' is missing`,
           );
-        }
-        for (const indices of crossRowGroups) {
-          for (let priorRow = rowIndex - 1; priorRow >= 0; priorRow--) {
-            const conditionParts = indices.map((index) => {
-              const base = entryShape[index].base;
-              return `${base}_r${rowIndex} == ${base}_r${priorRow}`;
-            });
-            const aliasedEntryArgs = [...physicalEntryArgs];
-            for (const index of indices) {
-              aliasedEntryArgs[index] = `${entryShape[index].base}_r${priorRow}`;
+          runtimeAliasHandler.collectionJournalRuntimeAliases = true;
+        } else {
+          for (const indices of crossRowGroups) {
+            for (let priorRow = rowIndex - 1; priorRow >= 0; priorRow--) {
+              const conditionParts = indices.map((index) => {
+                const base = entryShape[index].base;
+                return `${base}_r${rowIndex} == ${base}_r${priorRow}`;
+              });
+              const aliasedEntryArgs = [...physicalEntryArgs];
+              for (const index of indices) {
+                aliasedEntryArgs[index] = `${entryShape[index].base}_r${priorRow}`;
+              }
+              dispatch = `if (${conditionParts.join(' && ')}) { ${dispatchFor(aliasedEntryArgs)} } else { ${dispatch} }`;
             }
-            dispatch = `if (${conditionParts.join(' && ')}) { ${dispatchFor(aliasedEntryArgs)} } else { ${dispatch} }`;
           }
         }
       }

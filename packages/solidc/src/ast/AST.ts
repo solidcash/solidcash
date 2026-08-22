@@ -444,6 +444,13 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
    * single entry, so sibling handlers over the same entry resolve to one pending value and one vmap slot. */
   forceCollectionJournalPool?: boolean;
+  /** Compiler-owned pooled helper whose independently keyed entries can each alias an earlier route row.
+   * LowerCollectionJournalHelpers selects and updates those physical caches at runtime without expanding the
+   * dispatcher's branches into their Cartesian product. */
+  collectionJournalRuntimeAliases?: boolean;
+  /** Compiler-owned route handler: its physical participant block is a distinct delegated proxy input, so the
+   * hidden message-bus owner witness (rather than OP_INPUTINDEX) is the authoritative block base. */
+  messageBusDelegatedOwner?: boolean;
   // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   messageBusRoute?: boolean;

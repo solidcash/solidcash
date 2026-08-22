@@ -1796,7 +1796,7 @@ export function isCanonicalEvmScalarReturnVector(
 
 /** Select a complete Solidity return from strongest-to-weakest live stack candidates. */
 export function selectEvmScalarReturnCommitment(
-  candidates: readonly Uint8Array[], expectedTypes: readonly string[],
+  candidates: readonly Uint8Array[], expectedTypes: readonly string[], allowRaw = true,
 ): string | undefined {
   const bytes = expectedTypes.length * 32;
   // Message-bus routes frame the complete Solidity return vector as one canonical `bytes` field before
@@ -1814,6 +1814,7 @@ export function selectEvmScalarReturnCommitment(
       // Ordinary route-frame items are not canonical outer bytes fields.
     }
   }
+  if (!allowRaw) return undefined;
   for (const candidate of candidates) {
     if (candidate.length !== bytes) continue;
     if (!isCanonicalEvmScalarReturnVector(candidate, expectedTypes)) continue;
@@ -1831,7 +1832,7 @@ export function selectEvmScalarReturnCommitment(
 
 /** Recover a Solidity ABI value which is live immediately before a return-output comparison. */
 function extractEvmScalarReturnCommitment(
-  fullTrace: AuthenticationProgramStateCommon[], expectedTypes: readonly string[],
+  fullTrace: AuthenticationProgramStateCommon[], expectedTypes: readonly string[], allowRaw = true,
 ): string | undefined {
   if (expectedTypes.length === 0 || !expectedTypes.every((type) => (
     type === 'bool' || type === 'int' || type === 'uint' || type === 'bigint'
@@ -1845,7 +1846,7 @@ function extractEvmScalarReturnCommitment(
       candidates.push(Uint8Array.from(stack[stackIndex]));
     }
   }
-  return selectEvmScalarReturnCommitment(candidates, expectedTypes);
+  return selectEvmScalarReturnCommitment(candidates, expectedTypes, allowRaw);
 }
 
 /** Encode the scalar Solidity ABI forms used by SDK-side return precomputation. */
@@ -10114,7 +10115,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             let evmScalar = (artifactUsesSolidityAbi(group.externalContract.inner.artifact)
               || group.externalContract.inner.artifact.compiler?.options?.evmCompat)
-              ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes) : undefined;
+              ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes, false) : undefined;
             if (!returnCommitments?.length && !evmScalar) {
               fullTraceRet = createVirtualMachineBch2026ForProvider(this.inner.provider)
                 .debug(returnProgram) as AuthenticationProgramStateCommon[];
@@ -10128,7 +10129,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               evmScalar = (artifactUsesSolidityAbi(group.externalContract.inner.artifact)
                 || group.externalContract.inner.artifact.compiler?.options?.evmCompat)
-                ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes) : undefined;
+                ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes, false) : undefined;
             }
             if (inBlockIdx >= 0) {
               const materializedCommitment = transactionRet.outputs[inBlockIdx]?.token?.nft?.commitment;
@@ -23184,7 +23185,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const extractSchemaFallback = (candidateTrace: AuthenticationProgramStateCommon[]): string | undefined => {
       if (!resultSchema?.resultTypes.length) return undefined;
       if (resultSchema.solidityAbi) {
-        const inner = extractEvmScalarReturnCommitment(candidateTrace, resultSchema.resultTypes);
+        // Only a compiler-framed vector is stronger than the targeted return-output observation. A raw ABI-width
+        // stack item is ambiguous: state hashes, collection keys, and placeholders are all canonical uint256
+        // words and can otherwise replace the real result during semantic fixed-point assembly.
+        const inner = extractEvmScalarReturnCommitment(candidateTrace, resultSchema.resultTypes, false);
         return inner === undefined ? undefined : binToHex(scriptToBytecode([hexToBin(inner)]));
       }
       return extractPendingReturnCommitment(

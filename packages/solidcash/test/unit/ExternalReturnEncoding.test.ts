@@ -55,6 +55,11 @@ describe('encodeExternalReturnValue', () => {
       [stateWitness, framed], ['uint256'],
     )).toBe(`${'00'.repeat(31)}07`);
   });
+
+  it('can require compiler framing when raw ABI words are ambiguous', () => {
+    const stateHash = new Uint8Array(32).fill(0xca);
+    expect(selectEvmScalarReturnCommitment([stateHash], ['uint256'], false)).toBeUndefined();
+  });
 });
 
 describe('selectMaterializedTailReturnEvents', () => {

@@ -1575,7 +1575,9 @@ describe('messageBus.compose atomic transaction', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const leafArtifact = compileString(`contract ComposeLeaf() {
       function leaf(int value) public pure returns (int) { return value * 2; }
-    }`, { forceStateful: true, messageBus: true });
+    }`, {
+      forceStateful: true, messageBus: true, solidityImportCompat: true, suppressWarnings: true,
+    });
     const leafBase = new Contract(leafArtifact, [], { provider });
     const leafSetup = await setupStatefulUtxos(
       provider, leafBase, leafArtifact.stateLayout!, {}, { saltContract: true },
@@ -1584,14 +1586,18 @@ describe('messageBus.compose atomic transaction', () => {
     const leaf = StatefulContract.withCategory(leafInner, leafSetup.categoryId);
 
     const middleArtifact = compileString(`
-      interface IComposeLeaf { function leaf(int value) returns (int); }
+      interface IComposeLeaf { function leaf(int value) external returns (int); }
       contract ComposeMiddle(address leafAddress) {
+        int counter;
         function middle(int value) public returns (int) {
           int doubled = IComposeLeaf(leafAddress).leaf(value);
-          return doubled + 3;
+          this.counter = doubled + 3;
+          return this.counter;
         }
       }
-    `, { forceStateful: true, messageBus: true });
+    `, {
+      forceStateful: true, messageBus: true, solidityImportCompat: true, suppressWarnings: true,
+    });
     const middleBase = new Contract(middleArtifact, [leafInner.lockingBytecode], { provider });
     const middleSetup = await setupStatefulUtxos(
       provider, middleBase, middleArtifact.stateLayout!, {}, { saltContract: true },
@@ -1600,21 +1606,31 @@ describe('messageBus.compose atomic transaction', () => {
     const middle = StatefulContract.withCategory(middleInner, middleSetup.categoryId);
 
     const rootArtifact = compileString(`
-      interface IComposeMiddle { function middle(int value) returns (int); }
+      interface IComposeMiddle { function middle(int value) external returns (int); }
       contract ComposeRoot(address middleAddress) {
+        struct Record { int prefix; int returned; }
+        Record[] jobs;
+        function seed(int prefix) public {
+          this.jobs.push(Record(prefix, 0));
+          require(this.jobs.length == 1);
+        }
         function root(int value) public {
           int result = IComposeMiddle(middleAddress).middle(value);
+          this.jobs[0].returned = result;
           require(result == value * 2 + 3);
         }
       }
-    `, { forceStateful: true, messageBus: true });
+    `, {
+      forceStateful: true, messageBus: true, solidityImportCompat: true, suppressWarnings: true,
+    });
     const rootBase = new Contract(rootArtifact, [middleInner.lockingBytecode], { provider });
     const rootSetup = await setupStatefulUtxos(
-      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+      provider, rootBase, rootArtifact.stateLayout!, { jobs: [] }, { saltContract: true },
     );
     const root = StatefulContract.withCategory(
       rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
     );
+    await root.call.seed(7n).send();
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({
       calls: [root.call.root(11n), middle.call.middle(11n), leaf.call.leaf(11n)],
@@ -1626,6 +1642,7 @@ describe('messageBus.compose atomic transaction', () => {
     expect(built.inputs).toHaveLength(built.outputs.length);
     expect(built.inputs.length).toBeGreaterThanOrEqual(6);
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect((await root.getState()).jobs).toEqual([{ prefix: 7n, returned: 25n }]);
   }, 120_000);
 
   it('binds an emitted event row to its absolute physical output', async () => {

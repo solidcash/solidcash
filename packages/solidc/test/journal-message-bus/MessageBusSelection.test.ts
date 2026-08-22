@@ -265,6 +265,34 @@ describe('message-bus compilation selection', () => {
     );
   });
 
+  it('binds a state-derived key for a mapping struct-field write', () => {
+    const artifact = compileString(`contract Registry {
+      struct Record { uint value; }
+      mapping(uint => Record) records;
+      uint next;
+      function create() public {
+        uint id = next;
+        records[id].value = 7;
+        next = next + 1;
+        require(records[id].value == 7);
+      }
+    }`, {
+      solidityImportCompat: true,
+      messageBus: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'create')).toEqual(
+      expect.objectContaining({
+        eligible: true,
+        batchKeyWitnesses: [expect.objectContaining({
+          source: 'expression',
+          expressionLabel: 'state:next',
+        })],
+      }),
+    );
+  });
+
   it('keeps valid external siblings when the fast route attributes one generated clone failure', () => {
     const artifact = compileString(`contract SelectiveRoute {
       struct Record { int value; }

@@ -2267,7 +2267,8 @@ function synthesizeMessageBusRoute(
           const computedKey = alternatives.length === 1 && alternatives[0].some((index) => index === -1);
           const directComputedWrite = computedKey && (fn.body.statements ?? []).some((statement) => {
             const bare = bareEntryAccessOf(statement, locallyBound);
-            const access = statement instanceof MappingAssignNode || statement instanceof MappingDeleteNode
+            const access = statement instanceof MappingAssignNode || statement instanceof MappingFieldAssignNode
+              || statement instanceof MappingDeleteNode
               ? { name: statement.name, keys: statement.keys as ExpressionNode[] } : bare;
             return access?.name === collectionName && access.keys.length === collection.allKeyTypes.length;
           });

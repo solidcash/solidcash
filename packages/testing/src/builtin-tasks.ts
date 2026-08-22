@@ -164,9 +164,11 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     // override) when publishing mainnet-ready split bundles.
     const maxShardBytes = hre.network.provider.consensusLimits?.maximumInputBytes ?? 10_000;
     const maximumNftCommitmentBytes = hre.network.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
+    const suppressWarnings = args['suppress-warnings'] === true
+      || hre.config.solc?.suppressWarnings === true;
     const compilerOptions = {
       ...hre.config.solc,
-      suppressWarnings: args['suppress-warnings'] || hre.config.solc?.suppressWarnings,
+      suppressWarnings,
       maximumInputBytes: maxShardBytes,
       commitmentLimit: Math.min(
         (hre.config.solc?.commitmentLimit as number | undefined) ?? maximumNftCommitmentBytes,

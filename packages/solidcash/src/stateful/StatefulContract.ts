@@ -23373,6 +23373,75 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return commitment === undefined ? undefined : hexToBin(commitment);
   }
 
+  /** @internal Discover routed event expectations from the complete atomic transaction.
+   *
+   * Isolated participant probes can stop before a graph handler reaches its event covenant because their graph
+   * coordinates are intentionally final-transaction-relative. The atomic composer already has the authoritative
+   * transaction here, so read each event commitment and exact locking bytecode from that trace. A relaxed
+   * discovery trace may cross an
+   * earlier provisional output mismatch; the ordinary final preflight remains the authority for acceptance.
+   */
+  _messageBusEventCommitmentsFromTransaction(
+    builder: TransactionBuilder, eventOutputIndices: readonly number[], inputIndex: number,
+    program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLibauthProgram(),
+  ): ReadonlyMap<number, { commitment: string; lockingBytecode?: string }> {
+    if (eventOutputIndices.length === 0) return new Map();
+    const { transaction, sourceOutputs } = program;
+    const extract = (
+      trace: AuthenticationProgramStateCommon[],
+    ): Map<number, { commitment: string; lockingBytecode?: string }> => {
+      const found = extractCommitmentMapFromTrace(trace, undefined, true, false, true);
+      // Event pins are emitted as `<event commitment> <physical output index>
+      // OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY`. Read the expected operand before introspection: this remains
+      // unambiguous when a sparse trace crosses OP_INVOKE boundaries where the generic pending-pin matcher can
+      // otherwise associate the equality with an outer helper. Restricting this to the compiler-published event
+      // indices keeps it independent of any contract layout or event schema.
+      const requested = new Set(eventOutputIndices);
+      for (const state of trace) {
+        if (state.controlStack.some((flag) => flag === false)) continue;
+        if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT || state.stack.length < 2) continue;
+        const outputIndex = Number(decodeScriptNumber(state.stack[state.stack.length - 1]));
+        if (!requested.has(outputIndex) || found.has(outputIndex)) continue;
+        found.set(outputIndex, binToHex(state.stack[state.stack.length - 2]));
+      }
+      for (const outputIndex of eventOutputIndices) {
+        if (found.has(outputIndex)) continue;
+        const actual = transaction.outputs[outputIndex]?.token?.nft?.commitment;
+        const fallback = extractExpectedOutputCommitmentFromTrace(
+          trace, outputIndex, actual === undefined ? '' : binToHex(actual),
+        );
+        if (fallback !== undefined) found.set(outputIndex, fallback);
+      }
+      return new Map([...found].map(([outputIndex, commitment]) => {
+        const lockingBytecode = extractVerifiedValuesFromTrace(
+          trace, Op.OP_OUTPUTBYTECODE, { min: outputIndex, max: outputIndex + 1 }, true, false, true,
+        )[0];
+        return [outputIndex, {
+          commitment,
+          ...(lockingBytecode !== undefined && { lockingBytecode: binToHex(lockingBytecode) }),
+        }];
+      }));
+    };
+    const trace = evaluateProbeTrace(this.inner.provider, { inputIndex, sourceOutputs, transaction });
+    const found = extract(trace);
+    if (eventOutputIndices.every((outputIndex) => found.has(outputIndex)) || trace.at(-1)?.error === undefined) {
+      return found;
+    }
+    const relaxed = extract(evaluateProbeTrace(
+      this.inner.provider, { inputIndex, sourceOutputs, transaction }, true,
+    ));
+    for (const [outputIndex, expectation] of relaxed) {
+      const current = found.get(outputIndex);
+      found.set(outputIndex, {
+        commitment: expectation.commitment,
+        ...(expectation.lockingBytecode !== undefined
+          ? { lockingBytecode: expectation.lockingBytecode }
+          : current?.lockingBytecode !== undefined ? { lockingBytecode: current.lockingBytecode } : {}),
+      });
+    }
+    return found;
+  }
+
   /**
    * ethers-style `fn.staticCall(...)` read: run the function's covenant in a read-only VM probe against the
    * current on-chain state + args, extract the encoded return value, and decode it against the ABI output type(s)

@@ -490,6 +490,7 @@ export function finalizeAtomicInvocationGraph(
   if (effectKeys.size !== eventEffects.length) {
     throw new Error('messageBus: atomic event effects contain a duplicate participant slot');
   }
+  const eventOrdinals = new Map<number, number>();
   const eventRows = [...eventEffects]
     .sort((a, b) => a.participant - b.participant || a.offset - b.offset)
     .map((effect) => {
@@ -507,7 +508,21 @@ export function finalizeAtomicInvocationGraph(
         throw new Error(`messageBus: participant ${effect.participant} has a non-canonical event frame`);
       }
       const frameWidth = eventSlotCount / maximumRows;
-      const parent = participant.invocations[Math.floor(slot.slotIndex / frameWidth)];
+      const eventOrdinal = eventOrdinals.get(effect.participant) ?? 0;
+      eventOrdinals.set(effect.participant, eventOrdinal + 1);
+      const emittingInvocations = participant.invocations.flatMap((invocationIndex) => {
+        const invocation = plan.invocations[invocationIndex];
+        const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+          candidate.name === invocation.function);
+        return Array.from({ length: handler?.emits?.length ?? 0 }, () => invocationIndex);
+      });
+      // Physical event sites belong to the compiler's unrolled selector dispatcher and need not be compact row
+      // ordinals. Bind each discovered active event to the corresponding emitting invocation in execution order;
+      // the slot itself remains authenticated independently by sourceOffset/targetOffset.
+      // Older/minimal artifacts do not publish handler-level emit metadata. Keep their canonical physical-frame
+      // binding as a compatibility fallback; full artifacts use the reached emitting invocation sequence above.
+      const parent = emittingInvocations[eventOrdinal]
+        ?? participant.invocations[Math.floor(slot.slotIndex / frameWidth)];
       if (!/^(?:[0-9a-fA-F]{2})*$/.test(effect.lockingBytecodeHex)
         || !/^(?:[0-9a-fA-F]{2})*$/.test(effect.commitmentHex)) {
         throw new Error(`messageBus: participant ${participant.participant} event slot ${slot.offset} is not byte hex`);

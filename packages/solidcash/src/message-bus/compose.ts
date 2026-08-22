@@ -1,7 +1,8 @@
 import { binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
-  MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256,
+  MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, buildEventNftCovenantScript,
+  buildAnonymousEventNftCovenantScript, computeEventNameHash,
 } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -9,7 +10,7 @@ import type {
   ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
 } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import {
   decodeEvmScalarReturn, evalComputedKey, isCanonicalEvmScalarReturnVector,
   StatefulContract, StatefulFunctionCall,
@@ -802,6 +803,24 @@ export class AtomicMessageBusComposition {
       builder.outputs[tail] = { ...builder.outputs[tail], amount };
     };
 
+    const eventLockingBytecodes = (participant: (typeof plan.participants)[number]): string[] => {
+      const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+      const category = hexToBin(categories[participant.participant]);
+      return participant.invocations.flatMap((invocationIndex) => {
+        const invocation = plan.invocations[invocationIndex];
+        const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+          candidate.name === invocation.function);
+        return (handler?.emits ?? []).map((emitted) => {
+          const event = participant.artifact.events?.find((candidate) =>
+            candidate.signature === emitted.eventSignature);
+          const script = event?.anonymous
+            ? buildAnonymousEventNftCovenantScript(category)
+            : buildEventNftCovenantScript(category, computeEventNameHash(emitted.eventSignature));
+          return binToHex(scriptToLockingBytecode(script, contract.inner.addressType));
+        });
+      });
+    };
+
     const assemble = async (
       graph: ReturnType<typeof finalizeAtomicInvocationGraph>,
       results: Readonly<Record<number, string>>,
@@ -903,6 +922,41 @@ export class AtomicMessageBusComposition {
             `messageBus: participant ${participant.participant} '${participant.artifact.contractName}' `
             + `failed to build its balanced block: ${error instanceof Error ? error.message : String(error)}`,
           );
+        }
+        // Event effects are fixed-point claims just like return values and mutable resources. Once a prior pass
+        // has authenticated an event commitment, feed it back into the exact compiler-published participant slot;
+        // otherwise every assembly pass recreates the empty probe placeholder and convergence can never advance
+        // past the handler's OUTPUTTOKENCOMMITMENT equality.
+        const eventClaims = graph.callManifest.rows.filter((row) =>
+          row.kind === 2 && row.owner === participant.participant && row.mode === 1);
+        if (eventClaims.length > 0) {
+          const eventOffsets = participant.blockLayout!.slots
+            .filter((slot) => slot.kind === 'event').map((slot) => slot.offset);
+          const eventLocks = eventLockingBytecodes(participant);
+          const eventLockSet = new Set(eventLocks);
+          const templateOffsets = local.outputs.flatMap((output, offset) => {
+            const lockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+            return output.token?.nft?.capability === 'none'
+              && eventLockSet.has(binToHex(lockingBytecode))
+              ? [offset] : [];
+          });
+          const inactive = eventOffsets.map((offset) => local.outputs[offset]).find((output) => !output?.token);
+          if (eventLocks.length < eventClaims.length || !inactive) {
+            throw new Error(
+              `messageBus: participant ${participant.participant} cannot materialize its authenticated event frame`,
+            );
+          }
+          for (const offset of new Set([...eventOffsets, ...templateOffsets])) local.outputs[offset] = { ...inactive };
+          eventClaims.forEach((row) => {
+            local.outputs[row.targetOffset] = {
+              to: hexToBin(row.subjectHex),
+              amount: inactive.amount,
+              token: {
+                category: categories[participant.participant], amount: 0n,
+                nft: { capability: 'none', commitment: row.effectHex },
+              },
+            };
+          });
         }
         const publishedComputeOffsets = participant.blockLayout!.slots
           .filter((slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar')
@@ -1889,12 +1943,81 @@ export class AtomicMessageBusComposition {
           continue;
         }
         const derivedEventEffects: AtomicEventSlotEffect[] = [];
+        const eventProgram = provisional.buildLibauthProgram();
+        const discoveredEvents = new Map<number, { commitment: string; lockingBytecode?: string }>();
+        for (const participant of plan.participants) {
+          const ownedSlots = eventSlots.filter((slot) => slot.participant === participant.participant);
+          const participantBase = finalized.layout.participantInputs[participant.participant];
+          const eventIndices = ownedSlots.map((slot) => participantBase + slot.offset);
+          if (eventIndices.length === 0) continue;
+          const executionInput = participant.executionKind === 1 && participant.executorOffset !== null
+            ? participantBase + participant.executorOffset : participantBase;
+          const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+          for (const [outputIndex, expectation] of contract._messageBusEventCommitmentsFromTransaction(
+            provisional, eventIndices, executionInput, eventProgram,
+          )) discoveredEvents.set(outputIndex, expectation);
+        }
+        // The route's unrolled dispatcher owns the physical event site. A compact local probe initially places
+        // reached events by logical row, but those coordinates can differ when several selector arms share the
+        // route. The complete trace above is the compiler's authority: relocate the SDK's artifact-derived event
+        // templates onto the exact event slots introspected by the covenant, and return every other reserved slot
+        // to its canonical balanced-output shape. No contract-specific handler or event names participate.
+        for (const participant of plan.participants) {
+          const participantBase = finalized.layout.participantInputs[participant.participant];
+          const indices = eventSlots.filter((slot) => slot.participant === participant.participant)
+            .map((slot) => participantBase + slot.offset);
+          if (indices.length === 0) continue;
+          const eventLocks = eventLockingBytecodes(participant);
+          const eventLockSet = new Set(eventLocks);
+          const participantEnd = participantBase
+            + finalized.callManifest.participants[participant.participant].actualSize;
+          const active = Array.from({ length: participantEnd - participantBase }, (_unused, offset) =>
+            participantBase + offset).filter((index) => {
+            const output = provisional.outputs[index];
+            const nft = provisional.outputs[index]?.token?.nft;
+            const lockingBytecode = output === undefined ? undefined
+              : typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+            return nft?.capability === 'none' && lockingBytecode !== undefined
+              && eventLockSet.has(binToHex(lockingBytecode));
+          });
+          const targets = indices.filter((index) =>
+            (discoveredEvents.get(index)?.commitment.length ?? 0) > 0);
+          if (targets.length === 0) continue;
+          if (targets.length > eventLocks.length) {
+            throw new Error(
+              `messageBus: compiler discovered ${targets.length} active event slots but the participant publishes `
+              + `only ${eventLocks.length} event definitions`,
+            );
+          }
+          const inactive = indices.map((index) => provisional.outputs[index]).find((output) => !output.token);
+          if (!inactive && targets.some((target) => !active.includes(target))) {
+            throw new Error('messageBus: event-frame relocation has no canonical inactive output');
+          }
+          const template = inactive ?? provisional.outputs[targets[0]];
+          if (!template) throw new Error('messageBus: active event frame has no output template');
+          if (inactive) {
+            for (const index of new Set([...indices, ...active])) provisional.outputs[index] = { ...inactive };
+          }
+          targets.forEach((target, index) => {
+            provisional.outputs[target] = {
+              to: hexToBin(discoveredEvents.get(target)?.lockingBytecode ?? eventLocks[index]),
+              amount: template.amount,
+              token: {
+                category: categories[participant.participant], amount: 0n,
+                nft: { capability: 'none', commitment: discoveredEvents.get(target)!.commitment },
+              },
+            };
+          });
+          rebalanceFeeTail(provisional, 'relocated compiler-authenticated event outputs');
+        }
         for (const slot of eventSlots) {
           const outputIndex = finalized.layout.participantInputs[slot.participant] + slot.offset;
           const output = provisional.outputs[outputIndex];
           if (!output) throw new Error(`messageBus: event slot ${slot.participant}:${slot.offset} has no output`);
           const lockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
-          const active = output.token !== undefined;
+          const expectation = discoveredEvents.get(outputIndex);
+          const commitment = expectation?.commitment ?? output.token?.nft?.commitment ?? '';
+          const active = output.token !== undefined && commitment.length > 0;
           if (active && (output.token!.category !== categories[slot.participant]
             || output.token!.nft?.capability !== 'none')) {
             throw new Error(
@@ -1903,8 +2026,8 @@ export class AtomicMessageBusComposition {
           }
           if (active) {
             derivedEventEffects.push({
-              ...slot, active, lockingBytecodeHex: binToHex(lockingBytecode),
-              commitmentHex: output.token?.nft?.commitment ?? '',
+              ...slot, active, lockingBytecodeHex: expectation?.lockingBytecode ?? binToHex(lockingBytecode),
+              commitmentHex: commitment,
             });
           }
         }

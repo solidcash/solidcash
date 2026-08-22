@@ -1596,7 +1596,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(constant)), locationData);
       this.emit(Op.OP_ADD, locationData);
     }
-    this.emitMasterInputIndex(locationData);
+    // The site-derived relative offset is a runtime-only value above the compiler-tracked frame. Account for it
+    // while copying the master input; otherwise a handler can select the message envelope (or another ABI value)
+    // as a UTXO index before adding the relative effect offset.
+    this.emitMasterInputIndex(locationData, 1);
     this.emit(Op.OP_ADD, locationData);
     return true;
   }
@@ -16039,6 +16042,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       return node;
     }
+    const routeBatch = this.ownsMessageBusParticipantBlock()
+      && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIndex)) ?? false)
+      && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${slotIndex}`), true) >= 0;
+    if (routeBatch) {
+      // A routed ABI is the union of all handlers, so a cache read synthesized for an inactive handler has no
+      // physical entry input. Relative proof offset zero is reserved for the master (an entry can never occupy it)
+      // and the SDK supplies it only for such inactive slots. Active read-only slots retain their real nonzero
+      // proof even though their batch-write sentinel is -2.
+      this.emitPickVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emitDefaultValue(loc, valueType);
+      this.emit(Op.OP_ELSE, loc);
+    }
     // Outlined delegate handlers can install a local slot table while retaining the source assignment's slot
     // ordinal. The assignment's resolved collection, not a same-numbered caller slot, owns this covenant address.
     const collectionHash = computeCollectionHash(`${collection.name}:${collection.type.toString()}`);
@@ -16095,6 +16113,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);    // -> []
     this.emitDefaultValue(loc, valueType);                      // absent -> default
     this.emit(Op.OP_ENDIF, loc);
+
+    if (routeBatch) this.emit(Op.OP_ENDIF, loc);
 
     this.pushToStack('(value)');
     return node;
@@ -18213,14 +18233,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
-  /**
-   * Copy a batch-topology witness by its stable function-frame ordinal. Handler calls and chunk verification can
-   * leave temporary values above the tracked frame, so a top-relative OP_PICK plus a hand-maintained offset can
-   * silently select an adjacent slot's otherwise-valid witness. The bottom ordinal remains invariant across those
-   * temporary values and works for both the original ABI parameter and its post-handler snapshot.
-   */
-  private emitPickVMapWitness(name: string, loc: SingleLocationData): void {
-    this.emitPickTrackedFromBottom(this.vmapWitnessName(name), loc);
+  /** Copy a batch-topology witness from the compiler-tracked top frame. */
+  private emitPickVMapWitness(name: string, loc: SingleLocationData, extraStackOffset = 0): void {
+    const resolved = this.vmapWitnessName(name);
+    if (resolved.startsWith('__vmap_snapshot_')) {
+      // Restored snapshots are pushed only after every invoked handler has returned, so they sit above any
+      // runtime-only handler residue. Their top-relative depth is stable; a bottom ordinal would incorrectly count
+      // that untracked residue as part of the compiler frame and select an adjacent ABI value.
+      this.emit(encodeInt(BigInt(this.getStackIndex(resolved) + extraStackOffset)), loc);
+      this.emit(Op.OP_PICK, loc);
+      return;
+    }
+    // Before restoration, the original ABI witness sits below handler working values and is stable from bottom.
+    this.emitPickTrackedFromBottom(resolved, loc);
   }
 
   /** Copy the upsert key hash parked at the top of the altstack, preserving it for later upsert phases. */
@@ -18233,8 +18258,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {
     const loc = { location: node.location, positionHint: PositionHint.START };
     const arg = (name: string, extra = 0): void => {
-      void extra;
-      this.emitPickVMapWitness(name, loc);
+      this.emitPickVMapWitness(name, loc, extra);
     };
     const proofIndex = (slot: number, extra = 0): void => {
       arg(`__internal__vmapBatchProof_${slot}`, extra);
@@ -18898,15 +18922,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitEntryCategoryVerification(node: FunctionDefinitionNode): void {
     const locationData = { location: node.location, positionHint: PositionHint.START };
-
     for (let i = 0; i < this.entrySlots.length; i++) {
       // Loop-write entries are NEW (minted from master, no co-spent input entry) and have no fixed block slot.
       if (this.entrySlots[i].inLoop) continue;
 
-      // Check if entry exists via introspection
-      this.emitSlotExistsCheck('entry', i, locationData);
+      const routeBatch = this.ownsMessageBusParticipantBlock()
+        && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)
+        && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${i}`), true) >= 0;
+      if (routeBatch) {
+        // A compiler route publishes the union of every handler's logical entry slots. Its fixed block slot can
+        // belong to another participant when this handler is inactive, so existence must come from the
+        // authenticated batch proof witness. Offset zero is reserved for the participant master and emitted only
+        // for inactive logical slots; active reads and writes always carry a nonzero proof offset.
+        this.emitPickVMapWitness(`__internal__vmapBatchProof_${i}`, locationData);
+        this.emit(Op.OP_0, locationData);
+        this.emit(Op.OP_NUMNOTEQUAL, locationData);
+      } else {
+        // Ordinary entry points use physical fixed-slot presence.
+        this.emitSlotExistsCheck('entry', i, locationData);
+      }
 
-      // If flag is set, verify the entry input's token category
+      // If the slot is active, verify the entry input's token category.
       this.emit(Op.OP_IF, locationData);
 
       // Compute entry input index (0 extra untracked values at IF entry)
@@ -24686,12 +24722,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
     if (this.usesMessageBusOwnerBlockBase()) {
-      // The owner witness belongs to an invoked handler frame (including detached route-verifier bodies). Its
-      // local top-relative model includes every compiler-owned handler operand; a bottom ordinal would cross the
-      // caller's still-live route frame and select its oldest value instead.
-      const ownerIndex = this.getStackIndex('__internal__messageBusOwnerInput') + extraStackOffset;
-      this.emit(encodeInt(BigInt(ownerIndex)), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      if (!this.usesProxyStateBlockBase()) {
+        // A direct route executes in its physical owner input. OP_INPUTINDEX is the consensus authority and avoids
+        // copying an equivalent hidden witness out of the still-live route frame.
+        this.emit(Op.OP_INPUTINDEX, locationData);
+      } else {
+        // A delegated handler executes in a distinct implementation input and must use its authenticated owner
+        // witness. Its local top-relative model includes every compiler-owned handler operand; a bottom ordinal
+        // would cross the caller's still-live route frame and select its oldest value instead.
+        const ownerIndex = this.getStackIndex('__internal__messageBusOwnerInput') + extraStackOffset;
+        this.emit(encodeInt(BigInt(ownerIndex)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      }
     } else if (this.usesProxyStateBlockBase()) {
       if (!this.isDefineSubTraversal) {
         // A physical delegate entry authenticates this relation at entry (see the delegate preflight above).

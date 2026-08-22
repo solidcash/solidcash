@@ -18536,13 +18536,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // Publish the callee's chunkable-value witnesses alongside the vmap batch witnesses; the delegate
               // arg fill reads them by name. Emitted unconditionally - a route may read a chunkable value
               // without carrying any sorted-batch WRITE.
+              const childValueWitnessArgs: Record<string, FunctionArgument> = {};
               for (const [routeSlot, payload] of childValueWitnesses) {
-                childCompilerInternalArgs[`__internal__valueWitness_${routeSlot}`] = payload;
+                const name = `__internal__valueWitness_${routeSlot}`;
+                childCompilerInternalArgs[name] = payload;
+                childValueWitnessArgs[name] = payload;
               }
               const sharedPrimary = sharedGroupIndex >= 0
                 ? externalCallUtxoGroups[sharedGroupIndex] : undefined;
               const sharedDelegate = delegateCallGroupIndex !== undefined
                 ? lowLevelCallUtxoGroups[delegateCallGroupIndex] : undefined;
+              // A read-only row can be discovered after the state-writing row which owns the one physical
+              // participant. Its authenticated long-value witness still belongs to that physical route. Keep
+              // these additive, per-route-slot arguments when later rows reuse the group; otherwise the route
+              // receives the empty caller-side fallback and silently decodes the mapped value as zero.
+              if (sharedPrimary && Object.keys(childValueWitnessArgs).length > 0) {
+                sharedPrimary.internalArgs = {
+                  ...sharedPrimary.internalArgs,
+                  ...childValueWitnessArgs,
+                };
+                if (sharedPrimary.compilerRoute) {
+                  sharedPrimary.compilerRoute = {
+                    ...sharedPrimary.compilerRoute,
+                    internalArgs: {
+                      ...sharedPrimary.compilerRoute.internalArgs,
+                      ...childValueWitnessArgs,
+                    },
+                  };
+                }
+              }
               for (const [name, value] of Object.entries({
                 ...sharedDelegate?.internalArgs,
                 ...sharedPrimary?.internalArgs,

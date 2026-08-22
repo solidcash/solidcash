@@ -8,7 +8,7 @@ import {
   keccakComputeLockingBytecode,
   ecrecoverComputeLockingBytecode,
   hash160,
-  buildValueChunkCommitment, encodePushdataValue, splitValueIntoValueChunks,
+  buildValueChunkCommitment, encodeChunkableValueTail, encodePushdataValue, splitValueIntoValueChunks,
 } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { ethers } from 'ethers';
@@ -505,23 +505,35 @@ describe('messageBus.compose atomic transaction', () => {
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 
-  it('preserves a pooled mapping-array return across an event-emitting write', async () => {
+  it('preserves a pooled long mapping return across event-emitting writes', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposePooledArrayCallee() {
+      struct FeeRecord { bytes publicKey; string name; bigint fee; }
       event Appended(uint256 key);
       mapping(bool => bool) earlier;
+      mapping(bigint => FeeRecord) fees;
       mapping(uint256 => bigint[]) items;
       function readEarlier(bool key) public returns (bool) { return this.earlier[key]; }
+      function readFee(bigint key) public returns (bigint) { return this.fees[key].fee; }
       function itemsLength(uint256 key) public returns (uint256) { return this.items[key].length; }
       function append(uint256 key) public {
         this.items[key].push(bigint(4) << 160);
       emit Appended(key);
       require(this.items[key].length > 0);
       }
-    }`, { forceStateful: true, messageBus: true, messageBusGraphContext: true });
+    }`, {
+      forceStateful: true, messageBus: true, messageBusGraphContext: true,
+      suppressWarnings: true,
+    });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const key = 7n;
     const slot = keyToSlot(bigIntToVmNumber(key));
+    const feeKey = 9n;
+    const feeSlot = keyToSlot(bigIntToVmNumber(feeKey));
+    const feeValue = encodePushdataValue([
+      new Uint8Array(33).fill(2), 'long fee record '.repeat(6), 100n,
+    ], 'FeeRecord', calleeArtifact.structs);
+    const feeDigest = sha256(feeValue);
     const encodedItems = encodePushdataValue([
       1n << 160n, 2n << 160n, 3n << 160n,
     ], 'bigint[]');
@@ -543,10 +555,32 @@ describe('messageBus.compose atomic transaction', () => {
               commitment: binToHex(encodeEntryCommitment(slot, new Uint8Array(32), entryValue)),
             },
           },
+        }, {
+          address: getEntryNftAddress(calleeBase, categoryId, 'fees'),
+          satoshis: 10_000n,
+          token: {
+            amount: 0n,
+            nft: {
+              capability: 'mutable' as const,
+              commitment: binToHex(encodeEntryCommitment(
+                feeSlot, new Uint8Array(32),
+                encodeChunkableValueTail(feeValue),
+              )),
+            },
+          },
         }];
         const chunkAddress = getValueChunkAddress(calleeBase, categoryId, 'items', slot, valueDigest);
         splitValueIntoValueChunks(encodedItems).forEach((chunk, index) => outputs.push({
           address: chunkAddress,
+          satoshis: 10_000n,
+          token: {
+            amount: 0n,
+            nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(index, chunk) },
+          },
+        }));
+        const feeChunkAddress = getValueChunkAddress(calleeBase, categoryId, 'fees', feeSlot, feeDigest);
+        splitValueIntoValueChunks(feeValue).forEach((chunk, index) => outputs.push({
+          address: feeChunkAddress,
           satoshis: 10_000n,
           token: {
             amount: 0n,
@@ -560,18 +594,23 @@ describe('messageBus.compose atomic transaction', () => {
     const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
     const callerArtifact = compileString(`
       interface IComposePooledArrayCallee {
-        function readEarlier(bool key) returns (bool);
-        function itemsLength(uint256 key) returns (uint256);
-        function append(uint256 key);
+        function readEarlier(bool key) external returns (bool);
+        function readFee(bigint key) external returns (bigint);
+        function itemsLength(uint256 key) external returns (uint256);
+        function append(uint256 key) external;
       }
       contract ComposePooledArrayCaller(address calleeAddress) {
         function prepare(uint256 key) public {
           uint256 length = IComposePooledArrayCallee(calleeAddress).itemsLength(key);
           IComposePooledArrayCallee(calleeAddress).append(key);
-          require(length == 3);
+          IComposePooledArrayCallee(calleeAddress).append(key);
+          bigint fee = IComposePooledArrayCallee(calleeAddress).readFee(9);
+          require(length == 3 && fee == 100);
         }
       }
-    `, { forceStateful: true, messageBus: true });
+    `, {
+      forceStateful: true, messageBus: true, suppressWarnings: true,
+    });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -581,7 +620,10 @@ describe('messageBus.compose atomic transaction', () => {
     );
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({
-      calls: [caller.call.prepare(key), callee.call.itemsLength(key), callee.call.append(key)],
+      calls: [
+        caller.call.prepare(key), callee.call.itemsLength(key), callee.call.append(key),
+        callee.call.append(key), callee.call.readFee(feeKey),
+      ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });

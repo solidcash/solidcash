@@ -213,6 +213,32 @@ describe('Release 0 shared invocation analysis', () => {
       .toEqual(summary.resultConsumers);
   });
 
+  it('publishes the producer callsite for a directly nested external-call argument', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProducer { function quote(bigint n) returns (bigint); }
+      interface IConsumer { function settle(bigint quoted); }
+      contract NestedResultFlow() {
+        function run(address producer, address consumer, bigint n) public {
+          IConsumer(consumer).settle(IProducer(producer).quote(n));
+          require(n >= 0);
+        }
+      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+    const calls = artifact.invocationAnalysis!.functions
+      .find((fn) => fn.name === 'run')!.externalCalls!;
+    expect(calls.map((call) => [call.callsiteId, call.functionName])).toEqual([
+      [0, 'quote'], [1, 'settle'],
+    ]);
+    expect(calls[1].argSources?.[0]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'externalCall',
+        name: 'IProducer.quote',
+        callsiteId: 0,
+        type: 'bigint',
+      },
+    });
+  });
+
   it('links each used tuple result through its synthetic local definition', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface IProducer { function quote(bigint n) returns (bigint, bool); }

@@ -731,6 +731,87 @@ export class AtomicMessageBusComposition {
         ) ?? provisionalInvocationResult(artifact, invocation.resultTypes),
       ];
     }));
+    const propagateResultDependentArguments = (
+      results: Readonly<Record<number, string>>,
+    ): { propagated: boolean; calls: PreparedAtomicMessageBusCall[] } => {
+      const resultsByParent = new Map<number, Map<number, FunctionArgument>>();
+      for (const invocation of returning) {
+        if (invocation.parent === null || invocation.consumerCallsiteId === undefined) continue;
+        const resultHex = results[invocation.index];
+        if (resultHex === undefined || invocation.resultTypes.length !== 1) continue;
+        const artifact = plan.participants[invocation.callee].artifact;
+        let value: FunctionArgument | undefined;
+        if (artifactUsesSolidityAbi(artifact)) {
+          value = decodeEvmScalarReturn(hexToBin(resultHex), invocation.resultTypes[0]);
+        } else {
+          try {
+            const bytes = hexToBin(resultHex);
+            const decoded = decodePushdataValue(bytes, 0, invocation.resultTypes[0], artifact.structs);
+            if (decoded.bytesConsumed === bytes.length) value = decoded.value as FunctionArgument;
+          } catch {
+            // Unsupported result shapes remain ordinary fixed-point claims; no argument is guessed.
+          }
+        }
+        if (value === undefined) continue;
+        const siblings = resultsByParent.get(invocation.parent) ?? new Map<number, FunctionArgument>();
+        siblings.set(invocation.consumerCallsiteId, value);
+        resultsByParent.set(invocation.parent, siblings);
+      }
+      let propagated = false;
+      const calls = descriptors.map((descriptor, index): PreparedAtomicMessageBusCall => {
+        const invocation = plan.invocations[index];
+        const siblingResults = invocation.parent === null
+          ? undefined : resultsByParent.get(invocation.parent);
+        const resolved = siblingResults && descriptor.resolveArgsFromResults?.(siblingResults);
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1' && siblingResults
+          && descriptor.resolveArgsFromResults) {
+          console.error('atomic-result-argument-resolution', {
+            invocation: index,
+            functionName: descriptor.functionName,
+            callsites: [...siblingResults.keys()],
+            resolved: resolved !== undefined,
+            changed: resolved !== undefined
+              && semanticJson(resolved) !== semanticJson(descriptor.args),
+          });
+        }
+        let args = descriptor.args;
+        if (resolved && semanticJson(resolved) !== semanticJson(descriptor.args)) {
+          propagated = true;
+          args = resolved;
+        }
+        return {
+          contract: descriptor.contract,
+          functionName: descriptor.functionName,
+          args,
+          ...(descriptor.callsiteId !== undefined && { callsiteId: descriptor.callsiteId }),
+          ...(descriptor.executionArtifact && { executionArtifact: descriptor.executionArtifact }),
+          ...(descriptor.executor && { executor: descriptor.executor }),
+          ...(results[index] !== undefined
+            ? { provisionalResultCommitment: hexToBin(results[index]) }
+            : descriptor.provisionalResultCommitment && {
+              provisionalResultCommitment: descriptor.provisionalResultCommitment,
+            }),
+          ...(descriptor.resolveArgsFromResults && {
+            resolveArgsFromResults: descriptor.resolveArgsFromResults,
+          }),
+        };
+      });
+      return { propagated, calls };
+    };
+    // A graph-discovery seed is already semantically available on the first atomic pass. Rebuild expressions
+    // which consume it before assembling the call manifest; waiting for the VM to discover a *different* result
+    // leaves an unchanged seed permanently paired with the stale pre-discovery argument bytes.
+    const initialPropagation = propagateResultDependentArguments(provisionalResults);
+    if (initialPropagation.propagated) {
+      if (this.resultPropagationDepth >= descriptors.length) {
+        throw new Error('messageBus: authenticated result arguments did not converge');
+      }
+      return new AtomicMessageBusComposition(
+        { ...this.options, preparedCalls: initialPropagation.calls },
+        this.resultPropagationDepth + 1,
+      )._build();
+    }
     const eventSlots = plan.participants.flatMap((participant) =>
       participant.blockLayout!.slots.filter((slot) => slot.kind === 'event').map((slot) => ({
         participant: participant.participant, offset: slot.offset,
@@ -1616,75 +1697,13 @@ export class AtomicMessageBusComposition {
           // (for example a struct field or abi.encodePacked). Once the VM exposes an updated authenticated result,
           // rebuild those complete expressions and restart planning: argsHex, route-key witnesses, participant
           // batches, and the call manifest all depend on the argument bytes and must change atomically.
-          const resultsByParent = new Map<number, Map<number, FunctionArgument>>();
-          for (const invocation of returning) {
-            if (invocation.parent === null || invocation.consumerCallsiteId === undefined) continue;
-            const resultHex = derivedResults[invocation.index];
-            if (resultHex === undefined || invocation.resultTypes.length !== 1) continue;
-            const artifact = plan.participants[invocation.callee].artifact;
-            let value: FunctionArgument | undefined;
-            if (artifactUsesSolidityAbi(artifact)) {
-              value = decodeEvmScalarReturn(hexToBin(resultHex), invocation.resultTypes[0]);
-            } else {
-              try {
-                const bytes = hexToBin(resultHex);
-                const decoded = decodePushdataValue(bytes, 0, invocation.resultTypes[0], artifact.structs);
-                if (decoded.bytesConsumed === bytes.length) value = decoded.value as FunctionArgument;
-              } catch {
-                // Unsupported result shapes remain ordinary fixed-point claims; no argument is guessed.
-              }
-            }
-            if (value === undefined) continue;
-            const siblings = resultsByParent.get(invocation.parent) ?? new Map<number, FunctionArgument>();
-            siblings.set(invocation.consumerCallsiteId, value);
-            resultsByParent.set(invocation.parent, siblings);
-          }
-          let propagated = false;
-          const nextCalls = descriptors.map((descriptor, index): PreparedAtomicMessageBusCall => {
-            const invocation = plan.invocations[index];
-            const siblingResults = invocation.parent === null
-              ? undefined : resultsByParent.get(invocation.parent);
-            const resolved = siblingResults && descriptor.resolveArgsFromResults?.(siblingResults);
-            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-              ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1' && siblingResults
-              && descriptor.resolveArgsFromResults) {
-              console.error('atomic-result-argument-resolution', {
-                invocation: index,
-                functionName: descriptor.functionName,
-                callsites: [...siblingResults.keys()],
-                resolved: resolved !== undefined,
-                changed: resolved !== undefined
-                  && semanticJson(resolved) !== semanticJson(descriptor.args),
-              });
-            }
-            let args = descriptor.args;
-            if (resolved && semanticJson(resolved) !== semanticJson(descriptor.args)) {
-              propagated = true;
-              args = resolved;
-            }
-            return {
-              contract: descriptor.contract,
-              functionName: descriptor.functionName,
-              args,
-              ...(descriptor.callsiteId !== undefined && { callsiteId: descriptor.callsiteId }),
-              ...(descriptor.executionArtifact && { executionArtifact: descriptor.executionArtifact }),
-              ...(descriptor.executor && { executor: descriptor.executor }),
-              ...(derivedResults[index] !== undefined
-                ? { provisionalResultCommitment: hexToBin(derivedResults[index]) }
-                : descriptor.provisionalResultCommitment && {
-                  provisionalResultCommitment: descriptor.provisionalResultCommitment,
-                }),
-              ...(descriptor.resolveArgsFromResults && {
-                resolveArgsFromResults: descriptor.resolveArgsFromResults,
-              }),
-            };
-          });
-          if (propagated) {
+          const propagation = propagateResultDependentArguments(derivedResults);
+          if (propagation.propagated) {
             if (this.resultPropagationDepth >= descriptors.length) {
               throw new Error('messageBus: authenticated result arguments did not converge');
             }
             return new AtomicMessageBusComposition(
-              { ...this.options, preparedCalls: nextCalls },
+              { ...this.options, preparedCalls: propagation.calls },
               this.resultPropagationDepth + 1,
             )._build();
           }

@@ -2653,6 +2653,28 @@ export default class SymbolTableTraversal extends AstTraversal {
             candidate.batchInvocations?.some((row) => row.parameters === slot.sourceCallNode?.parameters));
           if (representative) slot.slotIndex = representative.slotIndex;
         }
+        const remapSerializedCallsites = (
+          expression: ExternalCallExpression | undefined,
+          seen = new Set<ExternalCallExpression>(),
+        ): void => {
+          if (!expression || seen.has(expression)) return;
+          seen.add(expression);
+          if (expression.kind === 'externalCall' && expression.callsiteId !== undefined
+            && expression.callsiteId >= 0) {
+            const logicalProducer = logicalCallSlots[expression.callsiteId];
+            if (logicalProducer) expression.callsiteId = logicalProducer.slotIndex;
+          }
+          for (const child of [expression.target, expression.expression, expression.left, expression.right,
+            expression.condition, expression.ifTrue, expression.ifFalse, ...(expression.args ?? [])]) {
+            remapSerializedCallsites(child, seen);
+          }
+        };
+        for (const slot of logicalCallSlots) {
+          for (const source of [slot.addressSource, ...(slot.argSources ?? []), ...(slot.rawArgSources ?? [])]) {
+            if (source?.kind === 'expression') remapSerializedCallsites(source.expression);
+          }
+          remapSerializedCallsites(slot.condition);
+        }
         node.externalCalls = externalCallSlots;
 
         // External-call address locals must survive to the epilogue: emitExternalCallVerification reads
@@ -6391,6 +6413,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         });
       }
 
+      // Nested calls are serialized into their parent's argument metadata during this same pre-scan. Give each
+      // source node its traversal-stable logical index immediately so `outer(inner())` does not snapshot the
+      // producer as sentinel -1. Physical repeated-owner grouping may remap this index below; that remap is
+      // applied to the serialized expression tree after the final slot layout is known.
+      const provisionalSlotIndex = slots.length;
+      node.callInfo.externalCallSlotIndex = provisionalSlotIndex;
       slots.push({
         interfaceName: node.callInfo.interfaceName,
         functionName: node.callInfo.functionName,
@@ -6407,7 +6435,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(rawFunctionName && { rawFunctionName }),
         ...(rawSelector && { rawSelector }),
         ...(rawArgSources && { rawArgSources }),
-        slotIndex: -1,
+        slotIndex: provisionalSlotIndex,
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,
         needsSelectorVerification,

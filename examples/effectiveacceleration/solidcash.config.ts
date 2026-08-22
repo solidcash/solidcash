@@ -13,6 +13,7 @@ export default defineConfig({
     // ERC-20 in particular) still need their route emitted because a routed parent can reach them repeatedly.
     messageBus: true,
     optimizeForCompilationSpeed: true,
+    suppressWarnings: true,
     ecrecover: 'p2pkh',
     // Keep the Hardhat-compatible harness on the uniform fixed-entry backend.
     // Mocknet's relaxed limits remove the former need to selectively switch

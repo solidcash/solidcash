@@ -1645,6 +1645,92 @@ describe('messageBus.compose atomic transaction', () => {
     expect((await root.getState()).jobs).toEqual([{ prefix: 7n, returned: 25n }]);
   }, 120_000);
 
+  it('applies a provisional sibling return before building dependent call arguments', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const sourceArtifact = compileString(`contract ComposeFeeSource() {
+      function fee() public pure returns (uint16) { return 1; }
+    }`, {
+      forceStateful: true, messageBus: true, solidityImportCompat: true, suppressWarnings: true,
+    });
+    const sourceBase = new Contract(sourceArtifact, [], { provider });
+    const sourceSetup = await setupStatefulUtxos(
+      provider, sourceBase, sourceArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const source = StatefulContract.withCategory(
+      sourceBase.withCategory(hexToBin(sourceSetup.categoryId)), sourceSetup.categoryId,
+    );
+
+    const sinkArtifact = compileString(`contract ComposeFeeSink() {
+      uint16 lastFee;
+      function accept(uint16 fee) public { this.lastFee = fee; require(fee == 1); }
+    }`, {
+      forceStateful: true, messageBus: true, solidityImportCompat: true, suppressWarnings: true,
+    });
+    const sinkBase = new Contract(sinkArtifact, [], { provider });
+    const sinkSetup = await setupStatefulUtxos(
+      provider, sinkBase, sinkArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const sink = StatefulContract.withCategory(
+      sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
+    );
+
+    const rootArtifact = compileString(`
+      interface IComposeFeeSource { function fee() external returns (uint16); }
+      interface IComposeFeeSink { function accept(uint16 fee) external; }
+      contract ComposeFeeRoot(address source, address sink) {
+        function run() public {
+          uint16 fee = IComposeFeeSource(source).fee();
+          IComposeFeeSink(sink).accept(fee);
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true, messageBus: true, solidityImportCompat: true, suppressWarnings: true,
+    });
+    const rootBase = new Contract(
+      rootArtifact, [source.inner.lockingBytecode, sink.inner.lockingBytecode], { provider },
+    );
+    const rootSetup = await setupStatefulUtxos(
+      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const root = StatefulContract.withCategory(
+      rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
+    );
+    const run = rootArtifact.abi.find((fn) => fn.name === 'run')!;
+    const sourceCallsite = run.externalCalls!.find((call) => call.functionName === 'fee')!.callsiteId!;
+    const sinkCallsite = run.externalCalls!.find((call) => call.functionName === 'accept')!.callsiteId!;
+    const provisionalFee = new Uint8Array(32);
+    provisionalFee[31] = 1;
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [
+        { contract: root, functionName: 'run', args: [] },
+        {
+          contract: source,
+          functionName: 'fee',
+          args: [],
+          callsiteId: sourceCallsite,
+          provisionalResultCommitment: provisionalFee,
+        },
+        {
+          contract: sink,
+          functionName: 'accept',
+          args: [0n],
+          callsiteId: sinkCallsite,
+          resolveArgsFromResults: (results) => {
+            const resolvedFee = results.get(sourceCallsite);
+            return resolvedFee === undefined ? undefined : [resolvedFee];
+          },
+        },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect((await sink.getState()).lastFee).toBe(1n);
+  }, 120_000);
+
   it('binds an emitted event row to its absolute physical output', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeEventCallee() {

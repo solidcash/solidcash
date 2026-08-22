@@ -297,6 +297,23 @@ describe('delegate inference', () => {
       const route = decodeAuthenticationInstructions(hexToBin(
         artifact.functionBodies?.[artifact.messageBus!.route!.selector]!,
       ));
+      const readNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
+        if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
+        if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
+          return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
+        }
+        if (!instruction.data) return undefined;
+        const decoded = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
+        return typeof decoded === 'bigint' ? decoded : undefined;
+      };
+      // Invoked handlers can leave runtime-only values above the route's tracked frame. Reading a long-lived
+      // dynamic journal value for its chunk count must therefore use DEPTH-bottomOrdinal, not a fixed PICK depth.
+      expect(route.some((instruction, index) => instruction.opcode === OpcodesBCH.OP_DEPTH
+        && readNumber(route[index + 1]) !== undefined
+        && route[index + 2]?.opcode === OpcodesBCH.OP_SUB
+        && route[index + 3]?.opcode === OpcodesBCH.OP_PICK
+        && route[index + 4]?.opcode === OpcodesBCH.OP_SIZE
+        && route[index + 5]?.opcode === OpcodesBCH.OP_NIP)).toBe(true);
       // A legacy delegate owns the transaction suffix, but a compiler route owns a balanced participant block.
       // Reject the legacy `TXOUTPUTCOUNT - 1 - ceil(size/120)` dynamic-write anchor in that routed body.
       const suffixAnchoredWrite = route.some((instruction, index) =>

@@ -20843,8 +20843,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       // --- loop-invariant temp: nNew = ceil(size(value) / CHUNK) ('(dyn_nnew)') ---
-      this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName))), loc);
-      this.emit(Op.OP_PICK, loc); // copy value
+      this.emitPickCompilerRouteFrameValue(valueStackName, loc); // copy value
       this.pushToStack('(dyn_nnew)');
       this.emit(Op.OP_SIZE, loc); // [..., value_copy, size] (OP_SIZE leaves the value)
       this.emit(Op.OP_NIP, loc); // [..., size]
@@ -20858,8 +20857,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Empty for the first written var (no temps, single-write bytecode identical). ---
       const wPriorTempNames: string[] = [];
       for (let k = 0; k < writtenValueStackNames.length; k++) {
-        this.emit(encodeInt(BigInt(this.getStackIndex(writtenValueStackNames[k]))), loc);
-        this.emit(Op.OP_PICK, loc); // copy prior value
+        this.emitPickCompilerRouteFrameValue(writtenValueStackNames[k], loc); // copy prior value
         this.pushToStack(`(dyn_wprior_${k})`);
         this.emit(Op.OP_SIZE, loc);
         this.emit(Op.OP_NIP, loc);
@@ -20897,8 +20895,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.stack[0] = '(dyn_expected)';
 
       // slice_i = value[i*CHUNK : i*CHUNK + min(CHUNK, size - i*CHUNK)]  (tracked '(dyn_slice)')
-      this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName))), loc);
-      this.emit(Op.OP_PICK, loc); // copy value
+      this.emitPickCompilerRouteFrameValue(valueStackName, loc); // copy value
       this.pushToStack('(dyn_slice)');
       this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_i)'))), loc); // (dyn_slice) already tracked, no offset
       this.emit(Op.OP_PICK, loc); // copy i
@@ -20931,8 +20928,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_TXOUTPUTCOUNT, loc);
         this.emit(Op.OP_1SUB, loc);
         for (const [, write] of writesInDeclOrder) {
-          this.emit(encodeInt(BigInt(this.getStackIndex(write.valueStackName) + 1)), loc);
-          this.emit(Op.OP_PICK, loc);
+          this.emitPickCompilerRouteFrameValue(write.valueStackName, loc, 1);
           this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
           this.emit(encodeInt(BigInt(CHUNK - 1)), loc); this.emit(Op.OP_ADD, loc);
           this.emit(encodeInt(BigInt(CHUNK)), loc); this.emit(Op.OP_DIV, loc);
@@ -21490,8 +21486,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, loc);
     this.popFromStack();
     this.scopeDepth -= 1;
-    this.emitPickTrackedFromBottom('(adj_count)', loc);
-    this.emitPickTrackedFromBottom(expectedCountName, loc);
+    // Both values are epilogue-local temporaries created after invoked handlers return. Runtime-only handler
+    // operands can sit below this local frame, so a bottom ordinal would select one of those leftovers. Their
+    // top-relative depths remain exact; account for the first untracked copy while selecting the expected count.
+    this.emit(encodeInt(BigInt(this.getStackIndex('(adj_count)'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(expectedCountName) + 1)), loc);
+    this.emit(Op.OP_PICK, loc);
     if (nFixed > 0) { this.emit(encodeInt(BigInt(nFixed)), loc); this.emit(Op.OP_ADD, loc); }
     this.emit(Op.OP_EQUALVERIFY, loc);
     const idx = this.getStackIndex('(adj_count)');
@@ -21519,7 +21520,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Pick from the bottom so extra untracked items only shift DEPTH.
     // An altstack needle (already parked by the caller) is immune to tracker drift.
     if (!opts?.addrOnAltstack) {
-      this.emitPickTrackedFromBottom(addrName, loc);
+      if (this.isCompilerMessageBusRoute()) {
+        // Route dynamic epilogues create their address after all handler invocations. It is above any untracked
+        // handler residue, so its top-relative depth is authoritative (unlike the pre-handler ABI frame).
+        this.emit(encodeInt(BigInt(this.getStackIndex(addrName))), loc);
+        this.emit(Op.OP_PICK, loc);
+      } else {
+        this.emitPickTrackedFromBottom(addrName, loc);
+      }
       this.pushToStack('(chunk_scan_addr)');
     }
     this.emit(encodeInt(0n), loc);
@@ -21544,7 +21552,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_TOALTSTACK, loc);
     } else {
-      this.emitPickTrackedFromBottom('(chunk_scan_addr)', loc);
+      if (this.isCompilerMessageBusRoute()) {
+        // One untracked bytecode item is above the tracked loop frame.
+        this.emit(encodeInt(BigInt(this.getStackIndex('(chunk_scan_addr)') + 1)), loc);
+        this.emit(Op.OP_PICK, loc);
+      } else {
+        this.emitPickTrackedFromBottom('(chunk_scan_addr)', loc);
+      }
     }
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_IF, loc);
@@ -21559,13 +21573,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // (chunk_scan_i) consumed by the exit-branch DROP
     this.scopeDepth -= 1;
 
-    this.emitPickTrackedFromBottom('(chunk_scan_count)', loc);
-    this.emitPickTrackedFromBottom(expectedCountName, loc);
+    if (this.isCompilerMessageBusRoute()) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('(chunk_scan_count)'))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(expectedCountName) + 1)), loc);
+      this.emit(Op.OP_PICK, loc);
+    } else {
+      this.emitPickTrackedFromBottom('(chunk_scan_count)', loc);
+      this.emitPickTrackedFromBottom(expectedCountName, loc);
+    }
     this.emit(Op.OP_EQUALVERIFY, loc);
 
-    this.emitDropTrackedFromBottom('(chunk_scan_count)', loc);
+    if (this.isCompilerMessageBusRoute()) {
+      const countIndex = this.getStackIndex('(chunk_scan_count)');
+      this.emit(encodeInt(BigInt(countIndex)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(countIndex);
+    } else {
+      this.emitDropTrackedFromBottom('(chunk_scan_count)', loc);
+    }
     if (!opts?.addrOnAltstack) {
-      this.emitDropTrackedFromBottom('(chunk_scan_addr)', loc);
+      if (this.isCompilerMessageBusRoute()) {
+        const addressIndex = this.getStackIndex('(chunk_scan_addr)');
+        this.emit(encodeInt(BigInt(addressIndex)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.removeFromStack(addressIndex);
+      } else {
+        this.emitDropTrackedFromBottom('(chunk_scan_addr)', loc);
+      }
     }
   }
 
@@ -21605,7 +21642,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(CHUNK)), loc);
     this.emit(Op.OP_DIV, loc); // (dyn_oldnnew) = ceil(oldLen/CHUNK)
     this.emitVerifyChunkUtxoCount('(dyn_oldnnew)', false, loc);
-    this.emitDropTrackedFromBottom('(dyn_oldnnew)', loc);
+    if (this.isCompilerMessageBusRoute()) {
+      const index = this.getStackIndex('(dyn_oldnnew)');
+      this.emit(encodeInt(BigInt(index)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(index);
+    } else {
+      this.emitDropTrackedFromBottom('(dyn_oldnnew)', loc);
+    }
   }
 
   // Reframe a just-read dynamic-storage value into the canonical array form the element ops expect. For a

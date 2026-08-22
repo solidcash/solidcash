@@ -16964,11 +16964,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const delegateVisibleInputs = (delegateFn?.inputs ?? []).filter(
               (input) => !input.name.startsWith('__internal__'),
             );
-            // An ordinary proxy OP_INVOKE evaluates the implementation against the proxy/state-owner input. The
-            // atomic graph also evaluates the authenticated implementation route at its own executor input, so
-            // retain both exact OP_UTXOBYTECODE identities rather than reconstructing either from a category.
+            // OP_INVOKE changes the function body, not the source handler's authenticated owner context. Both
+            // ordinary and atomic delegate execution therefore resolve address(this) by reading the exact
+            // proxy/state-owner input bytecode.
             const delegateSelfAddress = hexToBin(this.inner.lockingBytecode);
-            const delegateGraphSelfAddress = hexToBin(callInfo.contract.inner.lockingBytecode);
             const nestedExternalCalls: ExternalCallAbi[] = [];
             for (const nested of publishedNestedExternalCalls) {
               if (!nested.condition) {
@@ -17159,26 +17158,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   + 'that cannot yet be resolved by the SDK.',
                 );
               }
-              const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
-                ? await this._resolveExternalExpressionReturns(
-                  nestedSources, delegateVisibleArgs, callInfo.contract, onChainState.state,
-                  delegateVisibleInputs, delegateGraphSelfAddress,
-                  true,
-                )
-                : nestedExpressionReturns;
-              const graphNestedArgs = preparedAtomicNodes
-                ? this._resolveExternalArgs(
-                  nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-                  delegateVisibleInputs, graphExpressionReturns, 0, false, delegateGraphSelfAddress,
-                ) ?? nestedArgs
-                : nestedArgs;
               const resolveGraphNestedArgs = preparedAtomicNodes && nestedSources
                 ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined => {
                   const externalReturns = externalReturnsForCallsites(nestedSources, results);
                   if (externalReturns.size === 0) return undefined;
                   return this._resolveExternalArgs(
                     nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-                    delegateVisibleInputs, externalReturns, 0, false, delegateGraphSelfAddress,
+                    delegateVisibleInputs, externalReturns, 0, false, delegateSelfAddress,
                   );
                 }
                 : undefined;
@@ -18715,7 +18701,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 preparedAtomicNodes.push({
                   contract: callee,
                   functionName: resolvedRawFunctionName ?? nested.functionName,
-                  args: graphNestedArgs,
+                  args: nestedArgs,
                   ...(proxyCallee && {
                     executionArtifact: proxyCallee.implementation.inner.artifact,
                     executor: proxyCallee.implementation,
@@ -18763,17 +18749,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     true,
                   );
                   if (!nextLogicalArgs) return false;
-                  const nextGraphArgs = this._resolveExternalArgs(
-                    nestedSources,
-                    delegateVisibleArgs,
-                    callInfo.contract.inner.artifact,
-                    nextState as Record<string, StateValue>,
-                    delegateVisibleInputs,
-                    undefined,
-                    0,
-                    true,
-                    delegateGraphSelfAddress,
-                  );
                   const physicalGroupIndex = logicalGroup.sharedGroupIndex ?? childExternalGroupIndex;
                   const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];
                   const routeDerivedRefresher = refreshChunkableRouteWitnesses
@@ -18850,7 +18825,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   if (preparedAtomicNodes && atomicNodeIndex !== undefined) {
                     preparedAtomicNodes[atomicNodeIndex] = {
                       ...preparedAtomicNodes[atomicNodeIndex],
-                      args: [...(nextGraphArgs ?? nextLogicalArgs)],
+                      args: [...nextLogicalArgs],
                     };
                   }
 
@@ -18929,10 +18904,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       delegateVisibleInputs, externalReturns, 0, false, delegateSelfAddress,
                     );
                     if (!nextLogicalArgs) return false;
-                    const nextGraphArgs = this._resolveExternalArgs(
-                      nestedSources, delegateVisibleArgs, callInfo.contract.inner.artifact, onChainState.state,
-                      delegateVisibleInputs, externalReturns, 0, false, delegateGraphSelfAddress,
-                    ) ?? nextLogicalArgs;
                     const physicalGroupIndex = logicalGroup.sharedGroupIndex ?? childExternalGroupIndex;
                     const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];
                     const activeCompilerRoute = currentCompilerRoute
@@ -18976,7 +18947,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     }
                     preparedAtomicNodes![atomicNodeIndex] = {
                       ...preparedAtomicNodes![atomicNodeIndex],
-                      args: [...nextGraphArgs],
+                      args: [...nextLogicalArgs],
                     };
                     if (nextCompilerRoute) {
                       currentCompilerRoute = nextCompilerRoute;

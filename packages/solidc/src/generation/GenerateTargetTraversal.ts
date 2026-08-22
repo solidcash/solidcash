@@ -1321,6 +1321,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private graphTransferFlagActive: boolean = false;
   // SEC-15: the route allocated GRAPH_EVENT_SITE for this function.
   private graphEventSiteActive: boolean = false;
+  // Source expressions used to authenticate a graph-emission row are generated in the route wrapper before its
+  // delegated handler is invoked. While visiting those expressions, retain the handler's authenticated owner
+  // context rather than accidentally treating the implementation route input as the source contract.
+  private graphEmissionDelegatedOwner: boolean = false;
   // True while generating a branded delegate library: the delegate master-validation pins the co-spent proxy
   // master's category to the library's `__brand` ctor arg (docs/library-contracts.md 3b contention).
   private currentContractIsBrandedLibrary: boolean = false;
@@ -9684,6 +9688,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
     switch (node.operator) {
+      case NullaryOperator.INPUT_INDEX:
+        // A compiler-owned delegate handler is invoked from the implementation route, but its source-level
+        // execution context remains the authenticated proxy/state-owner input. The handler can have a large
+        // runtime-only emission frame above its tracked parameters, so do not recover this particular index with
+        // a top-relative PICK. The compiler places the executor exactly one published route block after its owner;
+        // derive that input coordinate and let the enclosing unary operation read its exact OP_UTXOBYTECODE.
+        if (this.currentFunction.messageBusDelegatedOwner) {
+          const ownerDistance = this.currentFunction.blockLayout?.blockSize;
+          if (ownerDistance === undefined || ownerDistance <= 0) {
+            throw new Error('Delegated message-bus handler has no published owner block size');
+          }
+          this.emit(Op.OP_INPUTINDEX, locationData);
+          this.emit(encodeInt(BigInt(ownerDistance)), locationData);
+          this.emit(Op.OP_SUB, locationData);
+        } else if (this.graphEmissionDelegatedOwner) {
+          this.emitMasterInputIndex(locationData);
+        } else this.emit(compileNullaryOp(node.operator), locationData);
+        break;
       case NullaryOperator.MSG_SENDER:
         this.emitMsgSender(locationData);
         break;
@@ -14839,6 +14861,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     },
   ): number {
     const { disposition, parametersAreCallArguments = false } = verification;
+    const visitSourceExpression = (expression: ExpressionNode): ExpressionNode => {
+      const previous = this.graphEmissionDelegatedOwner;
+      this.graphEmissionDelegatedOwner = handler.messageBusDelegatedOwner === true;
+      try {
+        return this.visit(expression) as ExpressionNode;
+      } finally {
+        this.graphEmissionDelegatedOwner = previous;
+      }
+    };
     const materializeGraphExpression = (expression: ExpressionNode): ExpressionNode => {
       const substitutions = new Map<string, ExpressionNode>(handler.parameters.map((parameter, index) =>
         [parameter.name, parameters[index]]));
@@ -14891,7 +14922,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       : undefined;
     let evaluatedSelectorExpression = false;
     if (evaluatedTargetExpression) {
-      this.visit(slot.sourceCallNode!.addressExpression);
+      visitSourceExpression(slot.sourceCallNode!.addressExpression);
     } else if (constructorTarget || inlinedConstructorTarget) {
       this.emit(encodeInt(BigInt(this.getStackIndex(
         constructorTarget ?? inlinedConstructorTarget!,
@@ -14915,7 +14946,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(encodeInt(BigInt(this.getStackIndex(target.name))), locationData);
           this.emit(Op.OP_PICK, locationData);
         } else {
-          this.visit(target);
+          visitSourceExpression(target);
         }
       } else {
         this.emit(encodeInt(BigInt(this.getStackIndex(slot.addressParam))), locationData);
@@ -15028,7 +15059,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           || (slot.argSources?.[i]?.kind) === 'expression'
           || !(parameter instanceof IdentifierNode);
         if (evaluateArgument) {
-          parameter = this.visit(parameter);
+          parameter = visitSourceExpression(parameter);
           callManifestArgumentParameters[i] = parameter;
         } else {
           this.emit(encodeInt(BigInt(this.getStackIndex((parameter as IdentifierNode).name))), locationData);

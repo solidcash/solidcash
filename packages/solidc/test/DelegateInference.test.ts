@@ -269,7 +269,7 @@ describe('delegate inference', () => {
     }
   });
 
-  it('bases routed dynamic outputs on the participant block while address(this) reads the executor bytecode', () => {
+  it('bases routed dynamic outputs and address(this) on the authenticated participant owner', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
@@ -314,6 +314,11 @@ describe('delegate inference', () => {
         && route[index + 3]?.opcode === OpcodesBCH.OP_PICK
         && route[index + 4]?.opcode === OpcodesBCH.OP_SIZE
         && route[index + 5]?.opcode === OpcodesBCH.OP_NIP)).toBe(true);
+      // The route wrapper authenticates the outgoing graph row before invoking the handler. Its materialized
+      // address(this) argument must use the same owner input as the handler body, not the wrapper's executor.
+      expect(route.some((instruction, index) =>
+        instruction.opcode === OpcodesBCH.OP_SUB
+        && route[index + 1]?.opcode === OpcodesBCH.OP_UTXOBYTECODE)).toBe(true);
       // A legacy delegate owns the transaction suffix, but a compiler route owns a balanced participant block.
       // Reject the legacy `TXOUTPUTCOUNT - 1 - ceil(size/120)` dynamic-write anchor in that routed body.
       const suffixAnchoredWrite = route.some((instruction, index) =>
@@ -334,8 +339,11 @@ describe('delegate inference', () => {
       expect(routedHandler).toBeDefined();
       const handler = decodeAuthenticationInstructions(hexToBin(routedHandler!.bytecode));
       expect(handler.some((instruction, index) =>
-        instruction.opcode === OpcodesBCH.OP_INPUTINDEX
+        instruction.opcode === OpcodesBCH.OP_SUB
         && handler[index + 1]?.opcode === OpcodesBCH.OP_UTXOBYTECODE)).toBe(true);
+      expect(handler.some((instruction, index) =>
+        instruction.opcode === OpcodesBCH.OP_INPUTINDEX
+        && handler[index + 1]?.opcode === OpcodesBCH.OP_UTXOBYTECODE)).toBe(false);
     } finally {
       warn.mockRestore();
       log.mockRestore();

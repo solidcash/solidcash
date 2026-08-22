@@ -17,10 +17,11 @@ export interface CompiledGraphParticipant {
   /** Physical covenant identity used to intern and position the participant's state-owner block. */
   lockingBytecode: string;
   /**
-   * Authenticated public call identity when it differs from the physical state owner, as it does for a
-   * proxy/delegate execution or a contract with a published logical CREATE identity. Nested `msg.sender` rows
-   * may use this identity. Source-level `address(this)` always uses the exact active execution input returned by
-   * OP_UTXOBYTECODE: `lockingBytecode` for an owner route or `executorLockingBytecode` for a delegate route.
+   * Authenticated public target identity when it differs from the physical state owner, as it does for a
+   * proxy/delegate execution or a contract with a published logical CREATE identity. This is the address a
+   * source-level call targets and the authenticated caller identity of an owner route. A delegate route instead
+   * calls as its distinct executor input. Source-level `address(this)` remains the exact active input returned by
+   * OP_UTXOBYTECODE in both cases; it is never reconstructed from this logical identity.
    */
   logicalLockingBytecode?: string;
   /**
@@ -380,10 +381,12 @@ export function finalizeAtomicInvocationGraph(
       throw new Error(`messageBus: void invocation ${invocation.index} cannot carry a result`);
     }
     const caller = invocation.caller === null ? 0xff : invocation.caller;
+    const callerExecution = invocation.caller === null ? undefined : plan.participants[invocation.caller];
     const subjectHex = invocation.caller === null
       ? plan.rootCallerLockingBytecode ?? ''
-      : plan.participants[invocation.caller].logicalLockingBytecode
-        ?? plan.participants[invocation.caller].lockingBytecode;
+      : callerExecution!.executionKind === 1
+        ? callerExecution!.executorLockingBytecode
+        : callerExecution!.logicalLockingBytecode ?? callerExecution!.lockingBytecode;
     const completion = plan.participants[invocation.callee].completionPositions[invocation.localRow];
     if (completion === undefined) {
       throw new Error(`messageBus: invocation ${invocation.index} has no compiler-authored completion position`);
@@ -392,7 +395,9 @@ export function finalizeAtomicInvocationGraph(
       kind: 0, owner: caller === 0xff ? invocation.callee : caller, consumer: invocation.callee,
       slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
       sourceOffset: invocation.caller === null
-        ? 0xffff : plan.participants[invocation.caller].logicalIdentityOffset ?? 0,
+        ? 0xffff : callerExecution!.executionKind === 1
+          ? callerExecution!.executorOffset!
+          : callerExecution!.logicalIdentityOffset ?? 0,
       // Invocation rows bind the address used by the source-level call, not necessarily the state owner's
       // physical master at offset zero. Proxies and explicit identity anchors authenticate that logical callee
       // at `logicalIdentityOffset`; using zero here makes the SDK transcript name the logical address while the
@@ -1373,10 +1378,16 @@ export function planCompiledGraph(
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
         : {
-          logicalCaller: hexToBin(
-            participants[invocations[invocation.parent].callee].logicalLockingBytecode
-              ?? participants[invocations[invocation.parent].callee].lockingBytecode,
-          ),
+          logicalCaller: hexToBin((() => {
+            const caller = participants[invocations[invocation.parent].callee];
+            // A nested call is made by the input executing the parent handler. In a delegate participant this
+            // is the pinned implementation input, not the proxy's public target identity. This mirrors the
+            // compiler's OP_UTXOBYTECODE implementation of `address(this)` and keeps msg.sender-keyed state
+            // identical to an explicit `address(this)` argument across the edge.
+            return caller.executionKind === 'delegate'
+              ? caller.executorLockingBytecode!
+              : caller.logicalLockingBytecode ?? caller.lockingBytecode;
+          })()),
         }),
     });
     globalByOwner[invocation.callee].push(index);

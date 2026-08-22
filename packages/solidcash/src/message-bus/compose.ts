@@ -695,8 +695,10 @@ export class AtomicMessageBusComposition {
         ...(invocation.caller !== null && handler?.usesMsgValue && { msgValue: 0n }),
         logicalCaller: invocation.caller === null
           ? rootCaller : hexToBin(
-            plan.participants[invocation.caller].logicalLockingBytecode
-              ?? plan.participants[invocation.caller].lockingBytecode,
+            plan.participants[invocation.caller].executionKind === 1
+              ? plan.participants[invocation.caller].executorLockingBytecode
+              : plan.participants[invocation.caller].logicalLockingBytecode
+                ?? plan.participants[invocation.caller].lockingBytecode,
           ),
       }], { ...plannedWitnesses, ...validationWitnesses }).rows[0];
       if (suppliedRow.argsHex !== invocation.argsHex) {

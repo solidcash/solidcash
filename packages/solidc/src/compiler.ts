@@ -3809,7 +3809,6 @@ function synthesizeMessageBusRoute(
         ? entryShape!.findIndex((entry) =>
           !entry.perRow && `${entry.base}_row` === varyingEntry.base)
         : -1;
-      const callArgs = [...sourceCallArgs, ...physicalEntryArgs, ...callerContextArgs, ...ownerContextArgs].join(', ');
       const outStateBoundaryChecks = '';
       const decode = declarations.length === 0
         ? 'require(rowArgs.length == 0);'
@@ -3819,10 +3818,13 @@ function synthesizeMessageBusRoute(
       // IDENTIFIER, so LowerCollectionJournalHelpers uses one cache and preserves Solidity's sequential lvalue
       // semantics. The distinct arm retains its own physical entry slot. Later semantic metadata gates that slot
       // off when one of these equality arms is taken.
-      if (fn === resourceShapedHandler && rowIndex !== undefined
-      && entryShape && varyingEntry
-      && entryShape.filter((entry) => entry.perRow && entry.collection === varyingEntry.collection).length === 1
-      && sharedEntryIndex >= 0 && varyingEntry) {
+      const dispatchFor = (entryArgs: string[]): string => {
+        const callArgs = [...sourceCallArgs, ...entryArgs, ...callerContextArgs, ...ownerContextArgs].join(', ');
+        if (!(fn === resourceShapedHandler && rowIndex !== undefined
+          && entryShape && varyingEntry
+          && entryShape.filter((entry) => entry.perRow
+            && entry.collection === varyingEntry.collection).length === 1
+          && sharedEntryIndex >= 0 && varyingEntry)) return invoke(callArgs);
         const shared = entryShape[sharedEntryIndex].base;
         const varying = `${varyingEntry.base}_r${rowIndex}`;
         // Shared-self aliasing is handled inside the clone so its call/return frame remains statically identical.
@@ -3841,7 +3843,7 @@ function synthesizeMessageBusRoute(
         let dispatch = orientedInvoke(callArgs);
         for (let candidateIndex = prior.length - 1; candidateIndex >= 0; candidateIndex--) {
           const candidate = prior[candidateIndex];
-          const aliasedEntryArgs = [...physicalEntryArgs];
+          const aliasedEntryArgs = [...entryArgs];
           aliasedEntryArgs[varyingEntryIndex] = candidate;
           // Keep the shared-self case on two distinct wrapper cache locals. The handler's internal equality branch
           // canonicalizes the actual lvalue, while the untouched varying cache occupies its own return/capture slot.
@@ -3857,13 +3859,54 @@ function synthesizeMessageBusRoute(
             ? invoke(aliasedArgs, selectedInvoke) : orientedInvoke(aliasedArgs);
           dispatch = `if (${varying} == ${candidate}) { ${selectedDispatch} } else { ${dispatch} }`;
         }
-        return `${condition} { ${decode} ${keyChecks} ${outStateBoundaryChecks} ${dispatch}
-          require(rowArgs == rowArgs); }`;
+        return dispatch;
+      };
+      let dispatch = dispatchFor(physicalEntryArgs);
+      if (rowIndex !== undefined && rowIndex > 0 && entryShape) {
+        // A route row can write a collection entry which a later, different handler reads (ERC-20 approve ->
+        // transferFrom is the canonical shape). Cross-handler witness analysis already marks every key component
+        // whose source position changes as row-local. When all components of one physical entry have that mark,
+        // compare the current tuple with earlier row tuples and pass the earlier IDENTIFIERS into the helper.
+        // LowerCollectionJournalHelpers then assigns both calls one cache local, preserving ordinary sequential
+        // read-after-write semantics and letting conditional entry analysis gate off the duplicate physical slot.
+        const crossRowGroups: number[][] = [];
+        for (let start = 0; start < entryShape.length;) {
+          const first = entryShape[start];
+          const width = collectionByName.get(first.collection)?.allKeyTypes.length ?? 1;
+          const indices = Array.from({ length: width }, (_unused, offset) => start + offset)
+            .filter((index) => index < entryShape.length
+              && entryShape[index].collection === first.collection);
+          if (indices.length === width && indices.every((index) => entryShape[index].perRow
+            && crossHandlerPerRowWitnesses.has(entryShape[index].base))) {
+            crossRowGroups.push(indices);
+          }
+          start += Math.max(1, indices.length);
+        }
+        // Multiple independently aliasable entry groups would require a product of branches. Keep the emitted
+        // route linear and fail closed until the journal grows a first-class runtime cache selector.
+        if (crossRowGroups.length > 1) {
+          throw new Error(
+            `Message-bus handler '${fn.name}' has multiple independently row-aliasable collection entries`,
+          );
+        }
+        for (const indices of crossRowGroups) {
+          for (let priorRow = rowIndex - 1; priorRow >= 0; priorRow--) {
+            const conditionParts = indices.map((index) => {
+              const base = entryShape[index].base;
+              return `${base}_r${rowIndex} == ${base}_r${priorRow}`;
+            });
+            const aliasedEntryArgs = [...physicalEntryArgs];
+            for (const index of indices) {
+              aliasedEntryArgs[index] = `${entryShape[index].base}_r${priorRow}`;
+            }
+            dispatch = `if (${conditionParts.join(' && ')}) { ${dispatchFor(aliasedEntryArgs)} } else { ${dispatch} }`;
+          }
+        }
       }
       // `abi.decodeAt(rowArgs, ...)` can occur repeatedly in the key checks and the handler arguments. Keep the
       // row blob live through the whole dispatch arm: otherwise last-use relocation may OP_ROLL the tracked local
       // during an earlier decode, and a later decode then reads the adjacent selector-prefixed row instead.
-      return `${condition} { ${decode} ${keyChecks} ${invoke(callArgs)}
+      return `${condition} { ${decode} ${keyChecks} ${outStateBoundaryChecks} ${dispatch}
         require(rowArgs == rowArgs); }`;
     }).join(' ');
   const declaredWitnessNames = new Set<string>();

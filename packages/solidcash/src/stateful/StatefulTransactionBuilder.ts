@@ -3879,8 +3879,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   minRelayFeePerKb?: bigint;  // satoshis per 1000 bytes; default 1000n (1 sat/byte)
   blockLayout?: FunctionBlockLayout;
   funderUtxos?: UnlockableUtxo[];     // funder UTXOs for output-only slots
-  /** Immutable SCID anchor co-spent outside every fixed participant block so callees can authenticate the
-   * Solidity-visible logical caller address. */
+  /** Immutable SCID anchor co-spent outside every fixed participant block to authenticate a stable logical
+   * call target. Runtime caller identity is always taken from the active covenant input instead. */
   logicalIdentityUtxo?: UnlockableUtxo;
   /** Immutable SCID anchors of CALLEES whose Solidity-visible address is logical, co-spent so an external-call
    * identity check can prove the logical-to-physical binding. Appended after `logicalIdentityUtxo`, outside every

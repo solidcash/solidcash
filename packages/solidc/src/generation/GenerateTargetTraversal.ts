@@ -26549,7 +26549,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * If _msgSenderCategory is 32 zero bytes: fallback to tx.origin (direct P2PKH call).
    * If non-zero: verify an input with matching category + minting capability exists,
-   * and return its lockingBytecode.
+   * and return that exact input's OP_UTXOBYTECODE.
    *
    * Stack before: [...]
    * Stack after:  [..., lockingBytecode]
@@ -26866,94 +26866,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, locationData);
     this.emit(Op.OP_0NOTEQUAL, locationData);
     this.emit(Op.OP_VERIFY, locationData);
-    this.emit(Op.OP_SWAP, locationData);           // [result, expectedCategoryWithCapability]
-    this.emit(encodeInt(32n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);           // [result, category, capability]
-    this.emit(Op.OP_DROP, locationData);            // [result, category]
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_DROP, locationData);            // [category]
-
-    // The minting master proves the caller category, but its locking bytecode
-    // is the caller's current implementation. Solidity-visible addresses are
-    // the 35-byte P2SH32 locking bytecodes of the category's SCID identity
-    // anchors, so resolve and authenticate that unique anchor separately.
-    this.emitMsgSenderIdentityAnchorVerification(locationData);
-    // Stack: [lockingBytecode]
-  }
-
-  /** Resolve the unique SCID identity anchor for a caller category on top of the stack. */
-  private emitMsgSenderIdentityAnchorVerification(locationData: SingleLocationData): void {
-    // [category] -> [category, sentinel, i]
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_BEGIN, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_TXINPUTCOUNT, locationData);
-    this.emit(Op.OP_LESSTHAN, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_INPUTINDEX, locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.emit(encodeInt(3n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-    // Keep the 4-byte magic prefix. Concatenating zeros and dropping the suffix compared empty
-    // padding to "SCID" and never authenticated a real identity anchor.
-    this.emit(encodeInt(4n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(new Uint8Array([0x53, 0x43, 0x49, 0x44]), locationData);
-    this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    this.emit(Op.OP_OVER, locationData);
-    this.emit(Op.OP_SIZE, locationData);
+    // [expectedCategoryWithCapability, lockingBytecode] -> [lockingBytecode]. The category selected this unique
+    // minting master; do not replace its active input bytecode with a separately reconstructed public address.
     this.emit(Op.OP_NIP, locationData);
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_NOT, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_UTXOBYTECODE, locationData);
-    this.emit(Op.OP_ROT, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);
-
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_UNTIL, locationData);
-
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
   }
 
   // ===== Address Balance Loop Support =====

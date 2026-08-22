@@ -202,10 +202,10 @@ function invalidateSignerUtxos(signer: Signer): void {
 }
 import {
   findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
+  registeredExecutionLockingBytecode,
 } from './deployment-registry.js';
 import {
   logicalIdentityAddressVariants, logicalIdentityBandKey, resolveLogicalIdentity,
-  resolveLogicalIdentityFromAddresses, requireMsgSenderIdentity, isZeroMsgSenderCategory,
 } from './logical-identity.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import { ConstructorArgument, FunctionArgument, encodeFunctionArgument } from '../Argument.js';
@@ -3609,6 +3609,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const encoded = keys.map((arg, i) => {
         if (typeof arg === 'string') {
           if (keyTypes?.[i] === 'address' && arg.includes(':')) return addressToLockScript(arg);
+          if (keyTypes?.[i] === 'address' && /^(?:[0-9a-fA-F]{2})+$/.test(arg)) return hexToBin(arg);
           // 0x-hex locking bytecode (23/25/35) or other hex keys. Do not UTF-8 pack the hex text.
           if (/^0x(?:[0-9a-fA-F]{2})+$/i.test(arg)) return hexToBin(arg.slice(2));
           if (keyTypes?.[i] && /^(?:u?int|bigint)/.test(keyTypes[i]) && /^-?\d+$/.test(arg)) {
@@ -12881,6 +12882,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (deployment) {
         add(deployment.address);
         if (deployment.lockingBytecode) add(hexToBin(deployment.lockingBytecode));
+        // The Hardhat-compatible proxy facade exposes its stable logical address, while native SolidCash
+        // `address(this)` is the exact active delegate input's OP_UTXOBYTECODE. Include that authenticated
+        // execution address as a read alias so an ethers-style balanceOf(proxy.getAddress()) observes assets
+        // deliberately held by the delegate executor without changing native call or storage semantics.
+        const executionLockingBytecode = (deployment.contract as {
+          implementation?: { inner?: { lockingBytecode?: string } };
+        }).implementation?.inner?.lockingBytecode;
+        if (executionLockingBytecode) add(hexToBin(executionLockingBytecode));
       }
       if (deployed) {
         add(deployed._logicalAddress);
@@ -12917,6 +12926,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       omitLocalFeeTail?: boolean;
     },
   ): Promise<StatefulTransactionBuilder> {
+    // Argument normalization below must not rewrite the caller-owned array retained by a reusable function call.
+    args = [...args];
     const timingEnabled = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_BUILDER_TIMING === '1';
     const startedAt = Date.now();
@@ -12936,6 +12947,42 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Move ABI lookup FIRST so we can determine if full state is needed
     const abiFunction = overrides?.abiFunction
       ?? this.inner.artifact.abi.find((f) => f.name === functionName);
+    const registeredSelf = findDeploymentByAddress(this.inner.provider, this.target);
+    const executionSelfAddress = hexToBin(
+      registeredSelf ? registeredExecutionLockingBytecode(registeredSelf) ?? this.inner.lockingBytecode
+        : this.inner.lockingBytecode,
+    );
+    // Hardhat-compatible handles expose stable logical CREATE addresses, while native contract identity is the
+    // exact active covenant input. Translate registered contract addresses used as ordinary ABI data to that
+    // execution bytecode. Parameters which select an external-call target retain their logical address: their
+    // SCID anchor authenticates routing separately from caller/storage identity.
+    if (abiFunction) {
+      const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
+      const logicalTargetParams = new Set<number>();
+      for (const call of abiFunction.externalCalls ?? []) {
+        if (call.addressSource?.kind === 'forward' && call.addressSource.paramIndex !== undefined) {
+          logicalTargetParams.add(call.addressSource.paramIndex);
+        }
+        if (call.addressParam) {
+          const index = visibleInputs.findIndex((input) => input.name === call.addressParam);
+          if (index >= 0) logicalTargetParams.add(index);
+        }
+      }
+      for (const call of abiFunction.lowLevelCalls ?? []) {
+        if (call.target?.kind !== 'parameter' || !call.target.name) continue;
+        const index = visibleInputs.findIndex((input) => input.name === call.target!.name);
+        if (index >= 0) logicalTargetParams.add(index);
+      }
+      for (const [index, input] of visibleInputs.entries()) {
+        if (logicalTargetParams.has(index)
+          || (input.type !== 'address' && input.type !== 'address payable')
+          || typeof args[index] !== 'string') continue;
+        const deployment = findDeploymentByAddress(this.inner.provider, args[index]);
+        const executionLockingBytecode = deployment
+          ? registeredExecutionLockingBytecode(deployment) : undefined;
+        if (executionLockingBytecode) args[index] = hexToBin(executionLockingBytecode);
+      }
+    }
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
 
@@ -15158,6 +15205,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         callerStateSnapshot ??= (await this.getFullState()).state;
         const resolvedArgs = this._resolveExternalArgs(
           ec.argSources, args, this.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
+          undefined, 0, false, executionSelfAddress,
         );
         if (resolvedArgs === undefined && ec.argSources?.some((s) => s.kind === 'expression')) {
           throw new Error(
@@ -15240,6 +15288,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const compilerRoute = this._buildRepeatedExternalBatch(
           ec, args, callInfo.externalContract as StatefulContract,
           this.inner.artifact, callerStateSnapshot, undefined, abiFunction?.inputs,
+          false, executionSelfAddress,
         );
         const bGraphBlockhashSelections = compilerRoute
           ? selectGraphBlockhashReads(callInfo.externalContract.inner.artifact, compilerRoute.blob)
@@ -15452,7 +15501,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       source: NonNullable<typeof bEntryAccess.keySources>[number] | undefined,
                     ): boolean => isMsgSenderKeySource(source);
                     const effKeyValue = isSenderKey(bEntryAccess.keySources?.[0])
-                      ? addressToLockScript(this.address)
+                      ? executionSelfAddress
                       : keyValue;
                     let matchUtxo: Utxo | undefined;
                     if (bCollection?.sorted && effKeyValue !== undefined) {
@@ -15465,7 +15514,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       );
                       const encodedKeys = bEntryAccess.keyParams.map((name, keyIndex) => {
                         if (isSenderKey(bEntryAccess.keySources?.[keyIndex])) {
-                          return addressToLockScript(this.address);
+                          return executionSelfAddress;
                         }
                         const index = bAbiFunc!.inputs.findIndex((input) => input.name === name);
                         const value = index >= 0 ? bRouteArgs[index] : undefined;
@@ -15476,10 +15525,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
                         throw new Error(`External message-bus batch cannot resolve entry key '${name}'`);
                       });
-                      const directKeyBin = effKeyValue instanceof Uint8Array ? effKeyValue
-                        : typeof effKeyValue === 'bigint' ? bigIntToVmNumber(effKeyValue)
-                          : bigIntToVmNumber(effKeyValue ? 1n : 0n);
-                      const bSlot = compilerRoute ? keyToSlotMulti(encodedKeys) : keyToSlot(directKeyBin);
+                      const bSlot = keyToSlotMulti(encodedKeys);
                       let unsupportedColdEntry = false;
                       try {
                         const exact = bList.find(bSlot);
@@ -17530,20 +17576,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   })()
                   : undefined;
                 let value: StateValue | undefined;
-                if (proxyStateAccessor) {
+                if (proxyStateAccessor && !readAccess) {
                   value = await proxyStateAccessor(...nestedArgs);
                 } else if (nested.functionName === readAccess?.collection && collectionValue !== undefined) {
                   value = collectionValue;
                 } else if (effectiveReturnFn.outputs[0].type === 'bool'
-                  && /Registered$/.test(nested.functionName)) {
+                  && /Registered$/.test(nested.functionName) && collectionValue !== undefined) {
                   if (collectionValue !== null && typeof collectionValue === 'object'
                     && 'publicKey' in collectionValue) {
                     const publicKey = (collectionValue as { publicKey?: unknown }).publicKey;
                     value = publicKey instanceof Uint8Array ? publicKey.length > 0
                       : typeof publicKey === 'string' ? publicKey.length > 0 : false;
-                  } else if (collectionValue === undefined || collectionValue === null) {
-                    // A missing mapping row is not registered. Leaving this undefined falls
-                    // through to a stack-scanned ABI true and admits unregistered addresses.
+                  } else if (collectionValue === null) {
                     value = false;
                   }
                 } else if (proxyCallee) {
@@ -17837,7 +17881,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             );
                             return addressToLockScript(sender.getAddress());
                           }
-                          return addressToLockScript(this.target);
+                          return delegateSelfAddress;
                         }
                         // A computed key (hash160(pk), keccak256(x), ...) is not a parameter name, so the
                         // param lookup below cannot find it and the whole access silently produces no pick -
@@ -17943,26 +17987,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         if (timingEnabled && nested.callsiteId === 6) console.error('nested-entry-list-complete', {
                           collection: access.collection,
                         });
-                        let keySlot = keyToSlotMulti(keys);
-                        const senderIndexes = keySources
-                          .map((source, index) => (isMsgSenderKeySource(source) ? index : -1))
-                          .filter((index) => index >= 0);
-                        if (senderIndexes.length > 0 && !list.has(keySlot)) {
-                          for (const alt of [this.address, this._logicalAddress, this.target]) {
-                            if (!alt) continue;
-                            let altLock: Uint8Array;
-                            try { altLock = addressToLockScript(alt); } catch { continue; }
-                            const altKeys = keys.map((key, index) => (
-                              senderIndexes.includes(index) ? altLock : key
-                            ));
-                            const altSlot = keyToSlotMulti(altKeys);
-                            if (list.has(altSlot)) {
-                              keys = altKeys;
-                              keySlot = altSlot;
-                              break;
-                            }
-                          }
-                        }
+                        const keySlot = keyToSlotMulti(keys);
                         childBatchTargets.set(slot.slotIndex ?? 0, keySlot);
                         childBatchLists.set(access.collection, list);
                         // P5b: a chunkable value stored LONG (len > 60) keeps only `root32 || headData28` in the
@@ -19095,6 +19120,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const parent = externalCallUtxoGroups[parentGroupIndex];
         const parentContract = parent.externalContract as StatefulContract;
         const logicalParentContract = (parent.logicalContract ?? parentContract) as StatefulContract;
+        const parentExecutor = parent.delegateCallGroupIndex === undefined
+          ? parentContract
+          : (lowLevelCallUtxoGroups[parent.delegateCallGroupIndex]?.externalContract
+            ?? parentContract) as StatefulContract;
+        const parentExecutionSelfAddress = hexToBin(parentExecutor.inner.lockingBytecode);
         const logicalParentArtifact = parent.logicalArtifact ?? logicalParentContract.inner.artifact;
         const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
         const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
@@ -19119,7 +19149,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const resolvedAddressTarget = !registered && nested.addressSource
             ? logicalParentContract._resolveExternalArgs(
               [nested.addressSource], logicalParentArgs, logicalParentArtifact, parentState,
-              parentFn.inputs,
+              parentFn.inputs, undefined, 0, false, parentExecutionSelfAddress,
             )?.[0]
             : undefined;
           if (!registered && resolvedAddressTarget !== undefined) {
@@ -19165,7 +19195,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const childArgs = logicalParentContract._resolveExternalArgs(
             nested.rawArgSources ?? nested.argSources,
             logicalParentArgs, logicalParentArtifact, parentState,
-            parentFn.inputs,
+            parentFn.inputs, undefined, 0, false, parentExecutionSelfAddress,
           );
           if (childArgs === undefined) continue;
           const graphChildArgs = graphParentArgs === logicalParentArgs
@@ -19173,7 +19203,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             : logicalParentContract._resolveExternalArgs(
               nested.rawArgSources ?? nested.argSources,
               [...graphParentArgs], logicalParentArtifact, parentState,
-              parentFn.inputs,
+              parentFn.inputs, undefined, 0, false, parentExecutionSelfAddress,
             ) ?? childArgs;
           const graphChildSources = nested.rawArgSources ?? nested.argSources;
           const resolveGraphChildArgs = preparedAtomicNodes && graphChildSources
@@ -19182,7 +19212,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (externalReturns.size === 0) return undefined;
               return logicalParentContract._resolveExternalArgs(
                 graphChildSources, [...graphParentArgs], logicalParentArtifact, parentState,
-                parentFn.inputs, externalReturns,
+                parentFn.inputs, externalReturns, 0, false, parentExecutionSelfAddress,
               );
             }
             : undefined;
@@ -19325,7 +19355,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     ?? access.keyParams.map((paramName) => ({ kind: 'param' as const, paramName }));
                   const encodedKeys = keySources.map((source, keyIndex) => {
                     if (isMsgSenderKeySource(source)) {
-                      return addressToLockScript(logicalParentContract.target);
+                      return parentExecutionSelfAddress;
                     }
                     if (source.kind === 'expression' && 'expressionLabel' in source) {
                       const resolved = resolveRouteRowExpressionKey({
@@ -20177,14 +20207,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           argIndex: number; name: string; band: number; proxyRoute: boolean;
         }[] = [];
         const childParentGroupIndex = allGroupParentIndices[groupIdx];
+        const childDelegateGroupIndex = [...delegateExternalGroupIndices.entries()]
+          .find(([, childGroups]) => childGroups.includes(groupIdx))?.[0];
         const childCallerCategoryId = childParentGroupIndex !== undefined && childParentGroupIndex >= 0
           ? externalCallUtxoGroups[childParentGroupIndex]?.categoryId ?? this.categoryId
-          : this.categoryId;
+          : childDelegateGroupIndex !== undefined
+            // A child reached from delegate code is called by the active implementation input. Its minting
+            // category lets the callee recover that exact OP_UTXOBYTECODE, matching the caller's address(this).
+            ? lowLevelCallUtxoGroups[childDelegateGroupIndex]?.categoryId ?? this.categoryId
+            : this.categoryId;
         const encoded = childFn.inputs.map((input, inputIndex) => {
           if (!input.name.startsWith('__internal__')) {
+            const visibleInputCount = childFn.inputs.filter(
+              (candidate) => !candidate.name.startsWith('__internal__'),
+            ).length;
+            const logicalArgs = child.logicalFunctionArgs;
             const visibleArgs = (child.functionName ?? child.logicalFunctionName) === 'publishJobEvent'
-              ? (child.logicalFunctionArgs ?? child.functionArgs)
-              : child.functionArgs;
+              && logicalArgs?.length === visibleInputCount ? logicalArgs : child.functionArgs;
             return visibleArgs[visible++];
           }
           if (input.name === '__internal__returnOutputIdx') {
@@ -20240,6 +20279,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               });
             }
             return BigInt(routeBlockWitness ?? nestedMasterIndices[groupIdx] + childBlockSize);
+          }
+          if (input.name === '__internal__proxyMasterIndex') {
+            // `childFn` may be the implementation ABI selected for a physical proxy group. Its state operations
+            // remain rooted at that proxy group's master, not at the co-spent implementation input.
+            const physicalGroupIndex = child.sharedGroupIndex ?? groupIdx;
+            return BigInt(nestedMasterIndices[physicalGroupIndex]);
           }
           if (input.name === '__internal__externalCallInputBase') {
             const firstNestedGroupIndex = childNestedGroupIndexForSlot(0);
@@ -20796,10 +20841,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               return -1n;
             }
             if (inp.name === '__internal__msgSenderCategory') {
-              const nestedProxyCategoryId = nestedDelegateProxyGroupByLowLevel.has(groupLocalIdx)
-                ? externalCallUtxoGroups[nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx)!]?.categoryId
-                : undefined;
-              return delegateImplMsgSenderCategory(nestedProxyCategoryId, this.categoryId);
+              const nestedProxyGroupIndex = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+              const nestedProxyCategoryId = nestedProxyGroupIndex === undefined
+                ? undefined : externalCallUtxoGroups[nestedProxyGroupIndex]?.categoryId;
+              const callerDelegateGroupIndex = nestedProxyGroupIndex === undefined
+                ? undefined : [...delegateExternalGroupIndices.entries()]
+                  .find(([, childGroups]) => childGroups.includes(nestedProxyGroupIndex))?.[0];
+              const callerExecutionCategoryId = callerDelegateGroupIndex === undefined
+                ? this.categoryId : lowLevelCallUtxoGroups[callerDelegateGroupIndex]?.categoryId ?? this.categoryId;
+              return delegateImplMsgSenderCategory(nestedProxyCategoryId, callerExecutionCategoryId);
             }
             if (inp.name === '__internal__proxyMasterIndex') {
               const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
@@ -21108,25 +21158,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             });
           }
           if (timingEnabled) console.error('delegate-args-map-complete', { groupLocalIdx });
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_NESTED_PAY === '1' && group.functionName === 'payStartJob') {
-            console.error('marketplace-pay-start-args', bFunc.inputs.flatMap((input, index) => (
-              input.name.startsWith('__internal__external')
-              || input.name.startsWith('__internal__extcall')
-              || input.name.startsWith('__internal__callInput')
-                ? [{ name: input.name, value: encodedArgs[index] instanceof Uint8Array
-                  ? binToHex(encodedArgs[index]) : String(encodedArgs[index]) }] : []
-            )));
-          }
-          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1' && group.functionName === 'publishJobPost') {
-            console.error('publish-job-encoded-args', bFunc.inputs.map((input, index) => ({
-              name: input.name,
-              value: typeof encodedArgs[index] === 'bigint' ? encodedArgs[index].toString()
-                : encodedArgs[index] instanceof Uint8Array
-                  ? binToHex(encodedArgs[index]).slice(0, 80) : encodedArgs[index],
-            })));
-          }
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_VMAP_PROOF === '1' && group.compilerRoute) {
             console.error('delegate-lowlevel-route-final-args', {
@@ -21955,21 +21986,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       logicalAddress: this._logicalAddress,
       externalGroups: externalCallUtxoGroups.length,
     });
-    const identityAddresses = [this._logicalAddress, this.target, this.address];
-    const nestedUsesMsgSender = [...externalCallUtxoGroups, ...lowLevelCallUtxoGroups].some((group) => {
-      const named = group.compilerRoute?.abiFunction
-        ?? group.externalContract?.inner.artifact.abi.find((fn: { name: string }) => fn.name === group.functionName);
-      return named?.usesMsgSender === true;
-    });
-    const needsCallerIdentity = !isZeroMsgSenderCategory(this.categoryId) && (
-      nestedUsesMsgSender
-      || overrides?.msgSenderCategory !== undefined && !isZeroMsgSenderCategory(overrides.msgSenderCategory)
-    );
-    const logicalIdentity = overrides?.logicalIdentity ?? (
-      needsCallerIdentity
-        ? await requireMsgSenderIdentity(this.inner.provider, this.categoryId, identityAddresses)
-        : await resolveLogicalIdentityFromAddresses(this.inner.provider, identityAddresses)
-    );
+    // Logical identity anchors authenticate stable public call targets. Runtime `address(this)` and nested
+    // `msg.sender` use the exact active input bytecode, so they neither require nor consume the caller's SCID.
+    const logicalIdentity = overrides?.logicalIdentity;
     if (logicalIdentity && !this._logicalAddress) this._logicalAddress = logicalIdentity.logicalAddress;
     timing('logical-identity-complete');
     if (timingEnabled) console.error('builder-shape', {
@@ -27928,26 +27947,6 @@ export class StatefulFunctionCall {
     if (needsRebuild) await this.parentContract!._ensureResolved();
     const signerUtxos = needsRebuild && this.functionName === '__forward'
       ? await this.signerUtxosPromise : undefined;
-    let logicalIdentity: Awaited<ReturnType<typeof resolveLogicalIdentity>> | undefined;
-    if (needsRebuild && this.parentContract) {
-      const parent = this.parentContract;
-      const identityAddresses = [parent._logicalAddress, parent.target, parent.address];
-      const nestedUsesMsgSender = this.callInfos.some((call) => {
-        if (call.type !== 'stateful') return false;
-        const named = call.compilerRoute?.abiFunction
-          ?? call.contract.inner.artifact.abi.find((fn) => fn.name === call.functionName);
-        return named?.usesMsgSender === true;
-      }) || this.externalCallInfos.some((call) => (
-        call.externalContract.inner.artifact.abi.some((fn) =>
-          fn.name === call.functionName && fn.usesMsgSender)
-      ));
-      logicalIdentity = !isZeroMsgSenderCategory(parent.categoryId) && nestedUsesMsgSender
-        ? await requireMsgSenderIdentity(parent.inner.provider, parent.categoryId, identityAddresses)
-        : await resolveLogicalIdentityFromAddresses(parent.inner.provider, identityAddresses);
-      if (logicalIdentity && !parent._logicalAddress) {
-        parent._logicalAddress = logicalIdentity.logicalAddress;
-      }
-    }
     if (debugApply) console.error('apply-overrides-snapshot', {
       functionName: this.functionName, count: signerUtxos?.length,
     });
@@ -27958,7 +27957,6 @@ export class StatefulFunctionCall {
           externalCalls: this.externalCallInfos.length > 0 ? this.externalCallInfos : undefined,
           calls: this.callInfos.length > 0 ? this.callInfos : undefined,
           signerUtxos,
-          logicalIdentity,
           entryKeyOverrides: this.entryKeyOverrides.size > 0 ? this.entryKeyOverrides : undefined,
           externalEntryKeyOverrides: this.externalEntryKeyOverrides.size > 0 ? this.externalEntryKeyOverrides : undefined,
           emitReturn: this.emitReturnFlag || undefined,

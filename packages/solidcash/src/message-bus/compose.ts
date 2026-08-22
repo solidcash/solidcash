@@ -300,7 +300,7 @@ const participantOf = (
         ? effectiveLayout.blockSize - 1
         : undefined;
   if (logicalIdentityOffset === undefined) {
-    throw new Error('messageBus: logical caller identity has no authenticated participant slot');
+    throw new Error('messageBus: logical call target has no authenticated participant slot');
   }
   if (descriptor.executor && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {

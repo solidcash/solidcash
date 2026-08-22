@@ -14,6 +14,9 @@ import { addressToLockScript } from '../../src/utils.js';
 import { binToHex } from '@bitauth/libauth';
 import { createTestProvider } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
+import {
+  findDeploymentByLockingBytecode, registerDeployment, registeredExecutionLockingBytecode,
+} from '../../src/stateful/deployment-registry.js';
 
 function freshKey(): Uint8Array {
   const key = new Uint8Array(32);
@@ -155,7 +158,7 @@ describe('logical CREATE identity at getAddress()', () => {
     ).nft?.commitment)).toEqual([firstCommitment, secondCommitment]);
   });
 
-  it('requires the unique SCID of a non-zero msg.sender category', async () => {
+  it('resolves an explicit logical identity independently of runtime msg.sender', async () => {
     const { signer } = await fundedSigner('ae');
     const token = await new ContractFactory(compileString(TOKEN), signer).deploy();
     expect(isZeroMsgSenderCategory(new Uint8Array(32))).toBe(true);
@@ -171,6 +174,24 @@ describe('logical CREATE identity at getAddress()', () => {
     await expect(requireMsgSenderIdentity(
       signer.provider, '11'.repeat(32), [signer.getAddress()],
     )).rejects.toThrow(/CREATE identity for category/);
+  });
+
+  it('resolves a proxy registration by its active implementation bytecode', () => {
+    const provider = createTestProvider();
+    const implementationLock = `aa20${'11'.repeat(32)}87`;
+    const proxyLock = `aa20${'22'.repeat(32)}87`;
+    const proxyHandle = {
+      implementation: { inner: { lockingBytecode: implementationLock } },
+      proxy: { inner: { lockingBytecode: proxyLock } },
+    };
+    const deployment = {
+      contractName: 'ProxyTarget', address: 'logical-proxy-address',
+      lockingBytecode: proxyLock, contract: proxyHandle,
+    };
+    registerDeployment(provider, deployment);
+
+    expect(registeredExecutionLockingBytecode(deployment)).toBe(implementationLock);
+    expect(findDeploymentByLockingBytecode(provider, implementationLock)).toBe(deployment);
   });
 
   it('resolves identity from target/address when _logicalAddress is omitted', async () => {

@@ -17,7 +17,9 @@ import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
-import { findDeploymentByAddress, registerDeployment } from './deployment-registry.js';
+import {
+  findDeploymentByAddress, registerDeployment, registeredExecutionLockingBytecode,
+} from './deployment-registry.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -334,11 +336,15 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
       return index >= 0 ? [index] : [];
     }));
     const covenantArgs = implArgs.map((arg, index): FunctionArgument => {
-      if (!physicalTargetParams.has(index) || visibleInputs[index]?.type !== 'address' || typeof arg !== 'string') {
+      if (visibleInputs[index]?.type !== 'address' || typeof arg !== 'string') {
         return arg;
       }
       const deployment = findDeploymentByAddress(this.proxy.inner.provider, arg);
       if (!deployment) return arg;
+      if (!physicalTargetParams.has(index)) {
+        const executionLockingBytecode = registeredExecutionLockingBytecode(deployment);
+        return executionLockingBytecode ? hexToBin(executionLockingBytecode) : arg;
+      }
       const registered = deployment.contract as {
         _logicalAddress?: string;
         proxy?: StatefulContract & { _logicalAddress?: string };

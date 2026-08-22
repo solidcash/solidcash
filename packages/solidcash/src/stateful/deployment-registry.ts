@@ -9,6 +9,19 @@ export interface RegisteredDeployment {
   contract: unknown;
 }
 
+/** Exact covenant bytecode which executes calls made by a registered deployment. */
+export function registeredExecutionLockingBytecode(
+  deployment: RegisteredDeployment,
+): string | undefined {
+  const registered = deployment.contract as {
+    implementation?: { inner?: { lockingBytecode?: string } };
+    inner?: { lockingBytecode?: string };
+  };
+  return registered.implementation?.inner?.lockingBytecode
+    ?? registered.inner?.lockingBytecode
+    ?? deployment.lockingBytecode;
+}
+
 const deployments = new WeakMap<NetworkProvider, RegisteredDeployment[]>();
 
 /** A repeatable snapshot of the Hardhat-compatible deployment registry. */
@@ -95,6 +108,9 @@ export function findDeploymentByLockingBytecode(
   const current = deployments.get(provider) ?? [];
   const wanted = lockingBytecode.replace(/^0x/, '').toLowerCase();
   for (let index = current.length - 1; index >= 0; index--) {
+    if (registeredExecutionLockingBytecode(current[index])?.replace(/^0x/, '').toLowerCase() === wanted) {
+      return current[index];
+    }
     if (current[index].lockingBytecode?.replace(/^0x/, '').toLowerCase() === wanted) {
       return current[index];
     }

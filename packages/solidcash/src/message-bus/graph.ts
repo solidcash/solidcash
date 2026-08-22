@@ -19,10 +19,8 @@ export interface CompiledGraphParticipant {
   /**
    * Authenticated public target identity when it differs from the physical state owner, as it does for a
    * proxy/delegate execution or a contract with a published logical CREATE identity. This is the address a
-   * source-level call targets and the authenticated caller identity of an ordinary high-level call. A raw
-   * low-level call from a delegate route instead originates at its distinct executor input. Source-level
-   * `address(this)` remains the exact active input returned by OP_UTXOBYTECODE in both cases; it is never
-   * reconstructed from this logical identity.
+   * source-level call targets. Source-level `address(this)` and calls made by the contract both originate at the
+   * exact active input returned by OP_UTXOBYTECODE; they are never reconstructed from this logical identity.
    */
   logicalLockingBytecode?: string;
   /**
@@ -46,7 +44,7 @@ export interface CompiledGraphParticipant {
 export interface CompiledGraphInvocation {
   /**
    * Parent invocation index. `null` identifies the single transaction-origin root.
-   * The logical caller owner is derived as `invocations[parent].callee`; it is never witness-authored.
+   * The active caller owner is derived as `invocations[parent].callee`; it is never witness-authored.
    */
   parent: number | null;
   callee: number;
@@ -104,7 +102,7 @@ export interface CompiledParticipantExecution {
   artifact: Artifact;
   lockingBytecode: string;
   logicalLockingBytecode?: string;
-  /** Local balanced-block offset of the Solidity-visible caller identity. */
+  /** Local balanced-block offset of the authenticated public call target. */
   logicalIdentityOffset: number;
   executionKind: 0 | 1;
   /** Local balanced-block offset of the distinct delegate executor input. */
@@ -1204,10 +1202,9 @@ type GraphCallerInvocation = Pick<CompiledGraphInvocation,
 'parent' | 'callee' | 'function' | 'consumerCallsiteId'>;
 
 /**
- * Raw address calls originate at the exact covenant input executing the caller. Ordinary interface calls retain
- * the caller's authenticated public identity, which is stable across proxy upgrades. Keeping this distinction
- * explicit prevents `msg.sender` from silently changing for every high-level call merely because its caller is
- * currently executing through a delegate, while preserving OP_UTXOBYTECODE identity for low-level calls.
+ * Calls originate at the exact covenant input executing the caller. This keeps a callee's `msg.sender` equal to
+ * the caller's source-level `address(this)` for both high-level and raw calls. A proxy's stable logical identity
+ * remains its authenticated call target; it does not replace the active delegate executor's identity.
  */
 export function graphInvocationUsesExecutorCaller(
   participants: readonly GraphCallerParticipant[],
@@ -1216,15 +1213,7 @@ export function graphInvocationUsesExecutorCaller(
 ): boolean {
   if (invocation.parent === null) return false;
   const caller = participants[invocations[invocation.parent].callee];
-  if (caller.executionKind !== 'delegate' && caller.executionKind !== 1) return false;
-  const parent = invocations[invocation.parent];
-  const parentFunction = caller.artifact.abi
-    ? resolveGraphAbiFunction(caller.artifact, parent.function) : undefined;
-  const callsite = parentFunction?.externalCalls?.find((candidate) =>
-    invocation.consumerCallsiteId !== undefined
-      ? candidate.callsiteId === invocation.consumerCallsiteId
-      : candidate.functionName === invocation.function);
-  return callsite?.interfaceName === '__raw__' && callsite.functionName === '__raw__';
+  return caller.executionKind === 'delegate' || caller.executionKind === 1;
 }
 
 export function graphInvocationCallerIdentity(
@@ -1242,13 +1231,13 @@ export function graphInvocationCallerIdentity(
         (slot) => slot.kind === 'lowLevelCall',
       )?.offset;
     if (!caller.executorLockingBytecode || executorOffset === undefined || executorOffset === null) {
-      throw new Error('messageBus: raw delegate caller has no authenticated executor identity');
+      throw new Error('messageBus: delegate caller has no authenticated executor identity');
     }
     return { lockingBytecode: caller.executorLockingBytecode, offset: executorOffset };
   }
   return {
-    lockingBytecode: caller.logicalLockingBytecode ?? caller.lockingBytecode,
-    offset: caller.logicalIdentityOffset ?? 0,
+    lockingBytecode: caller.lockingBytecode,
+    offset: 0,
   };
 }
 

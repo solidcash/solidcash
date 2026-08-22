@@ -14,7 +14,7 @@ export interface MessageBatchCall {
   args?: readonly FunctionArgument[];
   /** Logical per-invocation satoshi delta when compiler-authored effects cannot derive it. */
   msgValue?: bigint;
-  /** Graph-authenticated logical caller locking bytecode for msg.sender-keyed resources. */
+  /** Graph-authenticated active caller input bytecode for msg.sender-keyed resources. */
   logicalCaller?: FunctionArgument;
 }
 
@@ -300,7 +300,7 @@ export function encodeMessageBatch(
       if (value === undefined) {
         throw new MessageBusDiagnosticError(
           'L3_RESOURCE_UNRESOLVED',
-          `message-bus batch collection witness '${binding.routeInput}' requires an authenticated logical caller`,
+          `message-bus batch collection witness '${binding.routeInput}' requires an authenticated active caller`,
           { handler: handler.name, resourceIdentity: binding.routeInput, keyIdentity: 'msg.sender', invocationIds: [rowIndex] },
         );
       }

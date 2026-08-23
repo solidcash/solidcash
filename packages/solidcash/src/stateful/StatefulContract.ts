@@ -807,16 +807,29 @@ function encodeStructArgument(
   value: FunctionArgument, typeName: string, structs: Artifact['structs'],
   timestamp?: bigint,
 ): Uint8Array {
-  if (value instanceof Uint8Array) return value;
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const record = { ...(value as Record<string, unknown>) };
+  let decodedValue: FunctionArgument = value;
+  if (value instanceof Uint8Array) {
+    try {
+      const decoded = decodePushdataValue(value, 0, typeName, structs);
+      if (decoded.bytesConsumed !== value.length) return value;
+      decodedValue = decoded.value as FunctionArgument;
+    } catch {
+      return value;
+    }
+  }
+  const struct = structs?.find((candidate) => candidate.name === typeName);
+  const canonicalValue = Array.isArray(decodedValue) && struct
+    ? Object.fromEntries(struct.fields.map((field, index) => [field.name, decodedValue[index]]))
+    : decodedValue;
+  if (canonicalValue && typeof canonicalValue === 'object' && !Array.isArray(canonicalValue)) {
+    const record = { ...(canonicalValue as Record<string, unknown>) };
     if (record.timestamp_ === 0 || record.timestamp_ === 0n || record.timestamp_ === undefined) {
       record.timestamp_ = timestamp ?? BigInt(Math.floor(Date.now() / 1000));
     }
     normalizeJobEventAddresses(record, typeName, structs);
     return encodePushdataValue(record as never, typeName, structs);
   }
-  return encodePushdataValue(value as never, typeName, structs);
+  return encodePushdataValue(canonicalValue as never, typeName, structs);
 }
 
 function p2pkhLockingBytecode(pkh: Uint8Array): Uint8Array {
@@ -12918,6 +12931,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // while the mock/provider drains prior transaction work, producing the same peak-memory stall as a late scan.
       ? await signerUtxoSnapshot(this._signer) : undefined);
     await this._ensureResolved(); // address-constructed instances: resolve the category before building the tx
+    const mockStorage = (this.inner.provider as unknown as {
+      indexer?: { storage?: { _test?: unknown } };
+    }).indexer?.storage;
+    const syncMockParticipantOracle = async (
+      contract: { inner: { lockingBytecode: string } },
+    ): Promise<void> => {
+      if (!mockStorage?._test) return;
+      const registered = findDeploymentByLockingBytecode(
+        this.inner.provider, contract.inner.lockingBytecode,
+      );
+      const { syncMockBlockOracleDeployment } = await import('../oracle/blockOracleUpdater.js');
+      await syncMockBlockOracleDeployment(this.inner.provider, registered ?? { contract });
+    };
+    // The mock chain has no keeper. Refresh the state owner before reading it; nested participants are refreshed
+    // lazily below, preserving one block context without scanning unrelated deployments on every SDK call.
+    await syncMockParticipantOracle(this);
     const stateLayout = this.inner.stateLayout!;
 
     // Move ABI lookup FIRST so we can determine if full state is needed
@@ -12939,6 +12968,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const deployment = findDeploymentByAddress(this.inner.provider, arg);
         return deployment?.lockingBytecode ? hexToBin(deployment.lockingBytecode) : arg;
       });
+    }
+    if (mockStorage?._test) {
+      const participants = new Set<{ inner: { lockingBytecode: string } }>();
+      for (const call of abiFunction?.externalCalls ?? []) {
+        const registered = this._externalRegistry.get(call.interfaceName)
+          ?? (findDeploymentByName(this.inner.provider, call.interfaceName)?.contract as
+            { inner: { lockingBytecode: string } } | undefined)
+          ?? (/^I[A-Z]/.test(call.interfaceName)
+            ? findDeploymentByName(this.inner.provider, call.interfaceName.slice(1))?.contract as
+              { inner: { lockingBytecode: string } } | undefined
+            : undefined);
+        if (registered) participants.add(registered);
+      }
+      for (const call of overrides?.externalCalls ?? []) participants.add(call.externalContract);
+      for (const call of overrides?.calls ?? []) {
+        if (call.type === 'stateful') participants.add(call.contract);
+      }
+      await Promise.all([...participants].map(syncMockParticipantOracle));
     }
     const registeredSelf = findDeploymentByAddress(this.inner.provider, this.target);
     const executionSelfAddress = hexToBin(
@@ -16835,7 +16882,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const nestedFullState = (contract: StatefulContract): Promise<OnChainState> => {
       let pending = nestedFullStateCache.get(contract.categoryId);
       if (!pending) {
-        pending = contract.getFullState();
+        pending = (async () => {
+          await syncMockParticipantOracle(contract);
+          return contract.getFullState();
+        })();
         nestedFullStateCache.set(contract.categoryId, pending);
       }
       return pending;
@@ -16843,7 +16893,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const nestedMasterState = (contract: StatefulContract): Promise<OnChainState> => {
       let pending = nestedMasterStateCache.get(contract.categoryId);
       if (!pending) {
-        pending = contract._getMasterOnlyState();
+        pending = (async () => {
+          await syncMockParticipantOracle(contract);
+          return contract._getMasterOnlyState();
+        })();
         nestedMasterStateCache.set(contract.categoryId, pending);
       }
       return pending;
@@ -19215,7 +19268,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const selectedFn = (selectedContract.inner.artifact.abi as readonly AbiFunction[])
             .find((candidate) => candidate.name === (rawFunctionName ?? nested.functionName));
           if (!selectedFn) continue;
-          const childState = await callee.getFullState();
+          const childState = await nestedFullState(callee);
           if (!childState.masterUtxo) continue;
           const requiredDataNftIndices = [...new Set(
             (selectedFn.blockLayout?.slots ?? [])
@@ -27952,18 +28005,6 @@ export class StatefulFunctionCall {
     // If external calls were added, rebuild the builder with external call context
     let builder: StatefulTransactionBuilder;
     let derived: Record<string, any> | undefined;
-
-    // A composed transaction observes one block context across every participant. The mock chain has no keeper,
-    // so refresh all registered oracle-backed data NFTs before any participant state or wallet snapshot is read.
-    // Production providers do not expose the in-memory mock storage marker and remain untouched.
-    const provider = this.parentContract?.inner.provider;
-    const mockStorage = (provider as unknown as {
-      indexer?: { storage?: { _test?: unknown } };
-    } | undefined)?.indexer?.storage;
-    if (provider && mockStorage?._test) {
-      const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
-      await syncMockBlockOracles(provider);
-    }
 
     await this._resolveLibrariesFromRegistry();
     this._autoWireLibraryDelegatecalls();

@@ -142,4 +142,41 @@ describe('encodeLeadingRouteArrayPushes', () => {
     })).toBeUndefined();
   });
 
+  it('normalizes an already encoded struct before applying route-known fields', () => {
+    const stampedStructs: StructDefinitionInfo[] = [{
+      name: 'Stamped',
+      fields: [{ name: 'value', type: 'uint256' }, { name: 'timestamp_', type: 'uint32' }],
+    }];
+    const encodedRecord = encodePushdataValue({ value: 2n, timestamp_: 0n }, 'Stamped', stampedStructs);
+    const stampedRow = (record: Uint8Array | bigint[] | { value: bigint; timestamp_: bigint }) => ({
+      args: [7n, record],
+      handler: {
+        inputs: [
+          { name: 'recordId', type: 'uint256' },
+          { name: 'record', type: 'Stamped' },
+        ],
+        entryAccesses: [{
+          collection: 'history',
+          keyParams: ['recordId'],
+          operations: ['read', 'write'],
+        }],
+      },
+    });
+    const encoded = encodeLeadingRouteArrayPushes({
+      rowArguments: [
+        stampedRow(encodedRecord),
+        stampedRow([3n, 0n]),
+        stampedRow({ value: 4n, timestamp_: 0n }),
+      ],
+      collection: 'history',
+      valueType: 'Stamped[]',
+      structs: stampedStructs,
+      timestamp: 42n,
+    });
+    expect(decodePushdataValue(encoded!, 0, 'Stamped[]', stampedStructs).value).toEqual([
+      { value: 2n, timestamp_: 42n },
+      { value: 3n, timestamp_: 42n },
+    ]);
+  });
+
 });

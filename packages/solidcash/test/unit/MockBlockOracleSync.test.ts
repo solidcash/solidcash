@@ -54,7 +54,7 @@ describe('mock evm_increaseTime writes __block_timestamp', () => {
     await provider.addUtxo(signer.getAddress(), {
       txid: 'b3'.repeat(32), vout: 0, satoshis: 1_000_000n,
     });
-    await first.gated(0n).send();
+    await first.gated(0n).withCall(second, 'gated', [0n]).send();
     expect((await first.getState()).__block_timestamp)
       .toBe((await second.getState()).__block_timestamp);
   });

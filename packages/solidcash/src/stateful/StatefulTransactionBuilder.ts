@@ -8552,9 +8552,13 @@ export class StatefulTransactionBuilder {
         : (stateOwnerCategory
           ? persistedJobEventsByCategory.get(stateOwnerCategory) ?? [] : []))
       : [];
+    // VM-observed chunks carry the exact root-addressed locking bytecode. A staged value can reconstruct
+    // commitments, but without its collection/slot recipe it cannot authoritatively reconstruct the lock.
+    // Keep the observed run atomic rather than allowing a guessed staged lock to replace its identity.
+    const observed = selectObservedValueChunkRun(fromStaged, fromDerived);
     const source = rematerialize
-      ? firstUsableValueChunkRun(fromStaged, fromDerived, fromValue, persistChunks)
-      : firstUsableValueChunkRun(fromStaged, fromDerived);
+      ? firstUsableValueChunkRun(observed, fromValue, persistChunks)
+      : observed;
     const seen = new Set<string>();
     const chunks: Array<{ commitment: string; lockingBytecode: Uint8Array; categoryId?: string }> = [];
     for (const chunk of [...source].reverse()) {
@@ -8594,7 +8598,7 @@ export class StatefulTransactionBuilder {
       const prior = previousDerived.get(index);
       const commitment = preferChunkCommitment(prior?.commitment, chunk.commitment);
       this.derivedChunkOutputs.set(index, {
-        ...(commitment === prior?.commitment && prior ? prior : chunk),
+        ...chunk,
         commitment,
         categoryId: stateOwnerCategory ?? chunk.categoryId ?? prior?.categoryId,
       });
@@ -8605,6 +8609,7 @@ export class StatefulTransactionBuilder {
       if (index < liveBand.start || index > liveEnd) continue;
       if (this.derivedChunkOutputs.has(index)) continue;
       if (isEmptyValueChunkCommitment(prior.commitment) || prior.commitment === '00') continue;
+      if (binToHex(prior.lockingBytecode) !== binToHex(chunks[0].lockingBytecode)) continue;
       this.derivedChunkOutputs.set(index, prior);
     }
     const reserved = new Set<number>();
@@ -8707,9 +8712,10 @@ export class StatefulTransactionBuilder {
     const fromStaged = stagedValue
       ? chunksFromJobEventsValue(stagedValue, redeemLock, persistTokenCategory)
       : [];
+    const observed = selectObservedValueChunkRun(fromStaged, fromDerived);
     const source = this._shouldRematerializePersistUpdate()
-      ? firstUsableValueChunkRun(fromStaged, fromDerived, fromValue)
-      : firstUsableValueChunkRun(fromStaged, fromDerived);
+      ? firstUsableValueChunkRun(observed, fromValue)
+      : observed;
     const lockCounts = new Map<string, { lock: Uint8Array; n: number }>();
     for (let index = band.start; index < band.start + Math.max(band.nNew, 8); index++) {
       const lock = builder.outputs[index]?.to;

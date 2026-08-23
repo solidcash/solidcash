@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
 import {
-  encodeExternalReturnValue, encodeLeadingRouteArrayPushes, encodeRouteArrayPushResult,
+  encodeExternalReturnValue, encodeLeadingRouteArrayPushes,
   isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector, selectEvmScalarReturnCommitment,
 } from '../../src/stateful/StatefulContract.js';
 import {
@@ -142,25 +142,4 @@ describe('encodeLeadingRouteArrayPushes', () => {
     })).toBeUndefined();
   });
 
-  it('applies selected same-key pushes to the authenticated stored value in row order', () => {
-    const initialValue = encodeRouteArrayPushResult({
-      rowArguments: [row(7n, 1n)],
-      collection: 'history',
-      valueType: 'Pair[]',
-      structs,
-      initialValue: encodePushdataValue([], 'Pair[]', structs),
-    });
-    const result = encodeRouteArrayPushResult({
-      rowArguments: [row(7n, 2n), row(8n, 3n), row(7n, 4n)],
-      collection: 'history',
-      valueType: 'Pair[]',
-      structs,
-      initialValue: initialValue!,
-    });
-    expect(decodePushdataValue(result!, 0, 'Pair[]', structs).value).toEqual([
-      { count: 1n, active: true },
-      { count: 2n, active: true },
-      { count: 4n, active: true },
-    ]);
-  });
 });

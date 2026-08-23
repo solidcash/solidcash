@@ -3065,46 +3065,6 @@ export function encodeLeadingRouteArrayPushes(params: {
   return encoded;
 }
 
-/**
- * Apply every selected same-key array push to an authenticated stored value. This is the exact off-chain mirror
- * of the compiler route's leading-push replay followed by its final handler body. It is intentionally limited to
- * the unambiguous shape published by the ABI: one write access and one visible argument of the array element type.
- */
-export function encodeRouteArrayPushResult(params: {
-  rowArguments: readonly RouteExpressionKeyRow[];
-  collection: string;
-  valueType: string;
-  structs: Artifact['structs'];
-  initialValue: Uint8Array;
-  timestamp?: bigint;
-}): Uint8Array | undefined {
-  const array = parseArrayTypeString(params.valueType);
-  if (!array || array.bound !== undefined) return undefined;
-  const rows = params.rowArguments.flatMap((row) => {
-    const accesses = (row.handler.entryAccesses ?? []).filter((access) => (
-      access.collection === params.collection && access.operations?.includes('write')
-    ));
-    if (accesses.length !== 1) return [];
-    const key = routeRowCollectionKey(row, accesses[0], params.structs);
-    const visible = visibleHandlerInputs(row.handler.inputs);
-    const elementInputs = visible
-      .map((input, index) => ({ input, index }))
-      .filter(({ input }) => input.type === array.elementType);
-    if (key === undefined || elementInputs.length !== 1) return [];
-    return [{ row, key, elementIndex: elementInputs[0].index }];
-  });
-  const final = rows.at(-1);
-  if (!final) return undefined;
-  let encoded = params.initialValue;
-  for (const candidate of rows.filter((row) => row.key === final.key)) {
-    const element = encodeStructArgument(
-      candidate.row.args[candidate.elementIndex], array.elementType, params.structs, params.timestamp,
-    );
-    encoded = appendEncodedArrayElement(encoded, element);
-  }
-  return encoded;
-}
-
 /** `AbiDecodeAtNode{data=id:rowArgs,index=N,schema=[...]}` → argument index and handler arity. */
 export function parseRowArgsDecodeLabel(label: string | undefined): {
   argumentIndex: number;
@@ -11153,22 +11113,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               rememberJobEventsLock(chunkCategory, redeemLock);
               stb.setJobEventsRedeemLock(redeemLock);
             }
-            for (const chunk of applyRedeemLockToChunks(allChunks, redeemLock ?? allChunks[0]?.lockingBytecode
-              ?? new Uint8Array())) {
+            for (const chunk of allChunks) {
               if (stb.setDerivedChunkOutput(chunk.outputIndex, {
                 commitment: chunk.commitment,
-                lockingBytecode: redeemLock ?? chunk.lockingBytecode,
+                lockingBytecode: chunk.lockingBytecode,
                 categoryId: chunkCategory,
               })) {
                 commitmentProgress += 1;
                 nestedPinProgress += 1;
-              }
-            }
-            if (redeemLock && band) {
-              for (const [index, chunk] of stb.getDerivedChunkOutputs()) {
-                if (index < band.start || index > band.end) continue;
-                if (binToHex(chunk.lockingBytecode) === binToHex(redeemLock)) continue;
-                stb.setDerivedChunkOutput(index, { ...chunk, lockingBytecode: redeemLock });
               }
             }
             if (pin && stb.setDerivedChunkOutput(pin.outputIndex, {
@@ -13589,7 +13541,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // selected handler's shared continuation band by one slot per inactive collection.
               const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
                 ?.messageBusRowArguments;
-              let exactComputedValue: Uint8Array | undefined;
               if (selectedRows && authenticatedChunkableValue) {
                 const timestamp = typeof onChainState.state.__block_timestamp === 'bigint'
                   ? onChainState.state.__block_timestamp : undefined;
@@ -13610,30 +13561,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     entryCompilerRoute.internalArgs = { ...entryCompilerRoute.internalArgs, [name]: leadingValue };
                   }
                 }
-                exactComputedValue = encodeRouteArrayPushResult({
-                  rowArguments: selectedRows,
-                  collection: access.collection,
-                  valueType: collection.valueType,
-                  structs: stateLayout.structs,
-                  initialValue: authenticatedChunkableValue,
-                  timestamp,
-                });
-                if (exactComputedValue && exactComputedValue.length > VALUE_INLINE_LIMIT) {
-                  // Keep each write as its own physical run. Keying these by collection collapsed two writes to
-                  // different keys into one continuation family, even though their slot/root-derived covenants
-                  // are necessarily distinct. Entry-access order is also the compiler's pin order.
-                  valueChunkMints.push({
-                    collection: access.collection,
-                    slot,
-                    digest: sha256Sync(exactComputedValue),
-                    chunks: splitValueIntoValueChunks(exactComputedValue),
-                  });
-                }
               }
-              if (!exactComputedValue) {
-                // No deterministic SDK reconstruction is available; learn this run from the authenticated VM pin.
-                addComputedValueChunkRun(access.collection);
-              }
+              // `valueParam` is intentionally absent for handler-computed values (array push/pop, partial field
+              // writes, and arbitrary expressions). Raw route arguments cannot reproduce mutations performed by
+              // the handler before its write, so the covenant's authenticated VM pin is the only exact source.
+              addComputedValueChunkRun(access.collection);
               // A computed UPDATE (present key) mints no NEW node; pin its loop entry EMPTY so the loop-entry
               // derivation does not misread the value-chunk pin's OP_OUTPUTTOKENCOMMITMENT calls as a phantom NEW.
               if (list.has(slot)) computedValueUpdateCollections.add(access.collection);

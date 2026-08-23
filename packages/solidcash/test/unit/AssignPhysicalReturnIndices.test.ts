@@ -1854,6 +1854,19 @@ describe('assignPhysicalReturnIndices', () => {
     expect(stamped.every((chunk) => binToHex(chunk.lockingBytecode) === binToHex(redeemPin))).toBe(true);
   });
 
+  it('keeps an observed value-chunk run atomic when a staged run has the same commitments', () => {
+    const stagedLock = p2sh32LockFromValueRoot(sha256Sync(utf8ToBin('staged guess')));
+    const observedLock = p2sh32LockFromValueRoot(sha256Sync(utf8ToBin('authenticated pin')));
+    const commitments = ['000061', '010062'];
+    const staged = commitments.map((commitment) => ({ commitment, lockingBytecode: stagedLock }));
+    const observed = commitments.map((commitment) => ({ commitment, lockingBytecode: observedLock }));
+
+    const selected = selectObservedValueChunkRun(staged, observed);
+
+    expect(selected.map((chunk) => chunk.commitment)).toEqual(commitments);
+    expect(selected.every((chunk) => binToHex(chunk.lockingBytecode) === binToHex(observedLock))).toBe(true);
+  });
+
   it('uses the live jobEvents width so a 5-wide band still rotates FakeToken', () => {
     expect(valueChunkBandWidth({})).toBe(3);
     expect(valueChunkBandWidth({ planned: 5 })).toBe(5);

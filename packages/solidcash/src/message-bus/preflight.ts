@@ -602,6 +602,17 @@ export interface FinalizedByteGateOptions {
 }
 
 /**
+ * Destination profile proven by a successful exact message-bus preflight. Kept outside TransactionBuilder's
+ * public options so relay/consensus policy cannot become another application-controlled construction switch.
+ * The final send still reassesses its current bytes; the receipt carries only which destination rules apply.
+ */
+const finalizedByteGateReceipts = new WeakMap<TransactionBuilder, FinalizedByteGateOptions>();
+
+export const finalizedByteGateReceiptOf = (
+  builder: TransactionBuilder,
+): FinalizedByteGateOptions | undefined => finalizedByteGateReceipts.get(builder);
+
+/**
  * Make the finalized-byte gate judge the same profile as its destination provider.
  *
  * `consensusLimits` is already the provider's consensus authority, so a second boolean deciding whether those
@@ -2074,6 +2085,14 @@ export const preflightMessageBusTransaction = (
   // of whether it would have relayed, and masking that diagnostic with a size or dust message would lose the
   // more informative half. Every existing per-input diagnostic therefore survives unchanged.
   assertFinalizedTransactionBytes(transaction, options);
+  if (options !== undefined) finalizedByteGateReceipts.set(builder, {
+    ...(options.consensusLimits === undefined ? {} : {
+      consensusLimits: { ...options.consensusLimits },
+    }),
+    ...(options.allowNonRelayable === undefined ? {} : {
+      allowNonRelayable: options.allowNonRelayable,
+    }),
+  });
   return transaction;
 };
 

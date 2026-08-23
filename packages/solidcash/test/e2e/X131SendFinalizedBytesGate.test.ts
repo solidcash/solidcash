@@ -63,7 +63,8 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * `finalizedOutputDustThreshold` (3 x (bytes + 148)) are the same arithmetic.
  *
  * SO THE GATE STAYS PROVIDER-BLIND, and row 2b is the behavioural pin: the identical bytes reach the identical
- * refusal under both policies. Only the caller's explicit `allowNonRelayable` may suppress a policy refusal.
+ * refusal under both policies. Only an exact preflight receipt may carry a composer's destination profile into
+ * the final send check.
  *
  * NOT A SECURITY BOUNDARY. The SDK is an untrusted witness constructor; this is a correctness aid that saves a
  * round trip and a confusing node error. Nothing here constrains an attacker, who does not call `send()`.

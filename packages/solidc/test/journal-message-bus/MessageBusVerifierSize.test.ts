@@ -39,4 +39,32 @@ describe('atomic verifier bytecode specialization', () => {
     const composed = bytes(source, true);
     expect(composed - direct).toBeLessThanOrEqual(5400);
   });
+
+  it('keeps a graph verifier frame independent from sibling compute side-cars', () => {
+    const artifact = compileString(`contract GraphVerifierCompute {
+      bytes32 digest;
+      function set(bytes payload) public {
+        this.digest = keccak256(payload);
+        require(payload.length > 0);
+      }
+    }`, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus?.verifierProgram?.inputs.map((input) => input.name)).toEqual([
+      'activeInputIndex',
+      'expectedLocalRows',
+      'localBatch',
+      'suppliedFixedSize',
+      'suppliedBlockSize',
+      'suppliedEmissions',
+      'suppliedCallers',
+      'suppliedSettlementBoundary',
+      'suppliedCompletionPositions',
+      'suppliedSettlementTable',
+    ]);
+  });
 });

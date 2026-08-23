@@ -1845,7 +1845,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           keccakOffsetsOf(entry).join(',') === firstKeccak.join(','))) continue;
       }
       this.ecrecoverSideCarBasisByFunctionId.set(functionId, entries[0]);
-      if (entries.some((entry) => this.ownsMessageBusParticipantBlock(entry))) {
+      // The detached atomic verifier has a metadata-defined public frame: its covenant supplies exactly
+      // `verifierProgram.inputs`, with the authenticated envelope deliberately left underneath. It does not
+      // participate in compiler-to-compiler hidden-context threading, even when a sibling route handler uses a
+      // compute side-car. Giving it this phantom slot makes its return cleanup NIP the preserved envelope.
+      if (target.name !== '__message_bus_verify_atomic'
+        && entries.some((entry) => this.ownsMessageBusParticipantBlock(entry))) {
         this.outlinedComputeBlockBaseFunctionIds.add(functionId);
       }
     }
@@ -2974,7 +2979,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return offsets.length === 1 && offsets[0] === first[0];
       })) continue;
       this.keccakSideCarBasisByFunctionId.set(functionId, entries[0]);
-      if (entries.some((entry) => this.ownsMessageBusParticipantBlock(entry))) {
+      if (target.name !== '__message_bus_verify_atomic'
+        && entries.some((entry) => this.ownsMessageBusParticipantBlock(entry))) {
         this.outlinedComputeBlockBaseFunctionIds.add(functionId);
       }
     }
@@ -3001,7 +3007,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           keccakOffsetsOf(entry).join(',') === firstKeccak.join(','))) continue;
       }
       this.ecrecoverSideCarBasisByFunctionId.set(functionId, entries[0]);
-      if (entries.some((entry) => this.ownsMessageBusParticipantBlock(entry))) {
+      if (target.name !== '__message_bus_verify_atomic'
+        && entries.some((entry) => this.ownsMessageBusParticipantBlock(entry))) {
         this.outlinedComputeBlockBaseFunctionIds.add(functionId);
       }
     }
@@ -3448,6 +3455,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitFunctionDefine(func: FunctionDefinitionNode, emitDefinition = true): void {
     const locationData = { location: func.location, positionHint: PositionHint.START };
+
+    if (func.name === '__message_bus_verify_atomic'
+      && (this.outlinedComputeBlockBaseFunctionIds.has(func.functionId!)
+        || this.outlinedDynamicReadThreadedFunctionIds.has(func.functionId!)
+        || this.constructorCaptures(func).length > 0)) {
+      throw new Error('Detached message-bus verifier cannot require compiler-internal call-frame operands');
+    }
 
     // Create a sub-traversal to compile the function body independently
     const subTraversal = new GenerateTargetTraversalWithLocation(this.compilerOptions);

@@ -16645,35 +16645,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
       this.emit(Op.OP_ELSE, loc);
-    } else if (runtimeAliasOwners.length > 0) {
+    } else if (inBatch) {
       // A funded fixed slot does not imply an inactive logical write: distinct absent targets can share one
       // predecessor proof, in which case this slot is funded while __internal__vmapBatchProof_N points at the
-      // earlier physical input. Only predOut=-2 denotes a true same-target alias (bound to an allowed prior by
-      // emitRuntimeAliasWitnessPreflight). Execute every other write, including shared-proof inserts.
-      if (inBatch) {
-        this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${slotIndex}`, loc);
-        this.emit(encodeInt(-2n), loc);
-        this.emit(Op.OP_NUMNOTEQUAL, loc);
-        this.emit(Op.OP_IF, loc);
-      } else {
-        // Non-batch routes have no topology sentinel and cannot redirect a proof input. Retain their structural
-        // active-slot gate; in that layout a funded fixed slot really is the inactive alias representation.
-        const trackedBeforeGate = [...this.stack];
-        this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-        this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-        this.emitSortedEntryAddress(collectionHash, loc);
-        this.emitBlockSlotIndex('entry', slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
-        this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
-        this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc);
-        this.emit(Op.OP_ENDIF, loc);
-        this.stack = [...trackedBeforeGate];
-        this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-        this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-        this.emitSortedEntryAddress(collectionHash, loc);
-        this.emitBlockSlotIndex('entry', slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
-        this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
-        this.stack = [...trackedBeforeGate];
-      }
+      // earlier physical input. Only predOut=-2 denotes either a true same-target alias (bound to an allowed
+      // prior by emitRuntimeAliasWitnessPreflight) or an inactive fixed-route row. This guard must apply to the
+      // first slot in each route family too: it has no earlier alias candidates, but it can still be inactive.
+      this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${slotIndex}`, loc);
+      this.emit(encodeInt(-2n), loc);
+      this.emit(Op.OP_NUMNOTEQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+    } else if (runtimeAliasOwners.length > 0) {
+      // Non-batch routes have no topology sentinel and cannot redirect a proof input. Retain their structural
+      // active-slot gate; in that layout a funded fixed slot really is the inactive alias representation.
+      const trackedBeforeGate = [...this.stack];
+      this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitSortedEntryAddress(collectionHash, loc);
+      this.emitBlockSlotIndex('entry', slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.stack = [...trackedBeforeGate];
+      this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitSortedEntryAddress(collectionHash, loc);
+      this.emitBlockSlotIndex('entry', slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
+      this.stack = [...trackedBeforeGate];
     }
 
     // Copy this upsert's post-value witnesses from the immutable pre-handler capsule. Bottom-relative addressing
@@ -16764,11 +16763,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc); this.popFromStack(); // v
       if (aliasOwner !== undefined) {
         this.emit(Op.OP_ENDIF, loc);
-      } else if (runtimeAliasOwners.length > 0) {
-        // The runtime-alias guard is emitted after H(k) has been computed. Its inactive arm therefore still owns
-        // that hash even though the write body (which normally consumes it) is skipped. Leaving it behind makes
-        // every aliased batch target widen an OP_INVOKE result by one runtime-only cell and eventually corrupts
-        // the caller's frame. Balance the guard at its source; no epilogue residue cleanup is required.
+      } else if (inBatch || runtimeAliasOwners.length > 0) {
+        // The inactive/alias guard is emitted after H(k) has been computed. Its skipped arm therefore still owns
+        // that hash even though the write body (which normally consumes it) is skipped. Leaving it behind widens
+        // the runtime stack and eventually corrupts the caller's frame. Balance the guard at its source.
         this.emit(Op.OP_ELSE, loc);
         this.emit(Op.OP_DROP, loc);
         this.emit(Op.OP_ENDIF, loc);

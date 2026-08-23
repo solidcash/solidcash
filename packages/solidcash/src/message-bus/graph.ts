@@ -137,6 +137,51 @@ export interface CompiledGraphPlan {
   rootCallerLockingBytecode?: string;
 }
 
+/** Physical event offsets owned by the selected local rows of a compiler-published graph effect frame. */
+export function selectedGraphEventOffsets(
+  plan: CompiledGraphPlan,
+  participant: CompiledParticipantExecution,
+): ReadonlySet<number> | undefined {
+  const capability = participant.artifact.messageBus;
+  const eventSlots = participant.blockLayout!.slots
+    .filter((slot) => slot.kind === 'event' && slot.slotIndex !== undefined);
+  let frame = capability?.route?.graphEffectFrame;
+  if (!frame) {
+    // Older ordinary unrolled routes predate explicit graph-effect metadata. They still publish a canonical
+    // one-event-per-row prefix: exactly `maximumRows` consecutive slot indices beginning at zero. Infer only
+    // that narrow, independently checkable shape and only when every selected handler emits at most once.
+    const maximumRows = capability?.maximumRows ?? 0;
+    const selectedHandlers = participant.invocations.map((invocationIndex) => {
+      const invocation = plan.invocations[invocationIndex];
+      return capability?.handlers.find((handler) => handler.name === invocation.function);
+    });
+    const canonicalPrefix = maximumRows > 0 && eventSlots.length >= maximumRows
+      && eventSlots.slice(0, maximumRows).every((slot, index) => slot.slotIndex === index);
+    if (canonicalPrefix && selectedHandlers.every((handler) => (handler?.emits?.length ?? 0) <= 1)) {
+      frame = {
+        sites: maximumRows, eventBase: 0, eventWidth: 1,
+        transferBase: 0, transferWidth: 0,
+        tokenTransferBase: 0, tokenTransferWidth: 0, tokenNftTransfers: false,
+      };
+    }
+  }
+  if (!frame || frame.eventWidth < 1) return undefined;
+  const offsetBySlot = new Map(eventSlots.map((slot) => [slot.slotIndex!, slot.offset]));
+  const selected = new Set<number>();
+  participant.invocations.forEach((invocationIndex, localRow) => {
+    if (localRow >= frame.sites) return;
+    const invocation = plan.invocations[invocationIndex];
+    const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+      candidate.name === invocation.function);
+    for (const emitted of handler?.emits ?? []) {
+      if (emitted.emitIndex < 0 || emitted.emitIndex >= frame.eventWidth) continue;
+      const offset = offsetBySlot.get(frame.eventBase + localRow * frame.eventWidth + emitted.emitIndex);
+      if (offset !== undefined) selected.add(offset);
+    }
+  });
+  return selected;
+}
+
 /**
  * Reject a result-dependency graph which requires an invocation to consume an unavailable future value.
  * Structural execution/owner edges are intentionally absent: A -> B -> A is valid when its invocation-level
@@ -529,13 +574,34 @@ export function finalizeAtomicInvocationGraph(
       // the slot itself remains authenticated independently by sourceOffset/targetOffset.
       // Older/minimal artifacts do not publish handler-level emit metadata. Keep their canonical physical-frame
       // binding as a compatibility fallback; full artifacts use the reached emitting invocation sequence above.
-      const parent = emittingInvocations[eventOrdinal]
-        ?? (frameWidth > 0 ? participant.invocations[Math.floor(slot.slotIndex / frameWidth)] : undefined);
+      const graphFrame = participant.artifact.messageBus?.route?.graphEffectFrame;
+      let parent: number | undefined;
+      if (graphFrame && graphFrame.eventWidth > 0
+        && slot.slotIndex >= graphFrame.eventBase
+        && slot.slotIndex < graphFrame.eventBase + graphFrame.sites * graphFrame.eventWidth) {
+        const relative = slot.slotIndex - graphFrame.eventBase;
+        const localRow = Math.floor(relative / graphFrame.eventWidth);
+        const emitIndex = relative % graphFrame.eventWidth;
+        const candidate = participant.invocations[localRow];
+        const invocation = candidate === undefined ? undefined : plan.invocations[candidate];
+        const handler = invocation === undefined ? undefined : participant.artifact.messageBus?.handlers
+          .find((entry) => entry.name === invocation.function);
+        if (handler?.emits?.some((emitted) => emitted.emitIndex === emitIndex)) parent = candidate;
+      } else {
+        parent = emittingInvocations[eventOrdinal]
+          ?? (frameWidth > 0 ? participant.invocations[Math.floor(slot.slotIndex / frameWidth)] : undefined);
+      }
       if (!/^(?:[0-9a-fA-F]{2})*$/.test(effect.lockingBytecodeHex)
         || !/^(?:[0-9a-fA-F]{2})*$/.test(effect.commitmentHex)) {
         throw new Error(`messageBus: participant ${participant.participant} event slot ${slot.offset} is not byte hex`);
       }
-      if (parent === undefined) throw new Error(`messageBus: event participant ${participant.participant} has no invocation`);
+      if (parent === undefined) {
+        throw new Error(
+          `messageBus: event participant ${participant.participant} '${participant.artifact.contractName}' `
+          + `slot ${slot.offset} has active ordinal ${eventOrdinal}, but its selected handlers declare `
+          + `${emittingInvocations.length} event emission(s) across ${participant.invocations.length} invocation(s)`,
+        );
+      }
       const invocation = plan.invocations[parent];
       return {
         kind: 2, owner: participant.participant, consumer: participant.participant,

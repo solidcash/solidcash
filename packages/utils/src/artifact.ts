@@ -229,6 +229,21 @@ export interface AbiFunction {
       row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
     }[];
   };
+  /** Compiler-owned owner-local effect frame for an unrolled message-bus route.
+   * Dispatch site `s` owns `[base + s * width, base + (s + 1) * width)` for each effect kind. */
+  graphEffectFrame?: {
+    sites: number;
+    eventBase: number;
+    eventWidth: number;
+    eventOffset?: number;
+    transferBase: number;
+    transferWidth: number;
+    transferOffset?: number;
+    tokenTransferBase: number;
+    tokenTransferWidth: number;
+    tokenTransferOffset?: number;
+    tokenNftTransfers: boolean;
+  };
   entryAccesses?: readonly EntryAccessAbi[];
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];

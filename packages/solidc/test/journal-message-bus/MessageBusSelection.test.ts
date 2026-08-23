@@ -415,6 +415,11 @@ describe('message-bus compilation selection', () => {
     expect(eventSlots).toHaveLength(artifact.messageBus!.maximumRows);
     expect(eventSlots.map((slot) => slot.slotIndex))
       .toEqual(Array.from({ length: artifact.messageBus!.maximumRows }, (_unused, index) => index));
+    expect(artifact.messageBus?.route.graphEffectFrame).toMatchObject({
+      sites: artifact.messageBus!.maximumRows,
+      eventBase: 0,
+      eventWidth: 1,
+    });
   });
 
   it('automatically selects message-bus planning for an external call graph', () => {

@@ -1000,6 +1000,7 @@ function buildFunctionAbiMetadata(
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
+    ...(func.graphEffectFrame && { graphEffectFrame: { ...func.graphEffectFrame } }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
     ...(func.entryAccesses && func.entryAccesses.some((ea) => !ea.inLoop) && {

@@ -420,6 +420,75 @@ describe('atomic compiled invocation graph', () => {
     });
   });
 
+  it('admits only event slots owned by selected graph-effect rows', () => {
+    const base = plan();
+    const framedArtifact = artifact('22222222');
+    framedArtifact.contractName = 'FramedEvents';
+    framedArtifact.messageBus!.maximumRows = 2;
+    framedArtifact.messageBus!.handlers[0].emits = [{
+      eventName: 'Changed', eventSignature: 'Changed(int)', emitIndex: 0,
+    }];
+    framedArtifact.messageBus!.route = {
+      name: '__message_bus1', inputs: [], outputs: [],
+      graphEffectFrame: {
+        sites: 2, eventBase: 0, eventWidth: 1,
+        transferBase: 0, transferWidth: 0,
+        tokenTransferBase: 0, tokenTransferWidth: 0, tokenNftTransfers: false,
+      },
+      blockLayout: {
+        blockSize: 3,
+        slots: [
+          { kind: 'master', offset: 0 },
+          { kind: 'event', offset: 1, slotIndex: 0, conditional: true },
+          { kind: 'event', offset: 2, slotIndex: 1, conditional: true },
+        ],
+      },
+    };
+    const framed: messageBus.CompiledGraphPlan = {
+      ...base,
+      participants: [base.participants[0], {
+        ...base.participants[1], artifact: framedArtifact,
+        blockLayout: framedArtifact.messageBus!.route.blockLayout!,
+      }],
+    };
+    expect([...messageBus.selectedGraphEventOffsets(framed, framed.participants[1])!]).toEqual([1]);
+    expect(() => messageBus.finalizeAtomicInvocationGraph(
+      framed, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [{
+        participant: 1, offset: 2, active: true, lockingBytecodeHex: '51', commitmentHex: '012a',
+      }],
+    )).toThrow(/active ordinal 0.*declare 1 event emission/s);
+  });
+
+  it('infers only a canonical one-event-per-row legacy prefix', () => {
+    const base = plan();
+    const legacyArtifact = artifact('22222222');
+    legacyArtifact.messageBus!.maximumRows = 2;
+    legacyArtifact.messageBus!.handlers[0].emits = [{
+      eventName: 'Changed', eventSignature: 'Changed(int)', emitIndex: 0,
+    }];
+    legacyArtifact.messageBus!.route = {
+      name: '__message_bus1', inputs: [], outputs: [],
+      blockLayout: {
+        blockSize: 3,
+        slots: [
+          { kind: 'master', offset: 0 },
+          { kind: 'event', offset: 1, slotIndex: 0, conditional: true },
+          { kind: 'event', offset: 2, slotIndex: 1, conditional: true },
+        ],
+      },
+    };
+    const legacy: messageBus.CompiledGraphPlan = {
+      ...base,
+      participants: [base.participants[0], {
+        ...base.participants[1], artifact: legacyArtifact,
+        blockLayout: legacyArtifact.messageBus!.route.blockLayout!,
+      }],
+    };
+    expect([...messageBus.selectedGraphEventOffsets(legacy, legacy.participants[1])!]).toEqual([1]);
+    legacyArtifact.messageBus!.route.blockLayout!.slots[2].slotIndex = 7;
+    expect(messageBus.selectedGraphEventOffsets(legacy, legacy.participants[1])).toBeUndefined();
+  });
+
   it('encodes a mutable-resource replacement with independent input and output covenants', () => {
     const base = plan();
     const replacementPlan: messageBus.CompiledGraphPlan = {

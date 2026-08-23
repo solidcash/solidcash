@@ -27,7 +27,7 @@ import {
 import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
 import { assertAtomicParticipantCapacity } from './capacity.js';
 import {
-  finalizeAtomicInvocationGraph, graphInvocationCallerIdentity,
+  finalizeAtomicInvocationGraph, graphInvocationCallerIdentity, selectedGraphEventOffsets,
   type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
   type AtomicSidecarSlotEffect, type AtomicTokenSlotEffect, type AtomicValueSlotEffect,
 } from './graph.js';
@@ -2044,6 +2044,7 @@ export class AtomicMessageBusComposition {
         // to its canonical balanced-output shape. No contract-specific handler or event names participate.
         for (const participant of plan.participants) {
           const participantBase = finalized.layout.participantInputs[participant.participant];
+          const selectedEventOffsets = selectedGraphEventOffsets(plan, participant);
           const indices = eventSlots.filter((slot) => slot.participant === participant.participant)
             .map((slot) => participantBase + slot.offset);
           if (indices.length === 0) continue;
@@ -2066,7 +2067,9 @@ export class AtomicMessageBusComposition {
           // for proxy/delegate routes, where the logical handler artifact need not publish the physical event lock.
           const targets = indices.filter((index) => {
             const expectation = discoveredEvents.get(index);
-            return (expectation?.commitment.length ?? 0) > 0
+            return (selectedEventOffsets === undefined
+              || selectedEventOffsets.has(index - participantBase))
+              && (expectation?.commitment.length ?? 0) > 0
               && expectation?.lockingBytecode !== undefined;
           });
           const inactive = indices.map((index) => provisional.outputs[index]).find((output) => !output.token);

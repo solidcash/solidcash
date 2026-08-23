@@ -1195,6 +1195,13 @@ function deriveRouteValueChunks(
     usesSharedBand ? sharedBand?.nNew ?? 0 : group.valueChunkOutputCount ?? 0,
     usesSharedBand ? group.categoryId : undefined,
   );
+  if (witness && allChunks.length > 0) {
+    for (const collection of chunkableArrayWriteCollections(witness.carrier, witness.abiFunction)) {
+      stb.rememberObservedValueChunks(group.categoryId, collection, allChunks.map((chunk) => ({
+        ...chunk, categoryId: group.categoryId,
+      })));
+    }
+  }
   if (usesSharedBand && group.categoryId && lastExtractedComputedValue) {
     rememberJobEventsValue(group.categoryId, lastExtractedComputedValue);
     stb.rememberJobEventsChunks(group.categoryId, allChunks.map((chunk) => ({
@@ -1326,11 +1333,19 @@ function writesChunkableArrayValue(
   group: ExternalCallUtxoGroup,
   abiFunction: AbiFunction,
 ): boolean {
-  return (abiFunction.entryAccesses ?? []).some((access) => {
-    if (!access.operations.includes('write')) return false;
+  return chunkableArrayWriteCollections(group, abiFunction).length > 0;
+}
+
+function chunkableArrayWriteCollections(
+  group: ExternalCallUtxoGroup,
+  abiFunction: AbiFunction,
+): string[] {
+  return (abiFunction.entryAccesses ?? []).flatMap((access) => {
+    if (!access.operations.includes('write')) return [];
     const collection = group.stateLayout.collections?.find((candidate) =>
       candidate.name === access.collection || candidate.signature === access.collection);
-    return collection?.chunkableValue === true && collection.valueType.endsWith('[]');
+    return collection?.chunkableValue === true && collection.valueType.endsWith('[]')
+      ? [access.collection] : [];
   });
 }
 

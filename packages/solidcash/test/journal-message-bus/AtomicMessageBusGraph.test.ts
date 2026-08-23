@@ -485,6 +485,12 @@ describe('atomic compiled invocation graph', () => {
       }],
     };
     expect([...messageBus.selectedGraphEventOffsets(legacy, legacy.participants[1])!]).toEqual([1]);
+    legacyArtifact.messageBus!.route.blockLayout!.blockSize = 4;
+    legacyArtifact.messageBus!.route.blockLayout!.slots.push({
+      kind: 'event', offset: 3, slotIndex: 2, conditional: true,
+    });
+    expect(messageBus.selectedGraphEventOffsets(legacy, legacy.participants[1])).toBeUndefined();
+    legacyArtifact.messageBus!.route.blockLayout!.slots.pop();
     legacyArtifact.messageBus!.route.blockLayout!.slots[2].slotIndex = 7;
     expect(messageBus.selectedGraphEventOffsets(legacy, legacy.participants[1])).toBeUndefined();
   });

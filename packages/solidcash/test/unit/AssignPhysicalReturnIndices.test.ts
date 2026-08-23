@@ -11,6 +11,7 @@ import {
   valueChunkBandWidth,
   continuationOutputBaseBeforeSuffix,
   selectValueChunkOutputBase,
+  findDisposableValueChunkOutputBase,
   mintingSwapShift,
   chooseMintingSwapShift,
   isEmptyValueChunkCommitment,
@@ -1898,6 +1899,23 @@ describe('assignPhysicalReturnIndices', () => {
       usesPlannedBand: false,
       fallbackBase: 21,
     })).toBe(21);
+  });
+
+  it('relocates a continuation only into a contiguous token-free alignment range', () => {
+    const outputs = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+    ];
+    const inputs = [
+      {},
+      { token: { category: 'aa', amount: 0n, nft: { capability: 'mutable' as const, commitment: '00' } } },
+      {},
+    ];
+
+    expect(findDisposableValueChunkOutputBase(outputs, inputs, 2)).toBeUndefined();
+    expect(findDisposableValueChunkOutputBase(outputs, [{}, {}, {}], 2)).toBe(1);
+    expect(findDisposableValueChunkOutputBase(outputs, [{}, {}, {}], 2, new Set([2]))).toBe(0);
   });
 
   it('does not treat OP_TRUE none-cap view tails as colliding writers', () => {

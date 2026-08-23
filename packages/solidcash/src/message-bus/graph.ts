@@ -155,7 +155,7 @@ export function selectedGraphEventOffsets(
       const invocation = plan.invocations[invocationIndex];
       return capability?.handlers.find((handler) => handler.name === invocation.function);
     });
-    const canonicalPrefix = maximumRows > 0 && eventSlots.length >= maximumRows
+    const canonicalPrefix = maximumRows > 0 && eventSlots.length === maximumRows
       && eventSlots.slice(0, maximumRows).every((slot, index) => slot.slotIndex === index);
     if (canonicalPrefix && selectedHandlers.every((handler) => (handler?.emits?.length ?? 0) <= 1)) {
       frame = {

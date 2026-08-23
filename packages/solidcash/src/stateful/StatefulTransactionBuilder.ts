@@ -98,6 +98,7 @@ const cloneToken = <T extends Utxo['token']>(token: T): T => (token === undefine
 const persistedJobEventsByCategory = new Map<string, Array<{
   commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
 }>>();
+const observedValueChunksByCollection = new Map<string, AuthenticatedValueChunk[]>();
 const persistedJobEventsValues = new Map<string, Uint8Array>();
 const persistedJobEventsLocks = new Map<string, Uint8Array>();
 const persistedJobEventsSpends = new Map<string, Array<{
@@ -579,6 +580,29 @@ export function selectValueChunkOutputBase(parts: {
 }): number {
   if (parts.usesPlannedBand && parts.plannedBandStart !== undefined) return parts.plannedBandStart;
   return parts.fallbackBase;
+}
+
+/** Find a contiguous, token-free balanced range which can carry a relocated computed-value continuation. */
+export function findDisposableValueChunkOutputBase(
+  outputs: readonly Output[],
+  inputs: readonly Pick<UnlockableUtxo, 'token'>[],
+  width: number,
+  reserved: ReadonlySet<number> = new Set(),
+): number | undefined {
+  if (!Number.isSafeInteger(width) || width <= 0 || width > outputs.length) return undefined;
+  for (let start = outputs.length - width; start >= 0; start -= 1) {
+    let available = true;
+    for (let offset = 0; offset < width; offset += 1) {
+      const index = start + offset;
+      if (reserved.has(index) || inputs[index]?.token !== undefined
+        || !isDisposableAlignmentPad(outputs[index])) {
+        available = false;
+        break;
+      }
+    }
+    if (available) return start;
+  }
+  return undefined;
 }
 
 /**
@@ -4821,6 +4845,17 @@ export class StatefulTransactionBuilder {
     persistedJobEventsByCategory.set(categoryId, next);
   }
 
+  /** Retain a VM-authenticated computed-value run across probe/final participant builder instances. */
+  rememberObservedValueChunks(
+    categoryId: string,
+    collection: string,
+    chunks: ReadonlyArray<AuthenticatedValueChunk>,
+  ): void {
+    const key = `${categoryId.toLowerCase()}:${collection}`;
+    const next = selectObservedValueChunkRun(observedValueChunksByCollection.get(key) ?? [], chunks);
+    if (next.length > 0) observedValueChunksByCollection.set(key, next);
+  }
+
   static clearPersistedJobEvents(categoryId?: string): void {
     if (categoryId) {
       persistedJobEventsByCategory.delete(categoryId);
@@ -4831,6 +4866,10 @@ export class StatefulTransactionBuilder {
       stagedJobEventsValues.delete(categoryId);
       createdDigestLocks.delete(categoryId);
       persistedCreatedValues.delete(categoryId);
+      const prefix = `${categoryId.toLowerCase()}:`;
+      for (const key of observedValueChunksByCollection.keys()) {
+        if (key.startsWith(prefix)) observedValueChunksByCollection.delete(key);
+      }
     } else {
       persistedJobEventsByCategory.clear();
       persistedJobEventsValues.clear();
@@ -4840,6 +4879,7 @@ export class StatefulTransactionBuilder {
       stagedJobEventsValues.clear();
       createdDigestLocks.clear();
       persistedCreatedValues.clear();
+      observedValueChunksByCollection.clear();
     }
     persistedJobEventsSendReady = false;
   }
@@ -8474,6 +8514,85 @@ export class StatefulTransactionBuilder {
   }
 
   /**
+   * Final state/resource preservation can legitimately reclaim a provisional continuation coordinate. Move only
+   * compiler-derived, self-describing runs, and only into token-free balanced slots; fixed pins remain immovable.
+   */
+  private _relocateCollidingDerivedValueChunkRuns(builder: TransactionBuilder): boolean {
+    type DerivedChunk = {
+      commitment: string; lockingBytecode: Uint8Array; categoryId?: string; fixedIndex?: boolean;
+    };
+    const outputMatches = (index: number, chunk: DerivedChunk): boolean => {
+      const output = builder.outputs[index];
+      const lock = output?.to instanceof Uint8Array
+        ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
+      return lock !== undefined
+        && binToHex(lock) === binToHex(chunk.lockingBytecode)
+        && output.token?.category === (chunk.categoryId ?? this.categoryId)
+        && output.token?.nft?.capability === 'mutable'
+        && output.token.nft.commitment === chunk.commitment;
+    };
+    const groups = new Map<string, Array<{ index: number; chunkIndex: number; chunk: DerivedChunk }>>();
+    for (const [index, chunk] of this.derivedChunkOutputs) {
+      const chunkIndex = valueChunkIndexFromCommitment(chunk.commitment);
+      if (chunk.fixedIndex || chunkIndex === undefined || !isP2sh32LockScript(chunk.lockingBytecode)) continue;
+      const key = `${chunk.categoryId ?? this.categoryId}:${binToHex(chunk.lockingBytecode)}`;
+      const group = groups.get(key) ?? [];
+      group.push({ index, chunkIndex, chunk });
+      groups.set(key, group);
+    }
+    let changed = false;
+    const changedCarriers = new Set<ExternalCallUtxoGroup>();
+    const reserved = new Set<number>([...this.derivedChunkOutputs.entries()].flatMap(([index, chunk]) => (
+      chunk.fixedIndex ? [index] : []
+    )));
+    for (const group of groups.values()) {
+      group.sort((left, right) => left.chunkIndex - right.chunkIndex);
+      if (group.length === 0 || group.some((entry, offset) => entry.chunkIndex !== offset)) continue;
+      const materialized = group.every((entry) => outputMatches(entry.index, entry.chunk));
+      if (materialized) {
+        for (const entry of group) reserved.add(entry.index);
+        continue;
+      }
+      const base = findDisposableValueChunkOutputBase(builder.outputs, this.allInputs, group.length, reserved);
+      if (base === undefined) continue;
+      const oldBase = group[0].index;
+      for (const entry of group) this.derivedChunkOutputs.delete(entry.index);
+      for (const [offset, entry] of group.entries()) {
+        const index = base + offset;
+        const next = {
+          to: entry.chunk.lockingBytecode,
+          amount: 1200n,
+          token: {
+            amount: 0n,
+            category: entry.chunk.categoryId ?? this.categoryId,
+            nft: { capability: 'mutable' as const, commitment: entry.chunk.commitment },
+          },
+        };
+        next.amount = BigInt(Math.max(1200, calculateDust(next)));
+        builder.outputs[index] = next;
+        this.derivedChunkOutputs.set(index, { ...entry.chunk, fixedIndex: true });
+        reserved.add(index);
+      }
+      for (const carrier of [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]) {
+        if (carrier.valueChunkOutputBase !== oldBase) continue;
+        carrier.valueChunkOutputBase = base;
+        carrier.internalArgs = {
+          ...carrier.internalArgs,
+          __internal__valueChunkOutputBase: BigInt(base),
+        };
+        carrier.refreshInternalArgs?.(
+          { __internal__valueChunkOutputBase: BigInt(base) },
+          { shiftPredOut: false },
+        );
+        changedCarriers.add(carrier);
+      }
+      changed = true;
+    }
+    if (changedCarriers.size > 0) this._syncRefreshedCarrierMasters(builder, changedCarriers);
+    return changed;
+  }
+
+  /**
    * Enforce the cardinality of each authenticated, contiguous value-chunk run.
    * Late state/preservation materializers can replay a predecessor outside the
    * derived run after its first cleanup. The compiler counts outputs by redeem
@@ -9022,14 +9141,15 @@ export class StatefulTransactionBuilder {
         ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
           ?.find((candidate) => candidate.name === carrier.functionName);
       if (!abiFunction?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')) continue;
-      const writesChunkableArray = (abiFunction.entryAccesses ?? []).some((access) => {
-        if (!access.operations.includes('write')) return false;
+      const chunkableCollections = (abiFunction.entryAccesses ?? []).flatMap((access) => {
+        if (!access.operations.includes('write')) return [];
         const collection = carrier.stateLayout.collections?.find((candidate) => (
           candidate.name === access.collection || candidate.signature === access.collection
         ));
-        return collection?.chunkableValue === true && collection.valueType.endsWith('[]');
+        return collection?.chunkableValue === true && collection.valueType.endsWith('[]')
+          ? [access.collection] : [];
       });
-      if (!writesChunkableArray) continue;
+      if (chunkableCollections.length === 0) continue;
 
       const lowLevelIndex = carrierIndex - this.externalCallUtxoGroups.length;
       const delegatedProxy = lowLevelIndex < 0 ? undefined : this.externalCallUtxoGroups.find(
@@ -9039,30 +9159,93 @@ export class StatefulTransactionBuilder {
         ? delegatedProxy?.categoryId ?? this.categoryId
         : carrier.categoryId;
       let selectedStart = -1;
-      for (let start = 0; start < builder.outputs.length; start += 1) {
-        const first = builder.outputs[start];
-        const firstLock = first?.to instanceof Uint8Array
-          ? first.to : first?.to !== undefined ? addressToLockScript(first.to) : undefined;
-        if (!isP2sh32LockScript(firstLock)
-          || first.token?.category !== outputCategoryId
-          || first.token.nft?.capability !== 'mutable'
-          || valueChunkIndexFromCommitment(first.token.nft.commitment ?? '') !== 0) continue;
-        const lockHex = binToHex(firstLock);
-        let width = 1;
-        while (start + width < builder.outputs.length) {
+      const provisionalBase = carrier.valueChunkOutputBase;
+      let preferredLocalBase = provisionalBase === undefined || provisionalBase < 0
+        ? undefined
+        : provisionalBase >= coordinateBase ? provisionalBase - coordinateBase : provisionalBase;
+      let candidateStarts = [...this.derivedChunkOutputs.entries()]
+        .filter(([, chunk]) => (chunk.categoryId ?? this.categoryId) === outputCategoryId
+          && valueChunkIndexFromCommitment(chunk.commitment) === 0)
+        .map(([start]) => start)
+        .sort((left, right) => left - right);
+      if (candidateStarts.length === 0) {
+        const observedRuns = chunkableCollections.flatMap((collection) => {
+          const run = coherentAuthenticatedValueChunkRun(observedValueChunksByCollection.get(
+            `${outputCategoryId.toLowerCase()}:${collection}`,
+          ) ?? []);
+          return run.length > 0 ? [run] : [];
+        });
+        if (observedRuns.length === 1) {
+          const run = observedRuns[0];
+          const matchesAt = (start: number): boolean => run.every((chunk, offset) => {
+            const output = builder.outputs[start + offset];
+            const lock = output?.to instanceof Uint8Array
+              ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
+            return lock !== undefined
+              && binToHex(lock) === binToHex(chunk.lockingBytecode)
+              && output.token?.category === outputCategoryId
+              && output.token?.nft?.capability === 'mutable'
+              && output.token.nft.commitment === chunk.commitment;
+          });
+          const reserved = new Set(this.derivedChunkOutputs.keys());
+          const base = preferredLocalBase !== undefined && matchesAt(preferredLocalBase)
+            ? preferredLocalBase
+            : findDisposableValueChunkOutputBase(builder.outputs, this.allInputs, run.length, reserved);
+          if (base !== undefined) {
+            for (const [offset, chunk] of run.entries()) {
+              const index = base + offset;
+              const next = {
+                to: chunk.lockingBytecode,
+                amount: 1200n,
+                token: {
+                  amount: 0n,
+                  category: outputCategoryId,
+                  nft: { capability: 'mutable' as const, commitment: chunk.commitment },
+                },
+              };
+              next.amount = BigInt(Math.max(1200, calculateDust(next)));
+              builder.outputs[index] = next;
+              this.derivedChunkOutputs.set(index, {
+                ...chunk, categoryId: outputCategoryId, fixedIndex: true,
+              });
+            }
+            carrier.valueChunkOutputBase = base;
+            preferredLocalBase = base;
+            candidateStarts = [base];
+          }
+        }
+      }
+      const eligibleStarts = preferredLocalBase !== undefined
+        ? candidateStarts.filter((start) => start === preferredLocalBase)
+        : candidateStarts.length === 1 ? candidateStarts : [];
+      for (const start of eligibleStarts) {
+        const firstExpected = this.derivedChunkOutputs.get(start)!;
+        const runLock = binToHex(firstExpected.lockingBytecode);
+        let expectedWidth = 0;
+        while (start + expectedWidth < builder.outputs.length) {
+          const expected = this.derivedChunkOutputs.get(start + expectedWidth);
+          if (!expected || (expected.categoryId ?? this.categoryId) !== outputCategoryId
+            || binToHex(expected.lockingBytecode) !== runLock
+            || valueChunkIndexFromCommitment(expected.commitment) !== expectedWidth) break;
+          expectedWidth += 1;
+        }
+        let width = 0;
+        while (width < expectedWidth) {
+          const expected = this.derivedChunkOutputs.get(start + width);
+          if (!expected) break;
           const output = builder.outputs[start + width];
           const lock = output?.to instanceof Uint8Array
             ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
           if (!isP2sh32LockScript(lock)
-            || binToHex(lock) !== lockHex
+            || binToHex(lock) !== runLock
             || output.token?.category !== outputCategoryId
             || output.token.nft?.capability !== 'mutable'
-            || valueChunkIndexFromCommitment(output.token.nft.commitment ?? '') !== width) break;
+            || output.token.nft.commitment !== expected.commitment) break;
           width += 1;
         }
+        if (expectedWidth === 0 || width !== expectedWidth) continue;
         const absoluteStart = coordinateBase + start;
         if (!occupiedBases.has(absoluteStart)) selectedStart = start;
-        start += width - 1;
       }
       if (selectedStart < 0) continue;
       const absoluteStart = coordinateBase + selectedStart;
@@ -12325,6 +12508,7 @@ export class StatefulTransactionBuilder {
     }
     this._reassertMintingOneToOne(builder);
     this._reassertFixedStateOutputs(builder);
+    this._relocateCollidingDerivedValueChunkRuns(builder);
     for (const [identity, output] of returnOutputRefs) {
       const index = builder.outputs.indexOf(output);
       if (index >= 0) this.builtReturnEventOutputIndices.set(identity, index);

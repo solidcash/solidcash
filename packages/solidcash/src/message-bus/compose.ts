@@ -15,6 +15,7 @@ import {
   decodeEvmScalarReturn, evalComputedKey, isCanonicalEvmScalarReturnVector,
   StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
+import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import {
   resolveLogicalIdentity, type ResolvedLogicalIdentity,
@@ -35,6 +36,7 @@ import { encodeMessageBatch } from './message-bus.js';
 import {
   convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
+import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 
 export interface AtomicMessageBusFunder {
@@ -353,6 +355,14 @@ interface DeferredComputeController {
     program: ReturnType<TransactionBuilder['buildLibauthProgram']>, executionInput: number, inputBase: number,
   ): boolean;
   refresh(): TransactionBuilder;
+}
+
+interface ComputedValueChunkClaim {
+  participant: number;
+  offset: number;
+  lockingBytecodeHex: string;
+  tokenCategory: string;
+  commitment: string;
 }
 
 type DeferredComputeBuilder = TransactionBuilder & {
@@ -881,6 +891,8 @@ export class AtomicMessageBusComposition {
           participant: participant.participant, offset: slot.offset,
           kind: slot.kind as AtomicSidecarSlotEffect['kind'],
         })));
+    const hasComputedValueChunks = plan.participants.some((participant) =>
+      participant.routeInputs.some((input) => input.name === '__internal__valueChunkOutputBase'));
     const provisionalEventEffects: AtomicEventSlotEffect[] = [];
     const provisionalResourceEffects: AtomicResourceSlotEffect[] = [];
     const provisionalValueEffects: AtomicValueSlotEffect[] = [];
@@ -1567,7 +1579,8 @@ export class AtomicMessageBusComposition {
     };
     const admit = (builder: TransactionBuilder): TransactionBuilder => {
       const convergence = convergeMessageBusComputedResourceOutputs(builder);
-      if (convergence.repairs > 0) {
+      const valueChunkConvergence = convergeMessageBusComputedValueChunkOutputs(builder);
+      if (convergence.repairs > 0 || valueChunkConvergence.repairs > 0) {
         throw new Error(
           'messageBus: mutable resources changed after semantic-manifest convergence; refusing a stale manifest',
         );
@@ -1694,7 +1707,7 @@ export class AtomicMessageBusComposition {
       return derivedResults;
     };
 
-    if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0
+    if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0 || hasComputedValueChunks
       || valueSlots.length > 0 || tokenSlots.length > 0 || sidecarSlots.length > 0) {
       let claimedResults: Readonly<Record<number, string>> = provisionalResults;
       let claimedEventEffects: readonly AtomicEventSlotEffect[] = provisionalEventEffects;
@@ -1702,13 +1715,14 @@ export class AtomicMessageBusComposition {
       let claimedValueEffects: readonly AtomicValueSlotEffect[] = provisionalValueEffects;
       let claimedTokenEffects: readonly AtomicTokenSlotEffect[] = provisionalTokenEffects;
       let claimedSidecarEffects: readonly AtomicSidecarSlotEffect[] = provisionalSidecarEffects;
+      let claimedComputedValueChunks: readonly ComputedValueChunkClaim[] = [];
       // Every value below is a claim which can feed a later assembly pass. The old
       // `invocations + 5` heuristic counted effect *classes*, so a resource-heavy graph could exhaust the
       // allowance even though another pass reached a valid fixed point. Allow one discovery pass per mutable
       // claim, one pass per returning invocation (results can propagate along the call graph), and one final
       // confirmation pass. Repeated complete states are rejected immediately as cycles.
       const mutableClaimCount = returning.length + eventSlots.length + resourceSlots.length
-        + valueSlots.length + tokenSlots.length + sidecarSlots.length;
+        + valueSlots.length + tokenSlots.length + sidecarSlots.length + (hasComputedValueChunks ? 1 : 0);
       const maximumPasses = mutableClaimCount + 2;
       const seenClaimStates = new Set<string>();
       for (let pass = 0; pass < maximumPasses; pass += 1) {
@@ -1719,6 +1733,7 @@ export class AtomicMessageBusComposition {
           values: claimedValueEffects,
           tokens: claimedTokenEffects,
           sidecars: claimedSidecarEffects,
+          computedValueChunks: claimedComputedValueChunks,
         });
         if (seenClaimStates.has(claimState)) {
           throw new Error('messageBus: semantic derivation entered a repeated non-final claim state');
@@ -1806,12 +1821,69 @@ export class AtomicMessageBusComposition {
           output.token.nft.commitment = claim.outputCommitmentHex;
           seededComputedResource = true;
         }
+        let seededComputedValueChunk = false;
+        for (const claim of claimedComputedValueChunks) {
+          const participant = finalized.callManifest.participants[claim.participant];
+          const trailingBase = plan.participants[claim.participant]?.blockLayout?.trailingBase;
+          if (!participant || trailingBase === undefined || claim.offset < trailingBase
+            || claim.offset >= participant.actualSize) continue;
+          const absolute = finalized.layout.participantInputs[claim.participant] + claim.offset;
+          const input = provisional.inputs[absolute];
+          const output = provisional.outputs[absolute];
+          if (input?.token !== undefined
+            || binToHex(input?.unlocker.generateLockingBytecode() ?? new Uint8Array())
+              !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
+            || output?.token?.category !== claim.tokenCategory
+            || output.token.amount !== 0n
+            || output.token.nft?.capability !== 'mutable'
+            || valueChunkIndexFromCommitment(output.token.nft.commitment)
+              !== valueChunkIndexFromCommitment(claim.commitment)) continue;
+          const lockingBytecode = hexToBin(claim.lockingBytecodeHex);
+          const currentLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+          if (binToHex(currentLockingBytecode) !== claim.lockingBytecodeHex) {
+            output.to = lockingBytecode;
+            seededComputedValueChunk = true;
+          }
+          if (output.token.nft.commitment !== claim.commitment) {
+            output.token.nft.commitment = claim.commitment;
+            seededComputedValueChunk = true;
+          }
+        }
         // State derived by a delegated or cross-participant call is unknowable to the isolated local builders.
         // Converge it on the complete graph before reading resource effects, so the next manifest authenticates
         // the repaired commitment rather than treating the late write as an unclaimed output mutation.
         const resourceConvergence = convergeMessageBusComputedResourceOutputs(provisional);
-        if (seededComputedResource || resourceConvergence.repairs > 0) {
+        const valueChunkConvergence = convergeMessageBusComputedValueChunkOutputs(provisional);
+        if (seededComputedResource || seededComputedValueChunk
+          || resourceConvergence.repairs > 0 || valueChunkConvergence.repairs > 0) {
           rebalanceFeeTail(provisional, 'converged mutable resource outputs');
+        }
+        const derivedComputedValueChunks: ComputedValueChunkClaim[] = [];
+        for (const absolute of valueChunkConvergence.ownedOutputs) {
+          let participant = -1;
+          for (let index = 0; index < finalized.layout.participantInputs.length; index += 1) {
+            const base = finalized.layout.participantInputs[index];
+            if (absolute >= base && absolute < base + finalized.callManifest.participants[index].actualSize) {
+              participant = index;
+              break;
+            }
+          }
+          if (participant < 0) continue;
+          const output = provisional.outputs[absolute];
+          const lockingBytecode = output === undefined ? undefined
+            : typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+          if (lockingBytecode === undefined || output?.token?.nft?.capability !== 'mutable') continue;
+          derivedComputedValueChunks.push({
+            participant,
+            offset: absolute - finalized.layout.participantInputs[participant],
+            lockingBytecodeHex: binToHex(lockingBytecode),
+            tokenCategory: output.token.category,
+            commitment: output.token.nft.commitment,
+          });
+        }
+        if (semanticJson(derivedComputedValueChunks) !== semanticJson(claimedComputedValueChunks)) {
+          claimedComputedValueChunks = derivedComputedValueChunks;
+          continue;
         }
         const derivedResourceEffects: AtomicResourceSlotEffect[] = [];
         for (const slot of resourceSlots) {

@@ -233,6 +233,10 @@ const convergeMessageBusMutableResourceOutputs = (
             const state = unknownState as AuthenticationProgramStateCommon;
             if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
               || state.stack.length < 2) return;
+            // Libauth invokes operation hooks for instructions in inactive IF/ELSE branches too. Those opcodes
+            // are not executed and their stack shape belongs to the active branch. Interpreting them as covenant
+            // observations can manufacture a preservation proposal from a write covenant's inactive read path.
+            if (state.controlStack.some((frame) => frame === false)) return;
             const nextOpcode = state.instructions[state.ip + 1]?.opcode;
             if (nextOpcode !== Op.OP_EQUAL && nextOpcode !== Op.OP_EQUALVERIFY) return;
             let outputIndex: number;

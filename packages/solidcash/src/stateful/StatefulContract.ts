@@ -21752,6 +21752,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const dynamicChunkInputs: UnlockableUtxo[] = [];
     const trailingDisposalInputs: UnlockableUtxo[] = [];
     const oldDynamicChunkCounts = new Map<string, number>();
+    const oldDynamicChunkCommitments = new Map<string, string[]>();
     for (const v of dynamicVarInfos) {
       const chunkAddr = getDynamicChunkAddress(this.inner, this.categoryId, v.name, v.type);
       const utxos = onChainState.dynamicChunkUtxos?.[v.name]
@@ -21774,6 +21775,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         });
       }
       oldDynamicChunkCounts.set(v.name, chunks.length);
+      oldDynamicChunkCommitments.set(v.name, chunks.map(({ utxo }) => utxo.token!.nft!.commitment));
       for (const { utxo } of chunks) {
         const unlocker = createDynamicChunkUnlocker(
           this.inner, overrides?.blockBase ?? 0, this.categoryId, v.name, v.type,
@@ -22058,6 +22060,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
       console.error('stateful-builder-created', { functionName });
+    }
+    // Begin dynamic-write fixed points from the authenticated pre-state. This is exact for compiler-journal
+    // write-backs and gives real mutations the longest already-valid prefix, so their first probe reaches the
+    // changed chunk instead of colliding a later trailing resource with an unmaterialized dynamic region.
+    for (const [name, commitments] of oldDynamicChunkCommitments) {
+      if (commitments.length > 0) builder.setChunkRawCommitments(name, commitments);
     }
     if (overrides?.omitLocalFeeTail) builder._setMessageBusProbeMasterVout(masterUtxo.vout);
     // Apply every compiler-derived non-output entry before any probe materializes the builder. Delegate input

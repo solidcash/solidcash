@@ -1285,6 +1285,55 @@ describe('messageBus.compose atomic transaction', () => {
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 
+  it('hash-commits an aggregate return vector larger than one NFT commitment', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const calleeArtifact = compileString(`contract ComposeLongReturnCallee() {
+      function value(bytes32 item) public pure returns (bytes32) {
+        require(item.length == 32);
+        return item;
+      }
+    }`, { forceStateful: true, messageBus: true, solidityImportCompat: true });
+    const callerArtifact = compileString(`
+      interface IComposeLongReturnCallee { function value(bytes32 item) external returns (bytes32); }
+      contract ComposeLongReturnCaller(address callee) {
+        function run(bytes32 a, bytes32 b, bytes32 c, bytes32 d) public {
+          require(IComposeLongReturnCallee(callee).value(a) == a);
+          require(IComposeLongReturnCallee(callee).value(b) == b);
+          require(IComposeLongReturnCallee(callee).value(c) == c);
+          require(IComposeLongReturnCallee(callee).value(d) == d);
+        }
+      }
+    `, { forceStateful: true, messageBus: true, solidityImportCompat: true });
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const callee = StatefulContract.withCategory(
+      calleeBase.withCategory(hexToBin(calleeSetup.categoryId)), calleeSetup.categoryId,
+    );
+    const callerBase = new Contract(callerArtifact, [callee.inner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const values = [1, 2, 3, 4].map((prefix) => Uint8Array.from({ length: 32 }, (_unused, index) => prefix + index));
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const built = await messageBus.compose({
+      calls: [
+        caller.call.run(...values),
+        ...values.map((value) => callee.call.value(value)),
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    }).build();
+    const longReturn = built.outputs.find((output) => output.token?.category === calleeSetup.categoryId
+      && output.token.nft?.capability === 'none');
+    expect(longReturn?.token?.nft?.commitment).toMatch(/^[0-9a-f]{64}$/);
+    await expect(built.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
   it('co-spends and recreates an ecrecover A/B pair at exact atomic slots', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const wallet = new ethers.Wallet(`0x${'11'.repeat(32)}`);

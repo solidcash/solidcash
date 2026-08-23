@@ -4674,12 +4674,23 @@ function synthesizeMessageBusRoute(
         require(lbcCursor == participantLbcs.length && suppliedSettlementTable == expectedSettlementTable);`}
         if (activeReturnOutput == 65535) { require(localResultVector.length == 0); }
         else {
-          require(localResultVector.length <= 126);
+          require(localResultVector.length <= 65535);
           bytes expectedCommitment;
           if (localResultVector.length <= 75) {
-            expectedCommitment = bytes.concat(bytes1(localResultVector.length), localResultVector);
+            expectedCommitment = bytes.concat(
+              toPaddedBytes(localResultVector.length, 2).slice(0, 1), localResultVector
+            );
+          } else if (localResultVector.length <= 255) {
+            expectedCommitment = bytes.concat(
+              hex"4c", toPaddedBytes(localResultVector.length, 2).slice(0, 1), localResultVector
+            );
           } else {
-            expectedCommitment = bytes.concat(hex"4c", bytes1(localResultVector.length), localResultVector);
+            expectedCommitment = bytes.concat(
+              hex"4d", toPaddedBytes(localResultVector.length, 3).slice(0, 2), localResultVector
+            );
+          }
+          if (expectedCommitment.length > 128) {
+            expectedCommitment = sha256(expectedCommitment);
           }
           require(tx.outputs[activeReturnOutput].nftCommitment == expectedCommitment);
         }

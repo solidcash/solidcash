@@ -889,6 +889,8 @@ export class AtomicMessageBusComposition {
         .join('');
       return vector.length === 0 ? undefined : scriptToBytecode([hexToBin(vector)]);
     };
+    const participantReturnCommitment = (blob: Uint8Array | undefined): Uint8Array | undefined =>
+      blob === undefined || blob.length <= 128 ? blob : sha256(blob);
 
     const internalTokenCategory = (token: TokenDetails): string => {
       const category = binToHex(hexToBin(token.category).reverse());
@@ -981,13 +983,14 @@ export class AtomicMessageBusComposition {
         const descriptor = descriptorByLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
         const blockSize = participant.blockLayout!.blockSize;
         const returnBlob = participantReturnBlob(participant.participant, results);
+        const returnCommitment = participantReturnCommitment(returnBlob);
         const localCall = contract._batchRaw(
           participant.batch.blob,
           participant.batch.routeWitnesses as FunctionArgument[],
           graphRouteContext(graph, participant.participant),
           graph.layout.participantInputs[participant.participant],
           returnBlob !== undefined,
-          returnBlob,
+          returnCommitment,
           true,
           descriptor.executor ? { artifact: descriptor.artifact, executor: descriptor.executor } : undefined,
           participant.invocations.map((invocationIndex) => {
@@ -1111,6 +1114,7 @@ export class AtomicMessageBusComposition {
             contract: participant.artifact.contractName,
             returnSlot,
             suppliedBlob: returnBlob && binToHex(returnBlob),
+            suppliedCommitment: returnCommitment && binToHex(returnCommitment),
             atSlot: returnOutput && {
               lockingBytecode: binToHex(typeof returnLock === 'string'
                 ? addressToLockScript(returnLock) : returnLock!),
@@ -1593,7 +1597,8 @@ export class AtomicMessageBusComposition {
           const priorBlob = participantReturnBlob(participant.participant, priorResults);
           const materialized = provisional.outputs[participantBase + returnSlot.offset]
             ?.token?.nft?.commitment?.toLowerCase();
-          if (!priorBlob || materialized !== binToHex(priorBlob)) {
+          const priorCommitment = participantReturnCommitment(priorBlob);
+          if (!priorCommitment || materialized !== binToHex(priorCommitment)) {
             missingParticipants.add(participant.participant);
           }
           continue;

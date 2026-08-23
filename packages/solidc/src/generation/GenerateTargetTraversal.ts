@@ -24190,6 +24190,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, locationData);
     // Stack: [_returnOutputIdx, __returnBlob_copy] (2 untracked)
 
+    if (this.isCompilerMessageBusRoute(node)) {
+      // A participant can aggregate several independently bounded handler results. Their canonical outer bytes
+      // push may exceed CashTokens' 128-byte NFT commitment ceiling even though every individual result and the
+      // complete route stack item are valid. Commit oversized vectors by hash, but transform only this COPY: the
+      // raw compiler-framed vector remains in the tracked route frame for typed fixed-point discovery.
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(encodeInt(128n), locationData);
+      this.emit(Op.OP_GREATERTHAN, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(Op.OP_SHA256, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+    }
+
     // Read actual output commitment at _returnOutputIdx
     this.emit(Op.OP_OVER, locationData); // [_returnOutputIdx, blob, _returnOutputIdx]
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData); // [_returnOutputIdx, blob, actual_commitment]

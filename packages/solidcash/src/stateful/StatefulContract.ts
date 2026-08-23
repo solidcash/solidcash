@@ -23917,27 +23917,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const extract = (
       trace: AuthenticationProgramStateCommon[],
     ): Map<number, { commitment: string; lockingBytecode?: string }> => {
-      const found = extractCommitmentMapFromTrace(trace, undefined, true, false, true);
       // Event pins are emitted as `<event commitment> <physical output index>
-      // OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY`. Read the expected operand before introspection: this remains
-      // unambiguous when a sparse trace crosses OP_INVOKE boundaries where the generic pending-pin matcher can
-      // otherwise associate the equality with an outer helper. Restricting this to the compiler-published event
-      // indices keeps it independent of any contract layout or event schema.
+      // OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY`. Inactive reserved slots instead execute
+      // `OP_OUTPUTTOKENCOMMITMENT OP_SIZE`, so requiring the adjacent compiler instruction distinguishes a real
+      // emit even in a relaxed sparse trace. Do not seed this map from the generic pin extractor: its intentional
+      // OP_INVOKE tolerance can associate an inactive introspection with a later, unrelated equality.
       const requested = new Set(eventOutputIndices);
+      const found = new Map<number, string>();
       for (const state of trace) {
         if (state.controlStack.some((flag) => flag === false)) continue;
         if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT || state.stack.length < 2) continue;
+        if (state.instructions[state.ip + 1]?.opcode !== Op.OP_EQUALVERIFY) continue;
         const outputIndex = Number(decodeScriptNumber(state.stack[state.stack.length - 1]));
-        if (!requested.has(outputIndex) || found.has(outputIndex)) continue;
+        if (!requested.has(outputIndex)) continue;
         found.set(outputIndex, binToHex(state.stack[state.stack.length - 2]));
-      }
-      for (const outputIndex of eventOutputIndices) {
-        if (found.has(outputIndex)) continue;
-        const actual = transaction.outputs[outputIndex]?.token?.nft?.commitment;
-        const fallback = extractExpectedOutputCommitmentFromTrace(
-          trace, outputIndex, actual === undefined ? '' : binToHex(actual),
-        );
-        if (fallback !== undefined) found.set(outputIndex, fallback);
       }
       return new Map([...found].map(([outputIndex, commitment]) => {
         const lockingBytecode = extractVerifiedValuesFromTrace(

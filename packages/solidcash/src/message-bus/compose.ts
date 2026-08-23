@@ -2031,19 +2031,23 @@ export class AtomicMessageBusComposition {
             return nft?.capability === 'none' && lockingBytecode !== undefined
               && eventLockSet.has(binToHex(lockingBytecode));
           });
-          const targets = indices.filter((index) =>
-            (discoveredEvents.get(index)?.commitment.length ?? 0) > 0);
-          if (targets.length === 0) continue;
-          if (targets.length > eventLocks.length) {
-            throw new Error(
-              `messageBus: compiler discovered ${targets.length} active event slots but the participant publishes `
-              + `only ${eventLocks.length} event definitions`,
-            );
-          }
+          // Inactive route slots only bind an empty commitment. A relaxed trace can carry that introspection into
+          // a neighboring equality and produce a false commitment match, but it cannot invent the event covenant's
+          // independently verified locking bytecode. The executing covenant's commitment+lock pair is authoritative
+          // for proxy/delegate routes, where the logical handler artifact need not publish the physical event lock.
+          const targets = indices.filter((index) => {
+            const expectation = discoveredEvents.get(index);
+            return (expectation?.commitment.length ?? 0) > 0
+              && expectation?.lockingBytecode !== undefined;
+          });
           const inactive = indices.map((index) => provisional.outputs[index]).find((output) => !output.token);
           if (!inactive && targets.some((target) => !active.includes(target))) {
             throw new Error('messageBus: event-frame relocation has no canonical inactive output');
           }
+          if (!inactive && targets.length === 0 && active.length > 0) {
+            throw new Error('messageBus: inactive event frame has no canonical empty output');
+          }
+          if (targets.length === 0 && active.length === 0) continue;
           const template = inactive ?? provisional.outputs[targets[0]];
           if (!template) throw new Error('messageBus: active event frame has no output template');
           if (inactive) {

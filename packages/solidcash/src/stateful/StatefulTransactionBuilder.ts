@@ -3381,9 +3381,9 @@ export function placePublishJobEventOutput(
 }
 
 /**
- * INSERT P' is a trailing output at `master+blockSize` (+ ordinal). Negative
+ * INSERT P' is a trailing output at the participant's runtime-resource base (+ ordinal). Negative
  * values are covenant sentinels (update / alias). A planner that still emits a
- * fixed entry offset (< blockSize) for an INSERT must not be rebased onto that
+ * fixed entry offset below that base for an INSERT must not be rebased onto that
  * 1:1 preserved slot — that is the transferFrom output-30 vs output-34 pin.
  */
 export function groupLayoutBlockSize(group: {
@@ -3393,6 +3393,15 @@ export function groupLayoutBlockSize(group: {
   return group.blockLayout?.blockSize
     ?? group.compilerRoute?.abiFunction?.blockLayout?.blockSize
     ?? 8;
+}
+
+/** First physical slot available to bounded runtime resources in a participant block. */
+export function groupLayoutTrailingBase(group: {
+  blockLayout?: { blockSize?: number; trailingBase?: number };
+  compilerRoute?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
+}): number {
+  const layout = group.blockLayout ?? group.compilerRoute?.abiFunction?.blockLayout;
+  return layout?.trailingBase ?? layout?.blockSize ?? 8;
 }
 
 /** True when an absolute output is owned by a slot of `kind` in a participant's fixed block. */
@@ -3430,16 +3439,16 @@ export function blockOutputOwnsFixedDataNft(
 /** Resolve the first trailing predecessor from the output slot the batch planner actually materializes. */
 export function materializedPredOutBase(group: {
   batchPredecessorOutputs?: Array<{ outputBlockSlot: number }>;
-  blockLayout?: { blockSize?: number };
-  compilerRoute?: { abiFunction?: { blockLayout?: { blockSize?: number } } };
+  blockLayout?: { blockSize?: number; trailingBase?: number };
+  compilerRoute?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
 }, masterIndex: number): number {
-  const blockSize = groupLayoutBlockSize(group);
+  const trailingBase = groupLayoutTrailingBase(group);
   const firstTrailingSlot = Math.min(
     ...((group.batchPredecessorOutputs ?? [])
       .map((output) => output.outputBlockSlot)
-      .filter((slot) => Number.isInteger(slot) && slot >= blockSize)),
+      .filter((slot) => Number.isInteger(slot) && slot >= trailingBase)),
   );
-  return masterIndex + (Number.isFinite(firstTrailingSlot) ? firstTrailingSlot : blockSize);
+  return masterIndex + (Number.isFinite(firstTrailingSlot) ? firstTrailingSlot : trailingBase);
 }
 
 /**
@@ -3471,18 +3480,18 @@ export function predOutBaseAfterOccupancy(parts: {
 export function resolveAbsolutePredOut(
   relative: bigint,
   masterIndex: number,
-  blockSize: number,
+  trailingBase: number,
   relocatedBase?: number,
 ): bigint {
   if (relative < 0n) return relative;
-  const natural = masterIndex + blockSize;
+  const natural = masterIndex + trailingBase;
   // A relocated base smaller than the executing master's trailing slot is the
-  // proxy-minting + impl-only-blockSize mistake (initialize PredOut 14 vs 17).
+  // proxy-minting + implementation-only base mistake (initialize PredOut 14 vs 17).
   const base = relocatedBase !== undefined && relocatedBase >= natural
     ? relocatedBase
     : natural;
   if (relative >= BigInt(base)) return relative;
-  const ordinal = Number(relative) >= blockSize ? Number(relative) - blockSize : 0;
+  const ordinal = Number(relative) >= trailingBase ? Number(relative) - trailingBase : 0;
   return BigInt(base + ordinal);
 }
 
@@ -3583,13 +3592,13 @@ export function remapInsertPredOuts(
   predOuts: ReadonlyArray<{ name: string; value: bigint }>,
   predBase: bigint,
   insertBudget: number,
-  blockSize: bigint,
+  trailingBase: bigint,
 ): Record<string, bigint> {
   const updates: Record<string, bigint> = {};
   let trailing = 0;
   for (const { name, value } of predOuts) {
     if (value < 0n) continue;
-    const plannedInsert = value >= blockSize;
+    const plannedInsert = value >= trailingBase;
     if (plannedInsert || trailing < insertBudget) {
       updates[name] = predBase + BigInt(trailing);
       trailing += 1;

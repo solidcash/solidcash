@@ -113,7 +113,7 @@ import { AddressType, ContractOptions, LibauthOutput, Output, TransactionDetails
 import {
   StatefulTransactionBuilder, EntryNftInfo, TokenContainerInfo, ExternalCallUtxoGroup,
   groupOwnsInBlockReturnEvent, assignPhysicalReturnIndices, logicalReturnGroupIndex,
-  groupLayoutBlockSize,
+  groupLayoutTrailingBase,
   materializedPredOutBase,
   inheritWriterBatchWitnesses,
   inheritWriterBatchPlan,
@@ -5435,9 +5435,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Append vmap batch witnesses (slot/proof/next/predOut per write + trailing count) so the factory unlocker
     // matches a normal StatefulContract call path.
     if (useBatch) {
-      const blockSize = deployAbi.blockLayout?.blockSize ?? 1;
+      const trailingBase = deployAbi.blockLayout?.trailingBase
+        ?? deployAbi.blockLayout?.blockSize ?? 1;
       // NEW nodes trail the full fixed block when deployDataNft slots authenticate the child data region.
-      let batchPredOutputBase = blockSize;
+      let batchPredOutputBase = trailingBase;
       let batchTrailingCount = 0;
       for (const batch of deployAbi.sortedBatchInfo ?? []) {
         const collection = factoryLayout.collections?.find((c) => c.name === batch.collection);
@@ -13907,8 +13908,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           u.token?.category === this.categoryId && u.token?.nft?.capability === 'mutable'
           && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0).length;
       }
-      let batchPredOutputBase = (entryAbiFunction?.blockLayout?.blockSize ?? 1) + preservedTrailingCount;
-      if (returnEmitOutputIndex < 0
+      const entryLayout = entryAbiFunction?.blockLayout;
+      // PredOut is an absolute OP_OUTPUT index. Direct calls use block base 0;
+      // composed participants must start at their final aggregate output base.
+      let batchPredOutputBase = (overrides?.blockBase ?? 0)
+        + (entryLayout?.trailingBase ?? entryLayout?.blockSize ?? 1)
+        + preservedTrailingCount;
+      if (entryLayout?.trailingBase === undefined && returnEmitOutputIndex < 0
         && entryAbiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')) {
         batchPredOutputBase -= 1;
       }
@@ -16399,13 +16405,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
           if (group.relocatedPredOutBase !== undefined) {
-            const blockSize = BigInt(group.blockLayout?.blockSize ?? 8);
+            const trailingBase = BigInt(groupLayoutTrailingBase(group));
             const predBase = BigInt(group.relocatedPredOutBase);
             let trailing = 0n;
             for (const [index, input] of capturedUnlockerInputs.entries()) {
               if (!/PredOut/.test(input.name) || typeof capturedUnlockerArgs[index] !== 'bigint') continue;
               if (capturedUnlockerArgs[index] < 0n) continue;
-              if ((capturedUnlockerArgs[index] as bigint) < blockSize) continue;
+              if ((capturedUnlockerArgs[index] as bigint) < trailingBase) continue;
               if ((capturedUnlockerArgs[index] as bigint) >= predBase) continue;
               if (updates[input.name] !== undefined) continue;
               capturedUnlockerArgs[index] = predBase + trailing;
@@ -20377,12 +20383,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 && typeof value === 'bigint' && value >= 0n) {
                 const physicalGroupIndex = child.sharedGroupIndex ?? groupIdx;
                 const physical = externalCallUtxoGroups[physicalGroupIndex];
-                const blockSize = groupLayoutBlockSize(physical ?? child);
+                const trailingBase = groupLayoutTrailingBase(physical ?? child);
                 const master = nestedMasterIndices[physicalGroupIndex] ?? 0;
                 return resolveAbsolutePredOut(
                   value,
                   master,
-                  blockSize,
+                  trailingBase,
                   relocatedPredOutBase.get(physicalGroupIndex) ?? physical?.relocatedPredOutBase,
                 );
               }
@@ -20483,13 +20489,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
           if (child.relocatedPredOutBase !== undefined) {
-            const blockSize = BigInt(child.blockLayout?.blockSize ?? 8);
+            const trailingBase = BigInt(groupLayoutTrailingBase(child));
             const predBase = BigInt(child.relocatedPredOutBase);
             let trailing = 0n;
             for (const [index, input] of childFn.inputs.entries()) {
               if (!/PredOut/.test(input.name) || typeof capturedChildArgs[index] !== 'bigint') continue;
               if (capturedChildArgs[index] < 0n) continue;
-              if ((capturedChildArgs[index] as bigint) < blockSize) continue;
+              if ((capturedChildArgs[index] as bigint) < trailingBase) continue;
               if ((capturedChildArgs[index] as bigint) >= predBase) continue;
               if (updates[input.name] !== undefined) continue;
               capturedChildArgs[index] = predBase + trailing;
@@ -20959,11 +20965,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   // covenant adds INPUTINDEX; predecessor outputs do not. Use the implementation
                   // master (input 3 on MarketplaceData.initialize), not the proxy minting UTXO.
                   const outputBase = masterInputIndex;
-                  const blockSize = groupLayoutBlockSize(group);
+                  const trailingBase = groupLayoutTrailingBase(group);
                   return resolveAbsolutePredOut(
                     compilerRouteValue,
                     outputBase,
-                    blockSize,
+                    trailingBase,
                     group.relocatedPredOutBase,
                   );
                 }
@@ -20985,7 +20991,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   return resolveAbsolutePredOut(
                     groupInternalValue,
                     masterInputIndex,
-                    groupLayoutBlockSize(group),
+                    groupLayoutTrailingBase(group),
                     group.relocatedPredOutBase,
                   );
                 }
@@ -21004,7 +21010,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   return resolveAbsolutePredOut(
                     value,
                     masterInputIndex,
-                    groupLayoutBlockSize(group),
+                    groupLayoutTrailingBase(group),
                     group.relocatedPredOutBase,
                   );
                 }
@@ -22689,9 +22695,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const tokenUpdates: Record<string, FunctionArgument> = {
           __internal__returnOutputIdx: BigInt(tokenReturn),
         };
+        const tokenTrailingBase = fill.tokenGroup
+          ? groupLayoutTrailingBase(fill.tokenGroup) : 8;
         if (fill.tokenGroup) {
           const tokenMaster = builder.findMintingInputIndex(fill.tokenGroup.categoryId);
-          const tokenBlockSize = fill.tokenGroup.blockLayout?.blockSize ?? 8;
           const physicalIdx = externalCallUtxoGroups.indexOf(fill.tokenGroup);
           const writer = externalCallUtxoGroups.find((candidate, index) =>
             (candidate.sharedGroupIndex ?? index) === physicalIdx
@@ -22713,7 +22720,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
         if (fill.tokenGroup?.relocatedPredOutBase !== undefined) {
-          // INSERT P' sits at master+blockSize. View tails are packed after that
+          // INSERT P' sits at the participant's first live trailing slot. View tails are packed after that
           // band; do not push PredOut past them (that lands on a SCID / OP_TRUE).
           const predBase = fill.tokenGroup.relocatedPredOutBase;
           const tokenFn = fill.tokenGroup.compilerRoute?.abiFunction
@@ -22722,7 +22729,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 || fn.name === fill.tokenGroup!.logicalFunctionName);
           const writerFn = (fill.tokenGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
             .find((fn) => fn.name === 'transferFrom') ?? tokenFn;
-          const tokenBlockSize = fill.tokenGroup.blockLayout?.blockSize ?? 8;
           const insertBudget = Math.max(1, fill.tokenGroup.batchPredecessorOutputs?.length ?? 0);
           const physicalIdx = externalCallUtxoGroups.indexOf(fill.tokenGroup);
           const writerGroup = externalCallUtxoGroups.find((candidate, index) =>
@@ -22741,7 +22747,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             predOuts,
             BigInt(predBase),
             insertBudget,
-            BigInt(tokenBlockSize),
+            BigInt(tokenTrailingBase),
           );
           Object.assign(tokenUpdates, remapped);
           fill.tokenGroup.internalArgs = {

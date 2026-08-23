@@ -22,6 +22,7 @@ import {
   materializedParticipantWidth,
   gatherContiguousPlainFunders,
   groupLayoutBlockSize,
+  groupLayoutTrailingBase,
   blockOutputOwnsSlotKind,
   blockOutputOwnsFixedDataNft,
   groupOwnsInBlockReturnEvent,
@@ -667,6 +668,10 @@ describe('assignPhysicalReturnIndices', () => {
       batchPredecessorOutputs: [{ outputBlockSlot: 10 }, { outputBlockSlot: 11 }],
     }, 26)).toBe(36);
     expect(materializedPredOutBase({ blockLayout: { blockSize: 8 } }, 26)).toBe(34);
+    expect(materializedPredOutBase({
+      blockLayout: { blockSize: 16, trailingBase: 6 },
+      batchPredecessorOutputs: [{ outputBlockSlot: 6 }],
+    }, 0)).toBe(6);
   });
 
   it('strips extra own-category none-cap tails outside event and return slots', () => {
@@ -700,6 +705,10 @@ describe('assignPhysicalReturnIndices', () => {
       compilerRoute: { abiFunction: { blockLayout: { blockSize: 14 } } },
     })).toBe(14);
     expect(groupLayoutBlockSize({})).toBe(8);
+    expect(groupLayoutTrailingBase({
+      compilerRoute: { abiFunction: { blockLayout: { blockSize: 163, trailingBase: 99 } } },
+    })).toBe(99);
+    expect(resolveAbsolutePredOut(99n, 244, 99)).toBe(343n);
   });
 
   it('lets a fused writer overwrite view leftover PredOuts', () => {

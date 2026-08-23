@@ -27,6 +27,22 @@ contract MessageBusCompositeEncoding() {
   }
 }`;
 
+const ROUTED_COLLECTION_SOURCE = `pragma solidity ^0.8.0;
+contract RoutedCollectionEncoding() {
+  mapping(address => uint) balances;
+  mapping(address => mapping(address => uint)) allowances;
+  function approve(address spender, address owner, uint amount) public {
+    allowances[owner][spender] = amount;
+    require(amount >= 0);
+  }
+  function transferFrom(address from, address to, address spender, uint amount) public {
+    allowances[from][spender] = allowances[from][spender] - amount;
+    balances[from] = balances[from] - amount;
+    balances[to] = balances[to] + amount;
+    require(amount >= 0);
+  }
+}`;
+
 const artifact = compileString(SOURCE, {
   forceStateful: true,
   messageBus: true,
@@ -118,6 +134,32 @@ describe('messageBus.encodeMessageBatch', () => {
     // (OP_4), not an SDK-path-dependent outer pushdata frame.
     expect(encoded.rows[0].argsHex).toBe(`00${binToHex(payloadBytes)}`);
     expect(payloadBytes[0]).toBe(0x54);
+  });
+
+  it('keeps inactive row-local collection witnesses distinct from active identities', () => {
+    const routed = compileString(ROUTED_COLLECTION_SOURCE, {
+      forceStateful: true,
+      messageBus: true,
+      solidityImportCompat: true,
+      optimizeForCompilationSpeed: true,
+      suppressWarnings: true,
+    });
+    const source = new Uint8Array(25).fill(0x11);
+    const destination = new Uint8Array(25).fill(0x22);
+    const spender = new Uint8Array(25).fill(0x33);
+    const encoded = messageBus.encodeMessageBatch(routed, [
+      { function: 'approve', args: [spender, source, 80n] },
+      { function: 'transferFrom', args: [source, destination, spender, 30n] },
+    ]);
+    const visibleRouteInputs = routed.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const witness = (name: string) => encoded.routeWitnesses[visibleRouteInputs
+      .findIndex((input) => input.name === name)];
+
+    expect(witness('__message_bus_key_balances_0_row_r0')).toEqual(
+      messageBus.inactiveMessageBusRouteWitness('address'),
+    );
+    expect(witness('__message_bus_key_balances_0_row_r1')).toEqual(destination);
   });
 
   it('rejects non-advertised, ineligible, and malformed invocation plans', () => {

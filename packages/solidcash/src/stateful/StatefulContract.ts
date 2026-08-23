@@ -77,7 +77,10 @@ import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../ke
 import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit,
 } from '../ecrecover/ecrecoverComputeSidecar.js';
-import { encodeMessageBatch, encodeMessageBusArguments } from '../message-bus/message-bus.js';
+import {
+  encodeMessageBatch, encodeMessageBusArguments, inactiveMessageBusRouteWitness,
+} from '../message-bus/message-bus.js';
+export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 // X186. The covenant-annotating gate moved to `message-bus/preflight.ts` when `TransactionBuilder.send` became its
 // second caller. The four lifecycle-admin sites below route through it; none calls the bare gate.
@@ -2926,34 +2929,6 @@ export function isSdkResolvedExternalCallTopologyWitness(paramName: string): boo
   return paramName === '__internal__externalCallInputBase'
     || /^__internal__extcallMasterIdx\d*$/.test(paramName)
     || /^__internal__extcallAnchorIdx\d*$/.test(paramName);
-}
-
-/**
- * Produce an ABI-valid placeholder for a fixed message-bus route input which is inactive for the selected rows.
- * Route ABIs reserve witness bands for every eligible collection, but dispatch only observes the bands used by
- * the selected handlers. Keeping placeholder construction type-driven lets any route use the same fixed ABI.
- */
-export function inactiveMessageBusRouteWitness(type: string): FunctionArgument {
-  const array = parseArrayTypeString(type);
-  if (array) {
-    if (array.bound === undefined) return [];
-    return Array.from(
-      { length: array.bound },
-      () => inactiveMessageBusRouteWitness(array.elementType) as ConstructorArgument,
-    );
-  }
-  if (type === 'bool') return false;
-  if (type === 'string') return '';
-  if (type === 'address' || type === 'address payable') {
-    return encodeLockingBytecodeP2pkh(new Uint8Array(20));
-  }
-  if (type === 'byte') return new Uint8Array(1);
-  const fixedBytes = type.match(/^bytes(\d+)$/);
-  if (fixedBytes) return new Uint8Array(Number(fixedBytes[1]));
-  if (type === 'bytes' || type === 'sig' || type === 'datasig') return new Uint8Array();
-  if (type === 'pubkey') return new Uint8Array(33);
-  // Integer, fixed-point, enum and integer-backed user-defined value types all encode from bigint.
-  return 0n;
 }
 
 /** Participant storage proofs depend on the materialized state UTXOs, so an atomic graph's provisional/default

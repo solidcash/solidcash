@@ -1,9 +1,11 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import {
-  ArrayType, decodePushdataValue, parseType, type Artifact, type StateValue, scriptToBytecode,
+  ArrayType, decodePushdataValue, parseArrayTypeString, parseType, type Artifact, type StateValue, scriptToBytecode,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
-import { encodeFunctionArgument, isSignatureTemplateArray, type FunctionArgument } from '../Argument.js';
+import {
+  encodeFunctionArgument, isSignatureTemplateArray, type ConstructorArgument, type FunctionArgument,
+} from '../Argument.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
 
@@ -102,6 +104,29 @@ const signedValue = (value: bigint): Uint8Array => {
   return concat(Uint8Array.of(value < 0n ? 1 : 0), uintLe(magnitude, 8));
 };
 
+/** ABI-valid default for an inactive position in a bounded message-bus route. */
+export function inactiveMessageBusRouteWitness(type: string): FunctionArgument {
+  const array = parseArrayTypeString(type);
+  if (array) {
+    if (array.bound === undefined) return [];
+    return Array.from(
+      { length: array.bound },
+      () => inactiveMessageBusRouteWitness(array.elementType) as ConstructorArgument,
+    );
+  }
+  if (type === 'bool') return false;
+  if (type === 'string') return '';
+  if (type === 'address' || type === 'address payable') {
+    return encodeLockingBytecodeP2pkh(new Uint8Array(20));
+  }
+  if (type === 'byte') return new Uint8Array(1);
+  const fixedBytes = type.match(/^bytes(\d+)$/);
+  if (fixedBytes) return new Uint8Array(Number(fixedBytes[1]));
+  if (type === 'bytes' || type === 'sig' || type === 'datasig') return new Uint8Array();
+  if (type === 'pubkey') return new Uint8Array(33);
+  return 0n;
+}
+
 /**
  * Canonically encode real compiler-generated message-bus batch handlers without constructing a transaction.
  *
@@ -114,10 +139,9 @@ export function encodeMessageBatch(
   artifact: Artifact,
   invocations: readonly MessageBatchCall[],
   /**
-   * Values for route key witnesses no invocation binds. A mixed batch produces these by construction: a handler
-   * with a single mapping access binds only the shared entry, so the other row's row-local slot stays unbound
-   * even though the route still declares it and the covenant still requires it to address a real entry. The
-   * caller names that entry; the SDK cannot derive it, because no row touches it.
+   * Optional values for route key witnesses no invocation binds. Inactive fixed-row bands otherwise receive a
+   * type-correct neutral value; callers only need this override when another compiler-owned route resource gives
+   * an unselected position an explicit identity.
    */
   unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
 ): EncodedMessageBatch {
@@ -406,23 +430,11 @@ export function encodeMessageBatch(
         if (fallback) return fallback;
       }
       const supplied = unboundRouteWitnesses[input.name];
-      const inactiveSwappable = [...swappableGlobals.values()].find((candidate) =>
-        input.name.startsWith(`${candidate.rowBase}_r`));
-      // Collection-journal caches are initialized before the row dispatch. Reuse an active value from the same
-      // unrolled witness family for unused row capacity, making every inactive cache a true same-target alias of
-      // one authenticated entry. Distinct random targets can share a predecessor proof but cannot co-spend that
-      // UTXO, and they are not semantically aliases, so manufacturing one filler per row is unsound.
-      const family = input.name.replace(/_r\d+$/, '');
-      const activeFamily = [...keyWitnessValues.entries()].find(([name]) =>
-        name.replace(/_r\d+$/, '') === family)?.[1];
-      if (activeFamily) return activeFamily.value;
       if (supplied !== undefined) return supplied;
-      if (inactiveSwappable) return inactiveSwappable.value;
-      throw new MessageBusDiagnosticError(
-        'L3_RESOURCE_UNRESOLVED',
-        `Missing message-bus batch route witness '${input.name}'; no invocation binds it, so it must be supplied`,
-        { resourceIdentity: input.name, keyIdentity: input.name },
-      );
+      // Route dispatch never observes an inactive row's key band. Keep it distinct from active identities: reusing
+      // an active family member manufactures a false same-target alias and can redirect a later row's journal to
+      // an inactive default-valued cache. The positional ABI only requires a type-correct value here.
+      return inactiveMessageBusRouteWitness(input.type);
     });
 
   return {

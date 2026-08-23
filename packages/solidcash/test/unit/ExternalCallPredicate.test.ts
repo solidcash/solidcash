@@ -113,6 +113,20 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toBe(true);
   });
 
+  it('short-circuits predicates before evaluating an unresolved right operand', () => {
+    const unresolved: ExternalCallExpression = { kind: 'state', name: 'runtimeOnly' };
+    const evaluate = (operator: '&&' | '||', left: boolean): FunctionArgument | undefined => (
+      evaluator._evaluateExternalExpression({
+        kind: 'binary', operator, left: { kind: 'literal', type: 'bool', value: left }, right: unresolved,
+      }, [], artifact)
+    );
+
+    expect(evaluate('&&', false)).toBe(false);
+    expect(evaluate('||', true)).toBe(true);
+    expect(evaluate('&&', true)).toBeUndefined();
+    expect(evaluate('||', false)).toBeUndefined();
+  });
+
   it('packs Solidity addresses and arbitrarily long hex bytes like the compiler', () => {
     const addressHash = new Uint8Array(20).fill(0x47);
     const lockingBytecode = Uint8Array.of(0x76, 0xa9, 0x14, ...addressHash, 0x88, 0xac);

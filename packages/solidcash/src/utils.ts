@@ -222,6 +222,7 @@ export function libauthTokenDetailsToSolidCashTokenDetails(token: LibauthTokenDe
 
 interface CachedSourceOutput {
   unlocker: Unlocker;
+  lockingBytecode: string;
   satoshis: bigint;
   category?: string;
   amount?: bigint;
@@ -234,9 +235,15 @@ const sourceOutputCache = new WeakMap<UnlockableUtxo, CachedSourceOutput>();
 
 export function generateLibauthSourceOutputs(inputs: UnlockableUtxo[]): LibauthOutput[] {
   const sourceOutputs = inputs.map((input) => {
+    // Stateful composition can refresh an unlocker's internal contract/route
+    // binding without replacing the unlocker object. Object identity alone is
+    // therefore not a sufficient cache key for the source locking bytecode.
+    const lockingBytecode = input.unlocker.generateLockingBytecode();
+    const lockingBytecodeHex = binToHex(lockingBytecode);
     const cached = sourceOutputCache.get(input);
     if (cached
       && cached.unlocker === input.unlocker
+      && cached.lockingBytecode === lockingBytecodeHex
       && cached.satoshis === input.satoshis
       && cached.category === input.token?.category
       && cached.amount === input.token?.amount
@@ -244,12 +251,13 @@ export function generateLibauthSourceOutputs(inputs: UnlockableUtxo[]): LibauthO
       && cached.commitment === input.token?.nft?.commitment) return cached.output;
     const sourceOutput = {
       amount: input.satoshis,
-      to: input.unlocker.generateLockingBytecode(),
+      to: lockingBytecode,
       token: input.token,
     };
     const output = solidCashOutputToLibauthOutput(sourceOutput);
     sourceOutputCache.set(input, {
       unlocker: input.unlocker,
+      lockingBytecode: lockingBytecodeHex,
       satoshis: input.satoshis,
       category: input.token?.category,
       amount: input.token?.amount,

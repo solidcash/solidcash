@@ -8,6 +8,8 @@ export type ImportResolverFn = (importPath: string, currentFile: string) => Reso
 export interface CompilerOptions {
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
+  /** Maximum message-bus blob/VM stack-item size; defaults to BCH's 520-byte consensus limit. */
+  maximumStackItemBytes?: number;
   /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
   optimizeForCompilationSpeed?: boolean;
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
@@ -226,6 +228,13 @@ export interface AbiFunction {
     reads: readonly {
       row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
     }[];
+  };
+  /** Compiler-proven dense pagination of one authenticated mapping(K => V[]) entry. */
+  mappingArrayPagination?: {
+    collection: string;
+    keyParams: readonly string[];
+    indexParam: string;
+    limitParam: string;
   };
   entryAccesses?: readonly EntryAccessAbi[];
   externalReads?: readonly ExternalReadAbi[];
@@ -757,9 +766,10 @@ export interface InvocationAnalysisArtifact {
 }
 
 /**
- * Largest message-bus batch message-bus blob any generated covenant admits, in bytes (X106).
+ * Default largest message-bus batch blob admitted by a generated covenant, in bytes (X106).
  *
- * ONE home for a value with two enforcers. The compiler compiles this bound into every message-bus route
+ * ONE home for the production default used by two enforcers. The compiler compiles this bound into every
+ * message-bus route unless an explicit private/mock profile supplies `maximumStackItemBytes`
  * (`require(batchBlob.length <= N)`) and republishes it as `Artifact.messageBus.maximumBlobBytes`; the SDK's
  * messageBus graph generator enforces the same bound while framing each participant's message-envelope rows. Both
  * carried a bare `223` and nothing made them move together. `@solidcash/utils` is the only package both the
@@ -768,16 +778,17 @@ export interface InvocationAnalysisArtifact {
  * The value is load-bearing rather than cosmetic: for a chunk-backed value crossing a handler boundary the
  * blob envelope, NOT the trailing region, is the binding constraint. The bound is the BCH maximum stack-item
  * size: the blob is one unlocking-bytecode push and can use the canonical PUSHDATA2 form through 520 bytes.
- * Silent drift between the copies would therefore move a real consensus-facing limit.
+ * Silent drift between their defaults would therefore move a real consensus-facing limit.
  */
 export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 
 /** Shared wire constants for the atomic single-transaction message bus. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
 export const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;
-// The wire stores row count as uint16. Sixty-four covers bounded multi-effect DAGs while finalized-byte and VM
-// preflight remain the authoritative production admission gates (notably the stock 520-byte stack-item limit).
-export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 64;
+// The wire stores row count as uint16. Keep a finite construction bound, but allow chunk-backed collection
+// updates to cross 64 rows; finalized-byte and VM preflight remain the authoritative production admission gates
+// (notably the stock 520-byte stack-item limit).
+export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 256;
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
 export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
   'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';

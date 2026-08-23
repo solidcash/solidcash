@@ -52,4 +52,20 @@ describe('chai empty-address and event predicates', () => {
       expect(receipt).to.emit(contract, 'JobEvent').withArgs(0n, () => false),
     ).rejects.toThrow(/predicate returned false/);
   });
+
+  it('supports a negated emit after a withArgs chain', async () => {
+    const receipt = {
+      txid: 'ab',
+      events: [{ event: 'JobEvent', args: { jobId: 0n } }],
+    };
+    const contract = {
+      artifact: {
+        events: [{ name: 'JobEvent', parameters: [{ name: 'jobId' }] }],
+      },
+    };
+
+    await expect(receipt)
+      .to.emit(contract, 'JobEvent').withArgs(0n)
+      .and.not.to.emit(contract, 'Pay');
+  });
 });

@@ -2357,6 +2357,11 @@ export default class AstBuilder
       }
       functionDefinition.modifiers.push(m.getText() as FunctionModifier);
     }
+    // Later delegate/split lowering may remove `view`/`pure` from the physical handler because it must execute
+    // with a stateful covenant frame. Preserve the source declaration for ABI dispatch before those modifiers
+    // are rewritten: SDK reads must still resolve to a value rather than broadcasting a transaction.
+    functionDefinition.sourceReadOnly = functionDefinition.modifiers.includes(FunctionModifier.VIEW)
+      || functionDefinition.modifiers.includes(FunctionModifier.PURE);
     // Private functions are not inherited, so Solidity does not permit them to participate in virtual dispatch.
     // Check during declaration construction so abstract functions (which have no traversable body) are covered.
     if (functionDefinition.modifiers.includes(FunctionModifier.PRIVATE)
@@ -5311,6 +5316,7 @@ export default class AstBuilder
     const index = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
     index.location = Location.fromCtx(ctx);
     const node = new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, index);
+    node.isThisExpression = true;
     node.location = Location.fromCtx(ctx);
     return node;
   }

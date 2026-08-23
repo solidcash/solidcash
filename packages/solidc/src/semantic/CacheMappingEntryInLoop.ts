@@ -135,7 +135,12 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // functions. Their original semantic metadata may still reference the
       // pre-lowered body until the next symbol pass; never synthesize physical
       // entry caching inside that handler.
-      if (fn?.body && !fn.collectionJournal) this.transformFunction(fn);
+      // Compiler message-bus routes already pool every repeated physical entry through collection-journal
+      // caches. Wrapping their branch-local write-backs in a second function-wide vmap cache both duplicates the
+      // coalescing layer and can initialize that outer cache from an inactive logical route slot.
+      if (fn?.body && !fn.collectionJournal && !fn.messageBusRoute && !fn.forceCollectionJournalPool) {
+        this.transformFunction(fn);
+      }
     }
     return node;
   }
@@ -149,7 +154,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       cacheRead.location = fn.body.location;
       const cache = new VariableDefinitionNode(e.valueType, [], local, cacheRead);
       cache.location = fn.body.location;
-      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], e.mapping, e.key, local);
+      let stmts = this.insertFlushesBeforeReturns(
+        fn.body.statements ?? [], e.mapping, e.key, local, e.fromModifier,
+      );
       if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
         stmts = [...stmts, this.makeFlush(e.mapping, e.key, local, fn.body.location, e.fromModifier)];
       }
@@ -327,13 +334,15 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // Insert a `m[k] = local` flush before every return (recursing into if/switch/try/blocks, NOT loops - in-loop
   // returns were already rewritten to flag+break by DesugarReturnInLoop). Mirrors CacheDynamicArrayInLoop.
   private insertFlushesBeforeReturns(
-    stmts: StatementNode[], mapping: string, key: KeyKind, local: string,
+    stmts: StatementNode[], mapping: string, key: KeyKind, local: string, fromModifier?: string,
   ): StatementNode[] {
-    const rec = (s: StatementNode[]): StatementNode[] => this.insertFlushesBeforeReturns(s ?? [], mapping, key, local);
+    const rec = (s: StatementNode[]): StatementNode[] => this.insertFlushesBeforeReturns(
+      s ?? [], mapping, key, local, fromModifier,
+    );
     const out: StatementNode[] = [];
     for (const stmt of stmts) {
       if (stmt instanceof ReturnNode) {
-        out.push(this.makeFlush(mapping, key, local, stmt.location));
+        out.push(this.makeFlush(mapping, key, local, stmt.location, fromModifier));
         out.push(stmt);
         continue;
       }

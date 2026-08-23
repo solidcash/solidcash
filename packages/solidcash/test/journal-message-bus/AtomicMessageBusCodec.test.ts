@@ -87,8 +87,15 @@ describe('atomic single-transaction codec', () => {
     expect(() => messageBus.encodeAtomicMessageBusCallManifest({ ...sample(), participants: [
       sample().participants[0], { ...sample().participants[1], actualSize: 8, trailingUsed: 6 },
     ] })).toThrow(/variable span/);
+    const row = sample().rows[0];
+    const aboveLegacyBoundary = {
+      ...sample(), rows: Array.from({ length: 65 }, () => row),
+    };
+    expect(messageBus.decodeAtomicMessageBusCallManifest(
+      messageBus.encodeAtomicMessageBusCallManifest(aboveLegacyBoundary),
+    )).toEqual(aboveLegacyBoundary);
     expect(() => messageBus.encodeAtomicMessageBusCallManifest({
-      ...sample(), rows: Array.from({ length: 25 }, () => sample().rows[0]),
+      ...sample(), rows: Array.from({ length: messageBus.ATOMIC_MESSAGE_BUS_MAX_ROWS + 1 }, () => row),
     })).toThrow(/row count/);
   });
 

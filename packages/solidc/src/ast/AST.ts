@@ -326,6 +326,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusPhysicalEntrySlots?: number[];
   /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
   messageBusHandlerManagedEntrySlots?: number[];
+  /** Solidity dynamic results already leave the synthesized route as one canonical outer `bytes` field. */
+  messageBusResultAlreadyFramed?: boolean;
   tokenContainerAccesses?: TokenContainerAccessInfo[];
   externalReads?: ExternalReadSlot[];
   externalCalls?: ExternalCallSlot[];
@@ -1420,6 +1422,12 @@ export class BinaryOpNode extends ExpressionNode {
 }
 
 export class UnaryOpNode extends ExpressionNode {
+  // Marks Solidity's `this` expression after it is lowered to
+  // `tx.inputs[this.activeInputIndex].lockingBytecode`. Stateful contracts expose their stable SCID identity
+  // anchor for this expression, while an explicit introspection expression keeps returning the physical input
+  // locking bytecode.
+  isThisExpression = false;
+
   // Solidity before 0.8 permits unsigned negation and evaluates it modulo the
   // destination width (e.g. `d & -d` in FullMath).
   legacyWrappingNegation = false;
@@ -1655,6 +1663,10 @@ export class IdentifierNode extends ExpressionNode implements Named {
   // so it routes through the internal functionId + OP_INVOKE path. Drives FunctionType.isExternal in typing.
   isExternalSelfRef?: boolean;
   storagePointerOnly?: boolean;
+  // A compiler-generated message-bus collection journal can collapse earlier array-push rows into an encoded
+  // leading value. When this identifier is used as the journal argument, codegen merges that value before the
+  // selected handler runs so the handler observes every logical push in the transaction.
+  collectionJournalLeadingPushSlotIndex?: number;
   fromModifier?: string; // see StateAssignNode.fromModifier (propagated when this resolves to a state access)
 
   constructor(

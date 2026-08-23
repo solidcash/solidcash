@@ -1247,7 +1247,11 @@ export class TransactionBuilder {
       transaction,
       inputSubjectsOfBuilder(this),
       this.provider.policy?.enforceProductionInputLimit === false
-        ? { consensusLimits: this.provider.consensusLimits }
+        ? {
+          consensusLimits: this.provider.consensusLimits,
+          allowNonRelayable:
+            (this.provider.consensusLimits?.maximumTransactionBytes ?? 100_000) > 100_000,
+        }
         : {},
     );
 
@@ -1304,6 +1308,14 @@ export class TransactionBuilder {
         const libauthTransaction = decodeTransaction(hexToBin(hex)) as LibauthTransaction;
         return attachWait({ ...libauthTransaction, txid, hex }, this.provider);
       } catch (e: any) {
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_TX_DETAILS === '1' && retries < 3) {
+          console.error('transaction-details-retry', {
+            retries,
+            txid,
+            reason: e?.message ?? String(e),
+          });
+        }
         // Propagate txid mismatch errors immediately - they indicate provider tampering
         if (e?.message?.includes('does not match expected txid')) {
           throw e;

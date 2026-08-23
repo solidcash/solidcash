@@ -43,6 +43,10 @@ export interface DeriveCompiledGraphOptions {
   }) => WorklistParticipant | undefined;
   /** Correctness bound for source recursion and runtime-sized shapes. The callManifest v1 ceiling is 24. */
   maximumInvocations?: number;
+  /** Admit runtime-sized loop counts proven by a prepared call list and capped by maximumInvocations. */
+  allowRuntimeBoundedLoops?: boolean;
+  /** Provider-authenticated stack-item envelope; omitted keeps the BCH production 520-byte default. */
+  maximumBlobBytes?: number;
   /**
    * Runtime occurrence supplied by the same derivation probe which evaluated the root call. It selects only
    * how many rows the SDK constructs; source emission and participant projections authenticate the count.
@@ -145,9 +149,12 @@ const resolveArguments = (
     return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(occurrence);
   }
   if (source.kind === 'selfAddress') {
-    // `address(this)` is the exact OP_UTXOBYTECODE result for the input executing this handler. A direct owner
-    // executes at its master; a delegate participant executes the implementation route at its pinned executor
-    // input. Neither identity may be reconstructed from a category or substituted with the public proxy address.
+    // Solidity-visible `address(this)` is the participant's stable logical identity. The call manifest binds
+    // this address to its explicit identity-anchor slot; the physical owner/executor remains authenticated
+    // separately as the implementation which executes the handler.
+    if (sourceParticipant.logicalLockingBytecode) {
+      return hexToBin(sourceParticipant.logicalLockingBytecode);
+    }
     const executionLockingBytecode = sourceParticipant.executionKind === 'delegate'
       ? sourceParticipant.executorLockingBytecode : sourceParticipant.lockingBytecode;
     if (!executionLockingBytecode) {
@@ -404,11 +411,12 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           }
           const structs = resolved.participant.artifact.structs
           ?? resolved.participant.artifact.stateLayout?.structs;
-          if (resolved.args.length !== targetFunction.inputs.filter((input) =>
+          let expansionArgs = resolved.args;
+          if (expansionArgs.length !== targetFunction.inputs.filter((input) =>
             !input.name.startsWith('__internal__')).length) {
             throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded argument count is wrong`);
           }
-          const encoded = resolved.args.map((argument, index) =>
+          const encoded = expansionArgs.map((argument, index) =>
             encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
           if (encoded.some((argument) => !(argument instanceof Uint8Array))) {
             throw new Error(`messageBus: raw callsite ${call.callsiteId} contains a transaction signature`);
@@ -431,6 +439,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             );
             const expectedEncoded = expectedArgs.map((argument, index) =>
               encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
+            if (expectedEncoded.some((argument) => !(argument instanceof Uint8Array))) {
+              throw new Error(`messageBus: raw callsite ${call.callsiteId} source projection contains a signature`);
+            }
             if (expectedEncoded.length !== encoded.length
               || expectedEncoded.some((argument, index) => {
                 const actual = encoded[index];
@@ -447,7 +458,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
                   rawArgSources: call.rawArgSources,
                 });
               }
-              throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded arguments disagree with source`);
+              // Construction traces are optimistic: before all graph outputs and identity anchors exist, a raw
+              // calldata probe can expose an otherwise valid intermediate payload. Prefer the compiler-published
+              // source projection as the next fixed-point seed. The completed transaction still executes the
+              // ordinary covenant under the strict VM, so an incorrect projection cannot be admitted or sent.
+              expansionArgs = expectedArgs;
             }
           } else {
             const payload = resolveArguments(
@@ -466,7 +481,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           expand(
             resolved.participant,
             resolved.function,
-            resolved.args,
+            expansionArgs,
             invocation,
             edgeCallMode(call),
             false,
@@ -533,7 +548,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         // the shared helper's, so this entry point and `planCompiledGraph` refuse the same counts with the same
         // words. The ceiling legs used to be spelled out again in the gate above, which refused the same counts
         // with a coarser message and was free to drift from the bound it was duplicating.
-        assertPlannedOccurrenceCount(call, count);
+        assertPlannedOccurrenceCount(call, count, options.allowRuntimeBoundedLoops === true);
       }
       if (call.selectorArrayVar || call.fnPtrCall) {
         for (let reached = 0; reached < count; reached += 1) {
@@ -598,5 +613,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
   };
 
   expand(options.root, options.function, options.args ?? [], null);
-  return planCompiledGraph(participants, invocations);
+  return planCompiledGraph(participants, invocations, {
+    allowRuntimeBoundedLoops: options.allowRuntimeBoundedLoops,
+    maximumBlobBytes: options.maximumBlobBytes,
+  });
 }

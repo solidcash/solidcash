@@ -13,8 +13,9 @@ import {
   BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
+  BranchNode, UnaryOpNode, MappingAccessNode,
 } from '../ast/AST.js';
-import { BinaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
@@ -138,6 +139,120 @@ export const resultArrayOutputOf = (
     expression instanceof IdentifierNode && expression.name === resultName);
   return output < 0 ? undefined : output;
 };
+
+/**
+ * Prove the canonical mapping-array pagination body:
+ * `length = m[key].length; require(index < length); count = min(limit || remaining, remaining);`
+ * followed by a dense `result[i] = m[key][i + index]` loop and `return result`.
+ *
+ * The SDK may answer this view directly from the authenticated mapping entry only when this exact proof is
+ * published. Similar-looking functions which filter, transform, reorder, or branch inside the copy loop publish
+ * no metadata and retain ordinary VM return derivation.
+ */
+function mappingArrayPaginationOf(func: FunctionDefinitionNode): {
+  collection: string; keyParams: string[]; indexParam: string; limitParam: string;
+} | undefined {
+  const statements = func.body?.statements;
+  const access = func.entryAccesses?.length === 1
+    && func.entryAccesses[0].operations.every((operation) => operation === 'read')
+    ? func.entryAccesses[0] : undefined;
+  if (!statements || statements.length !== 9 || !access) return undefined;
+  const [lengthDecl, guard, remainingDecl, zeroLimit, capLimit, resultDecl, loopDecl, loop, returned] = statements;
+  if (!(lengthDecl instanceof VariableDefinitionNode) || !(guard instanceof RequireNode)
+    || !(remainingDecl instanceof VariableDefinitionNode) || !(zeroLimit instanceof BranchNode)
+    || !(capLimit instanceof BranchNode) || !(resultDecl instanceof VariableDefinitionNode)
+    || !(loopDecl instanceof VariableDefinitionNode) || !(loop instanceof WhileNode)
+    || !(returned instanceof ReturnNode)) return undefined;
+  const zeroStatements = zeroLimit.ifBlock.statements ?? [];
+  const capStatements = capLimit.ifBlock.statements ?? [];
+  const capElseStatements = capLimit.elseBlock?.statements ?? [];
+  const loopStatements = loop.block.statements ?? [];
+  if (!(lengthDecl.expression instanceof UnaryOpNode)
+    || lengthDecl.expression.operator !== UnaryOperator.SIZE
+    || !(lengthDecl.expression.expression instanceof MappingAccessNode)
+    || lengthDecl.expression.expression.name !== access.collection
+    || !(guard.expression instanceof BinaryOpNode)
+    || guard.expression.operator !== BinaryOperator.LT
+    || !(guard.expression.left instanceof IdentifierNode)
+    || !(guard.expression.right instanceof IdentifierNode)
+    || guard.expression.right.name !== lengthDecl.name
+    || !(remainingDecl.expression instanceof BinaryOpNode)
+    || remainingDecl.expression.operator !== BinaryOperator.MINUS
+    || !(remainingDecl.expression.left instanceof IdentifierNode)
+    || remainingDecl.expression.left.name !== lengthDecl.name
+    || !(remainingDecl.expression.right instanceof IdentifierNode)
+    || remainingDecl.expression.right.name !== guard.expression.left.name
+    || !(zeroLimit.condition instanceof BinaryOpNode)
+    || zeroLimit.condition.operator !== BinaryOperator.EQ
+    || !(zeroLimit.condition.left instanceof IdentifierNode)
+    || !(zeroLimit.condition.right instanceof LiteralNode)
+    || zeroLimit.condition.right.value !== 0n
+    || zeroLimit.elseBlock !== undefined
+    || zeroStatements.length !== 1
+    || !(zeroStatements[0] instanceof AssignNode)
+    || zeroStatements[0].identifier.name !== zeroLimit.condition.left.name
+    || !(zeroStatements[0].expression instanceof IdentifierNode)
+    || zeroStatements[0].expression.name !== remainingDecl.name
+    || !(capLimit.condition instanceof BinaryOpNode)
+    || capLimit.condition.operator !== BinaryOperator.GT
+    || !(capLimit.condition.left instanceof IdentifierNode)
+    || capLimit.condition.left.name !== remainingDecl.name
+    || !(capLimit.condition.right instanceof IdentifierNode)
+    || capLimit.condition.right.name !== zeroLimit.condition.left.name
+    || capStatements.length !== 1
+    || !(capStatements[0] instanceof AssignNode)
+    || capStatements[0].identifier.name !== remainingDecl.name
+    || !(capStatements[0].expression instanceof IdentifierNode)
+    || capStatements[0].expression.name !== zeroLimit.condition.left.name
+    || !capLimit.elseBlock || capElseStatements.length !== 1
+    || !(capElseStatements[0] instanceof AssignNode)
+    || capElseStatements[0].identifier.name !== remainingDecl.name
+    || !(capElseStatements[0].expression instanceof IdentifierNode)
+    || capElseStatements[0].expression.name !== remainingDecl.name
+    || !(resultDecl.expression instanceof NewArrayNode)
+    || !(resultDecl.expression.size instanceof IdentifierNode)
+    || resultDecl.expression.size.name !== remainingDecl.name
+    || loopDecl.loopInitialValue !== 0n || loopDecl.loopStepValue !== 1n
+    || !(loop.condition instanceof BinaryOpNode)
+    || loop.condition.operator !== BinaryOperator.LT
+    || !(loop.condition.left instanceof IdentifierNode)
+    || loop.condition.left.name !== loopDecl.name
+    || !(loop.condition.right instanceof IdentifierNode)
+    || loop.condition.right.name !== remainingDecl.name
+    || loopStatements.length !== 2
+    || !(loopStatements[0] instanceof ArrayAssignNode)
+    || loopStatements[0].name !== resultDecl.name
+    || !(loopStatements[0].index instanceof IdentifierNode)
+    || loopStatements[0].index.name !== loopDecl.name
+    || !(loopStatements[0].value instanceof MappingAccessNode)
+    || loopStatements[0].value.name !== access.collection
+    || !(loopStatements[0].value.arrayIndex instanceof BinaryOpNode)
+    || loopStatements[0].value.arrayIndex.operator !== BinaryOperator.PLUS
+    || !(loopStatements[0].value.arrayIndex.left instanceof IdentifierNode)
+    || loopStatements[0].value.arrayIndex.left.name !== loopDecl.name
+    || !(loopStatements[0].value.arrayIndex.right instanceof IdentifierNode)
+    || loopStatements[0].value.arrayIndex.right.name !== guard.expression.left.name
+    || !(loopStatements[1] instanceof AssignNode)
+    || loopStatements[1].identifier.name !== loopDecl.name
+    || !(loopStatements[1].expression instanceof BinaryOpNode)
+    || loopStatements[1].expression.operator !== BinaryOperator.PLUS
+    || !(loopStatements[1].expression.left instanceof IdentifierNode)
+    || loopStatements[1].expression.left.name !== loopDecl.name
+    || !(loopStatements[1].expression.right instanceof LiteralNode)
+    || loopStatements[1].expression.right.value !== 1n
+    || returned.expressions.length !== 1
+    || !(returned.expressions[0] instanceof IdentifierNode)
+    || returned.expressions[0].name !== resultDecl.name) return undefined;
+  const sameKeys = (candidate: MappingAccessNode): boolean => candidate.keys.length === access.keyParams.length
+    && candidate.keys.every((key, index) => key instanceof IdentifierNode && key.name === access.keyParams[index]);
+  if (!sameKeys(lengthDecl.expression.expression) || !sameKeys(loopStatements[0].value)) return undefined;
+  return {
+    collection: access.collection,
+    keyParams: [...access.keyParams],
+    indexParam: guard.expression.left.name,
+    limitParam: zeroLimit.condition.left.name,
+  };
+}
 
 /**
  * True when a loop body can stop short of its trip count.
@@ -755,8 +870,10 @@ function buildFunctionAbiMetadata(
     // collection name is entryLoopWrites, so match that name rather than requiring the AST flag to survive.
     .filter((access) => routeEntryLoopWrites?.includes(access.collection))
     .map((access) => [access.collection, access.collectionSignature]));
+  const mappingArrayPagination = mappingArrayPaginationOf(func);
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
+    ...(mappingArrayPagination && { mappingArrayPagination }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),

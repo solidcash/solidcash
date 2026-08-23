@@ -149,7 +149,7 @@ describe('atomic route ineligibility matrix', () => {
       .toEqual(['control']);
   });
 
-  it('keeps dynamic array-of-struct element writes on their direct route', () => {
+  it('keeps explicitly enabled array-of-struct writes admitted in the verifier-binding pass', () => {
     const artifact = compileString(`contract C() {
       struct Pair { int left; int right; }
       Pair[] values;
@@ -160,8 +160,7 @@ describe('atomic route ineligibility matrix', () => {
       function read(int index) public returns (int) { return this.values[index].left; }
     }`, { forceStateful: true, messageBus: true });
     expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'write')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'array-struct-element-write-route-not-enabled',
+      eligible: true,
     });
     expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'read')).toMatchObject({
       eligible: true,

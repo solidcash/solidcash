@@ -198,6 +198,7 @@ function invalidateSignerUtxos(signer: Signer): void {
 }
 import {
   findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
+  findDeploymentImplementing,
 } from './deployment-registry.js';
 import {
   logicalIdentityAddressVariants, logicalIdentityBandKey, resolveLogicalIdentity,
@@ -253,7 +254,7 @@ function defaultInternalFunctionArg(input: { name: string; type?: string }): Fun
   if (name.includes('valueWitness') || type === 'bytes'
     || (type.startsWith('bytes') && type !== 'bytes4' && type !== 'bytes32')) return new Uint8Array();
   if (name.includes('Return') || name.includes('Proof') || name.includes('PredOut')
-    || name.includes('OutputIdx')) return -1n;
+    || name.includes('OutputIdx') || name.includes('OutputBase')) return -1n;
   if (type === 'bool') return false;
   return 0n;
 }
@@ -1013,6 +1014,15 @@ function extractRouteChunkPin(
   return undefined;
 }
 
+function extractRouteChunkPinInBand(
+  trace: AuthenticationProgramStateCommon[],
+  band: { start: number; end: number; nNew: number } | undefined,
+): { outputIndex: number; lockingBytecode: Uint8Array; commitment: string } | undefined {
+  const direct = extractRouteChunkPin(trace);
+  if (direct && band && direct.outputIndex >= band.start && direct.outputIndex <= band.end) return direct;
+  return extractFailingP2sh32OutputPin(trace, band);
+}
+
 /** OUTPUTBYTECODE EQUALVERIFY mismatch whose expected side is a p2sh32 redeem lock. */
 function extractFailingP2sh32OutputPin(
   trace: AuthenticationProgramStateCommon[],
@@ -1129,8 +1139,7 @@ function deriveRouteValueChunks(
     end: explicitBase + VALUE_CHUNK_MAX_COUNT - 1,
     nNew: group.valueChunkOutputCount ?? 0,
   };
-  const pin = extractRouteChunkPin(trace)
-    ?? extractFailingP2sh32OutputPin(trace, pinBand);
+  const pin = extractRouteChunkPinInBand(trace, pinBand);
   if (!pin) return false;
   if (usesSharedBand && isP2sh32LockingBytecode(pin.lockingBytecode)) {
     stb.setJobEventsRedeemLock(pin.lockingBytecode);
@@ -1845,6 +1854,86 @@ function extractEvmScalarReturnCommitment(
   return selectEvmScalarReturnCommitment(candidates, expectedTypes);
 }
 
+const isEvmStaticReturnType = (type: string): boolean => type === 'bool'
+  || type === 'int' || type === 'uint' || type === 'bigint'
+  || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
+  || type === 'address' || type === 'address payable'
+  || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type);
+
+const readEvmReturnWord = (bytes: Uint8Array, offset: number): number | undefined => {
+  if (offset < 0 || offset + 32 > bytes.length) return undefined;
+  let value = 0n;
+  for (const byte of bytes.slice(offset, offset + 32)) value = (value << 8n) | BigInt(byte);
+  return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : undefined;
+};
+
+/** Length of one canonical Solidity `abi.encode(result tuple)` within a concatenated route result vector. */
+function evmReturnTupleLength(
+  vector: Uint8Array, cursor: number, resultTypes: readonly string[],
+): number | undefined {
+  if (resultTypes.length === 0 || resultTypes.some((type) => (
+    !isEvmStaticReturnType(type) && type !== 'bytes' && type !== 'string'
+  ))) return undefined;
+  const headLength = resultTypes.length * 32;
+  if (cursor + headLength > vector.length) return undefined;
+  let tailLength = headLength;
+  for (let index = 0; index < resultTypes.length; index += 1) {
+    const type = resultTypes[index];
+    const wordOffset = cursor + index * 32;
+    if (isEvmStaticReturnType(type)) {
+      if (!isCanonicalEvmScalarReturnVector(vector.slice(wordOffset, wordOffset + 32), [type])) {
+        return undefined;
+      }
+      continue;
+    }
+    const relative = readEvmReturnWord(vector, wordOffset);
+    // Canonical abi.encode lays dynamic tails out contiguously in declaration order.
+    if (relative === undefined || relative !== tailLength) return undefined;
+    const payloadLength = readEvmReturnWord(vector, cursor + relative);
+    if (payloadLength === undefined) return undefined;
+    const paddedLength = Math.ceil(payloadLength / 32) * 32;
+    const end = cursor + relative + 32 + paddedLength;
+    if (end > vector.length) return undefined;
+    const padding = vector.slice(cursor + relative + 32 + payloadLength, end);
+    if (!padding.every((byte) => byte === 0)) return undefined;
+    tailLength = relative + 32 + paddedLength;
+  }
+  return tailLength;
+}
+
+function isCanonicalEvmRouteReturnVector(
+  vector: Uint8Array, resultTypeGroups: readonly (readonly string[])[],
+): boolean {
+  let cursor = 0;
+  for (const resultTypes of resultTypeGroups) {
+    const length = evmReturnTupleLength(vector, cursor, resultTypes);
+    if (length === undefined) return false;
+    cursor += length;
+  }
+  return cursor === vector.length;
+}
+
+/** Recover a complete, possibly dynamic, Solidity route return vector before its commitment hash boundary. */
+function extractEvmRouteReturnCommitment(
+  fullTrace: AuthenticationProgramStateCommon[], resultTypeGroups: readonly (readonly string[])[],
+): string | undefined {
+  for (let traceIndex = fullTrace.length - 1; traceIndex >= 0; traceIndex -= 1) {
+    const stack = fullTrace[traceIndex].stack;
+    for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+      const candidate = Uint8Array.from(stack[stackIndex]);
+      if (isCanonicalEvmRouteReturnVector(candidate, resultTypeGroups)) return binToHex(candidate);
+      try {
+        const outer = decodePushdataValue(candidate, 0, 'bytes');
+        if (outer.value instanceof Uint8Array && outer.bytesConsumed === candidate.length
+          && isCanonicalEvmRouteReturnVector(outer.value, resultTypeGroups)) return binToHex(outer.value);
+      } catch {
+        // Most live route-frame items are not return vectors.
+      }
+    }
+  }
+  return undefined;
+}
+
 /** Encode the scalar Solidity ABI forms used by SDK-side return precomputation. */
 function encodeEvmScalarReturn(value: StateValue, type: string): Uint8Array | undefined {
   if (type === 'bool') {
@@ -1872,6 +1961,26 @@ export function encodeExternalReturnValue(
 ): Uint8Array {
   return (solidityAbi ? encodeEvmScalarReturn(value, type) : undefined)
     ?? encodePushdataValue(value, type, structs);
+}
+
+/** Encode the single dynamic Solidity return forms used to seed an atomic graph's first authenticated pass. */
+function encodePreparedSolidityReturn(value: StateValue, type: string): Uint8Array | undefined {
+  const scalar = encodeEvmScalarReturn(value, type);
+  if (scalar) return scalar;
+  const payload = type === 'string' && typeof value === 'string'
+    ? utf8ToBin(value)
+    : type === 'bytes' && value instanceof Uint8Array
+      ? value : undefined;
+  if (!payload) return undefined;
+  const offset = encodeEvmScalarReturn(32n, 'uint256')!;
+  const length = encodeEvmScalarReturn(BigInt(payload.length), 'uint256')!;
+  const padded = new Uint8Array(Math.ceil(payload.length / 32) * 32);
+  padded.set(payload);
+  const result = new Uint8Array(offset.length + length.length + padded.length);
+  result.set(offset, 0);
+  result.set(length, offset.length);
+  result.set(padded, offset.length + length.length);
+  return result;
 }
 
 /** Recover a source require message from an invoked-body probe failure. */
@@ -2365,13 +2474,26 @@ const PROBE_TRACE_OPCODES = new Set<number>([
   Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTVALUE,
   Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OUTPUTTOKENCATEGORY,
   Op.OP_INPUTBYTECODE, Op.OP_EQUALVERIFY,
+  // Oversized message-bus result vectors are reduced to an NFT-sized digest at this boundary. Retain the
+  // pre-operation state so optimistic construction can recover the authenticated raw ABI vector rather than
+  // mistaking the digest for a decodable return commitment.
+  Op.OP_SHA256,
+]);
+
+/** Opcodes whose optimistic execution can differ from the stock VM. All other operations remain unwrapped. */
+const OPTIMISTIC_PROBE_OPCODES = new Set<number>([
+  ...PROBE_TRACE_OPCODES,
+  Op.OP_VERIFY, Op.OP_NUMEQUALVERIFY,
+  Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIGVERIFY, Op.OP_CHECKDATASIGVERIFY,
+  Op.OP_ADD, Op.OP_SPLIT,
+  Op.OP_UTXOBYTECODE, Op.OP_UTXOVALUE, Op.OP_UTXOTOKENCATEGORY,
+  Op.OP_UTXOTOKENCOMMITMENT, Op.OP_UTXOTOKENAMOUNT,
 ]);
 
 interface CachedProbeVm {
   trace: AuthenticationProgramStateCommon[];
   awaitingVerification: boolean;
-  relaxNextVerification: boolean;
-  relaxationApplied: boolean;
+  optimisticVerificationSkipped: boolean;
   vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
 }
 
@@ -2379,44 +2501,122 @@ interface CachedProbeVm {
 // libauth's complete BCH-2026 instruction set (then wrapping the observed opcode handlers) for every convergence
 // step is therefore pure overhead. Keep the VM and its observer closure, resetting only the small trace buffer.
 const probeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
-const relaxedProbeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
+const optimisticProbeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
+const strictReturnVmCache = new WeakMap<
+NetworkProvider,
+ReturnType<typeof createVirtualMachineBch2026ForProvider>
+>();
 
-function cachedProbeVm(provider: NetworkProvider, relaxOutputVerifications = false): CachedProbeVm {
-  const cache = relaxOutputVerifications ? relaxedProbeVmCache : probeVmCache;
+function cachedStrictReturnVm(
+  provider: NetworkProvider,
+): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
+  const existing = strictReturnVmCache.get(provider);
+  if (existing) return existing;
+  const vm = createVirtualMachineBch2026ForProvider(provider);
+  strictReturnVmCache.set(provider, vm);
+  return vm;
+}
+
+function cachedProbeVm(provider: NetworkProvider, optimistic = true): CachedProbeVm {
+  const cache = optimistic ? optimisticProbeVmCache : probeVmCache;
   const existing = cache.get(provider);
   if (existing) return existing;
   const cached = {
     trace: [] as AuthenticationProgramStateCommon[],
     awaitingVerification: false,
-    relaxNextVerification: false,
-    relaxationApplied: false,
+    optimisticVerificationSkipped: false,
   } as CachedProbeVm;
   const debugTraceOperationMode = (globalThis as {
     process?: { env?: Record<string, string | undefined> };
   }).process?.env?.SOLIDC_DEBUG_DERIVE_TRACE_OPS;
   const debugTraceOperations = debugTraceOperationMode === '1'
     || debugTraceOperationMode === 'project' || debugTraceOperationMode === 'range';
+  const debugEnv = (globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env;
+  const debugFrom = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_FROM_IP ?? Number.NaN);
+  const debugTo = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_TO_IP ?? Number.NaN);
+  const debugInstructionCount = Number(
+    debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_INSTRUCTION_COUNT ?? Number.NaN,
+  );
+  const debugInputIndex = Number(
+    debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_INPUT_INDEX ?? Number.NaN,
+  );
+  const focusDepth = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_STACK_DEPTH ?? Number.NaN);
+  const debugCallers = debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_CALLERS === '1';
+  const debugCallerWindow = debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_CALLER_WINDOW === '1';
+  const debugInvokeId = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_INVOKE_ID ?? Number.NaN);
+  const debugInvokeInput = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_INVOKE_INPUT ?? Number.NaN);
+  const debugEntryInput = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_ENTRY_INPUT ?? Number.NaN);
+  let debugEntryReadPending = false;
   cached.vm = createVirtualMachineBch2026ForProvider(provider, {
     opcodes: debugTraceOperationMode === 'range'
       ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode as Op))
+      : optimistic
+        ? (Number.isFinite(debugInvokeId)
+          ? new Set([...OPTIMISTIC_PROBE_OPCODES, Op.OP_INVOKE]) : OPTIMISTIC_PROBE_OPCODES)
       : debugTraceOperationMode === '1'
-      ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160])
-      : debugTraceOperationMode === 'project'
-        ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
-      : PROBE_TRACE_OPCODES,
+        ? new Set([...PROBE_TRACE_OPCODES, Op.OP_EQUAL, Op.OP_VERIFY, Op.OP_HASH160])
+        : debugTraceOperationMode === 'project'
+          ? new Set([...PROBE_TRACE_OPCODES, Op.OP_HASH160])
+          : PROBE_TRACE_OPCODES,
     beforeOperation: (unknownState) => {
       const state = unknownState as AuthenticationProgramStateCommon;
       const opcode = state.instructions[state.ip]?.opcode;
-      const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-        .process?.env;
-      const debugFrom = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_FROM_IP ?? Number.NaN);
-      const debugTo = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_TO_IP ?? Number.NaN);
-      const debugInstructionCount = Number(
-        debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_INSTRUCTION_COUNT ?? Number.NaN,
-      );
-      const debugInputIndex = Number(
-        debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_INPUT_INDEX ?? Number.NaN,
-      );
+      if (debugEntryReadPending) {
+        console.error('derive-entry-result', JSON.stringify({
+          inputIndex: state.program.inputIndex,
+          ip: state.ip,
+          opcode,
+          instructionCount: state.instructions.length,
+          stack: state.stack.slice(-8).map((item) => `${item.length}:${binToHex(item.slice(0, 160))}`),
+        }));
+        debugEntryReadPending = false;
+      }
+      if (opcode === Op.OP_UTXOTOKENCOMMITMENT && Number.isFinite(debugEntryInput)) {
+        const rawIndex = state.stack.at(-1);
+        const index = rawIndex === undefined ? Number.NaN
+          : Number(vmNumberToBigInt(rawIndex, { requireMinimalEncoding: false }));
+        if (index === debugEntryInput) {
+          console.error('derive-entry-read', JSON.stringify({
+            inputIndex: state.program.inputIndex,
+            ip: state.ip,
+            instructionCount: state.instructions.length,
+            stack: state.stack.slice(-8).map((item) => `${item.length}:${binToHex(item.slice(0, 160))}`),
+          }));
+          debugEntryReadPending = true;
+        }
+      }
+      if (opcode === Op.OP_INVOKE && Number.isFinite(debugInvokeId)
+        && (!Number.isFinite(debugInvokeInput) || state.program.inputIndex === debugInvokeInput)) {
+        const rawId = state.stack.at(-1);
+        const invokeId = rawId === undefined ? Number.NaN
+          : Number(vmNumberToBigInt(rawId, { requireMinimalEncoding: false }));
+        if (invokeId === debugInvokeId) {
+          console.error('derive-invoke', JSON.stringify({
+            inputIndex: state.program.inputIndex,
+            id: invokeId,
+            ip: state.ip,
+            instructionCount: state.instructions.length,
+            depth: state.stack.length,
+            digitalVideo: state.stack.flatMap((item, index) =>
+              binToHex(item) === '4449474954414c5f564944454f'
+                ? [{ index, fromTop: state.stack.length - index - 1 }] : []),
+            cacheNeighborhood: state.stack.slice(38, 56).map((item, offset) => ({
+              index: offset + 38,
+              fromTop: state.stack.length - offset - 39,
+              value: `${item.length}:${binToHex(item.slice(0, 160))}`,
+            })),
+            stack: state.stack.slice(-20).map((item) => `${item.length}:${binToHex(item.slice(0, 160))}`),
+            callers: state.controlStack.flatMap((frame) => typeof frame === 'object' && frame !== null
+              ? [{ instructionCount: frame.instructions.length, ip: frame.ip }] : []),
+          }));
+        }
+      }
+      // Optimistic execution wraps every opcode so it can recover from the small, explicit placeholder-failure
+      // set below. Trace observation needs only the probe opcodes unless instruction diagnostics are enabled.
+      // Keep the overwhelmingly common path allocation-free and avoid re-reading process.env per instruction.
+      if (!debugTraceOperations && !PROBE_TRACE_OPCODES.has(opcode as Op)) return;
       if (debugTraceOperations
         && (debugTraceOperationMode !== 'project'
           || opcode === Op.OP_OUTPUTTOKENCOMMITMENT || opcode === Op.OP_HASH160)
@@ -2425,18 +2625,17 @@ function cachedProbeVm(provider: NetworkProvider, relaxOutputVerifications = fal
           || state.instructions.length === debugInstructionCount)
         && (!Number.isFinite(debugInputIndex) || state.program.inputIndex === debugInputIndex)
         && state.ip >= debugFrom && state.ip <= debugTo) {
-        const focusDepth = Number(debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_STACK_DEPTH ?? Number.NaN);
         console.error('derive-op', JSON.stringify({
           inputIndex: state.program.inputIndex,
           ip: state.ip,
           opcode,
-          callerFrames: debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_CALLERS === '1'
+          callerFrames: debugCallers
             ? state.controlStack.flatMap((frame) => typeof frame === 'object' && frame !== null
               ? [{
                 instructionCount: frame.instructions.length,
                 ip: frame.ip,
                 opcode: frame.instructions[frame.ip]?.opcode,
-                window: debugEnv?.SOLIDC_DEBUG_DERIVE_TRACE_CALLER_WINDOW === '1'
+                window: debugCallerWindow
                   ? frame.instructions.slice(Math.max(0, frame.ip - 24), frame.ip + 5)
                     .map((instruction, offset) => ({
                       ip: Math.max(0, frame.ip - 24) + offset,
@@ -2465,7 +2664,7 @@ function cachedProbeVm(provider: NetworkProvider, relaxOutputVerifications = fal
       // Diagnostic-only observations must not change the reduced trace consumed by the derivation extractors.
       // In particular, retaining OP_EQUAL/OP_VERIFY here breaks otherwise-adjacent introspection/EQUALVERIFY
       // pairs and can make enabling diagnostics change transaction construction.
-      if (debugTraceOperations && !PROBE_TRACE_OPCODES.has(opcode as Op)) return;
+      if (!PROBE_TRACE_OPCODES.has(opcode as Op)) return;
       if (opcode === Op.OP_EQUALVERIFY && !cached.awaitingVerification) return;
       // libauth mutates the stack containers between operations, but stack items are immutable values: opcodes
       // replace Uint8Arrays rather than editing them in place. Snapshot the containers while sharing their byte
@@ -2477,23 +2676,45 @@ function cachedProbeVm(provider: NetworkProvider, relaxOutputVerifications = fal
         alternateStack: state.alternateStack.slice(),
         controlStack: state.controlStack.slice(),
       });
-      // The relaxed VM may continue past speculative OUTPUT pins only. A deferred keccak probe deliberately
-      // fails the EQUALVERIFY following OP_INPUTBYTECODE so its runtime preimage can be learned; suppressing that
-      // bind would change execution semantics and could skip over the call the next iteration must resolve.
-      if (opcode !== Op.OP_EQUALVERIFY) cached.relaxNextVerification = opcode !== Op.OP_INPUTBYTECODE;
       cached.awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
     },
-    ...(relaxOutputVerifications && {
+    ...(optimistic && {
       operation: (opcode, unknownState, operation) => {
-        const shouldRelax = opcode === Op.OP_EQUALVERIFY && cached.relaxNextVerification;
-        if (opcode === Op.OP_EQUALVERIFY) cached.relaxNextVerification = false;
         const next = operation(unknownState as never) as AuthenticationProgramStateCommon;
-        // This VM is used only to discover candidate output values. Continue past a failed output comparison so
-        // one pass can expose later independent pins. A transaction is accepted only on an iteration where this
-        // wrapper suppresses nothing, making that evaluation identical to the ordinary VM verdict.
-        if (shouldRelax && next.error === AuthenticationErrorCommon.failedVerify) {
+        // Intermediate construction probes are optimistic: the transaction still contains placeholder outputs
+        // and an isolated participant cannot satisfy aggregate graph-envelope checks. Continue through failed
+        // verification opcodes to discover later state/event/return candidates. Execution-shape failures (invalid
+        // splits, stack errors, disabled opcodes, and so on) remain fatal. The completed aggregate is accepted only
+        // after the ordinary, unwrapped BCH-2026 preflight validates every input.
+        if (next.error === AuthenticationErrorCommon.failedVerify) {
           delete next.error;
-          cached.relaxationApplied = true;
+          cached.optimisticVerificationSkipped = true;
+        } else if (opcode === Op.OP_ADD && next.error?.includes('valid VM Number')) {
+          // A speculative route can still hold placeholder topology witnesses. Preserve the arithmetic result's
+          // stack shape with zero so later independent effects can be discovered; strict aggregate preflight
+          // rejects the malformed witness if construction never replaces it.
+          delete next.error;
+          next.stack.push(new Uint8Array());
+          cached.optimisticVerificationSkipped = true;
+        } else if (opcode === Op.OP_SPLIT && next.error?.includes('invalid index')) {
+          delete next.error;
+          next.stack.push(new Uint8Array(), new Uint8Array());
+          cached.optimisticVerificationSkipped = true;
+        } else if ([
+          Op.OP_UTXOBYTECODE,
+          Op.OP_UTXOVALUE,
+          Op.OP_UTXOTOKENCATEGORY,
+          Op.OP_UTXOTOKENCOMMITMENT,
+          Op.OP_UTXOTOKENAMOUNT,
+          Op.OP_OUTPUTBYTECODE,
+          Op.OP_OUTPUTVALUE,
+          Op.OP_OUTPUTTOKENCATEGORY,
+          Op.OP_OUTPUTTOKENCOMMITMENT,
+          Op.OP_OUTPUTTOKENAMOUNT,
+        ].includes(opcode) && next.error?.includes('invalid transaction')) {
+          delete next.error;
+          next.stack.push(new Uint8Array());
+          cached.optimisticVerificationSkipped = true;
         }
         return next;
       },
@@ -2525,11 +2746,11 @@ function reduceProbeTrace(
   return filtered;
 }
 
-/** Evaluate a probe without retaining millions of irrelevant VM states under relaxed private-network limits. */
+/** Evaluate an optimistic construction probe without retaining millions of irrelevant VM states. */
 function evaluateProbeTrace(
   provider: NetworkProvider,
   program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
-  relaxOutputVerifications = false,
+  optimistic = true,
 ): AuthenticationProgramStateCommon[] {
   const maxIn = provider.consensusLimits?.maximumInputBytes ?? 10_000;
   const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
@@ -2541,7 +2762,7 @@ function evaluateProbeTrace(
     || debugEnv?.SC_FORCE_FULL_PROBE_TRACE === '1'
     || debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
     || debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS === '1';
-  if (preferFullDebug && !relaxOutputVerifications) {
+  if (preferFullDebug && !optimistic) {
     try {
       const full = createVirtualMachineBch2026ForProvider(provider)
         .debug(program) as AuthenticationProgramStateCommon[];
@@ -2562,11 +2783,10 @@ function evaluateProbeTrace(
   // introspection and OP_EQUALVERIFY as breaking that pair. OP_INPUTBYTECODE is the one additional observation
   // required for deferred keccak; if it appears, it correctly breaks any pending output pair because the next
   // equality binds the side-car preimage rather than that earlier output.
-  const cached = cachedProbeVm(provider, relaxOutputVerifications);
+  const cached = cachedProbeVm(provider, optimistic);
   cached.trace.length = 0;
   cached.awaitingVerification = false;
-  cached.relaxNextVerification = false;
-  cached.relaxationApplied = false;
+  cached.optimisticVerificationSkipped = false;
   cached.trace.push(cached.vm.evaluate(program) as AuthenticationProgramStateCommon);
   // Rotate rather than copy: the observer closure resolves `cached.trace` at each operation, so the completed
   // trace can be handed to the caller while the next evaluation receives a fresh collector.
@@ -3240,6 +3460,326 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     this._externalRegistry.set(name, contract as ConnectedStatefulContract);
   }
 
+  /** @internal Resolve an ordinary Solidity-style external-call closure for atomic message-bus execution. */
+  async _prepareAtomicExternalClosure(
+    functionName: string,
+    functionArgs: readonly FunctionArgument[],
+  ): Promise<readonly PreparedAtomicMessageBusCall[] | undefined> {
+    const closureDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ATOMIC_CLOSURE === '1';
+    const debugFailure = (reason: string, details: Record<string, unknown> = {}): false => {
+      if (closureDebug) console.error('atomic-closure-refusal', { functionName, reason, ...details });
+      return false;
+    };
+    const rootFunction = (this.inner.artifact.abi as readonly AbiFunction[])
+      .find((candidate) => candidate.name === functionName);
+    if (!rootFunction?.externalCalls?.length || !this._signer) {
+      if (closureDebug) console.error('atomic-closure-unavailable', {
+        functionName,
+        hasFunction: rootFunction !== undefined,
+        externalCalls: rootFunction?.externalCalls?.length ?? 0,
+        hasSigner: this._signer !== undefined,
+      });
+      return undefined;
+    }
+    const prepared: PreparedAtomicMessageBusCall[] = [];
+    const active = new Set<string>();
+    const literalMsgSender = (value: Uint8Array): ((source: ArgSource) => ArgSource) => {
+      const replace = (candidate: unknown, seen = new Map<object, unknown>()): unknown => {
+        if (!candidate || typeof candidate !== 'object') return candidate;
+        if (seen.has(candidate as object)) return seen.get(candidate as object);
+        if (Array.isArray(candidate)) {
+          const result: unknown[] = [];
+          seen.set(candidate, result);
+          result.push(...candidate.map((item) => replace(item, seen)));
+          return result;
+        }
+        const source = candidate as Partial<ArgSource>;
+        if (source.kind === 'msgSender') {
+          return { kind: 'literal', type: 'bytes', value: binToHex(value) } satisfies ArgSource;
+        }
+        const result: Record<string, unknown> = {};
+        seen.set(candidate as object, result);
+        for (const [name, child] of Object.entries(candidate)) result[name] = replace(child, seen);
+        return result;
+      };
+      return (source) => replace(source) as ArgSource;
+    };
+    const withOccurrence = (value: unknown, occurrence: number, seen = new Map<object, unknown>()): unknown => {
+      if (!value || typeof value !== 'object') return value;
+      if (seen.has(value as object)) return seen.get(value as object);
+      if (Array.isArray(value)) {
+        const result: unknown[] = [];
+        seen.set(value, result);
+        result.push(...value.map((item) => withOccurrence(item, occurrence, seen)));
+        return result;
+      }
+      const source = value as Partial<ArgSource>;
+      if (source.kind === 'arrayElement' && source.indexParamIndex === undefined) {
+        return { ...source, indexValue: occurrence } as ArgSource;
+      }
+      const result: Record<string, unknown> = {};
+      seen.set(value as object, result);
+      for (const [name, child] of Object.entries(value)) {
+        result[name] = withOccurrence(child, occurrence, seen);
+      }
+      return result;
+    };
+    const arraySourceLength = (value: unknown, args: readonly FunctionArgument[], seen = new Set<object>()): number => {
+      if (!value || typeof value !== 'object' || seen.has(value as object)) return -1;
+      seen.add(value as object);
+      const source = value as Partial<ArgSource>;
+      if (source.kind === 'arrayElement' && source.paramIndex !== undefined) {
+        const array = args[source.paramIndex];
+        if (Array.isArray(array)) return array.length;
+      }
+      for (const child of Object.values(value)) {
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            const length = arraySourceLength(item, args, seen);
+            if (length >= 0) return length;
+          }
+        } else {
+          const length = arraySourceLength(child, args, seen);
+          if (length >= 0) return length;
+        }
+      }
+      return -1;
+    };
+    const deploymentFor = (
+      owner: StatefulContract,
+      call: ExternalCallAbi,
+      addressValue: FunctionArgument | undefined,
+      selectedName: string,
+    ): ConnectedStatefulContract | undefined => {
+      const addressHex = addressValue instanceof Uint8Array ? binToHex(addressValue) : undefined;
+      const atAddress = addressHex
+        ? findDeploymentByLockingBytecode(owner.inner.provider, addressHex)
+        : typeof addressValue === 'string'
+          ? findDeploymentByAddress(owner.inner.provider, addressValue)
+            ?? findDeploymentByLockingBytecode(owner.inner.provider, addressValue)
+          : undefined;
+      const registered = owner._externalRegistry.get(call.interfaceName);
+      if (atAddress?.contract) return atAddress.contract as ConnectedStatefulContract;
+      if (addressValue !== undefined) return undefined;
+      return registered
+        ?? findDeploymentByName(owner.inner.provider, call.interfaceName)?.contract as ConnectedStatefulContract
+        ?? (/^I[A-Z]/.test(call.interfaceName)
+          ? findDeploymentByName(owner.inner.provider, call.interfaceName.slice(1))
+            ?.contract as ConnectedStatefulContract
+          : undefined)
+        ?? findDeploymentImplementing(owner.inner.provider, selectedName)?.contract as ConnectedStatefulContract;
+    };
+    const expand = async (
+      owner: StatefulContract,
+      selectedFunction: string,
+      visibleArgs: readonly FunctionArgument[],
+      currentMsgSender: Uint8Array,
+      callsiteId?: number,
+    ): Promise<boolean> => {
+      const artifact = owner.inner.artifact;
+      const abiFunction = (artifact.abi as readonly AbiFunction[])
+        .find((candidate) => candidate.name === selectedFunction);
+      const handler = artifact.messageBus?.handlers.find((candidate) =>
+        candidate.name === selectedFunction && candidate.eligible);
+      if (!abiFunction || !handler) return debugFailure('handler-ineligible', {
+        contract: artifact.contractName, selectedFunction,
+        hasAbiFunction: abiFunction !== undefined,
+        publishedHandler: artifact.messageBus?.handlers.find((candidate) =>
+          candidate.name === selectedFunction),
+      });
+      const recursionKey = `${owner.categoryId}:${selectedFunction}`;
+      if (active.has(recursionKey)) return debugFailure('recursive-owner-function', {
+        contract: artifact.contractName, selectedFunction, recursionKey,
+      });
+      active.add(recursionKey);
+      prepared.push({
+        contract: owner,
+        functionName: selectedFunction,
+        args: Object.freeze([...visibleArgs]),
+        ...(callsiteId !== undefined && { callsiteId }),
+      });
+      const fullState = await owner.getFullState();
+      const state = fullState.state;
+      // In a message-bus closure the selected route, not the ordinary per-function script, is the active
+      // covenant input. Solidity `address(this)` and the callee's `msg.sender` must therefore use the deployed
+      // StatefulContract identity (`target`), matching the route VM's authenticated execution context.
+      const executionAddress = addressToLockScript(owner.target);
+      const senderReplacement = literalMsgSender(currentMsgSender);
+      const successfulRawFunctions = new Set<string>();
+      const skippedRawLocations = new Set<string>();
+      for (const call of abiFunction.externalCalls ?? []) {
+        let concreteName = call.interfaceName === '__raw__'
+          ? call.rawFunctionName ?? call.functionName : call.functionName;
+        const location = call.sourceLocation
+          ? `${call.sourceLocation.line}:${call.sourceLocation.column}` : '';
+        const rawSources = call.interfaceName === '__raw__' ? call.rawArgSources : call.argSources;
+        const sources = (rawSources ?? []).map(senderReplacement);
+        // SafeERC20/Address lowering publishes one typed read and one raw call against the same synthesized
+        // address parameter. The raw edge intentionally omits the duplicate address expression; recover it from
+        // the sibling exactly as the legacy transitive resolver does.
+        const publishedAddressSource = call.addressSource
+          ?? (call.interfaceName === '__raw__' && call.addressParam !== undefined
+            ? (abiFunction.externalCalls ?? []).find((candidate) => (
+              candidate.addressParam === call.addressParam && candidate.addressSource !== undefined
+            ))?.addressSource
+            : undefined);
+        const addressSource = publishedAddressSource ? senderReplacement(publishedAddressSource) : undefined;
+        const addressValue = addressSource
+          ? owner._resolveExternalArgs(
+            [addressSource], [...visibleArgs], artifact, state, abiFunction.inputs,
+            undefined, 0, false, executionAddress,
+          )?.[0]
+          : call.addressParam
+            ? (() => {
+              const index = abiFunction.inputs.findIndex((input) => input.name === call.addressParam);
+              return index >= 0 ? visibleArgs[index] : undefined;
+            })()
+            : undefined;
+        const target = deploymentFor(owner, call, addressValue, concreteName);
+        if (!target) {
+          active.delete(recursionKey);
+          return debugFailure('target-unresolved', {
+            contract: artifact.contractName, selectedFunction,
+            interfaceName: call.interfaceName, concreteName, callsiteId: call.callsiteId,
+            addressValue: addressValue instanceof Uint8Array ? binToHex(addressValue) : addressValue,
+          });
+        }
+        if (call.interfaceName === '__raw__' && !call.rawFunctionName) {
+          const selected = (target.inner.artifact.abi as readonly AbiFunction[])
+            .find((candidate) => candidate.selector === call.rawSelector)?.name;
+          if (!selected) {
+            active.delete(recursionKey);
+            return debugFailure('raw-selector-unresolved', {
+              contract: artifact.contractName, selectedFunction,
+              callsiteId: call.callsiteId, rawSelector: call.rawSelector,
+              target: target.inner.artifact.contractName,
+            });
+          }
+          concreteName = selected;
+        }
+        const rawLocation = location ? `${concreteName}@${location}` : '';
+        if (rawLocation && skippedRawLocations.has(rawLocation)) continue;
+        owner._externalRegistry.set(call.interfaceName, target);
+        let occurrences = 1;
+        if (call.condition) {
+          const condition = owner._evaluateExternalExpression(
+            senderReplacement({ kind: 'expression', expression: call.condition }).expression!,
+            [...visibleArgs], artifact, state, abiFunction.inputs,
+            undefined, 0, false, executionAddress,
+          );
+          if (condition === false) occurrences = 0;
+          else if (condition === undefined) {
+            active.delete(recursionKey);
+            return debugFailure('condition-unresolved', {
+              contract: artifact.contractName, selectedFunction,
+              interfaceName: call.interfaceName, concreteName, callsiteId: call.callsiteId,
+              condition: call.condition,
+            });
+          }
+        }
+        if (call.occurrence === 'loop') {
+          const length = arraySourceLength(sources, visibleArgs);
+          if (length < 0) {
+            active.delete(recursionKey);
+            return debugFailure('loop-length-unresolved', {
+              contract: artifact.contractName, selectedFunction,
+              interfaceName: call.interfaceName, concreteName, callsiteId: call.callsiteId,
+            });
+          }
+          occurrences = Math.min(length, call.maximumOccurrences ?? length);
+        }
+        if (call.interfaceName === '__raw__' && call.occurrence === 'conditional'
+          && location && successfulRawFunctions.has(concreteName)) {
+          const siblings = (abiFunction.externalCalls ?? []).filter((candidate) =>
+            candidate.interfaceName === '__raw__'
+            && candidate.rawFunctionName === concreteName
+            && candidate.sourceLocation?.line === call.sourceLocation?.line
+            && candidate.sourceLocation?.column === call.sourceLocation?.column).length;
+          if (siblings > 1) {
+            skippedRawLocations.add(rawLocation);
+            occurrences = 0;
+          }
+        }
+        for (let occurrence = 0; occurrence < occurrences; occurrence++) {
+          const occurrenceSources = sources.map((source) =>
+            withOccurrence(source, occurrence) as ArgSource);
+          const expressionReturns = occurrenceSources.some((source) => source.kind === 'expression')
+            ? await owner._resolveExternalExpressionReturns(
+              occurrenceSources,
+              [...visibleArgs],
+              owner,
+              state,
+              abiFunction.inputs,
+              executionAddress,
+            )
+            : undefined;
+          const childArgs = owner._resolveExternalArgs(
+            occurrenceSources, [...visibleArgs], artifact, state, abiFunction.inputs,
+            expressionReturns, occurrence, false, executionAddress,
+          );
+          if (!childArgs) {
+            active.delete(recursionKey);
+            return debugFailure('arguments-unresolved', {
+              contract: artifact.contractName, selectedFunction,
+              interfaceName: call.interfaceName, concreteName, callsiteId: call.callsiteId,
+              occurrence,
+            });
+          }
+          const childSender = executionAddress;
+          const childNodeIndex = prepared.length;
+          if (!await expand(target as StatefulContract, concreteName, childArgs, childSender, call.callsiteId)) {
+            active.delete(recursionKey);
+            return false;
+          }
+          if (call.hasReturnValues) {
+            try {
+              const returned = await (target as StatefulContract)._deriveReturnValue(concreteName, childArgs);
+              const targetFunction = (target.inner.artifact.abi as readonly AbiFunction[])
+                .find((candidate) => candidate.name === concreteName);
+              const output = targetFunction?.outputs?.length === 1 ? targetFunction.outputs[0] : undefined;
+              const encoded = output && artifactUsesSolidityAbi(target.inner.artifact)
+                ? encodePreparedSolidityReturn(returned as StateValue, output.type)
+                : output
+                  ? encodePushdataValue(returned as StateValue, output.type, target.inner.artifact.structs)
+                  : undefined;
+              if (encoded) {
+                prepared[childNodeIndex] = {
+                  ...prepared[childNodeIndex],
+                  provisionalResultCommitment: encoded,
+                };
+              }
+            } catch {
+              // Progressive atomic derivation can still discover the value from the completed transaction.
+            }
+          }
+          if (call.interfaceName === '__raw__' && call.hasReturnValues) {
+            try {
+              const returned = await (target as StatefulContract)._deriveReturnValue(concreteName, childArgs);
+              if (returned === true) successfulRawFunctions.add(concreteName);
+            } catch {
+              // The final atomic covenant remains authoritative; an unavailable optional precomputation simply
+              // leaves all compiler-published conditional alternatives in the prepared closure.
+            }
+          }
+        }
+      }
+      active.delete(recursionKey);
+      return true;
+    };
+    const rootSender = addressToLockScript(this._signer.getAddress());
+    if (!await expand(this as unknown as StatefulContract, functionName, functionArgs, rootSender)) return undefined;
+    if (closureDebug) console.error('atomic-closure-prepared', {
+      functionName,
+      calls: prepared.map((call) => ({
+        contract: call.contract.inner.artifact.contractName,
+        functionName: call.functionName,
+        callsiteId: call.callsiteId,
+      })),
+    });
+    return prepared.length > 1 ? Object.freeze(prepared) : undefined;
+  }
+
   /**
    * Register the callee instances for an array-element external call `IFoo(arr[i]).m()` (in array order).
    * Stored in the base Contract's unified external-target registry (keyed by each instance's address), shared
@@ -3530,21 +4070,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     keyTypes?: readonly string[],
   ): boolean {
     if (entry.slot) {
-      const encoded = keys.map((arg, i) => {
+      const encodedCandidates = keys.map((arg, i): Uint8Array[] => {
         if (typeof arg === 'string') {
-          if (keyTypes?.[i] === 'address' && arg.includes(':')) return addressToLockScript(arg);
+          if (keyTypes?.[i] === 'address' && arg.includes(':')) return [addressToLockScript(arg)];
           // 0x-hex locking bytecode (23/25/35) or other hex keys. Do not UTF-8 pack the hex text.
-          if (/^0x(?:[0-9a-fA-F]{2})+$/i.test(arg)) return hexToBin(arg.slice(2));
-          if (keyTypes?.[i] && /^(?:u?int|bigint)/.test(keyTypes[i]) && /^-?\d+$/.test(arg)) {
-            return bigIntToVmNumber(BigInt(arg));
+          if (/^0x(?:[0-9a-fA-F]{2})+$/i.test(arg)) {
+            const bytes = hexToBin(arg.slice(2));
+            // Ported Solidity event decoders expose an address as its 20-byte `0x` payload, while SolidCash
+            // persists `address` mapping keys as full locking bytecode. Treat the EVM-compatible payload as the
+            // equivalent P2PKH address, but retain the raw candidate for artifacts which intentionally used a
+            // bytes20-shaped address key.
+            if (keyTypes?.[i] === 'address' && bytes.length === 20) {
+              return [Uint8Array.from([0x76, 0xa9, 0x14, ...bytes, 0x88, 0xac]), bytes];
+            }
+            return [bytes];
           }
-          return utf8ToBin(arg);
+          if (keyTypes?.[i] && /^(?:u?int|bigint)/.test(keyTypes[i]) && /^-?\d+$/.test(arg)) {
+            return [bigIntToVmNumber(BigInt(arg))];
+          }
+          return [utf8ToBin(arg)];
         }
-        if (arg instanceof Uint8Array) return arg;
-        if (typeof arg === 'bigint') return bigIntToVmNumber(arg);
-        return bigIntToVmNumber(arg ? 1n : 0n);
+        if (arg instanceof Uint8Array) return [arg];
+        if (typeof arg === 'bigint') return [bigIntToVmNumber(arg)];
+        return [bigIntToVmNumber(arg ? 1n : 0n)];
       });
-      return binsAreEqual(entry.slot, keyToSlotMulti(encoded));
+      const visit = (index: number, encoded: Uint8Array[]): boolean => index === encodedCandidates.length
+        ? binsAreEqual(entry.slot!, keyToSlotMulti(encoded))
+        : encodedCandidates[index].some((candidate) => visit(index + 1, [...encoded, candidate]));
+      return visit(0, []);
     }
     const entryKeys = entry.keys ?? (entry.key !== undefined ? [entry.key] : []);
     if (entryKeys.length !== keys.length) return false;
@@ -3634,9 +4187,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   // Wrap the instance in a Proxy so a bare `sc.name` resolves to the ABI function / state getter when `name` is
-  // not a framework member (v6 dispatch: contract routine wins the bare name). Framework members (in the target)
-  // win a collision; the shadowed function is reachable via getFunction(). Internal `this.*` access binds to the
-  // target, so this never affects the class's own methods.
+  // not a framework member. A mapping's compiler-generated ABI getter and its authenticated state accessor share
+  // one name; prefer the state accessor so `contract.mapping(key)` has ethers view semantics without synthesizing
+  // a transaction. Framework members (in the target) win a collision; shadowed functions remain reachable via
+  // getFunction(). Internal `this.*` access binds to the target, so this never affects the class's own methods.
   private _withDispatchProxy(): this {
     const abiNames = new Set(this.inner.artifact.abi.map((f) => f.name));
     const stateNames = new Set((this.inner.stateLayout?.variables ?? []).map((v) => v.name));
@@ -3645,8 +4199,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return new Proxy(this, {
       get(target, prop, receiver) {
         if (typeof prop === 'string' && !(prop in target)) {
-          if (abiNames.has(prop)) return (target.call as any)[prop];
           if (stateNames.has(prop)) return (target.state as any)[prop];
+          if (abiNames.has(prop)) return (target.call as any)[prop];
         }
         return Reflect.get(target, prop, receiver);
       },
@@ -3699,10 +4253,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     emitReturn = false,
     returnBlob?: Uint8Array,
     omitLocalFeeTail = false,
-    delegateExecution?: { artifact: Artifact; executor: StatefulContract },
+    executionOverride?: { artifact: Artifact; executor?: StatefulContract },
     rowArguments?: readonly RouteExpressionKeyRow[],
+    optimisticEventCommitments?: ReadonlyMap<number, string>,
   ): StatefulFunctionCall {
-    const executionArtifact = delegateExecution?.artifact ?? this.inner.artifact;
+    const executionArtifact = executionOverride?.artifact ?? this.inner.artifact;
     const capability = executionArtifact.messageBus;
     if (!capability) throw new Error('This artifact does not advertise a message-bus route');
     const expectedWitnesses = capability.route.inputs
@@ -3717,6 +4272,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const routeArgs = capability.route.inputs.map((input): FunctionArgument => {
       if (input.name === 'batchBlob') return blob;
       if (input.name.startsWith('__internal__')) {
+        // The atomic composer owns the participant return vector. Its current fixed-point claim must drive both
+        // the materialized return NFT and the route covenant witness; the graph context can still contain the
+        // preceding pass's result while return-value convergence is advancing.
+        if (input.name === '__internal__returnBlob' && returnBlob !== undefined) return returnBlob;
         const value = internalRouteWitnesses[input.name];
         if (value !== undefined) return value;
         if (input.name === '__internal__activeVerifierIndex') return -1n;
@@ -3794,24 +4353,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       handler.physicalEntrySlots?.forEach((physicalSlot, directIndex) => {
         const directAccess = selected?.entryAccesses?.[directIndex];
         const canonicalAccess = capability.route.entryAccesses?.[physicalSlot];
-        if (!directAccess || !canonicalAccess) return;
+        if (!canonicalAccess) return;
+        // Internal handlers can publish the physical route slot without retaining a standalone ABI
+        // entry-access record. The physical correspondence is still compiler-authored proof that this handler
+        // reaches the slot, so fall back to the canonical route access rather than marking a real write inactive.
+        const concreteAccess = directAccess ?? canonicalAccess;
         const selectedKeys = canonicalAccess.keyParams.map((key) =>
           routeKeyName(key).replace(/_r\d+$/, `_r${rowIndex}`));
         const selectedSlot = capability.route.entryAccesses?.findIndex((candidate) =>
-          candidate.collection === directAccess.collection
+          candidate.collection === concreteAccess.collection
           && candidate.keyParams.length === selectedKeys.length
           && candidate.keyParams.every((key, keyIndex) => routeKeyName(key) === selectedKeys[keyIndex]));
         if (selectedSlot === undefined || selectedSlot < 0) return;
         const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
         activeRouteEntryOperations.set(
           selectedSlot,
-          [...new Set([...prior, ...directAccess.operations])],
+          [...new Set([...prior, ...concreteAccess.operations])],
         );
       });
     });
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_ROUTE_ENTRY_PLAN === '1') {
-      console.error('message-bus-active-entry-operations', {
+      console.error('message-bus-active-entry-operations', JSON.stringify({
         handlers: reachedHandlers.map((handler) => handler.name),
         entries: [...activeRouteEntryOperations.entries()].map(([slotIndex, operations]) => ({
           slotIndex,
@@ -3820,7 +4383,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           operations,
         })),
         inactiveRouteEntrySlots,
-      });
+      }));
     }
     // Route entry metadata is the union of every admitted handler. In particular, a collection read in the
     // selected envelope can still advertise `write` because a sibling handler writes the same physical journal.
@@ -3829,9 +4392,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const activeRouteWriteCollections = [...new Set(reachedHandlers.flatMap((handler) => {
       const selected = executionArtifact.abi.find((candidate) =>
         candidate.selector === handler.selector || candidate.name === handler.name);
-      return (selected?.entryAccesses ?? [])
+      const direct = (selected?.entryAccesses ?? [])
         .filter((access) => access.operations.includes('write'))
         .map((access) => access.collection);
+      const physical = (handler.physicalEntrySlots ?? []).flatMap((slotIndex) => {
+        const access = capability.route.entryAccesses?.[slotIndex];
+        return access?.operations.includes('write') ? [access.collection] : [];
+      });
+      return [...direct, ...physical];
     }))];
     const reachedFtTransfers = reachedHandlers.reduce((sum, handler) =>
       sum + (handler.tokenContainerAccesses ?? []).reduce((inner, access) =>
@@ -3910,6 +4478,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // selected rows only; retaining the union when no selected row emits makes the builder materialize every
       // inactive event after the balanced block.
       emits: reachedEmits,
+      sortedBatchInfo: capability.route.sortedBatchInfo,
       ...(effectiveTokenAccesses && { tokenContainerAccesses: effectiveTokenAccesses }),
       ...(selectedKeccakCalls.length > 0 && {
         keccakPreimageParams: selectedKeccakCalls.map(() => null),
@@ -3940,7 +4509,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         .graphEcrecoverCalls = graphEcrecoverCalls;
     }
     const routeSelector = hexToBin(capability.selector);
-    if (delegateExecution) {
+    if (executionOverride?.executor) {
       const proxyForward = this.inner.artifact.abi.find((fn) => fn.name === '__forward');
       if (!proxyForward || proxyForward.inputs[0]?.type !== 'bytes') {
         throw new Error('messageBus: automatic delegate composition currently requires a baked __forward(bytes) proxy');
@@ -3955,13 +4524,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       };
       return new StatefulFunctionCall(
         this._createBuilder('__forward', [routeSelector], {
-          blockBase, emitReturn, returnBlob, omitLocalFeeTail,
+          blockBase, emitReturn, returnBlob, omitLocalFeeTail, optimisticEventCommitments,
         }),
         this as unknown as StatefulContract, '__forward', [routeSelector],
         // `routeSelector` is calldata for the co-spent implementation, not a selector for the single-entry
         // proxy. Keep the physical proxy unlocker selector-free when `_applyOverrides` rebuilds this call.
         { abiFunction: proxyForward, blockBase, emitReturn, returnBlob, omitLocalFeeTail },
-      )._withCompilerRouteDelegatecall(delegateExecution.executor, route);
+      )._withCompilerRouteDelegatecall(executionOverride.executor, route);
     }
     return new StatefulFunctionCall(
       this._createBuilder('__message_bus1', routeArgs, {
@@ -3971,6 +4540,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         emitReturn,
         returnBlob,
         omitLocalFeeTail,
+        optimisticEventCommitments,
       }),
       this as unknown as StatefulContract, '__message_bus1', routeArgs,
       { abiFunction: effectiveRoute, selector: routeSelector, blockBase, emitReturn, returnBlob, omitLocalFeeTail },
@@ -6662,6 +7232,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const internalInitArgs: FunctionArgument[] = [];
     for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
       if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
+      else if (input.name === '__internal__valueChunkOutputBase') internalInitArgs.push(-1n);
+      else if (input.name.startsWith('__internal__valueWitness_')
+        || input.name.startsWith('__internal__leadingPushValue_')) {
+        // Genesis starts from an empty collection, so constructor mapping writes have no prior chunked value to
+        // authenticate or leading array-push value to carry. If long computed values reserve continuation outputs,
+        // their absolute band is derived later from the -1 relocation sentinel above.
+        internalInitArgs.push(new Uint8Array());
+      }
       else {
         const match = input.name.match(/^__internal__vmapBatch(Slot|Proof|Next|PredOut|Rank)_(\d+)$/);
         if (match) {
@@ -6723,18 +7301,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         (slot) => slot.kind === kind && (slot.slotIndex ?? 0) === slotIndex,
       )?.offset;
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    // Sparse probes omit OP_INPUTBYTECODE unless listed; constructors with keccak need full traces
-    // on small contracts and carefully instrumented sparse traces on large ones. Prefer full debug
-    // when the constructor is modest enough that cloning the trace is safe.
-    // The sparse observer is an approximation of the faithful trace (it records only the inspected opcodes and
-    // the EQUALVERIFY adjacent to each). SOLIDCASH_FAITHFUL_DEPLOY_PROBE=1 forces the faithful path so a
-    // derivation failure can be attributed to the contract rather than to the observer.
-    const useSparseProbe = !(globalThis as any).process?.env?.SOLIDCASH_FAITHFUL_DEPLOY_PROBE
-      && (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
     const allEventDefs = artifact.events ?? [];
     // A failing commitment equality stops VM execution, so one probe may reveal only the prefix through the
-    // first mismatched data NFT. Allow every state NFT to be learned progressively plus a final convergence run.
-    const maxDeployIterations = Math.max(5, requiredIndices.length + 2);
+    // first mismatched output. Allow every progressively learned placeholder (keccak preimage, entry/trailing
+    // entry, event, dynamic chunk, or state NFT) to consume a probe, plus a final convergence run. Constructors
+    // with several emitted events can otherwise exhaust the state-only allowance before reaching their NFTs.
+    const maxDeployIterations = Math.max(
+      5,
+      constructorKeccakPreimages.filter((preimage) => preimage === null).length
+        + entryOutputCount
+        + sortedCollections.length
+        + emitCount
+        + (constructorAbi?.dynamicWrites?.length ?? 0)
+        + requiredIndices.length
+        + 2,
+    );
     const seenDeployKeys = new Set<string>();
 
     let deployConverged = false;
@@ -7021,55 +7602,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
-      // Run VM debug and extract commitments
+      // Constructor derivation is an intermediate construction pass: placeholder output equalities may fail before
+      // later commitments become observable. Keep every convergence iteration optimistic; the fully assembled
+      // deployment transaction is validated by the ordinary strict preflight immediately before broadcast.
       const transaction = probeBuilder.buildLibauthTransaction();
       const sourceOutputs = generateLibauthSourceOutputs(
         probeBuilder.inputs,
       );
       const program = { inputIndex: 0, sourceOutputs, transaction };
-      let fullTrace: AuthenticationProgramStateCommon[];
-      if (useSparseProbe) {
-        // Large private-network contracts can execute millions of instructions. vm.debug() clones every state,
-        // including its stack, so probing a several-hundred-kilobyte initializer can consume many gigabytes.
-        // Commitment/transfer extraction only needs the inspected opcode and its adjacent EQUALVERIFY state.
-        const sparseTrace: AuthenticationProgramStateCommon[] = [];
-        const observedOpcodes = new Set<number>([
-          Op.OP_OUTPUTTOKENCOMMITMENT,
-          Op.OP_OUTPUTBYTECODE,
-          Op.OP_OUTPUTVALUE,
-          Op.OP_OUTPUTTOKENAMOUNT,
-          Op.OP_OUTPUTTOKENCATEGORY,
-          Op.OP_EQUALVERIFY,
-        ]);
-        // Complex constructor keccak arguments are learned at the contract's OP_INPUTBYTECODE side-car read.
-        // Retaining this one additional state is still sparse, and reduceProbeTrace removes it again before the
-        // output-pin extractors run.
-        if (constructorKeccakPreimages.some((preimage) => preimage === null)) {
-          observedOpcodes.add(Op.OP_INPUTBYTECODE);
-        }
-        let awaitingVerification = false;
-        const vm = createVirtualMachineBch2026ForProvider(options.provider, {
-          opcodes: observedOpcodes,
-          beforeOperation: (unknownState) => {
-            const state = unknownState as AuthenticationProgramStateCommon;
-            const opcode = state.instructions[state.ip]?.opcode;
-            if (opcode === Op.OP_EQUALVERIFY && !awaitingVerification) return;
-            sparseTrace.push({
-              ...state,
-              stack: state.stack.slice(),
-              alternateStack: state.alternateStack.slice(),
-              controlStack: state.controlStack.slice(),
-            });
-            awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
-          },
-        });
-        const finalState = vm.evaluate(program) as AuthenticationProgramStateCommon;
-        fullTrace = [...sparseTrace, finalState];
-      } else {
-        fullTrace = createVirtualMachineBch2026ForProvider(options.provider).debug(
-          program,
-        ) as AuthenticationProgramStateCommon[];
-      }
+      const fullTrace = evaluateProbeTrace(options.provider, program);
 
       if (constructorKeccakPreimages.some((preimage) => preimage === null)) {
         if (constructorKeccakBase === undefined) {
@@ -7093,11 +7634,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
-      // Keep the faithful trace above for computed keccak preimages and diagnostics, but give all output-pin
-      // extractors the same reduced trace shape as evaluateProbeTrace's sparse observer. Without this reduction,
-      // outlined constructor checks insert OP_INVOKE/alt-stack instructions between an introspection read and its
-      // EQUALVERIFY, making every state/event placeholder look undiscoverable.
-      const probeTrace = reduceProbeTrace(fullTrace);
+      const probeTrace = fullTrace;
 
       // Learn entry commitments even from a trace that stops at their placeholder equality check. On the next
       // iteration those commitments are present, allowing execution to reach later state/event derivations.
@@ -7276,32 +7813,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
-      // Once the complete constructor probe validates, every learned output placeholder is a fixed point.
-      if (!fullTrace.some((step) => step.error !== undefined)) {
-        deployConverged = true;
-        break;
-      }
-
-      // Oscillation detection: if we've seen this exact commitment set before,
-      // the derivation is cycling without converging.
       const deployKey = stateCommitments.join('|') + '||' + entryCommits.join('|')
         + '||' + trailingEntryCommits.join('|') + '||' + eventCommits.join('|')
         + '||' + reservedChunkNames.map((name) => dynamicChunkCommits[name] ?? '').join('|');
-      if (seenDeployKeys.has(deployKey)) {
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_DEPLOY === '1') {
-          // eslint-disable-next-line no-console
-          console.error('constructor-probe-oscillation', {
-            iter, stateCommitments, entryCommits, trailingEntryCommits, eventCommits,
-            error: [...fullTrace].reverse().find((step) => step.error)?.error,
-          });
-        }
-        throw new Error(
-          'Deploy derivation oscillation detected: commitment state is cycling without converging. '
-          + 'This may indicate conflicting covenant constraints in the constructor.',
-        );
+      if (!seenDeployKeys.has(deployKey)) {
+        seenDeployKeys.add(deployKey);
+        continue;
       }
-      seenDeployKeys.add(deployKey);
+
+      deployConverged = true;
+      break;
     }
 
     if (!deployConverged) {
@@ -9395,7 +9916,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           return rebound;
         };
 
-        if (skipExternalStateDerivation) {
+        // A read followed by a write can share both the participant master and the same sorted-entry proof.
+        // Always promote the physical entry inputs to the master-authorized unlocker after fusion; otherwise the
+        // first logical view's preserve-only unlocker survives and rejects the writer's predecessor update.
+        const refreshExternalEntryMasters = (): void => {
           let rebound = false;
           for (const group of externalCallUtxoGroups) {
             if (group.sharedGroupIndex !== undefined) continue;
@@ -9404,7 +9928,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ) || rebound;
           }
           if (rebound) stb._refreshInputs();
-        }
+        };
+        refreshExternalEntryMasters();
 
         // A structural-layout restart deliberately skips the expensive external-state derivation below, but it
         // still creates a fresh transaction builder. Recreate every planned cold-insert placeholder on that fresh
@@ -9451,7 +9976,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
             console.error('route-probe-build-start', { groupIdx, functionName: group.functionName });
           }
-          let probeBuilder = stb.build();
+          let probeBuilder = stb.build({ optimistic: true });
           if (valueChunkWitness && group.valueChunkOutputBase === undefined) {
             const plannedBand = stb.getPublishJobEventsBand();
             const usesPlannedBand = plannedBand !== undefined
@@ -9475,7 +10000,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               __internal__valueChunkOutputBase: BigInt(outputBase),
             });
             stb._refreshInputs();
-            probeBuilder = stb.build();
+            probeBuilder = stb.build({ optimistic: true });
           }
           if (debugTargetDerivation) console.error('derive-phase1-group-built', {
             groupIdx, functionName: group.functionName,
@@ -9512,10 +10037,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // list. The STB's pre-build `allInputs` ordering is therefore not authoritative for a derivation VM
           // run. Resolve the exact outpoint in the probe we are about to execute; retain the layout getter only
           // as a defensive fallback for synthetic groups without a materialized master outpoint.
-          const builtMasterIdx = probeBuilder.inputs.findIndex((input) => input.txid === expectedMaster.txid
-            && input.vout === expectedMaster.vout);
-          const builtStateMasterIdx = probeBuilder.inputs.findIndex((input) => input.txid === group.masterUtxo.txid
-            && input.vout === group.masterUtxo.vout);
+          const repeatedStateMasterOccurrence = externalCallUtxoGroups.slice(0, groupIdx).filter((candidate) => (
+            candidate.sharedGroupIndex === undefined
+            && candidate.masterUtxo.txid === group.masterUtxo.txid
+            && candidate.masterUtxo.vout === group.masterUtxo.vout
+          )).length;
+          const builtStateMasterCandidates = probeBuilder.inputs
+            .map((input, index) => ({ input, index }))
+            .filter(({ input }) => input.txid === group.masterUtxo.txid
+              && input.vout === group.masterUtxo.vout)
+            .map(({ index }) => index);
+          const builtStateMasterIdx = builtStateMasterCandidates[repeatedStateMasterOccurrence]
+            ?? builtStateMasterCandidates[0] ?? -1;
+          const builtMasterIdx = group.delegateCallGroupIndex === undefined
+            ? builtStateMasterIdx
+            : probeBuilder.inputs.findIndex((input) => input.txid === expectedMaster.txid
+              && input.vout === expectedMaster.vout);
           const bMasterIdx = group.compilerRoute && group.delegateCallGroupIndex !== undefined
             // Routed proxy state follows its implementation in the input band. The group's provisional master
             // outpoint can still alias the implementation during probe convergence, so derive this coordinate
@@ -9619,7 +10156,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (learnedValue && witnessInputs.length === 1 && delegateGroup?.refreshInternalArgs) {
               delegateGroup.refreshInternalArgs({ [witnessInputs[0].name]: learnedValue });
               stb._refreshInputs();
-              const witnessProbe = stb.build();
+              const witnessProbe = stb.build({ optimistic: true });
               fullTrace = evaluateProbeTrace(this.inner.provider, {
                 inputIndex: bMasterIdx,
                 sourceOutputs: generateLibauthSourceOutputs(witnessProbe.inputs),
@@ -9656,14 +10193,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // this can legitimately come back empty - that must NOT skip the return-event extraction below.
           const expectedMasterLockingBytecode = (group.masterUtxo as UnlockableUtxo)
             .unlocker.generateLockingBytecode();
-          const builtOutputBase = probeBuilder.outputs.findIndex((output) => {
-            const lockingBytecode = typeof output.to === 'string'
-              ? addressToLockScript(output.to) : output.to;
-            return output.token?.category === group.categoryId
-              && output.token?.nft?.capability === 'minting'
-              && lockingBytecode.length === expectedMasterLockingBytecode.length
-              && lockingBytecode.every((byte, index) => byte === expectedMasterLockingBytecode[index]);
-          });
+          const builtOutputCandidates = probeBuilder.outputs
+            .map((output, index) => ({ output, index }))
+            .filter(({ output }) => {
+              const lockingBytecode = typeof output.to === 'string'
+                ? addressToLockScript(output.to) : output.to;
+              return output.token?.category === group.categoryId
+                && output.token?.nft?.capability === 'minting'
+                && lockingBytecode.length === expectedMasterLockingBytecode.length
+                && lockingBytecode.every((byte, index) => byte === expectedMasterLockingBytecode[index]);
+            })
+            .map(({ index }) => index);
+          const repeatedOutputOccurrence = externalCallUtxoGroups.slice(0, groupIdx).filter((candidate) => (
+            candidate.sharedGroupIndex === undefined
+            && candidate.masterUtxo.txid === group.masterUtxo.txid
+            && candidate.masterUtxo.vout === group.masterUtxo.vout
+          )).length;
+          const builtOutputBase = builtOutputCandidates[repeatedOutputOccurrence] ?? -1;
           // The concrete probe is authoritative: output-only caller slots and sorted INSERT expansion can shift
           // participant bands in ways the pre-build dense-coordinate helper cannot reconstruct. Compiler-routed
           // proxies deliberately emit a spacer in their nominal master slot, so retain the helper as their fallback.
@@ -9679,6 +10225,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // B's data NFT commitments
           if (commitments && commitments.length > 0) {
             const bCommitments = commitments.slice(0, bRequiredNftCount);
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_EXTERNAL_STATE === '1') {
+              console.error('external-state-commitments', {
+                groupIdx, functionName: group.functionName, bOutputBase,
+                requiredNftIndices: group.requiredDataNftIndices, bCommitments,
+              });
+            }
             const bState = commitmentsToState(bCommitments, group.stateLayout, group.requiredDataNftIndices);
             for (const [name, value] of Object.entries(bState)) {
               stb.setExternalCallState(group.categoryId, name, value);
@@ -9709,7 +10262,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const requiresFreshEntryProbe = group.compilerRoute !== undefined
               || group.delegateEmbeddedInBlock === true || valueChunkWitness !== undefined;
             if (requiresFreshEntryProbe) {
-              const entryProbe = stb.build();
+              const entryProbe = stb.build({ optimistic: true });
               const entryTransaction = entryProbe.buildLibauthTransaction();
               if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN', 'SOLIDC_DEBUG_CHUNK_SCAN'].some((name) =>
                 (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
@@ -9753,7 +10306,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 seededInitialEntry = true;
               }
               if (seededInitialEntry) {
-                const entryProbe = stb.build();
+                const entryProbe = stb.build({ optimistic: true });
                 entryTrace = evaluateProbeTrace(this.inner.provider, {
                   inputIndex: bMasterIdx,
                   sourceOutputs: generateLibauthSourceOutputs(entryProbe.inputs),
@@ -9810,10 +10363,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               if (deriveRouteValueChunks(group, bOutputBase, entryTrace, stb)) {
                 progressed = true;
-                if (chunkPasses < VALUE_CHUNK_MAX_COUNT) chunkPasses += 1;
+                // This is speculative fixed-point discovery, not the format's theoretical 15-bit chunk limit.
+                // A non-converging pin can otherwise extend its own loop bound to 32,768 full VM evaluations.
+                if (chunkPasses < MAX_SPECULATIVE_CHUNK_OUTPUTS) chunkPasses += 1;
               }
               if (!progressed || pass === entrySlotCount + chunkPasses) break;
-              const nextProbe = stb.build();
+              const nextProbe = stb.build({ optimistic: true });
               entryTrace = evaluateProbeTrace(this.inner.provider, {
                 inputIndex: bMasterIdx,
                 sourceOutputs: generateLibauthSourceOutputs(nextProbe.inputs),
@@ -9860,7 +10415,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // nevertheless leaves each expected `uint16 index || data` commitment in the trace. Reassemble
               // those authenticated pieces with each candidate head and accept only a root-matching result.
               if (!learnedValue) {
-                for (const headCandidate of traceItems.filter((item) => item.length > 60 && item.length <= 10_000)) {
+                // Trace snapshots intentionally share immutable stack items, so identity-deduplicate repeated
+                // heads. Index the latest matching chunk once; cloning+reversing the whole trace per head/chunk
+                // made this recovery O(heads * chunks * trace-items) on large routed contracts.
+                const headCandidates: Uint8Array[] = [];
+                const seenHeads = new Set<Uint8Array>();
+                for (const item of traceItems) {
+                  if (item.length <= 60 || item.length > 10_000 || seenHeads.has(item)) continue;
+                  seenHeads.add(item);
+                  headCandidates.push(item);
+                }
+                const latestChunkByShape = new Map<string, Uint8Array>();
+                for (let itemIndex = traceItems.length - 1; itemIndex >= 0; itemIndex--) {
+                  const item = traceItems[itemIndex];
+                  if (item.length < VALUE_CHUNK_INDEX_SIZE) continue;
+                  const key = `${item[0] | (item[1] << 8)}:${item.length - VALUE_CHUNK_INDEX_SIZE}`;
+                  if (!latestChunkByShape.has(key)) latestChunkByShape.set(key, item);
+                }
+                for (const headCandidate of headCandidates) {
                   if (!isCompleteCollectionValue(headCandidate, witnessValueType, witnessLayout?.structs)) continue;
                   const expectedCount = Math.ceil((headCandidate.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
                   if (expectedCount < 1 || expectedCount > 32) continue;
@@ -9869,10 +10441,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     const expectedDataLength = chunkIndex + 1 < expectedCount
                       ? VALUE_CHUNK_SIZE
                       : headCandidate.length - VALUE_HEAD_SIZE - VALUE_CHUNK_SIZE * chunkIndex;
-                    const item = [...traceItems].reverse().find((candidate) =>
-                      candidate.length === VALUE_CHUNK_INDEX_SIZE + expectedDataLength
-                      && candidate[0] === (chunkIndex & 0xff)
-                      && candidate[1] === (chunkIndex >>> 8));
+                    const item = latestChunkByShape.get(`${chunkIndex}:${expectedDataLength}`);
                     if (!item) break;
                     candidates.push(parseValueChunkCommitment(binToHex(item)));
                   }
@@ -9902,7 +10471,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (witnessInput && learnedValue && delegateGroup?.refreshInternalArgs) {
                 delegateGroup.refreshInternalArgs({ [witnessInput.name]: learnedValue });
                 stb._refreshInputs();
-                const witnessProbe = stb.build();
+                const witnessProbe = stb.build({ optimistic: true });
                 entryTrace = evaluateProbeTrace(this.inner.provider, {
                   inputIndex: bMasterIdx,
                   sourceOutputs: generateLibauthSourceOutputs(witnessProbe.inputs),
@@ -9957,7 +10526,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // Second pass for INSERTs: with P' + placeholder NEW(s) now present, re-run B's VM so it reaches each NEW's
             // OP_OUTPUTTOKENCOMMITMENT and pushes the real NEW commitment; extract it and replace the placeholder.
             if (insertHandles.length > 0) {
-              const pb2 = stb.build();
+              const pb2 = stb.build({ optimistic: true });
               const map2 = extractCommitmentMapFromTrace(evaluateProbeTrace(this.inner.provider, {
                 inputIndex: bMasterIdx, sourceOutputs: generateLibauthSourceOutputs(pb2.inputs),
                 transaction: pb2.buildLibauthTransaction(),
@@ -9981,7 +10550,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // verifies only its own, so exactly one matches.
           if (ec.hasReturnValues
             && (group.fusedReturnGroupIndex !== undefined || !group.precomputedReturnCommitment)) {
-            const probeBuilderRet = stb.build();
+            const probeBuilderRet = stb.build({ optimistic: true });
             const transactionRet = probeBuilderRet.buildLibauthTransaction();
             const sourceOutputsRet = generateLibauthSourceOutputs(probeBuilderRet.inputs);
             const returnProgram = {
@@ -10168,7 +10737,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     ? stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex)
                     : bMasterIdx;
                 const eventOutputBase = eventProbeIndex >= 0 ? eventProbeIndex : bOutputBase;
-                const probeBuilder2 = stb.build();
+                const probeBuilder2 = stb.build({ optimistic: true });
                 const transaction2 = probeBuilder2.buildLibauthTransaction();
                 const sourceOutputs2 = generateLibauthSourceOutputs(probeBuilder2.inputs);
                 const fullTrace2 = evaluateProbeTrace(this.inner.provider, {
@@ -10267,7 +10836,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       lockingBytecode,
                     };
                     group.eventOutputs = eventOutputs;
-                    const progressiveProbe = stb.build();
+                    const progressiveProbe = stb.build({ optimistic: true });
                     const progressiveTrace = evaluateProbeTrace(this.inner.provider, {
                       inputIndex: eventProbeIndex >= 0 ? eventProbeIndex : bMasterIdx,
                       sourceOutputs: generateLibauthSourceOutputs(progressiveProbe.inputs),
@@ -10377,7 +10946,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const learnedEntries = new Set<number>();
             const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
             for (let pass = 0; pass <= entrySlotCount; pass++) {
-              const entryProbe = stb.build();
+              const entryProbe = stb.build({ optimistic: true });
               const entryTrace = evaluateProbeTrace(this.inner.provider, {
                 inputIndex: bMasterIdx,
                 sourceOutputs: generateLibauthSourceOutputs(entryProbe.inputs),
@@ -10493,7 +11062,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // the return commitment in the same fixed participant block.
           if (ec.hasReturnValues && group.eventOutputs?.some((output) => output !== undefined)
             && (group.fusedReturnGroupIndex !== undefined || !group.precomputedReturnCommitment)) {
-            const returnProbe = stb.build();
+            const returnProbe = stb.build({ optimistic: true });
             const returnProgram = {
               inputIndex: bMasterIdx,
               sourceOutputs: generateLibauthSourceOutputs(returnProbe.inputs),
@@ -10581,7 +11150,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           for (let groupIdx = 0; groupIdx < externalOutStateUtxoGroups.length; groupIdx++) {
             const group = externalOutStateUtxoGroups[groupIdx];
 
-            const probeBuilder = stb.build();
+            const probeBuilder = stb.build({ optimistic: true });
             const transaction = probeBuilder.buildLibauthTransaction();
             const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
 
@@ -10623,7 +11192,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               requiredDataNftIndices: group.requiredDataNftIndices,
             });
 
-            const probeBuilder = stb.build();
+            const probeBuilder = stb.build({ optimistic: true });
             const transaction = probeBuilder.buildLibauthTransaction();
             const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
 
@@ -10780,7 +11349,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
 	        for (let iter = 0; iter < maxIterations; iter++) {
 	          const debugIterationStartedAt = debugTargetsThisDerivation ? Date.now() : 0;
-	          const probeBuilder2 = stb.build();
+	          const probeBuilder2 = stb.build({ optimistic: true });
 	          const debugBuilderBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
 	          if (debugTargetsThisDerivation) console.error('derive-phase2-builder-built', {
 	            iter, buildMs: debugBuilderBuiltAt - debugIterationStartedAt,
@@ -10835,15 +11404,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             transaction: transaction2,
           };
           // A dynamic output region can contain dozens of independently verified commitments. Run the discovery
-          // VM directly: it records whether it actually suppressed a failed output EQUALVERIFY. If it suppresses
-          // nothing, its result is byte-for-byte the faithful verdict; if it does, the iteration remains marked as
-          // failed and only supplies candidates for the next probe. This preserves the faithful fixed-point gate
-          // without first executing the same multi-megabyte covenant to its first mismatch twice.
-          const fullTrace2 = evaluateProbeTrace(
-            this.inner.provider, probeProgram, hasLoopOrChunkVars,
-          );
-          const faithfulProbeHadError = fullTrace2.some((state) => state.error !== undefined)
-            || (hasLoopOrChunkVars && cachedProbeVm(this.inner.provider, true).relaxationApplied);
+          // VM directly: it records whether it skipped a failed verification. Intermediate probes are optimistic
+          // by default and supply candidates for the next iteration; the completed aggregate is validated once by
+          // the strict BCH VM preflight.
+          const fullTrace2 = evaluateProbeTrace(this.inner.provider, probeProgram);
+          const optimisticProbeHadError = fullTrace2.some((state) => state.error !== undefined)
+            || cachedProbeVm(this.inner.provider).optimisticVerificationSkipped;
           if (debugTargetsThisDerivation) {
             const last = fullTrace2.at(-1);
             const instruction = last?.instructions[last.ip];
@@ -10896,7 +11462,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // nested returns, so only this complete transaction can evaluate it. Learn one runtime-reached preimage
           // per probe; rebuilding the ordinary side-car advances execution to the next nested/outer hash.
           if (stb.resolveDeferredKeccakPreimage(fullTrace2)) commitmentProgress += 1;
-          if (stb.resolveDeferredEcrecoverArgument(fullTrace2)) commitmentProgress += 1;
+          // The recovery hash can consume that keccak result. A preimage rebuild above changes the next program,
+          // so deriving recovery from this iteration's now-stale trace would immediately certify the old digest.
+          else if (stb.resolveDeferredEcrecoverArgument(fullTrace2)) commitmentProgress += 1;
 
           // Nested delegate implementations can pin computed value chunks at implementation-relative outputs.
           // Phase 2 traces the root implementation, so recover those pins from each nested implementation input.
@@ -10974,8 +11542,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               })),
             }));
             nestedProbeHadError ||= nestedTrace.some((state) => state.error !== undefined);
-            const pin = extractRouteChunkPin(nestedTrace)
-              ?? extractFailingP2sh32OutputPin(nestedTrace, stb.getPublishJobEventsBand());
+            const pin = extractRouteChunkPinInBand(nestedTrace, stb.getPublishJobEventsBand());
             const nestedPinExtractedAt = debugTargetsThisDerivation ? Date.now() : 0;
             const chunkCategory = proxyGroup?.categoryId ?? llc.categoryId;
             const band = stb.getPublishJobEventsBand();
@@ -11269,9 +11836,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   && candidate.token.nft?.capability === 'mutable'));
           const stateOutputBase = delegateMasterOutputIndex >= 0 ? delegateMasterOutputIndex + 1 : 1;
           const stateOutputRange = { min: stateOutputBase, max: stateOutputBase + stateCount };
-          const stateCommits = extractCommitmentsFromTrace(
+          const probedStateCommits = extractCommitmentsFromTrace(
             fullTrace2, stateCount, stateOutputRange, delegatecallInputIndex !== undefined,
           ) ?? [];
+          // A failing derivation probe can compare a short placeholder commitment before reaching the real
+          // state equality. Treat only the contiguous, fully decodable state prefix as progress; otherwise a
+          // two-byte placeholder (for example an inactive graph return) aborts a mapping-only handler even
+          // though its scalar state should simply remain unchanged.
+          const stateCommits: string[] = [];
+          for (let commitmentIndex = 0;
+            commitmentIndex < Math.min(probedStateCommits.length, stateCount);
+            commitmentIndex++) {
+            const commitment = probedStateCommits[commitmentIndex];
+            try {
+              commitmentsToState([commitment], stateLayout, [requiredNftIndices[commitmentIndex]]);
+              stateCommits.push(commitment);
+            } catch {
+              break;
+            }
+          }
           commitmentProgress += stateCommits.length;
           let latestEntryCommits: string[] = [];
           let latestEventCommits: string[] = [];
@@ -11435,7 +12018,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         : derivedDynamicBytes) as StateValueType;
                     }
                   } catch {
-                    // A relaxed probe can expose a length-matched intermediate before its output pin succeeds.
+                    // An optimistic probe can expose a length-matched intermediate before its output pin succeeds.
                     // Keep the commitment candidate, but defer typed dependency refresh until a later probe
                     // exposes a structurally complete dynamic value.
                   }
@@ -12174,7 +12757,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // is one probe AFTER the chunks converge - so with value chunks, do not break on a stable fingerprint
           // while the probe still errors (bounded by maxIterations). Non-value-chunk txs keep the original break so
           // an expected-revert derivation still exits fast.
-          const probeHadError = faithfulProbeHadError;
+          const probeHadError = optimisticProbeHadError;
           const anyProbeHadError = probeHadError || nestedProbeHadError;
           if (debugTargetsThisDerivation && (globalThis as { process?: { env?: Record<string, string> } }).process
             ?.env?.SOLIDC_DEBUG_DERIVATION_MIN === '1') {
@@ -12195,8 +12778,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             elapsedMs: Date.now() - debugIterationStartedAt,
             traceStates: fullTrace2.length,
             probeError: fullTrace2.find((state) => state.error)?.error,
-            relaxationApplied: hasLoopOrChunkVars
-              ? cachedProbeVm(this.inner.provider, true).relaxationApplied : false,
+            optimisticVerificationSkipped: hasLoopOrChunkVars
+              ? cachedProbeVm(this.inner.provider).optimisticVerificationSkipped : false,
             commitmentProgress,
             nestedPinProgress,
             nestedProbeHadError,
@@ -12272,7 +12855,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? Math.min(64, configuredDebugIterations) : 64;
           for (let iter = 0; iter < cleanedIterationLimit; iter++) {
             const cleanedStartedAt = debugTargetsThisDerivation ? Date.now() : 0;
-            const cleanedProbe = stb.build();
+            const cleanedProbe = stb.build({ optimistic: true });
             if (delegatecallInputIndex !== undefined) {
               stb.insertBeforeLateValueSuffix(cleanedProbe, { to: dummyLbc, amount: 1000n });
             }
@@ -12281,14 +12864,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               sourceOutputs: generateLibauthSourceOutputs(cleanedProbe.inputs),
               transaction: cleanedProbe.buildLibauthTransaction(),
             };
-            const faithfulCleanedTrace = evaluateProbeTrace(this.inner.provider, cleanedProgram);
-            const faithfulCleanedHadError = faithfulCleanedTrace.some((state) => state.error !== undefined);
-            const cleanedTrace = faithfulCleanedHadError
-              ? evaluateProbeTrace(this.inner.provider, cleanedProgram, true)
-              : faithfulCleanedTrace;
+            const cleanedTrace = evaluateProbeTrace(this.inner.provider, cleanedProgram);
+            const optimisticCleanedHadError = cleanedTrace.some((state) => state.error !== undefined)
+              || cachedProbeVm(this.inner.provider).optimisticVerificationSkipped;
             if (debugTargetsThisDerivation) console.error('derive-cleaned-evaluated', {
               iter, evaluateMs: Date.now() - cleanedStartedAt,
-              faithfulError: faithfulCleanedTrace.at(-1)?.error,
+              optimisticError: cleanedTrace.at(-1)?.error,
               states: cleanedTrace.length,
             });
 	            lastTrace = retainDiagnosticTrace(cleanedTrace);
@@ -12360,7 +12941,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               chunkOffset += existing.length;
             }
-            if (!changed || !faithfulCleanedHadError) break;
+            if (!changed || !optimisticCleanedHadError) break;
             if (debugTargetsThisDerivation) console.error('derive-cleaned-iteration-complete', {
               iter, elapsedMs: Date.now() - cleanedStartedAt, changed,
             });
@@ -12373,7 +12954,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           process?: { env?: Record<string, string> };
         }).process?.env;
         if (vmHadError && deriveDebugEnv?.SOLIDC_DEBUG_DERIVE_FAIL_SUMMARY === '1') {
-          const failInputs = stb.build().inputs;
+          const failInputs = stb.build({ optimistic: true }).inputs;
           const executedInputIndex = delegatecallInputIndex ?? 0;
           const executedUnlocker = failInputs[executedInputIndex]?.unlocker as {
             abiFunction?: AbiFunction;
@@ -12391,8 +12972,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const failingInstructions = (lastStep as {
             instructions?: Array<{ opcode?: number; data?: Uint8Array }>;
           }).instructions ?? [];
-          const failOutputs = stb.build().outputs;
-          const failInputs = stb.build().inputs;
+          const failOutputs = stb.build({ optimistic: true }).outputs;
+          const failInputs = stb.build({ optimistic: true }).inputs;
           const executedInputIndex = delegatecallInputIndex ?? 0;
           const executedUnlocker = failInputs[executedInputIndex]?.unlocker as {
             params?: unknown[];
@@ -12531,7 +13112,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const opcode = (lastStep as { instructions?: Array<{ opcode?: number }> })
             .instructions?.[ip ?? -1]?.opcode;
           const executedInputIndex = delegatecallInputIndex ?? 0;
-          const executedUnlocker = stb.build().inputs[executedInputIndex]?.unlocker as {
+          const executedUnlocker = stb.build({ optimistic: true }).inputs[executedInputIndex]?.unlocker as {
             abiFunction?: { name?: string; selector?: string };
             contract?: { artifact?: Artifact };
           } | undefined;
@@ -12619,6 +13200,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
           reconcileReturnWitnesses();
+          refreshExternalEntryMasters();
           return {
             state: currentState, vmErrored: vmHadError, derivationError,
             derivedTransfers, derivedTokenContainerTransfers: derivedFtTransfers,
@@ -12638,6 +13220,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
         reconcileReturnWitnesses();
+        refreshExternalEntryMasters();
         // State commitments were found. If the VM errored, they might be false positives from infrastructure
         // code. Mark for re-derivation while retaining the complete current-state baseline above.
         return {
@@ -12768,6 +13351,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       blockBase?: number;
       /** A atomic composition supplies one global fee tail after all participant blocks. */
       omitLocalFeeTail?: boolean;
+      /** Optimistic construction seeds; final transaction preflight validates every event commitment. */
+      optimisticEventCommitments?: ReadonlyMap<number, string>;
     },
   ): Promise<StatefulTransactionBuilder> {
     const timingEnabled = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -12902,7 +13487,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         throw new Error(`Function '${functionName}' has no returnEvent output slot; cannot emit its return value.`);
       }
       returnEmitBlockOffset = slot.offset;
-      returnEmitOutputIndex = (overrides?.blockBase ?? 0) + returnEmitBlockOffset;
+      returnEmitOutputIndex = returnEmitBlockOffset;
       // X12/X56. A delegated call's return event is verified by the IMPLEMENTATION (emitReturnEventCovenant-
       // Verification is gated `!functionHasDelegatecall`), which resolves EVERY output-only slot
       // implementation-relative - its event and its own returnEvent alike. When the implementation also emits,
@@ -13020,7 +13605,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const activeMessageBusEntryOperations = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
       ?.messageBusActiveEntryOperations;
     const entryOperations = (slotIndex: number): readonly string[] =>
-      activeMessageBusEntryOperations?.get(slotIndex) ?? entryAccesses?.[slotIndex]?.operations ?? [];
+      activeMessageBusEntryOperations === undefined
+        ? entryAccesses?.[slotIndex]?.operations ?? []
+        : activeMessageBusEntryOperations.get(slotIndex) ?? [];
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       // Entries of DIFFERENT collections share the master's category and are indistinguishable by commitment
@@ -13063,6 +13650,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // later delegate plumbing consumes the witnesses in ABI order. Inactive message-bus slots therefore need
       // an explicit empty witness; omitting them shifts every later active value onto the wrong ABI parameter.
       const chunkableValueWitnesses: Array<Uint8Array | Uint8Array[]> = [];
+      const chunkableValueWitnessesBySlot = new Map<number, Uint8Array | Uint8Array[]>();
 
       for (let slotIndex = 0; slotIndex < entryAccesses.length; slotIndex++) {
         const access = entryAccesses[slotIndex];
@@ -13075,10 +13663,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const participatesInSortedBatch = entryAbiFunction?.sortedBatchInfo?.some(
           (batch) => batch.slotIndices.includes(slotIndex),
         ) ?? false;
-        if (inactiveMessageBusEntrySlots.has(slotIndex) && !participatesInSortedBatch) {
+        const isPublishedPerRowBatchLane = participatesInSortedBatch
+          && access.keyParams.some((name) => /_r\d+$/.test(name));
+        if (!collection.sorted && inactiveMessageBusEntrySlots.has(slotIndex)
+          && !activeMessageBusEntryOperations?.has(slotIndex)
+          && !isPublishedPerRowBatchLane) {
           // Preserve the route's physical entry offset without looking up a collection proof. Several absent
           // inactive keys can share one sorted-list predecessor; resolving them normally would attempt to spend
-          // that NFT more than once even though their selector-gated handlers never execute.
+          // that NFT more than once even though their selector-gated handlers never execute. Route-wide sorted
+          // batch metadata is also a union of all handlers, so a sibling handler's batch cannot reactivate this
+          // slot for the concrete selected envelope.
           entryNfts.push({
             slotIndex,
             collection: access.collection,
@@ -13087,7 +13681,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             keyValue: 0n,
             exists: false,
           });
-          if (hasChunkableValueWitness) chunkableValueWitnesses.push(new Uint8Array());
+          if (hasChunkableValueWitness) {
+            const witness = new Uint8Array();
+            chunkableValueWitnesses.push(witness);
+            chunkableValueWitnessesBySlot.set(slotIndex, witness);
+          }
           continue;
         }
         const collectionEntries = await collectionEntriesFor(collection.signature);
@@ -13366,6 +13964,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               });
             }
             chunkableValueWitnesses.push(witness);
+            chunkableValueWitnessesBySlot.set(slotIndex, witness);
           }
 
           // P5b: a sorted chunkable-value WRITE persists the full value as chunks; the covenant PINS them to the
@@ -13396,9 +13995,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
                 ?.messageBusRowArguments;
               if (selectedRows && authenticatedChunkableValue) {
+                const graphExecution = (entryAbiFunction as MessageBusRuntimeAbiFunction)
+                  .messageBusGraphExecution === true;
                 const timestamp = typeof onChainState.state.__block_timestamp === 'bigint'
                   ? onChainState.state.__block_timestamp : undefined;
-                const leadingValue = encodeLeadingRouteArrayPushes({
+                // Atomic graph routes execute every selected row against the shared collection journal. Their
+                // earlier pushes are already present when the final row runs; replaying a leading prefix before
+                // each body duplicates those writes. Legacy collapsed routes still execute only their final body.
+                const leadingValue = graphExecution ? undefined : encodeLeadingRouteArrayPushes({
                   rowArguments: selectedRows,
                   collection: access.collection,
                   valueType: collection.valueType,
@@ -13423,6 +14027,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   initialValue: authenticatedChunkableValue,
                   timestamp,
                 });
+                if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                  ?.SOLIDC_DEBUG_LEADING_PUSH === '1') {
+                  console.error('leading-push-route-value', JSON.stringify({
+                    collection: access.collection,
+                    rows: selectedRows.length,
+                    authenticatedHead: binToHex(authenticatedChunkableValue).slice(0, 8),
+                    leadingHead: leadingValue ? binToHex(leadingValue).slice(0, 8) : undefined,
+                    exactHead: exactValue ? binToHex(exactValue).slice(0, 8) : undefined,
+                  }));
+                }
                 if (exactValue) {
                   const prior = computedValueChunkValues.get(access.collection);
                   if (prior && binToHex(prior.slot) !== binToHex(slot)) {
@@ -13640,6 +14254,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         });
       }
 
+      // A batched sorted-map read and a later INSERT can resolve to the same predecessor UTXO even though their
+      // target slots differ. Physical proof deduplication keeps that predecessor only once; if the read was
+      // discovered first, its preserve-only unlocker would otherwise survive while the writer legitimately
+      // re-points the predecessor. Promote every shared proof outpoint touched by any write to master-authorized
+      // spending before alias planning selects the physical owner.
+      const writableEntryOutpoints = new Set(entryNfts.flatMap((entry) => (
+        entry.utxo && entryOperations(entry.slotIndex).some(
+          (operation) => operation === 'write' || operation === 'delete',
+        ) ? [`${entry.utxo.txid.toLowerCase()}:${entry.utxo.vout}`] : []
+      )));
+      for (const entry of entryNfts) {
+        if (!entry.utxo
+          || !writableEntryOutpoints.has(`${entry.utxo.txid.toLowerCase()}:${entry.utxo.vout}`)) continue;
+        entry.utxo.unlocker = createEntryNftUnlocker(
+          this.inner, overrides?.blockBase ?? 0, this.categoryId, entry.collection,
+        );
+      }
+
       const batchAliasSkips = new Set<number>();
       const batchAliasOwners = new Map<number, number>();
       for (const entry of entryNfts) {
@@ -13670,13 +14302,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             batchAliasSkips.add(entry.slotIndex);
             batchAliasOwners.set(entry.slotIndex, ownerSlot);
             runtimeMessageBusAliasSkipSlots.add(entry.slotIndex);
+            // The route journal canonicalizes equal row keys to the earliest physical cache. If that owner row's
+            // selector did not itself use the entry, the selector-derived inactive set still marks its slot as a
+            // funder. Reactivate it and promote the selected operations: the later active row writes through this
+            // canonical slot, while its own alias slot remains the skipped placeholder below. Composition reads
+            // this same runtime map when deciding which physical outputs must remain byte-identical.
+            inactiveMessageBusEntrySlots.delete(ownerSlot);
+            if (sameSortedTarget && activeMessageBusEntryOperations !== undefined) {
+              const ownerOperations = activeMessageBusEntryOperations.get(ownerSlot) ?? [];
+              const aliasOperations = activeMessageBusEntryOperations.get(entry.slotIndex) ?? [];
+              (activeMessageBusEntryOperations as Map<number, readonly string[]>).set(
+                ownerSlot,
+                [...new Set([...ownerOperations, ...aliasOperations])],
+              );
+            }
             break;
           }
         }
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_ENTRY_PLAN === '1') {
-        console.error('message-bus-route-entry-plan', entryNfts.map((entry) => ({
+        console.error('message-bus-route-entry-plan', JSON.stringify(entryNfts.map((entry) => ({
           slotIndex: entry.slotIndex,
           collection: entry.collection,
           keys: entryAccesses?.[entry.slotIndex]?.keyParams,
@@ -13691,7 +14337,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           commitment: entry.utxo?.token?.nft?.commitment,
           aliasOwner: batchAliasOwners.get(entry.slotIndex),
           aliasSkipped: batchAliasSkips.has(entry.slotIndex),
-        })));
+        }))));
       }
       const batchGuardSlot = entryAbiFunction?.blockLayout?.slots.find(
         (slot) => slot.kind === 'entry' && slot.softDelete,
@@ -13728,9 +14374,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           u.token?.category === this.categoryId && u.token?.nft?.capability === 'mutable'
           && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0).length;
       }
-      let batchPredOutputBase = (entryAbiFunction?.blockLayout?.blockSize ?? 1) + preservedTrailingCount;
-      if (returnEmitOutputIndex < 0
-        && entryAbiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')) {
+      const entryBlockLayout = entryAbiFunction?.blockLayout;
+      const ownsBalancedTrailingFrame = (entryBlockLayout?.trailingCapacity ?? 0) > 0;
+      let batchPredOutputBase = (
+        ownsBalancedTrailingFrame
+          ? entryBlockLayout?.trailingBase ?? entryBlockLayout?.blockSize ?? 1
+          : entryBlockLayout?.blockSize ?? 1
+      ) + preservedTrailingCount;
+      if (!ownsBalancedTrailingFrame && returnEmitOutputIndex < 0
+        && entryBlockLayout?.slots.some((slot) => slot.kind === 'returnEvent')) {
         batchPredOutputBase -= 1;
       }
       for (const batch of entryAbiFunction?.sortedBatchInfo ?? []) {
@@ -13756,6 +14408,47 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const collectionEntries = await collectionEntriesFor(collection.signature);
         const list = SortedList.fromUtxos(collectionEntries);
+        const selectedWriteSlots = batch.slotIndices.filter((slotIndex) => entryOperations(slotIndex).some(
+          (operation) => operation === 'write' || operation === 'delete',
+        ));
+        if (selectedWriteSlots.length === 0) {
+          // A fixed message-bus route authenticates each sorted collection proof before dispatching the selected
+          // handler. An envelope with no writes to this batch therefore still needs a real proof coordinate, but
+          // must not run the batch planner or materialize any target/predecessor outputs.
+          for (const slotIndex of batch.slotIndices) {
+            if (batchAliasSkips.has(slotIndex)) {
+              const ownerSlot = batchAliasOwners.get(slotIndex);
+              if (ownerSlot === undefined) throw new Error(`inactive vmap alias slot has no owner ${slotIndex}`);
+              const ownerOffset = entryAbiFunction!.blockLayout?.slots.find(
+                (slot) => slot.kind === 'entry' && slot.slotIndex === ownerSlot,
+              )?.offset;
+              if (ownerOffset === undefined) {
+                throw new Error(`inactive vmap alias owner has no block offset ${ownerSlot}`);
+              }
+              batchWitnesses.push(
+                batchTargetSlots.get(slotIndex)!, BigInt(ownerOffset), new Uint8Array(32), -2n,
+                ...(batch.linear ? [0n] : []),
+              );
+              continue;
+            }
+            const offset = entryAbiFunction!.blockLayout?.slots.find(
+              (slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex,
+            )?.offset;
+            if (offset === undefined) throw new Error(`inactive vmap batch slot has no block offset ${slotIndex}`);
+            const targetSlot = batchTargetSlots.get(slotIndex);
+            if (!targetSlot) throw new Error(`inactive vmap batch '${batch.collection}' is missing target slot ${slotIndex}`);
+            const proof = list.find(targetSlot) ?? list.predecessorOf(targetSlot);
+            batchWitnesses.push(
+              targetSlot,
+              BigInt(offset),
+              decodeEntryCommitment(hexToBin(proof.utxo.token!.nft!.commitment!)).nextKey,
+              -3n,
+              ...(batch.linear ? [0n] : []),
+            );
+          }
+          if (batch.linear) batchWitnesses.push(new Uint8Array());
+          continue;
+        }
         const writes = batch.slotIndices.filter((slotIndex) => !batchAliasSkips.has(slotIndex)).map((slotIndex) => ({
           slot: batchTargetSlots.get(slotIndex)!, value: new Uint8Array(),
         }));
@@ -13867,13 +14560,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (abiFunction?.inputs.some((input) => input.name.startsWith('__internal__valueWitness_'))) {
         const positions = abiFunction.inputs.flatMap((input, index) =>
           input.name.startsWith('__internal__valueWitness_') ? [index] : []);
-        if (finalArgs.length === abiFunction.inputs.length && positions.length >= chunkableValueWitnesses.length) {
-          chunkableValueWitnesses.forEach((witness, index) => { finalArgs[positions[index]] = witness; });
+        const orderedWitnesses = positions.map((position) => {
+          const slotIndex = Number(abiFunction!.inputs[position].name.slice('__internal__valueWitness_'.length));
+          return chunkableValueWitnessesBySlot.get(slotIndex) ?? new Uint8Array();
+        });
+        if (finalArgs.length === abiFunction.inputs.length) {
+          orderedWitnesses.forEach((witness, index) => { finalArgs[positions[index]] = witness; });
         } else {
-          for (const witness of chunkableValueWitnesses) finalArgs = [...finalArgs, witness];
+          for (const witness of orderedWitnesses) finalArgs = [...finalArgs, witness];
         }
+        entryValueWitnesses = orderedWitnesses;
+      } else {
+        entryValueWitnesses = chunkableValueWitnesses;
       }
-      entryValueWitnesses = chunkableValueWitnesses;
     }
 
     // Alias-conditional writes (swap-remove of the LAST key): a write slot whose runtime key equals the aliasing
@@ -14914,6 +15613,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       positions: { name: string; categoryId: string }[];
     }[] = [];
     const topLevelAnchorFillPositions: { argIndex: number; band: number; proxyRoute: boolean }[] = [];
+    const topLevelExternalCallInputFillPositions: { argIndex: number; categoryId: string }[] = [];
+    const topLevelExternalReturnFillPositions: { argIndex: number; groupIndex: number }[] = [];
+    let topLevelExternalCallBaseArgIndex: number | undefined;
     const pendingTokenCallInputFills: {
       group: { refreshInternalArgs?: (updates: Record<string, FunctionArgument>) => void };
       encodedArgs: FunctionArgument[];
@@ -14956,6 +15658,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Combined metadata for all groups (direct + transitive); used by _deriveFullTransactionState
     let allGroupEcSlots: readonly { hasReturnValues?: boolean; requiredDataNftIndices: number[] }[] = externalCalls ?? [];
     let allGroupParentIndices: readonly number[] = (externalCalls ?? []).map(() => -1);
+    // A rolled external-call loop whose source array is empty reaches no callsite. Keep the ABI slot so hidden
+    // index witnesses retain their source numbering, but do not materialize a physical callee block for it.
+    const inactiveExternalCallSlots = new Set<number>();
 
     // Auto-resolve external calls from the registry when not explicitly provided.
     // The registry provides the contract object for UTXO/state lookup.
@@ -14969,7 +15674,41 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const ec = externalCalls[eci];
         // Array-element call: the callee instance was already resolved during expansion.
         if (presetResolved?.[eci]) { autoResolved.push(presetResolved[eci]!); continue; }
-        const registered = this._externalRegistry.get(ec.interfaceName);
+        // Hardhat-style suites normally pass deployed addresses through constructor/function arguments rather
+        // than explicitly rebuilding an SDK external registry. Resolve that authenticated address first, just
+        // like the nested-composition path below. This also disambiguates two concrete contracts implementing
+        // the same interface (IUnicrow*.challenge is a common example).
+        callerStateSnapshot ??= (await this.getFullState()).state;
+        const addressValue = ec.addressSource
+          ? this._resolveExternalArgs(
+            [ec.addressSource], args, this.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
+          )?.[0]
+          : ec.addressParam
+            ? (() => {
+              const addressParamIndex = abiFunction?.inputs.findIndex(
+                (input) => input.name === ec.addressParam,
+              ) ?? -1;
+              return addressParamIndex >= 0 ? args[addressParamIndex] : undefined;
+            })()
+            : undefined;
+        const addressHex = addressValue instanceof Uint8Array ? binToHex(addressValue) : undefined;
+        const deploymentAtAddress = addressHex
+          ? findDeploymentByLockingBytecode(this.inner.provider, addressHex)
+          : typeof addressValue === 'string'
+            ? findDeploymentByAddress(this.inner.provider, addressValue)
+              ?? findDeploymentByLockingBytecode(this.inner.provider, addressValue)
+            : undefined;
+        const implementationName = ec.interfaceName === '__raw__'
+          ? ec.rawFunctionName : ec.functionName;
+        const registered = this._externalRegistry.get(ec.interfaceName)
+          ?? deploymentAtAddress?.contract as ConnectedStatefulContract | undefined
+          ?? findDeploymentByName(this.inner.provider, ec.interfaceName)?.contract as ConnectedStatefulContract | undefined
+          ?? (/^I[A-Z]/.test(ec.interfaceName)
+            ? findDeploymentByName(this.inner.provider, ec.interfaceName.slice(1))?.contract as ConnectedStatefulContract
+            : undefined)
+          ?? (implementationName
+            ? findDeploymentImplementing(this.inner.provider, implementationName)?.contract as ConnectedStatefulContract
+            : undefined);
         if (!registered) {
           canAutoResolve = false;
           break;
@@ -14978,11 +15717,79 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // `_evaluateExternalExpression` already covers every shape these reach - state/array length/arithmetic,
         // struct constructors, the Encoding helpers - but silently yields undefined without a state snapshot,
         // which then surfaces as "cannot be auto-resolved". Read it once and thread it through.
-        callerStateSnapshot ??= (await this.getFullState()).state;
-        const resolvedArgs = this._resolveExternalArgs(
-          ec.argSources, args, this.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
+        if (ec.condition) {
+          const active = this._evaluateExternalExpression(
+            ec.condition, args, this.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
+            undefined, 0, false, hexToBin(this.inner.lockingBytecode),
+          );
+          // Intermediate composition is optimistic: only a predicate proven false suppresses a physical call.
+          // Runtime-only predicates remain covenant-owned and are checked by the final transaction pass.
+          if (active === false) inactiveExternalCallSlots.add(eci);
+        }
+        const externalFunctionName = ec.interfaceName === '__raw__'
+          ? ec.rawFunctionName ?? ec.functionName : ec.functionName;
+        const externalArgSources = ec.interfaceName === '__raw__'
+          ? ec.rawArgSources : ec.argSources;
+        const expressionReturns = externalArgSources?.some((source) => source.kind === 'expression')
+          ? await this._resolveExternalExpressionReturns(
+            externalArgSources,
+            args,
+            this as unknown as StatefulContract,
+            callerStateSnapshot,
+            abiFunction?.inputs,
+            addressToLockScript(this.target),
+          )
+          : undefined;
+        let resolvedArgs = this._resolveExternalArgs(
+          externalArgSources,
+          args,
+          this.inner.artifact,
+          callerStateSnapshot,
+          abiFunction?.inputs,
+          expressionReturns,
+          0,
+          false,
+          addressToLockScript(this.target),
         );
-        if (resolvedArgs === undefined && ec.argSources?.some((s) => s.kind === 'expression')) {
+        if (resolvedArgs === undefined && ec.occurrence === 'loop') {
+          const usesEmptyArrayElement = (value: unknown, seen = new Set<object>()): boolean => {
+            if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
+            seen.add(value as object);
+            const source = value as Partial<ArgSource>;
+            if (source.kind === 'arrayElement' && source.paramIndex !== undefined
+              && Array.isArray(args[source.paramIndex])
+              && (args[source.paramIndex] as unknown[]).length === 0) return true;
+            return Object.values(value).some((child) => (
+              Array.isArray(child)
+                ? child.some((item) => usesEmptyArrayElement(item, seen))
+                : usesEmptyArrayElement(child, seen)
+            ));
+          };
+          if (externalArgSources?.some((source) => usesEmptyArrayElement(source))) {
+            inactiveExternalCallSlots.add(eci);
+            const externalArtifact = (registered as StatefulContract).inner.artifact;
+            const externalInputs = externalArtifact.abi.find(
+              (candidate) => candidate.name === externalFunctionName,
+            )?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+            const inactiveValue = (type: string): FunctionArgument => {
+              const dynamicArray = type.match(/^(.*)\[\]$/);
+              if (dynamicArray) return [] as FunctionArgument;
+              const fixedArray = type.match(/^(.*)\[(\d+)\]$/);
+              if (fixedArray) {
+                return Array.from(
+                  { length: Number(fixedArray[2]) }, () => inactiveValue(fixedArray[1]),
+                ) as FunctionArgument;
+              }
+              const struct = (externalArtifact.structs ?? externalArtifact.stateLayout?.structs)
+                ?.find((candidate) => candidate.name === type);
+              if (struct) return struct.fields.map((field) => inactiveValue(field.type)) as FunctionArgument;
+              if (type === 'bool') return false;
+              return inactiveMessageBusRouteWitness(type);
+            };
+            resolvedArgs = externalInputs.map((input) => inactiveValue(input.type));
+          }
+        }
+        if (resolvedArgs === undefined && externalArgSources?.some((s) => s.kind === 'expression')) {
           throw new Error(
             `External call to ${ec.interfaceName}.${ec.functionName} has expression-based argSources `
             + 'that cannot be auto-resolved. Use withExternalCall() to provide args explicitly.',
@@ -14990,7 +15797,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         autoResolved.push({
           externalContract: registered as StatefulContract,
-          functionName: ec.functionName,
+          functionName: externalFunctionName,
           args: resolvedArgs ?? [],
         });
       }
@@ -15013,6 +15820,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (this._signer) {
         let totalBFunders = 0;
         for (let si = 0; si < externalCalls.length; si++) {
+          if (inactiveExternalCallSlots.has(si)) continue;
           const ecSlot = externalCalls[si];
           const ci = resolvedExternalCalls[si];
           if (!ci?.externalContract) continue;
@@ -15046,7 +15854,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
+      const directGroupEcSlots: ExternalCallAbi[] = [];
       for (let slotIndex = 0; slotIndex < externalCalls.length; slotIndex++) {
+        if (inactiveExternalCallSlots.has(slotIndex)) continue;
         const ec = externalCalls[slotIndex];
         const callInfo = resolvedExternalCalls[slotIndex];
 
@@ -15064,6 +15874,37 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ec, args, callInfo.externalContract as StatefulContract,
           this.inner.artifact, callerStateSnapshot, undefined, abiFunction?.inputs,
         );
+        const sharedCompilerRouteGroupIndex = compilerRoute === undefined ? -1
+          : externalCallUtxoGroups.findIndex((group) => (
+            group.categoryId === externalCategoryId
+            && group.compilerRoute !== undefined
+            && binToHex(group.compilerRoute.selector) === binToHex(compilerRoute.selector)
+            && binToHex(group.compilerRoute.blob) === binToHex(compilerRoute.blob)
+          ));
+        if (sharedCompilerRouteGroupIndex >= 0) {
+          const physical = externalCallUtxoGroups[sharedCompilerRouteGroupIndex];
+          // The compiler annotates every logical callsite in a repeated family with the same aggregate route.
+          // Keep those logical groups for selector/index/return plumbing, but serialize the aggregate callee block
+          // exactly once. Re-spending its master for every annotated callsite is both invalid UTXO assembly and
+          // redundant: the route envelope already executes every row.
+          externalCallUtxoGroups.push({
+            categoryId: externalCategoryId,
+            stateLayout: physical.stateLayout,
+            masterUtxo: physical.masterUtxo,
+            dataNftUtxos: [],
+            requiredDataNftIndices: [],
+            functionName: callInfo.functionName,
+            functionArgs: callInfo.args,
+            externalContract: callInfo.externalContract,
+            logicalFunctionName: callInfo.functionName,
+            compilerRoute,
+            sharedGroupIndex: sharedCompilerRouteGroupIndex,
+            blockInputs: [],
+            ...(ec.callMode && { callMode: ec.callMode }),
+          });
+          directGroupEcSlots.push(ec);
+          continue;
+        }
         const bGraphBlockhashSelections = compilerRoute
           ? selectGraphBlockhashReads(callInfo.externalContract.inner.artifact, compilerRoute.blob)
           : [];
@@ -15081,12 +15922,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // This list is emitted for every callsite. An explicit empty list is authoritative: mapping-only calls
         // do not co-spend fixed-state NFTs, and expanding empty to "all" shifts every later block slot.
         const concreteAbi = callInfo.externalContract.inner.artifact.abi as readonly AbiFunction[];
+        const concreteTargetFunction = concreteAbi.find((candidate) => candidate.name === callInfo.functionName);
         const bRequiredNftIndices = compilerRoute
           ? [...new Set(compilerRoute.rowArguments.flatMap((row) => (
             concreteAbi.find((candidate) => candidate.selector === row.selector)?.requiredNftIndices
               ?? row.handler.requiredNftIndices ?? []
           )))]
-          : [...ec.requiredDataNftIndices];
+          : [...(concreteTargetFunction?.requiredNftIndices ?? ec.requiredDataNftIndices)];
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1' && callInfo.functionName === 'approve') {
           console.error('approve-required-nfts', {
@@ -15123,6 +15965,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : undefined);
         const bBlockLayout = bAbiFunc?.blockLayout;
         let bBlockInputs: UnlockableUtxo[] | undefined;
+        const bDynamicReadChunks: Array<{ blockOffset: number; varName: string; varType: string }> = [];
         // X13: set once B's block is confirmed to carry a funding input at its published returnEvent offset.
         let bReturnEventInBlock = false;
         const bCompilerInternalArgs: Record<string, FunctionArgument> = {};
@@ -15167,6 +16010,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const bRouteArgs = compilerRoute?.args ?? (callInfo.args ?? []);
             // This provisional unlocker is replaced below once the complete hidden frame is known.
             const bBlockArgs = bRouteArgs;
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_UNICROW_PAY === '1') {
+              console.error('nested-external-unlocker', {
+                caller: abiFunction?.name,
+                slotIndex,
+                declaredCall: `${ec.interfaceName}.${ec.functionName}`,
+                resolvedCall: callInfo.functionName,
+                compilerRoute: compilerRoute?.abiFunction.name,
+                args: bBlockArgs.map((value) => value instanceof Uint8Array ? binToHex(value) : String(value)),
+              });
+            }
             const bMasterUnlocker = compilerRoute
               ? callInfo.externalContract.inner.createCompilerRouteUnlocker(
                 compilerRoute.abiFunction, compilerRoute.selector,
@@ -15268,14 +16122,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     const keyValue = tryCashAddressToLockScript(rawKeyValue)
                       ?? (rawKeyValue instanceof Uint8Array || typeof rawKeyValue === 'bigint'
                         || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined);
-                    // msg.sender key (cross-contract): B's `bal[msg.sender]` where msg.sender = US (the caller). Resolve
-                    // the key to OUR category-pinned locking bytecode - the covenant keys the entry by keyToSlot(caller
-                    // LBC) too (emitSortedKeyHash visits msg.sender -> emitMsgSenderMintingVerification -> caller LBC).
+                    // msg.sender key (cross-contract): B's `bal[msg.sender]` where msg.sender = US (the caller).
+                    // The covenant resolves this to our stable SCID identity anchor.
                     const isSenderKey = (
                       source: NonNullable<typeof bEntryAccess.keySources>[number] | undefined,
                     ): boolean => isMsgSenderKeySource(source);
                     const effKeyValue = isSenderKey(bEntryAccess.keySources?.[0])
-                      ? addressToLockScript(this.address)
+                      ? addressToLockScript(this.target)
                       : keyValue;
                     let matchUtxo: Utxo | undefined;
                     if (bCollection?.sorted && effKeyValue !== undefined) {
@@ -15288,7 +16141,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       );
                       const encodedKeys = bEntryAccess.keyParams.map((name, keyIndex) => {
                         if (isSenderKey(bEntryAccess.keySources?.[keyIndex])) {
-                          return addressToLockScript(this.address);
+                          return addressToLockScript(this.target);
                         }
                         const index = bAbiFunc!.inputs.findIndex((input) => input.name === name);
                         const value = index >= 0 ? bRouteArgs[index] : undefined;
@@ -15302,18 +16155,83 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       const directKeyBin = effKeyValue instanceof Uint8Array ? effKeyValue
                         : typeof effKeyValue === 'bigint' ? bigIntToVmNumber(effKeyValue)
                           : bigIntToVmNumber(effKeyValue ? 1n : 0n);
-                      const bSlot = compilerRoute ? keyToSlotMulti(encodedKeys) : keyToSlot(directKeyBin);
+                      // Nested mappings always hash every key. A plain external
+                      // call is not a reason to collapse `_allowances[from][msg.sender]`
+                      // to `_allowances[from]`; doing so selected the balance-like
+                      // single-key slot off-chain while the callee verified the
+                      // full composite slot on-chain.
+                      const bSlot = encodedKeys.length > 1
+                        ? keyToSlotMulti(encodedKeys)
+                        : keyToSlot(directKeyBin);
                       let unsupportedColdEntry = false;
                       try {
                         const exact = bList.find(bSlot);
-                        if (compilerRoute && !exact) unsupportedColdEntry = true;
+                        const routeSlot = slot.slotIndex ?? 0;
+                        // A direct external route must carry chunkable-value witnesses from the callee's
+                        // collection. The caller's entryValueWitnesses describe only the caller's own entries,
+                        // so falling back to that frame supplies an empty witness for a long callee value.
+                        if (bCollection.chunkableValue && exact) {
+                          const tail = exact.value;
+                          const storedLength = tail.length >= 4
+                            ? tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24) : 0;
+                          if (storedLength > 60) {
+                            const root = tail.slice(4, 36);
+                            const chunkAddress = getValueChunkAddress(
+                              bSc.inner, externalCategoryId, bEntryAccess.collection, bSlot, root,
+                            );
+                            const expectedChunks = Math.ceil(
+                              (storedLength - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE,
+                            );
+                            const byIndex = new Map<number, {
+                              chunkIndex: number; chunkData: Uint8Array;
+                            }>();
+                            const chunkUtxos = await this.inner.provider.getUtxos(chunkAddress);
+                            for (const chunk of chunkUtxos
+                              .filter((utxo) => utxo.token?.category === externalCategoryId
+                                && (utxo.token?.nft?.commitment?.length ?? 0) > 0)
+                              .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))) {
+                              if (chunk.chunkIndex < expectedChunks) byIndex.set(chunk.chunkIndex, chunk);
+                            }
+                            const joined = joinValueChunks(
+                              tail.slice(36, 64),
+                              [...byIndex.values()].sort((left, right) => left.chunkIndex - right.chunkIndex),
+                              storedLength,
+                            );
+                            if (binToHex(sha256Sync(joined)) !== binToHex(root)) {
+                              throw new Error(
+                                `External message-bus route could not reconstruct long value for `
+                                + `${bEntryAccess.collection} entry slot ${routeSlot}`,
+                              );
+                            }
+                            bCompilerInternalArgs[`__internal__valueWitness_${routeSlot}`] = joined;
+                          }
+                        }
+                        const inactiveRouteSlot = (bAbiFunc as AbiFunction & {
+                          messageBusInactiveEntrySlots?: readonly number[];
+                        } | undefined)?.messageBusInactiveEntrySlots?.includes(routeSlot) === true;
+                        if (compilerRoute && !exact && !inactiveRouteSlot) unsupportedColdEntry = true;
                         matchUtxo = compilerRoute
                           ? (exact ?? bList.predecessorOf(bSlot))?.utxo
                           : (bList.has(bSlot) ? bList.find(bSlot) : bList.predecessorOf(bSlot))?.utxo;
                         if (bAbiFunc?.sortedBatchInfo?.some((batch) =>
                           batch.slotIndices.includes(slot.slotIndex ?? 0))) {
-                          if (exact) {
-                            const routeSlot = slot.slotIndex ?? 0;
+                          if (inactiveRouteSlot) {
+                            const blockOffset = bBlockLayout.slots.find((candidate) =>
+                              candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;
+                            if (blockOffset === undefined) {
+                              throw new Error(`External message-bus batch entry slot ${routeSlot} has no block offset`);
+                            }
+                            const proof = exact ?? bList.predecessorOf(bSlot);
+                            const commitment = proof.utxo.token?.nft?.commitment;
+                            if (!commitment) throw new Error(
+                              `External message-bus batch entry slot ${routeSlot} has no proof commitment`,
+                            );
+                            bCompilerInternalArgs[`__internal__vmapBatchSlot_${routeSlot}`] = bSlot;
+                            bCompilerInternalArgs[`__internal__vmapBatchProof_${routeSlot}`] = BigInt(blockOffset);
+                            bCompilerInternalArgs[`__internal__vmapBatchNext_${routeSlot}`] =
+                              decodeEntryCommitment(hexToBin(commitment)).nextKey;
+                            bCompilerInternalArgs[`__internal__vmapBatchPredOut_${routeSlot}`] = -3n;
+                          } else if (exact) {
                             const blockOffset = bBlockLayout.slots.find((candidate) =>
                               candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;
                             if (blockOffset === undefined) {
@@ -15327,7 +16245,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                               decodeEntryCommitment(hexToBin(commitment)).nextKey;
                             bCompilerInternalArgs[`__internal__vmapBatchPredOut_${routeSlot}`] = -1n;
                           } else {
-                            const routeSlot = slot.slotIndex ?? 0;
                             const blockOffset = bBlockLayout.slots.find((candidate) =>
                               candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;
                             if (blockOffset === undefined) {
@@ -15490,6 +16407,40 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 if (!hadFullBlockKinds && !bHasLoop) bBlockInputs = undefined;
               }
             }
+            if (bBlockInputs && bSc) {
+              const dynamicWrites = new Set(bAbiFunc?.dynamicWrites ?? []);
+              for (const varName of bAbiFunc?.dynamicReads ?? []) {
+                if (dynamicWrites.has(varName)) continue;
+                const variable = bStatelayout.variables.find((candidate) => (
+                  candidate.name === varName && candidate.dynamic
+                ));
+                if (!variable) continue;
+                const chunkAddress = getDynamicChunkAddress(
+                  bSc.inner, externalCategoryId, variable.name, variable.type,
+                );
+                const chunks = (await this.inner.provider.getUtxos(chunkAddress))
+                  .filter((utxo) => utxo.token?.category === externalCategoryId
+                    && utxo.token?.nft?.capability === 'mutable'
+                    && !!utxo.token.nft.commitment)
+                  .map((utxo) => ({
+                    utxo,
+                    chunkIndex: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex,
+                  }))
+                  .sort((left, right) => left.chunkIndex - right.chunkIndex);
+                for (const { utxo } of chunks) {
+                  const blockOffset = bBlockInputs.length;
+                  bBlockInputs.push({
+                    ...utxo,
+                    unlocker: createReadOnlyDynamicChunkUnlocker(
+                      bSc.inner, 0, externalCategoryId, variable.name, variable.type,
+                    ),
+                  });
+                  bDynamicReadChunks.push({
+                    blockOffset, varName: variable.name, varType: variable.type,
+                  });
+                }
+              }
+            }
             if (bBlockInputs) {
               for (const planned of bPlannedEntryInserts) {
                 planned.outputBlockSlot = Math.max(bBlockInputs.length, bBlockLayout?.blockSize ?? 0);
@@ -15617,6 +16568,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           )) {
           bCompilerInternalArgs.__internal__vmapBatchTrailingCount = BigInt(bPlannedEntryInserts.length);
         }
+        // A direct external participant uses the same linear sorted-batch covenant as a nested participant.
+        // Its per-slot witnesses are collected while materializing the balanced block above; finish the shared
+        // row permutation only after every slot is known. Leaving these ABI values at their zero/empty defaults
+        // makes the final strict pass reject an otherwise complete multi-key update.
+        for (const batch of bAbiFunc?.sortedBatchInfo ?? []) {
+          const rows = batch.slotIndices
+            .filter((slotIndex) => (
+              bCompilerInternalArgs[`__internal__vmapBatchPredOut_${slotIndex}`] !== -2n
+              && bCompilerInternalArgs[`__internal__vmapBatchPredOut_${slotIndex}`] !== -3n
+            ))
+            .map((slotIndex) => ({
+              slotIndex,
+              slot: bCompilerInternalArgs[`__internal__vmapBatchSlot_${slotIndex}`] as Uint8Array,
+              next: bCompilerInternalArgs[`__internal__vmapBatchNext_${slotIndex}`] as Uint8Array
+                ?? new Uint8Array(32),
+            }))
+            .filter((row) => row.slot instanceof Uint8Array)
+            .sort((left, right) => (bytesToSlotValue(left.slot) < bytesToSlotValue(right.slot) ? -1 : 1));
+          rows.forEach((row, rank) => {
+            bCompilerInternalArgs[`__internal__vmapBatchRank_${row.slotIndex}`] = BigInt(rank);
+          });
+          if (batch.linear) {
+            bCompilerInternalArgs[`__internal__vmapBatchRows_${batch.collection}`] = Uint8Array.from(
+              rows.flatMap((row) => [...row.slot, ...row.next]),
+            );
+          }
+        }
 
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
           console.error('external-route-vmap-args', callInfo.functionName, bAbiFunc?.name,
@@ -15653,6 +16631,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(ec.callMode && { callMode: ec.callMode }),
           ...(bPlannedEntryInserts.length > 0 && { plannedEntryInserts: bPlannedEntryInserts }),
           ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
+          ...(bDynamicReadChunks.length > 0 && { dynamicReadChunks: bDynamicReadChunks }),
           ...(bReturnEventInBlock && { returnEventInBlock: true }),
           ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
           ...(bEntryLoopCommitments && {
@@ -15676,6 +16655,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             return Object.keys(values).length > 0 ? { dynamicStateValues: values } : {};
           })(),
         });
+        directGroupEcSlots.push(ec);
       }
 
       // Track per-group metadata (direct + transitive)
@@ -15685,7 +16665,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Build metadata for direct groups
       for (let i = 0; i < directGroupCount; i++) {
         groupMetas.push({
-          ecSlot: externalCalls[i],
+          ecSlot: directGroupEcSlots[i],
           callerCategoryId: this.categoryId,
           parentGroupIndex: -1,
         });
@@ -15706,9 +16686,80 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         if (!bAbiFunc?.externalCalls?.length) continue;
 
+        const bState = (await bContract.getFullState()).state;
+
         for (const bEc of bAbiFunc.externalCalls) {
-          // Resolve C from B's external registry
-          const cRegistered = (bContract as StatefulContract)._externalRegistry.get(bEc.interfaceName);
+          if (bEc.condition) {
+            const active = bContract._evaluateExternalExpression(
+              bEc.condition,
+              directGroup.functionArgs,
+              bContract.inner.artifact,
+              bState,
+              bAbiFunc.inputs,
+              undefined,
+              0,
+              false,
+              addressToLockScript(bContract.target),
+            );
+            // Construction is optimistic: only a predicate proven false suppresses the call. The final
+            // all-input preflight remains authoritative for predicates which depend on runtime transaction data.
+            if (active === false) continue;
+          }
+
+          // Resolve C from an authenticated address expression before falling back to a connect-time binding.
+          // Solidity commonly lowers one typed call and one Address/SafeERC20 raw call to the same synthesized
+          // address parameter; the raw edge intentionally omits a duplicate addressSource, so borrow it from its
+          // typed sibling when necessary.
+          const addressSource = bEc.addressSource
+            ?? (bEc.addressParam === undefined ? undefined : bAbiFunc.externalCalls.find((candidate) => (
+              candidate.addressParam === bEc.addressParam && candidate.addressSource !== undefined
+            ))?.addressSource);
+          const addressValue = addressSource
+            ? bContract._resolveExternalArgs(
+              [addressSource],
+              directGroup.functionArgs,
+              bContract.inner.artifact,
+              bState,
+              bAbiFunc.inputs,
+              undefined,
+              0,
+              false,
+              addressToLockScript(bContract.target),
+            )?.[0]
+            : undefined;
+          const addressHex = addressValue instanceof Uint8Array ? binToHex(addressValue) : undefined;
+          const deploymentAtAddress = addressHex
+            ? findDeploymentByLockingBytecode(this.inner.provider, addressHex)
+            : typeof addressValue === 'string'
+              ? findDeploymentByAddress(this.inner.provider, addressValue)
+                ?? findDeploymentByLockingBytecode(this.inner.provider, addressValue)
+              : undefined;
+          const implementationName = bEc.interfaceName === '__raw__'
+            ? bEc.rawFunctionName : bEc.functionName;
+          const cRegistered = deploymentAtAddress?.contract as ConnectedStatefulContract | undefined
+            ?? bContract._externalRegistry.get(bEc.interfaceName)
+            ?? this._externalRegistry.get(bEc.interfaceName)
+            ?? findDeploymentByName(this.inner.provider, bEc.interfaceName)?.contract as ConnectedStatefulContract | undefined
+            ?? (/^I[A-Z]/.test(bEc.interfaceName)
+              ? findDeploymentByName(this.inner.provider, bEc.interfaceName.slice(1))
+                ?.contract as ConnectedStatefulContract | undefined
+              : undefined)
+            ?? (implementationName
+              ? findDeploymentImplementing(this.inner.provider, implementationName)
+                ?.contract as ConnectedStatefulContract | undefined
+              : undefined);
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_TRANSITIVE_RESOLUTION === '1') {
+            console.error('transitive-resolution', {
+              parent: directGroup.functionName,
+              interfaceName: bEc.interfaceName,
+              functionName: bEc.functionName,
+              addressParam: bEc.addressParam,
+              addressValue: addressValue instanceof Uint8Array ? binToHex(addressValue) : addressValue,
+              implementationName,
+              resolvedContract: cRegistered && (cRegistered as StatefulContract).inner.artifact.contractName,
+            });
+          }
           if (!cRegistered) {
             throw new Error(
               `Transitive external call: ${bEc.interfaceName}.${bEc.functionName} not found `
@@ -15729,11 +16780,32 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             );
           }
 
+          const cFunctionName = bEc.interfaceName === '__raw__'
+            ? bEc.rawFunctionName
+              ?? (cContract.inner.artifact.abi as readonly AbiFunction[])
+                .find((candidate) => candidate.selector === bEc.rawSelector)?.name
+            : bEc.functionName;
+          if (!cFunctionName) {
+            throw new Error(
+              `Transitive raw call selector '${bEc.rawSelector ?? '<unknown>'}' is not advertised by `
+              + `${cContract.inner.artifact.contractName}.`,
+            );
+          }
+
           // Resolve C's args from B's argSources
+          const cArgSources = bEc.rawArgSources ?? bEc.argSources;
           const cArgs = (bContract as StatefulContract)._resolveExternalArgs(
-            bEc.argSources, directGroup.functionArgs, bContract.inner.artifact, undefined, bAbiFunc.inputs,
+            cArgSources,
+            directGroup.functionArgs,
+            bContract.inner.artifact,
+            bState,
+            bAbiFunc.inputs,
+            undefined,
+            0,
+            false,
+            addressToLockScript(bContract.target),
           );
-          if (cArgs === undefined && bEc.argSources?.some((s: any) => s.kind === 'expression')) {
+          if (cArgs === undefined && cArgSources?.some((s: any) => s.kind === 'expression')) {
             throw new Error(
               `Transitive external call to ${bEc.interfaceName}.${bEc.functionName} has expression-based `
               + 'argSources that cannot be auto-resolved. Use withExternalCall() to provide args explicitly.',
@@ -15776,10 +16848,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             masterUtxo: cState.masterUtxo,
             dataNftUtxos: cDataNfts,
             requiredDataNftIndices: cRequiredNftIndices,
-            functionName: bEc.functionName,
+            functionName: cFunctionName,
             functionArgs: cArgs ?? [],
             externalContract: cContract,
-            logicalFunctionName: bEc.functionName,
+            logicalFunctionName: cFunctionName,
             ...(bEc.callMode && { callMode: bEc.callMode }),
           });
 
@@ -15799,7 +16871,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // message-bus batch reserves the complete oracle row band before its callees. Active reads are sparse; count the
       // physical width, not the number of resolved oracle UTXOs, when assigning the first participant base.
       externalCallInputBase += abiFunction?.graphBlockhashOracle?.slotCount ?? 0;
-      if (iterationEntryInputs.length > 0) externalCallInputBase += iterationEntryInputs.length;
+      const directLoopOutputCount = [...sortedLoopCommitments.values()]
+        .reduce((sum, commitments) => sum + commitments.length, 0);
+      const directLoopOutputSurplus = Math.max(
+        0,
+        Math.max(directLoopOutputCount, insertLoopPredecessors.length * 2) - insertLoopPredecessors.length,
+      );
+      if (iterationEntryInputs.length > 0) {
+        externalCallInputBase += iterationEntryInputs.length
+          + insertLoopPredecessors.length + directLoopOutputSurplus;
+      }
+      topLevelExternalCallBaseArgIndex = finalArgs.length;
       finalArgs = [...finalArgs, BigInt(externalCallInputBase)];
 
       // Fill each synthesized `__internal__loopTargets<n>` witness (a per-iteration COMPUTED target
@@ -15835,7 +16917,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       let externalCallOutputStart = -1;
       if (allReturningGroupIndices.length > 0) {
         const externalCallOutputCount = externalCallUtxoGroups.reduce(
-          (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
+          (sum, g) => sum + (g.sharedGroupIndex === undefined
+            ? (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length) : 0), 0,
         );
 
         // Pre-compute low-level call output count (LLC outputs sit between external calls and entries)
@@ -15879,7 +16962,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         returnEventOutputBase = baseOutputOffset + entryOutputCount + iterationEntryInputs.length
           + satoshiContainerOutputCount + transferCount + tokenContainerTransferCount + emitCount;
         externalCallOutputStart = 1 + requiredNftIndices.length + externalReadUtxos.length
-          + outStateOutputCount + iterationEntryInputs.length;
+          + outStateOutputCount + iterationEntryInputs.length + directLoopOutputCount;
       }
 
       // Build return-event-index map: groupIndex -> return event output index.
@@ -15892,15 +16975,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (externalCallOutputStart >= 0) {
         let cursor = externalCallOutputStart;
         let tailRank = 0;
+        const physicalOutputBases: number[] = [];
         for (let i = 0; i < externalCallUtxoGroups.length; i++) {
           const g = externalCallUtxoGroups[i];
+          const physicalBase = g.sharedGroupIndex === undefined
+            ? cursor : physicalOutputBases[g.sharedGroupIndex];
+          physicalOutputBases[i] = physicalBase;
           const offset = g.blockLayout?.slots.find((s) => s.kind === 'returnEvent')?.offset;
           if (groupMetas[i].ecSlot.hasReturnValues) {
             returnEventIndexMap.set(i, isInBlockGroup(i) && offset !== undefined
-              ? cursor + offset
+              ? physicalBase + offset
               : returnEventOutputBase + tailRank++);
           }
-          cursor += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+          if (g.sharedGroupIndex === undefined) {
+            cursor += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+          }
         }
       }
 
@@ -15912,6 +17001,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
         const group = externalCallUtxoGroups[groupIdx];
         const meta = groupMetas[groupIdx];
+        if (group.sharedGroupIndex !== undefined) {
+          groupMasterIndices[groupIdx] = groupMasterIndices[group.sharedGroupIndex];
+          continue;
+        }
         const masterInputIndex = currentInputBase;
         groupMasterIndices[groupIdx] = masterInputIndex;
 
@@ -15929,6 +17022,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (slot.kind !== 'dataNft') continue;
             const recreated = group.dataNftUtxos[dataIdx++];
             if (recreated && group.blockInputs[slot.offset]) group.blockInputs[slot.offset] = recreated;
+          }
+        }
+        if (group.blockInputs && group.dynamicReadChunks) {
+          for (const chunk of group.dynamicReadChunks) {
+            const input = group.blockInputs[chunk.blockOffset];
+            if (!input) continue;
+            group.blockInputs[chunk.blockOffset] = {
+              ...input,
+              unlocker: createReadOnlyDynamicChunkUnlocker(
+                group.externalContract.inner,
+                masterInputIndex,
+                group.categoryId,
+                chunk.varName,
+                chunk.varType,
+              ),
+            };
           }
         }
 
@@ -15978,7 +17087,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             continue;
           }
 
-          const resolvedInternalArgs = group.compilerRoute?.internalArgs ?? group.internalArgs;
+          // Compiler routes seed a complete hidden frame, but storage witnesses resolved while materializing
+          // the participant block are newer. Select per parameter so one physical-group witness does not require
+          // replacing (or get discarded by) the compiler route's unrelated graph arguments.
+          const resolvedInternalArgs = group.internalArgs
+            && Object.prototype.hasOwnProperty.call(group.internalArgs, paramName)
+            ? group.internalArgs : group.compilerRoute?.internalArgs;
           if (resolvedInternalArgs
             && Object.prototype.hasOwnProperty.call(resolvedInternalArgs, paramName)) {
             const value = resolvedInternalArgs[paramName];
@@ -16109,7 +17223,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           );
         }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_VMAP_PROOF === '1' && group.compilerRoute) {
+          ?.SOLIDC_DEBUG_VMAP_PROOF === '1'
+          && group.compilerRoute) {
           console.error('delegate-route-final-args', {
             contract: group.externalContract.inner.artifact.contractName,
             function: group.functionName,
@@ -16227,26 +17342,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         (inp: { name: string }) => inp.name.startsWith('__internal__externalCallSelector'),
       ).length;
       if (selectorParamCount > 0) {
-        for (let i = 0; i < directGroupCount; i++) {
-          const group = externalCallUtxoGroups[i];
-          // A loop-expanded slot (computed-target / array-element loop) owns ONE shared selector param (the covenant
-          // checks each co-spent element against it), not one per element - fill it once at the range start, skip
-          // the rest, mirroring the per-group master-index fill above.
-          const selRange = loopIdxRanges.find((r) => i >= r.start && i < r.start + r.count);
-          if (selRange && i !== selRange.start) continue;
-          // call/staticcall/delegatecall modes don't inject selector params - skip them
-          if (group.callMode === 'call' || group.callMode === 'staticcall' || group.callMode === 'delegatecall') continue;
-          // A single-method callee has no witness selector param (its unlocking carries no selector); only groups
-          // the compiler marked needsSelectorVerification get a filled selector. Absent (older artifacts) = fill.
-          if ((groupMetas[i].ecSlot as { needsSelectorVerification?: boolean })
-            .needsSelectorVerification === false) continue;
-          const targetSelector = group.compilerRoute
+        const selectorInputs = abiFunction!.inputs.filter(
+          (input) => input.name.startsWith('__internal__externalCallSelector'),
+        );
+        for (const input of selectorInputs) {
+          const slot = selectorParamSlot(input.name, abiFunction?.externalCalls);
+          const ec = externalCalls[slot];
+          const groupIndex = directGroupEcSlots.findIndex((candidate) => candidate === ec);
+          const group = groupIndex < 0 ? undefined : externalCallUtxoGroups[groupIndex];
+          // Inactive optimistic loop slots still occupy their ABI position. Resolve their selector from the
+          // caller's interface metadata so later bigint witnesses cannot shift into this bytes4 parameter.
+          const targetSelector = group?.compilerRoute
             ? binToHex(group.compilerRoute.selector)
-            : (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
-              .find((f) => f.name === group.functionName)?.selector;
+            : group
+              ? (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
+                .find((f) => f.name === group.functionName)?.selector
+              : (this.inner.artifact.externalInterfaces ?? [])
+                .find((candidate) => candidate.name === ec?.interfaceName)
+                ?.abi?.find((candidate) => candidate.name === ec?.functionName)?.selector;
           if (!targetSelector) {
             throw new Error(
-              `Function '${group.functionName}' not found in external contract ABI`,
+              `Function '${ec?.functionName ?? input.name}' not found in external contract ABI`,
             );
           }
           finalArgs = [...finalArgs, hexToBin(targetSelector)];
@@ -16289,20 +17405,61 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           finalArgs = [...finalArgs, BigInt(groupMasterIndices[i])];
         }
       }
+      // Ordinary compiler-owned master witnesses are keyed by source callsite, not by the number of physical
+      // groups. An empty optimistic loop therefore still contributes its typed -1 sentinel at the ABI slot.
+      const masterInputs = abiFunction!.inputs.filter(
+        (input) => /^__internal__extcallMasterIdx\d*$/.test(input.name),
+      );
+      if (masterInputs.length > 0) {
+        // The legacy physical-group loop above is only for fn-pointer/list layouts. Rebuild ordinary scalar
+        // witnesses in source-slot order; those functions do not synthesize list witnesses.
+        const scalarValues = masterInputs.map((input) => {
+          const suffix = input.name.match(/\d+$/)?.[0];
+          const slot = suffix === undefined ? 0 : Number(suffix);
+          const ec = externalCalls[slot];
+          const groupIndex = directGroupEcSlots.findIndex((candidate) => candidate === ec);
+          return groupIndex < 0 ? -1n : BigInt(groupMasterIndices[groupIndex]);
+        });
+        const scalarCountAlreadyAppended = (!hasLoopSlotAbi && directGroupCount > 1)
+          ? directGroupEcSlots.filter((ec) => !(ec as { fnPtrCall?: boolean }).fnPtrCall).length
+          : 0;
+        if (scalarCountAlreadyAppended > 0) {
+          finalArgs.splice(finalArgs.length - scalarCountAlreadyAppended, scalarCountAlreadyAppended);
+        }
+        const scalarBase = finalArgs.length;
+        finalArgs = [...finalArgs, ...scalarValues];
+        for (let index = 0; index < masterInputs.length; index++) {
+          const suffix = masterInputs[index].name.match(/\d+$/)?.[0];
+          const slot = suffix === undefined ? 0 : Number(suffix);
+          const ec = externalCalls[slot];
+          const groupIndex = directGroupEcSlots.findIndex((candidate) => candidate === ec);
+          const group = groupIndex < 0 ? undefined : externalCallUtxoGroups[groupIndex];
+          if (group) topLevelExternalCallInputFillPositions.push({
+            argIndex: scalarBase + index,
+            categoryId: group.categoryId,
+          });
+        }
+      }
 
       // Per-slot logical-identity anchor input index. -1 selects the direct identity proof (the visible address
       // IS the co-spent master's locking bytecode); a real index selects the proxy anchor proof. Mirrors the
       // compiler's synthesis condition: fixed-slot calls whose target is a value rather than a baked literal or
       // tx-derived msg.sender. Loop-expanded groups own no anchor param, exactly as for the master index above.
-      for (let i = 0; i < directGroupCount; i++) {
-        if (loopIdxRanges.some((r) => i >= r.start && i < r.start + r.count)) continue;
-        if (!abiFunction?.inputs.some((input) => input.name === `__internal__extcallAnchorIdx${i}`)) continue;
-        const anchorSlot = groupMetas[i].ecSlot as {
+      const anchorInputs = abiFunction!.inputs.filter(
+        (input) => /^__internal__extcallAnchorIdx\d+$/.test(input.name),
+      );
+      for (const input of anchorInputs) {
+        const slot = Number(input.name.match(/\d+$/)![0]);
+        const anchorSlot = externalCalls[slot] as {
           addressParam?: string; addressLiteral?: string; addressIsMsgSender?: boolean;
         };
-        if (!anchorSlot.addressParam || anchorSlot.addressLiteral !== undefined
-          || anchorSlot.addressIsMsgSender) continue;
-        const group = externalCallUtxoGroups[i];
+        const groupIndex = directGroupEcSlots.findIndex((candidate) => candidate === anchorSlot);
+        const group = groupIndex < 0 ? undefined : externalCallUtxoGroups[groupIndex];
+        if (!group || !anchorSlot.addressParam || anchorSlot.addressLiteral !== undefined
+          || anchorSlot.addressIsMsgSender) {
+          finalArgs = [...finalArgs, -1n];
+          continue;
+        }
         const callee = group?.externalContract as StatefulContract | undefined;
         const logicalAddress = callee?._logicalAddress ?? callee?.target ?? callee?.address;
         let band: number | undefined;
@@ -16333,8 +17490,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // retaining ordinary direct locking-bytecode identity. -1 is the
           // ordinary source-selector/direct-identity path.
           const physicalGroup = group === undefined ? undefined
-            : externalCallUtxoGroups[group.sharedGroupIndex ?? i];
-          finalArgs = [...finalArgs, externalCallAnchorIndices.get(i)
+            : externalCallUtxoGroups[group.sharedGroupIndex ?? groupIndex];
+          finalArgs = [...finalArgs, externalCallAnchorIndices.get(groupIndex)
             ?? (physicalGroup?.compilerRoute ? -2n : -1n)];
         } else {
           topLevelAnchorFillPositions.push({
@@ -16350,18 +17507,32 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Append per-slot _externalReturnOutputIdx params for A's args (direct returning calls only)
       const directReturningSlots = externalCalls.filter((ec) => ec.hasReturnValues);
       if (directReturningSlots.length > 0 && returnEventOutputBase >= 0) {
-        for (let i = 0; i < directGroupCount; i++) {
-          // A loop-expanded returning slot owns ONE shared externalReturnOutputIdx param (the covenant reads the
-          // per-iteration event at base + i); fill it once at the range start, skip the rest - same as the selector
-          // and master-index fills above (else N return-idx args vs 1 param -> arg-count mismatch).
-          const retRange = loopIdxRanges.find((r) => i >= r.start && i < r.start + r.count);
-          if (retRange && i !== retRange.start) continue;
-          if (groupMetas[i].ecSlot.hasReturnValues) {
-            const retOutputIdx = returnEventIndexMap.get(i);
-            if (retOutputIdx !== undefined) {
-              finalArgs = [...finalArgs, BigInt(retOutputIdx)];
-            }
+        const returnInputs = abiFunction!.inputs.filter(
+          (input) => /^__internal__externalReturnOutputIdx\d*$/.test(input.name),
+        );
+        const firstReturnInputIndex = abiFunction!.inputs.findIndex(
+          (input) => /^__internal__externalReturnOutputIdx\d*$/.test(input.name),
+        );
+        // Dynamic/value chunk output bases are resolved only after the builder has materialized its output bands.
+        // Reserve any such ABI slots which precede the return witnesses; otherwise appending the return now puts
+        // it in the chunk-base slot, the later rebase overwrites it, and the real return input remains `-1`.
+        while (firstReturnInputIndex >= 0 && finalArgs.length < firstReturnInputIndex) {
+          const pending = abiFunction!.inputs[finalArgs.length];
+          if (!pending?.name.startsWith('__internal__')) {
+            throw new Error(`Missing visible ABI argument '${pending?.name ?? finalArgs.length}'`);
           }
+          finalArgs.push(defaultInternalFunctionArg(pending));
+        }
+        for (const input of returnInputs) {
+          const slot = externalReturnParamSlot(input.name, abiFunction?.externalCalls);
+          const ec = slot === undefined ? undefined : externalCalls[slot];
+          const groupIndex = directGroupEcSlots.findIndex((candidate) => candidate === ec);
+          const retOutputIdx = groupIndex < 0 ? undefined : returnEventIndexMap.get(groupIndex);
+          if (groupIndex >= 0) topLevelExternalReturnFillPositions.push({
+            argIndex: finalArgs.length,
+            groupIndex,
+          });
+          finalArgs = [...finalArgs, retOutputIdx === undefined ? -1n : BigInt(retOutputIdx)];
         }
       }
     }
@@ -16768,7 +17939,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // atomic graph also evaluates the authenticated implementation route at its own executor input, so
             // retain both exact OP_UTXOBYTECODE identities rather than reconstructing either from a category.
             const delegateSelfAddress = hexToBin(this.inner.lockingBytecode);
-            const delegateGraphSelfAddress = hexToBin(callInfo.contract.inner.lockingBytecode);
+            const delegateGraphSelfAddress = addressToLockScript(callInfo.contract.target);
             const nestedExternalCalls: ExternalCallAbi[] = [];
             for (const nested of publishedNestedExternalCalls) {
               if (!nested.condition) {
@@ -17899,6 +19070,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 // not mutate that collection. Those inactive journals preserve their canonical zero-key entry;
                 // they still require the real key hash and an authenticated proof rather than all-zero vmap fields.
                 const activeSortedBatches = selectedFn?.sortedBatchInfo ?? [];
+                const inactiveSortedSlots = new Set(
+                  (selectedFn as AbiFunction & {
+                    messageBusInactiveEntrySlots?: readonly number[];
+                  } | undefined)?.messageBusInactiveEntrySlots ?? [],
+                );
                 const allBatchSlots = new Set((selectedFn?.sortedBatchInfo ?? [])
                   .flatMap((batch) => batch.slotIndices));
                 if ((selectedFn?.sortedBatchInfo?.length ?? 0) > 0) {
@@ -17973,11 +19149,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                           structs,
                           timestamp: oracleTimestamp,
                         }) : undefined;
-                      const leadingPush = inheritedLeading instanceof Uint8Array
-                        && inheritedLeading.length > 0 && routeLeading
-                        ? concatenateEncodedArrays(inheritedLeading, routeLeading)
-                        : routeLeading ?? (inheritedLeading instanceof Uint8Array
-                          ? inheritedLeading : undefined);
+                      // A compiler route publishes its complete selected row set, so routeLeading already contains
+                      // every earlier same-key push. Its inherited seed came from planning that same route; adding
+                      // both replays those rows again. Ordinary sequential groups only know the immediately prior
+                      // call, so they still accumulate their inherited prefix.
+                      const leadingPush = childCompilerRoute?.rowArguments
+                        ? routeLeading
+                        : inheritedLeading instanceof Uint8Array
+                          && inheritedLeading.length > 0 && routeLeading
+                          ? concatenateEncodedArrays(inheritedLeading, routeLeading)
+                          : routeLeading ?? (inheritedLeading instanceof Uint8Array
+                            ? inheritedLeading : undefined);
+                      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                        ?.SOLIDC_DEBUG_LEADING_PUSH === '1') {
+                        console.error('leading-push-plan', JSON.stringify({
+                          collection: access.collection,
+                          compilerRows: childCompilerRoute?.rowArguments?.length,
+                          sequentialRows: sequentialRows?.length,
+                          inheritedHead: inheritedLeading instanceof Uint8Array
+                            ? binToHex(inheritedLeading).slice(0, 8) : undefined,
+                          routeHead: routeLeading ? binToHex(routeLeading).slice(0, 8) : undefined,
+                          selectedHead: leadingPush ? binToHex(leadingPush).slice(0, 8) : undefined,
+                        }));
+                      }
                       if (leadingPush && leadingPush.length > 0) {
                         childCompilerInternalArgs[leadingName] = leadingPush;
                       }
@@ -17997,9 +19191,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       } else {
                         payloadBytes = nextValue.length + fallbackPayloadBytes + VALUE_CHUNK_SIZE;
                       }
-                      const previousValue = childStoredValues.get(routeSlot);
-                      if (previousValue && previousValue.length > VALUE_HEAD_SIZE
-                        && nextValue.length > VALUE_HEAD_SIZE) {
+                      if (nextValue.length > VALUE_HEAD_SIZE) {
                         stageJobEventsValue(callee.categoryId, nextValue);
                       }
                     }
@@ -18044,6 +19236,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       });
                     }
                     throw new Error(`Nested vmap batch '${batch.collection}' has no sorted-list snapshot`);
+                  }
+                  if (batch.slotIndices.every((slotIndex) => inactiveSortedSlots.has(slotIndex))) {
+                    for (const slotIndex of batch.slotIndices) {
+                      const target = childBatchTargets.get(slotIndex);
+                      if (!target) throw new Error(
+                        `Inactive nested vmap batch '${batch.collection}' is missing slot ${slotIndex}`,
+                      );
+                      const proof = list.find(target) ?? list.predecessorOf(target);
+                      const proofOffset = selectedLayout.slots.find((candidate) =>
+                        candidate.kind === 'entry' && candidate.slotIndex === slotIndex)?.offset;
+                      if (proofOffset === undefined) throw new Error(
+                        `Inactive nested vmap batch slot ${slotIndex} has no block offset`,
+                      );
+                      childCompilerInternalArgs[`__internal__vmapBatchSlot_${slotIndex}`] = target;
+                      childCompilerInternalArgs[`__internal__vmapBatchProof_${slotIndex}`] = BigInt(proofOffset);
+                      childCompilerInternalArgs[`__internal__vmapBatchNext_${slotIndex}`] = proof.nextKey;
+                      childCompilerInternalArgs[`__internal__vmapBatchPredOut_${slotIndex}`] = -3n;
+                    }
+                    if (batch.linear) {
+                      childCompilerInternalArgs[`__internal__vmapBatchRows_${batch.collection}`] =
+                        new Uint8Array();
+                    }
+                    continue;
                   }
                   const canonicalSlots: number[] = [];
                   const canonicalByTarget = new Map<string, number>();
@@ -18200,7 +19415,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   for (const batch of activeSortedBatches) {
                     const rows = batch.slotIndices
                       .filter((slotIndex) => childBatchTargets.has(slotIndex)
-                        && childCompilerInternalArgs[`__internal__vmapBatchPredOut_${slotIndex}`] !== -2n)
+                        && childCompilerInternalArgs[`__internal__vmapBatchPredOut_${slotIndex}`] !== -2n
+                        && childCompilerInternalArgs[`__internal__vmapBatchPredOut_${slotIndex}`] !== -3n)
                       .map((slotIndex) => ({
                         slotIndex,
                         slot: childBatchTargets.get(slotIndex)!,
@@ -19958,7 +21174,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // layout slot moves there - the witness stays -1 and the covenant skips the check entirely.
       if (delegateReturnEventOffset !== undefined && returnEmitOutputIndex >= 0) {
         returnEmitBlockOffset = delegateReturnEventOffset;
-        returnEmitOutputIndex = (overrides?.blockBase ?? 0) + returnEmitBlockOffset;
+        returnEmitOutputIndex = returnEmitBlockOffset;
       }
       // Fix data NFT unlockers with correct master input index
       let currentBase = lowLevelCallInputBase;
@@ -20397,9 +21613,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               return valueWitness;
             }
             if (/^__internal__leadingPushValue_\d+$/.test(inp.name)) {
-              return group.compilerRoute?.internalArgs?.[inp.name]
+              const leadingPush = group.compilerRoute?.internalArgs?.[inp.name]
                 ?? group.internalArgs?.[inp.name]
                 ?? new Uint8Array();
+              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_LEADING_PUSH === '1') {
+                console.error('leading-push-bind', JSON.stringify({
+                  functionName: group.functionName,
+                  input: inp.name,
+                  compilerHead: group.compilerRoute?.internalArgs?.[inp.name] instanceof Uint8Array
+                    ? binToHex(group.compilerRoute.internalArgs[inp.name] as Uint8Array).slice(0, 8) : undefined,
+                  groupHead: group.internalArgs?.[inp.name] instanceof Uint8Array
+                    ? binToHex(group.internalArgs[inp.name] as Uint8Array).slice(0, 8) : undefined,
+                  selectedHead: leadingPush instanceof Uint8Array
+                    ? binToHex(leadingPush).slice(0, 8) : undefined,
+                }));
+              }
+              return leadingPush;
             }
             const anchorWitness = inp.name.match(/^__internal__extcallAnchorIdx(\d+)$/);
             if (anchorWitness) {
@@ -20757,7 +21987,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // covenant computes the return value but does not emit it on-chain); opt-in emit sets a real index.
     if (abiFunction) {
       const returnIdxPos = abiFunction.inputs.findIndex((inp) => inp.name === '__internal__returnOutputIdx');
-      if (returnIdxPos >= 0 && finalArgs.length < abiFunction.inputs.length) {
+      if (returnIdxPos >= 0 && finalArgs.length === abiFunction.inputs.length) {
+        finalArgs[returnIdxPos] = BigInt(returnEmitOutputIndex);
+      } else if (returnIdxPos >= 0 && finalArgs.length < abiFunction.inputs.length) {
         finalArgs = [
           ...finalArgs.slice(0, returnIdxPos),
           BigInt(returnEmitOutputIndex),
@@ -20864,7 +22096,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         };
       }));
     }
-
     // Create unlockable UTXOs (after all synthetic params are appended to finalArgs)
     // Contract.ts registers fallback/receive unlockers as 'fallback'/'receive' on the multi-function path,
     // but a single-function contract registers under the plain ABI name ('__fallback'/'__receive'). Prefer
@@ -20990,7 +22221,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
         ecrecoverPreimages: ecrecoverEvmPreimages,
-        ...((delegatedKeccak || ecrecoverEvmPreimages.some((preimage) => preimage === null)) && {
+        ...((delegatedKeccak
+          || deferredEcrecoverCompute !== undefined
+          || ecrecoverEvmPreimages.some((preimage) => preimage === null)) && {
           deferUnresolved: true,
         }),
         ...(delegatedKeccak && {
@@ -21357,6 +22590,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       dataNftUtxos: unlockableDataNfts,
       stateLayout,
       categoryId: this.categoryId,
+      returnProbeOnly: overrides?.returnProbeOnly,
       requiredNftIndices: [...requiredNftIndices],
       entryNfts,
       entryAccesses,
@@ -21405,13 +22639,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(compilerRouteDelegateLayout && { compilerRouteDelegateBlock: true }),
       ...(overrides?.omitLocalFeeTail && { preserveBlockLayoutWidth: true }),
       ...(batchPredCommitments.size > 0 && { batchEntriesBeforeDynamicChunks: true }),
+      ...(dynamicChunkVars.length > 0
+        && abiFunction?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')
+        && { valueChunksBeforeDynamicChunks: true }),
       ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
       ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
+      ...((abiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusGraphExecution === true
+        && { omitEmptyEventPlaceholders: true }),
       ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
       ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
       ...(effectiveBlockLayout && { blockLayout: effectiveBlockLayout }),
     });
     builder.seedPrecomputedReturnEvents(allGroupEcSlots);
+    for (const [emitIndex, commitment] of overrides?.optimisticEventCommitments ?? []) {
+      builder.setEventRawCommitment(emitIndex, commitment);
+    }
     timing('builder-created');
 
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -21423,6 +22665,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // discovery below may call build() early; leaving alias/hard-delete slots until the end makes that probe encode
     // their placeholder keys as new entries even though the finalized transaction correctly omits them.
     for (const slotIndex of new Set([...inactiveMessageBusEntrySlots, ...entryDeleteSlots])) {
+      const inactiveEntry = entryNfts.find((entry) => entry.slotIndex === slotIndex);
+      const inactiveCollection = inactiveEntry === undefined ? undefined
+        : stateLayout.collections?.find((collection) => collection.name === inactiveEntry.collection);
+      // Sorted route slots authenticate their collection covenant before the selected handler gate. Keep the
+      // read-only predecessor's published input coordinate even when the handler is inactive; composition forces
+      // its output to exact identity. Plain mappings and genuine deletes retain the -1/no-output sentinel.
+      if (inactiveMessageBusEntrySlots.has(slotIndex)
+        && !entryDeleteSlots.has(slotIndex)
+        && inactiveCollection?.sorted === true
+        && inactiveEntry?.utxo !== undefined) continue;
       builder.deleteEntry(slotIndex);
     }
     for (const slotIndex of condSoftDeleteSlots) {
@@ -21456,10 +22708,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         builder.requireLoopEntryCount(ins.collection, 1);
       }
     }
-    // Break the first-probe ordering cycle when a scalar vmap INSERT follows newly-written dynamic state chunks:
-    // reserve one chunk candidate so NEW is placed after the dynamic region and the VM can reach both commitment
-    // checks. Derivation replaces it with the exact count/commitments (or removes it for an empty final value).
-    if (sortedInserts.length > 0 || usesComposedDelegateDynamicTail) {
+    const valueChunkOutputBasePosition = abiFunction?.inputs.findIndex(
+      (input) => input.name === '__internal__valueChunkOutputBase',
+    ) ?? -1;
+    const dynamicChunkOutputBasePosition = abiFunction?.inputs.findIndex(
+      (input) => input.name === '__internal__dynamicChunkOutputBase',
+    ) ?? -1;
+    // Break the first-probe ordering cycle when a scalar vmap INSERT or computed chunkable value follows newly-
+    // written dynamic state chunks: reserve one chunk candidate so the later resource starts after the dynamic
+    // region. Derivation replaces it with the exact count/commitments (or removes it for an empty final value).
+    if (sortedInserts.length > 0 || usesComposedDelegateDynamicTail || valueChunkOutputBasePosition >= 0) {
       for (const dv of builder.getDynamicChunkVars()) {
         if (builder.getChunkRawCommitments(dv.name).length === 0) {
           // closeJob / in-place jobs writes keep the on-chain chunk count. A single
@@ -21543,6 +22801,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }));
     }
 
+    // A direct entry point can compute a chunkable mapping value (for example, assigning a freshly-built struct)
+    // without going through an external-call carrier. Its covenant addresses the continuation outputs using the
+    // same absolute witness as composed calls, so bind that witness after all preceding dynamic/entry output bands
+    // have been registered. Leaving the default -1 sentinel makes the first chunk check inspect output 0.
+    if (valueChunkOutputBasePosition >= 0) {
+      // Derivation evaluates this participant as an isolated, zero-based transaction. Keep the probe witness
+      // local until every commitment has converged; it is rebased to the aggregate coordinate before handoff.
+      finalArgs[valueChunkOutputBasePosition] = BigInt(builder.getValueChunkOutputBase());
+      builder._setMasterUnlocker(unlockFn(...finalArgs));
+    }
+    if (dynamicChunkOutputBasePosition >= 0) {
+      // External participant widths are known once the builder is assembled, so bind the dynamic continuation
+      // region to its real physical start before any optimistic derivation probe executes.
+      finalArgs[dynamicChunkOutputBasePosition] = BigInt(builder.getChunkOutputBase());
+      builder._setMasterUnlocker(unlockFn(...finalArgs));
+    }
+
     // blockhash(n) requires tx.time >= n; set it so the derivation probe (and the final tx) satisfy the CLTV.
     // Otherwise ported `block.timestamp` is nLocktime: stamp the provider tip so publish writes a real
     // job.timestamp and later require(tx.time >= posted + 24h) can pass after evm_increaseTime.
@@ -21623,6 +22898,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         effectiveBlockLayout.slots.filter((slot) => slot.kind === 'ecrecoverSideCar').length
           - ecrecoverComputeCoSpendUtxos.length,
       );
+      if (batchPredCommitments.size > 0) {
+        const localLoopEntryOutputCount = builder.getLoopEntryVars()
+          .filter((variable) => variable.delegate !== true
+            && (variable.categoryId === undefined || variable.categoryId === this.categoryId))
+          .reduce((count, variable) => count + builder.getLoopEntryCommitments(variable.collection).length, 0);
+        // Atomic sorted batches can create more predecessor/target outputs than they consume trailing inputs.
+        // `_buildInputs` balances that output-only expansion after the authenticated input resources; provision
+        // those neutral inputs in addition to funders for fixed output-only block slots (such as events).
+        neededFunders += Math.max(0, localLoopEntryOutputCount - insertLoopPredecessors.length);
+      }
       const trailingCapacity = effectiveBlockLayout.trailingCapacity ?? 0;
       if (trailingCapacity > 0) {
         const existingTrailingInputs = iterationEntryInputs.length
@@ -21939,6 +23224,46 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return changed;
     };
     refreshNestedIdentityAnchorWitnesses();
+    const refreshTopLevelExternalCallInputWitnesses = (): boolean => {
+      let changed = false;
+      const activeIndices: number[] = [];
+      for (const position of topLevelExternalCallInputFillPositions) {
+        const inputIndex = builder.findMintingInputIndex(position.categoryId);
+        if (inputIndex < 0) continue;
+        activeIndices.push(inputIndex);
+        const next = BigInt(inputIndex);
+        if (finalArgs[position.argIndex] === next) continue;
+        finalArgs[position.argIndex] = next;
+        changed = true;
+      }
+      for (const position of topLevelExternalReturnFillPositions) {
+        const group = externalCallUtxoGroups[position.groupIndex];
+        const physicalIndex = group?.sharedGroupIndex ?? position.groupIndex;
+        const physical = externalCallUtxoGroups[physicalIndex];
+        if (!physical) continue;
+        let outputIndex = physical.returnOutputIndex;
+        const returnSlot = physical.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent');
+        if (groupOwnsInBlockReturnEvent(externalCallUtxoGroups, position.groupIndex) && returnSlot) {
+          const masterInputIndex = builder.findMintingInputIndex(physical.categoryId);
+          if (masterInputIndex >= 0) outputIndex = masterInputIndex + returnSlot.offset;
+        }
+        if (outputIndex === undefined || outputIndex < 0) continue;
+        const next = BigInt(outputIndex);
+        if (finalArgs[position.argIndex] === next) continue;
+        finalArgs[position.argIndex] = next;
+        changed = true;
+      }
+      if (topLevelExternalCallBaseArgIndex !== undefined && activeIndices.length > 0) {
+        const next = BigInt(Math.min(...activeIndices));
+        if (finalArgs[topLevelExternalCallBaseArgIndex] !== next) {
+          finalArgs[topLevelExternalCallBaseArgIndex] = next;
+          changed = true;
+        }
+      }
+      if (changed) builder._setMasterUnlocker(unlockFn(...finalArgs));
+      return changed;
+    };
+    refreshTopLevelExternalCallInputWitnesses();
     const applyMintingMasterFills = (): boolean => {
       let changed = false;
       for (const fill of pendingExternalCallInputFills) {
@@ -21975,7 +23300,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const band = builder.getPublishJobEventsBand();
         const tokenReturn = tokenWriterReturnIndex(
           master, group.blockLayout, band,
-          builder.tokenWriterOccupancy(master, builder.build().outputs),
+          builder.tokenWriterOccupancy(master, builder.build({ optimistic: true }).outputs),
         );
         if (group.returnOutputIndex !== tokenReturn) {
           group.returnOutputIndex = tokenReturn;
@@ -22587,6 +23912,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (applyMintingMasterFills()) builder._refreshInputs();
       timing('pre-derive-layout-ready');
+      // A static-call probe may fail a source-level guard before it can expose a return commitment. Check mapped
+      // requires against the small provisional transaction before optimistic derivation: otherwise continuing
+      // through a failed bounds check can turn an intentionally rejected index into an enormous speculative
+      // array/loop. Generated placeholder covenant failures remain optimistic here because they have no mapped
+      // source require; every valid return is still checked strictly again after convergence.
+      if (overrides?.returnProbeOnly) this._strictlyValidateReturnProbe(builder, true, true);
       const persistBeforeDerive = isPersistedJobEventsReady() ? persistedJobEventsWidth() : 0;
       const layoutRevisionBeforeDerive = builder.getDynamicLayoutRevision();
       const firstDeriveStarted = Date.now();
@@ -22661,6 +23992,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ?? (builder as any).__derivedReturnBlob as Uint8Array | undefined
         ?? this._deriveReturnBlob(builder, returnEmitOutputIndex, delegatecallInputIndex ?? 0);
       if (!blob) {
+        // A failed require can stop execution before the return-event commitment is exposed. Surface its mapped
+        // source message before falling back to the generic return-derivation diagnostic.
+        this._strictlyValidateReturnProbe(builder, true);
         throw new Error(
           `Could not derive the return value of '${functionName}' for .emitReturn(). `
           + 'The covenant trace did not expose an authenticated return commitment.',
@@ -22763,6 +24097,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // these as provisional and authenticates the completed transaction before admission.
     if (preparedAtomicNodes?.length) {
       const returnEvents = builder.getReturnEventOutputs();
+      const materializedOutputs = builder.build().outputs;
       for (const [groupIndex, nodeIndex] of preparedAtomicNodeByExternalGroup) {
         const group = externalCallUtxoGroups[groupIndex];
         const node = preparedAtomicNodes[nodeIndex];
@@ -22780,6 +24115,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...node,
           provisionalResultCommitment: event.commitment,
         };
+      }
+      for (const [groupIndex, nodeIndex] of preparedAtomicNodeByExternalGroup) {
+        const group = externalCallUtxoGroups[groupIndex];
+        const node = preparedAtomicNodes[nodeIndex];
+        if (!group || !node) continue;
+        const artifact = node.executionArtifact ?? node.contract.inner.artifact;
+        const abi = artifact.abi.find((candidate) => candidate.name === node.functionName);
+        const eventSlots = abi?.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
+        const outputBase = builder.getExternalCallOutputBase(groupIndex);
+        const provisionalEventCommitments = (abi?.emits ?? []).flatMap((emitted, ordinal) => {
+          const cached = group.eventOutputs?.[ordinal]?.commitment;
+          const slot = eventSlots.find((candidate) => candidate.slotIndex === emitted.emitIndex)
+            ?? eventSlots[ordinal];
+          const materialized = slot === undefined ? undefined : materializedOutputs[outputBase + slot.offset];
+          const rawMaterialized = materialized?.token?.category === group.categoryId
+            && materialized.token.nft?.capability === 'none'
+            ? materialized.token.nft.commitment : undefined;
+          const commitment = cached && cached.length > 0
+            ? hexToBin(cached)
+            : typeof rawMaterialized === 'string' ? hexToBin(rawMaterialized) : undefined;
+          if (!commitment || commitment.length === 0) return [];
+          return [{
+            emitIndex: emitted.emitIndex,
+            eventSignature: emitted.eventSignature,
+            commitment,
+          }];
+        });
+        if (provisionalEventCommitments.length === 0) continue;
+        preparedAtomicNodes[nodeIndex] = { ...node, provisionalEventCommitments };
       }
     }
 
@@ -22868,8 +24232,47 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(node.provisionalResultCommitment && {
             provisionalResultCommitment: node.provisionalResultCommitment.slice(),
           }),
+          ...(node.provisionalEventCommitments && {
+            provisionalEventCommitments: Object.freeze(node.provisionalEventCommitments.map((event) =>
+              Object.freeze({ ...event, commitment: event.commitment.slice() }))),
+          }),
         })));
       }
+    }
+
+    // Derivation can grow an output-only continuation band and consequently shift the trailing identity inputs.
+    // Rebind every root physical-input witness against the completed input list before the final strict pass.
+    refreshTopLevelExternalCallInputWitnesses();
+    refreshTopLevelIdentityAnchorWitnesses();
+    if (valueChunkOutputBasePosition >= 0) {
+      finalArgs[valueChunkOutputBasePosition] = BigInt(
+        (overrides?.blockBase ?? 0) + builder.getValueChunkOutputBase(),
+      );
+    }
+    if (dynamicChunkOutputBasePosition >= 0) {
+      finalArgs[dynamicChunkOutputBasePosition] = BigInt(
+        (overrides?.blockBase ?? 0) + builder.getChunkOutputBase(),
+      );
+    }
+    const aggregateBlockBase = overrides?.blockBase ?? 0;
+    if (aggregateBlockBase > 0 && abiFunction) {
+      for (let index = 0; index < abiFunction.inputs.length; index++) {
+        const input = abiFunction.inputs[index];
+        const value = finalArgs[index];
+        if (/^__internal__vmapBatchPredOut_\d+$/.test(input.name)
+          && typeof value === 'bigint' && value >= 0n) {
+          finalArgs[index] = value + BigInt(aggregateBlockBase);
+        }
+      }
+      const returnPosition = abiFunction.inputs.findIndex(
+        (input) => input.name === '__internal__returnOutputIdx',
+      );
+      if (returnPosition >= 0 && returnEmitBlockOffset >= 0) {
+        finalArgs[returnPosition] = BigInt(aggregateBlockBase + returnEmitBlockOffset);
+      }
+    }
+    if (valueChunkOutputBasePosition >= 0 || dynamicChunkOutputBasePosition >= 0 || aggregateBlockBase > 0) {
+      builder._setMasterUnlocker(unlockFn(...finalArgs));
     }
 
     timing('complete');
@@ -22937,11 +24340,56 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return commitment === undefined ? undefined : hexToBin(commitment);
   }
 
+  /**
+   * Accept a converged static-call candidate only after every input passes the ordinary BCH VM. Return discovery
+   * is intentionally optimistic, but a view has no later broadcast/preflight boundary at which a failed require
+   * could otherwise be rejected.
+   */
+  private _strictlyValidateReturnProbe(
+    builder: StatefulTransactionBuilder, mappedRequireOnly = false, exactRequireOnly = false,
+  ): void {
+    const probe = builder.build();
+    const transaction = probe.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
+    const vm = cachedStrictReturnVm(this.inner.provider);
+    const debugTiming = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_PREFLIGHT_TIMING === '1';
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      const startedAt = debugTiming ? Date.now() : 0;
+      const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+      if (debugTiming) console.error('static-return-preflight-input-timing', {
+        inputIndex,
+        ms: Date.now() - startedAt,
+        passed: evaluated.error === undefined,
+        ...(evaluated.error === undefined ? {} : { error: evaluated.error, ip: evaluated.ip }),
+      });
+      const failed = evaluated.error === undefined ? undefined : evaluated;
+      if (!failed?.error) continue;
+      const unlocker = probe.inputs[inputIndex]?.unlocker as {
+        abiFunction?: AbiFunction;
+        contract?: { artifact?: Artifact };
+      } | undefined;
+      const artifact = unlocker?.contract?.artifact ?? this.inner.artifact;
+      const functionName = unlocker?.abiFunction?.name;
+      const selector = unlocker?.abiFunction?.selector
+        ?? artifact.abi.find((candidate) => candidate.name === functionName)?.selector;
+      const reason = probeRequireMessage(
+        [artifact], selector, failed.ip,
+        exactRequireOnly ? [] : functionName ? [functionName] : [],
+      );
+      if (reason !== undefined || !mappedRequireOnly) throw new Error(reason ?? failed.error);
+    }
+  }
+
   /** @internal Extract a participant's message-bus return commitment from a complete bus transaction. */
   _messageBusReturnBlobFromTransaction(
     builder: TransactionBuilder, returnOutputIndex: number, inputIndex: number,
     program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLibauthProgram(),
-    resultSchema?: { resultTypes: readonly string[]; solidityAbi: boolean },
+    resultSchema?: {
+      resultTypes: readonly string[];
+      resultTypeGroups?: readonly (readonly string[])[];
+      solidityAbi: boolean;
+    },
   ): Uint8Array | undefined {
     const { transaction, sourceOutputs } = program;
     const trace = evaluateProbeTrace(this.inner.provider, { inputIndex, sourceOutputs, transaction });
@@ -22955,47 +24403,71 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const extractSchemaFallback = (candidateTrace: AuthenticationProgramStateCommon[]): string | undefined => {
       if (!resultSchema?.resultTypes.length) return undefined;
       if (resultSchema.solidityAbi) {
-        const inner = extractEvmScalarReturnCommitment(candidateTrace, resultSchema.resultTypes);
+        const groups = resultSchema.resultTypeGroups ?? [resultSchema.resultTypes];
+        const hasDynamic = groups.some((types) => types.some((type) => type === 'bytes' || type === 'string'));
+        const inner = hasDynamic
+          ? extractEvmRouteReturnCommitment(candidateTrace, groups)
+          : extractEvmScalarReturnCommitment(candidateTrace, resultSchema.resultTypes);
         return inner === undefined ? undefined : binToHex(scriptToBytecode([hexToBin(inner)]));
       }
       return extractPendingReturnCommitment(
         candidateTrace, resultSchema.resultTypes.length, resultSchema.resultTypes,
       );
     };
-    // A converging return output can already satisfy an early preservation check with its provisional value.
-    // That observation is weaker than a complete, schema-shaped result still live in the route frame: it proves
-    // only that the seed was preserved at that earlier site, not that later handlers returned the same value.
-    // Prefer the live result only when the output extractor found nothing or merely rediscovered the concrete
-    // provisional commitment. A differing output-covenant expectation remains the strongest evidence.
+    const matchesResultSchema = (candidate: string | undefined): boolean => {
+      if (candidate === undefined || !resultSchema?.resultTypes.length) return false;
+      try {
+        const bytes = hexToBin(candidate);
+        const outer = decodePushdataValue(bytes, 0, 'bytes');
+        if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== bytes.length) return false;
+        if (resultSchema.solidityAbi) {
+          return isCanonicalEvmRouteReturnVector(
+            outer.value, resultSchema.resultTypeGroups ?? [resultSchema.resultTypes],
+          );
+        }
+        let cursor = 0;
+        for (const type of resultSchema.resultTypes) {
+          cursor += decodePushdataValue(outer.value, cursor, type, this.inner.artifact.structs).bytesConsumed;
+        }
+        return cursor === outer.value.length;
+      } catch {
+        return false;
+      }
+    };
+    // A schema fallback is useful only when the targeted covenant value is not itself a complete return (for
+    // example, an oversized result's digest). A schema-valid targeted value is the stronger observation: it is
+    // bound to the exact return output rather than merely being another ABI-shaped item in the live route frame.
     const schemaFallback = extractSchemaFallback(trace);
-    if (schemaFallback !== undefined
-      && (commitment === undefined || commitment === materializedReturnHex)) {
-      commitment = schemaFallback;
+    if (schemaFallback !== undefined && !matchesResultSchema(commitment)) commitment = schemaFallback;
+    if (!matchesResultSchema(commitment) && matchesResultSchema(materializedReturnHex)) {
+      // Optimistic construction may reach an unrelated output check before it can frame this participant's
+      // return. Retain the schema-valid fixed-point seed already materialized in the candidate transaction; the
+      // final aggregate BCH VM pass must still reproduce it exactly before admission.
+      commitment = materializedReturnHex;
     }
     // A participant can compute its return only after checking several output/resource pins. Early semantic
     // passes intentionally carry placeholders for those pins, so a faithful probe may stop before the return
     // channel and a generic stack scan can merely rediscover the pre-seeded provisional commitment. Continue a
     // discovery-only VM past failed OUTPUT equalities and prefer the later return it exposes. The candidate is
-    // only a graph claim: the converged transaction still passes the ordinary, non-relaxed BCH VM preflight.
-    let relaxedTrace: AuthenticationProgramStateCommon[] | undefined;
-    let relaxedCommitment: string | undefined;
+    // only a graph claim: the converged transaction still passes the strict BCH VM preflight.
+    let optimisticTrace: AuthenticationProgramStateCommon[] | undefined;
+    let optimisticCommitment: string | undefined;
     if (trace.at(-1)?.error !== undefined
       && (commitment === undefined || commitment === materializedReturnHex)) {
-      relaxedTrace = evaluateProbeTrace(
-        this.inner.provider, { inputIndex, sourceOutputs, transaction }, true,
+      optimisticTrace = evaluateProbeTrace(
+        this.inner.provider, { inputIndex, sourceOutputs, transaction },
       );
-      const relaxedCommitments = extractCommitmentsFromTrace(relaxedTrace, 1, {
+      const optimisticCommitments = extractCommitmentsFromTrace(optimisticTrace, 1, {
         min: returnOutputIndex, max: returnOutputIndex + 1,
       });
-      relaxedCommitment = relaxedCommitments?.[0]
-        ?? extractPendingReturnCommitmentAtOutput(relaxedTrace, returnOutputIndex)
-        ?? extractSchemaFallback(relaxedTrace);
-      const relaxedSchemaFallback = extractSchemaFallback(relaxedTrace);
-      if (relaxedSchemaFallback !== undefined
-        && (relaxedCommitment === undefined || relaxedCommitment === materializedReturnHex)) {
-        relaxedCommitment = relaxedSchemaFallback;
+      optimisticCommitment = optimisticCommitments?.[0]
+        ?? extractPendingReturnCommitmentAtOutput(optimisticTrace, returnOutputIndex)
+        ?? extractSchemaFallback(optimisticTrace);
+      const optimisticSchemaFallback = extractSchemaFallback(optimisticTrace);
+      if (optimisticSchemaFallback !== undefined && optimisticCommitment === undefined) {
+        optimisticCommitment = optimisticSchemaFallback;
       }
-      if (relaxedCommitment !== undefined) commitment = relaxedCommitment;
+      if (optimisticCommitment !== undefined) commitment = optimisticCommitment;
     }
     const returnDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
     const returnDebugTarget = returnDebugEnv?.SOLIDC_DEBUG_RETURN_VECTOR_CONTRACT;
@@ -23008,7 +24480,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction?: AbiFunction; params?: readonly unknown[];
       } | undefined;
       const failedOperandHex = new Set(
-        (relaxedTrace?.at(-1)?.stack.slice(-8) ?? []).map((item) => binToHex(item)),
+        (optimisticTrace?.at(-1)?.stack.slice(-8) ?? []).map((item) => binToHex(item)),
       );
       const matchingParams = debugUnlocker?.abiFunction?.inputs.flatMap((input, index) => {
         const value = debugUnlocker.params?.[index];
@@ -23043,21 +24515,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         inputIndex, returnOutputIndex,
         actual: transaction.outputs[returnOutputIndex]?.token?.nft?.commitment === undefined
           ? undefined : binToHex(transaction.outputs[returnOutputIndex].token!.nft!.commitment),
-        selected: commitments?.[0], relaxed: relaxedTrace && {
-          applied: cachedProbeVm(this.inner.provider, true).relaxationApplied,
-          error: relaxedTrace.at(-1)?.error,
-          commitment: relaxedCommitment,
-          failure: relaxedTrace.at(-1) && {
-            ip: relaxedTrace.at(-1)!.ip,
-            opcode: relaxedTrace.at(-1)!.instructions[relaxedTrace.at(-1)!.ip]?.opcode,
-            instructionCount: relaxedTrace.at(-1)!.instructions.length,
-            stack: relaxedTrace.at(-1)!.stack.slice(-6).map(binToHex),
-            alternateStack: relaxedTrace.at(-1)!.alternateStack.slice(-8).map(binToHex),
+        selected: commitments?.[0], schemaFallback, commitment, optimistic: optimisticTrace && {
+          applied: cachedProbeVm(this.inner.provider).optimisticVerificationSkipped,
+          error: optimisticTrace.at(-1)?.error,
+          commitment: optimisticCommitment,
+          failure: optimisticTrace.at(-1) && {
+            ip: optimisticTrace.at(-1)!.ip,
+            opcode: optimisticTrace.at(-1)!.instructions[optimisticTrace.at(-1)!.ip]?.opcode,
+            instructionCount: optimisticTrace.at(-1)!.instructions.length,
+            stack: optimisticTrace.at(-1)!.stack.slice(-6).map(binToHex),
+            alternateStack: optimisticTrace.at(-1)!.alternateStack.slice(-8).map(binToHex),
             matchingParams,
-            instructions: relaxedTrace.at(-1)!.instructions.slice(
-              Math.max(0, relaxedTrace.at(-1)!.ip - 10), relaxedTrace.at(-1)!.ip + 2,
+            instructions: optimisticTrace.at(-1)!.instructions.slice(
+              Math.max(0, optimisticTrace.at(-1)!.ip - 10), optimisticTrace.at(-1)!.ip + 2,
             ).map((instruction, offset) => ({
-              ip: Math.max(0, relaxedTrace.at(-1)!.ip - 10) + offset,
+              ip: Math.max(0, optimisticTrace.at(-1)!.ip - 10) + offset,
               opcode: instruction.opcode,
               ...('data' in instruction && { data: binToHex(instruction.data) }),
             })),
@@ -23175,6 +24647,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   async _deriveReturnValue(
     functionName: string, args: FunctionArgument[], calls?: CallInfo[],
   ): Promise<StateValue> {
+    const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
+    const visibleInputs = abiFunction?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+    const scalarGetter = this.inner.stateLayout?.variables.find((variable) => (
+      !variable.dynamic
+      && (variable.name === functionName || variable.name.replace(/^_+/, '') === functionName)
+      && variable.type === abiFunction?.outputs?.[0]?.type
+    ));
+    if (scalarGetter && args.length === 0 && visibleInputs.length === 0
+      && abiFunction?.writesState === false && abiFunction.outputs?.length === 1
+      && (abiFunction.externalCalls?.length ?? 0) === 0
+      && (abiFunction.lowLevelCalls?.length ?? 0) === 0
+      && (abiFunction.entryAccesses?.length ?? 0) === 0) {
+      // Public state getters and conventional inherited accessors such as OZ owner()/paused() are authenticated
+      // directly by the current data-NFT commitment. This also avoids synthesizing a return transaction for a
+      // value the state reader has already decoded from covenant-controlled UTXOs.
+      return (await this.getState())[scalarGetter.name] as StateValue;
+    }
     if ((functionName === 'balanceOf' || functionName === 'allowance')
       && (this.inner.stateLayout?.collections ?? []).some((collection) =>
         collection.name === (functionName === 'balanceOf' ? '_balances' : '_allowances'))) {
@@ -23195,7 +24684,141 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       return 0n;
     }
-    const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
+    // A compiler-proven dense slice of one mapping(K => V[]) entry can be returned directly from the same
+    // authenticated entry/value-chunk UTXOs the synthetic VM probe would consume. The proof excludes filters,
+    // transforms, reordering, conditional loop bodies, and non-canonical limit handling; absent metadata always
+    // falls through to ordinary VM return derivation.
+    const mappingPagination = abiFunction?.mappingArrayPagination;
+    if (mappingPagination && abiFunction?.writesState === false && abiFunction.outputs?.length === 1) {
+      const collection = this.inner.stateLayout?.collections?.find(
+        (candidate) => candidate.name === mappingPagination.collection,
+      );
+      const visibleIndex = new Map(visibleInputs.map((input, index) => [input.name, index]));
+      const keyArgs = mappingPagination.keyParams.map((name) => {
+        const index = visibleIndex.get(name);
+        return index === undefined ? undefined : args[index];
+      });
+      const indexArg = visibleIndex.get(mappingPagination.indexParam);
+      const limitArg = visibleIndex.get(mappingPagination.limitParam);
+      if (collection?.valueType === abiFunction.outputs[0].type
+        && keyArgs.every((value) => value !== undefined)
+        && indexArg !== undefined && limitArg !== undefined) {
+        const keys = keyArgs as Array<bigint | boolean | Uint8Array | string>;
+        const index = Number(StatefulContract._toSoftBigint(args[indexArg]));
+        const requested = Number(StatefulContract._toSoftBigint(args[limitArg]));
+        if (Number.isSafeInteger(index) && index >= 0
+          && Number.isSafeInteger(requested) && requested >= 0) {
+          const overlay = this._getSoftMapping(mappingPagination.collection, keys);
+          const entries = overlay === undefined ? await this.getEntries(mappingPagination.collection) : [];
+          const entry = entries.find((candidate) => StatefulContract._entryMatchesKeys(
+            candidate,
+            keys,
+            collection.keyTypes ?? (collection.keyType ? [collection.keyType] : undefined),
+          ));
+          const values = Array.isArray(overlay) ? overlay : Array.isArray(entry?.value) ? entry.value : [];
+          if (index >= values.length) throw new Error('index out of bounds');
+          const count = requested === 0 ? values.length - index : Math.min(requested, values.length - index);
+          return attachDecodedAccessors(values.slice(index, index + count));
+        }
+      }
+    }
+    // Solidity pagination helpers commonly iterate a dynamic address array and return the mapping value at each
+    // address (`result[i] = users[userAddresses[i + index]]`). The compiler proves this shape in metadata: one
+    // read-only entry access keyed by the one dynamic read. Both sources are independently authenticated UTXOs,
+    // so compose the view result directly instead of constructing a provisional transaction with only one loop
+    // witness. This also preserves the source's `limit == 0` meaning (all remaining rows).
+    const pagedOutput = abiFunction?.writesState === false && abiFunction.outputs?.length === 1
+      && abiFunction.outputs[0].type.endsWith('[]')
+      && abiFunction.entryAccesses?.length === 1
+      && abiFunction.entryAccesses[0].operations.every((operation) => operation === 'read')
+      && abiFunction.dynamicReads?.length === 1
+      ? {
+        access: abiFunction.entryAccesses[0],
+        addresses: abiFunction.dynamicReads[0],
+      } : undefined;
+    const pagedKeyLabel = pagedOutput?.access.keySources?.[0]?.expressionLabel
+      ?? pagedOutput?.access.keyParams?.[0];
+    if (pagedOutput && pagedKeyLabel?.startsWith(`map:${pagedOutput.addresses}(`)) {
+      const state = await this.getState();
+      const keys = state[pagedOutput.addresses];
+      if (Array.isArray(keys)) {
+        const index = Number(StatefulContract._toSoftBigint(args[0]));
+        const requested = Number(StatefulContract._toSoftBigint(args[1]));
+        if (Number.isSafeInteger(index) && index >= 0
+          && Number.isSafeInteger(requested) && requested >= 0) {
+          // This compiler-recognized pagination form guards `index < array.length`; fail at the authenticated
+          // read boundary rather than falling back to a costly placeholder-witness transaction.
+          if (index >= keys.length) throw new Error('index out of bounds');
+          const count = requested === 0 ? keys.length - index : Math.min(requested, keys.length - index);
+          const collection = this.inner.stateLayout?.collections?.find(
+            (candidate) => candidate.name === pagedOutput.access.collection,
+          );
+          const entries = await this.getEntries(pagedOutput.access.collection);
+          const values = keys.slice(index, index + count).map((key) => entries.find((entry) => (
+            StatefulContract._entryMatchesKeys(
+              entry,
+              [key as bigint | boolean | Uint8Array],
+              collection?.keyTypes ?? (collection?.keyType ? [collection.keyType] : undefined),
+            )
+          ))?.value);
+          if (values.every((value) => value !== undefined)) {
+            return attachDecodedAccessors(values as StateValue[]);
+          }
+        }
+      }
+    }
+    // A read-only facade can paginate another contract by first reading its length and then calling one getter per
+    // selected row. Those calls authenticate the same child master independently; placing them all in one synthetic
+    // probe would duplicate that UTXO. Recognize the compiler-published once+loop shape and compose the returned
+    // array from the individually authenticated child reads.
+    const externalPagedOutput = abiFunction?.writesState === false
+      && abiFunction.outputs?.length === 1
+      && abiFunction.outputs[0].type.endsWith('[]')
+      && abiFunction.externalCalls?.length === 2
+      ? {
+        length: abiFunction.externalCalls.find((call) => call.occurrence === 'once'
+          && call.hasReturnValues && call.returnTypes?.length === 1),
+        rows: abiFunction.externalCalls.find((call) => call.occurrence === 'loop'
+          && call.hasReturnValues && call.resultArrayOutput === 0),
+      } : undefined;
+    if (externalPagedOutput?.length && externalPagedOutput.rows
+      && externalPagedOutput.length.interfaceName === externalPagedOutput.rows.interfaceName) {
+      const interfaceName = externalPagedOutput.length.interfaceName;
+      const target = (this._externalRegistry.get(interfaceName)
+        ?? findDeploymentByName(this.inner.provider, interfaceName)?.contract
+        ?? (/^I[A-Z]/.test(interfaceName)
+          ? findDeploymentByName(this.inner.provider, interfaceName.slice(1))?.contract
+          : undefined)) as StatefulContract | undefined;
+      if (target) {
+        const callerState = await this.getState();
+        const lengthArgs = this._resolveExternalArgs(
+          externalPagedOutput.length.argSources, args, this.inner.artifact, callerState,
+          abiFunction!.inputs,
+        );
+        const rawLength = lengthArgs && await target._deriveReturnValue(
+          externalPagedOutput.length.functionName, lengthArgs,
+        );
+        const index = Number(StatefulContract._toSoftBigint(args[0]));
+        const requested = Number(StatefulContract._toSoftBigint(args[1]));
+        const length = rawLength === undefined ? -1 : Number(StatefulContract._toSoftBigint(rawLength));
+        if (Number.isSafeInteger(index) && index >= 0
+          && Number.isSafeInteger(requested) && requested >= 0
+          && Number.isSafeInteger(length) && length >= 0) {
+          if (index >= length) throw new Error('index out of bounds');
+          const count = requested === 0 ? length - index : Math.min(requested, length - index);
+          const values: StateValue[] = [];
+          for (let occurrence = 0; occurrence < count; occurrence++) {
+            const rowArgs = this._resolveExternalArgs(
+              externalPagedOutput.rows.argSources, args, this.inner.artifact, callerState,
+              abiFunction!.inputs, undefined, occurrence,
+            );
+            if (!rowArgs) break;
+            values.push(await target._deriveReturnValue(externalPagedOutput.rows.functionName, rowArgs));
+          }
+          if (values.length === count) return attachDecodedAccessors(values);
+        }
+      }
+    }
     const delegatedReturn = calls
       ?.filter((call): call is Extract<CallInfo, { type: 'stateful' }> => call.type === 'stateful')
       .map((call) => ({
@@ -23236,13 +24859,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         rootRegistry: [...this._externalRegistry.keys()],
       });
     }
-    if (delegatedCall && passthrough && passthroughOnly) {
-      const registered = (delegatedCall.contract._externalRegistry.get(passthrough.interfaceName)
+    if (passthrough && passthroughOnly) {
+      const passthroughCaller = delegatedCall?.contract ?? this;
+      const registered = (passthroughCaller._externalRegistry.get(passthrough.interfaceName)
         ?? this._externalRegistry.get(passthrough.interfaceName)
         ?? findDeploymentByName(this.inner.provider, passthrough.interfaceName)?.contract) as unknown;
-      const resolvedArgs = delegatedCall.contract._resolveExternalArgs(
-        passthrough.argSources, delegatedCall.args, delegatedCall.contract.inner.artifact,
-        undefined, delegatedReturn?.fn?.inputs,
+      const resolvedArgs = passthroughCaller._resolveExternalArgs(
+        passthrough.argSources, delegatedCall?.args ?? args, passthroughCaller.inner.artifact,
+        undefined, delegatedReturn?.fn?.inputs ?? resultFunction?.inputs,
       );
       if (registered && resolvedArgs) {
         if (typeof registered === 'object' && 'forward' in registered
@@ -23269,6 +24893,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + 'Functions that write state and return a value are not yet supported as reads.',
       );
     }
+    this._strictlyValidateReturnProbe(builder);
     const resultArtifact = (abiFunction?.outputs?.length ?? 0) > 0
       ? this.inner.artifact : delegatedReturn?.artifact ?? this.inner.artifact;
     const resultStructs = resultArtifact.structs ?? resultArtifact.stateLayout?.structs;
@@ -23584,9 +25209,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           break;
         }
         case 'selfAddress': {
-          // The compiler lowers `address(this)` to OP_INPUTINDEX OP_UTXOBYTECODE: the exact P2SH32 locking
-          // bytecode of the active executing input. Logical CREATE identities are routing metadata, not `this`.
-          resolved.push(executionSelfAddress ?? hexToBin(this.inner.lockingBytecode));
+          // Stateful Solidity identities remain stable across physical implementation changes. Callers which
+          // resolve arguments symbolically must use the same identity anchor as the generated covenant.
+          resolved.push(executionSelfAddress ?? addressToLockScript(this.target));
           break;
         }
         case 'arrayElement': {
@@ -23675,9 +25300,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     const inferredType = (candidate: ExternalCallExpression): string => {
       if (candidate.type) return candidate.type;
-      if (candidate.kind === 'source' && candidate.source?.kind === 'forward') {
-        const { paramIndex } = candidate.source;
-        return paramIndex === undefined ? '' : callerInputs?.[paramIndex]?.type ?? '';
+      if (candidate.kind === 'source') {
+        const { kind, paramIndex } = candidate.source ?? {};
+        const parameterType = paramIndex === undefined ? '' : callerInputs?.[paramIndex]?.type ?? '';
+        if (kind === 'forward') return parameterType;
+        // Array-element metadata points at the containing ABI parameter. Recover its element type so expression
+        // evaluation applies Solidity's packed-address narrowing to `addresses[i]`, just as the covenant does.
+        if (kind === 'arrayElement') return parameterType.replace(/\[[0-9]*\]$/, '');
       }
       return '';
     };
@@ -23744,15 +25373,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (typeof value === 'string') {
         const canonicalHex = /^0x(?:[0-9a-fA-F]{2})*$/.test(value);
         if (canonicalHex && typeHint === 'uint160' && value.length === 42) {
-          return concat([hexToBin(value.slice(2)), new Uint8Array([0])]);
+          return hexToBin(value.slice(2));
         }
         if (typeHint === 'uint160') {
           const locking = addressToLockScript(value);
-          // Packed uint160(address) on BCH is the locking bytecode (p2sh32 cannot be rebuilt from 20 bytes).
-          if (isStandardLockingBytecode(locking)) return locking;
-          const narrowed = locking.length === 20 ? locking
-            : locking.length === 23 ? locking.slice(2, 22) : locking.slice(3, 23);
-          return concat([narrowed, new Uint8Array([0])]);
+          return narrowAddress(locking);
         }
         // Packed `address` on BCH is locking bytecode (p2sh20=23, p2pkh=25, p2sh32=35), never a
         // 20-byte account id. Solidity compatibility is the exception: the compiler applies its documented
@@ -23780,11 +25405,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (value instanceof Uint8Array) {
         if (typeHint === 'uint160') {
-          if (isStandardLockingBytecode(value)) return value;
-          const narrowed = value.length === 0 ? new Uint8Array(20)
-            : value.length === 20 ? value
-              : value.length === 23 ? value.slice(2, 22) : value.slice(3, 23);
-          return concat([narrowed, new Uint8Array([0])]);
+          return narrowAddress(value);
         }
         if (typeHint === 'address' || typeHint === 'address payable') {
           if (solidityImportCompat) return narrowAddress(value);
@@ -23910,10 +25531,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     if (expression.kind === 'binary' && expression.left && expression.right) {
       const left = evaluate(expression.left);
+      if (left === undefined) return undefined;
+      // Preserve Solidity short-circuit semantics while resolving call predicates. In particular, an
+      // unreachable right-hand side may depend on runtime-only values that the SDK cannot resolve.
+      if (expression.operator === '&&' && !Boolean(left)) return false;
+      if (expression.operator === '||' && Boolean(left)) return true;
       const right = evaluate(expression.right);
-      if (left === undefined || right === undefined) return undefined;
-      if (expression.operator === '&&') return Boolean(left) && Boolean(right);
-      if (expression.operator === '||') return Boolean(left) || Boolean(right);
+      if (right === undefined) return undefined;
+      if (expression.operator === '&&') return Boolean(right);
+      if (expression.operator === '||') return Boolean(right);
       if (expression.operator === '==') return valuesEqual(left, right, expression.left, expression.right);
       if (expression.operator === '!=') return !valuesEqual(left, right, expression.left, expression.right);
       if ((typeof left === 'bigint' || typeof left === 'number')
@@ -23944,10 +25570,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (value instanceof Uint8Array) {
           let bytes = value;
           if (expression.type === 'uint160') {
-            if (value.length === 0) bytes = new Uint8Array(20);
-            else if (value.length === 20) bytes = value;
-            else if (value.length === 23) bytes = value.slice(2, 22);
-            else bytes = value.slice(3, 23);
+            bytes = narrowAddress(value);
+            let result = 0n;
+            for (const byte of bytes) result = (result << 8n) | BigInt(byte);
+            return result;
           }
           let result = 0n;
           for (let i = bytes.length - 1; i >= 0; i--) {
@@ -23999,15 +25625,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (values.some((value) => value === undefined)) return undefined;
       if (expression.name === 'encodeString' && typeof values[0] === 'string') {
         const bytes = utf8ToBin(values[0]);
-        return concat([numberLe(BigInt(bytes.length), 2), bytes]);
+        return concat([numberLe(BigInt(bytes.length), solidityImportCompat ? 1 : 2), bytes]);
       }
       if (expression.name === 'encodeStringArray' && Array.isArray(values[0])) {
         const strings = values[0] as unknown[];
         const encoded = strings.map((value) => {
           const bytes = utf8ToBin(String(value));
-          return concat([numberLe(BigInt(bytes.length), 2), bytes]);
+          return concat([numberLe(BigInt(bytes.length), solidityImportCompat ? 1 : 2), bytes]);
         });
-        return concat([numberLe(BigInt(strings.length), 2), ...encoded]);
+        return concat([numberLe(BigInt(strings.length), solidityImportCompat ? 1 : 2), ...encoded]);
       }
       // Struct constructor: positional arrays are accepted by the ABI encoder.
       if (expression.name && /^[A-Z]/.test(expression.name)) {
@@ -25369,7 +26995,7 @@ export class StatefulFunctionCall {
   /**
    * True when awaiting this call should READ the return value (ethers `view`/`pure` semantics) instead of SENDing
    * a transaction: a single-output function that provably writes no state (`writesState === false`, which fails
-   * closed to `true`), is not a deploy/external-call view, and has no send-intent config attached (transfers,
+   * closed to `true`), is not a deploy, and has no send-intent config attached (transfers,
    * emitReturn, state/entry overrides, split/merge, container ops). Multi-value returns still SEND (their packed
    * encoding is not decodable yet). `.staticCall()` / `.send()` remain the explicit, typed escapes.
    */
@@ -25379,7 +27005,6 @@ export class StatefulFunctionCall {
     if (!abiFn || abiFn.writesState !== false) return false;
     if ((abiFn.outputs?.length ?? 0) !== 1) return false;
     if (abiFn.modifiers?.includes('deploy')) return false;
-    if ((abiFn.externalCalls?.length ?? 0) > 0) return false;
     return this.transfers.length === 0 && !this.emitReturnFlag
       && this.stateOverrides.length === 0 && this.entryOverrides.length === 0
       && this.entryKeyOverrides.size === 0 && this.externalEntryKeyOverrides.size === 0
@@ -25461,7 +27086,9 @@ export class StatefulFunctionCall {
             const trace = evaluateProbeTrace(provider, { ...program, inputIndex: executionInput });
             let progressed = false;
             if (stb.resolveDeferredKeccakPreimage(trace, inputBase)) progressed = true;
-            if (stb.resolveDeferredEcrecoverArgument(trace, inputBase)) progressed = true;
+            // A changed keccak recreation can change the recovery hash in this same execution. Never derive the
+            // recovery witness from the pre-change trace; let the composition rebuild and probe fresh bytes first.
+            else if (stb.resolveDeferredEcrecoverArgument(trace, inputBase)) progressed = true;
             if (!progressed
               && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_ECRECOVER_DERIVE === '1') {
@@ -25612,6 +27239,43 @@ export class StatefulFunctionCall {
       // Split/merge bypass the debug step (covenant scripts don't fully validate
       // in the debug VM due to mock source output limitations).
       return this._sendRawBuilder(splitMergeBuilder);
+    }
+
+    // A normally deployed Solidity contract can call the same state owner several times in one source
+    // invocation. One BCH transaction may consume that owner's minting master only once, so discover the
+    // compiler-authored closure before constructing the legacy one-group-per-call builder and execute it through
+    // the owner-interning atomic message bus. Imperative SDK overrides retain the explicit legacy path.
+    if (this.parentContract && this.functionName !== undefined && this.functionArgs) {
+      let composable = true;
+      try {
+        this._messageBusCompositionDescriptor();
+      } catch {
+        composable = false;
+      }
+      if (composable) {
+        const prepared = await this.parentContract._prepareAtomicExternalClosure(
+          this.functionName, this.functionArgs as FunctionArgument[],
+        );
+        if (prepared) {
+          const signer = this.parentContract._signer;
+          if (!signer) throw new Error('messageBus: direct atomic composition requires a connected signer');
+          invalidateSignerUtxos(signer);
+          const available = (await signerUtxoSnapshot(signer))
+            .filter((utxo) => utxo.token === undefined)
+            .sort((left, right) => Number(right.satoshis - left.satoshis));
+          const feeUtxo = available[0];
+          if (!feeUtxo) throw new Error('messageBus: direct atomic composition requires one token-free fee UTXO');
+          retireSignerUtxos(signer, [feeUtxo]);
+          const { compose } = await import('../message-bus/compose.js');
+          const receipt = await compose({
+            preparedCalls: prepared,
+            funder: { ...feeUtxo, unlocker: signer.unlockP2PKH() },
+            changeAddress: signer.getAddress(),
+          }).send();
+          invalidateSignerUtxos(signer);
+          return receipt;
+        }
+      }
     }
 
     // Retry loop for UTXO staleness: if a concurrent transaction spends our UTXOs

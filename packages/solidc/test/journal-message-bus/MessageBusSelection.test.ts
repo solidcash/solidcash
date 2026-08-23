@@ -18,9 +18,18 @@ describe('message-bus compilation selection', () => {
   it('treats explicit true as an opt-in that skips narrowing and builds a graph-free leaf participant', () => {
     const artifact = compileString(STATEFUL_LEAF, { messageBus: true });
     expect(artifact.messageBus).toBeDefined();
+    expect(artifact.messageBus?.maximumBlobBytes).toBe(520);
     expect(artifact.compiler.options?.messageBus).toBe(true);
     expect(artifact.messageBus?.route.inputs.some((input) => input.name === '__internal__graphCallers'))
       .toBe(false);
+  });
+
+  it('publishes an explicit private-network stack-item envelope without changing the production default', () => {
+    const artifact = compileString(STATEFUL_LEAF, {
+      messageBus: true,
+      maximumStackItemBytes: 10_000,
+    });
+    expect(artifact.messageBus?.maximumBlobBytes).toBe(10_000);
   });
 
   it('can bind a graph-free leaf participant to per-row logical callers', () => {
@@ -67,6 +76,30 @@ describe('message-bus compilation selection', () => {
         routeInput: '__message_bus_key_whitelistWorkers_1',
         source: 'msgSender',
       }));
+  });
+
+  it('allocates one public mapping-getter proof per graph row in permissive profiles', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+    contract Tags {
+      mapping(string => string) public tags;
+    }`, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusHandlers: ['tags'],
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+    });
+    const getter = artifact.messageBus?.handlers.find((handler) => handler.name === 'tags');
+    expect(getter).toEqual(expect.objectContaining({
+      eligible: true,
+      batchKeyWitnesses: [expect.objectContaining({
+        routeInput: '__message_bus_key_tags_0', perRow: true,
+      })],
+    }));
+    const routeInputs = artifact.messageBus?.route.inputs.map((input) => input.name) ?? [];
+    expect(routeInputs).toContain('__message_bus_key_tags_0_r0');
+    expect(routeInputs).toContain('__message_bus_key_tags_0_r1');
   });
 
   it('journals pooled collection getters through the same canonical route entries as sibling writes', () => {
@@ -163,6 +196,7 @@ describe('message-bus compilation selection', () => {
       contract Escrow(address token) {
         mapping(uint => uint) escrows;
         uint next;
+        event Paid(uint id, uint amount);
         function readBalance(address currency) internal returns (uint) {
           return IToken(currency).balanceOf(address(this));
         }
@@ -172,6 +206,7 @@ describe('message-bus compilation selection', () => {
           if (useToken) { amount = readBalance(token); }
           escrows[id] = amount;
           next = next + 1;
+          emit Paid(id, amount);
           return id;
         }
         // Keep an unrelated low-level return consumer in the expanded contract. It must not taint pay with a

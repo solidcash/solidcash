@@ -115,11 +115,17 @@ export function canApplyRepairedNftCommitment(args: {
   // coordinate. A compiler-owned mutable data NFT is different: its exact physical lineage and
   // OUTPUTTOKENCOMMITMENT equality authenticate the coordinate, and scalar state legitimately encodes to one or
   // two bytes (for example 0 -> 00 and 100 -> 0164). Do not impose the entry/chunk shape floor on that state.
-  const authenticatedScalarState = capability === 'mutable' && fixedStateSlot && proposed.length > 0;
+  const currentLen = currentCommitmentHex.length === 0 ? 0 : hexToBin(currentCommitmentHex).length;
+  // A scalar-sized equality witness is only authoritative for a slot which is
+  // already scalar-shaped. While probing a later failing branch, unrelated
+  // booleans can remain below OUTPUTTOKENCOMMITMENT and look like a one-byte
+  // replacement. Never let that observation collapse a structured state NFT;
+  // final layout replay would restore it and create an endless repair cycle.
+  const authenticatedScalarState = capability === 'mutable' && fixedStateSlot
+    && proposed.length > 0 && currentLen < 3;
   if ((!authenticatedScalarState && proposed.length < 3) || proposed.length > 128) return 'skip';
   const proposedHex = binToHex(proposed);
   if (capability === 'mutable') {
-    const currentLen = currentCommitmentHex.length === 0 ? 0 : hexToBin(currentCommitmentHex).length;
     if (isEmptyValueEntryCommitment(proposed) && currentLen > 128) return 'skip';
     if (hasLockingBytecode) return 'apply-lock-and-commit';
     if ((fixedStateSlot || proposed.length >= 32) && proposedHex !== currentCommitmentHex) {

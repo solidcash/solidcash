@@ -36,7 +36,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator } from '../ast/Operator.js';
-import { IntType, Type } from '@solidcash/utils';
+import { ArrayType, IntType, Type } from '@solidcash/utils';
 
 interface Candidate {
   fn: FunctionDefinitionNode;
@@ -131,6 +131,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   private activeMultiCaches = new Map<FunctionDefinitionNode, ActiveMultiCache>();
   /** Route dispatchers load only selected-row caches; selected compiler handlers already own their resources. */
   private lazyMultiCaches = true;
+  private pendingRouteJournalValue = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -335,7 +336,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.activeMultiCaches = this.currentMulti
         ? new Map()
         : this.prepareMultiCaches(fn.body, new Set(fn.parameters.map(({ name }) => name)));
-      this.lazyMultiCaches = !(fn.graphEmissionHandler || fn.forceCollectionJournalPool);
+      this.lazyMultiCaches = !(fn.messageBusRoute || fn.graphEmissionHandler || fn.forceCollectionJournalPool);
       fn.body = this.rewriteBlock(fn.body);
       if (this.activeMultiCaches.size > 0) this.installMultiCaches(fn.body);
     }
@@ -712,7 +713,25 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const invoked = this.at(new FunctionCallNode(
       this.at(new IdentifierNode(call.identifier.name), call),
       [
-        ...callLocals.map(({ local }) => this.at(new IdentifierNode(local.name), call)),
+        ...callLocals.map(({ entry, local }) => {
+          // A route's handler/upsert machinery may temporarily reshape the shared journal frame between rows.
+          // Globally read-only entries do not need a pending journal cell, so materialize them at the selected
+          // call site instead of addressing an eager cache across that mutable frame. Entries touched by any
+          // writer must keep using the shared cache so later readers observe the pending value.
+          if (local.mutates) {
+            const journal = this.at(new IdentifierNode(local.name), call);
+            if (!this.lazyMultiCaches && entry.valueType instanceof ArrayType) {
+              journal.collectionJournalLeadingPushSlotIndex = local.index;
+            }
+            return journal;
+          }
+          const read = this.at(new MappingAccessNode(
+            entry.collection,
+            local.keys.map((key) => cloneNode(key) as ExpressionNode),
+          ), call);
+          read.fromModifier = entry.sourceScope;
+          return read;
+        }),
         ...originalArgs,
       ],
     ), call);
@@ -733,9 +752,47 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         ]), call),
       ), call);
     }) : [];
+    // A route allocates one logical cache per possible row, while the SDK may bind several of those rows to one
+    // physical vmap entry using the runtime alias sentinel. A later logical cache therefore cannot read its own
+    // dummy slot as its starting value. Before invoking the selected handler, redirect equal-key caches to the
+    // earliest canonical cache so sequential reads/writes observe the pending value already authenticated there.
+    const aliasLoads = this.lazyMultiCaches ? [] : distinctLocals.flatMap((local): StatementNode[] => {
+      const priorAliases = cache.locals.filter((prior) => prior.index < local.index
+        && prior.entry.collection === local.entry.collection
+        && prior.keys.length === local.keys.length);
+      let fallback: StatementNode | undefined;
+      for (const prior of priorAliases.reverse()) {
+        const equalKeys = local.keys.map((key, index) => this.at(new BinaryOpNode(
+          cloneNode(key) as ExpressionNode,
+          BinaryOperator.EQ,
+          cloneNode(prior.keys[index]) as ExpressionNode,
+        ), call)).reduce((left, right) => this.at(new BinaryOpNode(
+          left, BinaryOperator.AND, right,
+        ), call));
+        const redirect = this.at(new AssignNode(
+          this.at(new IdentifierNode(local.name), call),
+          this.at(new IdentifierNode(prior.name), call),
+        ), call);
+        fallback = this.at(new BranchNode(
+          equalKeys,
+          this.at(new BlockNode([redirect]), call),
+          fallback === undefined ? undefined : this.at(new BlockNode([fallback]), call),
+        ), call);
+      }
+      return fallback === undefined ? [] : [fallback];
+    });
+    // Keep a route handler's fresh result shallow until its immediate covenant write has consumed it. Replacing
+    // the deep shared cache first makes the following write depend on a frame-relative lookup after OP_INVOKE.
+    const pendingValueName = !this.lazyMultiCaches && callLocals.length === 1
+      && resultElements.length === 0 && callLocals[0].mutates
+      ? `__cj_pending_${this.pendingRouteJournalValue++}` : undefined;
     // A void pooled handler touching one entry still returns a single journal value, not a one-element tuple.
     let capture: StatementNode;
-    if (callLocals.length === 1 && resultElements.length === 0) {
+    if (pendingValueName !== undefined) {
+      capture = this.at(new VariableDefinitionNode(
+        callLocals[0].entry.valueType, [], pendingValueName, invoked,
+      ), call);
+    } else if (callLocals.length === 1 && resultElements.length === 0) {
       capture = this.at(new AssignNode(
         this.at(new IdentifierNode(callLocals[0].local.name), call), invoked,
       ), call);
@@ -759,7 +816,74 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const dirties = [...new Map(callLocals.filter(({ mutates }) => mutates)
       .map(({ local }) => [local.name, local])).values()]
       .map((local) => this.setCacheMaskBit(COLLECTION_CACHE_DIRTY_MASK, local.index, call));
-    return this.at(new BlockNode([...loads, capture, ...dirties]), call);
+    const debugCacheAssertions = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_JOURNAL_EXPECT_CACHE6 === '1'
+      && target.fn.name.includes('transferFrom')
+      && callLocals.some(({ local }) => local.name === '__cj_cache_6')
+      ? [this.at(new RequireNode(this.at(new BinaryOpNode(
+        this.at(new IdentifierNode('__cj_cache_6'), call),
+        BinaryOperator.EQ,
+        this.at(new IntLiteralNode(900000000000000000000n), call),
+      ), call)), call)]
+      : [];
+    // A route may select the same physical mapping entry in several rows. Keep every intermediate result in the
+    // canonical pending cache and emit exactly one physical transition at the route exit; pinning each row here
+    // would require mutually different long-value chunk commitments at the same output coordinates. Runtime key
+    // equality redirects an alias to the earliest cache and marks only that canonical cache dirty.
+    const settleDirties = [...new Map(callLocals.filter(({ mutates }) => mutates)
+      .map(({ local }) => [local.name, local])).values()].map((local): StatementNode => {
+      const selectedValueName = pendingValueName ?? local.name;
+      const settle = (target: ActiveMultiCacheLocal): BlockNode => {
+        const statements: StatementNode[] = [];
+        if (target.name !== selectedValueName) {
+          statements.push(this.at(new AssignNode(
+            this.at(new IdentifierNode(target.name), call),
+            this.at(new IdentifierNode(selectedValueName), call),
+          ), call));
+        }
+        statements.push(this.setCacheMaskBit(COLLECTION_CACHE_DIRTY_MASK, target.index, call));
+        return this.at(new BlockNode(statements), call);
+      };
+      const priorAliases = cache.locals.filter((prior) => prior.index < local.index
+        && prior.entry.collection === local.entry.collection
+        && prior.keys.length === local.keys.length);
+      let fallback: StatementNode = settle(local);
+      for (const prior of priorAliases.reverse()) {
+        const equalKeys = local.keys.map((key, index) => this.at(new BinaryOpNode(
+          cloneNode(key) as ExpressionNode,
+          BinaryOperator.EQ,
+          cloneNode(prior.keys[index]) as ExpressionNode,
+        ), call)).reduce((left, right) => this.at(new BinaryOpNode(
+          left, BinaryOperator.AND, right,
+        ), call));
+        const debugRedirectAssertions = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_JOURNAL_EXPECT_CACHE6 === '1'
+          && target.fn.name.includes('transferFrom')
+          && local.name === '__cj_cache_6' && prior.name === '__cj_cache_0'
+          ? [this.at(new RequireNode(this.at(new BinaryOpNode(
+            this.at(new IdentifierNode(prior.name), call),
+            BinaryOperator.EQ,
+            this.at(new IntLiteralNode(900000000000000000000n), call),
+          ), call)), call)]
+          : [];
+        fallback = this.at(new BranchNode(
+          equalKeys,
+          this.at(new BlockNode([
+            ...(settle(prior).statements ?? []),
+            ...debugRedirectAssertions,
+          ]), call),
+          this.at(new BlockNode([fallback]), call),
+        ), call);
+      }
+      return fallback;
+    });
+    return this.at(new BlockNode([
+      ...loads,
+      ...aliasLoads,
+      capture,
+      ...debugCacheAssertions,
+      ...(this.lazyMultiCaches ? dirties : settleDirties),
+    ]), call);
   }
 
   private prepareMultiCaches(
@@ -882,9 +1006,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     // entry made an untaken handler validate a dummy slot (and writing every cache created phantom upserts).
     const pooled = [...new Set([...this.activeMultiCaches.values()].flatMap((cache) => cache.locals))];
     const caches = [{ locals: pooled }];
-    const declarations = caches.flatMap((cache) => cache.locals.map(({ entry, name, keys }) => {
+    const declarations = caches.flatMap((cache) => cache.locals.map(({ entry, name, keys, mutates }) => {
       let initial: ExpressionNode;
-      if (this.lazyMultiCaches) {
+      if (this.lazyMultiCaches || !mutates) {
+        // Read-only route entries are materialized inside the selected handler arm. Initializing every possible
+        // row here would introspect inactive trailing slots which the transaction correctly leaves unfunded.
         initial = createDefaultValueExpression(entry.valueType, body.location);
       } else {
         const read = this.at(new MappingAccessNode(entry.collection, keys.map((key) =>

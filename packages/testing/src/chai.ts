@@ -6,7 +6,7 @@
  * `await`, ethers-style. A `chai` module alias lets ported files' `import { expect } from 'chai'` resolve here.
  */
 import 'solidcash/vitest';
-import { cashAddressToLockingBytecode, binToHex } from '@bitauth/libauth';
+import { cashAddressToLockingBytecode, binToHex, hash160 } from '@bitauth/libauth';
 import { getActiveProvider } from './network-helpers.js';
 
 // A BCH `address` value is a full locking bytecode (Uint8Array), returned verbatim (never a pubkey-hash or a
@@ -77,6 +77,28 @@ function normalizeBytesPair(actual: any, expected: any): [any, any] {
     if (allZero(eb) && ab.length === 25 && ab[0] === 0x76 && ab[1] === 0xa9 && ab[2] === 0x14
       && ab.slice(3, 23).every((x) => x === 0)) {
       return [new Uint8Array(20), new Uint8Array(20)];
+    }
+    // Solidity `uint160(address)` projections are 20 bytes, while the corresponding SolidCash `address` value
+    // remains its full locking bytecode. Compare the declared lossy projection when exactly one side has each
+    // representation (P2SH32 uses HASH160 of the full locking bytecode, matching compiler cast semantics).
+    const narrowAddress = (bytes: Uint8Array): Uint8Array | undefined => {
+      if (bytes.length === 25 && bytes[0] === 0x76 && bytes[1] === 0xa9 && bytes[2] === 0x14
+        && bytes[23] === 0x88 && bytes[24] === 0xac) return bytes.slice(3, 23);
+      if (bytes.length === 23 && bytes[0] === 0xa9 && bytes[1] === 0x14 && bytes[22] === 0x87) {
+        return bytes.slice(2, 22);
+      }
+      if (bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87) {
+        return hash160(bytes);
+      }
+      return undefined;
+    };
+    if (ab.length === 20) {
+      const narrowed = narrowAddress(eb);
+      if (narrowed && binToHex(ab) === binToHex(narrowed)) return [binToHex(ab), binToHex(narrowed)];
+    }
+    if (eb.length === 20) {
+      const narrowed = narrowAddress(ab);
+      if (narrowed && binToHex(eb) === binToHex(narrowed)) return [binToHex(narrowed), binToHex(eb)];
     }
     // Compare as hex strings so length-mismatched zero forms still pass after coercion above.
     return [binToHex(ab), binToHex(eb)];
@@ -383,17 +405,30 @@ class EmitAssertion implements PromiseLike<void> {
    */
   get to(): { emit: (contract: any, event: string) => EmitAssertion } {
     return {
-      emit: (contract: any, event: string) => new EmitAssertion(
-        this.actual, contract, event, this.negate,
-        [...this.prior, () => this.assertOnce()],
-        undefined,
-        this.shared,
-      ),
+      emit: (contract: any, event: string) => this.nextEmit(contract, event, this.negate),
     };
   }
 
   /** Chai/Waffle chain alias: `.to.emit(...).withArgs(...).and.to.emit(...)`. */
   get and(): this { return this; }
+
+  /** Preserve the completed assertion while negating only the next chained emit. */
+  get not(): { to: { emit: (contract: any, event: string) => EmitAssertion } } {
+    return {
+      to: {
+        emit: (contract: any, event: string) => this.nextEmit(contract, event, !this.negate),
+      },
+    };
+  }
+
+  private nextEmit(contract: any, event: string, negate: boolean): EmitAssertion {
+    return new EmitAssertion(
+      this.actual, contract, event, negate,
+      [...this.prior, () => this.assertOnce()],
+      undefined,
+      this.shared,
+    );
+  }
 
   then<R1 = void, R2 = never>(onOk?: ((v: void) => R1 | PromiseLike<R1>) | null,
     onErr?: ((r: any) => R2 | PromiseLike<R2>) | null): PromiseLike<R1 | R2> {
@@ -600,6 +635,18 @@ class Assertion {
     const viewRead = this.actual?.parentContract?.inner?.artifact?.abi
       ?.find((fn: { name?: string; writesState?: boolean }) => fn.name === this.actual?.functionName)
       ?.writesState === false;
+    if (!this.negate && viewRead) {
+      return Promise.resolve(this.actual).then(
+        () => { throw new Error(`expected view call to revert with ${String(reason)}, but it succeeded`); },
+        (error) => {
+          const message = String((error as { message?: unknown })?.message ?? error);
+          const matches = reason instanceof RegExp ? reason.test(message) : message.includes(reason);
+          if (!matches) {
+            throw new Error(`expected view call to revert with ${String(reason)}, but received: ${message}`);
+          }
+        },
+      );
+    }
     if (!this.negate && !viewRead && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))) {
       const result = typeof this.actual?.send === 'function' ? this.actual.send() : this.actual;
       return Promise.resolve(result).then(

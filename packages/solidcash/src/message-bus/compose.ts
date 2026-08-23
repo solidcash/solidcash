@@ -1,6 +1,7 @@
 import { binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
+  buildEventNftCovenantScript, computeEventNameHash, encodeEventCommitment,
   MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256,
 } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
@@ -9,9 +10,10 @@ import type {
   ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
 } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import {
-  evalComputedKey, isCanonicalEvmScalarReturnVector, StatefulContract, StatefulFunctionCall,
+  evalComputedKey, inactiveMessageBusRouteWitness, isCanonicalEvmScalarReturnVector,
+  StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
@@ -25,7 +27,9 @@ import {
   type AtomicSidecarSlotEffect, type AtomicTokenSlotEffect, type AtomicValueSlotEffect,
 } from './graph.js';
 import { encodeMessageBatch } from './message-bus.js';
-import { convergeMessageBusFixedStateOutputs, preflightMessageBusTransaction } from './preflight.js';
+import {
+  convergeMessageBusComputedOutputs, convergeMessageBusFixedStateOutputs, preflightMessageBusTransaction,
+} from './preflight.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 
 export interface AtomicMessageBusFunder {
@@ -59,6 +63,15 @@ export interface PreparedAtomicMessageBusCall {
    * fixed-point seed: the composed transaction still has to expose the same result and pass every covenant.
    */
   provisionalResultCommitment?: Uint8Array;
+  /**
+   * Events already derived while discovering this invocation. These are optimistic fixed-point seeds only;
+   * strict final VM evaluation must reproduce every commitment before the transaction can be admitted.
+   */
+  provisionalEventCommitments?: readonly {
+    emitIndex: number;
+    eventSignature: string;
+    commitment: Uint8Array;
+  }[];
 }
 
 interface CallDescriptor extends PreparedAtomicMessageBusCall {
@@ -471,20 +484,33 @@ export class AtomicMessageBusComposition {
       const state = await stateOf(descriptor.contract);
       const witnesses: Record<string, FunctionArgument> = {};
       for (const binding of expressionBindings) {
+        const routeType = artifact.messageBus?.route.inputs.find((input) =>
+          input.name === (binding.perRow ? `${binding.routeInput}_r0` : binding.routeInput))?.type;
+        const expressionLabel = binding.expressionLabel?.replace(
+          /id:__sp\d+_[A-Za-z0-9_]+/g, 'lit:0',
+        );
+        const lengthDeltas: Record<string, bigint> = {};
+        for (const name of abi.dynamicWrites ?? []) {
+          if (expressionLabel === `binop:-(unop:.length(state:${name}),lit:1)`
+            && abi.sortedUpsertLoopInfo?.some((loop) => loop.fixedKeySources?.some(
+              (source) => source.expressionLabel === binding.expressionLabel,
+            ))) lengthDeltas[name] = 1n;
+        }
         const encoded = evalComputedKey(
-          binding.expressionLabel,
+          expressionLabel,
           [...descriptor.args],
           abi.inputs,
           state as Parameters<typeof evalComputedKey>[3],
+          lengthDeltas,
         );
         if (!encoded) {
-          throw new Error(
-            `messageBus: cannot derive computed route witness '${binding.routeInput}' `
-            + `from '${binding.expressionLabel ?? '<missing expression>'}'`,
-          );
+          if (binding.expressionLabel?.startsWith('arridx(') && routeType !== undefined) {
+            witnesses[binding.routeInput] = inactiveMessageBusRouteWitness(routeType);
+            continue;
+          }
+          throw new Error(`messageBus: cannot derive computed route witness '${binding.routeInput}' `
+            + `from '${binding.expressionLabel ?? '<missing expression>'}'`);
         }
-        const routeType = artifact.messageBus?.route.inputs.find((input) =>
-          input.name === (binding.perRow ? `${binding.routeInput}_r0` : binding.routeInput))?.type;
         witnesses[binding.routeInput] = routeType === 'bool'
           ? vmNumberToBigInt(encoded) !== 0n
           : routeType === 'bigint' || routeType === 'int' || routeType === 'uint'
@@ -570,6 +596,8 @@ export class AtomicMessageBusComposition {
       args: descriptors[0].args,
       rootCaller,
       targets: {},
+      allowRuntimeBoundedLoops: this.options.preparedCalls !== undefined,
+      maximumBlobBytes: descriptors[0].contract.inner.provider.consensusLimits?.maximumStackItemBytes,
       target: ({ callsiteId }) => {
         const descriptor = descriptors[next];
         if (!descriptor) return undefined;
@@ -583,7 +611,9 @@ export class AtomicMessageBusComposition {
         if (!callsite) {
           throw new Error(`messageBus: compiler omitted occurrence metadata for callsite ${callsiteId}`);
         }
-        const maximum = callsite.maximumOccurrences ?? (kind === 'conditional' ? 1 : 0);
+        const maximum = callsite.maximumOccurrences
+          ?? (kind === 'conditional' ? 1
+            : this.options.preparedCalls !== undefined ? descriptors.length - next : 0);
         // Compiler-authored raw edges retain `functionName: __raw__` and publish the decoded concrete selector
         // separately. Prepared calls use that concrete function name, so occurrence matching must do the same.
         let count = 0;
@@ -647,6 +677,11 @@ export class AtomicMessageBusComposition {
         descriptors: descriptors.map((descriptor) => ({
           functionName: descriptor.functionName,
           callsiteId: descriptor.callsiteId,
+          provisionalEvents: descriptor.provisionalEventCommitments?.map((event) => ({
+            emitIndex: event.emitIndex,
+            eventSignature: event.eventSignature,
+            commitment: binToHex(event.commitment),
+          })),
         })),
         invocations: plan.invocations.map((invocation) => ({
           functionName: invocation.function,
@@ -689,9 +724,15 @@ export class AtomicMessageBusComposition {
           ),
       }], { ...plannedWitnesses, ...validationWitnesses }).rows[0];
       if (suppliedRow.argsHex !== invocation.argsHex) {
-        throw new Error(
-          `messageBus: prepared call ${index} arguments disagree with compiler-derived invocation arguments`,
-        );
+        if (!invocation.args) {
+          throw new Error(
+            `messageBus: prepared call ${index} arguments disagree with compiler-derived invocation arguments`,
+          );
+        }
+        // Prepared calls originate in optimistic VM discovery and may still carry a placeholder-derived value
+        // (notably a physical implementation for `address(this)`). Promote the compiler-resolved invocation
+        // vector for the next assembly pass. Strict finalized-byte preflight remains the admission boundary.
+        descriptors[index] = { ...supplied, args: invocation.args };
       }
     });
     const byLockingBytecode = new Map<string, StatefulContract>();
@@ -705,6 +746,43 @@ export class AtomicMessageBusComposition {
       const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase());
       if (!contract?.categoryId) throw new Error('messageBus: every participant must have a resolved master category');
       return contract.categoryId;
+    });
+    // Common ERC-20 effects have a canonical projection from the authenticated invocation row. Supplying that
+    // projection breaks the first-pass event-claim cycle (the route authenticates graphEmissions before it can
+    // materialize the same event output). This is only an optimistic seed: strict final evaluation checks the
+    // handler's actual emit blob, event covenant, and manifest row byte-for-byte.
+    descriptors.forEach((descriptor, invocationIndex) => {
+      const invocation = plan.invocations[invocationIndex];
+      const participant = plan.participants[invocation.callee];
+      const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+        candidate.name === descriptor.functionName);
+      const caller = invocation.caller === null
+        ? rootCaller
+        : hexToBin(
+          plan.participants[invocation.caller].logicalLockingBytecode
+            ?? plan.participants[invocation.caller].lockingBytecode,
+        );
+      const projected = [...(descriptor.provisionalEventCommitments ?? [])];
+      const add = (signature: string, values: readonly FunctionArgument[]): void => {
+        const emitted = handler?.emits?.find((candidate) => candidate.eventSignature === signature);
+        if (!emitted || projected.some((candidate) => candidate.emitIndex === emitted.emitIndex)) return;
+        const types = signature.slice(signature.indexOf('(') + 1, -1).split(',').map((type) => ({ type }));
+        projected.push({
+          emitIndex: emitted.emitIndex,
+          eventSignature: emitted.eventSignature,
+          commitment: encodeEventCommitment(types, values as Parameters<typeof encodeEventCommitment>[1]),
+        });
+      };
+      if (descriptor.functionName === 'approve' && descriptor.args.length >= 2) {
+        add('Approval(address,address,uint256)', [caller, descriptor.args[0], descriptor.args[1]]);
+      } else if (descriptor.functionName === 'transfer' && descriptor.args.length >= 2) {
+        add('Transfer(address,address,uint256)', [caller, descriptor.args[0], descriptor.args[1]]);
+      } else if (descriptor.functionName === 'transferFrom' && descriptor.args.length >= 3) {
+        // OpenZeppelin's `_spendAllowance` does not emit Approval; the transfer itself is unconditional on every
+        // successful invocation. Custom implementations which differ fail the strict pass and are never sent.
+        add('Transfer(address,address,uint256)', [descriptor.args[0], descriptor.args[1], descriptor.args[2]]);
+      }
+      if (projected.length > 0) descriptor.provisionalEventCommitments = Object.freeze(projected);
     });
     const returning = plan.invocations.filter((invocation) => invocation.resultTypes.length > 0);
     const provisionalResults = Object.fromEntries(returning.map((invocation) => {
@@ -729,6 +807,7 @@ export class AtomicMessageBusComposition {
         ].includes(slot.kind))
         .map((slot) => ({
           participant: participant.participant, offset: slot.offset, kind: slot.kind,
+          ...('slotIndex' in slot && { slotIndex: slot.slotIndex }),
         })));
     const valueSlots = plan.participants.flatMap((participant) =>
       participant.blockLayout!.slots.filter((slot) => slot.kind === 'transfer').map((slot) => ({
@@ -745,7 +824,33 @@ export class AtomicMessageBusComposition {
           participant: participant.participant, offset: slot.offset,
           kind: slot.kind as AtomicSidecarSlotEffect['kind'],
         })));
-    const provisionalEventEffects: AtomicEventSlotEffect[] = [];
+    const provisionalEventEffects: AtomicEventSlotEffect[] = plan.participants.flatMap((participant) => {
+      const slots = participant.blockLayout!.slots.filter((slot) => slot.kind === 'event');
+      const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
+      const frameWidth = maximumRows > 0 ? slots.length / maximumRows : 0;
+      return participant.invocations.flatMap((invocationIndex, rowIndex) => {
+        const descriptor = descriptors[invocationIndex];
+        return (descriptor.provisionalEventCommitments ?? []).flatMap((event) => {
+          const slotIndex = rowIndex * frameWidth + event.emitIndex;
+          const slot = slots.find((candidate) => candidate.slotIndex === slotIndex);
+          if (!slot) return [];
+          const lockingBytecode = scriptToLockingBytecode(
+            buildEventNftCovenantScript(
+              hexToBin(categories[participant.participant]),
+              computeEventNameHash(event.eventSignature),
+            ),
+            descriptor.contract.inner.addressType,
+          );
+          return [{
+            participant: participant.participant,
+            offset: slot.offset,
+            active: true,
+            lockingBytecodeHex: binToHex(lockingBytecode),
+            commitmentHex: binToHex(event.commitment),
+          }];
+        });
+      });
+    });
     const provisionalResourceEffects: AtomicResourceSlotEffect[] = [];
     const provisionalValueEffects: AtomicValueSlotEffect[] = [];
     const provisionalTokenEffects: AtomicTokenSlotEffect[] = [];
@@ -764,7 +869,12 @@ export class AtomicMessageBusComposition {
         .filter((invocation) => plan.invocations[invocation].resultTypes.length > 0)
         .map((invocation) => results[invocation] ?? '')
         .join('');
-      return vector.length === 0 ? undefined : scriptToBytecode([hexToBin(vector)]);
+      if (vector.length === 0) return undefined;
+      const bytes = hexToBin(vector);
+      // The compiler route and detached verifier use this same boundary. A canonical outer push fits only for
+      // vectors up to 126 bytes; larger authenticated graph results are represented by their 32-byte digest.
+      const framed = scriptToBytecode([bytes]);
+      return framed.length > 128 ? sha256(framed) : framed;
     };
 
     const internalTokenCategory = (token: TokenDetails): string => {
@@ -808,13 +918,13 @@ export class AtomicMessageBusComposition {
       const deferredComputeGraphKey = binToHex(sha256(graph.bytes));
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_GRAPH_RESULTS === '1') {
-        console.error('atomic-graph-results', graph.callManifest.rows.flatMap((row, index) => row.kind === 0 ? [{
+        console.error('atomic-graph-results', JSON.stringify(graph.callManifest.rows.flatMap((row, index) => row.kind === 0 ? [{
           index,
           function: graph.plan.invocations[index]?.function,
           owner: row.owner,
           consumer: row.consumer,
           resultHex: row.resultHex,
-        }] : []));
+        }] : [])));
       }
       // Resource delete rows authorize exact NFT disappearance at participant-owned slots; the generated
       // covenants still reject any unlisted burn through endpoint cardinality and commitment checks.
@@ -840,6 +950,35 @@ export class AtomicMessageBusComposition {
         const descriptor = descriptorByLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
         const blockSize = participant.blockLayout!.blockSize;
         const returnBlob = participantReturnBlob(participant.participant, results);
+        const routeEventSlots = participant.artifact.messageBus?.route.blockLayout?.slots
+          .filter((slot) => slot.kind === 'event') ?? [];
+        const routeMaximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
+        const routeEventWidth = routeEventSlots.length === 0 || routeMaximumRows === 0
+          ? 0 : Math.floor(routeEventSlots.length / routeMaximumRows);
+        const optimisticEventCommitments = new Map<number, string>();
+        participant.invocations.forEach((invocationIndex, rowIndex) => {
+          const invocation = descriptors[invocationIndex];
+          const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+            candidate.name === invocation.functionName);
+          for (const emitted of handler?.emits ?? []) {
+            const seed = invocation.provisionalEventCommitments?.find((candidate) =>
+              candidate.emitIndex === emitted.emitIndex
+              && candidate.eventSignature === emitted.eventSignature);
+            if (!seed) continue;
+            optimisticEventCommitments.set(
+              rowIndex * routeEventWidth + emitted.emitIndex,
+              binToHex(seed.commitment),
+            );
+          }
+        });
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ATOMIC_PROMOTION === '1' && optimisticEventCommitments.size > 0) {
+          console.error('atomic-optimistic-events', JSON.stringify({
+            participant: participant.participant,
+            contract: participant.artifact.contractName,
+            events: [...optimisticEventCommitments],
+          }));
+        }
         const localCall = contract._batchRaw(
           participant.batch.blob,
           participant.batch.routeWitnesses as FunctionArgument[],
@@ -848,7 +987,10 @@ export class AtomicMessageBusComposition {
           returnBlob !== undefined,
           returnBlob,
           true,
-          descriptor.executor ? { artifact: descriptor.artifact, executor: descriptor.executor } : undefined,
+          {
+            artifact: participant.artifact,
+            ...(descriptor.executor && { executor: descriptor.executor }),
+          },
           participant.invocations.map((invocationIndex) => {
             const invocation = descriptors[invocationIndex];
             const handler = participant.artifact.abi.find((candidate) =>
@@ -858,6 +1000,7 @@ export class AtomicMessageBusComposition {
             }
             return { args: invocation.args, handler };
           }),
+          optimisticEventCommitments,
         );
         // A participant probe is built in isolation while its covenant addresses outputs in the final graph's
         // absolute coordinate space. Forward/literal BCH transfers are already compiler-authenticated in the
@@ -888,11 +1031,36 @@ export class AtomicMessageBusComposition {
         let local: TransactionBuilder;
         try {
           local = await localCall.build();
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_PROMOTION === '1' && optimisticEventCommitments.size > 0) {
+            console.error('atomic-optimistic-event-outputs', JSON.stringify({
+              participant: participant.participant,
+              events: routeEventSlots.map((slot) => ({
+                slotIndex: slot.slotIndex,
+                offset: slot.offset,
+                category: local.outputs[slot.offset]?.token?.category,
+                commitment: local.outputs[slot.offset]?.token?.nft?.commitment,
+              })),
+            }));
+          }
         } catch (error) {
           throw new Error(
             `messageBus: participant ${participant.participant} '${participant.artifact.contractName}' `
             + `failed to build its balanced block: ${error instanceof Error ? error.message : String(error)}`,
           );
+        }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+          console.error('atomic-local-fixed-state', {
+            participant: participant.participant,
+            contract: participant.artifact.contractName,
+            invocations: participant.invocations.map((index) => descriptors[index].functionName),
+            slots: participant.blockLayout!.slots.flatMap((slot) => slot.kind === 'dataNft' ? [{
+              offset: slot.offset,
+              input: local.inputs[slot.offset]?.token?.nft?.commitment,
+              output: local.outputs[slot.offset]?.token?.nft?.commitment,
+            }] : []),
+          });
         }
         const publishedComputeOffsets = participant.blockLayout!.slots
           .filter((slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar')
@@ -970,6 +1138,32 @@ export class AtomicMessageBusComposition {
             amount: executorInput.satoshis,
             ...(executorInput.token && { token: executorInput.token }),
           };
+        }
+        // Logical CREATE identities are normally appended after an independently built contract block. Atomic
+        // composition publishes that authenticated anchor as the participant's fixed suffix instead, so replace
+        // the inactive pad at its published coordinate and keep the anchor as the final input in the block.
+        if (participant.logicalIdentityOffset !== null
+          && participant.logicalIdentityOffset === blockSize - 1
+          && local.inputs.length > blockSize
+          && local.outputs.length === blockSize) {
+          const anchor = local.inputs[local.inputs.length - 1];
+          const anchorOutput = local.outputs[participant.logicalIdentityOffset];
+          const overflowPadsAreInactive = local.inputs.slice(blockSize, -1).every((input) =>
+            input.token === undefined
+            && binToHex(input.unlocker.generateLockingBytecode()) === BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
+          if (anchor.token?.nft?.capability === 'none'
+            && anchorOutput?.token?.nft?.capability === 'none'
+            && anchor.token.category === anchorOutput.token.category
+            && anchor.token.nft.commitment === anchorOutput.token.nft.commitment
+            && overflowPadsAreInactive) {
+            local.inputs[participant.logicalIdentityOffset] = anchor;
+            local.outputs[participant.logicalIdentityOffset] = {
+              to: anchor.unlocker.generateLockingBytecode(),
+              amount: anchor.satoshis,
+              token: anchor.token,
+            };
+            local.inputs.splice(blockSize);
+          }
         }
         aggregate.locktime = Math.max(aggregate.locktime, local.locktime);
         while (local.outputs.length < blockSize && local.outputs.length < local.inputs.length) {
@@ -1311,15 +1505,34 @@ export class AtomicMessageBusComposition {
         });
       }
       if (resolvableDeferredBlocks.length > 0) {
-        const maximumRounds = resolvableDeferredBlocks.reduce((sum, block) => sum + block.offsets.length, 0) + 1;
+        // One batched keccak side-car can carry three nested hashes. Optimistic probes intentionally continue
+        // after placeholder comparisons, so inner-result changes may require revisiting already-learned outer
+        // preimages before one final unchanged fixed-point probe. Budget by physical resources but leave enough
+        // rounds for every batch member to settle without making the limit transaction-size-dependent.
+        const maximumRounds = resolvableDeferredBlocks.reduce(
+          (sum, block) => sum + Math.max(8, block.offsets.length * 8), 0,
+        ) + 1;
         for (let round = 0; round < maximumRounds; round += 1) {
           const unresolved = resolvableDeferredBlocks.filter((block) => block.controller.hasUnresolved());
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ECRECOVER_DERIVE === '1') {
+            console.error('atomic-deferred-round', {
+              round, maximumRounds, unresolved: unresolved.map((block) => block.participant),
+              offsets: unresolved.map((block) => block.offsets),
+            });
+          }
           if (unresolved.length === 0) break;
           const program = aggregate.buildLibauthProgram();
           let progressed = false;
           for (const block of unresolved) {
             if (!block.controller.resolve(program, block.executionInput, block.inputBase)) continue;
             progressed = true;
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_ECRECOVER_DERIVE === '1') {
+              console.error('atomic-deferred-round-progress', {
+                round, participant: block.participant, remains: block.controller.hasUnresolved(),
+              });
+            }
             const refreshed = block.controller.refresh();
             for (const offset of block.offsets) {
               const input = refreshed.inputs[offset];
@@ -1370,7 +1583,11 @@ export class AtomicMessageBusComposition {
       preflightMessageBusTransaction(
         builder,
         builder.provider.policy?.enforceProductionInputLimit === false
-          ? { consensusLimits: builder.provider.consensusLimits }
+          ? {
+            consensusLimits: builder.provider.consensusLimits,
+            allowNonRelayable:
+              (builder.provider.consensusLimits?.maximumTransactionBytes ?? 100_000) > 100_000,
+          }
           : undefined,
       );
       return builder;
@@ -1406,10 +1623,19 @@ export class AtomicMessageBusComposition {
         const executionInput = participant.executionKind === 1 && participant.executorOffset !== null
           ? participantBase + participant.executorOffset
           : participantBase;
+        const priorBlob = participantReturnBlob(participant.participant, priorResults);
+        const materialized = provisional.outputs[participantBase + returnSlot.offset]
+          ?.token?.nft?.commitment?.toLowerCase();
+        // Return vectors whose canonical push exceeds the commitment limit are published as a SHA-256 digest.
+        // The optimistic probe cannot recover that preimage, so its schema fallback is not a newly observed
+        // result. Keep the existing seed when the materialized output authenticates it; the final strict VM pass
+        // still proves that the handler itself produced this digest before the transaction can be admitted.
+        if (priorBlob?.length === 32 && materialized === binToHex(priorBlob)) continue;
         const blob = contract._messageBusReturnBlobFromTransaction(
           provisional, participantBase + returnSlot.offset, executionInput, probeProgram,
           {
             resultTypes: owned.flatMap((invocation) => plan.invocations[invocation].resultTypes),
+            resultTypeGroups: owned.map((invocation) => plan.invocations[invocation].resultTypes),
             solidityAbi: artifactUsesSolidityAbi(participant.artifact),
           },
         );
@@ -1418,9 +1644,6 @@ export class AtomicMessageBusComposition {
           // return-output comparison. Keep the exact schema-shaped vector already assembled from this pass's
           // prior claims as a convergence seed. It is not trusted: `admit` executes every ordinary covenant, so
           // a wrong seed either exposes a different return on a later pass or fails final BCH VM preflight.
-          const priorBlob = participantReturnBlob(participant.participant, priorResults);
-          const materialized = provisional.outputs[participantBase + returnSlot.offset]
-            ?.token?.nft?.commitment?.toLowerCase();
           if (!priorBlob || materialized !== binToHex(priorBlob)) {
             missingParticipants.add(participant.participant);
           }
@@ -1510,6 +1733,10 @@ export class AtomicMessageBusComposition {
         + valueSlots.length + tokenSlots.length + sidecarSlots.length;
       const maximumPasses = mutableClaimCount + 2;
       const seenClaimStates = new Set<string>();
+      const computedOutputSeeds = new Map<string, {
+        participant: number; offset: number; category: string; lockingBytecodeHex: string; commitmentHex: string;
+      }>();
+      let priorClaimAdvance = 'initial';
       for (let pass = 0; pass < maximumPasses; pass += 1) {
         const claimState = semanticJson({
           results: claimedResults,
@@ -1518,11 +1745,17 @@ export class AtomicMessageBusComposition {
           values: claimedValueEffects,
           tokens: claimedTokenEffects,
           sidecars: claimedSidecarEffects,
+          computedOutputs: [...computedOutputSeeds.values()],
         });
-        if (seenClaimStates.has(claimState)) {
+        const repeatedReturnClaim = seenClaimStates.has(claimState) && priorClaimAdvance === 'returns';
+        if (seenClaimStates.has(claimState) && !repeatedReturnClaim) {
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+            console.error('atomic-repeated-claim-state', { pass, priorClaimAdvance });
+          }
           throw new Error('messageBus: semantic derivation entered a repeated non-final claim state');
         }
-        seenClaimStates.add(claimState);
+        if (!repeatedReturnClaim) seenClaimStates.add(claimState);
         finalized = finalizeAtomicInvocationGraph(
           plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
           claimedTokenEffects,
@@ -1549,9 +1782,20 @@ export class AtomicMessageBusComposition {
         const derivedResults = deriveReturnResults(
           finalized, provisional, claimedResults, missingReturnParticipants,
         );
-        if (returning.some((invocation) =>
+        if (!repeatedReturnClaim && returning.some((invocation) =>
           derivedResults[invocation.index] !== claimedResults[invocation.index])) {
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+            console.error('atomic-return-claim-advance', returning.flatMap((invocation) =>
+              derivedResults[invocation.index] === claimedResults[invocation.index] ? [] : [{
+                invocation: invocation.index,
+                function: invocation.function,
+                claimed: claimedResults[invocation.index],
+                derived: derivedResults[invocation.index],
+              }]));
+          }
           claimedResults = derivedResults;
+          priorClaimAdvance = 'returns';
           continue;
         }
         // A resource claim learned on the prior pass must seed the new local probe. Otherwise the verifier sees
@@ -1583,12 +1827,114 @@ export class AtomicMessageBusComposition {
           output.token.nft.commitment = claim.outputCommitmentHex;
           seededFixedState = true;
         }
+        // Continuation addresses can depend on values that become available only in the complete graph. Retain
+        // exact compiler observations separately from semantic resource claims: using a provisional mode-1/5
+        // claim as its own seed creates feedback where the manifest-derived placeholder replaces the observed
+        // covenant address on the next pass. Strict final admission remains read-only.
+        let seededComputedOutputs = false;
+        for (const seed of computedOutputSeeds.values()) {
+          const absolute = finalized.layout.participantInputs[seed.participant] + seed.offset;
+          const output = provisional.outputs[absolute];
+          if (output?.token?.nft?.capability !== 'mutable'
+            || output.token.category !== seed.category) continue;
+          output.to = hexToBin(seed.lockingBytecodeHex);
+          output.token.nft.commitment = seed.commitmentHex;
+          seededComputedOutputs = true;
+        }
+        // A selected route can materialize a real entry NFT into a compiler-declared slot after its local
+        // participant builder has already filled the matching output with an alignment pad. Seed the identity
+        // transition here so read-only accesses remain one-to-one; write derivation below may still replace the
+        // commitment with the route-authenticated value on the next semantic pass.
+        let seededEntryOutputs = false;
+        const inactiveEntryLocks = new Map<number, Set<string>>();
+        for (const slot of resourceSlots) {
+          if (slot.kind !== 'entry') continue;
+          const participantBase = finalized.layout.participantInputs[slot.participant];
+          const absolute = participantBase + slot.offset;
+          const input = provisional.inputs[absolute];
+          const output = provisional.outputs[absolute];
+          const outputLock = output?.to instanceof Uint8Array ? output.to : undefined;
+          if (input?.token?.nft?.capability !== 'mutable') continue;
+          const activeEntryOperations = (provisional.inputs[participantBase] as unknown as {
+            unlocker?: { abiFunction?: {
+              messageBusActiveEntryOperations?: ReadonlyMap<number, readonly string[]>;
+            } };
+          }).unlocker?.abiFunction?.messageBusActiveEntryOperations;
+          const selectedOperations = activeEntryOperations?.get(slot.slotIndex ?? -1) ?? [];
+          const selectedReadOnly = activeEntryOperations !== undefined
+            && !selectedOperations.some((operation) => operation === 'write' || operation === 'delete');
+          const outputIsPad = output?.token === undefined
+            && outputLock?.length === 1 && outputLock[0] === 0x51;
+          if (!selectedReadOnly && !outputIsPad) continue;
+          provisional.outputs[absolute] = {
+            to: input.unlocker.generateLockingBytecode(),
+            amount: input.satoshis,
+            token: {
+              amount: input.token.amount,
+              category: input.token.category,
+              nft: {
+                capability: input.token.nft.capability,
+                commitment: input.token.nft.commitment,
+              },
+            },
+          };
+          if (selectedReadOnly) {
+            const locks = inactiveEntryLocks.get(slot.participant) ?? new Set<string>();
+            locks.add(binToHex(input.unlocker.generateLockingBytecode()));
+            inactiveEntryLocks.set(slot.participant, locks);
+          }
+          seededEntryOutputs = true;
+        }
+        // Conservative sorted-write derivation can materialize a route-union NEW node even when the selected
+        // handler treats that physical slot as read-only. It occupies the first trailing coordinate and shifts
+        // dynamic-state chunks. Remove only outputs at the inactive entry's exact collection lock, compacting
+        // inside the participant's fixed block and retaining its width.
+        for (const [participant, locks] of inactiveEntryLocks) {
+          const layout = plan.participants[participant]?.blockLayout;
+          const base = finalized.layout.participantInputs[participant];
+          if (!layout || base === undefined) continue;
+          const trailingBase = layout.trailingBase ?? layout.blockSize;
+          for (let offset = trailingBase; offset < layout.blockSize; offset += 1) {
+            const absolute = base + offset;
+            const output = provisional.outputs[absolute];
+            const lock = output?.to instanceof Uint8Array ? binToHex(output.to) : undefined;
+            if (lock === undefined || !locks.has(lock) || output?.token?.nft?.capability !== 'mutable') continue;
+            for (let next = offset; next < layout.blockSize - 1; next += 1) {
+              provisional.outputs[base + next] = provisional.outputs[base + next + 1];
+            }
+            provisional.outputs[base + layout.blockSize - 1] = {
+              to: Uint8Array.of(0x51), amount: output.amount,
+            };
+            offset -= 1;
+          }
+        }
         // State derived by a delegated or cross-participant call is unknowable to the isolated local builders.
         // Converge it on the complete graph before reading resource effects, so the next manifest authenticates
         // the repaired commitment rather than treating the late write as an unclaimed output mutation.
         const stateConvergence = convergeMessageBusFixedStateOutputs(provisional);
-        if (seededFixedState || stateConvergence.repairs > 0) {
-          rebalanceFeeTail(provisional, 'converged mutable state outputs');
+        const computedConvergence = convergeMessageBusComputedOutputs(provisional);
+        for (const absolute of computedConvergence.outputs) {
+          const participant = finalized.layout.participantInputs.findIndex((base, index, bases) => (
+            absolute >= base && (index === bases.length - 1 || absolute < bases[index + 1])
+          ));
+          if (participant < 0) continue;
+          const offset = absolute - finalized.layout.participantInputs[participant];
+          const slot = resourceSlots.find((candidate) => candidate.participant === participant
+            && candidate.offset === offset && candidate.kind === 'trailing');
+          const output = provisional.outputs[absolute];
+          if (!slot || output?.token?.nft?.capability !== 'mutable') continue;
+          const lockingBytecode = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
+          computedOutputSeeds.set(`${participant}:${offset}`, {
+            participant,
+            offset,
+            category: output.token.category,
+            lockingBytecodeHex: binToHex(lockingBytecode),
+            commitmentHex: output.token.nft.commitment,
+          });
+        }
+        if (seededFixedState || seededComputedOutputs || seededEntryOutputs || stateConvergence.repairs > 0
+          || computedConvergence.repairs > 0) {
+          rebalanceFeeTail(provisional, 'converged mutable outputs');
         }
         const derivedResourceEffects: AtomicResourceSlotEffect[] = [];
         for (const slot of resourceSlots) {
@@ -1705,7 +2051,27 @@ export class AtomicMessageBusComposition {
           });
         }
         if (semanticJson(derivedResourceEffects) !== semanticJson(claimedResourceEffects)) {
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+            const priorBySlot = new Map(claimedResourceEffects.map((effect) =>
+              [`${effect.participant}:${effect.offset}`, effect]));
+            console.error('atomic-resource-claim-advance', JSON.stringify(derivedResourceEffects.flatMap((effect) => {
+              const prior = priorBySlot.get(`${effect.participant}:${effect.offset}`);
+              const slot = resourceSlots.find((candidate) => candidate.participant === effect.participant
+                && candidate.offset === effect.offset);
+              return semanticJson(prior) === semanticJson(effect) ? [] : [{
+                participant: effect.participant,
+                offset: effect.offset,
+                kind: slot?.kind,
+                priorInput: prior?.inputCommitmentHex.slice(0, 48),
+                priorOutput: prior?.outputCommitmentHex.slice(0, 48),
+                input: effect.inputCommitmentHex.slice(0, 48),
+                output: effect.outputCommitmentHex.slice(0, 48),
+              }];
+            })));
+          }
           claimedResourceEffects = derivedResourceEffects;
+          priorClaimAdvance = 'resources';
           continue;
         }
         const derivedValueEffects: AtomicValueSlotEffect[] = [];
@@ -1726,6 +2092,7 @@ export class AtomicMessageBusComposition {
         }
         if (semanticJson(derivedValueEffects) !== semanticJson(claimedValueEffects)) {
           claimedValueEffects = derivedValueEffects;
+          priorClaimAdvance = 'values';
           continue;
         }
         const derivedTokenEffects: AtomicTokenSlotEffect[] = [];
@@ -1754,6 +2121,7 @@ export class AtomicMessageBusComposition {
         }
         if (semanticJson(derivedTokenEffects) !== semanticJson(claimedTokenEffects)) {
           claimedTokenEffects = derivedTokenEffects;
+          priorClaimAdvance = 'tokens';
           continue;
         }
         const derivedSidecarEffects: AtomicSidecarSlotEffect[] = [];
@@ -1797,6 +2165,7 @@ export class AtomicMessageBusComposition {
         }
         if (semanticJson(derivedSidecarEffects) !== semanticJson(claimedSidecarEffects)) {
           claimedSidecarEffects = derivedSidecarEffects;
+          priorClaimAdvance = 'sidecars';
           continue;
         }
         const derivedEventEffects: AtomicEventSlotEffect[] = [];
@@ -1838,6 +2207,27 @@ export class AtomicMessageBusComposition {
             console.error('atomic-composed-layout', {
               participantInputs: finalized.layout.participantInputs,
               actualSizes: assembled.actualSizes,
+              watchedOutputs: provisional.outputs.flatMap((output, index) => {
+                const lockingBytecode = binToHex(typeof output.to === 'string'
+                  ? addressToLockScript(output.to) : output.to);
+                return lockingBytecode === 'aa20fd66dd65aad2e36b5965d155ba7ff8c0b9ba4c35776c6a35f68c1fc422ae03a187'
+                  ? [{ index, lockingBytecode, commitment: output.token?.nft?.commitment }] : [];
+              }),
+              participantTokenOutputs: provisional.outputs.flatMap((output, index) => {
+                const participant = finalized.layout.participantInputs.findIndex((base, owner, bases) => (
+                  index >= base && (owner === bases.length - 1 || index < bases[owner + 1])
+                ));
+                if (participant < 0 || output.token?.nft === undefined) return [];
+                return [{
+                  participant,
+                  index,
+                  lockingBytecode: binToHex(typeof output.to === 'string'
+                    ? addressToLockScript(output.to) : output.to),
+                  category: output.token.category,
+                  capability: output.token.nft.capability,
+                  commitment: output.token.nft.commitment,
+                }];
+              }),
               participants: plan.participants.map((participant) => ({
                 participant: participant.participant,
                 lockingBytecode: participant.lockingBytecode,
@@ -1845,6 +2235,21 @@ export class AtomicMessageBusComposition {
                   plan.invocations[invocation].function),
                 maximumSize: participant.blockLayout?.blockSize,
                 trailingBase: participant.blockLayout?.trailingBase,
+                logicalIdentityOffset: participant.logicalIdentityOffset,
+                ...(participant.logicalIdentityOffset !== null && {
+                  logicalIdentityInputLockingBytecode: binToHex(provisional.inputs[
+                    finalized.layout.participantInputs[participant.participant]
+                      + participant.logicalIdentityOffset
+                  ]?.unlocker.generateLockingBytecode() ?? new Uint8Array()),
+                  logicalIdentityOutputLockingBytecode: binToHex((() => {
+                    const output = provisional.outputs[
+                      finalized.layout.participantInputs[participant.participant]
+                        + participant.logicalIdentityOffset
+                    ];
+                    if (!output) return new Uint8Array();
+                    return typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+                  })()),
+                }),
               })),
             });
           }
@@ -1852,6 +2257,7 @@ export class AtomicMessageBusComposition {
         }
         claimedResults = derivedResults;
         claimedEventEffects = derivedEventEffects;
+        priorClaimAdvance = 'events';
         claimedResourceEffects = derivedResourceEffects;
         claimedValueEffects = derivedValueEffects;
         claimedTokenEffects = derivedTokenEffects;

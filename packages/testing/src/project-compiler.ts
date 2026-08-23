@@ -188,6 +188,10 @@ export function compileSolidityProject(
       artifactCacheVersion: 2,
       compilerVersion: cache?.compilerVersion ?? '',
       options,
+      // Two roots in a circular import component have the same transitive dependency set, but
+      // compileFileMulti still gives the selected root primary-contract semantics. Keep their cached
+      // artifact maps distinct so a dependency-context artifact cannot replace the declaring root's output.
+      root: source.path,
       sources: dependencyHashes(source, allSources),
     }));
     const jobFile = cache && path.join(cache.directory, 'jobs', `${jobId}.bin`);

@@ -2149,9 +2149,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Compiler-generated message-bus handlers consume this hidden parameter during block-slot code generation,
     // rather than through a source-level IdentifierNode. Record that real backend use in the symbol table so it
     // is neither reported as unused nor mistaken for an unreferenced caller-supplied value.
-    if (node.parameters.some((parameter) => parameter.name === '__internal__messageBusOwnerInput')) {
-      const owner = this.symbolTables[0].get('__internal__messageBusOwnerInput');
-      if (owner) owner.references.push({ name: '__internal__messageBusOwnerInput' } as IdentifierNode);
+    for (const name of ['__internal__messageBusOwnerInput']) {
+      if (!node.parameters.some((parameter) => parameter.name === name)) continue;
+      const compilerOwned = this.symbolTables[0].get(name);
+      if (compilerOwned) compilerOwned.references.push({ name } as IdentifierNode);
     }
     Object.defineProperty(node, 'hasStatefulOperation', {
       value: bodySurvey.hasStatefulOperation, writable: true, configurable: true,
@@ -2943,6 +2944,29 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.pushToStack(inputBaseParam);
         }
       }
+    }
+
+    // A direct entry point that both mutates dynamic storage and co-spends external contracts cannot infer its
+    // trailing chunk-output base from an external return alone: a later non-returning callee may still extend the
+    // physical output band. Publish the final absolute base as an SDK-owned witness. Compiler-generated graph and
+    // delegate routes already own explicit aggregate/suffix layouts and must retain those conventions.
+    // Storage aliases erase the original dynamic root from field assignments (e.g. `T storage item = items[i]`),
+    // so deciding this from syntax would miss real writes. Conservatively publish the witness for every direct
+    // external co-spend; functions that do not write a dynamic value never consume it, while this keeps their ABI
+    // stable if a helper or imported transform later reveals such a write.
+    if (bodySurvey.hasExternalFunctionCall
+      && node.isEntryPoint && !node.graphEmissionHandler && !node.messageBusRoute
+      && !node.modifiers.includes(FunctionModifier.DELEGATE)
+      && !node.parameters.some((parameter) => parameter.name === '__internal__dynamicChunkOutputBase')) {
+      const dynamicChunkBaseParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__dynamicChunkOutputBase');
+      dynamicChunkBaseParam.location = node.location;
+      node.parameters.push(dynamicChunkBaseParam);
+      this.symbolTables[0].set(Symbol.variable(dynamicChunkBaseParam));
+      const dynamicChunkBaseSymbol = this.symbolTables[0].get('__internal__dynamicChunkOutputBase');
+      if (dynamicChunkBaseSymbol) {
+        dynamicChunkBaseSymbol.references.push({ name: '__internal__dynamicChunkOutputBase' } as IdentifierNode);
+      }
+      this.pushToStack(dynamicChunkBaseParam);
     }
 
     // A composed transaction may park chunkable mapping values after another participant's fixed output band.
@@ -6399,6 +6423,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(rawFunctionName && { rawFunctionName }),
         ...(rawSelector && { rawSelector }),
         ...(rawArgSources && { rawArgSources }),
+        ...(rawParameters !== undefined && { rawParameters }),
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,
@@ -12296,6 +12321,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       siteCounts.set(target.name, ordinal + 1);
     });
     const sites = Math.max(0, ...siteCounts.values());
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+      console.error('graph-effect-frame-plan', JSON.stringify({
+        contract: contract.name,
+        route: route.name,
+        handlers: handlers.map((fn) => ({ name: fn.name, emits: fn.emitInfos?.length,
+          transfers: fn.transferInfos?.length })),
+        siteCounts: Object.fromEntries(siteCounts),
+        sites,
+      }));
+    }
     if (sites === 0) return;
     // Fail closed if the route could reach a handler more often than it has dispatch sites. That happens only
     // under the LOOP parser (`for (row = 0; row < rowCount; ..)`), where one syntactic call site serves every
@@ -12371,6 +12407,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     frame.eventOffset = offsetOf('event', frame.eventBase);
     frame.transferOffset = offsetOf('transfer', frame.transferBase);
     frame.tokenTransferOffset = offsetOf('tcTransfer', frame.tokenTransferBase);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+      console.error('graph-effect-frame-layout', JSON.stringify({
+        contract: contract.name, frame, layout: route.blockLayout,
+      }));
+    }
   }
 
   /**

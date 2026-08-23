@@ -45,6 +45,14 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('keeps the production blob envelope by default and admits an explicit provider profile', () => {
+    const wide = {
+      messageBus: { maximumBlobBytes: 10_000 },
+    } as unknown as Artifact;
+    expect(() => messageBus.assertGraphBatchBlobEnvelope(wide, 2)).toThrow(/wider than the 520/);
+    expect(() => messageBus.assertGraphBatchBlobEnvelope(wide, 2, 10_000)).not.toThrow();
+  });
+
   it('uses a runtime occurrence proof for a bounded conditional raw edge', () => {
     const capability = (
       name: string,

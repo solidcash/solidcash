@@ -34,11 +34,13 @@ const plan = (): messageBus.CompiledGraphPlan => ({
       index: 0, parent: null, caller: null, callee: 0, subtreeEnd: 1, localRow: 0, depth: 0,
       function: 'run', selectorHex: '11111111', callMode: 'call', callOptions: 0,
       argsHex: '01', resultTypes: [], resultDependencies: [],
+      targetLockingBytecode: '51'.repeat(64), targetIdentityOffset: 0,
     },
     {
       index: 1, parent: 0, caller: 0, callee: 1, subtreeEnd: 1, localRow: 0, depth: 1,
       function: 'run', selectorHex: '22222222', callMode: 'staticcall', callOptions: 1,
       argsHex: '02', resultTypes: ['int'], consumerCallsiteId: 7, resultDependencies: [],
+      targetLockingBytecode: '52'.repeat(64), targetIdentityOffset: 0,
     },
   ],
   rootCallerLockingBytecode: '53',
@@ -144,6 +146,7 @@ describe('atomic compiled invocation graph', () => {
         invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
       } as unknown as Artifact,
       lockingBytecode: '51',
+      logicalLockingBytecode: '53',
     };
     const root = {
       artifact: {
@@ -165,14 +168,16 @@ describe('atomic compiled invocation graph', () => {
       root,
       function: 'run',
       targets: {},
-      target: () => sink,
+      target: () => ({ participant: sink, targetLockingBytecode: '51' }),
       occurrence: ({ callsiteId }) => callsiteId === 2 ? 1 : 0,
     });
     expect(planned.invocations.map((invocation) => ({
-      function: invocation.function, callsiteId: invocation.consumerCallsiteId,
+      function: invocation.function,
+      callsiteId: invocation.consumerCallsiteId,
+      target: invocation.targetLockingBytecode,
     }))).toEqual([
-      { function: 'run', callsiteId: undefined },
-      { function: 'ping', callsiteId: 2 },
+      { function: 'run', callsiteId: undefined, target: '52' },
+      { function: 'ping', callsiteId: 2, target: '51' },
     ]);
   });
 
@@ -188,12 +193,16 @@ describe('atomic compiled invocation graph', () => {
         slots: [{ kind: 'master', offset: 0 }, { kind: 'identityAnchor', offset: 1 }],
       },
     };
+    withLogicalCaller.invocations[1] = {
+      ...withLogicalCaller.invocations[1], targetLockingBytecode: '55', targetIdentityOffset: 1,
+    };
     const finalized = messageBus.finalizeAtomicInvocationGraph(
       withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     expect(finalized.callManifest.participants[0].lockingBytecode).toBe('51'.repeat(64));
     expect(finalized.callManifest.rows[1].subjectHex).toBe('51'.repeat(64));
-    expect(finalized.callManifest.rows[1].targetOffset).toBe(0);
+    expect(finalized.plan.invocations[1].targetLockingBytecode).toBe('55');
+    expect(finalized.callManifest.rows[1].targetOffset).toBe(1);
   });
 
   it('uses a delegate owner input as the nested high-level caller identity', () => {

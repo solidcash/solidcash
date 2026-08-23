@@ -59,6 +59,8 @@ export interface PreparedAtomicMessageBusCall {
   args: readonly FunctionArgument[];
   /** @internal Compiler-stable identity of this invocation in its parent function. */
   callsiteId?: number;
+  /** Exact address value evaluated by the parent call expression, encoded as locking-bytecode hex. */
+  targetLockingBytecode?: string;
   /** Delegate route artifact executed against `contract`'s state/category. */
   executionArtifact?: Artifact;
   /** Pinned delegate executor co-spent inside this participant's block. */
@@ -362,13 +364,16 @@ const graphRouteContext = (
 ): Readonly<Record<string, FunctionArgument>> => {
   const execution = finalized.plan.participants[participant];
   const rows = finalized.callManifest.rows;
-  const emissions = rows.filter((row) => row.kind === 0 && row.parent !== 0xffff && row.owner === participant)
-    .map((row) => {
-      const target = finalized.callManifest.participants[row.consumer];
-      // A high-level call executes the registered participant's physical owner input. Keep the transcript byte
-      // identical to the runtime address value: a proxy's public/SCID identity is lookup metadata, not the
-      // OP_UTXOBYTECODE-authenticated target consumed by the call verifier.
-      const targetLbc = hexToBin(target.lockingBytecode);
+  const emissions = rows.map((row, invocation) => ({ row, invocation }))
+    .filter(({ row }) => row.kind === 0 && row.parent !== 0xffff && row.owner === participant)
+    .map(({ row, invocation }) => {
+      const plannedInvocation = finalized.plan.invocations[invocation];
+      if (!plannedInvocation || plannedInvocation.callee !== row.consumer) {
+        throw new Error('messageBus: invocation row order disagrees with the compiled graph plan');
+      }
+      // The transcript binds the exact address evaluated by this call edge. Settlement remains keyed by the
+      // physical participant in `row.consumer`, while a public/SCID address is authenticated at targetOffset.
+      const targetLbc = hexToBin(plannedInvocation.targetLockingBytecode);
       const args = hexToBin(row.argsHex);
       const result = hexToBin(row.resultHex);
       const selector = hexToBin(row.selectorHex);
@@ -587,7 +592,12 @@ export class AtomicMessageBusComposition {
         if (!descriptor) return undefined;
         if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) return undefined;
         next += 1;
-        return workParticipants[next - 1];
+        return {
+          participant: workParticipants[next - 1],
+          ...(descriptor.targetLockingBytecode !== undefined && {
+            targetLockingBytecode: descriptor.targetLockingBytecode,
+          }),
+        };
       },
       occurrence: ({ participant, function: ownerFunction, callsiteId, kind }) => {
         const abiFunction = participant.artifact.abi.find((candidate) => candidate.name === ownerFunction);
@@ -644,6 +654,9 @@ export class AtomicMessageBusComposition {
           participant: workParticipants[next - 1],
           function: descriptor.functionName,
           args: descriptor.args,
+          ...(descriptor.targetLockingBytecode !== undefined && {
+            targetLockingBytecode: descriptor.targetLockingBytecode,
+          }),
         };
       },
     });
@@ -811,6 +824,9 @@ export class AtomicMessageBusComposition {
           functionName: descriptor.functionName,
           args,
           ...(descriptor.callsiteId !== undefined && { callsiteId: descriptor.callsiteId }),
+          ...(descriptor.targetLockingBytecode !== undefined && {
+            targetLockingBytecode: descriptor.targetLockingBytecode,
+          }),
           ...(descriptor.executionArtifact && { executionArtifact: descriptor.executionArtifact }),
           ...(descriptor.executor && { executor: descriptor.executor }),
           ...(results[index] !== undefined

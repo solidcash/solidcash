@@ -53,6 +53,11 @@ export interface CompiledGraphInvocation {
   /** Compiler-stable identity of the parent callsite reached by this invocation. */
   consumerCallsiteId?: number;
   /**
+   * Exact locking bytecode evaluated by the parent call expression. It may be the participant's physical
+   * owner or an authenticated public identity; settlement still belongs to `callee` in both cases.
+   */
+  targetLockingBytecode?: string;
+  /**
    * Transaction-origin caller for the root row. This is required when the root handler derives a collection
    * key from `msg.sender`; nested callers remain compiler-derived from the authenticated parent participant.
    * The plan carries the same locking bytecode into finalization, where the participant covenant binds it to
@@ -92,6 +97,9 @@ export interface PlannedGraphInvocation {
    * for parents whose artifact publishes no matching callsite.
    */
   consumerCallsiteId?: number;
+  /** Exact source-level call target and the participant-local input which authenticates it. */
+  targetLockingBytecode: string;
+  targetIdentityOffset: number;
   /** Child invocation results which must exist before this invocation can resume. */
   resultDependencies: readonly number[];
 }
@@ -394,9 +402,9 @@ export function finalizeAtomicInvocationGraph(
       slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
       sourceOffset: invocation.caller === null
         ? 0xffff : callerIdentity!.offset,
-      // Calls bind the physical participant input whose OP_UTXOBYTECODE is compared by the verifier. A public
-      // proxy/SCID identity may locate that participant in the SDK, but it is not an alternate execution target.
-      targetOffset: 0,
+      // Settlement belongs to the physical participant, while this edge authenticates the exact address value
+      // used by the source expression (physical owner or an explicit public identity anchor).
+      targetOffset: invocation.targetIdentityOffset,
       selectorHex: invocation.selectorHex,
       position: completion, parent: invocation.parent ?? 0xffff, depth: invocation.depth,
       subtreeEnd: invocation.subtreeEnd, subjectHex, argsHex: invocation.argsHex, resultHex: result.toLowerCase(),
@@ -1359,6 +1367,31 @@ export function planCompiledGraph(
     || invocations.slice(1).some((invocation) => invocation.parent === null)) {
     throw new Error('messageBus: compiled graph requires exactly one root invocation at index 0');
   }
+  const invocationTargetIdentity = (
+    invocation: CompiledGraphInvocation, index: number,
+  ): { lockingBytecode: string; offset: number } => {
+    const participant = participants[invocation.callee];
+    const physical = participant.lockingBytecode.toLowerCase();
+    if (invocation.parent === null) {
+      if (invocation.targetLockingBytecode !== undefined
+        && invocation.targetLockingBytecode.toLowerCase() !== physical) {
+        throw new Error(`messageBus: root invocation ${index} cannot target a participant identity alias`);
+      }
+      return { lockingBytecode: physical, offset: 0 };
+    }
+    const logical = participant.logicalLockingBytecode?.toLowerCase();
+    const requested = invocation.targetLockingBytecode?.toLowerCase() ?? logical ?? physical;
+    if (!/^([0-9a-f]{2})+$/.test(requested)) {
+      throw new Error(`messageBus: invocation ${index} target locking bytecode must be hex bytes`);
+    }
+    if (requested === physical) return { lockingBytecode: physical, offset: 0 };
+    if (logical !== undefined && requested === logical) {
+      return { lockingBytecode: logical, offset: participant.logicalIdentityOffset ?? 0 };
+    }
+    throw new Error(
+      `messageBus: invocation ${index} target is not an authenticated identity of participant ${invocation.callee}`,
+    );
+  };
 
   const perOwner: MessageBatchCall[][] = participants.map(() => []);
   const globalByOwner: number[][] = participants.map(() => []);
@@ -1562,6 +1595,7 @@ export function planCompiledGraph(
     const row = execution.batch.rows[localRow];
     const result = execution.batch.results.find((candidate) => candidate.row === localRow);
     const caller = invocation.parent === null ? null : invocations[invocation.parent].callee;
+    const targetIdentity = invocationTargetIdentity(invocation, index);
     let callMode: 'call' | 'staticcall' = invocation.callMode ?? 'call';
     if (invocation.parent === null) {
       // X5: the transaction-origin row answers no callsite, so there is no published mode for a caller-supplied
@@ -1627,6 +1661,8 @@ export function planCompiledGraph(
       callOptions: (callMode === 'staticcall' ? CALL_OPTION_READ_ONLY : 0) | optionBits[index],
       argsHex: row.argsHex,
       resultTypes: Object.freeze([...(result?.types ?? [])]),
+      targetLockingBytecode: targetIdentity.lockingBytecode,
+      targetIdentityOffset: targetIdentity.offset,
     });
   });
   // Compiler-side diagnostic for §6.3's transitive rule. This is deliberately duplicated by the root

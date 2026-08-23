@@ -17,6 +17,12 @@ export interface WorklistParticipant extends CompiledGraphParticipant {
   constructorArgs?: readonly FunctionArgument[];
 }
 
+export interface WorklistTargetResolution {
+  participant: WorklistParticipant;
+  /** Exact address evaluated by this call edge when it differs from the participant's default public identity. */
+  targetLockingBytecode?: string;
+}
+
 export type WorklistTargetRegistry = Readonly<Record<
 string, WorklistParticipant | readonly WorklistParticipant[]
 >>;
@@ -40,7 +46,7 @@ export interface DeriveCompiledGraphOptions {
     callsiteId: number;
     occurrence: number;
     interfaceName: string;
-  }) => WorklistParticipant | undefined;
+  }) => WorklistParticipant | WorklistTargetResolution | undefined;
   /** Correctness bound for source recursion and runtime-sized shapes. The callManifest v1 ceiling is 24. */
   maximumInvocations?: number;
   /**
@@ -79,7 +85,12 @@ export interface DeriveCompiledGraphOptions {
     callsiteId: number;
     occurrence: number;
     kind: 'function-pointer' | 'selector-table' | 'low-level';
-  }) => { participant: WorklistParticipant; function: string; args?: readonly FunctionArgument[] };
+  }) => {
+    participant: WorklistParticipant;
+    function: string;
+    args?: readonly FunctionArgument[];
+    targetLockingBytecode?: string;
+  };
 }
 
 const functionAbi = (participant: WorklistParticipant, name: string): AbiFunction => {
@@ -234,12 +245,12 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     functionName: string,
     invocation: number,
     occurrence: number,
-  ): WorklistParticipant => {
+  ): WorklistTargetResolution => {
     const resolved = options.target?.({
       participant, function: functionName, invocation, callsiteId: call.callsiteId!, occurrence,
       interfaceName: call.interfaceName,
     });
-    if (resolved) return resolved;
+    if (resolved) return 'participant' in resolved ? resolved : { participant: resolved };
     const targetIsRuntimeDerived = call.loopArrayVar || call.addressStateVar
       || (call.addressParam !== undefined
         && !fn.inputs.some((input) => input.name === call.addressParam));
@@ -257,7 +268,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         diagnosticContext(call),
       );
     }
-    if (!Array.isArray(registered)) return registered as WorklistParticipant;
+    if (!Array.isArray(registered)) return { participant: registered as WorklistParticipant };
     const cursor = targetCursors.get(call.interfaceName) ?? 0;
     const target = registered[cursor];
     if (!target) {
@@ -269,7 +280,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       );
     }
     targetCursors.set(call.interfaceName, cursor + 1);
-    return target;
+    return { participant: target };
   };
   const assertForwardedTarget = (
     source: WorklistParticipant,
@@ -278,11 +289,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     call: ExternalCallAbi,
     target: WorklistParticipant,
     occurrence: number,
-  ): void => {
+  ): string | undefined => {
     const targetName = call.addressParam ?? call.loopArrayVar;
-    if (!targetName) return;
+    if (!targetName) return undefined;
     const input = fn.inputs.findIndex((candidate) => candidate.name === targetName);
-    if (input < 0) return;
+    if (input < 0) return undefined;
     const supplied = call.loopArrayVar && Array.isArray(visibleArgs[input])
       ? visibleArgs[input][occurrence] : visibleArgs[input];
     if (supplied === undefined) {
@@ -290,10 +301,14 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
     const structs = source.artifact.structs ?? source.artifact.stateLayout?.structs;
     const encoded = encodeFunctionArgument(supplied as FunctionArgument, 'address', structs);
-    if (!(encoded instanceof Uint8Array)
-      || binToHex(encoded) !== target.lockingBytecode.toLowerCase()) {
+    const encodedHex = encoded instanceof Uint8Array ? binToHex(encoded) : undefined;
+    const authenticatedTargets = [target.lockingBytecode, target.logicalLockingBytecode]
+      .filter((candidate): candidate is string => candidate !== undefined)
+      .map((candidate) => candidate.toLowerCase());
+    if (encodedHex === undefined || !authenticatedTargets.includes(encodedHex)) {
       throw new Error(`messageBus: callsite ${call.callsiteId} target proof disagrees with registered owner`);
     }
+    return encodedHex;
   };
 
   const active = new Map<string, number>();
@@ -305,6 +320,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     callMode?: 'call' | 'staticcall',
     boundedRecursiveEdge = false,
     consumerCallsiteId?: number,
+    targetLockingBytecode?: string,
   ): void => {
     if (invocations.length >= maximum) {
       throw new MessageBusDiagnosticError(
@@ -329,6 +345,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     invocations.push({
       parent, callee: owner, function: functionName, args, ...(callMode && { callMode }),
       ...(consumerCallsiteId !== undefined && { consumerCallsiteId }),
+      ...(parent !== null && {
+        targetLockingBytecode: targetLockingBytecode
+          ?? participant.logicalLockingBytecode
+          ?? participant.lockingBytecode,
+      }),
       ...(parent === null && options.rootCaller !== undefined && { logicalCaller: options.rootCaller }),
     });
     activeInvocations.push(invocation);
@@ -462,7 +483,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           }
           // A visible forwarded address is checked here. State/expression-derived targets intentionally have no
           // public ABI argument; their compiler-emitted graph projection binds the concrete owner on-chain.
-          assertForwardedTarget(participant, fn, args, call, resolved.participant, reached);
+          const provedTarget = assertForwardedTarget(
+            participant, fn, args, call, resolved.participant, reached,
+          );
           expand(
             resolved.participant,
             resolved.function,
@@ -471,6 +494,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             edgeCallMode(call),
             false,
             call.callsiteId,
+            provedTarget ?? resolved.targetLockingBytecode,
           );
         }
         continue;
@@ -479,7 +503,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         if ((call.occurrence ?? 'once') !== 'once') {
           throw new Error(`messageBus: batched callsite ${call.callsiteId} must be straight-line`);
         }
-        const target = takeTarget(call, participant, fn, functionName, invocation, 0);
+        const resolvedTarget = takeTarget(call, participant, fn, functionName, invocation, 0);
+        const target = resolvedTarget.participant;
         const rows = [...call.batchInvocations].sort((a, b) => a.logicalIndex - b.logicalIndex);
         rows.forEach((row, index) => {
           if (row.logicalIndex !== index) {
@@ -508,6 +533,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             edgeCallMode(call),
             false,
             call.callsiteId,
+            resolvedTarget.targetLockingBytecode,
           );
         });
         continue;
@@ -572,13 +598,15 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             edgeCallMode(call),
             occurrenceKind !== 'once' && occurrenceBoundOf(call).maximum !== undefined,
             call.callsiteId,
+            resolved.targetLockingBytecode,
           );
         }
         continue;
       }
       for (let reached = 0; reached < count; reached += 1) {
-        const target = takeTarget(call, participant, fn, functionName, invocation, reached);
-        assertForwardedTarget(participant, fn, args, call, target, reached);
+        const resolvedTarget = takeTarget(call, participant, fn, functionName, invocation, reached);
+        const target = resolvedTarget.participant;
+        const provedTarget = assertForwardedTarget(participant, fn, args, call, target, reached);
         expand(
           target,
           call.functionName,
@@ -589,6 +617,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           edgeCallMode(call),
           occurrenceKind !== 'once' && occurrenceBoundOf(call).maximum !== undefined,
           call.callsiteId,
+          provedTarget ?? resolvedTarget.targetLockingBytecode,
         );
       }
     }

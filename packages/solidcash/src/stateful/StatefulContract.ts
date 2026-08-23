@@ -17139,6 +17139,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 : -1;
               const addressValue = resolvedAddress
                 ?? (addressParamIndex >= 0 ? delegateVisibleArgs[addressParamIndex] : undefined);
+              const resolvedTargetLockingBytecode = tryCashAddressToLockScript(addressValue);
               let deploymentAtAddress: unknown;
               if (typeof addressValue === 'string') {
                 deploymentAtAddress = (
@@ -18786,6 +18787,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   contract: callee,
                   functionName: resolvedRawFunctionName ?? nested.functionName,
                   args: graphNestedArgs,
+                  ...(resolvedTargetLockingBytecode && {
+                    targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),
+                  }),
                   ...(proxyCallee && {
                     executionArtifact: proxyCallee.implementation.inner.artifact,
                     executor: proxyCallee.implementation,
@@ -19177,18 +19181,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             && (allGroupEcSlots[index] as ExternalCallAbi | undefined)?.callsiteId === nested.callsiteId)) {
             continue;
           }
+          const resolvedAddressTarget = nested.addressSource
+            ? logicalParentContract._resolveExternalArgs(
+              [nested.addressSource], logicalParentArgs, logicalParentArtifact, parentState,
+              parentFn.inputs, undefined, 0, false, parentExecutionSelfAddress,
+            )?.[0]
+            : nested.addressStateVar
+              ? parentState[nested.addressStateVar] as FunctionArgument | undefined
+              : undefined;
+          const resolvedTargetLockingBytecode = tryCashAddressToLockScript(resolvedAddressTarget);
           let registered = logicalParentContract._externalRegistry.get(nested.interfaceName)
             ?? parentContract._externalRegistry.get(nested.interfaceName)
             ?? this._externalRegistry.get(nested.interfaceName)
             ?? findDeploymentByName(this.inner.provider, nested.interfaceName)?.contract
             ?? (/^I[A-Z]/.test(nested.interfaceName)
               ? findDeploymentByName(this.inner.provider, nested.interfaceName.slice(1))?.contract : undefined);
-          const resolvedAddressTarget = !registered && nested.addressSource
-            ? logicalParentContract._resolveExternalArgs(
-              [nested.addressSource], logicalParentArgs, logicalParentArtifact, parentState,
-              parentFn.inputs, undefined, 0, false, parentExecutionSelfAddress,
-            )?.[0]
-            : undefined;
           if (!registered && resolvedAddressTarget !== undefined) {
             const targetHex = resolvedAddressTarget instanceof Uint8Array
               ? binToHex(resolvedAddressTarget) : undefined;
@@ -19693,6 +19700,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 contract: callee,
                 functionName: rawFunctionName ?? nested.functionName,
                 args: graphChildArgs,
+                ...(resolvedTargetLockingBytecode && {
+                  targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),
+                }),
                 ...(proxyCallee && {
                   executionArtifact: proxyCallee.implementation.inner.artifact,
                   executor: proxyCallee.implementation,
@@ -23644,6 +23654,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           functionName: node.functionName,
           args: Object.freeze([...node.args]),
           ...(node.callsiteId !== undefined && { callsiteId: node.callsiteId }),
+          ...(node.targetLockingBytecode !== undefined && {
+            targetLockingBytecode: node.targetLockingBytecode,
+          }),
           ...(node.executionArtifact && { executionArtifact: node.executionArtifact }),
           ...(node.executor && { executor: node.executor }),
           ...(node.provisionalResultCommitment && {

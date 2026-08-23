@@ -14238,6 +14238,9 @@ export class StatefulTransactionBuilder {
   private _assertConvergedFinalTransaction(
     builder: TransactionBuilder,
     afterRepairs?: () => void,
+    beforeValidation?: (
+      transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>,
+    ) => boolean,
   ): ReturnType<TransactionBuilder['buildLibauthTransaction']> {
     let lastError: unknown;
     let repairsRemaining = 32;
@@ -14295,6 +14298,7 @@ export class StatefulTransactionBuilder {
     let cycleDetected = false;
     for (let sweep = 0; sweep <= 32; sweep++) {
       const transaction = builder.buildLibauthTransaction(true);
+      if (beforeValidation?.(transaction)) continue;
       try {
         assertFinalizedTransactionCovenants(builder, transaction);
         return transaction;
@@ -14774,35 +14778,12 @@ export class StatefulTransactionBuilder {
       })));
     }
 
-    // Validate the exact transaction which will be serialized. Provider-side validation is still necessary,
-    // but it is not a substitute for the SDK's deterministic error boundary and cannot protect providers that
-    // accept a transaction without running the same VM policy.
-    // The convergence pass already generated and validated the exact unlocking bytecode. Reuse that transaction
-    // for serialization rather than regenerating every multi-megabyte P2SH input once more in build(). Token
-    // conservation depends only on the builder's input/output assets, so validate it independently first.
-    finalBuilder.validateTokenConservation();
-    const finalizedTransaction = this._assertConvergedFinalTransaction(
-      finalBuilder,
-      reassertFinalLayout,
-    );
-    sendTiming('covenants-converged');
-
-    let rawTxBin = encodeTransaction(finalizedTransaction);
-    let rawTx = binToHex(rawTxBin);
-    sendTiming('serialized');
-
-    // -- Phase 4: fee sanity checks --
-    const { decodeTransactionUnsafe, hash256 } = await import('@bitauth/libauth');
-    // Fee accounting must use the inputs which produced `finalizedTransaction`.
+    // -- Phase 4: fee finalization and exact covenant validation --
+    // Fee accounting must use the inputs which produce the finalized transaction.
     // `allInputs` is the logical candidate set and can retain a funder or
     // participant displaced by fixed block assembly; counting that stale input
     // reports a fictitious surplus even though it is absent from the bytes.
     const totalInputSats = finalBuilder.inputs.reduce((sum, input) => sum + input.satoshis, 0n);
-    let decodedTx = finalizedTransaction;
-    let totalOutputSats = (decodedTx as { outputs: Array<{ valueSatoshis: bigint }> }).outputs
-      .reduce((sum, out) => sum + out.valueSatoshis, 0n);
-    let fee = totalInputSats - totalOutputSats;
-
     const findChangeIndex = (requiredReduction: bigint): number | undefined => [...finalBuilder.outputs]
       .map((output, index) => ({ output, index }))
       .reverse()
@@ -14811,34 +14792,25 @@ export class StatefulTransactionBuilder {
         return !!lock && lock.length === 25 && lock[0] === 0x76 && lock[1] === 0xa9
           && !output.token && (output.amount ?? 0n) > requiredReduction + 1000n;
       })?.index;
-
-    if (fee < 0n) {
-      // Computed-output convergence can replace low-value placeholders after the initial change calculation.
-      // Rebalance the unowned plain change output against the authenticated final output shape.
-      const deficit = -fee;
-      const changeIndex = findChangeIndex(deficit);
+    const finalizeFeeBeforeValidation = (
+      transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>,
+    ): boolean => {
+      const totalOutputSats = transaction.outputs
+        .reduce((sum, output) => sum + output.valueSatoshis, 0n);
+      const fee = totalInputSats - totalOutputSats;
+      const txSize = BigInt(encodeTransaction(transaction).byteLength);
+      const minFee = this._checkMinRelayFee ? this.computeMinFee(txSize) : 0n;
+      const requiredFee = minFee;
+      if (fee >= requiredFee) return false;
+      const reduction = requiredFee - fee;
+      const changeIndex = findChangeIndex(reduction);
       if (changeIndex === undefined) {
-        throw new Error(
-          `Transaction outputs (${totalOutputSats} sats) exceed inputs (${totalInputSats} sats). `
-          + 'This transaction is invalid. Add more funding inputs or reduce outputs.',
-        );
-      }
-      const current = finalBuilder.outputs[changeIndex];
-      finalBuilder.outputs[changeIndex] = { ...current, amount: (current.amount ?? 0n) - deficit };
-      rawTx = finalBuilder.build();
-      rawTxBin = hexToBin(rawTx);
-      decodedTx = decodeTransactionUnsafe(rawTxBin);
-      totalOutputSats = (decodedTx as { outputs: Array<{ valueSatoshis: bigint }> }).outputs
-        .reduce((sum, out) => sum + out.valueSatoshis, 0n);
-      fee = totalInputSats - totalOutputSats;
-    }
-
-    let txSize = BigInt(encodeTransaction(decodedTx).byteLength);
-    const minFee = this.computeMinFee(txSize);
-    if (this._checkMinRelayFee && fee < minFee) {
-      const shortfall = minFee - fee;
-      const changeIndex = findChangeIndex(shortfall);
-      if (changeIndex === undefined) {
+        if (fee < 0n) {
+          throw new Error(
+            `Transaction outputs (${totalOutputSats} sats) exceed inputs (${totalInputSats} sats). `
+            + 'This transaction is invalid. Add more funding inputs or reduce outputs.',
+          );
+        }
         const fpb = Number(minFee) / Number(txSize);
         throw new Error(
           `Transaction fee of ${fee} satoshis is below the minimum relay fee `
@@ -14847,15 +14819,30 @@ export class StatefulTransactionBuilder {
         );
       }
       const current = finalBuilder.outputs[changeIndex];
-      finalBuilder.outputs[changeIndex] = { ...current, amount: (current.amount ?? 0n) - shortfall };
-      rawTx = finalBuilder.build();
-      rawTxBin = hexToBin(rawTx);
-      decodedTx = decodeTransactionUnsafe(rawTxBin);
-      totalOutputSats = (decodedTx as { outputs: Array<{ valueSatoshis: bigint }> }).outputs
-        .reduce((sum, out) => sum + out.valueSatoshis, 0n);
-      fee = totalInputSats - totalOutputSats;
-      txSize = BigInt(encodeTransaction(decodedTx).byteLength);
-    }
+      finalBuilder.outputs[changeIndex] = { ...current, amount: (current.amount ?? 0n) - reduction };
+      return true;
+    };
+
+    // Validate the exact transaction which will be serialized. Fee adjustment runs before each validation
+    // attempt, including after computed-output repairs, so the successful VM receipt remains bound to the exact
+    // transaction object submitted to the provider. Token conservation depends only on input/output assets.
+    finalBuilder.validateTokenConservation();
+    const finalizedTransaction = this._assertConvergedFinalTransaction(
+      finalBuilder,
+      reassertFinalLayout,
+      finalizeFeeBeforeValidation,
+    );
+    sendTiming('covenants-converged');
+
+    const rawTxBin = encodeTransaction(finalizedTransaction);
+    const rawTx = binToHex(rawTxBin);
+    sendTiming('serialized');
+
+    const { decodeTransactionUnsafe, hash256 } = await import('@bitauth/libauth');
+    const decodedTx = finalizedTransaction;
+    const totalOutputSats = decodedTx.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
+    const fee = totalInputSats - totalOutputSats;
+    const txSize = BigInt(rawTxBin.byteLength);
 
     if (this._maximumFeeSatoshis !== undefined && fee > this._maximumFeeSatoshis) {
       throw new Error(

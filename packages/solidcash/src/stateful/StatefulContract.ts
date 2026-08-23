@@ -206,6 +206,7 @@ import {
 } from './deployment-registry.js';
 import {
   logicalIdentityAddressVariants, logicalIdentityBandKey, resolveLogicalIdentity,
+  type ResolvedLogicalIdentity,
 } from './logical-identity.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import { ConstructorArgument, FunctionArgument, encodeFunctionArgument } from '../Argument.js';
@@ -3778,6 +3779,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     omitLocalFeeTail = false,
     delegateExecution?: { artifact: Artifact; executor: StatefulContract },
     rowArguments?: readonly RouteExpressionKeyRow[],
+    logicalIdentity?: ResolvedLogicalIdentity,
   ): StatefulFunctionCall {
     const executionArtifact = delegateExecution?.artifact ?? this.inner.artifact;
     const capability = executionArtifact.messageBus;
@@ -4032,12 +4034,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       };
       return new StatefulFunctionCall(
         this._createBuilder('__forward', [routeSelector], {
-          blockBase, emitReturn, returnBlob, omitLocalFeeTail,
+          blockBase, emitReturn, returnBlob, omitLocalFeeTail, logicalIdentity,
         }),
         this as unknown as StatefulContract, '__forward', [routeSelector],
         // `routeSelector` is calldata for the co-spent implementation, not a selector for the single-entry
         // proxy. Keep the physical proxy unlocker selector-free when `_applyOverrides` rebuilds this call.
-        { abiFunction: proxyForward, blockBase, emitReturn, returnBlob, omitLocalFeeTail },
+        { abiFunction: proxyForward, blockBase, emitReturn, returnBlob, omitLocalFeeTail, logicalIdentity },
       )._withCompilerRouteDelegatecall(delegateExecution.executor, route);
     }
     return new StatefulFunctionCall(
@@ -4048,9 +4050,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         emitReturn,
         returnBlob,
         omitLocalFeeTail,
+        logicalIdentity,
       }),
       this as unknown as StatefulContract, '__message_bus1', routeArgs,
-      { abiFunction: effectiveRoute, selector: routeSelector, blockBase, emitReturn, returnBlob, omitLocalFeeTail },
+      {
+        abiFunction: effectiveRoute, selector: routeSelector, blockBase, emitReturn, returnBlob,
+        omitLocalFeeTail, logicalIdentity,
+      },
     );
   }
 
@@ -12926,8 +12932,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       omitLocalFeeTail?: boolean;
     },
   ): Promise<StatefulTransactionBuilder> {
-    // Argument normalization below must not rewrite the caller-owned array retained by a reusable function call.
-    args = [...args];
     const timingEnabled = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_BUILDER_TIMING === '1';
     const startedAt = Date.now();
@@ -12952,37 +12956,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       registeredSelf ? registeredExecutionLockingBytecode(registeredSelf) ?? this.inner.lockingBytecode
         : this.inner.lockingBytecode,
     );
-    // Hardhat-compatible handles expose stable logical CREATE addresses, while native contract identity is the
-    // exact active covenant input. Translate registered contract addresses used as ordinary ABI data to that
-    // execution bytecode. Parameters which select an external-call target retain their logical address: their
-    // SCID anchor authenticates routing separately from caller/storage identity.
-    if (abiFunction) {
-      const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
-      const logicalTargetParams = new Set<number>();
-      for (const call of abiFunction.externalCalls ?? []) {
-        if (call.addressSource?.kind === 'forward' && call.addressSource.paramIndex !== undefined) {
-          logicalTargetParams.add(call.addressSource.paramIndex);
-        }
-        if (call.addressParam) {
-          const index = visibleInputs.findIndex((input) => input.name === call.addressParam);
-          if (index >= 0) logicalTargetParams.add(index);
-        }
-      }
-      for (const call of abiFunction.lowLevelCalls ?? []) {
-        if (call.target?.kind !== 'parameter' || !call.target.name) continue;
-        const index = visibleInputs.findIndex((input) => input.name === call.target!.name);
-        if (index >= 0) logicalTargetParams.add(index);
-      }
-      for (const [index, input] of visibleInputs.entries()) {
-        if (logicalTargetParams.has(index)
-          || (input.type !== 'address' && input.type !== 'address payable')
-          || typeof args[index] !== 'string') continue;
-        const deployment = findDeploymentByAddress(this.inner.provider, args[index]);
-        const executionLockingBytecode = deployment
-          ? registeredExecutionLockingBytecode(deployment) : undefined;
-        if (executionLockingBytecode) args[index] = hexToBin(executionLockingBytecode);
-      }
-    }
+    // Keep execution identity and public caller identity distinct. address(this) expressions use the exact active
+    // input bytecode above; callees observing msg.sender use a CREATE/proxy's stable SCID-backed address.
+    const publicSelfAddress = this._logicalAddress
+      ? addressToLockScript(this._logicalAddress) : executionSelfAddress;
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
 
@@ -15288,7 +15265,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const compilerRoute = this._buildRepeatedExternalBatch(
           ec, args, callInfo.externalContract as StatefulContract,
           this.inner.artifact, callerStateSnapshot, undefined, abiFunction?.inputs,
-          false, executionSelfAddress,
+          false, executionSelfAddress, undefined, publicSelfAddress,
         );
         const bGraphBlockhashSelections = compilerRoute
           ? selectGraphBlockhashReads(callInfo.externalContract.inner.artifact, compilerRoute.blob)
@@ -15501,7 +15478,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       source: NonNullable<typeof bEntryAccess.keySources>[number] | undefined,
                     ): boolean => isMsgSenderKeySource(source);
                     const effKeyValue = isSenderKey(bEntryAccess.keySources?.[0])
-                      ? executionSelfAddress
+                      ? publicSelfAddress
                       : keyValue;
                     let matchUtxo: Utxo | undefined;
                     if (bCollection?.sorted && effKeyValue !== undefined) {
@@ -15514,7 +15491,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       );
                       const encodedKeys = bEntryAccess.keyParams.map((name, keyIndex) => {
                         if (isSenderKey(bEntryAccess.keySources?.[keyIndex])) {
-                          return executionSelfAddress;
+                          return publicSelfAddress;
                         }
                         const index = bAbiFunc!.inputs.findIndex((input) => input.name === name);
                         const value = index >= 0 ? bRouteArgs[index] : undefined;
@@ -17025,6 +17002,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // that exact input's P2SH32 locking bytecode in both ordinary and atomic construction, matching the
             // handler's OP_INPUTINDEX OP_UTXOBYTECODE execution context rather than the proxy state owner.
             const delegateSelfAddress = hexToBin(callInfo.contract.inner.lockingBytecode);
+            const delegatePublicAddress = publicSelfAddress;
             const nestedExternalCalls: ExternalCallAbi[] = [];
             for (const nested of publishedNestedExternalCalls) {
               if (!nested.condition) {
@@ -17247,6 +17225,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 delegateVisibleInputs,
                 false,
                 delegateSelfAddress,
+                undefined,
+                delegatePublicAddress,
               );
               if (timingEnabled) console.error('nested-callsite-route-built', {
                 callsiteId: nested.callsiteId, route: childCompilerRoute?.abiFunction.name,
@@ -17881,7 +17861,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             );
                             return addressToLockScript(sender.getAddress());
                           }
-                          return delegateSelfAddress;
+                          return delegatePublicAddress;
                         }
                         // A computed key (hash160(pk), keccak256(x), ...) is not a parameter name, so the
                         // param lookup below cannot find it and the whole access silently produces no pick -
@@ -18829,6 +18809,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       delegateVisibleInputs,
                       true,
                       delegateSelfAddress,
+                      undefined,
+                      delegatePublicAddress,
                     )
                     : undefined;
                   const logicalArgsChanged = !functionArgumentListsEqual(
@@ -18983,12 +18965,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       ? this._buildRepeatedExternalBatch(
                         nested, delegateVisibleArgs, callee, callInfo.contract.inner.artifact,
                         onChainState.state, calleeRouteArtifact, delegateVisibleInputs, false,
-                        delegateSelfAddress, externalReturns,
+                        delegateSelfAddress, externalReturns, delegatePublicAddress,
                       )
                       : activeCompilerRoute
                         ? this._replaceRepeatedExternalBatchRow(
                           activeCompilerRoute, currentLogicalArgs, nextLogicalArgs,
-                          calleeRouteArtifact, delegateSelfAddress,
+                          calleeRouteArtifact, delegatePublicAddress,
                         )
                         : undefined;
                     const routeDerivedRefresher = refreshChunkableRouteWitnesses
@@ -19125,6 +19107,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : (lowLevelCallUtxoGroups[parent.delegateCallGroupIndex]?.externalContract
             ?? parentContract) as StatefulContract;
         const parentExecutionSelfAddress = hexToBin(parentExecutor.inner.lockingBytecode);
+        const parentPublicSelfAddress = logicalParentContract._logicalAddress
+          ? addressToLockScript(logicalParentContract._logicalAddress) : parentExecutionSelfAddress;
         const logicalParentArtifact = parent.logicalArtifact ?? logicalParentContract.inner.artifact;
         const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
         const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
@@ -19355,7 +19339,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     ?? access.keyParams.map((paramName) => ({ kind: 'param' as const, paramName }));
                   const encodedKeys = keySources.map((source, keyIndex) => {
                     if (isMsgSenderKeySource(source)) {
-                      return parentExecutionSelfAddress;
+                      return parentPublicSelfAddress;
                     }
                     if (source.kind === 'expression' && 'expressionLabel' in source) {
                       const resolved = resolveRouteRowExpressionKey({
@@ -20207,15 +20191,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           argIndex: number; name: string; band: number; proxyRoute: boolean;
         }[] = [];
         const childParentGroupIndex = allGroupParentIndices[groupIdx];
-        const childDelegateGroupIndex = [...delegateExternalGroupIndices.entries()]
-          .find(([, childGroups]) => childGroups.includes(groupIdx))?.[0];
         const childCallerCategoryId = childParentGroupIndex !== undefined && childParentGroupIndex >= 0
           ? externalCallUtxoGroups[childParentGroupIndex]?.categoryId ?? this.categoryId
-          : childDelegateGroupIndex !== undefined
-            // A child reached from delegate code is called by the active implementation input. Its minting
-            // category lets the callee recover that exact OP_UTXOBYTECODE, matching the caller's address(this).
-            ? lowLevelCallUtxoGroups[childDelegateGroupIndex]?.categoryId ?? this.categoryId
-            : this.categoryId;
+          : this.categoryId;
         const encoded = childFn.inputs.map((input, inputIndex) => {
           if (!input.name.startsWith('__internal__')) {
             const visibleInputCount = childFn.inputs.filter(
@@ -20841,15 +20819,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               return -1n;
             }
             if (inp.name === '__internal__msgSenderCategory') {
-              const nestedProxyGroupIndex = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
-              const nestedProxyCategoryId = nestedProxyGroupIndex === undefined
-                ? undefined : externalCallUtxoGroups[nestedProxyGroupIndex]?.categoryId;
-              const callerDelegateGroupIndex = nestedProxyGroupIndex === undefined
-                ? undefined : [...delegateExternalGroupIndices.entries()]
-                  .find(([, childGroups]) => childGroups.includes(nestedProxyGroupIndex))?.[0];
-              const callerExecutionCategoryId = callerDelegateGroupIndex === undefined
-                ? this.categoryId : lowLevelCallUtxoGroups[callerDelegateGroupIndex]?.categoryId ?? this.categoryId;
-              return delegateImplMsgSenderCategory(nestedProxyCategoryId, callerExecutionCategoryId);
+              const nestedProxyCategoryId = nestedDelegateProxyGroupByLowLevel.has(groupLocalIdx)
+                ? externalCallUtxoGroups[nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx)!]?.categoryId
+                : undefined;
+              return delegateImplMsgSenderCategory(nestedProxyCategoryId, this.categoryId);
             }
             if (inp.name === '__internal__proxyMasterIndex') {
               const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
@@ -21986,9 +21959,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       logicalAddress: this._logicalAddress,
       externalGroups: externalCallUtxoGroups.length,
     });
-    // Logical identity anchors authenticate stable public call targets. Runtime `address(this)` and nested
-    // `msg.sender` use the exact active input bytecode, so they neither require nor consume the caller's SCID.
-    const logicalIdentity = overrides?.logicalIdentity;
+    // address(this) is always the active input's exact bytecode. A nested call which observes msg.sender also
+    // needs this contract's stable public identity anchor when this is a CREATE/proxy facade; native contracts
+    // have no logical address and the callee falls back to the authenticated minting-master input bytecode.
+    const nestedUsesMsgSender = [...externalCallUtxoGroups, ...lowLevelCallUtxoGroups].some((group) => {
+      const called = group.compilerRoute?.abiFunction
+        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((candidate) => candidate.name === group.functionName);
+      return called?.usesMsgSender === true;
+    });
+    const logicalIdentity = overrides?.logicalIdentity
+      ?? (nestedUsesMsgSender && this._logicalAddress
+        ? await resolveLogicalIdentity(this.inner.provider, this._logicalAddress)
+        : undefined);
     if (logicalIdentity && !this._logicalAddress) this._logicalAddress = logicalIdentity.logicalAddress;
     timing('logical-identity-complete');
     if (timingEnabled) console.error('builder-shape', {
@@ -24944,6 +24927,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     callerStateIncludesPriorWrites = false,
     callerSelfAddress?: FunctionArgument,
     externalReturns?: ReadonlyMap<string, FunctionArgument>,
+    callerIdentityAddress?: FunctionArgument,
   ): {
       abiFunction: AbiFunction;
       selector: Uint8Array;
@@ -24980,7 +24964,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const routeMsgSender = routePreservesSender
       ? addressToLockScript(routeSender!.getAddress())
-      : callerSelfAddress ?? addressToLockScript(this.target);
+      : callerIdentityAddress ?? callerSelfAddress ?? addressToLockScript(this.target);
 
     const structs = calleeRouteArtifact.structs
       ?? externalContract.inner.stateLayout?.structs;
@@ -25804,6 +25788,7 @@ export class StatefulFunctionCall {
   private compilerRoute?: {
     abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
     emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
+    logicalIdentity?: ResolvedLogicalIdentity;
   };
 
   private splitFundingConfig?: {
@@ -25830,6 +25815,7 @@ export class StatefulFunctionCall {
     compilerRoute?: {
       abiFunction: AbiFunction; selector?: Uint8Array; blockBase?: number;
       emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
+      logicalIdentity?: ResolvedLogicalIdentity;
     },
   ) {
     // Prevent unhandled rejection if the builder fails before send() is called
@@ -27967,6 +27953,7 @@ export class StatefulFunctionCall {
             emitReturn: this.compilerRoute.emitReturn,
             returnBlob: this.compilerRoute.returnBlob,
             omitLocalFeeTail: this.compilerRoute.omitLocalFeeTail,
+            logicalIdentity: this.compilerRoute.logicalIdentity,
           }),
         },
       );

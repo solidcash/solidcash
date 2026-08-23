@@ -1202,9 +1202,9 @@ type GraphCallerInvocation = Pick<CompiledGraphInvocation,
 'parent' | 'callee' | 'function' | 'consumerCallsiteId'>;
 
 /**
- * Calls originate at the exact covenant input executing the caller. This keeps a callee's `msg.sender` equal to
- * the caller's source-level `address(this)` for both high-level and raw calls. A proxy's stable logical identity
- * remains its authenticated call target; it does not replace the active delegate executor's identity.
+ * Raw address calls originate at the exact covenant input executing the caller. Ordinary interface calls use the
+ * caller's authenticated public identity, which remains stable across proxy upgrades. Source-level address(this)
+ * is independent and always reads the active executing input directly.
  */
 export function graphInvocationUsesExecutorCaller(
   participants: readonly GraphCallerParticipant[],
@@ -1213,7 +1213,15 @@ export function graphInvocationUsesExecutorCaller(
 ): boolean {
   if (invocation.parent === null) return false;
   const caller = participants[invocations[invocation.parent].callee];
-  return caller.executionKind === 'delegate' || caller.executionKind === 1;
+  if (caller.executionKind !== 'delegate' && caller.executionKind !== 1) return false;
+  const parent = invocations[invocation.parent];
+  const parentFunction = caller.artifact.abi
+    ? resolveGraphAbiFunction(caller.artifact, parent.function) : undefined;
+  const callsite = parentFunction?.externalCalls?.find((candidate) =>
+    invocation.consumerCallsiteId !== undefined
+      ? candidate.callsiteId === invocation.consumerCallsiteId
+      : candidate.functionName === invocation.function);
+  return callsite?.interfaceName === '__raw__' && callsite.functionName === '__raw__';
 }
 
 export function graphInvocationCallerIdentity(
@@ -1236,8 +1244,8 @@ export function graphInvocationCallerIdentity(
     return { lockingBytecode: caller.executorLockingBytecode, offset: executorOffset };
   }
   return {
-    lockingBytecode: caller.lockingBytecode,
-    offset: 0,
+    lockingBytecode: caller.logicalLockingBytecode ?? caller.lockingBytecode,
+    offset: caller.logicalIdentityOffset ?? 0,
   };
 }
 

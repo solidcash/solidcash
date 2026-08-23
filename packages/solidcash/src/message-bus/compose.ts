@@ -16,6 +16,9 @@ import {
   StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
+import {
+  resolveLogicalIdentity, type ResolvedLogicalIdentity,
+} from '../stateful/logical-identity.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
 import {
   createMessageBusVerifierUnlocker, getMessageBusVerifierLockingBytecodeForArtifact,
@@ -730,6 +733,21 @@ export class AtomicMessageBusComposition {
       if (!contract?.categoryId) throw new Error('messageBus: every participant must have a resolved master category');
       return contract.categoryId;
     });
+    // Public CREATE/proxy identities are authenticated by immutable SCID anchors. Resolve each required anchor
+    // once per fixed-point assembly pass and supply it explicitly to the local builder: address(this) still comes
+    // from the active covenant input, while an ordinary nested msg.sender can select this stable public identity.
+    const logicalIdentities = new Map<number, ResolvedLogicalIdentity>();
+    await Promise.all(plan.participants.map(async (participant) => {
+      if (!participant.blockLayout?.slots.some((slot) => slot.kind === 'identityAnchor')) return;
+      const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+      const identity = await resolveLogicalIdentity(provider, contract._logicalAddress ?? contract.target);
+      const expected = participant.logicalLockingBytecode?.toLowerCase();
+      const actual = binToHex(addressToLockScript(identity.logicalAddress)).toLowerCase();
+      if (!expected || actual !== expected) {
+        throw new Error('messageBus: resolved logical call target disagrees with its participant identity');
+      }
+      logicalIdentities.set(participant.participant, identity);
+    }));
     const returning = plan.invocations.filter((invocation) => invocation.resultTypes.length > 0);
     const provisionalResults = Object.fromEntries(returning.map((invocation) => {
       const artifact = plan.participants[invocation.callee].artifact;
@@ -981,6 +999,7 @@ export class AtomicMessageBusComposition {
             }
             return { args: invocation.args, handler };
           }),
+          logicalIdentities.get(participant.participant),
         );
         // A participant probe is built in isolation while its covenant addresses outputs in the final graph's
         // absolute coordinate space. Forward/literal BCH transfers are already compiler-authenticated in the

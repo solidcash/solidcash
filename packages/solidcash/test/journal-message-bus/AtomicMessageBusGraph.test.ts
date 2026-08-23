@@ -170,7 +170,7 @@ describe('atomic compiled invocation graph', () => {
     ]);
   });
 
-  it('uses the active owner input for nested callers while retaining the logical callee target', () => {
+  it('uses logical call identity for nested owner callers while retaining physical owner identity', () => {
     const withLogicalCaller = plan();
     withLogicalCaller.participants[0].logicalLockingBytecode = '54';
     withLogicalCaller.participants[1] = {
@@ -186,11 +186,11 @@ describe('atomic compiled invocation graph', () => {
       withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     expect(finalized.callManifest.participants[0].lockingBytecode).toBe('51'.repeat(64));
-    expect(finalized.callManifest.rows[1].subjectHex).toBe('51'.repeat(64));
+    expect(finalized.callManifest.rows[1].subjectHex).toBe('54');
     expect(finalized.callManifest.rows[1].targetOffset).toBe(1);
   });
 
-  it('uses a delegate executor input as the nested high-level caller identity', () => {
+  it('uses a delegate public identity as the nested high-level caller identity', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],
@@ -208,7 +208,7 @@ describe('atomic compiled invocation graph', () => {
     const finalized = messageBus.finalizeAtomicInvocationGraph(
       delegatedCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
-    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '56', sourceOffset: 1 });
+    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '54', sourceOffset: 0 });
   });
 
   it('uses a delegate executor input as the nested raw-call identity', () => {

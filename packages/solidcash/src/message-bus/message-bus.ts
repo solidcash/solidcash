@@ -14,7 +14,7 @@ export interface MessageBatchCall {
   args?: readonly FunctionArgument[];
   /** Logical per-invocation satoshi delta when compiler-authored effects cannot derive it. */
   msgValue?: bigint;
-  /** Graph-authenticated active caller input bytecode for msg.sender-keyed resources. */
+  /** Graph-authenticated caller identity bytecode for msg.sender-keyed resources. */
   logicalCaller?: FunctionArgument;
 }
 

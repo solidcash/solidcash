@@ -27953,6 +27953,18 @@ export class StatefulFunctionCall {
     let builder: StatefulTransactionBuilder;
     let derived: Record<string, any> | undefined;
 
+    // A composed transaction observes one block context across every participant. The mock chain has no keeper,
+    // so refresh all registered oracle-backed data NFTs before any participant state or wallet snapshot is read.
+    // Production providers do not expose the in-memory mock storage marker and remain untouched.
+    const provider = this.parentContract?.inner.provider;
+    const mockStorage = (provider as unknown as {
+      indexer?: { storage?: { _test?: unknown } };
+    } | undefined)?.indexer?.storage;
+    if (provider && mockStorage?._test) {
+      const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
+      await syncMockBlockOracles(provider);
+    }
+
     await this._resolveLibrariesFromRegistry();
     this._autoWireLibraryDelegatecalls();
     const needsRebuild = (this.externalCallInfos.length > 0 || this.callInfos.length > 0

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { ContractFactory, Signer } from '../../src/index.js';
+import { ContractFactory, Signer, syncMockBlockOracleDeployment } from '../../src/index.js';
 import { createTestProvider } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 
@@ -33,5 +33,29 @@ describe('mock evm_increaseTime writes __block_timestamp', () => {
     const after = await timed.getState();
     expect(after.__block_timestamp).toBe(BigInt(provider.getBlockTime()));
     expect(after.__block_timestamp).toBeGreaterThan(86_400n);
+  });
+
+  it('synchronizes every registered participant before building a call', async () => {
+    const provider = createTestProvider();
+    const signer = new Signer(freshKey(), provider);
+    await provider.addUtxo(signer.getAddress(), {
+      txid: 'b2'.repeat(32), vout: 0, satoshis: 10_000_000n,
+    });
+    const factory = new ContractFactory(compileString(TIMED), signer);
+    const first = await factory.deploy();
+    const second = await factory.deploy();
+
+    await syncMockBlockOracleDeployment(provider, { contract: first });
+    provider.increaseTime(5);
+    await syncMockBlockOracleDeployment(provider, { contract: second });
+    expect((await first.getState()).__block_timestamp)
+      .not.toBe((await second.getState()).__block_timestamp);
+
+    await provider.addUtxo(signer.getAddress(), {
+      txid: 'b3'.repeat(32), vout: 0, satoshis: 1_000_000n,
+    });
+    await first.gated(0n).send();
+    expect((await first.getState()).__block_timestamp)
+      .toBe((await second.getState()).__block_timestamp);
   });
 });

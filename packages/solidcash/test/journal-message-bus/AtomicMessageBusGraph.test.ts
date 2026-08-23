@@ -79,7 +79,13 @@ describe('atomic compiled invocation graph', () => {
       messageBus: capability('approve', '01020304', approveInputs),
       invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
     } as unknown as Artifact;
-    const target = { artifact: targetArtifact, lockingBytecode: '51' };
+    const target = {
+      artifact: targetArtifact,
+      lockingBytecode: '51',
+      // Lookup/public identity is deliberately different: the source-level address proof must bind the
+      // physical participant that actually executes, not this SDK identity alias.
+      logicalLockingBytecode: '55',
+    };
     const payload = Uint8Array.of(0x01, 0x02, 0x03, 0x04, 0x51);
     const runInputs = [{ name: 'target', type: 'address' }, { name: 'payload', type: 'bytes' }];
     const root = {
@@ -170,7 +176,7 @@ describe('atomic compiled invocation graph', () => {
     ]);
   });
 
-  it('uses logical call identity for nested owner callers while retaining physical owner identity', () => {
+  it('uses the authenticated physical owner identity for nested callers', () => {
     const withLogicalCaller = plan();
     withLogicalCaller.participants[0].logicalLockingBytecode = '54';
     withLogicalCaller.participants[1] = {
@@ -186,11 +192,11 @@ describe('atomic compiled invocation graph', () => {
       withLogicalCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     expect(finalized.callManifest.participants[0].lockingBytecode).toBe('51'.repeat(64));
-    expect(finalized.callManifest.rows[1].subjectHex).toBe('54');
-    expect(finalized.callManifest.rows[1].targetOffset).toBe(1);
+    expect(finalized.callManifest.rows[1].subjectHex).toBe('51'.repeat(64));
+    expect(finalized.callManifest.rows[1].targetOffset).toBe(0);
   });
 
-  it('uses a delegate public identity as the nested high-level caller identity', () => {
+  it('uses a delegate owner input as the nested high-level caller identity', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],
@@ -208,7 +214,7 @@ describe('atomic compiled invocation graph', () => {
     const finalized = messageBus.finalizeAtomicInvocationGraph(
       delegatedCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
-    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '54', sourceOffset: 0 });
+    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
   });
 
   it('uses a delegate executor input as the nested raw-call identity', () => {

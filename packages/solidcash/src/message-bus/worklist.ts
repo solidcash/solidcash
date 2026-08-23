@@ -291,7 +291,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     const structs = source.artifact.structs ?? source.artifact.stateLayout?.structs;
     const encoded = encodeFunctionArgument(supplied as FunctionArgument, 'address', structs);
     if (!(encoded instanceof Uint8Array)
-      || binToHex(encoded) !== (target.logicalLockingBytecode ?? target.lockingBytecode).toLowerCase()) {
+      || binToHex(encoded) !== target.lockingBytecode.toLowerCase()) {
       throw new Error(`messageBus: callsite ${call.callsiteId} target proof disagrees with registered owner`);
     }
   };

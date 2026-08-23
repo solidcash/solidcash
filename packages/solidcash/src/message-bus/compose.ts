@@ -365,14 +365,10 @@ const graphRouteContext = (
   const emissions = rows.filter((row) => row.kind === 0 && row.parent !== 0xffff && row.owner === participant)
     .map((row) => {
       const target = finalized.callManifest.participants[row.consumer];
-      // The manifest's physical locking bytecode identifies the state-owning participant for settlement, but
-      // Solidity call expressions bind the callee's logical address. These identities differ for a proxy (and
-      // for any participant backed by an explicit identity anchor), so the execution transcript must use the
-      // authenticated logical identity while the verifier continues to settle the physical owner block.
-      const plannedTarget = finalized.plan.participants[row.consumer];
-      const targetLbc = hexToBin(
-        plannedTarget.logicalLockingBytecode ?? target.lockingBytecode,
-      );
+      // A high-level call executes the registered participant's physical owner input. Keep the transcript byte
+      // identical to the runtime address value: a proxy's public/SCID identity is lookup metadata, not the
+      // OP_UTXOBYTECODE-authenticated target consumed by the call verifier.
+      const targetLbc = hexToBin(target.lockingBytecode);
       const args = hexToBin(row.argsHex);
       const result = hexToBin(row.resultHex);
       const selector = hexToBin(row.selectorHex);

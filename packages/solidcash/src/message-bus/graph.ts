@@ -394,12 +394,9 @@ export function finalizeAtomicInvocationGraph(
       slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
       sourceOffset: invocation.caller === null
         ? 0xffff : callerIdentity!.offset,
-      // Invocation rows bind the address used by the source-level call, not necessarily the state owner's
-      // physical master at offset zero. Proxies and explicit identity anchors authenticate that logical callee
-      // at `logicalIdentityOffset`; using zero here makes the SDK transcript name the logical address while the
-      // on-chain verifier reconstructs the physical owner address.
-      targetOffset: invocation.parent === null
-        ? 0 : plan.participants[invocation.callee].logicalIdentityOffset ?? 0,
+      // Calls bind the physical participant input whose OP_UTXOBYTECODE is compared by the verifier. A public
+      // proxy/SCID identity may locate that participant in the SDK, but it is not an alternate execution target.
+      targetOffset: 0,
       selectorHex: invocation.selectorHex,
       position: completion, parent: invocation.parent ?? 0xffff, depth: invocation.depth,
       subtreeEnd: invocation.subtreeEnd, subjectHex, argsHex: invocation.argsHex, resultHex: result.toLowerCase(),
@@ -1244,8 +1241,8 @@ export function graphInvocationCallerIdentity(
     return { lockingBytecode: caller.executorLockingBytecode, offset: executorOffset };
   }
   return {
-    lockingBytecode: caller.logicalLockingBytecode ?? caller.lockingBytecode,
-    offset: caller.logicalIdentityOffset ?? 0,
+    lockingBytecode: caller.lockingBytecode,
+    offset: 0,
   };
 }
 

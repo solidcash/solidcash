@@ -1,4 +1,4 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { addressToLockScript } from '../utils.js';
 
@@ -95,6 +95,22 @@ export function findDeploymentByAddress(
     }
   }
   return undefined;
+}
+
+/**
+ * Resolve a registered Solidity-facing address to the physical locking bytecode held by the deployment.
+ *
+ * Stateful contracts expose a stable logical CREATE address, while covenant comparisons (`address(this)` and
+ * `msg.sender`) observe the exact locking bytecode of the executing input. Callers which persist an address after
+ * its deployment exists must therefore store this physical form. An unresolved address is deliberately left to
+ * the caller: it may be an EOA or a forward reference in a cyclic deployment graph.
+ */
+export function registeredPhysicalLockingBytecode(
+  provider: NetworkProvider,
+  address: string,
+): Uint8Array | undefined {
+  const physical = findDeploymentByAddress(provider, address)?.lockingBytecode;
+  return physical ? hexToBin(physical) : undefined;
 }
 
 /** All deployments for a provider (most recent last). */

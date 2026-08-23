@@ -18,7 +18,7 @@ import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
 import {
-  findDeploymentByAddress, registerDeployment,
+  findDeploymentByAddress, registerDeployment, registeredPhysicalLockingBytecode,
 } from './deployment-registry.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 
@@ -103,17 +103,6 @@ function toInitialState(initialState: ProxyInitialState | undefined, impl: Artif
   const out: Record<string, unknown> = {};
   initialState.forEach((value, i) => { if (vars[i]) out[vars[i].name] = value; });
   return out;
-}
-
-/** Resolve a registered Solidity-facing address to the locking bytecode the covenant stores and compares. */
-function registeredPhysicalLockingBytecode(
-  provider: NetworkProvider,
-  address: string,
-): Uint8Array | undefined {
-  const deployment = findDeploymentByAddress(provider, address);
-  if (!deployment) return undefined;
-  const physical = deployment.lockingBytecode;
-  return physical ? hexToBin(physical) : undefined;
 }
 
 // Executing an entire very-large delegate artifact merely to apply a conventional OZ initializer can overwhelm

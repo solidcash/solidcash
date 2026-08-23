@@ -16,6 +16,7 @@ import { createTestProvider } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import {
   findDeploymentByLockingBytecode, registerDeployment, registeredExecutionLockingBytecode,
+  registeredPhysicalLockingBytecode,
 } from '../../src/stateful/deployment-registry.js';
 
 function freshKey(): Uint8Array {
@@ -45,6 +46,12 @@ const TOKEN = 'contract Token() {'
   + ' function approve(address spender, int amount) {'
   + '   this.allowances[msg.sender][spender] = amount;'
   + ' }'
+  + '}';
+
+const ADDRESS_HOLDER = 'contract AddressHolder {'
+  + ' address public peer;'
+  + ' constructor(address peer_) { peer = peer_; }'
+  + ' function check(address expected) external view { require(peer == expected); }'
   + '}';
 
 describe('logical CREATE identity at getAddress()', () => {
@@ -174,6 +181,18 @@ describe('logical CREATE identity at getAddress()', () => {
     await expect(requireMsgSenderIdentity(
       signer.provider, '11'.repeat(32), [signer.getAddress()],
     )).rejects.toThrow(/CREATE identity for category/);
+  });
+
+  it('stores a registered contract address as its physical locking bytecode', async () => {
+    const { signer } = await fundedSigner('ad');
+    const token = await new ContractFactory(compileString(TOKEN), signer).deploy();
+    const logicalAddress = await token.getAddress();
+    expect(binToHex(registeredPhysicalLockingBytecode(signer.provider, logicalAddress)!))
+      .toBe(token.inner.lockingBytecode);
+
+    const holder = await new ContractFactory(compileString(ADDRESS_HOLDER), signer).deploy(logicalAddress);
+    const state = await holder.getState();
+    expect(binToHex(state.peer as Uint8Array)).toBe(token.inner.lockingBytecode);
   });
 
   it('resolves a proxy registration by its active implementation bytecode', () => {

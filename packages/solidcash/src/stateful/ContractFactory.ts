@@ -11,7 +11,7 @@ import {
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { getNetworkPrefix } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } from './logical-identity.js';
-import { registerDeployment } from './deployment-registry.js';
+import { registerDeployment, registeredPhysicalLockingBytecode } from './deployment-registry.js';
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */
 export interface DeployContractOptions {
@@ -52,6 +52,18 @@ export type DeployedContract<T extends Artifact = Artifact> = ConnectedStatefulC
 
 function looksLikeOverrides(x: unknown): boolean {
   return typeof x === 'object' && x !== null && !(x instanceof Uint8Array) && !Array.isArray(x);
+}
+
+function normalizeRegisteredAddressArguments<T>(
+  provider: NetworkProvider,
+  inputs: readonly { type: string }[],
+  args: readonly T[],
+): T[] {
+  return args.map((arg, index) => {
+    const type = inputs[index]?.type;
+    if ((type !== 'address' && type !== 'address payable') || typeof arg !== 'string') return arg;
+    return (registeredPhysicalLockingBytecode(provider, arg) ?? arg) as T;
+  });
 }
 
 // A token genesis needs a fresh vout-0 UTXO, but each deploy strands its change at a non-zero vout - so a signer
@@ -221,11 +233,23 @@ export class ContractFactory<T extends Artifact = Artifact> {
         && looksLikeOverrides(args[args.length - 1])) {
       overrides = args.pop() as DeployContractOptions;
     }
-    const constructorArgs = args.slice(0, ctorCount) as ConstructorArgument[];
-    const positionalInitArgs = args.slice(ctorCount) as NonNullable<DeployOptions['initArgs']>;
-
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = signer ? signer.provider : (this.runner as NetworkProvider);
+    const constructorArgs = normalizeRegisteredAddressArguments(
+      provider,
+      this.artifact.constructorInputs,
+      args.slice(0, ctorCount) as ConstructorArgument[],
+    );
+    const publicInitInputs = this.artifact.abi.find((f) => f.name === '__construct')?.inputs
+      .filter((input) => !input.name.startsWith('__internal__')) ?? [];
+    const positionalInitArgs = normalizeRegisteredAddressArguments(
+      provider,
+      publicInitInputs,
+      args.slice(ctorCount) as NonNullable<DeployOptions['initArgs']>,
+    );
+    const overrideInitArgs = overrides.initArgs
+      ? normalizeRegisteredAddressArguments(provider, publicInitInputs, overrides.initArgs)
+      : undefined;
 
     // Pure / library contracts (no CashToken state): inject a zero-width stateLayout so they can still
     // go through StatefulContract.deploy + the dispatch Proxy (MistSwap ChainlinkOracleV2 / RewarderBrokenMock
@@ -294,7 +318,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         threadCount: overrides.threadCount,
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
-        initArgs: overrides.initArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
+        initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
         identityAnchors,
       });
       nonceReservation?.commit();

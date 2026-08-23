@@ -124,6 +124,22 @@ describe('compileSolidityProject', () => {
     expect(calls).toBe(1);
   });
 
+  it('reuses bytecode jobs when only warning output is suppressed', () => {
+    const [file] = project({ 'Root.sol': 'contract Root {}' });
+    const cache = { directory: path.join(path.dirname(file), 'cache'), compilerVersion: 'test' };
+    let calls = 0;
+    const compile = (): any => {
+      calls++;
+      return { Root: {} };
+    };
+
+    compileSolidityProject([file], { suppressWarnings: false }, compile, cache);
+    const result = compileSolidityProject([file], { suppressWarnings: true }, compile, cache);
+
+    expect(result.cacheHits).toHaveLength(1);
+    expect(calls).toBe(1);
+  });
+
   it('restores jobs.length-1 on upsert ABI that omitted fixedKeySources', () => {
     const [file] = project({ 'Root.sol': 'contract Root {}' });
     const compile = (): any => ({

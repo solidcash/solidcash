@@ -10,7 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { task } from './tasks.js';
 import type { HardhatRuntimeEnvironment } from './hre.js';
-import { compileSolidityProject } from './project-compiler.js';
+import { artifactCompilerOptions, compileSolidityProject } from './project-compiler.js';
 import { solidcashArtifactsPath } from './artifact-paths.js';
 import { migrateHardhatConfig } from './config.js';
 import { generateTypechainTargets, watchTypechainTargets } from './typegen.js';
@@ -41,6 +41,18 @@ function compilerJavaScriptFingerprint(entryFile: string): string {
     digest.update('\0');
   }
   return digest.digest('hex');
+}
+
+function artifactCompileContextIdentity(
+  compilerIdentity: string,
+  compilerOptions: Record<string, unknown>,
+  jsonArtifactModules: boolean,
+): string {
+  return createHash('sha256').update(JSON.stringify({
+    compilerIdentity,
+    compilerOptions: artifactCompilerOptions(compilerOptions),
+    jsonArtifactModules,
+  })).digest('hex');
 }
 
 // Recursively collect `.sol` sources, skipping vendored dependency trees (node_modules + `@scope` package dirs like
@@ -155,7 +167,6 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const artifactsDir = solidcashArtifactsPath(hre.config.paths.artifacts);
     const outputDir = `${artifactsDir}.tmp-${process.pid}`;
     const requestedSources = (args.sources as string[] | undefined) ?? [];
-    const focused = requestedSources.length > 0;
     const contractsBase = path.basename(contractsDir); // mirror hardhat's `artifacts/<sources>/<File>/<Contract>.json`
     // Split when the unsplit redeem script exceeds the active provider's input-script ceiling. MistSwap's
     // mock publishes 100KB so the suite can exercise CONTRACT behaviour past the real 10KB frontier; the
@@ -175,6 +186,25 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         maximumNftCommitmentBytes,
       ),
     };
+    const cacheDir = path.join(hre.config.paths.cache, 'solidcash');
+    const artifactContextFile = path.join(cacheDir, 'artifact-context');
+    const artifactContext = artifactCompileContextIdentity(
+      compilerCacheIdentity,
+      compilerOptions,
+      hre.config.typegen?.jsonArtifactModules === true,
+    );
+    let publishedArtifactContext: string | undefined;
+    try {
+      publishedArtifactContext = fs.readFileSync(artifactContextFile, 'utf8').trim();
+    } catch { /* A legacy or empty artifact tree has no published context. */ }
+    const hasPublishedArtifacts = fs.existsSync(artifactsDir);
+    const contextChanged = hasPublishedArtifacts && publishedArtifactContext !== artifactContext;
+    // Preserving unrelated artifacts is safe only when they were emitted by the same compiler implementation and
+    // artifact-affecting options. After compiler work, expand the first apparently-focused request to a complete
+    // compile: otherwise the copied tree mixes fresh and stale contracts while publishArtifactTree refreshes every
+    // file timestamp, hiding the mismatch from both humans and later tooling.
+    const focused = requestedSources.length > 0 && !contextChanged;
+    const effectiveRequestedSources = focused ? requestedSources : [];
     const formatArtifactModule = (artifact: unknown, jsonFilename: string): string => (
       hre.config.typegen?.jsonArtifactModules
         ? "import { readFileSync } from 'node:fs';\n"
@@ -192,7 +222,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       .map((file) => path.join(contractsDir, file));
     const allSolFiles = findSolSources(contractsDir);
     const selectedSources = selectCompileSources(
-      [...allScashFiles, ...allSolFiles], requestedSources, contractsDir,
+      [...allScashFiles, ...allSolFiles], effectiveRequestedSources, contractsDir,
     );
     const files = selectedSources.filter((file) => file.endsWith('.scash'));
     const failures: Error[] = [];
@@ -335,10 +365,12 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       throw new AggregateError(failures, `Compilation failed for ${failures.length} source group(s)`);
     }
     publishArtifactTree(outputDir, artifactsDir);
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(artifactContextFile, artifactContext);
     const typegen = generateTypechainTargets({
       artifactsDir,
       contractsDir,
-      cacheDir: path.join(hre.config.paths.cache, 'solidcash'),
+      cacheDir,
       targets: hre.config.typegen.targets,
     });
     const totalFiles = files.length + solFiles.length;

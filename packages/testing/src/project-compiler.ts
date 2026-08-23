@@ -52,6 +52,13 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? 'undefined';
 }
 
+/** Compiler switches which only affect diagnostics must not invalidate bytecode jobs or published artifacts. */
+export function artifactCompilerOptions(options: Record<string, unknown>): Record<string, unknown> {
+  const affecting = { ...options };
+  delete affecting.suppressWarnings;
+  return affecting;
+}
+
 function loadManifest(directory: string | undefined): CacheManifest {
   if (!directory) return { version: 1, files: {} };
   try {
@@ -187,7 +194,7 @@ export function compileSolidityProject(
     const jobId = hash(stableStringify({
       artifactCacheVersion: 2,
       compilerVersion: cache?.compilerVersion ?? '',
-      options,
+      options: artifactCompilerOptions(options),
       sources: dependencyHashes(source, allSources),
     }));
     const jobFile = cache && path.join(cache.directory, 'jobs', `${jobId}.bin`);

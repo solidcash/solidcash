@@ -129,4 +129,26 @@ describe('incremental compile task', () => {
     expect(fs.statSync(artifactDir).ino).toBe(artifactDirectoryInode);
     expect(fs.statSync(path.join(artifactDir, 'Dependency.json')).mode & 0o400).not.toBe(0);
   });
+
+  it('expands a focused request when the published artifact compile context changed', async () => {
+    const root = tempProject();
+    fs.writeFileSync(path.join(root, 'contracts', 'Unrelated.sol'), 'contract Unrelated {}');
+    const configured = (extra: Record<string, unknown>) => resolveConfig({
+      paths: {
+        contracts: './contracts', artifacts: './artifacts', cache: './cache', tests: './test',
+      },
+      compiler: { solidityImportCompat: true, ...extra },
+    }, root);
+    await runTask('compile', { quiet: true, 'skip-split': true },
+      createHardhatRuntimeEnvironment(configured({ ecrecover: 'p2sh32' })));
+
+    const result = await runTask('compile', {
+      quiet: true, 'skip-split': true, sources: ['Root.sol'],
+    }, createHardhatRuntimeEnvironment(configured({ ecrecover: 'p2pkh' }))) as {
+      compilerJobs: number; total: number;
+    };
+
+    expect(result.total).toBe(3);
+    expect(result.compilerJobs).toBeGreaterThan(1);
+  });
 });

@@ -4632,6 +4632,9 @@ function synthesizeMessageBusRoute(
           }
           if (outputSlot != activeReturnOutput && tx.outputs[outputSlot].tokenCategory == activeCategory
             && tx.inputs[slot].tokenCategory != activeCategory
+            // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
+            // endpoints, not emitted events, even when they use the participant's category.
+            && tx.outputs[outputSlot].nftCommitment.length > 0
             && tx.outputs[outputSlot].tokenAmount == 0) {
             physicalEventOutputs = physicalEventOutputs + 1;
           }
@@ -4640,6 +4643,7 @@ function synthesizeMessageBusRoute(
           // slot-local category transition, so such moves cancel while newly emitted event NFTs remain.
           if (outputSlot != activeReturnOutput && tx.inputs[slot].tokenCategory == activeCategory
             && tx.outputs[outputSlot].tokenCategory != activeCategory
+            && tx.inputs[slot].nftCommitment.length > 0
             && tx.inputs[slot].tokenAmount == 0) {
             physicalEventOutputs = physicalEventOutputs - 1;
           }

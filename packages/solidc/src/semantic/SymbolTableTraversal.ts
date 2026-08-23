@@ -6434,6 +6434,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(addressSource && { addressSource }),
         ...(rawFunctionName && { rawFunctionName }),
         ...(rawSelector && { rawSelector }),
+        // Keep the decoded AST parameters on the compiler-internal slot. Synthetic graph handlers are cloned
+        // after helper inlining, when the low-level payload may only remain as an identifier; the clone must still
+        // reconstruct the concrete callee's canonical argument vector from the values proven at the source edge.
+        ...(rawParameters && { rawParameters }),
         ...(rawArgSources && { rawArgSources }),
         slotIndex: provisionalSlotIndex,
         requiredDataNftIndices: dataNftIndices,

@@ -4524,9 +4524,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(GRAPH_STATIC_DIRTY, true);
       this.pushToStack(GRAPH_STATIC_MODE, true);
     }
-    if (this.isDefineSubTraversal && node.graphRuntimeEmissionHandler) {
-      this.pushToStack('__internal__graphEmissions', true);
-    }
     // A fixed-row emission handler receives authenticated return values as hidden invocation arguments.
     // Runtime handlers instead receive the complete emission vector and peel each reached result in the loop;
     // no `graphResultN` arguments are pushed by their caller. Tracking those names here creates phantom stack
@@ -4555,6 +4552,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (this.isDefineSubTraversal && node.graphEmissionHandler && this.contractUsesMsgValue) {
       this.pushToStack('__internal__handlerMsgValue', true);
+    }
+    if (this.isDefineSubTraversal && node.graphRuntimeEmissionHandler) {
+      // The caller pushes the runtime emission vector before every authenticated msg.* context, so it is
+      // physically deeper than those contexts inside OP_INVOKE. Declare it after them in the bottom-growing
+      // symbolic frame. Keeping it above msg.* makes every still-deeper argument (including sorted-map topology
+      // witnesses) one slot too shallow and can reinterpret this byte vector as a Script Number.
+      this.pushToStack('__internal__graphEmissions', true);
     }
     if (activeJournalSlots.length > 0) {
       if (this.isDefineSubTraversal) {
@@ -14865,6 +14869,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return resolved;
     };
     const rawCall = slot.interfaceName === '__raw__' && slot.functionName === '__raw__';
+    const canonicalRawParameters = rawCall && slot.rawSelector
+      && slot.rawParameters !== undefined
+      && slot.rawParameters.every((parameter) => parameter.type !== undefined)
+      ? slot.rawParameters.map((parameter) => (
+        parametersAreCallArguments ? parameter : materializeGraphExpression(parameter)
+      )) : undefined;
     if (!rawCall && !slot.compileTimeSelector && !slot.runtimeSelector) {
       throw new Error('Graph emission call lacks an authenticated selector');
     }
@@ -14951,23 +14961,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__graph_target_mode)');
 
     if (rawCall) {
-      const source = slot.argSources?.[0];
-      const payload = parametersAreCallArguments
-        ? parameters[0]
-        : source?.kind === 'expression' && slot.sourceCallNode?.parameters[0]
-          ? materializeGraphExpression(slot.sourceCallNode.parameters[0])
-          : source?.paramIndex === undefined ? undefined : parameters[source.paramIndex];
-      if (!payload) throw new Error('Raw graph call lacks its canonical calldata parameter');
-      this.visit(payload);
-      this.emit(encodeInt(4n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.popFromStack();
-      this.pushToStack('(__graph_selector)');
-      this.pushToStack('(__graph_args)');
-      // Derive selector and arguments from one copy of the canonical payload.
-      // Stashing the tail also keeps it out of the target||mode||selector CAT.
-      this.emit(Op.OP_TOALTSTACK, locationData);
-      this.popFromStack();
+      if (canonicalRawParameters) {
+        // A compiler-decoded abi.encodeWithSelector edge executes as the concrete callee ABI in the message bus.
+        // Authenticate that same canonical selector + SolidCash pushdata argument vector here. Comparing the
+        // original Solidity-ABI payload tail instead would disagree with the route that must unlock the concrete
+        // callee, despite both representations carrying the same proven typed values.
+        this.emit(slot.rawSelector!, locationData);
+      } else {
+        const source = slot.argSources?.[0];
+        const payload = parametersAreCallArguments
+          ? parameters[0]
+          : source?.kind === 'expression' && slot.sourceCallNode?.parameters[0]
+            ? materializeGraphExpression(slot.sourceCallNode.parameters[0])
+            : source?.paramIndex === undefined ? undefined : parameters[source.paramIndex];
+        if (!payload) throw new Error('Raw graph call lacks its canonical calldata parameter');
+        this.visit(payload);
+        this.emit(encodeInt(4n), locationData);
+        this.emit(Op.OP_SPLIT, locationData);
+        this.popFromStack();
+        this.pushToStack('(__graph_selector)');
+        this.pushToStack('(__graph_args)');
+        // Derive selector and arguments from one copy of the canonical payload.
+        // Stashing the tail also keeps it out of the target||mode||selector CAT.
+        this.emit(Op.OP_TOALTSTACK, locationData);
+        this.popFromStack();
+      }
+      if (canonicalRawParameters) this.pushToStack('(__graph_selector)');
     } else if (slot.runtimeSelector) {
       // Function-pointer lowerings bind this expression to the caller's selector companion
       // (`__fnsel_<pointer>`). Copy it rather than consuming it: ordinary external-call verification
@@ -14997,7 +15016,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__graph_target_selector)');
 
-    const argumentParameters = parametersAreCallArguments ? parameters : (slot.argSources ?? []).map((source, index) => {
+    const argumentParameters = canonicalRawParameters
+      ?? (parametersAreCallArguments ? parameters : (slot.argSources ?? []).map((source, index) => {
       if (source.kind === 'expression' && slot.sourceCallNode?.parameters[index]) {
         return materializeGraphExpression(slot.sourceCallNode.parameters[index]);
       }
@@ -15005,14 +15025,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         throw new Error('Graph argument source was not proven to be forwarded');
       }
       return parameters[source.paramIndex];
-    });
+    }));
     // Transaction signatures are positional message-bus batch route witnesses rather than
     // rooted invocation bytes (rooting them creates a signing fixed point).
     // Both caller emission and callee row projection therefore omit the same
     // typed fields while the callee's original checkSig remains authoritative.
     const callManifestArgumentParameters = argumentParameters.filter((parameter) =>
       parameter.type !== PrimitiveType.SIG);
-    if (rawCall) {
+    if (rawCall && !canonicalRawParameters) {
       if (!callManifestArgumentParameters[0]) {
         throw new Error('Raw graph call lacks its canonical calldata argument');
       }

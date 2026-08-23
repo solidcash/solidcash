@@ -28,14 +28,18 @@ type CovenantSourceOutput = Pick<LibauthOutput, 'lockingBytecode' | 'valueSatosh
 
 interface PreparedCovenantValidation {
   txid: string;
+  transaction: PreparedTransaction['transaction'];
   sourceOutputs: readonly CovenantSourceOutput[];
 }
 
 // The SDK's exact-finalization gate and MockNetworkProvider run in one process. Retain a one-use receipt for a
 // transaction whose every input has already passed the provider-configured BCH-2026 VM, avoiding the identical
-// VM pass at submission. Bind the receipt to provider identity, transaction bytes, and every source output;
-// all non-VM node checks still run in the verifier below.
-const preparedCovenantValidations = new WeakMap<object, WeakMap<object, PreparedCovenantValidation>>();
+// VM pass at submission. Bind the receipt to provider identity, transaction bytes, and every source output.
+// Exact transaction-object reuse is the zero-cost path; builders that deterministically reconstruct the same
+// transaction may reuse the receipt only after their reconstructed object is independently hashed. All non-VM
+// node checks still run in the verifier below.
+const preparedCovenantValidations = new WeakMap<object, Map<string, PreparedCovenantValidation>>();
+const maximumPreparedCovenantValidationsPerProvider = 256;
 
 const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean => (
   left.length === right.length && left.every((byte, index) => byte === right[index])
@@ -65,15 +69,22 @@ export function rememberPreparedCovenantValidation(
   transaction: PreparedTransaction['transaction'],
   sourceOutputs: readonly CovenantSourceOutput[],
 ): void {
-  let byTransaction = preparedCovenantValidations.get(provider as object);
-  if (!byTransaction) {
-    byTransaction = new WeakMap();
-    preparedCovenantValidations.set(provider as object, byTransaction);
+  let byTxid = preparedCovenantValidations.get(provider as object);
+  if (!byTxid) {
+    byTxid = new Map();
+    preparedCovenantValidations.set(provider as object, byTxid);
   }
-  byTransaction.set(transaction as object, {
-    txid: binToHex(hashTransactionUiOrder(encodeTransaction(transaction))),
+  const txid = binToHex(hashTransactionUiOrder(encodeTransaction(transaction)));
+  byTxid.delete(txid);
+  byTxid.set(txid, {
+    txid,
+    transaction,
     sourceOutputs,
   });
+  if (byTxid.size > maximumPreparedCovenantValidationsPerProvider) {
+    const oldestTxid = byTxid.keys().next().value;
+    if (oldestTxid !== undefined) byTxid.delete(oldestTxid);
+  }
 }
 
 /** Consume a matching receipt. Any byte/source mismatch falls back to full provider VM validation. */
@@ -85,15 +96,19 @@ export function consumePreparedCovenantValidation(
 ): boolean {
   const debugTiming = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_PREFLIGHT_TIMING === '1';
-  const byTransaction = preparedCovenantValidations.get(provider as object);
-  const receipt = byTransaction?.get(prepared.transaction as object);
+  const byTxid = preparedCovenantValidations.get(provider as object);
+  const receipt = byTxid?.get(txid);
   if (!receipt) {
-    if (debugTiming) console.error('prepared-covenant-receipt', { result: 'miss', reason: 'identity' });
+    if (debugTiming) console.error('prepared-covenant-receipt', { result: 'miss', reason: 'transaction-bytes' });
     return false;
   }
-  if (receipt.txid !== txid) {
+  const preparedTransactionTxid = receipt.transaction === prepared.transaction
+    ? receipt.txid
+    : binToHex(hashTransactionUiOrder(encodeTransaction(prepared.transaction)));
+  if (preparedTransactionTxid !== txid) {
     if (debugTiming) console.error('prepared-covenant-receipt', {
-      result: 'miss', reason: 'transaction-bytes', expected: receipt.txid, actual: txid,
+      result: 'miss', reason: 'prepared-transaction-bytes',
+      expected: receipt.txid, actual: preparedTransactionTxid,
     });
     return false;
   }
@@ -104,7 +119,7 @@ export function consumePreparedCovenantValidation(
     });
     return false;
   }
-  byTransaction!.delete(prepared.transaction as object);
+  byTxid!.delete(txid);
   if (debugTiming) console.error('prepared-covenant-receipt', { result: 'hit' });
   return true;
 }

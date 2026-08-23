@@ -44,6 +44,24 @@ describe('prepared covenant validation receipts', () => {
     expect(consumePreparedCovenantValidation(provider, prepared, sources, txid)).toBe(false);
 
     rememberPreparedCovenantValidation(provider, tx, sources);
+    const rebuiltTransaction = transaction();
+    const rebuiltBytes = encodeTransaction(rebuiltTransaction);
+    expect(consumePreparedCovenantValidation(provider, {
+      rawBytes: rebuiltBytes,
+      rawHex: binToHex(rebuiltBytes),
+      transaction: rebuiltTransaction,
+    }, sources, txid)).toBe(true);
+
+    rememberPreparedCovenantValidation(provider, tx, sources);
+    const inconsistentTransaction = transaction();
+    inconsistentTransaction.outputs[0].valueSatoshis = 899n;
+    expect(consumePreparedCovenantValidation(provider, {
+      rawBytes,
+      rawHex: binToHex(rawBytes),
+      transaction: inconsistentTransaction,
+    }, sources, txid)).toBe(false);
+
+    rememberPreparedCovenantValidation(provider, tx, sources);
     const changedBytes = rawBytes.slice();
     changedBytes[changedBytes.length - 1] ^= 1;
     const changedPrepared = { ...prepared, rawBytes: changedBytes, rawHex: binToHex(changedBytes) };

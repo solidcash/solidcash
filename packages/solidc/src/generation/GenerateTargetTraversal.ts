@@ -1183,7 +1183,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Event tracking
   private eventDefinitions: EventDefinitionNode[] = [];
   private emitInfos: EmitInfo[] = [];
-  private pendingEmits: { emitIndex: number; stackName: string; eventDef: EventDefinitionNode }[] = [];
+  /** Mutually-exclusive emits reuse a physical slot, so their selected covenant identity is runtime state too. */
+  private pendingEmits: { emitIndex: number; stackName: string; identityStackName: string }[] = [];
 
   // Deploy tracking (stateful contract deployment)
   private pendingDeploys: {
@@ -5760,10 +5761,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (let i = 0; i < ops.emitCount; i++) {
         const globalIdx = emitStartIndex + i;
         if (!this.preAllocatedEmits.has(globalIdx)) {
-          const emitStackName = `__internal__emit_${globalIdx}`;
-          this.emit(encodeInt(0n), locationData);
-          this.pushToStack(emitStackName);
-          this.preAllocatedEmits.add(globalIdx);
+          this.preAllocateEmit(globalIdx, locationData);
           // Note: pendingEmits entry will be populated when the emit is visited
         }
         // Mark conditional indices
@@ -6424,10 +6422,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.collectEmitIndices(node.block, emitIndices);
     for (const idx of emitIndices) {
       if (!this.preAllocatedEmits.has(idx)) {
-        const emitStackName = `__internal__emit_${idx}`;
-        this.emit(encodeInt(0n), locationData);
-        this.pushToStack(emitStackName);
-        this.preAllocatedEmits.add(idx);
+        this.preAllocateEmit(idx, locationData);
       }
     }
 
@@ -6593,10 +6588,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.collectEmitIndices(node.block, emitIndices);
     for (const idx of emitIndices) {
       if (!this.preAllocatedEmits.has(idx)) {
-        const emitStackName = `__internal__emit_${idx}`;
-        this.emit(encodeInt(0n), locationData);
-        this.pushToStack(emitStackName);
-        this.preAllocatedEmits.add(idx);
+        this.preAllocateEmit(idx, locationData);
       }
     }
 
@@ -6783,10 +6775,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.collectEmitIndices(node.body, emitIndices);
     for (const idx of emitIndices) {
       if (!this.preAllocatedEmits.has(idx)) {
-        const emitStackName = `__internal__emit_${idx}`;
-        this.emit(encodeInt(0n), locationData);
-        this.pushToStack(emitStackName);
-        this.preAllocatedEmits.add(idx);
+        this.preAllocateEmit(idx, locationData);
       }
     }
 
@@ -7343,10 +7332,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (let i = 0; i < ops.emitCount; i++) {
         const globalIdx = emitStartIndex + i;
         if (!this.preAllocatedEmits.has(globalIdx)) {
-          const emitStackName = `__internal__emit_${globalIdx}`;
-          this.emit(encodeInt(0n), locationData);
-          this.pushToStack(emitStackName);
-          this.preAllocatedEmits.add(globalIdx);
+          this.preAllocateEmit(globalIdx, locationData);
         }
         if (i >= ops.minEmitCount) {
           this.conditionalEmitIndices.add(emitStartIndex + i);
@@ -11537,23 +11523,66 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     });
 
     const stackName = `__internal__emit_${node.emitIndex}`;
+    const identityStackName = `__internal__emit_identity_${node.emitIndex}`;
 
     if (this.preAllocatedEmits.has(node.emitIndex)) {
       // Pre-allocated path: replace the dummy slot with the computed blob
       this.emitReplace(this.getStackIndex(stackName), node);
       this.popFromStack();
+      this.emit(this.eventCovenantSuffix(eventDef), locationData);
+      this.pushToStack('(event_identity)');
+      this.emitReplace(this.getStackIndex(identityStackName), node);
+      this.popFromStack();
       // Register in pendingEmits if not already there
       if (!this.pendingEmits.some((e) => e.emitIndex === node.emitIndex)) {
-        this.pendingEmits.push({ emitIndex: node.emitIndex, stackName, eventDef });
+        this.pendingEmits.push({ emitIndex: node.emitIndex, stackName, identityStackName });
       }
     } else {
       // Normal path (outside branches)
       this.popFromStack();
       this.pushToStack(stackName);
-      this.pendingEmits.push({ emitIndex: node.emitIndex, stackName, eventDef });
+      this.emit(this.eventCovenantSuffix(eventDef), locationData);
+      this.pushToStack(identityStackName);
+      this.pendingEmits.push({ emitIndex: node.emitIndex, stackName, identityStackName });
     }
 
     return node;
+  }
+
+  private eventCovenantSuffix(eventDef: EventDefinitionNode): Uint8Array {
+    if (eventDef.isAnonymous) {
+      return new Uint8Array([
+        0x88, // OP_EQUALVERIFY (category)
+        0x00, // OP_0 (empty = 'none' capability)
+        0x88, // OP_EQUALVERIFY (capability)
+        0x02, 0x90, 0x00, // push 2 bytes: 144 as Script Number
+        0xb2, // OP_CHECKSEQUENCEVERIFY
+        0x75, // OP_DROP
+        0x51, // OP_1
+      ]);
+    }
+    const eventNameHash = computeEventNameHash(eventDef.signature);
+    return new Uint8Array([
+      0x88, // OP_EQUALVERIFY (category)
+      0x00, // OP_0 (empty = 'none' capability)
+      0x88, // OP_EQUALVERIFY (capability)
+      0x14, // push 20 bytes
+      ...eventNameHash,
+      0x75, // OP_DROP
+      0x02, 0x90, 0x00, // push 2 bytes: 144 as Script Number
+      0xb2, // OP_CHECKSEQUENCEVERIFY
+      0x75, // OP_DROP
+      0x51, // OP_1
+    ]);
+  }
+
+  /** Preallocate both runtime-selected values shared by mutually-exclusive emit arms. */
+  private preAllocateEmit(emitIndex: number, locationData: SingleLocationData): void {
+    this.emit(encodeInt(0n), locationData);
+    this.pushToStack(`__internal__emit_${emitIndex}`);
+    this.emit(encodeInt(0n), locationData);
+    this.pushToStack(`__internal__emit_identity_${emitIndex}`);
+    this.preAllocatedEmits.add(emitIndex);
   }
 
   // `selfdestruct(addr)`: the implied selfdestruct modifier collapses all state UTXOs (no recreation); here we
@@ -22842,7 +22871,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.parkPendingEmitBlobs(locationData);
 
     for (const pendingEmit of this.pendingEmits) {
-      const { emitIndex, stackName, eventDef } = pendingEmit;
+      const { emitIndex, stackName, identityStackName } = pendingEmit;
       const isConditionalEmit = this.conditionalEmitIndices.has(emitIndex);
 
       this.emit(Op.OP_FROMALTSTACK, locationData);
@@ -22898,36 +22927,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // For the category: push <0x20 (push 32 bytes)> before the category
       const categoryPushPrefix = new Uint8Array([0x20]); // OP_PUSH32
 
-      // suffix depends on whether the event is anonymous:
-      // Named:  88 00 88 <len><hash> 75 <144> b2 75 51
-      // Anon:   88 00 88 <144> b2 75 51
-      let suffix: Uint8Array;
-      if (eventDef.isAnonymous) {
-        suffix = new Uint8Array([
-          0x88, // OP_EQUALVERIFY (category)
-          0x00, // OP_0 (empty = 'none' capability)
-          0x88, // OP_EQUALVERIFY (capability)
-          0x02, 0x90, 0x00, // push 2 bytes: 144 as Script Number
-          0xb2, // OP_CHECKSEQUENCEVERIFY
-          0x75, // OP_DROP
-          0x51, // OP_1
-        ]);
-      } else {
-        const eventNameHash = computeEventNameHash(eventDef.signature);
-        suffix = new Uint8Array([
-          0x88, // OP_EQUALVERIFY (category)
-          0x00, // OP_0 (empty = 'none' capability)
-          0x88, // OP_EQUALVERIFY (capability)
-          0x14, // push 20 bytes
-          ...eventNameHash,
-          0x75, // OP_DROP
-          0x02, 0x90, 0x00, // push 2 bytes: 144 as Script Number
-          0xb2, // OP_CHECKSEQUENCEVERIFY
-          0x75, // OP_DROP
-          0x51, // OP_1
-        ]);
-      }
-
       // Build full script: prefix + categoryPushPrefix + category + suffix
       this.emit(prefix, locationData);
       this.pushToStack('(value)');
@@ -22947,7 +22946,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(value)');
 
-      this.emit(suffix, locationData);
+      const identityIdx = this.getStackIndex(identityStackName);
+      this.emit(encodeInt(BigInt(identityIdx)), locationData);
+      this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(value)');
       this.emit(Op.OP_CAT, locationData); // full script
       this.popFromStack(2);
@@ -23042,6 +23043,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ROLL, locationData);
       this.emit(Op.OP_DROP, locationData);
       this.removeFromStack(idx);
+      const identityIdx = this.getStackIndex(pendingEmit.identityStackName);
+      this.emit(encodeInt(BigInt(identityIdx)), locationData);
+      this.emit(Op.OP_ROLL, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.removeFromStack(identityIdx);
     }
   }
 

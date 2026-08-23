@@ -20,6 +20,7 @@ import {
   resolveLogicalIdentity, type ResolvedLogicalIdentity,
 } from '../stateful/logical-identity.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
+import { tryParseEventCommitment } from '../stateful/StateReader.js';
 import {
   createMessageBusVerifierUnlocker, getMessageBusVerifierLockingBytecodeForArtifact,
 } from '../stateful/covenant-helpers.js';
@@ -917,22 +918,33 @@ export class AtomicMessageBusComposition {
       builder.outputs[tail] = { ...builder.outputs[tail], amount };
     };
 
-    const eventLockingBytecodes = (participant: (typeof plan.participants)[number]): string[] => {
+    const eventCandidates = (participant: (typeof plan.participants)[number]) => {
       const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
       const category = hexToBin(categories[participant.participant]);
       return participant.invocations.flatMap((invocationIndex) => {
         const invocation = plan.invocations[invocationIndex];
         const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
           candidate.name === invocation.function);
-        return (handler?.emits ?? []).map((emitted) => {
+        return (handler?.emits ?? []).flatMap((emitted) => {
           const event = participant.artifact.events?.find((candidate) =>
             candidate.signature === emitted.eventSignature);
+          if (!event) return [];
           const script = event?.anonymous
             ? buildAnonymousEventNftCovenantScript(category)
             : buildEventNftCovenantScript(category, computeEventNameHash(emitted.eventSignature));
-          return binToHex(scriptToLockingBytecode(script, contract.inner.addressType));
+          return [{ event, lockingBytecode: binToHex(scriptToLockingBytecode(script, contract.inner.addressType)) }];
         });
       });
+    };
+    const eventLockingBytecodes = (participant: (typeof plan.participants)[number]): string[] =>
+      eventCandidates(participant).map((candidate) => candidate.lockingBytecode);
+    const eventLockingBytecodeForCommitment = (
+      participant: (typeof plan.participants)[number], commitment: string,
+    ): string | undefined => {
+      const matching = eventCandidates(participant).filter(({ event }) =>
+        tryParseEventCommitment(commitment, event, participant.artifact.stateLayout?.structs) !== null);
+      const locks = [...new Set(matching.map((candidate) => candidate.lockingBytecode))];
+      return locks.length === 1 ? locks[0] : undefined;
     };
 
     const assemble = async (
@@ -2059,12 +2071,17 @@ export class AtomicMessageBusComposition {
             for (const index of new Set([...indices, ...active])) provisional.outputs[index] = { ...inactive };
           }
           targets.forEach((target, index) => {
+            const expectation = discoveredEvents.get(target)!;
+            // A flattened route trace can expose a sibling event identity beside the reached handler's payload.
+            // Prefer the unique event schema published by the selected handlers; retain the trace for genuinely
+            // ambiguous same-schema events, where the commitment alone cannot identify a named covenant.
+            const decodedLock = eventLockingBytecodeForCommitment(participant, expectation.commitment);
             provisional.outputs[target] = {
-              to: hexToBin(discoveredEvents.get(target)?.lockingBytecode ?? eventLocks[index]),
+              to: hexToBin(decodedLock ?? expectation.lockingBytecode ?? eventLocks[index]),
               amount: template.amount,
               token: {
                 category: categories[participant.participant], amount: 0n,
-                nft: { capability: 'none', commitment: discoveredEvents.get(target)!.commitment },
+                nft: { capability: 'none', commitment: expectation.commitment },
               },
             };
           });
@@ -2086,7 +2103,7 @@ export class AtomicMessageBusComposition {
           }
           if (active) {
             derivedEventEffects.push({
-              ...slot, active, lockingBytecodeHex: expectation?.lockingBytecode ?? binToHex(lockingBytecode),
+              ...slot, active, lockingBytecodeHex: binToHex(lockingBytecode),
               commitmentHex: commitment,
             });
           }

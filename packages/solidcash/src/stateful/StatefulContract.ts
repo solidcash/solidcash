@@ -13794,6 +13794,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         });
       }
 
+      // A read followed by a write can authenticate two distinct sorted targets with the same original proof
+      // NFT. The first physical lane remains the proof owner, but its read-only unlocker cannot authorize the
+      // later lane's replacement outputs. Promote every copy of that shared proof to the write-authorized
+      // unlocker whenever any logical lane backed by the proof writes; deduplication below may retain any copy.
+      const writeUnlockerByProof = new Map<string, UnlockableUtxo['unlocker']>();
+      for (const entry of entryNfts) {
+        if (!entry.utxo || !entryOperations(entry.slotIndex).some(
+          (operation) => operation === 'write' || operation === 'delete',
+        )) continue;
+        writeUnlockerByProof.set(
+          `${entry.collection}:${entry.utxo.txid.toLowerCase()}:${entry.utxo.vout}`,
+          entry.utxo.unlocker,
+        );
+      }
+      for (const entry of entryNfts) {
+        if (!entry.utxo) continue;
+        const unlocker = writeUnlockerByProof.get(
+          `${entry.collection}:${entry.utxo.txid.toLowerCase()}:${entry.utxo.vout}`,
+        );
+        if (unlocker) entry.utxo = { ...entry.utxo, unlocker };
+      }
+
       const batchAliasSkips = new Set<number>();
       const batchAliasOwners = new Map<number, number>();
       for (const entry of entryNfts) {

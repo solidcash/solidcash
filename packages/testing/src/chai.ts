@@ -32,13 +32,29 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
     const r = cashAddressToLockingBytecode(addr);
     return typeof r === 'string' ? null : r.bytecode;
   };
+  const payload = (lockingBytecode: Uint8Array, packedLength: number): Uint8Array | undefined => {
+    if (packedLength === 20 && lockingBytecode.length === 25
+      && lockingBytecode[0] === 0x76 && lockingBytecode[1] === 0xa9 && lockingBytecode[2] === 0x14
+      && lockingBytecode[23] === 0x88 && lockingBytecode[24] === 0xac) {
+      return lockingBytecode.slice(3, 23);
+    }
+    if (packedLength === 20 && lockingBytecode.length === 23
+      && lockingBytecode[0] === 0xa9 && lockingBytecode[1] === 0x14 && lockingBytecode[22] === 0x87) {
+      return lockingBytecode.slice(2, 22);
+    }
+    if (packedLength === 32 && lockingBytecode.length === 35
+      && lockingBytecode[0] === 0xaa && lockingBytecode[1] === 0x20 && lockingBytecode[34] === 0x87) {
+      return lockingBytecode.slice(2, 34);
+    }
+    return undefined;
+  };
   if (isBytes(actual) && isCashAddr(expected)) {
     const lockingBytecode = decode(expected);
-    if (lockingBytecode) return [binToHex(actual), binToHex(lockingBytecode)];
+    if (lockingBytecode) return [binToHex(actual), binToHex(payload(lockingBytecode, actual.length) ?? lockingBytecode)];
   }
   if (isCashAddr(actual) && isBytes(expected)) {
     const lockingBytecode = decode(actual);
-    if (lockingBytecode) return [binToHex(lockingBytecode), binToHex(expected)];
+    if (lockingBytecode) return [binToHex(payload(lockingBytecode, expected.length) ?? lockingBytecode), binToHex(expected)];
   }
   return [actual, expected];
 }

@@ -1,3 +1,4 @@
+import { cashAddressToLockingBytecode } from '@bitauth/libauth';
 import { describe, expect as vitestExpect, it } from 'vitest';
 import { expect } from '../src/chai.js';
 
@@ -5,6 +6,15 @@ describe('chai empty-address and event predicates', () => {
   it('treats a 20-byte fallback over a zero VM-number as empty', () => {
     expect('').to.deep.equal('0000000000000000000000000000000078000000');
     expect('0x0000000000000000000000000000000000000000').to.equal('');
+  });
+
+  it('compares an ABI-packed address payload with its CashAddress', () => {
+    const address = 'bchtest:qpcn7sy4mgy9glvkjxj3r5y0s9rhy5lwtymfzfnde8';
+    const decoded = cashAddressToLockingBytecode(address);
+    if (typeof decoded === 'string') throw new Error(decoded);
+    const payload = decoded.bytecode.slice(3, 23);
+    expect(payload).to.equal(address);
+    expect(address).to.equal(payload);
   });
 
   it('invokes withArgs predicates against receipt event args', async () => {

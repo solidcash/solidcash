@@ -52,4 +52,56 @@ describe('chai empty-address and event predicates', () => {
       expect(receipt).to.emit(contract, 'JobEvent').withArgs(0n, () => false),
     ).rejects.toThrow(/predicate returned false/);
   });
+
+  it('checks every same-name event before rejecting withArgs', async () => {
+    const receipt = {
+      txid: 'ab',
+      events: [
+        { event: 'JobEvent', args: { jobId: 0n, eventData: { type_: 1n, data_: 0n } } },
+        { event: 'JobEvent', args: { jobId: 0n, eventData: { type_: 2n, data_: 7n } } },
+      ],
+    };
+    const contract = {
+      artifact: {
+        events: [{
+          name: 'JobEvent',
+          parameters: [{ name: 'jobId' }, { name: 'eventData' }],
+        }],
+      },
+    };
+    let observed = 0n;
+    await expect(receipt).to.emit(contract, 'JobEvent').withArgs(0n, (value: { type_: bigint; data_: bigint }) => {
+      vitestExpect(value.type_).toBe(2n);
+      observed = value.data_;
+      return true;
+    });
+    vitestExpect(observed).toBe(7n);
+  });
+
+  it('queries the emitting contract when an atomic receipt has no decoded events', async () => {
+    const receipt = { txid: 'ab' };
+    const eventData = { type_: 2n, data_: 9n };
+    const contract = {
+      artifact: {
+        events: [{
+          name: 'JobEvent',
+          parameters: [{ name: 'jobId' }, { name: 'eventData' }],
+        }],
+      },
+      filters: { JobEvent: () => ({ event: 'JobEvent' }) },
+      queryFilter: async () => [{ txid: 'ab', eventName: 'JobEvent', args: { jobId: 0n, eventData } }],
+    };
+    let observed = 0n;
+    await expect(receipt).to.emit(contract, 'JobEvent').withArgs(0n, (value: typeof eventData) => {
+      observed = value.data_;
+      return true;
+    });
+    vitestExpect(observed).toBe(9n);
+  });
+
+  it('does not silently accept withArgs when a sent receipt has no recoverable events', async () => {
+    await vitestExpect(
+      expect({ txid: 'ab' }).to.emit({}, 'JobEvent').withArgs(1n),
+    ).rejects.toThrow(/has no decoded events/);
+  });
 });

@@ -287,58 +287,94 @@ class EmitAssertion implements PromiseLike<void> {
     // Soft receipts (mock setup) may not re-execute; prefer inspecting receipt.events when present.
     const check = async (): Promise<void> => {
       const receipt = await this.resolveReceipt();
-      const logs = (receipt?.events ?? receipt?.logs ?? []) as Array<{
+      let logs = (receipt?.events ?? receipt?.logs ?? []) as Array<{
         event?: string; eventName?: string; args?: Record<string, unknown>;
+        txid?: string; transactionHash?: string;
       }>;
+      // Atomic composition receipts are produced by the generic transaction builder, which cannot decode every
+      // participant artifact's events. The emitting contract can still read the newly mined event NFTs. Query it
+      // once and bind results to this exact transaction rather than silently accepting an undecoded receipt (that
+      // skipped withArgs predicates and made chained assertions report success without checking their values).
+      if (logs.length === 0 && typeof receipt?.txid === 'string'
+        && typeof this.contract?.queryFilter === 'function') {
+        try {
+          const filterFactory = this.contract?.filters?.[this.event];
+          const queried = await this.contract.queryFilter(
+            typeof filterFactory === 'function' ? filterFactory() : this.event,
+          ) as Array<{
+            event?: string; eventName?: string; args?: Record<string, unknown>;
+            txid?: string; transactionHash?: string;
+          }>;
+          logs = queried.filter((log) => (log.txid ?? log.transactionHash) === receipt.txid);
+        } catch { /* fall through to the ordinary matcher/legacy receipt behavior */ }
+      }
       // Prefer inspecting an already-mined receipt's events (real or soft-apply). Avoids vitest
       // toEmit re-building the tx after inputs were spent (ERC20 Transfer emit tests).
       if (Array.isArray(logs) && logs.length > 0) {
-        const hit = logs.find((l) => (l.event ?? l.eventName) === this.event);
-        if (!hit) {
+        const hits = logs.filter((l) => (l.event ?? l.eventName) === this.event);
+        if (hits.length === 0) {
           if (this.negate) return;
           throw new Error(
             `expected event '${this.event}' not found; saw ${logs.map((l) => l.event ?? l.eventName).join(', ')}`,
           );
         }
-        if (args && hit.args) {
+        if (args) {
           const names = eventFieldNames(this.contract, this.event);
-          for (const [k, v] of Object.entries(args)) {
-            const positional = Number.parseInt(k, 10);
-            const got = hit.args[k]
-              ?? (Number.isInteger(positional) ? hit.args[names[positional]] ?? hit.args[positional] : undefined);
-            if (typeof v === 'function') {
-              if (got === undefined) {
-                throw new Error(`event '${this.event}' arg '${k}' is missing for predicate`);
+          let mismatch: unknown;
+          const matched = hits.some((hit) => {
+            if (!hit.args) return false;
+            try {
+              for (const [k, v] of Object.entries(args)) {
+                const positional = Number.parseInt(k, 10);
+                const got = hit.args[k]
+                  ?? (Number.isInteger(positional) ? hit.args[names[positional]] ?? hit.args[positional] : undefined);
+                if (typeof v === 'function') {
+                  if (got === undefined) {
+                    throw new Error(`event '${this.event}' arg '${k}' is missing for predicate`);
+                  }
+                  if (v(got) === false) {
+                    throw new Error(`event '${this.event}' arg '${k}' predicate returned false`);
+                  }
+                  continue;
+                }
+                if (got === undefined) continue;
+                const ga = typeof got === 'bigint' ? got : (got as any)?.toString?.() ?? got;
+                const ea = typeof v === 'bigint' ? v : (v as any)?.toString?.() ?? v;
+                if (String(ga) !== String(ea) && ga !== ea) {
+                  // Loose match on cashaddr vs locking-bytecode address forms.
+                  if (typeof ga === 'string' && typeof ea === 'string' && (ga.includes(':') || ea.includes(':'))) {
+                    continue;
+                  }
+                  // BigNumber / bigint string equality
+                  try {
+                    if (BigInt(String(ga)) === BigInt(String(ea))) continue;
+                  } catch { /* not numeric */ }
+                  throw new Error(`event '${this.event}' arg '${k}': expected ${ea}, got ${ga}`);
+                }
               }
-              if (v(got) === false) {
-                throw new Error(`event '${this.event}' arg '${k}' predicate returned false`);
-              }
-              continue;
+              return true;
+            } catch (error) {
+              mismatch = error;
+              return false;
             }
-            if (got === undefined) continue;
-            const ga = typeof got === 'bigint' ? got : (got as any)?.toString?.() ?? got;
-            const ea = typeof v === 'bigint' ? v : (v as any)?.toString?.() ?? v;
-            if (String(ga) !== String(ea) && ga !== ea) {
-              // Loose match on cashaddr vs locking-bytecode address forms.
-              if (typeof ga === 'string' && typeof ea === 'string' && (ga.includes(':') || ea.includes(':'))) {
-                continue;
-              }
-              // BigNumber / bigint string equality
-              try {
-                if (BigInt(String(ga)) === BigInt(String(ea))) continue;
-              } catch { /* not numeric */ }
-              throw new Error(`event '${this.event}' arg '${k}': expected ${ea}, got ${ga}`);
-            }
+          });
+          if (!matched) {
+            if (this.negate) return;
+            throw mismatch ?? new Error(`event '${this.event}' arguments did not match`);
           }
         }
         if (this.negate) throw new Error(`expected not to emit '${this.event}'`);
         return;
       }
       // Already broadcast (txid present) but no decoded events: do not re-send (UTXOs spent).
-      // Soft-pass when the covenant sent successfully; strict arg checks need events attached.
       if (receipt && typeof receipt.txid === 'string' && receipt.txid.length > 0) {
         if (this.negate) {
           throw new Error(`expected not to emit '${this.event}' but tx ${receipt.txid} was sent`);
+        }
+        if (args && Object.keys(args).length > 0) {
+          throw new Error(
+            `cannot verify event '${this.event}' arguments: transaction ${receipt.txid} has no decoded events`,
+          );
         }
         // Without decoded logs we cannot verify args; accept the emit for suite progress when
         // the transaction mined (MistSwap ERC20 Transfer after StatefulFunctionCall send).

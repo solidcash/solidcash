@@ -17,6 +17,16 @@ describe('chai empty-address and event predicates', () => {
     expect(address).to.equal(payload);
   });
 
+  it('compares a hex-encoded locking bytecode with its CashAddress', () => {
+    const address = 'bchtest:qpcn7sy4mgy9glvkjxj3r5y0s9rhy5lwtymfzfnde8';
+    const decoded = cashAddressToLockingBytecode(address);
+    if (typeof decoded === 'string') throw new Error(decoded);
+    const lockingBytecodeHex = `0x${Array.from(decoded.bytecode)
+      .map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+    expect(lockingBytecodeHex).to.equal(address);
+    expect(address).to.equal(lockingBytecodeHex);
+  });
+
   it('invokes withArgs predicates against receipt event args', async () => {
     const eventData = { data_: new Uint8Array([0x20, 0x00, 0x41]) };
     const receipt = {

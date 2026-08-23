@@ -26,8 +26,17 @@ function isEmptyAddress(value: unknown): boolean {
 
 function normalizeAddressPair(actual: any, expected: any): [any, any] {
   if (isEmptyAddress(actual) && isEmptyAddress(expected)) return ['', ''];
-  const isBytes = (x: any): x is Uint8Array => x instanceof Uint8Array;
   const isCashAddr = (x: any): x is string => typeof x === 'string' && /^(bitcoincash|bchtest|bchreg):[0-9a-z]+$/.test(x);
+  const addressBytes = (x: any): Uint8Array | undefined => {
+    if (x instanceof Uint8Array) return x;
+    if (typeof x !== 'string' || !/^0x(?:[0-9a-fA-F]{2})+$/.test(x)) return undefined;
+    const hex = x.slice(2);
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let index = 0; index < bytes.length; index++) {
+      bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+    }
+    return bytes;
+  };
   const decode = (addr: string): Uint8Array | null => {
     const r = cashAddressToLockingBytecode(addr);
     return typeof r === 'string' ? null : r.bytecode;
@@ -48,13 +57,19 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
     }
     return undefined;
   };
-  if (isBytes(actual) && isCashAddr(expected)) {
+  const actualBytes = addressBytes(actual);
+  const expectedBytes = addressBytes(expected);
+  if (actualBytes && isCashAddr(expected)) {
     const lockingBytecode = decode(expected);
-    if (lockingBytecode) return [binToHex(actual), binToHex(payload(lockingBytecode, actual.length) ?? lockingBytecode)];
+    if (lockingBytecode) {
+      return [binToHex(actualBytes), binToHex(payload(lockingBytecode, actualBytes.length) ?? lockingBytecode)];
+    }
   }
-  if (isCashAddr(actual) && isBytes(expected)) {
+  if (isCashAddr(actual) && expectedBytes) {
     const lockingBytecode = decode(actual);
-    if (lockingBytecode) return [binToHex(payload(lockingBytecode, expected.length) ?? lockingBytecode), binToHex(expected)];
+    if (lockingBytecode) {
+      return [binToHex(payload(lockingBytecode, expectedBytes.length) ?? lockingBytecode), binToHex(expectedBytes)];
+    }
   }
   return [actual, expected];
 }

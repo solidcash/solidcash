@@ -834,6 +834,35 @@ function isLockingBytecode(bytes: Uint8Array): boolean {
       && bytes[2] === 0x14 && bytes[23] === 0x88 && bytes[24] === 0xac);
 }
 
+function addressArgumentLockingBytecodeHex(value: FunctionArgument | undefined): string | undefined {
+  let bytes: Uint8Array | undefined;
+  if (value instanceof Uint8Array) bytes = value;
+  else if (typeof value === 'string') {
+    try {
+      bytes = value.includes(':')
+        ? addressToLockScript(value)
+        : hexToBin(value.replace(/^0x/i, ''));
+    } catch { return undefined; }
+  }
+  return bytes && isLockingBytecode(bytes) ? binToHex(bytes) : undefined;
+}
+
+function externalCallTargetArgumentLockingBytecodeHex(
+  owner: AbiFunction,
+  slot: number,
+  visibleArgs: readonly FunctionArgument[],
+): string | undefined {
+  const call = owner.externalCalls?.[slot];
+  if (!call) return undefined;
+  const inputs = owner.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  const index = call.addressSource?.kind === 'forward'
+    ? call.addressSource.paramIndex
+    : call.addressParam === undefined ? undefined
+      : inputs.findIndex((input) => input.name === call.addressParam);
+  return index === undefined || index < 0
+    ? undefined : addressArgumentLockingBytecodeHex(visibleArgs[index]);
+}
+
 /** JobEventData.address_ is packed address locking bytecode (p2sh20=23, p2pkh=25, p2sh32=35). */
 function normalizeJobEventAddresses(
   decoded: unknown, type: string, structs: Artifact['structs'],
@@ -12927,15 +12956,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Move ABI lookup FIRST so we can determine if full state is needed
     const abiFunction = overrides?.abiFunction
       ?? this.inner.artifact.abi.find((f) => f.name === functionName);
+    if (abiFunction) {
+      const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
+      const externalTargetParams = new Set((abiFunction.externalCalls ?? []).flatMap((call) => {
+        if (call.addressSource?.kind === 'forward' && call.addressSource.paramIndex !== undefined) {
+          return [call.addressSource.paramIndex];
+        }
+        const index = call.addressParam
+          ? visibleInputs.findIndex((input) => input.name === call.addressParam) : -1;
+        return index >= 0 ? [index] : [];
+      }));
+      args = args.map((arg, index) => {
+        if (visibleInputs[index]?.type !== 'address' || typeof arg !== 'string'
+          || externalTargetParams.has(index)) return arg;
+        const deployment = findDeploymentByAddress(this.inner.provider, arg);
+        return deployment?.lockingBytecode ? hexToBin(deployment.lockingBytecode) : arg;
+      });
+    }
     const registeredSelf = findDeploymentByAddress(this.inner.provider, this.target);
     const executionSelfAddress = hexToBin(
       registeredSelf ? registeredExecutionLockingBytecode(registeredSelf) ?? this.inner.lockingBytecode
         : this.inner.lockingBytecode,
     );
-    // Keep execution identity and public caller identity distinct. address(this) expressions use the exact active
-    // input bytecode above; callees observing msg.sender use a CREATE/proxy's stable SCID-backed address.
-    const publicSelfAddress = this._logicalAddress
-      ? addressToLockScript(this._logicalAddress) : executionSelfAddress;
+    // A delegate's address(this) is the active implementation input above. A downstream callee's msg.sender is
+    // the authenticated calling master (the proxy/state holder). Logical CREATE/SCID addresses remain SDK lookup
+    // handles and must not leak into covenant arguments or sorted-map keys.
+    const publicSelfAddress = registeredSelf?.lockingBytecode
+      ? hexToBin(registeredSelf.lockingBytecode) : executionSelfAddress;
     const requiredNftIndices = abiFunction?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
 
@@ -16542,7 +16589,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const spentLock = spentUnlocker
             ? binToHex(spentUnlocker.generateLockingBytecode())
             : callee!.inner.lockingBytecode;
-          if (logicalLbc !== spentLock) {
+          const directArgument = externalCallTargetArgumentLockingBytecodeHex(abiFunction, i, args) === spentLock;
+          if (!directArgument && logicalLbc !== spentLock) {
             const bandKey = logicalIdentityBandKey(logicalAddress);
             band = identityAnchorBandByAddress.get(bandKey);
             if (band === undefined) {
@@ -16776,12 +16824,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return pending;
     };
     const resolveNestedIdentityAnchorBands = async (
-      inputs: readonly { name: string }[],
+      ownerFunction: AbiFunction,
+      visibleArgs: readonly FunctionArgument[],
       groupIndexForSlot: (slot: number) => number | undefined,
     ): Promise<{ anchorBandBySlot: Map<number, number>; proxyAnchorSlots: Set<number> }> => {
       const anchorBandBySlot = new Map<number, number>();
       const proxyAnchorSlots = new Set<number>();
-      for (const input of inputs) {
+      for (const input of ownerFunction.inputs) {
         const witness = input.name.match(/^__internal__extcallAnchorIdx(\d+)$/);
         if (!witness) continue;
         const slot = Number(witness[1]);
@@ -16797,6 +16846,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const spentLock = spentUnlocker
           ? binToHex(spentUnlocker.generateLockingBytecode())
           : callee!.inner.lockingBytecode;
+        // A source expression that already names the exact spent master needs no CREATE/SCID indirection. The
+        // hidden anchor witness exists for both physical and logical address values; select it only for the latter.
+        const sourceArgumentLock = externalCallTargetArgumentLockingBytecodeHex(ownerFunction, slot, visibleArgs);
+        if (sourceArgumentLock === spentLock) continue;
         // Direct identity is valid only when the spent master is locked at the Solidity-visible address.
         if (logicalLbc === spentLock) continue;
         const bandKey = logicalIdentityBandKey(logicalAddress);
@@ -17589,9 +17642,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
                 if (value !== undefined) {
                   const returnType = effectiveReturnFn.outputs![0].type;
-                  // The caller (this contract) decodes the return-event commitment. Match that framing,
-                  // not the callee's source language: a Solidity callee behind a proxy still publishes
-                  // pushdata `0x51` when the caller's bytecode was built without solidityImportCompat.
                   precomputedReturnCommitment = encodeExternalReturnValue(
                     value, returnType, returnStructs, calleeUsesSolidityAbi,
                   );
@@ -20189,7 +20239,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const {
           anchorBandBySlot: childAnchorBandBySlot,
           proxyAnchorSlots: childProxyAnchorSlots,
-        } = await resolveNestedIdentityAnchorBands(childFn.inputs, childNestedGroupIndexForSlot);
+        } = await resolveNestedIdentityAnchorBands(
+          childFn,
+          child.logicalFunctionArgs ?? child.functionArgs,
+          childNestedGroupIndexForSlot,
+        );
         const childAnchorFillPositions: {
           argIndex: number; name: string; band: number; proxyRoute: boolean;
         }[] = [];
@@ -20706,7 +20760,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // Resolve logical-to-physical identity once for every nested call shape. The absolute anchor input
           // index remains deferred until the builder has materialized all layout bands.
           const { anchorBandBySlot, proxyAnchorSlots } = await resolveNestedIdentityAnchorBands(
-            bFunc.inputs,
+            bFunc as AbiFunction,
+            visibleFunctionArgs,
             nestedGroupIndexForSlot,
           );
           const anchorFillPositions: {
@@ -22297,14 +22352,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         name: string; usesMsgSender?: boolean; externalCalls?: readonly { addressIsMsgSender?: boolean }[];
         entryAccesses?: readonly { keySources?: readonly { kind?: string }[] }[];
       };
-      const delegateUsesMsgSender = entryAbiFunction !== abiFunction && (() => {
-        const gFn = entryAbiFunction as DelegAbiFn;
+      const delegateUsesMsgSender = lowLevelCallUtxoGroups.some((group, groupIndex) => {
+        // A nested proxy implementation observes the immediate calling contract via its authenticated category.
+        // Only a delegate executing in this top-level call context falls back to tx.origin and therefore requires
+        // a native signer input. Inspect every such delegate, not only the subset promoted to entryAbiFunction
+        // because it happens to access a mapping.
+        if (nestedDelegateProxyGroupByLowLevel.has(groupIndex)) return false;
+        const gFn = (group.compilerRoute?.abiFunction
+          ?? (group.externalContract.inner.artifact.abi as readonly DelegAbiFn[])
+            .find((candidate) => candidate.name === group.functionName)) as DelegAbiFn | undefined;
+        if (!gFn) return false;
         const directUse = !!gFn.usesMsgSender && !(gFn.externalCalls ?? []).some((ec) => ec.addressIsMsgSender);
         // A msg.sender-KEYED mapping write in the delegate (users[msg.sender]=v) also needs the sender's native
         // P2PKH input so the covenant's emitTxOrigin resolves the on-chain key to the same address the SDK used.
-        const keyUse = (gFn.entryAccesses ?? []).some((ea) => (ea.keySources ?? []).some((ks) => ks.kind === 'msgSender'));
+        const keyUse = (gFn.entryAccesses ?? []).some((ea) => (ea.keySources ?? [])
+          .some((ks) => ks.kind === 'msgSender'));
         return directUse || keyUse;
-      })();
+      });
       timing('sender-delegate-scan');
       if (usesMsgSenderKey || usesTxOriginSender || delegateUsesMsgSender) neededFunders = Math.max(neededFunders, 1);
       const predictedBandWidth = Math.max(

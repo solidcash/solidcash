@@ -20,6 +20,7 @@ import { deriveLogicalCreateAddress } from './logical-identity.js';
 import {
   findDeploymentByAddress, registerDeployment,
 } from './deployment-registry.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -104,6 +105,17 @@ function toInitialState(initialState: ProxyInitialState | undefined, impl: Artif
   return out;
 }
 
+/** Resolve a registered Solidity-facing address to the locking bytecode the covenant stores and compares. */
+function registeredPhysicalLockingBytecode(
+  provider: NetworkProvider,
+  address: string,
+): Uint8Array | undefined {
+  const deployment = findDeploymentByAddress(provider, address);
+  if (!deployment) return undefined;
+  const physical = deployment.lockingBytecode;
+  return physical ? hexToBin(physical) : undefined;
+}
+
 // Executing an entire very-large delegate artifact merely to apply a conventional OZ initializer can overwhelm
 // a JavaScript VM even when a private mock network intentionally relaxes BCH's script limits. For that test-only
 // case, derive the initializer's direct assignments from its ABI names and seed well-known OZ bookkeeping slots.
@@ -148,7 +160,8 @@ function deriveLargeMockInitializerState(
     if (variable && index < initialState.length) {
       const value = initialState[index];
       seeded[stateName] = variable.type === 'address' && typeof value === 'string'
-        ? (value.includes(':') ? addressToLockScript(value) : hexToBin(value.replace(/^0x/, '')))
+        ? (registeredPhysicalLockingBytecode(provider, value)
+          ?? (value.includes(':') ? addressToLockScript(value) : hexToBin(value.replace(/^0x/, ''))))
         : value;
     }
   });
@@ -336,30 +349,28 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
       return index >= 0 ? [index] : [];
     }));
     const covenantArgs = implArgs.map((arg, index): FunctionArgument => {
-      if (!physicalTargetParams.has(index) || visibleInputs[index]?.type !== 'address' || typeof arg !== 'string') {
-        return arg;
-      }
+      if (visibleInputs[index]?.type !== 'address' || typeof arg !== 'string') return arg;
       const deployment = findDeploymentByAddress(this.proxy.inner.provider, arg);
       if (!deployment) return arg;
       const registered = deployment.contract as {
         _logicalAddress?: string;
         proxy?: StatefulContract & { _logicalAddress?: string };
       };
-      for (const call of abiFn.externalCalls ?? []) {
-        const sourceIndex = call.addressSource?.kind === 'forward' ? call.addressSource.paramIndex : undefined;
-        const namedIndex = call.addressParam
-          ? visibleInputs.findIndex((input) => input.name === call.addressParam) : -1;
-        if (sourceIndex === index || namedIndex === index) {
-          implSc._registerResolvedExternal(call.interfaceName, deployment.contract as StatefulContract);
+      if (physicalTargetParams.has(index)) {
+        for (const call of abiFn.externalCalls ?? []) {
+          const sourceIndex = call.addressSource?.kind === 'forward' ? call.addressSource.paramIndex : undefined;
+          const namedIndex = call.addressParam
+            ? visibleInputs.findIndex((input) => input.name === call.addressParam) : -1;
+          if (sourceIndex === index || namedIndex === index) {
+            implSc._registerResolvedExternal(call.interfaceName, deployment.contract as StatefulContract);
+          }
         }
+        // An external call to a CREATE-style deployment authenticates its immutable logical-identity anchor.
+        // Preserve that address only for the compiler-marked target parameter; ordinary address values use the
+        // physical locking bytecode, matching address(this), msg.sender, and on-chain address comparisons.
+        if (registered._logicalAddress || registered.proxy?._logicalAddress) return arg;
       }
-      // A CREATE-style deployment is authenticated by its immutable logical-identity anchor. Preserve the
-      // Solidity-visible address in calldata so the covenant can bind that anchor to the physical co-spent
-      // master. Replacing it with the physical P2SH bytecode while still supplying the anchor makes the two
-      // intentionally distinct identities compare equal and rejects every such call.
-      if (registered._logicalAddress || registered.proxy?._logicalAddress) return arg;
-      const physicalLockingBytecode = registered.proxy?.inner.lockingBytecode ?? deployment.lockingBytecode;
-      return physicalLockingBytecode ? hexToBin(physicalLockingBytecode) : arg;
+      return registeredPhysicalLockingBytecode(this.proxy.inner.provider, arg) ?? arg;
     });
     if (debugForward) console.error('proxy-forward-args', { implFunction });
     // Connect the proxy to the runner so the forwarded call carries the signer. Its native P2PKH input funds the
@@ -811,6 +822,12 @@ export async function deployProxy<TImpl extends Artifact>(
       }
       await initializerCall.send();
     }
+
+    // Mock chains do not run the production block-oracle keeper. Refresh only this completed deployment graph:
+    // doing it before the initializer would invalidate that transaction's authenticated state transition, while
+    // refreshing every registered deployment here makes unrelated contracts change out of band.
+    const { syncMockBlockOracleDeployment } = await import('../oracle/blockOracleUpdater.js');
+    await syncMockBlockOracleDeployment(proxy.inner.provider, { contract: handle });
 
     nonceReservation?.commit();
     return handle;

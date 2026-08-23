@@ -71,7 +71,6 @@ import {
   canApplyRepairedNftCommitment,
   isFixedStateRepairSlot,
   isForwardOutputOnlyRepairSlot,
-  isForwardStateRepairCoordinate,
   isOwnedStateRepairCoordinate,
   isRepairableNftOutput,
 } from './computed-output-repair.js';
@@ -160,9 +159,14 @@ export function groupOwnsInBlockReturnEvent(
       return abi?.writesState === true;
     });
   };
-  // Every state-writing logical callsite shares the in-block return NFT. Views
-  // (arbitratorRegistered, userRegistered, balanceOf) keep dedicated tails.
-  return writesState(child);
+  // A state-writing logical callsite owns the physical block's return slot. If a later writer is fused onto the
+  // same master, earlier views keep dedicated tails so they cannot read that writer's result. A standalone view
+  // has no competing writer: its physical representative owns the declared in-block slot.
+  if (writesState(child)) return true;
+  const hasWriter = groups.some((candidate, index) => (
+    (candidate.sharedGroupIndex ?? index) === physicalIdx && writesState(candidate)
+  ));
+  return !hasWriter && groupIdx === physicalIdx;
 }
 
 /** Writer groups share the fused in-block identity; views keep their own group index. */
@@ -13742,9 +13746,18 @@ export class StatefulTransactionBuilder {
         if ((!chunkShaped && !outlinedChunkPin) || layoutOwnedLock) return;
         const lockingBytecode = state.stack[state.stack.length - 2];
         const commitment = state.stack[state.stack.length - 4];
+        const output = outputIndex >= 0 && outputIndex < builder.outputs.length
+          ? builder.outputs[outputIndex] : undefined;
+        const repairCoordinate = isOwnedStateRepairCoordinate({
+          inputIndex,
+          outputIndex,
+          delegateOwnedFixedState: fixedStateSlots.has(outputIndex)
+            && delegateRepairOwnerCategory !== undefined
+            && output?.token?.category === delegateRepairOwnerCategory,
+        });
         if (lockingBytecode.length !== 35 || lockingBytecode[0] !== 0xaa || lockingBytecode[1] !== 0x20
           || lockingBytecode[34] !== 0x87 || commitment.length < 3 || commitment.length > 128
-          || !isForwardStateRepairCoordinate({ inputIndex, outputIndex })
+          || !repairCoordinate
           || outputIndex >= builder.outputs.length) return;
         repairs.set(outputIndex, {
           outputIndex, lockingBytecode, commitment,

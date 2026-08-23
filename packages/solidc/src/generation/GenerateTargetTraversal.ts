@@ -26924,88 +26924,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SPLIT, locationData);           // [physicalCaller, category, capability]
     this.emit(Op.OP_DROP, locationData);            // [physicalCaller, category]
 
-    // msg.sender is the authenticated public identity of the calling contract. Resolve the category's unique
-    // immutable SCID input when one exists and return that input's exact OP_UTXOBYTECODE. Native contracts have
-    // no SCID, so they retain the already-authenticated minting-master input bytecode. Neither branch reconstructs
-    // an address; source-level address(this) remains the active executing input's separate OP_UTXOBYTECODE.
-    this.emitMsgSenderIdentityAnchorVerification(locationData);
-  }
-
-  /** Prefer the unique SCID identity anchor over a native caller's authenticated physical bytecode. */
-  private emitMsgSenderIdentityAnchorVerification(locationData: SingleLocationData): void {
-    // [physicalCaller, category] -> [physicalCaller, category, sentinel, i]
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_BEGIN, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_TXINPUTCOUNT, locationData);
-    this.emit(Op.OP_LESSTHAN, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_INPUTINDEX, locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.emit(encodeInt(3n), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-    this.emit(encodeInt(4n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(new Uint8Array([0x53, 0x43, 0x49, 0x44]), locationData);
-    this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    this.emit(Op.OP_OVER, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_NOT, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_UTXOBYTECODE, locationData);
-    this.emit(Op.OP_ROT, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);
-
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_1ADD, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_UNTIL, locationData);
-
-    this.emit(Op.OP_DROP, locationData);            // [physicalCaller, category, identityAnchor]
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_DROP, locationData);            // [physicalCaller, identityAnchor]
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(Op.OP_0NOTEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_NIP, locationData);             // SCID-backed caller: [identityAnchor]
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_DROP, locationData);            // native caller: [physicalCaller]
-    this.emit(Op.OP_ENDIF, locationData);
+    // msg.sender is the exact locking bytecode of the authenticated calling contract's minting-master input.
+    // The category was only needed to find that input; do not substitute a logical identity anchor here.
+    this.emit(Op.OP_DROP, locationData);            // [physicalCaller]
   }
 
   // ===== Address Balance Loop Support =====

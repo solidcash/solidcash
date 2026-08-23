@@ -420,7 +420,10 @@ function replaceMockNftCommitment(
  * unmodified suites never start; this uses the same field mapping and the live data-NFT
  * commitments the covenant actually reads.
  */
-export async function syncMockBlockOracles(provider: NetworkProvider): Promise<number> {
+async function syncMockBlockOracleDeployments(
+  provider: NetworkProvider,
+  deployments: Iterable<{ contract: unknown }>,
+): Promise<number> {
   const storage = (provider as { indexer?: { storage?: MockUtxoStorage } }).indexer?.storage;
   if (!storage?._test) return 0;
   const fields = await mockProviderBlockFields({
@@ -436,7 +439,7 @@ export async function syncMockBlockOracles(provider: NetworkProvider): Promise<n
     __block_coinbase: fields.coinbase,
   };
   let updated = 0;
-  for (const deployment of listDeployments(provider)) {
+  for (const deployment of deployments) {
     for (const target of oracleTargetsFromDeployment(deployment)) {
       const { contract, categoryId, layout } = target;
       const touched = layout.variables.filter((variable) => (
@@ -471,4 +474,16 @@ export async function syncMockBlockOracles(provider: NetworkProvider): Promise<n
     }
   }
   return updated;
+}
+
+/** Refresh only one freshly deployed contract graph (including proxy/implementation pairs). */
+export async function syncMockBlockOracleDeployment(
+  provider: NetworkProvider,
+  deployment: { contract: unknown },
+): Promise<number> {
+  return syncMockBlockOracleDeployments(provider, [deployment]);
+}
+
+export async function syncMockBlockOracles(provider: NetworkProvider): Promise<number> {
+  return syncMockBlockOracleDeployments(provider, listDeployments(provider));
 }

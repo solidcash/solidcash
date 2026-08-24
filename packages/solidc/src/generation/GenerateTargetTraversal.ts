@@ -20711,9 +20711,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitEntryCovenantVerification(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    const handlerManagedSlots = new Set(node.messageBusHandlerManagedEntrySlots ?? []);
 
     // 1. Verify output commitments for WRITTEN (non-deleted) entries
     for (const [slotIdx, writeInfo] of this.pendingEntryWrites) {
+      // Compiler-generated graph handlers settle these physical slots at the runtime operation site, where the
+      // handler knows whether a bounded loop actually reached the write. Repeating the transition in the outer
+      // aggregate route would turn an inactive capacity slot into an unconditional mutable-NFT output.
+      if (handlerManagedSlots.has(slotIdx)) continue;
       if (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIdx))) continue;
       // A pending write with no entry descriptor means the resource is not an entry NFT the journal can settle
       // (a state array element reached through a batch route is the known case). Silently skipping it would
@@ -20752,6 +20757,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 2. Verify output token category base matches master for written (non-deleted) entry outputs
     for (const [slotIdx] of this.pendingEntryWrites) {
+      if (handlerManagedSlots.has(slotIdx)) continue;
       if (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIdx))) continue;
       if (this.sortedWrittenCollections.has(this.entrySlots[slotIdx].collection)) continue;
       if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
@@ -20775,6 +20781,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 3. Verify output locking bytecode for WRITTEN (non-deleted) entry outputs
     // Construct the expected P2SH32 locking bytecode at runtime (same pattern as event verification)
     for (const [slotIdx] of this.pendingEntryWrites) {
+      if (handlerManagedSlots.has(slotIdx)) continue;
       if (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIdx))) continue;
       if (this.sortedWrittenCollections.has(this.entrySlots[slotIdx].collection)) continue;
       if (this.pendingEntryDeletes.has(slotIdx) || this.condDeleteSlots.has(slotIdx)) continue;
@@ -20823,7 +20830,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // True for a write slot marked alias-conditional (verified via a runtime key-inequality gate, not the main loops).
   private isAliasCondWrite(slotIdx: number): boolean {
     const entry = this.entrySlots[slotIdx];
-    return !this.sortedWrittenCollections.has(entry?.collection)
+    return !this.currentFunction.messageBusHandlerManagedEntrySlots?.includes(slotIdx)
+      && !this.sortedWrittenCollections.has(entry?.collection)
       && (entry?.aliasCondDeleteSlot !== undefined
         || (entry?.runtimeAliasPriorSlots?.length ?? 0) > 0)
       && this.pendingEntryWrites.has(slotIdx)
@@ -20930,6 +20938,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.condDeleteSlots.size === 0) return;
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     for (const slotIdx of this.condDeleteSlots) {
+      if (node.messageBusHandlerManagedEntrySlots?.includes(slotIdx)) continue;
       const writeInfo = this.pendingEntryWrites.get(slotIdx)!;
       this.emitSlotExistsCheck('entry', slotIdx, locationData);
       this.emit(Op.OP_IF, locationData);
@@ -26314,6 +26323,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
 
     for (let i = 0; i < this.entrySlots.length; i++) {
+      // An outlined message-bus handler owns the transition or preservation proof for this shared physical slot.
+      // The aggregate route cannot repeat it: inactive runtime rows intentionally leave the capacity slot empty.
+      if (node.messageBusHandlerManagedEntrySlots?.includes(i)) continue;
       // Skip written or deleted entries (handled by emitEntryCovenantVerification)
       if (this.pendingEntryWrites.has(i) || this.pendingEntryDeletes.has(i)) continue;
       // Loop-write entries are NEW (no input to preserve) and have no fixed block slot.

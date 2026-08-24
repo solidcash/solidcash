@@ -419,6 +419,29 @@ describe('delegate inference', () => {
       const baseOwnerDepth = readNumber(instructions[partialThenDynamicRead]);
       const dynamicOwnerDepth = readNumber(instructions[partialThenDynamicRead + 5]);
       expect(dynamicOwnerDepth).toBe(baseOwnerDepth! + 1n);
+
+      // Runtime mapping loops settle their active rows inside the outlined graph handler. The aggregate route
+      // reserves a fixed capacity slot for that handler, but an empty loop intentionally leaves it unfunded and
+      // without an output. It must not append an unconditional second transition covenant for the reserved slot.
+      expect(instructions.some((instruction) =>
+        instruction.opcode === OpcodesBCH.OP_OUTPUTTOKENCOMMITMENT)).toBe(true);
+      expect(instructions.some((instruction) =>
+        instruction.opcode === OpcodesBCH.OP_OUTPUTTOKENCATEGORY)).toBe(true);
+      const routeInstructions = decodeAuthenticationInstructions(hexToBin(
+        artifact.functionBodies?.[artifact.messageBus!.route!.selector]!,
+      ));
+      const entryOffset = artifact.messageBus?.route?.blockLayout?.slots
+        .find((slot) => slot.kind === 'entry')?.offset;
+      expect(entryOffset).toBeDefined();
+      const repeatsHandlerEntryTransition = routeInstructions.some((instruction, index) => (
+        instruction.opcode === OpcodesBCH.OP_DEPTH
+        && routeInstructions[index + 1]?.opcode === OpcodesBCH.OP_1SUB
+        && routeInstructions[index + 2]?.opcode === OpcodesBCH.OP_PICK
+        && readNumber(routeInstructions[index + 3]) === BigInt(entryOffset!)
+        && routeInstructions[index + 4]?.opcode === OpcodesBCH.OP_ADD
+        && routeInstructions[index + 5]?.opcode === OpcodesBCH.OP_OUTPUTTOKENCOMMITMENT
+      ));
+      expect(repeatsHandlerEntryTransition).toBe(false);
     } finally {
       warn.mockRestore();
       log.mockRestore();

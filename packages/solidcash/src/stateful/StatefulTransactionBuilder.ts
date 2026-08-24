@@ -9966,6 +9966,25 @@ export class StatefulTransactionBuilder {
   }
 
   build(): TransactionBuilder {
+    const buildTimingEnabled = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_BUILDER_TIMING === '1';
+    const buildStartedAt = Date.now();
+    let buildLastTimingAt = buildStartedAt;
+    const buildTiming = (stage: string, builder?: TransactionBuilder): void => {
+      if (!buildTimingEnabled) return;
+      const now = Date.now();
+      console.error('stb-build-timing', {
+        stage,
+        deltaMs: now - buildLastTimingAt,
+        totalMs: now - buildStartedAt,
+        inputs: builder?.inputs.length ?? this.allInputs.length,
+        outputs: builder?.outputs.length,
+        heapMb: Math.round(((globalThis as { process?: { memoryUsage?: () => { heapUsed: number } } })
+          .process?.memoryUsage?.().heapUsed ?? 0) / 1_048_576),
+      });
+      buildLastTimingAt = now;
+    };
+    buildTiming('start');
     if (this.emitReassertAllowed === undefined) {
       this.emitReassertAllowed = isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
     }
@@ -10066,9 +10085,11 @@ export class StatefulTransactionBuilder {
         });
       });
     }
+    buildTiming('delegate-output-bases');
     const builder = new CovenantTransactionBuilder(opts);
     let debugOutputFingerprint: string | undefined;
     const debugAtomicOutputStage = (stage: string): void => {
+      buildTiming(stage, builder);
       const debugOutputIndexRaw = (globalThis as {
         process?: { env?: Record<string, string> };
       }).process?.env?.SOLIDC_DEBUG_OUTPUT_INDEX;
@@ -10139,6 +10160,7 @@ export class StatefulTransactionBuilder {
       }
     };
     const debugOwnMutableOutputs = (stage: string): void => {
+      buildTiming(stage, builder);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_FAILURE_RING !== '1') return;
       console.error('builder-own-mutable-outputs', {
@@ -10299,6 +10321,7 @@ export class StatefulTransactionBuilder {
     // Co-spend the external-library side-car as the LAST input (the covenant's library loader reads it via
     // OP_INPUTBYTECODE of the last input). Present in derivation probes and the final tx alike.
     if (this.sidecarUtxo) builder.addInputs([this.sidecarUtxo]);
+    buildTiming('inputs-registered', builder);
 
     // Read current state from the provided data NFT commitments
     const currentState: Record<
@@ -10514,6 +10537,7 @@ export class StatefulTransactionBuilder {
         });
       }
     }
+    buildTiming('root-and-front-outputs', builder);
 
     // A delegate implementation must occupy the same absolute output index as its input: its covenant binds
     // that input directly after the proxy master/data region and self-preserves at OP_INPUTINDEX. Nested callees

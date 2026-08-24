@@ -143,6 +143,42 @@ describe('X57 opcode observer survives providers without consensusLimits', () =>
     expect(seen).toEqual([Op.OP_EQUALVERIFY]);
   });
 
+  it('keeps stock push-only semantics on the relaxed zero-copy VM path', () => {
+    const cases = [
+      Uint8Array.of(Op.OP_1),
+      Uint8Array.of(0x50), // OP_RESERVED is push-only, though execution rejects it.
+      Uint8Array.of(Op.OP_1, Op.OP_1, Op.OP_ADD),
+      Uint8Array.of(0x4c), // truncated OP_PUSHDATA1
+    ];
+    for (const unlocking of cases) {
+      const program = buildProgram([{ unlocking, locking: Uint8Array.of(Op.OP_1) }]);
+      const expected = createVirtualMachineBch2026().evaluate(program) as { error?: string; stack: Uint8Array[] };
+      const actual = createVirtualMachineBch2026ForProvider(new MockNetworkProvider())
+        .evaluate(program) as { error?: string; stack: Uint8Array[] };
+      expect(actual.error).toEqual(expected.error);
+      expect(actual.stack).toEqual(expected.stack);
+    }
+  });
+
+  it('keeps stock OP_INVOKE semantics when decoded function bodies are reused', () => {
+    const functionBody = Uint8Array.of(Op.OP_1);
+    const locking = Uint8Array.of(
+      functionBody.length, ...functionBody,
+      Op.OP_0, Op.OP_DEFINE,
+      Op.OP_0, Op.OP_INVOKE,
+    );
+    const program = buildProgram([{ unlocking: Uint8Array.of(), locking }]);
+    const stock = createVirtualMachineBch2026();
+    const cached = createVirtualMachineBch2026ForProvider(new MockNetworkProvider());
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const expected = stock.evaluate(program) as { error?: string; stack: Uint8Array[] };
+      const actual = cached.evaluate(program) as { error?: string; stack: Uint8Array[] };
+      expect(actual.error).toEqual(expected.error);
+      expect(actual.stack).toEqual(expected.stack);
+    }
+  });
+
   // GUARD: the two paths must stay distinct. A limits-less provider must keep REAL consensus limits, and a
   // relaxed mock must keep its relaxed ones - even now that both build the VM the same way.
   it('keeps real consensus limits for limits-less providers and relaxed limits for the mock', () => {

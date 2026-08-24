@@ -1,11 +1,12 @@
 import {
   applyError, authenticationInstructionsAreMalformed, AuthenticationErrorCommon, binToHex,
   conditionallyEvaluate, createVirtualMachine, createVirtualMachineBch2026, decodeAuthenticationInstructions,
-  disassembleAuthenticationInstructionMalformed, isPayToScriptHash20, isPayToScriptHash32, isPushOnly,
+  disassembleAuthenticationInstructionMalformed, isPayToScriptHash20, isPayToScriptHash32,
   isWitnessProgram, pushToStackChecked, pushToStackVmNumber, ripemd160, secp256k1, sha1, sha256,
   stackItemIsTruthy, useTransactionOutput, useTransactionUtxo,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
+import { AuthenticationErrorBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-errors.js';
 import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
 import { OpcodesBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import type NetworkProvider from './NetworkProvider.js';
@@ -123,7 +124,11 @@ function installCachedP2shEvaluator(
         )}.`,
       );
     }
-    if (!isPushOnly(unlockingBytecode)) {
+    // `unlockingInstructions` was decoded above without copying pushed data. Re-decoding here through libauth's
+    // `isPushOnly` would allocate a second instruction graph and copy every push, defeating that optimization for
+    // multi-megabyte private-network inputs. Malformed pushes have already been rejected, so opcode inspection is
+    // exactly the remaining `CScript::IsPushOnly` check (OP_RESERVED through OP_16 are push-type opcodes too).
+    if (!unlockingInstructions.every(({ opcode }) => opcode <= OpcodesBch2026.OP_16)) {
       return applyError(initialState, AuthenticationErrorCommon.requiresPushOnly);
     }
     if (lockingBytecode.length > maximumBytecodeLength) {
@@ -225,6 +230,49 @@ function installCachedP2shEvaluator(
   };
 }
 
+/** Cache immutable OP_DEFINE bodies instead of decoding and copying their pushes at every OP_INVOKE. */
+function installCachedInvokeEvaluator(
+  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
+): void {
+  type State = Parameters<(typeof instructionSet.operations)[number]>[0];
+  const decodedFunctions = new WeakMap<Uint8Array, DecodedInstructions>();
+  instructionSet.operations[OpcodesBch2026.OP_INVOKE] = conditionallyEvaluate((state: State) => {
+    const functionIdentifier = state.stack.pop();
+    if (functionIdentifier === undefined) {
+      return applyError(state, AuthenticationErrorCommon.emptyStack);
+    }
+    const functionTableKey = binToHex(functionIdentifier);
+    const functionBody = state.functionTable[functionTableKey];
+    if (functionBody === undefined) {
+      return applyError(
+        state,
+        AuthenticationErrorBch2026.functionIdentifierUndefined,
+        `Function identifier: 0x${functionTableKey}.`,
+      );
+    }
+    let instructions = decodedFunctions.get(functionBody);
+    if (instructions === undefined) {
+      instructions = decodeAuthenticationInstructionViews(functionBody);
+      decodedFunctions.set(functionBody, instructions);
+    }
+    if (authenticationInstructionsAreMalformed(instructions)) {
+      return applyError(
+        state,
+        AuthenticationErrorBch2026.malformedFunction,
+        `Malformed instruction: ${disassembleAuthenticationInstructionMalformed(
+          OpcodesBch2026,
+          (instructions[instructions.length - 1]! as
+            Parameters<typeof disassembleAuthenticationInstructionMalformed>[1]),
+        )}.`,
+      );
+    }
+    state.controlStack.push({ instructions: state.instructions, ip: state.ip + 1 });
+    state.ip = -1;
+    state.instructions = instructions;
+    return state;
+  });
+}
+
 /**
  * Build the SDK's probe VM with the active private-network limits, if any.
  *
@@ -291,6 +339,7 @@ export function createVirtualMachineBch2026ForProvider(
   } as never);
   if (limits !== undefined && limits.maximumInputBytes > 10_000) {
     installCachedP2shEvaluator(instructionSet, provider!, limits.maximumInputBytes);
+    installCachedInvokeEvaluator(instructionSet);
   }
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
   if (limits !== undefined) {

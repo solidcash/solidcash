@@ -407,16 +407,17 @@ describe('delegate inference', () => {
         readNumber(instruction) !== undefined
         && instructions[index + 1]?.opcode === OpcodesBCH.OP_PICK
         && readNumber(instructions[index + 2]) !== undefined
-        && instructions[index + 3]?.opcode === OpcodesBCH.OP_ADD
-        && readNumber(instructions[index + 4]) !== undefined
-        && instructions[index + 5]?.opcode === OpcodesBCH.OP_PICK
-        && instructions[index + 6]?.opcode === OpcodesBCH.OP_1
-        && instructions[index + 7]?.opcode === OpcodesBCH.OP_ADD
-        && instructions[index + 8]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
+        && instructions[index + 3]?.opcode === OpcodesBCH.OP_PICK
+        && instructions[index + 4]?.opcode === OpcodesBCH.OP_ADD
+        && readNumber(instructions[index + 5]) !== undefined
+        && instructions[index + 6]?.opcode === OpcodesBCH.OP_PICK
+        && instructions[index + 7]?.opcode === OpcodesBCH.OP_1
+        && instructions[index + 8]?.opcode === OpcodesBCH.OP_ADD
+        && instructions[index + 9]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
       ));
       expect(partialThenDynamicRead).toBeGreaterThanOrEqual(0);
       const baseOwnerDepth = readNumber(instructions[partialThenDynamicRead]);
-      const dynamicOwnerDepth = readNumber(instructions[partialThenDynamicRead + 4]);
+      const dynamicOwnerDepth = readNumber(instructions[partialThenDynamicRead + 5]);
       expect(dynamicOwnerDepth).toBe(baseOwnerDepth! + 1n);
     } finally {
       warn.mockRestore();

@@ -2150,9 +2150,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Compiler-generated message-bus handlers consume this hidden parameter during block-slot code generation,
     // rather than through a source-level IdentifierNode. Record that real backend use in the symbol table so it
     // is neither reported as unused nor mistaken for an unreferenced caller-supplied value.
-    if (node.parameters.some((parameter) => parameter.name === '__internal__messageBusOwnerInput')) {
-      const owner = this.symbolTables[0].get('__internal__messageBusOwnerInput');
-      if (owner) owner.references.push({ name: '__internal__messageBusOwnerInput' } as IdentifierNode);
+    for (const backendParameter of ['__internal__messageBusOwnerInput', '__internal__graphBlockSize']) {
+      if (!node.parameters.some((parameter) => parameter.name === backendParameter)) continue;
+      const symbol = this.symbolTables[0].get(backendParameter);
+      if (symbol) symbol.references.push({ name: backendParameter } as IdentifierNode);
     }
     Object.defineProperty(node, 'hasStatefulOperation', {
       value: bodySurvey.hasStatefulOperation, writable: true, configurable: true,

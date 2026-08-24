@@ -568,6 +568,7 @@ const MESSAGE_BUS_CLONE_PREFIXES = [
  * explicitly rather than letting an internal OP_INVOKE body infer it from OP_INPUTINDEX.
  */
 const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
+const MESSAGE_BUS_BLOCK_SIZE = '__internal__graphBlockSize';
 
 const withinSpan = (location: Location, point: Point): boolean => {
   const after = point.line > location.start.line
@@ -3744,11 +3745,21 @@ function synthesizeMessageBusRoute(
   // active input; delegated routes authenticate a separate proxy master. Make that distinction an ordinary hidden
   // argument of the generated handler so all block-slot consumers (state, entries, trailing data and compute
   // side-cars) share one basis. This is deliberately route-wide rather than keyed to any handler or operation.
+  // Outgoing graph edges imply graph execution, but a composed leaf can also receive rows from multiple logical
+  // parents. In that case the caller stream is the only sound source of msg.sender for each row. Keep this
+  // explicit so standalone graph-free batching retains its smaller single-caller route.
+  const graphExecutionContext = graphTailHandlers.size > 0 || !!compilerOptions.messageBusGraphContext;
   const routeOwnedCloneNames = new Set(contract.functions
     .filter((candidate) => MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix)))
     .map((candidate) => candidate.name));
   for (const handler of contract.functions) {
     if (!routeOwnedCloneNames.has(handler.name)) continue;
+    if (graphExecutionContext
+      && !handler.parameters.some((parameter) => parameter.name === MESSAGE_BUS_BLOCK_SIZE)) {
+      handler.parameters.push(Object.assign(
+        new ParameterNode(PrimitiveType.BIGINT, MESSAGE_BUS_BLOCK_SIZE), { location: handler.location },
+      ));
+    }
     if (handler.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) continue;
     handler.parameters.push(Object.assign(
       new ParameterNode(PrimitiveType.BIGINT, MESSAGE_BUS_OWNER_INPUT), { location: handler.location },
@@ -3804,7 +3815,9 @@ function synthesizeMessageBusRoute(
       const entryKeyArguments = (handler: FunctionDefinitionNode): string[] =>
         (handlerEntryKeys.get(handler) ?? []).map(({ base, perRow }) =>
           (perRow ? `${base}_r${rowIndex}` : base));
-      const ownerContextArgs = routeOwnedCloneNames.has(invokeName) ? [routeOwnerInputExpression] : [];
+      const ownerContextArgs = routeOwnedCloneNames.has(invokeName)
+        ? [...(graphExecutionContext ? [MESSAGE_BUS_BLOCK_SIZE] : []), routeOwnerInputExpression]
+        : [];
       if (fn.parameters.length === 0) {
         const logicalCaller = graphExecutionContext ? '__message_bus_graph_caller' : 'msg.sender';
         const selectedIsClone = invokeName !== fn.name;
@@ -4025,10 +4038,6 @@ function synthesizeMessageBusRoute(
         ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
           `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
         : []));
-  // Outgoing graph edges imply graph execution, but a composed leaf can also receive rows from multiple logical
-  // parents. In that case the caller stream is the only sound source of msg.sender for each row. Keep this
-  // explicit so standalone graph-free batching retains its smaller single-caller route.
-  const graphExecutionContext = graphTailHandlers.size > 0 || !!compilerOptions.messageBusGraphContext;
   const resourceVerificationMode = eligible.some((fn) => {
     const footprint = eligibleFootprint(fn);
     return footprint.reads.length > 0 || footprint.writes.length > 0;
@@ -4047,7 +4056,7 @@ function synthesizeMessageBusRoute(
   });
   const graphRouteParameters = !graphExecutionContext ? [] : [
     'bigint __internal__graphFixedSize',
-    'bigint __internal__graphBlockSize',
+    `bigint ${MESSAGE_BUS_BLOCK_SIZE}`,
     'bytes __internal__graphEmissions',
     'bytes __internal__graphCallers',
     'bigint __internal__graphSettlementBoundary',

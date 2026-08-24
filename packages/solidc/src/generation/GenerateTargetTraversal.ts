@@ -4670,11 +4670,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMNOTEQUAL, loc); // [idx, bool]
       this.emit(Op.OP_VERIFY, loc);      // [idx]
 
-      // Every delegate executor immediately follows the proxy's master/data-NFT region. A compiler-owned
-      // message-bus route can reserve a much wider participant block, but that capacity follows the executor;
-      // using the route block size here turns the authenticated proxy index negative for wide aggregate routes.
+      // Ordinary delegate executors immediately follow the proxy's master/data-NFT region. A compiler-owned
+      // message-bus route instead places its executor at the end of the complete published owner block. Bind the
+      // witness to that compiler-authored offset so a route cannot execute from an arbitrary interior input.
       this.emit(Op.OP_INPUTINDEX, loc);
-      this.emit(encodeInt(BigInt(1 + this.dataNftCount)), loc);
+      this.emit(encodeInt(BigInt(this.isCompilerMessageBusRoute(node)
+        ? node.blockLayout?.blockSize ?? (1 + this.dataNftCount)
+        : 1 + this.dataNftCount)), loc);
       this.emit(Op.OP_SUB, loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }

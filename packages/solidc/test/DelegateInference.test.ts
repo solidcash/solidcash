@@ -322,6 +322,12 @@ describe('delegate inference', () => {
         && route[index + 3]?.opcode === OpcodesBCH.OP_PICK
         && route[index + 4]?.opcode === OpcodesBCH.OP_UTXOTOKENCATEGORY)).toBe(true);
       const blockSize = artifact.messageBus!.route!.blockLayout!.blockSize;
+      // The delegated route executor sits at the compiler-published owner-block boundary. Its entry covenant
+      // binds the proxy witness to that exact offset; ordinary delegates retain their compact data-NFT distance.
+      expect(route.some((instruction, index) => instruction.opcode === OpcodesBCH.OP_INPUTINDEX
+        && readNumber(route[index + 1]) === BigInt(blockSize)
+        && route[index + 2]?.opcode === OpcodesBCH.OP_SUB
+        && route[index + 3]?.opcode === OpcodesBCH.OP_NUMEQUALVERIFY)).toBe(true);
       expect(route.some((instruction, index) => instruction.opcode === OpcodesBCH.OP_INPUTINDEX
         && readNumber(route[index + 1]) === BigInt(blockSize)
         && route[index + 2]?.opcode === OpcodesBCH.OP_SUB

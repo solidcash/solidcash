@@ -4670,13 +4670,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMNOTEQUAL, loc); // [idx, bool]
       this.emit(Op.OP_VERIFY, loc);      // [idx]
 
-      // Direct delegates immediately follow the proxy's master/data-NFT region. A compiler-owned message-bus
-      // route instead owns one complete fixed-width proxy block, with its executor at the published block
-      // boundary. Bind the explicit ABI witness to the appropriate compiler-authored distance in both cases.
+      // Every delegate executor immediately follows the proxy's master/data-NFT region. A compiler-owned
+      // message-bus route can reserve a much wider participant block, but that capacity follows the executor;
+      // using the route block size here turns the authenticated proxy index negative for wide aggregate routes.
       this.emit(Op.OP_INPUTINDEX, loc);
-      this.emit(encodeInt(BigInt(this.isCompilerMessageBusRoute(node)
-        ? node.blockLayout?.blockSize ?? (1 + this.dataNftCount)
-        : 1 + this.dataNftCount)), loc);
+      this.emit(encodeInt(BigInt(1 + this.dataNftCount)), loc);
       this.emit(Op.OP_SUB, loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
@@ -24914,19 +24912,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     } else if (this.usesProxyStateBlockBase()) {
       if (!this.isDefineSubTraversal) {
-        // A physical delegate entry authenticates this relation at entry (see the delegate preflight above).
-        // Re-derive the master from the compiler-authored input layout: an ordinary delegate follows the proxy's
-        // master/data region, while an aggregate route follows its complete fixed-width participant block. Unlike
-        // either a top or bottom stack ordinal, this remains valid after an epilogue leaves temporaries on the data
-        // stack. Invoked handlers use their explicit local frame witness below because OP_INPUTINDEX still names
-        // the physical caller rather than the handler's logical owner.
-        this.emit(Op.OP_INPUTINDEX, locationData);
-        this.emit(encodeInt(BigInt(
-          this.currentFunctionIsMessageBusRoute
-            ? this.currentFunction.blockLayout?.blockSize ?? (1 + this.dataNftCount)
-            : 1 + this.dataNftCount,
-        )), locationData);
-        this.emit(Op.OP_SUB, locationData);
+        if (this.isCompilerMessageBusRoute()) {
+          // The route entry authenticated this owner witness before executing any handler. Its aggregate frame can
+          // leave runtime-only operands above the tracked ABI values, so recover the witness by stable bottom
+          // ordinal rather than guessing a physical distance from the executor's active input.
+          this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
+        } else {
+          // Ordinary delegate executors have the compact physical relation authenticated at entry.
+          this.emit(Op.OP_INPUTINDEX, locationData);
+          this.emit(encodeInt(BigInt(1 + this.dataNftCount)), locationData);
+          this.emit(Op.OP_SUB, locationData);
+        }
       } else {
         // Compiler-invoked handlers have a locally tracked call frame.
         const proxyIndex = this.getStackIndex('__internal__proxyMasterIndex') + extraStackOffset;

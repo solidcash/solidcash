@@ -314,6 +314,18 @@ describe('delegate inference', () => {
         && route[index + 3]?.opcode === OpcodesBCH.OP_PICK
         && route[index + 4]?.opcode === OpcodesBCH.OP_SIZE
         && route[index + 5]?.opcode === OpcodesBCH.OP_NIP)).toBe(true);
+      // The route executes before its full reserved participant capacity. State reads use the authenticated proxy
+      // witness from the stable ABI frame, never INPUTINDEX - blockSize (which is negative for a wide route).
+      expect(route.some((instruction, index) => instruction.opcode === OpcodesBCH.OP_DEPTH
+        && readNumber(route[index + 1]) !== undefined
+        && route[index + 2]?.opcode === OpcodesBCH.OP_SUB
+        && route[index + 3]?.opcode === OpcodesBCH.OP_PICK
+        && route[index + 4]?.opcode === OpcodesBCH.OP_UTXOTOKENCATEGORY)).toBe(true);
+      const blockSize = artifact.messageBus!.route!.blockLayout!.blockSize;
+      expect(route.some((instruction, index) => instruction.opcode === OpcodesBCH.OP_INPUTINDEX
+        && readNumber(route[index + 1]) === BigInt(blockSize)
+        && route[index + 2]?.opcode === OpcodesBCH.OP_SUB
+        && route[index + 3]?.opcode === OpcodesBCH.OP_UTXOTOKENCATEGORY)).toBe(false);
       // A legacy delegate owns the transaction suffix, but a compiler route owns a balanced participant block.
       // Reject the legacy `TXOUTPUTCOUNT - 1 - ceil(size/120)` dynamic-write anchor in that routed body.
       const suffixAnchoredWrite = route.some((instruction, index) =>

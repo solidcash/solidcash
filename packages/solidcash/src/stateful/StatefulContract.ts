@@ -2723,7 +2723,12 @@ function cachedProbeVm(provider: NetworkProvider, relaxOutputVerifications = fal
       // fails the EQUALVERIFY following OP_INPUTBYTECODE so its runtime preimage can be learned; suppressing that
       // bind would change execution semantics and could skip over the call the next iteration must resolve.
       if (opcode !== Op.OP_EQUALVERIFY) cached.relaxNextVerification = opcode !== Op.OP_INPUTBYTECODE;
-      cached.awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
+      // OP_INPUTBYTECODE is observed before execution because deferred compute discovery needs the argument and
+      // input index which are already on the stack. Its following equality is intentionally faithful (never
+      // relaxed), and retaining that pre-verification state can keep a fresh copy of a multi-megabyte unlocking
+      // bytecode alive for every routed read. It is not an output-pin pair, so break the pairing here and retain
+      // only the compact pre-operation observation plus the eventual terminal state if this bind fails.
+      cached.awaitingVerification = opcode !== Op.OP_EQUALVERIFY && opcode !== Op.OP_INPUTBYTECODE;
     },
     ...(relaxOutputVerifications && {
       operation: (opcode, unknownState, operation) => {
@@ -2761,7 +2766,9 @@ function reduceProbeTrace(
     if (opcode === undefined || !PROBE_TRACE_OPCODES.has(opcode)) continue;
     if (opcode === Op.OP_EQUALVERIFY && !awaitingVerification) continue;
     filtered.push(state);
-    awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
+    // The INPUTBYTECODE observation is self-contained; its following equality is not consumed by output-pin
+    // extraction and can retain the complete unlocking bytecode in an otherwise reduced production trace.
+    awaitingVerification = opcode !== Op.OP_EQUALVERIFY && opcode !== Op.OP_INPUTBYTECODE;
   }
   if (full.length > 0) filtered.push(full[full.length - 1]);
   return filtered;
@@ -3150,15 +3157,11 @@ const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),sch
 
 export interface RouteExpressionKeyRow {
   args: readonly FunctionArgument[];
-  handler: {
-    inputs: readonly { name: string; type: string }[];
-    entryAccesses?: readonly {
-      collection: string;
-      keyParams?: readonly string[];
-      keySources?: readonly { kind?: string; expressionLabel?: string }[];
-      operations?: readonly string[];
-    }[];
-  };
+  /** Source row template before runtime loop/conditional expansion. */
+  sourceLogicalIndex?: number;
+  /** Source loop occurrence represented by this physical route row. */
+  occurrenceIndex?: number;
+  handler: AbiFunction;
 }
 
 function routeRowCollectionKey(
@@ -3938,6 +3941,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       routeWitness += 1;
       return value;
     });
+    const resolvedInternalRouteWitnesses = Object.fromEntries(
+      capability.route.inputs.flatMap((input, index) => input.name.startsWith('__internal__')
+        ? [[input.name, routeArgs[index]]] : []),
+    ) as Record<string, FunctionArgument>;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_UNICROW_PAY === '1') {
       console.error('unicrow-batch-route-args', JSON.stringify({
@@ -4151,9 +4158,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction: effectiveRoute,
         selector: routeSelector,
         blob,
-        args: routeArgs,
+        // Compiler-route rebuilding walks the ABI and inserts `internalArgs` in-place. Retain only the visible
+        // positional frame here; storing the already-interleaved full route shifted every witness following the
+        // first hidden graph input into the wrong ABI slot.
+        args: [blob, ...routeWitnesses],
         logicalSelectors: reachedHandlers.map((handler) => handler.selector),
-        internalArgs: { ...internalRouteWitnesses },
+        // Keep the compiler route's positional frame visible-only and carry every hidden ABI value by name.
+        // Resource witnesses that are inactive in this envelope still need their typed empty/default value;
+        // omitting them makes the final ABI encoder receive `undefined`.
+        internalArgs: resolvedInternalRouteWitnesses,
       };
       return new StatefulFunctionCall(
         this._createBuilder('__forward', [routeSelector], {
@@ -9304,6 +9317,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   ): Promise<void> {
     const candidates = projectedExternalReturnCandidates(groups);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_BUILDER_TIMING === '1') {
+      console.error('projected-return-plan', {
+        groups: groups.length,
+        materializedGroups: stb.getExternalCallUtxoGroups().length,
+        candidates: candidates.map(({ groupIndex, abiFunction }) => ({
+          groupIndex, functionName: abiFunction.name,
+        })),
+      });
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1') {
       console.error('projected-return-candidates', candidates.map(({ groupIndex, abiFunction }) => ({
         groupIndex, functionName: abiFunction.name,
@@ -9496,6 +9519,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const rebasedProbeWitnesses: Record<string, FunctionArgument> = {};
     const restoreProbeWitnesses: Record<string, FunctionArgument> = {};
     if (probeDelegate?.refreshInternalArgs && probeRoute && localProxyMasterIndex >= 0) {
+      const rebaseStartedAt = debugTargetDerivation ? Date.now() : 0;
+      if (debugTargetDerivation) console.error('derive-probe-rebase-start', {
+        delegatecallInputIndex, probeRouteBlockSize, localProxyMasterIndex,
+      });
       for (const name of ['__internal__proxyMasterIndex', '__internal__proxyMasterOutputIndex']) {
         const argumentIndex = probeRoute.inputs.findIndex((input) => input.name === name);
         if (argumentIndex < 0) continue;
@@ -9508,7 +9535,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (Object.keys(rebasedProbeWitnesses).length > 0) {
         probeDelegate.refreshInternalArgs(rebasedProbeWitnesses, { shiftPredOut: false });
+        if (debugTargetDerivation) console.error('derive-probe-rebase-unlocker-refreshed', {
+          ms: Date.now() - rebaseStartedAt,
+        });
         stb._refreshInputs();
+        if (debugTargetDerivation) console.error('derive-probe-rebase-inputs-refreshed', {
+          ms: Date.now() - rebaseStartedAt,
+        });
       }
     }
     try {
@@ -9535,7 +9568,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ? binToHex(group.precomputedReturnCommitment) : undefined,
           })));
         }
+        if (debugTargetDerivation) console.error('derive-setup-seed-returns-start');
         stb.seedPrecomputedReturnEvents(externalCalls);
+        if (debugTargetDerivation) console.error('derive-setup-seed-returns-complete');
         // Output construction is the authoritative source of physical return positions. Reconcile only after
         // derivation has finished its normal builds: refreshing earlier would require an additional build pass,
         // and output construction also advances convergence handles used by dynamic storage probes.
@@ -10829,7 +10864,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         // Shared read/write participants use one physical state transition. Once that transition has converged,
         // replace any final dependent view's pre-state placeholder with a return derived from the projected UTXOs.
+        if (debugTargetDerivation) console.error('derive-projected-returns-start');
         await this._refreshProjectedExternalReturns(stb, externalCallUtxoGroups);
+        if (debugTargetDerivation) console.error('derive-projected-returns-complete');
 
         // Phase 1b: Derive each outState group's state (same pattern as external call groups)
         if (externalOutStateUtxoGroups && externalOutStateUtxoGroups.length > 0) {
@@ -10864,6 +10901,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Same pattern as external call groups: run the VM on the target's master,
         // extract expected commitments from the trace, and apply as state updates.
         const llcGroups = stb.getLowLevelCallUtxoGroups();
+        if (debugTargetDerivation) console.error('derive-low-level-groups-start', { count: llcGroups.length });
         if (llcGroups.length > 0) {
           for (let groupIdx = 0; groupIdx < llcGroups.length; groupIdx++) {
             const group = llcGroups[groupIdx];
@@ -10920,6 +10958,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
         }
+        if (debugTargetDerivation) console.error('derive-low-level-groups-complete');
 
         // Pre-populate event placeholders so the probe transaction has event outputs
         if (emitInfos && emitInfos.length > 0) {
@@ -11032,6 +11071,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Sorted value-upsert collections already probed for trailing NEW outputs. Once probed empty (an UPDATE
         // mints no new node), we must not re-seed a '00' placeholder or the loop count oscillates 0<->1 forever.
         const probedSortedLoop = new Set<string>();
+
+        if (debugTargetsThisDerivation) console.error('derive-phase2-loop-ready', { maxIterations });
 
 	        for (let iter = 0; iter < maxIterations; iter++) {
 	          const debugIterationStartedAt = debugTargetsThisDerivation ? Date.now() : 0;
@@ -13309,7 +13350,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           entryAccesses = implFn.entryAccesses;
           entryAbiFunction = implFn;
           entryCompilerRoute = ci.compilerRoute;
-          entryArgs = entryCompilerRoute?.args ?? ci.args ?? [];
+          if (entryCompilerRoute) {
+            // Compiler routes retain a compact visible-only argument frame. Entry planning indexes arguments by
+            // the complete route ABI, so expand that frame by name before resolving collection keys/values.
+            // Treating the compact vector as ABI-positioned makes every witness after the first hidden input
+            // undefined (or, with a longer frame, assigns an unrelated graph value to the collection key).
+            let visibleIndex = 0;
+            entryArgs = implFn.inputs.map((input) => {
+              if (input.name.startsWith('__internal__')) {
+                return entryCompilerRoute!.internalArgs?.[input.name];
+              }
+              const value = entryCompilerRoute!.args[visibleIndex];
+              visibleIndex += 1;
+              return value;
+            }) as FunctionArgument[];
+          } else {
+            entryArgs = ci.args ?? [];
+          }
           break;
         }
       }
@@ -13546,10 +13603,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (/^(?:u?int(?:\d+)?|bigint)$/.test(keyType) && typeof v === 'string') {
               return bigIntToVmNumber(BigInt(v));
             }
-            return typeof v === 'bigint' ? bigIntToVmNumber(v)
-              : v instanceof Uint8Array ? v
-                : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
-                  : encodePushdataValue(v as StateValue, keyType, stateLayout.structs);
+            try {
+              return typeof v === 'bigint' ? bigIntToVmNumber(v)
+                : v instanceof Uint8Array ? v
+                  : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
+                    : encodePushdataValue(v as StateValue, keyType, stateLayout.structs);
+            } catch (cause) {
+              throw new Error(
+                `Cannot encode ${access.collection} entry key '${paramName}' (slot ${slotIndex}) as ${keyType}`,
+                { cause },
+              );
+            }
           };
           const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
           batchTargetSlots.set(slotIndex, slot);
@@ -19035,25 +19099,48 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               });
               if (preparedAtomicNodes) {
                 const atomicNodeIndex = preparedAtomicNodes.length;
-                preparedAtomicNodes.push({
-                  contract: callee,
-                  functionName: resolvedRawFunctionName ?? nested.functionName,
-                  args: graphNestedArgs,
-                  ...(resolvedTargetLockingBytecode && {
-                    targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),
-                  }),
-                  ...(proxyCallee && {
-                    executionArtifact: proxyCallee.implementation.inner.artifact,
-                    executor: proxyCallee.implementation,
-                  }),
-                  parent: 0,
-                  ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
-                  ...(resolveGraphNestedArgs && { resolveArgsFromResults: resolveGraphNestedArgs }),
-                  // Mutually-exclusive SafeERC20 fallback writers share one physical owner. The ordinary
-                  // composition has already selected the first reached writer; do not tell the atomic planner
-                  // that an untaken fallback row executed merely because its arguments were statically resolvable.
-                  active: !preserveFirstConditionalWriter,
-                });
+                const runtimeRows = childCompilerRoute?.rowArguments;
+                if (runtimeRows?.length) {
+                  for (const row of runtimeRows) {
+                    preparedAtomicNodes.push({
+                      contract: callee,
+                      functionName: row.handler.name,
+                      args: [...row.args],
+                      ...(resolvedTargetLockingBytecode && {
+                        targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),
+                      }),
+                      ...(proxyCallee && {
+                        executionArtifact: proxyCallee.implementation.inner.artifact,
+                        executor: proxyCallee.implementation,
+                      }),
+                      parent: 0,
+                      ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
+                      batchLogicalIndex: row.sourceLogicalIndex,
+                      batchOccurrenceIndex: row.occurrenceIndex,
+                      // Mutually-exclusive SafeERC20 fallback writers share one physical owner. The ordinary
+                      // composition has already selected the first reached writer; do not tell the atomic planner
+                      // that an untaken fallback row executed merely because its arguments were statically resolvable.
+                      active: !preserveFirstConditionalWriter,
+                    });
+                  }
+                } else {
+                  preparedAtomicNodes.push({
+                    contract: callee,
+                    functionName: resolvedRawFunctionName ?? nested.functionName,
+                    args: graphNestedArgs,
+                    ...(resolvedTargetLockingBytecode && {
+                      targetLockingBytecode: binToHex(resolvedTargetLockingBytecode),
+                    }),
+                    ...(proxyCallee && {
+                      executionArtifact: proxyCallee.implementation.inner.artifact,
+                      executor: proxyCallee.implementation,
+                    }),
+                    parent: 0,
+                    ...(nested.callsiteId !== undefined && { callsiteId: nested.callsiteId }),
+                    ...(resolveGraphNestedArgs && { resolveArgsFromResults: resolveGraphNestedArgs }),
+                    active: !preserveFirstConditionalWriter,
+                  });
+                }
                 preparedAtomicNodeByExternalGroup.set(childExternalGroupIndex, atomicNodeIndex);
               }
               const logicalGroup = externalCallUtxoGroups[childExternalGroupIndex];
@@ -23950,6 +24037,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           nodes: orderedNodes.map((node) => ({
             functionName: node.functionName,
             callsiteId: node.callsiteId,
+            batchLogicalIndex: node.batchLogicalIndex,
+            batchOccurrenceIndex: node.batchOccurrenceIndex,
             contract: (node.executionArtifact ?? node.contract.inner.artifact).contractName,
             owner: node.contract.inner.lockingBytecode,
             parent: node.parent,
@@ -23974,6 +24063,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           functionName: node.functionName,
           args: Object.freeze([...node.args]),
           ...(node.callsiteId !== undefined && { callsiteId: node.callsiteId }),
+          ...(node.batchLogicalIndex !== undefined && { batchLogicalIndex: node.batchLogicalIndex }),
+          ...(node.batchOccurrenceIndex !== undefined && {
+            batchOccurrenceIndex: node.batchOccurrenceIndex,
+          }),
           ...(node.targetLockingBytecode !== undefined && {
             targetLockingBytecode: node.targetLockingBytecode,
           }),
@@ -25405,7 +25498,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       args: FunctionArgument[];
       internalArgs?: Record<string, FunctionArgument>;
       logicalSelectors: string[];
-      rowArguments: Array<{ selector: string; args: FunctionArgument[]; handler: AbiFunction }>;
+      rowArguments: Array<{
+        selector: string;
+        args: FunctionArgument[];
+        handler: AbiFunction;
+        sourceLogicalIndex: number;
+        occurrenceIndex: number;
+      }>;
       eventSignaturesBySlot?: Array<string | undefined>;
     } | undefined {
     const publishedRows = externalCall.batchInvocations;
@@ -25451,6 +25550,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     const rows: Array<(typeof publishedRows)[number] & {
       logicalIndex: number;
+      sourceLogicalIndex: number;
+      occurrenceIndex: number;
       argSources?: (typeof publishedRows)[number]['argSources'];
     }> = [];
     for (const published of publishedRows) {
@@ -25487,6 +25588,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         rows.push({
           ...published,
           logicalIndex: rows.length,
+          sourceLogicalIndex: published.logicalIndex,
+          occurrenceIndex,
           ...(published.argSources && {
             argSources: rewriteOccurrenceIndex(published.argSources, occurrenceIndex),
           }),
@@ -25529,7 +25632,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && candidate.batchInvocations.every((row, index) => row.selector === publishedRows[index].selector))
       ))
     ))?.inputs;
-    const rowArguments: Array<{ selector: string; args: FunctionArgument[]; handler: AbiFunction }> = [];
+    const rowArguments: Array<{
+      selector: string;
+      args: FunctionArgument[];
+      handler: AbiFunction;
+      sourceLogicalIndex: number;
+      occurrenceIndex: number;
+    }> = [];
     const encodedRows = rows.map((row, rowIndex) => {
       if (row.logicalIndex !== rowIndex) {
         throw new Error('Repeated external message-bus batch rows must use canonical contiguous callsite indices');
@@ -25555,7 +25664,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const handlerAbi = calleeRouteArtifact.abi.find((fn) => fn.name === handler.name);
       if (!handlerAbi) throw new Error(`Message-bus handler ABI '${handler.name}' is missing`);
-      rowArguments.push({ selector: row.selector, args, handler: handlerAbi });
+      rowArguments.push({
+        selector: row.selector,
+        args,
+        handler: handlerAbi,
+        sourceLogicalIndex: row.sourceLogicalIndex,
+        occurrenceIndex: row.occurrenceIndex,
+      });
       const encoded = args.map((arg, index) =>
         encodeFunctionArgument(arg, row.inputs[index].type, structs));
       if (encoded.some((arg) => !(arg instanceof Uint8Array))) {

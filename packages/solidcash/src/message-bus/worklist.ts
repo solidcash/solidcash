@@ -46,6 +46,8 @@ export interface DeriveCompiledGraphOptions {
     callsiteId: number;
     occurrence: number;
     interfaceName: string;
+    /** Source-template identity when this is one row of a collapsed repeated-call batch. */
+    batchLogicalIndex?: number;
   }) => WorklistParticipant | WorklistTargetResolution | undefined;
   /** Correctness bound for source recursion and runtime-sized shapes. The callManifest v1 ceiling is 24. */
   maximumInvocations?: number;
@@ -61,6 +63,19 @@ export interface DeriveCompiledGraphOptions {
     callsiteId: number;
     kind: 'conditional' | 'loop';
   }) => number;
+  /**
+   * Exact reached source-loop indices for one runtime-sized row template in a collapsed repeated-call batch.
+   * Transparent graph discovery supplies this when predicates can remove individual loop iterations; ordinary
+   * callers can omit it when the compiler-authored array cardinality alone determines the reached rows.
+   */
+  batchOccurrences?: (context: {
+    participant: WorklistParticipant;
+    function: string;
+    invocation: number;
+    callsiteId: number;
+    batchLogicalIndex: number;
+    kind: 'conditional' | 'loop';
+  }) => readonly number[] | undefined;
   /**
    * Values of compiler-labelled non-trivial argument expressions, obtained from the derivation VM trace.
    * The generated caller covenant independently emits and compares the canonical argument bytes.
@@ -245,10 +260,12 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     functionName: string,
     invocation: number,
     occurrence: number,
+    batchLogicalIndex?: number,
   ): WorklistTargetResolution => {
     const resolved = options.target?.({
       participant, function: functionName, invocation, callsiteId: call.callsiteId!, occurrence,
       interfaceName: call.interfaceName,
+      ...(batchLogicalIndex !== undefined && { batchLogicalIndex }),
     });
     if (resolved) return 'participant' in resolved ? resolved : { participant: resolved };
     const targetIsRuntimeDerived = call.loopArrayVar || call.addressStateVar
@@ -503,38 +520,117 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         if ((call.occurrence ?? 'once') !== 'once') {
           throw new Error(`messageBus: batched callsite ${call.callsiteId} must be straight-line`);
         }
-        const resolvedTarget = takeTarget(call, participant, fn, functionName, invocation, 0);
-        const target = resolvedTarget.participant;
         const rows = [...call.batchInvocations].sort((a, b) => a.logicalIndex - b.logicalIndex);
         rows.forEach((row, index) => {
           if (row.logicalIndex !== index) {
             throw new Error(`messageBus: batched callsite ${call.callsiteId} has non-canonical logical indices`);
           }
-          const targetFunction = target.artifact.abi.find((candidate) =>
-            candidate.selector?.toLowerCase() === row.selector.toLowerCase());
-          if (!targetFunction) {
+          const kind = row.occurrence ?? 'once';
+          let inferredMaximum: number | undefined;
+          let reached = kind === 'once' ? [0] : options.batchOccurrences?.({
+            participant,
+            function: functionName,
+            invocation,
+            callsiteId: call.callsiteId!,
+            batchLogicalIndex: row.logicalIndex,
+            kind,
+          });
+          if (reached === undefined && kind === 'conditional') {
+            const count = options.occurrence?.({
+              participant,
+              function: functionName,
+              invocation,
+              callsiteId: call.callsiteId!,
+              kind,
+            }) ?? -1;
+            if (!Number.isInteger(count) || count < 0 || count > 1) {
+              throw new Error(
+                `messageBus: batched conditional row ${row.logicalIndex} at callsite ${call.callsiteId} `
+                + 'lacks a valid occurrence proof',
+              );
+            }
+            reached = count === 1 ? [0] : [];
+          }
+          if (reached === undefined && kind === 'loop') {
+            const indices = new Set<number>();
+            const visit = (value: unknown, seen = new Set<object>()): void => {
+              if (!value || typeof value !== 'object' || seen.has(value as object)) return;
+              seen.add(value as object);
+              const source = value as { kind?: string; paramIndex?: number };
+              if (source.kind === 'arrayElement' && source.paramIndex !== undefined) {
+                indices.add(source.paramIndex);
+              }
+              for (const child of Object.values(value)) {
+                if (Array.isArray(child)) child.forEach((item) => visit(item, seen));
+                else visit(child, seen);
+              }
+            };
+            visit(row.argSources);
+            const lengths = [...indices].map((paramIndex) => {
+              const value = args[paramIndex];
+              if (!Array.isArray(value)) {
+                throw new Error(
+                  `messageBus: batched loop row ${row.logicalIndex} parameter ${paramIndex} is not an array`,
+                );
+              }
+              return value.length;
+            });
+            if (lengths.length === 0 || !lengths.every((length) => length === lengths[0])) {
+              throw new Error(
+                `messageBus: batched loop row ${row.logicalIndex} at callsite ${call.callsiteId} `
+                + 'has no unambiguous compiler-authored array cardinality',
+              );
+            }
+            inferredMaximum = lengths[0];
+            reached = Array.from({ length: inferredMaximum }, (_, occurrence) => occurrence);
+          }
+          if (!reached || reached.some((occurrence, position) => (
+            !Number.isSafeInteger(occurrence) || occurrence < 0
+            || (position > 0 && occurrence <= reached![position - 1])
+            || (inferredMaximum !== undefined && occurrence >= inferredMaximum)
+          ))) {
             throw new Error(
-              `messageBus: batched callsite ${call.callsiteId} selector ${row.selector} is absent from its target`,
+              `messageBus: batched row ${row.logicalIndex} at callsite ${call.callsiteId} `
+              + 'has invalid reached occurrence indices',
             );
           }
-          expand(
-            target,
-            targetFunction.name,
-            resolveArguments(
-              participant,
-              args,
-              { ...call, functionName: targetFunction.name, argSources: row.argSources },
-              functionName,
+          if (kind === 'conditional' && (reached.length > 1 || reached.some((occurrence) => occurrence !== 0))) {
+            throw new Error(
+              `messageBus: batched conditional row ${row.logicalIndex} at callsite ${call.callsiteId} `
+              + 'has an invalid occurrence proof',
+            );
+          }
+          reached.forEach((occurrence) => {
+            const resolvedTarget = takeTarget(
+              call, participant, fn, functionName, invocation, occurrence, row.logicalIndex,
+            );
+            const target = resolvedTarget.participant;
+            const targetFunction = target.artifact.abi.find((candidate) =>
+              candidate.selector?.toLowerCase() === row.selector.toLowerCase());
+            if (!targetFunction) {
+              throw new Error(
+                `messageBus: batched callsite ${call.callsiteId} selector ${row.selector} is absent from its target`,
+              );
+            }
+            expand(
+              target,
+              targetFunction.name,
+              resolveArguments(
+                participant,
+                args,
+                { ...call, functionName: targetFunction.name, argSources: row.argSources },
+                functionName,
+                invocation,
+                occurrence,
+                options.expressionArgument,
+              ),
               invocation,
-              row.logicalIndex,
-              options.expressionArgument,
-            ),
-            invocation,
-            edgeCallMode(call),
-            false,
-            call.callsiteId,
-            resolvedTarget.targetLockingBytecode,
-          );
+              edgeCallMode(call),
+              false,
+              call.callsiteId,
+              resolvedTarget.targetLockingBytecode,
+            );
+          });
         });
         continue;
       }

@@ -181,6 +181,79 @@ describe('atomic compiled invocation graph', () => {
     ]);
   });
 
+  it('expands fixed and runtime-loop rows from one collapsed callsite', () => {
+    const capability = (name: string, selector: string, inputs: { name: string; type: string }[]) => ({
+      version: 1 as const,
+      selector: '53434231' as const,
+      maximumRows: 8,
+      maximumBlobBytes: 512,
+      route: {
+        name: '__message_bus1', selector: '53434231', inputs: [], outputs: [],
+        blockLayout: { blockSize: 1, slots: [{ kind: 'master' as const, offset: 0 }] },
+      },
+      handlers: [{ name, selector, inputs, outputs: [], eligible: true }],
+    });
+    const pingInputs = [{ name: 'value', type: 'int' }];
+    const sink = {
+      artifact: {
+        contractName: 'RuntimeBatchSink',
+        abi: [{ name: 'ping', selector: '01020304', inputs: pingInputs, outputs: [] }],
+        messageBus: capability('ping', '01020304', pingInputs),
+        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+      } as unknown as Artifact,
+      lockingBytecode: '51',
+    };
+    const root = {
+      artifact: {
+        contractName: 'RuntimeBatchRoot',
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'values', type: 'int[]' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 4,
+            occurrence: 'once' as const,
+            interfaceName: 'ISink',
+            functionName: 'ping',
+            batchInvocations: [{
+              selector: '01020304', logicalIndex: 0, inputs: pingInputs,
+              argSources: [{ kind: 'literal' as const, type: 'int', value: '1' }],
+            }, {
+              selector: '01020304', logicalIndex: 1, inputs: pingInputs, occurrence: 'loop' as const,
+              argSources: [{ kind: 'arrayElement' as const, paramIndex: 0, indexValue: 0 }],
+            }],
+          }],
+        }],
+        messageBus: capability('run', '11111111', [{ name: 'values', type: 'int[]' }]),
+        invocationAnalysis: { version: 1, protocolVersions: [1], functions: [], components: [] },
+      } as unknown as Artifact,
+      lockingBytecode: '52',
+    };
+    const derive = (values: bigint[]) => {
+      const targets: Array<{ batchLogicalIndex?: number; occurrence: number }> = [];
+      const planned = messageBus.deriveCompiledGraphPlan({
+        root,
+        function: 'run',
+        args: [values],
+        targets: {},
+        target: ({ batchLogicalIndex, occurrence }) => {
+          targets.push({ batchLogicalIndex, occurrence });
+          return sink;
+        },
+        expressionArgument: ({ occurrence }) => values[occurrence],
+      });
+      return { planned, targets };
+    };
+    expect(derive([]).planned.invocations.map((invocation) => invocation.function)).toEqual(['run', 'ping']);
+    const three = derive([2n, 3n, 4n]);
+    expect(three.planned.invocations.map((invocation) => invocation.function))
+      .toEqual(['run', 'ping', 'ping', 'ping', 'ping']);
+    expect(three.targets).toEqual([
+      { batchLogicalIndex: 0, occurrence: 0 },
+      { batchLogicalIndex: 1, occurrence: 0 },
+      { batchLogicalIndex: 1, occurrence: 1 },
+      { batchLogicalIndex: 1, occurrence: 2 },
+    ]);
+  });
+
   it('uses the authenticated physical owner identity for nested callers', () => {
     const withLogicalCaller = plan();
     withLogicalCaller.participants[0].logicalLockingBytecode = '54';

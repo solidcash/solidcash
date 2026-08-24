@@ -61,6 +61,10 @@ export interface PreparedAtomicMessageBusCall {
   args: readonly FunctionArgument[];
   /** @internal Compiler-stable identity of this invocation in its parent function. */
   callsiteId?: number;
+  /** @internal Source-template identity for one runtime row of a collapsed repeated-call batch. */
+  batchLogicalIndex?: number;
+  /** @internal Source loop occurrence represented by this runtime batch row. */
+  batchOccurrenceIndex?: number;
   /** Exact address value evaluated by the parent call expression, encoded as locking-bytecode hex. */
   targetLockingBytecode?: string;
   /** Delegate route artifact executed against `contract`'s state/category. */
@@ -597,10 +601,16 @@ export class AtomicMessageBusComposition {
       args: descriptors[0].args,
       rootCaller,
       targets: {},
-      target: ({ callsiteId }) => {
+      target: ({ callsiteId, batchLogicalIndex, occurrence }) => {
         const descriptor = descriptors[next];
         if (!descriptor) return undefined;
         if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) return undefined;
+        if (batchLogicalIndex !== undefined
+          && descriptor.batchLogicalIndex !== undefined
+          && descriptor.batchLogicalIndex !== batchLogicalIndex) return undefined;
+        if (batchLogicalIndex !== undefined
+          && descriptor.batchOccurrenceIndex !== undefined
+          && descriptor.batchOccurrenceIndex !== occurrence) return undefined;
         next += 1;
         return {
           participant: workParticipants[next - 1],
@@ -608,6 +618,16 @@ export class AtomicMessageBusComposition {
             targetLockingBytecode: descriptor.targetLockingBytecode,
           }),
         };
+      },
+      batchOccurrences: ({ callsiteId, batchLogicalIndex }) => {
+        const reached: number[] = [];
+        for (let cursor = next; cursor < descriptors.length; cursor += 1) {
+          const descriptor = descriptors[cursor];
+          if (descriptor.callsiteId !== callsiteId
+            || descriptor.batchLogicalIndex !== batchLogicalIndex) break;
+          reached.push(descriptor.batchOccurrenceIndex ?? reached.length);
+        }
+        return reached.length > 0 || this.options.preparedCalls ? reached : undefined;
       },
       occurrence: ({ participant, function: ownerFunction, callsiteId, kind }) => {
         const abiFunction = participant.artifact.abi.find((candidate) => candidate.name === ownerFunction);
@@ -670,18 +690,14 @@ export class AtomicMessageBusComposition {
         };
       },
     });
-    if (plan.invocations.length !== descriptors.length) {
-      throw new Error(
-        `messageBus: prepared ${descriptors.length} call(s), but the compiled graph reaches `
-        + `${plan.invocations.length}`,
-      );
-    }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_ATOMIC_PROMOTION === '1') {
       console.error('atomic-prepared-plan', JSON.stringify({
         descriptors: descriptors.map((descriptor) => ({
           functionName: descriptor.functionName,
           callsiteId: descriptor.callsiteId,
+          batchLogicalIndex: descriptor.batchLogicalIndex,
+          batchOccurrenceIndex: descriptor.batchOccurrenceIndex,
         })),
         invocations: plan.invocations.map((invocation) => ({
           functionName: invocation.function,
@@ -690,6 +706,12 @@ export class AtomicMessageBusComposition {
           argsHex: invocation.argsHex,
         })),
       }));
+    }
+    if (plan.invocations.length !== descriptors.length) {
+      throw new Error(
+        `messageBus: prepared ${descriptors.length} call(s), but the compiled graph reaches `
+        + `${plan.invocations.length}`,
+      );
     }
     assertAtomicParticipantCapacity(plan.participants.length);
     const hasResultDependentAncestor = (invocationIndex: number): boolean => {
@@ -1070,9 +1092,14 @@ export class AtomicMessageBusComposition {
         try {
           local = await localCall.build();
         } catch (error) {
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_PROMOTION === '1') {
+            console.error('atomic-participant-build-error', error);
+          }
           throw new Error(
             `messageBus: participant ${participant.participant} '${participant.artifact.contractName}' `
             + `failed to build its balanced block: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
           );
         }
         // Event effects are fixed-point claims just like return values and mutable resources. Once a prior pass

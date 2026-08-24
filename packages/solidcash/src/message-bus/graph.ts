@@ -954,8 +954,27 @@ export function assertPlannedOccurrenceCount(call: ExternalCallAbi, count: numbe
  * callsite is reached at most once whether or not the compiler spent bytes saying so. Only a loop can leave
  * its ceiling unproven, and an unproven ceiling admits any count up to the global invocation bound.
  */
+const batchedCallsiteBounds = (call: ExternalCallAbi): { minimum: number; maximum: number } | undefined => {
+  if (call.batchInvocations === undefined) return undefined;
+  let minimum = 0;
+  let maximum = 0;
+  for (const row of call.batchInvocations) {
+    const occurrence = row.occurrence ?? 'once';
+    if (occurrence === 'once') {
+      minimum += 1;
+      maximum += 1;
+    } else if (occurrence === 'conditional') {
+      maximum += 1;
+    } else {
+      maximum = Number.POSITIVE_INFINITY;
+    }
+  }
+  return { minimum, maximum };
+};
+
 const callsiteRowCapacity = (call: ExternalCallAbi): number => {
-  if (call.batchInvocations !== undefined) return call.batchInvocations.length;
+  const batched = batchedCallsiteBounds(call);
+  if (batched !== undefined) return batched.maximum;
   const bound = occurrenceBoundOf(call);
   if (bound.kind !== 'loop') return 1;
   return bound.maximum ?? Number.POSITIVE_INFINITY;
@@ -994,10 +1013,8 @@ function assertHandlerRowCapacity(callsites: readonly ExternalCallAbi[], rows: n
   // exact count instead. `deriveCompiledGraphPlan` cannot reach this leg: it expands that callsite to exactly
   // `batchInvocations.length` rows by construction.
   if (batched !== undefined) {
-    throw new Error(
-      `messageBus: callsite ${callsites[last].callsiteId ?? '?'} collapses ${batched.length} repeated calls, `
-      + `but ${surplus} rows were planned`,
-    );
+    assertBatchedCallsiteRowCount(callsites[last], surplus);
+    throw new Error(`messageBus: batched callsite ${callsites[last].callsiteId ?? '?'} capacity drift`);
   }
   assertPlannedOccurrenceCount(callsites[last], surplus);
 }
@@ -1012,9 +1029,27 @@ function assertHandlerRowCapacity(callsites: readonly ExternalCallAbi[], rows: n
  * zero: a branch that was not taken legitimately emits no row.
  */
 const callsiteRowFloor = (call: ExternalCallAbi): number => {
-  if (call.batchInvocations !== undefined) return call.batchInvocations.length;
+  const batched = batchedCallsiteBounds(call);
+  if (batched !== undefined) return batched.minimum;
   return occurrenceBoundOf(call).minimum ?? 0;
 };
+
+function assertBatchedCallsiteRowCount(call: ExternalCallAbi, count: number): void {
+  const bound = batchedCallsiteBounds(call);
+  if (!bound) return;
+  if (count >= bound.minimum && count <= bound.maximum) return;
+  if (bound.minimum === bound.maximum) {
+    throw new Error(
+      `messageBus: callsite ${call.callsiteId ?? '?'} identifies ${bound.minimum} batched rows, `
+      + `but ${count} were planned`,
+    );
+  }
+  const maximum = Number.isFinite(bound.maximum) ? String(bound.maximum) : 'an unbounded runtime maximum';
+  throw new Error(
+    `messageBus: callsite ${call.callsiteId ?? '?'} admits ${bound.minimum}..${maximum} batched rows, `
+    + `but ${count} were planned`,
+  );
+}
 
 /**
  * X179: refuse a caller-supplied row set that DROPS a row one handler must have emitted.
@@ -1057,10 +1092,8 @@ function assertHandlerRowFloor(callsites: readonly ExternalCallAbi[], rows: numb
     // A collapsed repeated-call callsite is `once` yet emits every row it NAMES, so the occurrence wording
     // would read "reached at most once" against a callsite that legitimately emits several.
     if (callsite.batchInvocations !== undefined) {
-      throw new Error(
-        `messageBus: callsite ${callsite.callsiteId ?? '?'} collapses ${callsite.batchInvocations.length} `
-        + `repeated calls, but only ${remaining} rows were planned`,
-      );
+      assertBatchedCallsiteRowCount(callsite, remaining);
+      throw new Error(`messageBus: batched callsite ${callsite.callsiteId ?? '?'} floor drift`);
     }
     assertPlannedOccurrenceCount(callsite, remaining);
     // The shared bound admitted a count this floor does not, so the two have drifted. Refuse rather than
@@ -1806,12 +1839,7 @@ export function planCompiledGraph(
       for (const callsite of publishedCallsites) {
         const count = bindings.filter((binding) => binding?.callsiteId === callsite.callsiteId).length;
         if (callsite.batchInvocations !== undefined) {
-          if (count !== callsite.batchInvocations.length) {
-            throw new Error(
-              `messageBus: callsite ${callsite.callsiteId ?? '?'} identifies `
-              + `${callsite.batchInvocations.length} batched rows, but ${count} were planned`,
-            );
-          }
+          assertBatchedCallsiteRowCount(callsite, count);
           continue;
         }
         assertPlannedOccurrenceCount(callsite, count);

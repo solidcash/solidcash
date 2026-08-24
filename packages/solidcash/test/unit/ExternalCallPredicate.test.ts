@@ -14,6 +14,7 @@ import {
   inactiveMessageBusRouteWitness,
   isSdkResolvedExternalCallTopologyWitness,
   physicalExternalCallSelectorHex,
+  rebaseRoutedBatchProofOffsets,
   selectedMessageBusResourceMetadata,
 } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
@@ -59,6 +60,22 @@ const source = (paramIndex: number): ExternalCallExpression => ({
 });
 
 describe('compiler-published external-call predicate evaluation', () => {
+  it('rebases owner-relative batch proofs across an embedded proxy prefix', () => {
+    const rebased = rebaseRoutedBatchProofOffsets({
+      __internal__vmapBatchProof_0: 3n,
+      __internal__vmapBatchProof_1: -1n,
+      __internal__vmapBatchPredOut_0: 72n,
+      unrelated: 4n,
+    }, 3);
+
+    expect(rebased).toEqual({
+      __internal__vmapBatchProof_0: 6n,
+      __internal__vmapBatchProof_1: -1n,
+      __internal__vmapBatchPredOut_0: 72n,
+      unrelated: 4n,
+    });
+  });
+
   it('anchors routed dynamic resources to the state owner without changing block width', () => {
     const inputs = Array.from({ length: 8 }, (_, id) => ({ id }));
     const chunk = { id: 5, token: { category: '01' } };

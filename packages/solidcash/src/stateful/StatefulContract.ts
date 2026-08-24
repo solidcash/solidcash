@@ -364,6 +364,22 @@ export function anchorRoutedDynamicResourcesAtOwner<T extends { token?: unknown 
   return anchored;
 }
 
+/** Rebase compiler-route proof offsets when an implementation block is embedded after a proxy's state prefix.
+ * Batch proof witnesses are relative to the authenticated state owner, unlike ordinary implementation block slots
+ * which are relative to the executor. Negative sentinels and output-relative witnesses are intentionally unchanged. */
+export function rebaseRoutedBatchProofOffsets(
+  internalArgs: Readonly<Record<string, FunctionArgument>>,
+  executorOffset: number,
+): Record<string, FunctionArgument> {
+  if (executorOffset === 0) return { ...internalArgs };
+  const delta = BigInt(executorOffset);
+  return Object.fromEntries(Object.entries(internalArgs).map(([name, value]) => [
+    name,
+    /^__internal__vmapBatchProof_\d+$/.test(name) && typeof value === 'bigint' && value >= 0n
+      ? value + delta : value,
+  ]));
+}
+
 /** Decode only the rows selected by an message-bus batch envelope and project the compiler-published blockhash descriptors.
  * Artifact metadata is not trusted to describe the blob: selector, row and argument bounds are checked here. */
 function selectGraphBlockhashReads(
@@ -18814,6 +18830,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               if (sharedGroupIndex >= 0 && childWritesState && !preserveFirstConditionalWriter) {
                 const primary = externalCallUtxoGroups[sharedGroupIndex];
+                const proxyPrefixSize = proxyCallee && childBlockInputs && selectedLayout
+                  && delegateCallGroupIndex !== undefined ? 1 + childData.length : 0;
+                if (proxyPrefixSize > 0) {
+                  Object.assign(
+                    childCompilerInternalArgs,
+                    rebaseRoutedBatchProofOffsets(childCompilerInternalArgs, proxyPrefixSize),
+                  );
+                }
                 primary.stateLayout = childLayout;
                 primary.masterUtxo = childState.masterUtxo;
                 primary.dataNftUtxos = childData;

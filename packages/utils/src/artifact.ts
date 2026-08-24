@@ -568,6 +568,20 @@ export interface ExternalCallExpression {
   ifFalse?: ExternalCallExpression;
   args?: readonly ExternalCallExpression[];
   fields?: readonly string[];
+  /** Parameter names for a compiler-published pure helper body. */
+  parameters?: readonly string[];
+  /** Bounded statement program for a compiler-published pure helper body. */
+  statements?: readonly ExternalCallStatement[];
+}
+
+export interface ExternalCallStatement {
+  kind: 'variable' | 'assign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
+  name?: string;
+  type?: string;
+  expression?: ExternalCallExpression;
+  condition?: ExternalCallExpression;
+  statements?: readonly ExternalCallStatement[];
+  elseStatements?: readonly ExternalCallStatement[];
 }
 
 export interface ExternalCallAbi {

@@ -74,6 +74,7 @@ import {
   ExternalCallSlot,
   ExternalCallArgSource,
   ExternalCallExpression,
+  ExternalCallStatement,
   ExternalCallMode,
   ExternalOutputStateNode,
   ExternalOutputStateAccessNode,
@@ -6179,6 +6180,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         return expression;
       };
+      let serializedProgramLocals: ReadonlySet<string> | undefined;
+      const serializingPureHelpers = new Set<FunctionDefinitionNode>();
       const serializeExpression = (
         expression: ExpressionNode, seen = new Set<Node>(),
       ): ExternalCallExpression | undefined => {
@@ -6194,7 +6197,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         // cycle is classified as a reference.
         seen = new Set(seen);
         seen.add(expression);
-        const source = classifyArg(expression);
+        const preservedLocal = expression instanceof IdentifierNode
+          && serializedProgramLocals?.has(expression.name) === true;
+        const source = preservedLocal ? undefined : classifyArg(expression);
         if (source && source.kind !== 'expression') return {
           kind: 'source',
           source,
@@ -6203,7 +6208,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // exactly rather than treating the locking bytecode as untyped bytes.
           ...((source.kind === 'msgSender' || source.kind === 'selfAddress') && { type: 'address' }),
         };
-        const resolved = resolveInitializer(expression);
+        const resolved = preservedLocal ? expression : resolveInitializer(expression);
         if (resolved !== expression) return serializeExpression(resolved, seen);
         if (expression instanceof IntLiteralNode) {
           return { kind: 'literal', type: 'bigint', value: expression.value.toString() };
@@ -6359,12 +6364,90 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         if (expression instanceof FunctionCallNode) {
           const values = serializeArgs(expression.parameters);
+          const helper = expression.resolvedFunction;
+          let parameters: string[] | undefined;
+          let statements: ExternalCallStatement[] | undefined;
+          if (helper?.modifiers.includes(FunctionModifier.PURE)
+            && !serializingPureHelpers.has(helper)) {
+            const localNames = new Set(helper.parameters.map((parameter) => parameter.name));
+            const collectLocals = (block: BlockNode): void => {
+              for (const statement of block.statements ?? []) {
+                if (statement instanceof VariableDefinitionNode) localNames.add(statement.name);
+                else if (statement instanceof WhileNode) collectLocals(statement.block);
+                else if (statement instanceof BranchNode) {
+                  collectLocals(statement.ifBlock);
+                  if (statement.elseBlock) collectLocals(statement.elseBlock);
+                } else if (statement instanceof BlockNode) collectLocals(statement);
+              }
+            };
+            collectLocals(helper.body);
+            const serializeBlock = (block: BlockNode): ExternalCallStatement[] | undefined => {
+              const serialized: ExternalCallStatement[] = [];
+              for (const statement of block.statements ?? []) {
+                if (statement instanceof VariableDefinitionNode) {
+                  const initializer = statement.expression
+                    ? serializeExpression(statement.expression) : undefined;
+                  if (statement.expression && !initializer) return undefined;
+                  serialized.push({
+                    kind: 'variable', name: statement.name, type: statement.type.toString(),
+                    ...(initializer && { expression: initializer }),
+                  });
+                } else if (statement instanceof AssignNode) {
+                  const value = serializeExpression(statement.expression);
+                  if (!value || !localNames.has(statement.identifier.name)) return undefined;
+                  serialized.push({ kind: 'assign', name: statement.identifier.name, expression: value });
+                } else if (statement instanceof WhileNode) {
+                  const condition = serializeExpression(statement.condition);
+                  const body = serializeBlock(statement.block);
+                  if (!condition || !body) return undefined;
+                  serialized.push({ kind: 'while', condition, statements: body });
+                } else if (statement instanceof BranchNode) {
+                  const condition = serializeExpression(statement.condition);
+                  const ifBody = serializeBlock(statement.ifBlock);
+                  const elseBody = statement.elseBlock ? serializeBlock(statement.elseBlock) : [];
+                  if (!condition || !ifBody || !elseBody) return undefined;
+                  serialized.push({
+                    kind: 'branch', condition, statements: ifBody, elseStatements: elseBody,
+                  });
+                } else if (statement instanceof ReturnNode && statement.expressions.length === 1) {
+                  const value = serializeExpression(statement.expressions[0]);
+                  if (!value) return undefined;
+                  serialized.push({ kind: 'return', expression: value });
+                } else if (statement instanceof ExpressionStatementNode) {
+                  const value = serializeExpression(statement.expression);
+                  if (!value) return undefined;
+                  serialized.push({ kind: 'expression', expression: value });
+                } else if (statement instanceof BlockNode) {
+                  const body = serializeBlock(statement);
+                  if (!body) return undefined;
+                  serialized.push({ kind: 'block', statements: body });
+                } else {
+                  return undefined;
+                }
+              }
+              return serialized;
+            };
+            const priorLocals = serializedProgramLocals;
+            serializingPureHelpers.add(helper);
+            serializedProgramLocals = localNames;
+            try {
+              const body = serializeBlock(helper.body);
+              if (body) {
+                parameters = helper.parameters.map((parameter) => parameter.name);
+                statements = body;
+              }
+            } finally {
+              serializedProgramLocals = priorLocals;
+              serializingPureHelpers.delete(helper);
+            }
+          }
           return values && {
             kind: 'call',
             name: expression.identifier.name,
             args: values,
             ...(expression.fieldNames && { fields: expression.fieldNames }),
             ...(expression.type && { type: expression.type.toString() }),
+            ...(parameters && statements && { parameters, statements }),
           };
         }
         if (expression instanceof IdentifierNode) return { kind: 'identifier', name: expression.name };

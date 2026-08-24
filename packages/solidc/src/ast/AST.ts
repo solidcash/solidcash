@@ -2240,6 +2240,18 @@ export interface ExternalCallExpression {
   ifFalse?: ExternalCallExpression;
   args?: ExternalCallExpression[];
   fields?: string[];
+  parameters?: string[];
+  statements?: ExternalCallStatement[];
+}
+
+export interface ExternalCallStatement {
+  kind: 'variable' | 'assign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
+  name?: string;
+  type?: string;
+  expression?: ExternalCallExpression;
+  condition?: ExternalCallExpression;
+  statements?: ExternalCallStatement[];
+  elseStatements?: ExternalCallStatement[];
 }
 
 export interface ExternalCallSlot {

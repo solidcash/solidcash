@@ -91,6 +91,39 @@ describe('inferred message-bus batching for repeated external callees', () => {
     expect(compact.match(/OP_SPLITOP_1OP_SPLITOP_5OP_INVOKE/g)).toHaveLength(2);
   });
 
+  it('publishes bounded pure-helper programs for external argument derivation', () => {
+    const artifact = compileString(`
+      pragma solidity >=0.8.0;
+      function prefixItems(string[] values) pure returns (bytes) {
+        bytes result = abi.encodePacked(uint8(values.length));
+        for (uint i = 0; i < values.length; i = i + 1) {
+          result = bytes.concat(result, abi.encodePacked(uint8(bytes(values[i]).length), values[i]));
+        }
+        return result;
+      }
+      interface ISink { function publish(bytes value) external; }
+      contract Caller(address sink) {
+        function run(string[] values) public {
+          ISink(sink).publish(prefixItems(values));
+          ISink(sink).publish(prefixItems(values));
+          require(values.length >= 0);
+        }
+      }
+    `, { solidityImportCompat: true });
+    const run = artifact.abi.find((candidate) => candidate.name === 'run');
+    const program = run?.externalCalls?.[0].batchInvocations?.[0]
+      .argSources?.[0].expression;
+
+    expect(program).toMatchObject({
+      kind: 'call',
+      parameters: ['values'],
+      statements: expect.arrayContaining([
+        expect.objectContaining({ kind: 'while' }),
+        expect.objectContaining({ kind: 'return' }),
+      ]),
+    });
+  });
+
   it('leaves an ungrouped single external call byte-identical to the explicit opt-out', () => {
     const source = `
       interface ICounter { function add(int amount) external; }

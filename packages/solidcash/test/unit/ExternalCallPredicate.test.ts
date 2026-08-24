@@ -154,6 +154,47 @@ describe('compiler-published external-call predicate evaluation', () => {
       [{ type: 'uint16' }, { type: 'int16' }],
     )).toEqual(Uint8Array.of(0x00, 0x02, 0xff, 0xfe));
   });
+
+  it('evaluates compiler-published pure helper programs without helper-name knowledge', () => {
+    const helperArtifact = compileString(`
+      pragma solidity >=0.8.0;
+      function prefixItems(string[] values) pure returns (bytes) {
+        bytes result = abi.encodePacked(uint8(values.length));
+        for (uint i = 0; i < values.length; i = i + 1) {
+          result = bytes.concat(result, abi.encodePacked(uint8(bytes(values[i]).length), values[i]));
+        }
+        return result;
+      }
+      interface ISink { function publish(bytes value) external; }
+      contract HelperCaller(address sink) {
+        function run(string[] values) public {
+          ISink(sink).publish(prefixItems(values));
+          ISink(sink).publish(prefixItems(values));
+          require(values.length >= 0);
+        }
+      }
+    `, { solidityImportCompat: true, forceStateful: true, messageBus: true });
+    const expression = helperArtifact.abi.find((candidate) => candidate.name === 'run')
+      ?.externalCalls?.[0].batchInvocations?.[0].argSources?.[0].expression;
+    expect(expression).toBeDefined();
+
+    const helperEvaluator = new StatefulContract(
+      '00'.repeat(32), helperArtifact, createTestProvider(), { constructorArgs: [new Uint8Array()] },
+    ) as unknown as PredicateEvaluator;
+    expect(helperEvaluator._evaluateExternalExpression(
+      expression!, [['DV']], helperArtifact, undefined, [{ type: 'string[]' }],
+    )).toEqual(Uint8Array.of(1, 2, 0x44, 0x56));
+  });
+
+  it('packs a zero address cast to uint160 as the compiler zero value', () => {
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
+    };
+
+    expect(evaluator._evaluateExternalExpression(
+      expression, [`0x${'00'.repeat(20)}`], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(new Uint8Array());
+  });
 });
 
 describe('conditional external-call topology', () => {

@@ -6,6 +6,7 @@ import {
   AbiFunction,
   ArgSource,
   ExternalCallExpression,
+  ExternalCallStatement,
   ExternalCallAbi,
   buildInitialStateCommitments,
   buildTokenContainerCovenantScript,
@@ -24656,11 +24657,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     occurrenceIndex = 0,
     stateIncludesPriorWrites = false,
     executionSelfAddress?: FunctionArgument,
+    localBindings?: ReadonlyMap<string, FunctionArgument>,
   ): FunctionArgument | undefined {
     const evaluate = (candidate: ExternalCallExpression): FunctionArgument | undefined => (
       this._evaluateExternalExpression(
         candidate, functionArgs, artifact, state, callerInputs, externalReturns, occurrenceIndex,
-        stateIncludesPriorWrites, executionSelfAddress,
+        stateIncludesPriorWrites, executionSelfAddress, localBindings,
       )
     );
     const concat = (parts: Uint8Array[]): Uint8Array => {
@@ -24762,6 +24764,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // else (including a user string that merely starts with malformed hex) keeps the text encoding.
       if (typeof value === 'string') {
         const canonicalHex = /^0x(?:[0-9a-fA-F]{2})*$/.test(value);
+        if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
         if (canonicalHex && typeHint === 'uint160' && value.length === 42) {
           return concat([hexToBin(value.slice(2)), new Uint8Array([0])]);
         }
@@ -24798,6 +24801,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         return utf8ToBin(value);
       }
       if (value instanceof Uint8Array) {
+        if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
         if (typeHint === 'uint160') {
           if (isStandardLockingBytecode(value)) return value;
           const narrowed = value.length === 0 ? new Uint8Array(20)
@@ -24845,6 +24849,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return left === right;
     };
 
+    if (expression.kind === 'identifier' && expression.name) {
+      return localBindings?.get(expression.name);
+    }
     if (expression.kind === 'source' && expression.source) {
       return this._resolveExternalArgs(
         [expression.source], functionArgs, artifact, state, callerInputs, externalReturns,
@@ -25016,17 +25023,73 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (expression.kind === 'call') {
       const values = (expression.args ?? []).map(evaluate);
       if (values.some((value) => value === undefined)) return undefined;
-      if (expression.name === 'encodeString' && typeof values[0] === 'string') {
-        const bytes = utf8ToBin(values[0]);
-        return concat([numberLe(BigInt(bytes.length), 2), bytes]);
-      }
-      if (expression.name === 'encodeStringArray' && Array.isArray(values[0])) {
-        const strings = values[0] as unknown[];
-        const encoded = strings.map((value) => {
-          const bytes = utf8ToBin(String(value));
-          return concat([numberLe(BigInt(bytes.length), 2), bytes]);
-        });
-        return concat([numberLe(BigInt(strings.length), 2), ...encoded]);
+      if (expression.parameters && expression.statements
+        && expression.parameters.length === values.length) {
+        const bindings = new Map(localBindings);
+        expression.parameters.forEach((name, index) => bindings.set(name, values[index]!));
+        let remainingIterations = 10_000;
+        let invalid = false;
+        type Execution = { returned: boolean; value?: FunctionArgument };
+        const evaluateWith = (candidate: ExternalCallExpression): FunctionArgument | undefined => (
+          this._evaluateExternalExpression(
+            candidate, functionArgs, artifact, state, callerInputs, externalReturns, occurrenceIndex,
+            stateIncludesPriorWrites, executionSelfAddress, bindings,
+          )
+        );
+        const defaultValue = (type: string | undefined): FunctionArgument => {
+          if (type === 'bool') return false;
+          if (type === 'string') return '';
+          if (type?.endsWith('[]')) return [];
+          if (type?.startsWith('bytes') || type?.startsWith('address')) return new Uint8Array();
+          return 0n;
+        };
+        const execute = (statements: readonly ExternalCallStatement[]): Execution => {
+          for (const statement of statements) {
+            if (statement.kind === 'variable' && statement.name) {
+              const value = statement.expression
+                ? evaluateWith(statement.expression) : defaultValue(statement.type);
+              if (value === undefined) { invalid = true; return { returned: false }; }
+              bindings.set(statement.name, value);
+            } else if (statement.kind === 'assign' && statement.name && statement.expression) {
+              const value = evaluateWith(statement.expression);
+              if (value === undefined) { invalid = true; return { returned: false }; }
+              bindings.set(statement.name, value);
+            } else if (statement.kind === 'while' && statement.condition && statement.statements) {
+              while (true) {
+                const condition = evaluateWith(statement.condition);
+                if (condition === undefined) { invalid = true; return { returned: false }; }
+                if (!condition) break;
+                if (remainingIterations <= 0) { invalid = true; return { returned: false }; }
+                remainingIterations -= 1;
+                const result = execute(statement.statements);
+                if (result.returned || invalid) return result;
+              }
+            } else if (statement.kind === 'branch' && statement.condition && statement.statements) {
+              const condition = evaluateWith(statement.condition);
+              if (condition === undefined) { invalid = true; return { returned: false }; }
+              const result = execute(condition ? statement.statements : statement.elseStatements ?? []);
+              if (result.returned || invalid) return result;
+            } else if (statement.kind === 'return' && statement.expression) {
+              const value = evaluateWith(statement.expression);
+              if (value === undefined) { invalid = true; return { returned: false }; }
+              return { returned: true, value };
+            } else if (statement.kind === 'expression' && statement.expression) {
+              if (evaluateWith(statement.expression) === undefined) {
+                invalid = true;
+                return { returned: false };
+              }
+            } else if (statement.kind === 'block' && statement.statements) {
+              const result = execute(statement.statements);
+              if (result.returned || invalid) return result;
+            } else {
+              invalid = true;
+              return { returned: false };
+            }
+          }
+          return { returned: false };
+        };
+        const result = execute(expression.statements);
+        if (!invalid && result.returned) return result.value;
       }
       // Struct constructor: positional arrays are accepted by the ABI encoder.
       if (expression.name && /^[A-Z]/.test(expression.name)) {

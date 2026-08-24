@@ -292,6 +292,78 @@ type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusGraphExecution?: true;
 };
 
+/** Runtime resources selected by a concrete message-bus envelope. The published route ABI describes the
+ * bounded union of every eligible handler, while mutating transaction resources follow only authenticated rows. */
+export function selectedMessageBusResourceMetadata(
+  rows: readonly { handler: AbiFunction }[] | undefined,
+): {
+    entryLoopWrites: readonly string[];
+    entryLoopWriteSignatures: Readonly<Record<string, string>>;
+    loopCollections: readonly string[];
+    dynamicReads: readonly string[];
+    dynamicWrites: readonly string[];
+  } {
+  const entryLoopWrites = new Set<string>();
+  const entryLoopWriteSignatures: Record<string, string> = {};
+  const loopCollections = new Set<string>();
+  const dynamicReads = new Set<string>();
+  const dynamicWrites = new Set<string>();
+  for (const { handler } of rows ?? []) {
+    for (const collection of handler.entryLoopWrites ?? []) {
+      entryLoopWrites.add(collection);
+      loopCollections.add(collection);
+    }
+    for (const collection of handler.sortedInsertLoops ?? []) loopCollections.add(collection);
+    for (const info of handler.sortedInsertLoopInfo ?? []) loopCollections.add(info.collection);
+    for (const info of handler.sortedUpsertLoopInfo ?? []) loopCollections.add(info.collection);
+    for (const variable of handler.dynamicReads ?? []) dynamicReads.add(variable);
+    for (const variable of handler.dynamicWrites ?? []) dynamicWrites.add(variable);
+    for (const [collection, signature] of Object.entries(handler.entryLoopWriteSignatures ?? {})) {
+      const previous = entryLoopWriteSignatures[collection];
+      if (previous !== undefined && previous !== signature) {
+        throw new Error(`Selected message-bus handlers disagree on collection signature for '${collection}'`);
+      }
+      entryLoopWriteSignatures[collection] = signature;
+    }
+  }
+  return {
+    entryLoopWrites: [...entryLoopWrites],
+    entryLoopWriteSignatures,
+    loopCollections: [...loopCollections],
+    dynamicReads: [...dynamicReads],
+    dynamicWrites: [...dynamicWrites],
+  };
+}
+
+/** Move route-owned dynamic inputs from executor-relative provisional slots to the state owner's published
+ * trailing band. The displaced balanced funders retain the provisional positions, preserving total block width. */
+export function anchorRoutedDynamicResourcesAtOwner<T extends { token?: unknown }>(
+  blockInputs: readonly T[],
+  resources: readonly { blockSlot: number; name: string }[],
+  executorOffset: number,
+): T[] {
+  const anchored = [...blockInputs];
+  for (const resource of resources) {
+    const shiftedSlot = resource.blockSlot + executorOffset;
+    const destination = anchored[resource.blockSlot];
+    const source = anchored[shiftedSlot];
+    if (!source) {
+      throw new Error(
+        `Nested dynamic state '${resource.name}' has no provisional routed slot ${shiftedSlot}`,
+      );
+    }
+    if (destination?.token) {
+      throw new Error(
+        `Nested dynamic state '${resource.name}' overlaps a fixed routed resource at `
+        + `block slot ${resource.blockSlot}`,
+      );
+    }
+    anchored[resource.blockSlot] = source;
+    anchored[shiftedSlot] = destination;
+  }
+  return anchored;
+}
+
 /** Decode only the rows selected by an message-bus batch envelope and project the compiler-published blockhash descriptors.
  * Artifact metadata is not trusted to describe the blob: selector, row and argument bounds are checked here. */
 function selectGraphBlockhashReads(
@@ -9486,7 +9558,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         };
 
-        const rebindExternalEntryMaster = (
+        const rebindExternalResourceMaster = (
           group: ExternalCallUtxoGroup, entryMasterIdx: number,
         ): boolean => {
           if (!group.blockLayout || !group.blockInputs || entryMasterIdx < 0) return false;
@@ -9545,6 +9617,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               rebound = true;
             }
           }
+          for (const resource of group.dynamicChunkResources ?? []) {
+            if (!resource.write) continue;
+            const input = group.blockInputs[resource.blockSlot];
+            if (!input?.token?.nft) continue;
+            input.unlocker = createDynamicChunkUnlocker(
+              entryContract.inner, entryMasterIdx, group.categoryId, resource.name, resource.type,
+            );
+            rebound = true;
+          }
           return rebound;
         };
 
@@ -9552,7 +9633,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           let rebound = false;
           for (const group of externalCallUtxoGroups) {
             if (group.sharedGroupIndex !== undefined) continue;
-            rebound = rebindExternalEntryMaster(
+            rebound = rebindExternalResourceMaster(
               group, stb.findMintingInputIndex(group.categoryId),
             ) || rebound;
           }
@@ -9695,7 +9776,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // time used a block-relative placeholder (B's master index isn't known until the tx layout is). A funder
           // placeholder (absent key, no token) has no covenant to fix. The probe above runs B's master covenant only,
           // so the placeholder does not affect the entry-commitment extraction below; the final build uses this patch.
-          rebindExternalEntryMaster(group, entryMasterIdx);
+          rebindExternalResourceMaster(group, entryMasterIdx);
 
           // Run VM on B's master input
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -17842,6 +17923,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const childBatchPredecessorOutputs: Array<{
                 outputBlockSlot: number; lockingBytecode: Uint8Array; commitment: string;
               }> = [];
+              const childDynamicChunkResources: Array<{
+                blockSlot: number; name: string; type: string; write: boolean;
+              }> = [];
               // Active batch targets can share one predecessor proof. Only one physical input may spend that
               // proof; later target slots are funder-balanced but still mint distinct collection outputs.
               const childBatchEntryLockingBytecodes = new Map<number, Uint8Array>();
@@ -18256,6 +18340,64 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   }
                 }
                 const insertBase = selectedLayout.trailingBase ?? selectedLayout.blockSize;
+                // A compiler route publishes the union of every handler's dynamic-storage footprint. Its read
+                // loops therefore always address the physical union run at trailingBase, even when this envelope
+                // selects a handler which does not touch those variables. Materialize the old chunks in the same
+                // order as a direct call: read-only variables in ABI order, followed by written variables in state
+                // declaration order. Inactive union writes are preservation spends, not write-authorized spends.
+                const selectedResources = selectedMessageBusResourceMetadata(childCompilerRoute?.rowArguments);
+                const routeDynamicWrites = selectedFn?.dynamicWrites ?? [];
+                const routeDynamicNames = [
+                  ...(selectedFn?.dynamicReads ?? []).filter((name) => !routeDynamicWrites.includes(name)),
+                  ...(childLayout.variables ?? [])
+                    .filter((variable) => variable.dynamic && routeDynamicWrites.includes(variable.name))
+                    .map((variable) => variable.name),
+                ];
+                let dynamicChunkOffset = insertBase;
+                const dynamicContract = proxyCallee?.implementation.inner ?? callee.inner;
+                for (const name of routeDynamicNames) {
+                  const variable = (childLayout.variables ?? []).find((candidate) => (
+                    candidate.dynamic && candidate.name === name
+                  ));
+                  if (!variable) {
+                    throw new Error(`Nested compiler route references unknown dynamic state '${name}'`);
+                  }
+                  const chunkAddress = getDynamicChunkAddress(
+                    dynamicContract, callee.categoryId, variable.name, variable.type,
+                  );
+                  const chunks = (await nestedAddressUtxos(chunkAddress))
+                    .filter((utxo) => utxo.token?.category === callee.categoryId
+                      && utxo.token?.nft?.capability === 'mutable'
+                      && !!utxo.token.nft.commitment && utxo.token.nft.commitment.length > 0)
+                    .map((utxo) => ({
+                      utxo,
+                      chunkIndex: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex,
+                    }))
+                    .sort((left, right) => left.chunkIndex - right.chunkIndex);
+                  const activeWrite = selectedResources.dynamicWrites.includes(variable.name);
+                  for (const { utxo } of chunks) {
+                    if (dynamicChunkOffset >= insertBase + (selectedLayout.trailingCapacity ?? 0)) {
+                      throw new Error(
+                        `Nested dynamic state exceeds balanced trailing capacity for '${selectedFn?.name}'`,
+                      );
+                    }
+                    const unlocker = activeWrite
+                      ? createDynamicChunkUnlocker(
+                        dynamicContract, 0, callee.categoryId, variable.name, variable.type,
+                      )
+                      : createReadOnlyDynamicChunkUnlocker(
+                        dynamicContract, 0, callee.categoryId, variable.name, variable.type,
+                      );
+                    childBlockInputs[dynamicChunkOffset] = { ...utxo, unlocker };
+                    childDynamicChunkResources.push({
+                      blockSlot: dynamicChunkOffset,
+                      name: variable.name,
+                      type: variable.type,
+                      write: activeWrite,
+                    });
+                    dynamicChunkOffset += 1;
+                  }
+                }
                 // A fixed message-bus route executes each compiled batch journal even when the selected rows do
                 // not mutate that collection. Those inactive journals preserve their canonical zero-key entry;
                 // they still require the real key hash and an authenticated proof rather than all-zero vmap fields.
@@ -18668,6 +18810,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 delegate.batchPredecessorOutputs = childBatchPredecessorOutputs;
                 delegate.batchEntryLockingBytecodes = childBatchEntryLockingBytecodes;
                 delegate.relativeOutputInternalArgs = childRelativeOutputInternalArgs;
+                delegate.dynamicChunkResources = childDynamicChunkResources;
               }
               if (sharedGroupIndex >= 0 && childWritesState && !preserveFirstConditionalWriter) {
                 const primary = externalCallUtxoGroups[sharedGroupIndex];
@@ -18682,11 +18825,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 if (proxyCallee && childBlockInputs && selectedLayout
                   && delegateCallGroupIndex !== undefined) {
                   const proxyPrefix = [childState.masterUtxo as UnlockableUtxo, ...childData];
+                  // Delegate execution follows the proxy's fixed state prefix, but routed dynamic state remains
+                  // anchored to the authenticated proxy owner plus the compiler-published trailingBase. Move those
+                  // inputs back across the prefix while keeping the executor-relative source positions balanced.
+                  const embeddedBlockInputs = anchorRoutedDynamicResourcesAtOwner(
+                    [...proxyPrefix, ...childBlockInputs], childDynamicChunkResources, proxyPrefix.length,
+                  );
                   const shiftedSlots = selectedLayout.slots.map((slot) => ({
                     ...slot,
                     offset: slot.offset + proxyPrefix.length,
                   }));
-                  primary.blockInputs = [...proxyPrefix, ...childBlockInputs];
+                  primary.blockInputs = embeddedBlockInputs;
                   primary.blockLayout = {
                     blockSize: proxyPrefix.length + childBlockInputs.length,
                     slots: [
@@ -18714,6 +18863,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     [...childBatchEntryLockingBytecodes].map(([offset, lockingBytecode]) =>
                       [offset + proxyPrefix.length, lockingBytecode]),
                   );
+                  primary.dynamicChunkResources = childDynamicChunkResources;
                   primary.returnEventInBlock = selectedLayout.slots
                     .some((slot) => slot.kind === 'returnEvent');
                 } else if (!proxyCallee) {
@@ -18725,6 +18875,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   primary.plannedEntryInserts = childPlannedEntryInserts;
                   primary.batchPredecessorOutputs = childBatchPredecessorOutputs;
                   primary.batchEntryLockingBytecodes = childBatchEntryLockingBytecodes;
+                  primary.dynamicChunkResources = childDynamicChunkResources;
                 }
                 if (nested.hasReturnValues) {
                   primary.fusedReturnGroupIndex = childExternalGroupIndex;
@@ -18832,6 +18983,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }),
                 ...(!proxyCallee && childBatchEntryLockingBytecodes.size > 0 && {
                   batchEntryLockingBytecodes: childBatchEntryLockingBytecodes,
+                }),
+                ...(!proxyCallee && childDynamicChunkResources.length > 0 && {
+                  dynamicChunkResources: childDynamicChunkResources,
                 }),
                 ...(childRelativeOutputInternalArgs.length > 0 && {
                   relativeOutputInternalArgs: childRelativeOutputInternalArgs,
@@ -21994,10 +22148,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const delegateStateCategoryId = delegateProxyGroupIndex === undefined
       ? this.categoryId : externalCallUtxoGroups[delegateProxyGroupIndex].categoryId;
     const delegateRouteAbi = delegateRouteGroup?.compilerRoute?.abiFunction;
+    const entryRouteRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
+      ?.messageBusRowArguments;
+    const delegateRouteRows = delegateRouteGroup?.compilerRoute?.rowArguments;
+    const selectedRouteLoopMetadata = selectedMessageBusResourceMetadata([
+      ...(entryRouteRows ?? []),
+      ...(delegateRouteRows ?? []),
+    ]);
+    const selectedDelegateLoopMetadata = selectedMessageBusResourceMetadata(delegateRouteRows);
     const entryLoopWrites = [...new Set([
       ...(abiFunction?.entryLoopWrites ?? []),
       ...(entryAbiFunction?.entryLoopWrites ?? []),
       ...(delegateRouteAbi?.entryLoopWrites ?? []),
+      ...selectedRouteLoopMetadata.entryLoopWrites,
     ])];
     // Trailing vmap output indices are part of the covenant ABI. Fixed batches are assigned bases in
     // sortedBatchInfo order (first-access order), which can differ from state-layout declaration order. Preserve
@@ -22017,11 +22180,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const localStateCollections = new Set(this.inner.stateLayout?.collections?.map((collection) => collection.name));
     const loopEntryVars = orderedLoopCollections.map((name) => {
       const collection = stateLayout.collections?.find((candidate) => candidate.name === name);
-      const signature = delegateRouteAbi?.entryLoopWriteSignatures?.[name]
+      const signature = selectedRouteLoopMetadata.entryLoopWriteSignatures[name]
+        ?? delegateRouteAbi?.entryLoopWriteSignatures?.[name]
         ?? entryAbiFunction?.entryLoopWriteSignatures?.[name]
         ?? collection?.signature;
       const delegatedLoop = lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
-        && (delegateRouteAbi?.sortedUpsertLoopInfo?.some((info) => info.collection === name)
+        && (selectedDelegateLoopMetadata.loopCollections.includes(name)
+          || delegateRouteAbi?.sortedUpsertLoopInfo?.some((info) => info.collection === name)
           || delegateRouteAbi?.sortedInsertLoopInfo?.some((info) => info.collection === name)
           || (entryAbiFunction !== abiFunction
             && (entryAbiFunction?.sortedUpsertLoopInfo?.some((info) => info.collection === name)
@@ -22058,6 +22223,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         effectiveEntryLoopWrites: entryAbiFunction?.entryLoopWrites,
         delegateRouteAbi: delegateRouteAbi?.name,
         delegateRouteEntryLoopWrites: delegateRouteAbi?.entryLoopWrites,
+        selectedRouteHandlers: [...(entryRouteRows ?? []), ...(delegateRouteRows ?? [])]
+          .map((row) => row.handler.name),
+        selectedRouteEntryLoopWrites: selectedRouteLoopMetadata.entryLoopWrites,
         delegateStateCategoryId,
         entryAccesses: entryAccesses?.length ?? 0,
         orderedLoopCollections,

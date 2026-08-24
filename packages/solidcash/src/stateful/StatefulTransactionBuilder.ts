@@ -3855,6 +3855,11 @@ export interface ExternalCallUtxoGroup {
   batchEntryLockingBytecodes?: Map<number, Uint8Array>;
   /** Direct, unambiguous dynamic-write values derived from the callee ABI arguments. */
   dynamicStateValues?: Readonly<Record<string, StateValue>>;
+  /** Dynamic chunk inputs occupying a compiler route's balanced trailing band. Write spends are rebound once the
+   * physical state-owner master coordinate is known; inactive union resources remain preservation spends. */
+  dynamicChunkResources?: Array<{
+    blockSlot: number; name: string; type: string; write: boolean;
+  }>;
 }
 
 export interface StatefulTransactionOptions extends TransactionBuilderOptions {
@@ -10924,6 +10929,17 @@ export class StatefulTransactionBuilder {
             ?.findIndex((planned) => planned.outputBlockSlot === si) ?? -1;
           const batchPredecessor = group.batchPredecessorOutputs
             ?.find((planned) => planned.outputBlockSlot === si);
+          const routedDynamicResource = group.dynamicChunkResources
+            ?.find((resource) => resource.blockSlot === si);
+
+          if (routedDynamicResource && !routedDynamicResource.write) {
+            builder.addOutput({
+              to: input.unlocker.generateLockingBytecode(),
+              amount: input.satoshis,
+              token: cloneToken(input.token),
+            });
+            continue;
+          }
 
           if (batchPredecessor) {
             builder.addOutput({

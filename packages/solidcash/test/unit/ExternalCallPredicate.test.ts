@@ -6,6 +6,7 @@ import type {
 import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/index.js';
 import {
+  anchorRoutedDynamicResourcesAtOwner,
   canRefreshReachedCallFromPostState,
   externalCallTargetSourceLockingBytecodeHex,
   externalReturnParamSlot,
@@ -13,6 +14,7 @@ import {
   inactiveMessageBusRouteWitness,
   isSdkResolvedExternalCallTopologyWitness,
   physicalExternalCallSelectorHex,
+  selectedMessageBusResourceMetadata,
 } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
@@ -57,6 +59,56 @@ const source = (paramIndex: number): ExternalCallExpression => ({
 });
 
 describe('compiler-published external-call predicate evaluation', () => {
+  it('anchors routed dynamic resources to the state owner without changing block width', () => {
+    const inputs = Array.from({ length: 8 }, (_, id) => ({ id }));
+    const chunk = { id: 5, token: { category: '01' } };
+    inputs[5] = chunk;
+
+    const anchored = anchorRoutedDynamicResourcesAtOwner(
+      inputs, [{ blockSlot: 3, name: 'payload' }], 2,
+    );
+
+    expect(anchored).toHaveLength(inputs.length);
+    expect(anchored[3]).toBe(chunk);
+    expect(anchored[5]).toEqual({ id: 3 });
+    expect(inputs[5]).toBe(chunk);
+  });
+
+  it('selects loop resources from the concrete message-bus handlers', () => {
+    const selected = selectedMessageBusResourceMetadata([
+      {
+        handler: {
+          name: 'append', inputs: [], entryLoopWrites: ['history'],
+          dynamicReads: ['archive'], dynamicWrites: ['archive'],
+          entryLoopWriteSignatures: { history: 'history:mapping(bytes32 => bytes[])' },
+        },
+      },
+      {
+        handler: {
+          name: 'appendAgain', inputs: [], entryLoopWrites: ['history'],
+          entryLoopWriteSignatures: { history: 'history:mapping(bytes32 => bytes[])' },
+        },
+      },
+      {
+        handler: {
+          name: 'upsert', inputs: [],
+          sortedUpsertLoopInfo: [{
+            collection: 'balances', fixedKeyParams: [], varyingArrayParam: 'keys',
+            valueArrayParam: 'values', op: 'set',
+          }],
+        },
+      },
+    ]);
+
+    expect(selected).toEqual({
+      entryLoopWrites: ['history'],
+      entryLoopWriteSignatures: { history: 'history:mapping(bytes32 => bytes[])' },
+      loopCollections: ['history', 'balances'],
+      dynamicReads: ['archive'],
+      dynamicWrites: ['archive'],
+    });
+  });
+
   it('resolves loop-index sources relative to the reached occurrence', () => {
     expect(evaluator._resolveExternalArgs(
       [{ kind: 'loopIndex', initialValue: '2', stepValue: '3' }],

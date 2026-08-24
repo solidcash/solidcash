@@ -14907,6 +14907,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__batch_header_prefix)');
     this.pushToStack('(__batch_rows)');
+    // The split above intentionally retains only the six immutable header bytes in the prefix. Remove the
+    // previous count byte from the remainder before inserting its replacement; otherwise every appended row
+    // preserves the complete history of count bytes between the header and the first row.
+    this.emit(encodeInt(1n), locationData);
+    this.pushToStack('(__batch_old_count_width)');
+    this.emit(Op.OP_SPLIT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_old_count)');
+    this.pushToStack('(__batch_rows_without_count)');
+    this.emit(Op.OP_NIP, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_rows)');
     this.emit(Op.OP_SWAP, locationData);
     const prefixName = this.stack[0];
     this.stack[0] = this.stack[1];

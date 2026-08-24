@@ -83,6 +83,14 @@ describe('inferred message-bus batching for repeated external callees', () => {
     expect(compact).toContain('OP_ENDIFOP_5OP_SPLITOP_SWAP0453434231OP_EQUALVERIFY');
   });
 
+  it('replaces rather than retains the previous runtime batch count', () => {
+    const compact = compileString(SOURCE).bytecode.replace(/\s+/g, '');
+    // Rewriting SCB1's count splits after the six immutable header bytes, removes the old one-byte count, then
+    // concatenates the replacement count with only the actual row payload. The optimizer outlines the shared
+    // tail beginning at OP_NIP, so each of the two append sites ends this prefix with the same OP_INVOKE.
+    expect(compact.match(/OP_SPLITOP_1OP_SPLITOP_5OP_INVOKE/g)).toHaveLength(2);
+  });
+
   it('leaves an ungrouped single external call byte-identical to the explicit opt-out', () => {
     const source = `
       interface ICounter { function add(int amount) external; }

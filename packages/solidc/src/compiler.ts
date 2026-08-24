@@ -1598,6 +1598,7 @@ function synthesizeMessageBusRoute(
   const crossHandlerPerRowWitnesses = new Set<string>();
   const fixedIterationCollections = new Set<string>();
   const fixedArrayRouteHandlers = new Set<FunctionDefinitionNode>();
+  const runtimeLoopCollectionsByHandler = new Map<FunctionDefinitionNode, Set<string>>();
   // `required` is the compiler-owned verifier-binding continuation of an explicitly enabled route. Admission
   // must remain identical in both passes or binding silently narrows the artifact produced by the first pass.
   const explicitlyEnabledMessageBus = ['enabled', 'required'].includes(
@@ -1718,6 +1719,7 @@ function synthesizeMessageBusRoute(
     let graphHasComputedCallArguments = false;
     let graphHasLocalCallArguments = false;
     let graphHasDelegatecall = false;
+    let graphHasLowLevelCall = false;
     let graphHasCallValue = false;
     let routeUsesForeignTryCatch = false;
     let routeUsesOpaqueAssembly = false;
@@ -1764,12 +1766,14 @@ function synthesizeMessageBusRoute(
           if (node instanceof LowLevelCallStatementNode) {
             statefulExternalCall = true;
             methodCallCount += 1;
+            graphHasLowLevelCall = true;
             if (candidate === fn) directExternalCallsites.add(node);
             if (node.callMode === 'delegatecall') graphHasDelegatecall = true;
           }
           if (node instanceof LowLevelCallNode) {
             statefulExternalCall = true;
             methodCallCount += 1;
+            graphHasLowLevelCall = true;
             if (candidate === fn) directExternalCallsites.add(node);
             if (node.callMode === 'delegatecall') graphHasDelegatecall = true;
           }
@@ -1781,6 +1785,7 @@ function synthesizeMessageBusRoute(
             statefulExternalCall = true;
             methodCallCount += 1;
             if (candidate === fn) directExternalCallsites.add(node);
+            if (['call', 'staticcall', 'delegatecall'].includes(node.methodName)) graphHasLowLevelCall = true;
             if (node.methodName === 'delegatecall') graphHasDelegatecall = true;
             if (node.parameters.some((parameter) => !(parameter instanceof IdentifierNode))) {
               graphHasComputedCallArguments = true;
@@ -1805,6 +1810,7 @@ function synthesizeMessageBusRoute(
             && /\.(call|staticcall|delegatecall)$/.test(node.identifier.name)) {
             statefulExternalCall = true;
             methodCallCount += 1;
+            graphHasLowLevelCall = true;
             if (candidate === fn) directExternalCallsites.add(node);
             if (node.identifier.name.endsWith('.delegatecall')) graphHasDelegatecall = true;
           }
@@ -1904,16 +1910,15 @@ function synthesizeMessageBusRoute(
       && (lastStatement instanceof MethodCallStatementNode
         || (lastStatement instanceof FunctionCallStatementNode
           && contractTypedReceiverCall(lastStatement.call, interfaceTypedReceivers(fn))));
-    const boundedNamedClosure = (() => {
+    const namedClosureShape = (() => {
       const closureNames = collectNamedFunctionClosure(fn, byName);
       const edges = new Map<string, Set<string>>();
+      let bounded = true;
       for (const name of closureNames) {
         const outgoing = new Set<string>();
         edges.set(name, outgoing);
         for (const candidate of byName.get(name) ?? []) {
-          let bounded = true;
           walkInvocationAst(candidate.body, (node) => {
-            if (!bounded) return;
             const namedInternal = node instanceof FunctionCallNode && byName.has(node.identifier.name);
             if (namedInternal) outgoing.add(node.identifier.name);
             const potentiallyExternal = node instanceof ExternalFunctionCallNode
@@ -1925,7 +1930,6 @@ function synthesizeMessageBusRoute(
             const occurrence = occurrenceInfoOf(candidate, node);
             if (occurrence.occurrence === 'loop' && occurrence.maximumOccurrences === undefined) bounded = false;
           });
-          if (!bounded) return false;
         }
       }
       const visiting = new Set<string>();
@@ -1939,17 +1943,17 @@ function synthesizeMessageBusRoute(
         visited.add(name);
         return true;
       };
-      return acyclic(fn.name);
+      return { bounded, acyclic: acyclic(fn.name) };
     })();
+    const boundedNamedClosure = namedClosureShape.bounded && namedClosureShape.acyclic;
     // An explicitly requested route may use the runtime emission form for a general conditional call DAG when
-    // every outgoing callsite is physically in this entry point and has a compiler-proven finite reach count.
-    // The runtime form consumes and authenticates a row at the actual callsite, so branches preserve exact
-    // reachability and computed/local arguments remain in scope. Calls hidden in an internal-helper closure are
-    // deliberately excluded: their callsite ceiling must first be multiplied by the helper's own invocation
-    // count. Auto mode retains its narrower compatibility heuristic.
+    // every outgoing call and internal-helper invocation has a compiler-proven finite reach count and the named
+    // closure is acyclic. Later helper inlining places each edge at its actual callsite; semantic analysis then
+    // publishes the multiplied occurrence ceiling from that final body. Runtime emission consumes and authenticates
+    // a row there, so branches, computed/local arguments, and an independent source return value remain exact.
+    // Auto mode retains its narrower compatibility heuristic.
     const graphBoundedRuntimeEligible = explicitlyEnabledMessageBus
-      && fn.returnTypes.length === 0
-      && directExternalCallsites.size > 0
+      && methodCallCount > 0
       && boundedNamedClosure
       && !graphHasDelegatecall
       && !graphHasCallValue
@@ -1958,12 +1962,25 @@ function synthesizeMessageBusRoute(
         const occurrence = occurrenceInfoOf(fn, callsite);
         return occurrence.occurrence !== 'loop' || occurrence.maximumOccurrences !== undefined;
       });
+    // A typed runtime loop has a second, compiler-owned ceiling in atomic mode: the verifier authenticates one
+    // exact emission row per reached edge and rejects a callManifest above ATOMIC_MESSAGE_BUS_MAX_ROWS. This is
+    // sufficient for an acyclic high-level call closure even when the Solidity source has no literal/require
+    // ceiling. Raw calls stay excluded because their target/calldata resolver requires a source bound, and a
+    // recursive closure stays excluded because a finite row vector is not a termination proof.
+    const graphProtocolBoundedRuntimeEligible = explicitlyEnabledMessageBus
+      && methodCallCount > 0
+      && namedClosureShape.acyclic
+      && !graphHasLowLevelCall
+      && !graphHasDelegatecall
+      && !graphHasCallValue
+      && footprint.effects.every((effect) => effect === 'external-call');
+    const graphRuntimeEligible = graphBoundedRuntimeEligible || graphProtocolBoundedRuntimeEligible;
     // Outgoing-call handlers participate in the atomic messageEnvelope protocol by construction. Admission is
     // inferred from the handler closure; there is no compiler option that can opt a handler into the protocol.
     const graphTailCallEligible = methodCallCount >= 1
       && (graphTailStatement || graphResultStatement
         || (admitBareForwardingHandlers && graphBareTailStatement)
-        || graphBoundedRuntimeEligible
+        || graphRuntimeEligible
         || (fn.returnTypes.length === 0
           && !graphHasCallValue
           && bodyStatements[bodyStatements.length - 1] instanceof RequireNode));
@@ -2010,6 +2027,29 @@ function synthesizeMessageBusRoute(
         }
         return undefined;
       };
+      // A runtime-keyed collection write owns a variable trailing region, not one fixed route entry witness.
+      // Keep those writes out of the fixed-key classifier so the graph clone retains the original key expression
+      // and reaches the same sorted-loop covenant used by an ordinary entry point. Fixed-bound loops have already
+      // been unrolled before this synthesis point, so only genuinely runtime-sized loops remain here.
+      const runtimeLoopWrites = new Set<Node>();
+      const runtimeLoopCollections = new Set<string>();
+      for (const closureName of collectNamedFunctionClosure(fn, byName)) {
+        for (const candidate of byName.get(closureName) ?? []) {
+          const candidateBound = locallyBoundNames(candidate);
+          walkInvocationAst(candidate.body, (node) => {
+            const bare = bareEntryAccessOf(node, candidateBound);
+            const access = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+              || node instanceof MappingDeleteNode
+              ? { name: node.name, keys: node.keys as ExpressionNode[] }
+              : (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode ? bare : undefined);
+            if (!access || !collectionByName.has(access.name)) return;
+            const occurrence = occurrenceInfoOf(candidate, node);
+            if (occurrence.occurrence !== 'loop' || occurrence.maximumOccurrences !== undefined) return;
+            if (candidate === fn) runtimeLoopWrites.add(node);
+            runtimeLoopCollections.add(access.name);
+          });
+        }
+      }
       const collectKeys = (includeBare: boolean, flattenBare = false): Map<string, number[][]> => {
         const collected = new Map<string, number[][]>();
         const consumed = new Set<Node>();
@@ -2063,6 +2103,7 @@ function synthesizeMessageBusRoute(
             ? { name: node.name, keys: node.keys as ExpressionNode[] }
             : (flattened ?? (includeBare && !flattenBare ? bareAccessOf(node) : undefined));
           if (!access || !collectionByName.has(access.name)) return;
+          if (runtimeLoopWrites.has(node)) return;
           const indices = access.keys.map((key) => {
             if (key instanceof IdentifierNode) {
               const parameterIndex = parameterAliases.get(key.name);
@@ -2130,8 +2171,9 @@ function synthesizeMessageBusRoute(
           .filter((resource) => resource.startsWith('collection:'))
           .every((resource) => {
             const name = resource.split(':')[1];
-            return dynamicState.has(name) || name === 'tokens';
+            return dynamicState.has(name) || name === 'tokens' || runtimeLoopCollections.has(name);
           });
+      if (runtimeLoopCollections.size > 0) runtimeLoopCollectionsByHandler.set(fn, runtimeLoopCollections);
       // A fixed-array collection iteration is expanded before semantic analysis into one literal-index read per
       // element. Admit that shape only when the compiler can re-derive the COMPLETE identity set 0..N-1 here.
       // This is intentionally not a general literal-key widening: a partial set, a duplicate/out-of-range index,
@@ -2208,12 +2250,24 @@ function synthesizeMessageBusRoute(
         // entry slot per identity without accepting a key/count witness from the spender.
       } else if ((!nonEntryCollectionOnly && directKeys.size === 0) || [...closure].some((name) => name !== fn.name
         && [...(byName.get(name) ?? [])].some((candidate) => {
-          let touches = false;
+          let touchesUnsupported = false;
+          const candidateBound = locallyBoundNames(candidate);
           walkInvocationAst(candidate.body, (node) => {
-            if (node instanceof MappingAccessNode || node instanceof MappingAssignNode
-              || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode) touches = true;
+            const bare = bareEntryAccessOf(node, candidateBound);
+            const access = node instanceof MappingAccessNode || node instanceof MappingAssignNode
+              || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode
+              ? { name: node.name, write: !(node instanceof MappingAccessNode) }
+              : bare ? {
+                name: bare.name,
+                write: node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode,
+              } : undefined;
+            if (!access || !collectionByName.has(access.name)) return;
+            const occurrence = occurrenceInfoOf(candidate, node);
+            const runtimeLoopWrite = access.write && runtimeLoopCollections.has(access.name)
+              && occurrence.occurrence === 'loop' && occurrence.maximumOccurrences === undefined;
+            if (!runtimeLoopWrite) touchesUnsupported = true;
           });
-          return touches;
+          return touchesUnsupported;
         }))) {
         reason = 'collection-helper-route-not-enabled';
       } else if ([...directKeys.values()].some((alternatives) => alternatives.length > 1)) {
@@ -2439,10 +2493,12 @@ function synthesizeMessageBusRoute(
       // Partial array-of-struct writes currently reach a direct-only fallback after every admission rung. Reads
       // of the same struct remain batchable; refuse only the mutation shape until it has a row encoding.
       reason = 'array-struct-element-write-route-not-enabled';
-    } else if (!reason && fn.returnTypes.length > 0 && resizesDynamicArrayState) {
-      // Result rows cannot also carry a dynamic-state resize. The generated result route eventually rejects this
-      // after cloning and lowering several variants; identify the same invariant at eligibility time so the direct
-      // entry point remains available without paying for route shapes that cannot settle.
+    } else if (!reason && fn.returnTypes.length > 0 && resizesDynamicArrayState
+      && !(explicitlyEnabledMessageBus && graphTailCallEligible)) {
+      // A standalone result row cannot also carry a dynamic-state resize. An explicitly requested graph tail is
+      // different: its OP_INVOKE frame executes inside the authenticated route owner, whose shared dynamic journal
+      // settles the resize independently while the invocation row commits the returned value. Keep auto/plain
+      // batches on the established fail-closed path; only that compiler-owned graph frame reaches the widening.
       reason = 'result-route-requires-effect-free-handlers';
     } else if (!reason && reachesNestedDynamicArray) {
       // A nested dynamic-array state handler currently reaches the same direct-only fallback after several
@@ -2530,7 +2586,7 @@ function synthesizeMessageBusRoute(
     // row-local parsed value has independent multi-row VM proof.
     } else if (!reason && graphTailCallEligible
       && (routeUsesMsgData || routeUsesMsgSig
-        || (routeUsesMsgSender && !graphBoundedRuntimeEligible))) {
+        || (routeUsesMsgSender && !graphRuntimeEligible))) {
       reason = 'emission-handler-logical-context-reconstruction-unsupported';
     } else if (!reason && routeUsesForeignTryCatch) {
       reason = 'foreign-try-catch-callManifest-ineligible';
@@ -2573,7 +2629,7 @@ function synthesizeMessageBusRoute(
     // it to a forwarded handler parameter in the wrapper epilogue).
     if (!reason && graphTailCallEligible && !graphHasDelegatecall
       && (graphHasComputedCallArguments || graphHasLocalCallArguments
-        || graphBoundedRuntimeEligible || authenticatedBoundedLowLevelConsumer
+        || graphRuntimeEligible || authenticatedBoundedLowLevelConsumer
         || (!graphResultStatement && !graphTailStatement))) {
       graphRuntimeHandlers.add(fn);
     }
@@ -2656,12 +2712,14 @@ function synthesizeMessageBusRoute(
     if ((dropMixedScalars || !admitMixedScalarHandlers || perRowEntryRoute)
       && survivors.some((fn) => (fn.messageBusKeyWitnesses?.length ?? 0) > 0)) {
       for (const fn of survivors) {
-        if ((fn.messageBusKeyWitnesses?.length ?? 0) === 0) {
+        if ((fn.messageBusKeyWitnesses?.length ?? 0) === 0
+          && (runtimeLoopCollectionsByHandler.get(fn)?.size ?? 0) === 0) {
           fn.messageBusEligible = false;
           fn.messageBusRejectionReason = 'mixed-scalar-and-collection-route-not-enabled';
         }
       }
-      survivors = survivors.filter((fn) => (fn.messageBusKeyWitnesses?.length ?? 0) > 0);
+      survivors = survivors.filter((fn) => (fn.messageBusKeyWitnesses?.length ?? 0) > 0
+        || (runtimeLoopCollectionsByHandler.get(fn)?.size ?? 0) > 0);
     }
     let eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
     const resultMode = survivors.some((fn) => fn.returnTypes.length > 0);
@@ -3063,6 +3121,7 @@ function synthesizeMessageBusRoute(
   const bindEntryKeyParameters = (
     handler: FunctionDefinitionNode, source: FunctionDefinitionNode,
   ): void => {
+    const runtimeLoopCollections = runtimeLoopCollectionsByHandler.get(source) ?? new Set<string>();
     normalizeBareEntryAccesses(handler);
     if (process.env.SOLIDC_DEBUG_ROUTE === '1' && source.name === 'transferFrom') {
       const mappings: Array<{ kind: string; name: string; keys: string[] }> = [];
@@ -3082,6 +3141,7 @@ function synthesizeMessageBusRoute(
     const alternatives = new Map<string, string[]>();
     walkInvocationAst(handler.body, (node) => {
       if (!isMappingNode(node) || !collectionByName.has(node.name)) return;
+      if (runtimeLoopCollections.has(node.name)) return;
       const list = alternatives.get(node.name) ?? [];
       const signature = keySignature(node);
       if (!list.includes(signature)) list.push(signature);
@@ -3124,6 +3184,7 @@ function synthesizeMessageBusRoute(
     const declared = new Set<string>();
     walkInvocationAst(handler.body, (node) => {
       if (!isMappingNode(node)) return;
+      if (runtimeLoopCollections.has(node.name)) return;
       const collection = collectionByName.get(node.name);
       if (!collection || node.keys.length !== collection.allKeyTypes.length) return;
       const safeName = node.name.replace(/[^A-Za-z0-9_]/g, '_');
@@ -5846,15 +5907,20 @@ function compileResolvedAst(
   }
   if (messageBusRoute?.blockLayout) {
     const handlerManagedEntrySlots = new Set<number>();
+    const graphCloneBySource = new Map(ast.contract.functions
+      .filter((fn) => fn.graphEmissionHandler && fn.name.startsWith('__message_bus_graph_'))
+      .map((fn) => [fn.name.slice('__message_bus_graph_'.length), fn] as const));
     for (const fn of ast.contract.functions) {
       const routeClone = fn.graphEmissionHandler || fn.name.startsWith('__message_bus_array_')
         || fn.name.startsWith('__message_bus_entry_');
       if (routeClone) {
         fn.blockLayout = messageBusRoute.blockLayout;
       }
-      if ((routeClone || fn.messageBusEligible)
-        && fn.entryAccesses?.length && messageBusRoute.entryAccesses?.length) {
-        fn.messageBusPhysicalEntrySlots = fn.entryAccesses.map((entry) => {
+      const fixedHandlerEntries = fn.entryAccesses?.filter((entry) => !entry.inLoop) ?? [];
+      const directlyDispatchedSource = fn.messageBusEligible && !graphCloneBySource.has(fn.name);
+      if ((routeClone || directlyDispatchedSource)
+        && fixedHandlerEntries.length > 0 && messageBusRoute.entryAccesses?.length) {
+        fn.messageBusPhysicalEntrySlots = fixedHandlerEntries.map((entry) => {
           const byShape = messageBusRoute.entryAccesses!.filter((routeEntry) =>
             routeEntry.collection === entry.collection
               && routeEntry.keyParams.length === entry.keyParams.length);
@@ -5913,6 +5979,15 @@ function compileResolvedAst(
           return physical.slotIndex;
         });
       }
+    }
+    // Handler ABI metadata is published from the source entry point, but a graph handler is physically invoked
+    // through its compiler-owned clone. Copy the clone's exact fixed-slot projection instead of independently
+    // remapping the unused direct body (whose post-inline constant folding may legitimately have a different
+    // fixed-vs-runtime collection shape).
+    for (const [sourceName, clone] of graphCloneBySource) {
+      const source = ast.contract.functions.find((fn) => fn.name === sourceName && fn.isEntryPoint);
+      if (!source) continue;
+      source.messageBusPhysicalEntrySlots = clone.messageBusPhysicalEntrySlots;
     }
     messageBusRoute.messageBusHandlerManagedEntrySlots = [...handlerManagedEntrySlots];
   }
@@ -6385,6 +6460,30 @@ function compileResolvedAst(
           && { physicalEntrySlots: fn.messageBusPhysicalEntrySlots }),
       })),
     };
+    // An admitted runtime graph handler is also bounded by the compiler-owned atomic verifier: it accepts at
+    // most ATOMIC_MESSAGE_BUS_MAX_ROWS total rows, while code generation consumes one authenticated emission row
+    // at each reached typed callsite. Publish that route-only guard for typed loops which have no stronger source
+    // ceiling. Direct execution remains unchanged; raw/low-level loops never reach this admission path.
+    const routeHandlers = new Set(artifact.messageBus.handlers
+      .filter((handler) => handler.eligible)
+      .map((handler) => handler.name));
+    artifact.abi = artifact.abi.map((fn) => {
+      if (!routeHandlers.has(fn.name) || !fn.externalCalls?.some((call) =>
+        call.occurrence === 'loop' && call.maximumOccurrences === undefined
+        && call.interfaceName !== '__raw__' && call.functionName !== '__raw__')) return fn;
+      return {
+        ...fn,
+        externalCalls: fn.externalCalls.map((call) =>
+          call.occurrence === 'loop' && call.maximumOccurrences === undefined
+            && call.interfaceName !== '__raw__' && call.functionName !== '__raw__'
+            ? {
+              ...call,
+              maximumOccurrences: ATOMIC_MESSAGE_BUS_MAX_ROWS,
+              occurrenceBoundSource: 'guard' as const,
+            }
+            : call),
+      };
+    });
   } else if (mergedCompilerOptions.messageBus) {
     // X15. Route synthesis names a rejection reason for every entry point, but the ONLY channel that publishes
     // those names is `messageBus.handlers` - which is not built when no entry point survives. A contract whose

@@ -321,6 +321,67 @@ describe('message-bus compilation selection', () => {
     });
   });
 
+  it('keeps runtime collection loops in a returning graph handler on the authenticated trailing route', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ISink { function ping(uint value) external; }
+      contract RoutedRuntimeCollection {
+        ISink sink;
+        uint[] jobs;
+        mapping(uint => mapping(address => bool)) public whitelist;
+
+        function edge() internal { sink.ping(1); }
+        function update(uint id, address[] allowed, address[] denied) internal {
+          for (uint i = 0; i < allowed.length; i++) {
+            whitelist[id][allowed[i]] = true;
+            edge();
+          }
+          for (uint i = 0; i < denied.length; i++) {
+            whitelist[id][denied[i]] = false;
+            edge();
+          }
+        }
+        function setOne(uint id, address worker) public {
+          whitelist[id][worker] = true;
+          require(true);
+        }
+        function create(address[] workers) public returns (uint) {
+          edge();
+          jobs.push(0);
+          uint id = jobs.length - 1;
+          update(id, workers, new address[](0));
+          return id;
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 10_000_000,
+      optimizeForCompilationSpeed: true,
+      suppressWarnings: true,
+    });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'create');
+    const abi = artifact.abi.find((candidate) => candidate.name === 'create');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.batchKeyWitnesses).toBeUndefined();
+    expect(handler?.physicalEntrySlots).toBeUndefined();
+    expect(abi?.externalCalls?.find((call) => call.occurrence === 'loop')).toMatchObject({
+      maximumOccurrences: 0xffff,
+      occurrenceBoundSource: 'guard',
+    });
+    expect(abi?.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({
+        collection: 'whitelist',
+        fixedKeyParams: [],
+        varyingArrayParam: 'workers',
+        valueConst: '1',
+        op: 'set',
+      }),
+    ]);
+    expect(artifact.messageBus?.route.blockLayout).toMatchObject({ trailingCapacity: 64 });
+  });
+
   it('keeps valid external siblings when the fast route attributes one generated clone failure', () => {
     const artifact = compileString(`contract SelectiveRoute {
       struct Record { int value; }

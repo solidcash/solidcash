@@ -2726,7 +2726,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // journal share one caller-owned stack frame. Single-tail helpers are removed by
         // InlineReturningStateHelpers; any survivor here has multiple/non-tail exits and cannot safely execute
         // behind OP_INVOKE (the VM otherwise rejects its off-by-return-slot write-back).
-        if (writes.dynamicArray) {
+        if (writes.dynamicArray && !fn.graphEmissionHandler) {
           throw new Error(
             `Returning dynamic-array state helper '${fn.name}' must have one tail return so it can be inlined`,
           );

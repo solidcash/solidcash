@@ -273,6 +273,67 @@ function installCachedInvokeEvaluator(
   });
 }
 
+interface InactiveBranchTargets {
+  falseBranch: Int32Array;
+  elseBranch: Int32Array;
+}
+
+/** Skip inactive compiler-generated branches while preserving their base instruction cost in sparse probes. */
+function installSparseProbeBranchSkips(
+  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
+): void {
+  type State = Parameters<(typeof instructionSet.operations)[number]>[0];
+  const targetsByInstructions = new WeakMap<DecodedInstructions, InactiveBranchTargets>();
+  const targetsFor = (instructions: DecodedInstructions): InactiveBranchTargets => {
+    const existing = targetsByInstructions.get(instructions);
+    if (existing !== undefined) return existing;
+    const falseBranch = new Int32Array(instructions.length).fill(-1);
+    const elseBranch = new Int32Array(instructions.length).fill(-1);
+    const open: Array<{ conditional: number; otherwise?: number }> = [];
+    instructions.forEach(({ opcode }, index) => {
+      if (opcode === OpcodesBch2026.OP_IF || opcode === OpcodesBch2026.OP_NOTIF) {
+        open.push({ conditional: index });
+      } else if (opcode === OpcodesBch2026.OP_ELSE) {
+        const current = open[open.length - 1];
+        if (current !== undefined && current.otherwise === undefined) current.otherwise = index;
+      } else if (opcode === OpcodesBch2026.OP_ENDIF) {
+        const current = open.pop();
+        if (current === undefined) return;
+        falseBranch[current.conditional] = current.otherwise ?? index;
+        if (current.otherwise !== undefined) elseBranch[current.otherwise] = index;
+      }
+    });
+    const targets = { falseBranch, elseBranch };
+    targetsByInstructions.set(instructions, targets);
+    return targets;
+  };
+  const jumpTo = (state: State, target: number): State => {
+    if (target <= state.ip) return state;
+    // `createVirtualMachine` increments both the instruction count and IP after this operation. Point one before
+    // the delimiter so OP_ELSE/OP_ENDIF still performs the real control-stack transition. Inactive operations
+    // cannot change any other metric, but each still contributes the BCH-2025 base instruction cost.
+    state.metrics.evaluatedInstructionCount += target - state.ip - 1;
+    state.ip = target - 1;
+    return state;
+  };
+  for (const opcode of [OpcodesBch2026.OP_IF, OpcodesBch2026.OP_NOTIF]) {
+    const operation = instructionSet.operations[opcode]!;
+    instructionSet.operations[opcode] = (state: State) => {
+      const activeBefore = state.controlStack.every((entry) => entry !== false);
+      const next = operation(state);
+      if (!activeBefore || next.error !== undefined || next.controlStack.at(-1) !== false) return next;
+      return jumpTo(next, targetsFor(next.instructions).falseBranch[next.ip]);
+    };
+  }
+  const elseOperation = instructionSet.operations[OpcodesBch2026.OP_ELSE]!;
+  instructionSet.operations[OpcodesBch2026.OP_ELSE] = (state: State) => {
+    const activeBefore = state.controlStack.every((entry) => entry !== false);
+    const next = elseOperation(state);
+    if (!activeBefore || next.error !== undefined) return next;
+    return jumpTo(next, targetsFor(next.instructions).elseBranch[next.ip]);
+  };
+}
+
 /**
  * Build the SDK's probe VM with the active private-network limits, if any.
  *
@@ -340,6 +401,7 @@ export function createVirtualMachineBch2026ForProvider(
   if (limits !== undefined && limits.maximumInputBytes > 10_000) {
     installCachedP2shEvaluator(instructionSet, provider!, limits.maximumInputBytes);
     installCachedInvokeEvaluator(instructionSet);
+    if (observer !== undefined) installSparseProbeBranchSkips(instructionSet);
   }
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
   if (limits !== undefined) {

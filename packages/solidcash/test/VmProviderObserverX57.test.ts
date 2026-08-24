@@ -179,6 +179,43 @@ describe('X57 opcode observer survives providers without consensusLimits', () =>
     }
   });
 
+  it('preserves sparse-probe results and base cost when skipping inactive branches', () => {
+    const cases = [
+      {
+        unlocking: Uint8Array.of(Op.OP_0),
+        locking: Uint8Array.of(
+          Op.OP_IF,
+          Op.OP_1, Op.OP_IF, 0x50, Op.OP_ENDIF,
+          Op.OP_ELSE, Op.OP_1,
+          Op.OP_ENDIF,
+        ),
+      },
+      {
+        unlocking: Uint8Array.of(Op.OP_1),
+        locking: Uint8Array.of(
+          Op.OP_IF, Op.OP_1,
+          Op.OP_ELSE,
+          Op.OP_0, Op.OP_IF, 0x50, Op.OP_ENDIF,
+          Op.OP_ENDIF,
+        ),
+      },
+    ];
+    for (const scripts of cases) {
+      const program = buildProgram([scripts]);
+      const expected = createVirtualMachineBch2026().evaluate(program) as {
+        error?: string; metrics: { evaluatedInstructionCount: number; operationCost: number }; stack: Uint8Array[];
+      };
+      const { observer } = recordingObserver([Op.OP_EQUALVERIFY]);
+      const actual = createVirtualMachineBch2026ForProvider(new MockNetworkProvider(), observer)
+        .evaluate(program) as typeof expected;
+
+      expect(actual.error).toEqual(expected.error);
+      expect(actual.stack).toEqual(expected.stack);
+      expect(actual.metrics.evaluatedInstructionCount).toBe(expected.metrics.evaluatedInstructionCount);
+      expect(actual.metrics.operationCost).toBe(expected.metrics.operationCost);
+    }
+  });
+
   // GUARD: the two paths must stay distinct. A limits-less provider must keep REAL consensus limits, and a
   // relaxed mock must keep its relaxed ones - even now that both build the VM the same way.
   it('keeps real consensus limits for limits-less providers and relaxed limits for the mock', () => {

@@ -69,6 +69,8 @@ import {
 import {
   canMaterializeRepairedValueChunk,
   canApplyRepairedNftCommitment,
+  followsMutableNftOutputGuard,
+  isActiveVmControlBranch,
   isFixedStateRepairSlot,
   isForwardOutputOnlyRepairSlot,
   isOwnedStateRepairCoordinate,
@@ -13763,7 +13765,7 @@ export class StatefulTransactionBuilder {
     repairedOutputs: number[];
     repairDetails: Array<{
       outputIndex: number;
-      field: 'commitment' | 'lockingBytecode';
+      field: 'commitment' | 'lockingBytecode' | 'token';
       previous: string;
       proposed: string;
     }>;
@@ -13784,6 +13786,7 @@ export class StatefulTransactionBuilder {
       outputIndex: number; lockingBytecode?: Uint8Array; commitment: Uint8Array; categoryId?: string;
     }>();
     const lockingBytecodeRepairs = new Map<number, Uint8Array>();
+    const mutableTokenShellRepairs = new Map<number, { lockingBytecode: Uint8Array; categoryId: string }>();
     const eventRepairs = new Map<number, Uint8Array>();
     const tokenEventSlots = new Map<number, { categoryId: string; groupIndex: number; eventOrdinal: number }>();
     const tokenReturnSlots = new Map<number, number>();
@@ -13883,8 +13886,14 @@ export class StatefulTransactionBuilder {
       ]),
       beforeOperation: (unknownState) => {
         const state = unknownState as {
-          ip: number; instructions: Array<{ opcode: number; data?: Uint8Array }>; stack: Uint8Array[];
+          ip: number;
+          instructions: Array<{ opcode: number; data?: Uint8Array }>;
+          stack: Uint8Array[];
+          controlStack: boolean[];
         };
+        // This observer wraps libauth's conditionallyEvaluate operation, so it is also invoked for instructions
+        // in untaken IF branches. Those stack values are not covenant assertions and must never become repairs.
+        if (!isActiveVmControlBranch(state.controlStack)) return;
         const opcode = state.instructions[state.ip]?.opcode;
         if (opcode === Op.OP_EQUAL) {
           pendingOutputBytecodeIndices.delete(state.instructions);
@@ -13916,8 +13925,23 @@ export class StatefulTransactionBuilder {
               state.stack[state.stack.length - 2],
               state.stack[state.stack.length - 1],
             );
-            if (expected && binToHex(expected) !== binToHex(currentLock)) {
-              lockingBytecodeRepairs.set(outputIndex, expected);
+            if (expected) {
+              if (binToHex(expected) !== binToHex(currentLock)) {
+                lockingBytecodeRepairs.set(outputIndex, expected);
+              }
+              // A prior identity-conservation pass can leave the now-authenticated state coordinate tokenless.
+              // The compiler's immediate mutable-capability guard proves that a token belongs here; seed only its
+              // owner/category shell, then let later OUTPUTTOKENCOMMITMENT equality recover the exact payload.
+              if (!fixedStateSlots.has(outputIndex)
+                && builder.outputs[outputIndex]?.token === undefined
+                && repairOwnerCategory !== undefined
+                && /^[0-9a-f]{64}$/i.test(repairOwnerCategory)
+                && followsMutableNftOutputGuard(state.instructions, state.ip)) {
+                mutableTokenShellRepairs.set(outputIndex, {
+                  lockingBytecode: expected,
+                  categoryId: repairOwnerCategory,
+                });
+              }
             }
           }
           return;
@@ -14073,7 +14097,7 @@ export class StatefulTransactionBuilder {
     const repairedOutputs: number[] = [];
     const repairDetails: Array<{
       outputIndex: number;
-      field: 'commitment' | 'lockingBytecode';
+      field: 'commitment' | 'lockingBytecode' | 'token';
       previous: string;
       proposed: string;
     }> = [];
@@ -14264,6 +14288,30 @@ export class StatefulTransactionBuilder {
           repairedOutputs.push(found.outputIndex);
         }
       }
+    }
+    for (const [outputIndex, shell] of mutableTokenShellRepairs) {
+      const output = builder.outputs[outputIndex];
+      if (!output || output.token !== undefined) continue;
+      const currentLock = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
+      const proposedCategory = `${shell.categoryId}01`;
+      output.to = shell.lockingBytecode;
+      output.token = {
+        amount: 0n,
+        category: shell.categoryId,
+        nft: { capability: 'mutable', commitment: '' },
+      };
+      output.amount = BigInt(Math.max(1200, calculateDust(output)));
+      repairDetails.push({
+        outputIndex,
+        field: 'token',
+        previous: '',
+        proposed: proposedCategory,
+      });
+      if (binToHex(currentLock) !== binToHex(shell.lockingBytecode)) {
+        lockingBytecodeRepairs.set(outputIndex, shell.lockingBytecode);
+      }
+      changed = true;
+      repairedOutputs.push(outputIndex);
     }
     // Apply direct OUTPUTBYTECODE/EQUALVERIFY observations last. Earlier chunk-shaped observations can refer to
     // the same coordinate while probing a placeholder branch; the enforced equality which actually failed is

@@ -876,6 +876,22 @@ function externalCallTargetArgumentLockingBytecodeHex(
     ? undefined : addressArgumentLockingBytecodeHex(visibleArgs[index]);
 }
 
+/**
+ * Resolve the Solidity-visible target which authenticates an external-call master. A direct parameter is only
+ * one possible source: interface values are commonly loaded from authenticated contract state. Once the SDK has
+ * evaluated that compiler-published source, it has exactly the same authority as a forwarded argument and may
+ * select the direct physical identity proof when it already names the co-spent locking bytecode.
+ */
+export function externalCallTargetSourceLockingBytecodeHex(
+  owner: AbiFunction,
+  slot: number,
+  visibleArgs: readonly FunctionArgument[],
+  resolvedAddressSource?: FunctionArgument,
+): string | undefined {
+  return addressArgumentLockingBytecodeHex(resolvedAddressSource)
+    ?? externalCallTargetArgumentLockingBytecodeHex(owner, slot, visibleArgs);
+}
+
 /** JobEventData.address_ is packed address locking bytecode (p2sh20=23, p2pkh=25, p2sh32=35). */
 function normalizeJobEventAddresses(
   decoded: unknown, type: string, structs: Artifact['structs'],
@@ -3013,6 +3029,32 @@ export function selectorParamSlot(
     .map((call, index) => ({ call, index }))
     .filter(({ call }) => call.needsSelectorVerification !== false && !call.selectorArrayVar);
   return implicit.length === 1 ? implicit[0].index : 0;
+}
+
+type PhysicalSelectorGroup = {
+  sharedGroupIndex?: number;
+  delegateCallGroupIndex?: number;
+  functionName: string;
+  compilerRoute?: { selector: Uint8Array };
+  externalContract: { inner: { artifact: { abi: readonly { name: string; selector?: string }[] } } };
+};
+
+/** Resolve the selector actually present on a composed co-spend, following shared masters and proxy delegates. */
+export function physicalExternalCallSelectorHex(
+  groups: readonly PhysicalSelectorGroup[],
+  delegateGroups: readonly PhysicalSelectorGroup[],
+  groupIndex: number | undefined,
+): string | undefined {
+  if (groupIndex === undefined) return undefined;
+  const logical = groups[groupIndex];
+  if (!logical) return undefined;
+  const physical = groups[logical.sharedGroupIndex ?? groupIndex] ?? logical;
+  const delegate = physical.delegateCallGroupIndex === undefined
+    ? undefined : delegateGroups[physical.delegateCallGroupIndex];
+  const selected = delegate ?? physical;
+  if (selected.compilerRoute?.selector) return binToHex(selected.compilerRoute.selector);
+  return selected.externalContract.inner.artifact.abi
+    .find((candidate) => candidate.name === selected.functionName)?.selector;
 }
 
 const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),schema=\[([^\]]*)\]\}$/;
@@ -16583,7 +16625,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const spentLock = spentUnlocker
             ? binToHex(spentUnlocker.generateLockingBytecode())
             : callee!.inner.lockingBytecode;
-          const directArgument = externalCallTargetArgumentLockingBytecodeHex(abiFunction, i, args) === spentLock;
+          const call = abiFunction.externalCalls?.[i];
+          const resolvedAddressSource = call?.addressSource
+            ? this._resolveExternalArgs(
+              [call.addressSource], args, this.inner.artifact,
+              callerStateSnapshot ?? onChainState.state, abiFunction.inputs,
+              undefined, 0, false, executionSelfAddress,
+            )?.[0]
+            : call?.addressStateVar
+              ? (callerStateSnapshot ?? onChainState.state)[call.addressStateVar] as FunctionArgument | undefined
+              : undefined;
+          const directArgument = externalCallTargetSourceLockingBytecodeHex(
+            abiFunction, i, args, resolvedAddressSource,
+          ) === spentLock;
           if (!directArgument && logicalLbc !== spentLock) {
             const bandKey = logicalIdentityBandKey(logicalAddress);
             band = identityAnchorBandByAddress.get(bandKey);
@@ -16821,6 +16875,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ownerFunction: AbiFunction,
       visibleArgs: readonly FunctionArgument[],
       groupIndexForSlot: (slot: number) => number | undefined,
+      ownerContext?: {
+        contract: StatefulContract;
+        artifact: Artifact;
+        state: Record<string, unknown>;
+        executionSelfAddress: FunctionArgument;
+      },
     ): Promise<{ anchorBandBySlot: Map<number, number>; proxyAnchorSlots: Set<number> }> => {
       const anchorBandBySlot = new Map<number, number>();
       const proxyAnchorSlots = new Set<number>();
@@ -16842,7 +16902,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           : callee!.inner.lockingBytecode;
         // A source expression that already names the exact spent master needs no CREATE/SCID indirection. The
         // hidden anchor witness exists for both physical and logical address values; select it only for the latter.
-        const sourceArgumentLock = externalCallTargetArgumentLockingBytecodeHex(ownerFunction, slot, visibleArgs);
+        const call = ownerFunction.externalCalls?.[slot];
+        const resolvedAddressSource = call?.addressSource && ownerContext
+          ? ownerContext.contract._resolveExternalArgs(
+            [call.addressSource], [...visibleArgs], ownerContext.artifact, ownerContext.state,
+            ownerFunction.inputs, undefined, 0, false, ownerContext.executionSelfAddress,
+          )?.[0]
+          : call?.addressStateVar && ownerContext
+            ? ownerContext.state[call.addressStateVar] as FunctionArgument | undefined
+            : undefined;
+        const sourceArgumentLock = externalCallTargetSourceLockingBytecodeHex(
+          ownerFunction, slot, visibleArgs, resolvedAddressSource,
+        );
         if (sourceArgumentLock === spentLock) continue;
         // Direct identity is valid only when the spent master is locked at the Solidity-visible address.
         if (logicalLbc === spentLock) continue;
@@ -20267,6 +20338,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           childFn,
           child.logicalFunctionArgs ?? child.functionArgs,
           childNestedGroupIndexForSlot,
+          await (async () => {
+            const contract = (child.logicalContract ?? child.externalContract) as StatefulContract;
+            return {
+              contract,
+              artifact: child.logicalArtifact ?? child.externalContract.inner.artifact,
+              state: (await nestedFullState(contract)).state,
+              executionSelfAddress: hexToBin(child.externalContract.inner.lockingBytecode),
+            };
+          })(),
         );
         const childAnchorFillPositions: {
           argIndex: number; name: string; band: number; proxyRoute: boolean;
@@ -20377,20 +20457,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const slot = selectorParamSlot(input.name, childFn.externalCalls);
             const call = childFn.externalCalls?.[slot];
             const nestedGroupIndex = childNestedGroupIndexForSlot(slot);
-            const nestedGroup = nestedGroupIndex === undefined
-              ? undefined : externalCallUtxoGroups[nestedGroupIndex];
-            const physicalDelegate = nestedGroup?.delegateCallGroupIndex === undefined
-              ? undefined : lowLevelCallUtxoGroups[nestedGroup.delegateCallGroupIndex];
-            // Pin the selector on the physical co-spend. Shared logical calls may select a later state-writing
-            // handler, and proxied callees select on their implementation rather than the forwarding master.
-            const sharedPhysicalGroup = nestedGroup === undefined ? undefined
-              : externalCallUtxoGroups[nestedGroup.sharedGroupIndex ?? nestedGroupIndex!];
-            const physicalGroup = physicalDelegate ?? sharedPhysicalGroup;
-            const selected = physicalGroup
-              ? (physicalGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
-                .find((candidate) => candidate.name === physicalGroup.functionName)
-              : undefined;
-            if (selected?.selector) return hexToBin(selected.selector);
+            // Pin the selector on the physical co-spend. Shared logical calls inherit the first group's proxy
+            // delegate, and a compiler-batched delegate unlocks with the route selector (`SCB1`), not a row selector.
+            const selected = physicalExternalCallSelectorHex(
+              externalCallUtxoGroups, lowLevelCallUtxoGroups, nestedGroupIndex,
+            );
+            if (selected) return hexToBin(selected);
             const interfaces = (child.externalContract.inner.artifact.externalInterfaces ?? []) as readonly {
               name: string;
               abi: readonly { name: string; selector?: string }[];
@@ -20787,6 +20859,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             bFunc as AbiFunction,
             visibleFunctionArgs,
             nestedGroupIndexForSlot,
+            await (async () => {
+              const contract = (proxyGroup?.logicalContract
+                ?? proxyGroup?.externalContract ?? this) as StatefulContract;
+              return {
+                contract,
+                artifact: (group.logicalArtifact ?? bArt) as Artifact,
+                state: (await nestedFullState(contract)).state,
+                executionSelfAddress: hexToBin(group.externalContract.inner.lockingBytecode),
+              };
+            })(),
           );
           const anchorFillPositions: {
             argIndex: number; name: string; band: number; proxyRoute: boolean;
@@ -21010,22 +21092,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const call = (bFunc as AbiFunction).externalCalls?.[slot];
               const nestedGroupIndex = call?.callsiteId === undefined ? undefined
                 : delegateExternalGroupByCallsite.get(groupLocalIdx)?.get(call.callsiteId);
-              const nestedGroup = nestedGroupIndex === undefined
-                ? undefined : externalCallUtxoGroups[nestedGroupIndex];
-              const physicalDelegate = nestedGroup?.delegateCallGroupIndex === undefined
-                ? undefined : lowLevelCallUtxoGroups[nestedGroup.delegateCallGroupIndex];
               // Multiple logical calls to one category share a single physical
               // covenant input. A later state-writing call can replace an earlier
               // view call as that input's selected function, so pin the selector
               // actually present in the composed input. Upgrade proxies select on
               // their co-spent delegate; direct stateful contracts select on the
               // shared external group itself.
-              const physicalGroup = physicalDelegate ?? nestedGroup;
-              const physicalTarget = physicalGroup
-                ? (physicalGroup.externalContract.inner.artifact.abi as readonly AbiFunction[])
-                  .find((candidate) => candidate.name === physicalGroup.functionName)
-                : undefined;
-              if (physicalTarget?.selector) return hexToBin(physicalTarget.selector);
+              const physicalSelector = physicalExternalCallSelectorHex(
+                externalCallUtxoGroups, lowLevelCallUtxoGroups, nestedGroupIndex,
+              );
+              if (physicalSelector) return hexToBin(physicalSelector);
               const interfaces = (bArt.externalInterfaces ?? []) as readonly {
                 name: string;
                 abi: readonly { name: string; selector?: string }[];

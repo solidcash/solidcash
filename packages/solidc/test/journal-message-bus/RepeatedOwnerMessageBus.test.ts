@@ -72,6 +72,17 @@ describe('inferred message-bus batching for repeated external callees', () => {
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(1);
   });
 
+  it('accepts a proxy delegate-index push before the authenticated compiler-route selector', () => {
+    const compact = compileString(SOURCE).bytecode.replace(/\s+/g, '');
+    // Direct participants start at push4(SCB1); proxy implementations prepend their authenticated master-input
+    // index. Branch on the actual first script byte, consume one complete optional push, then retain the exact
+    // minimal route-selector check for both shapes.
+    expect(compact).toContain(
+      'OP_INPUTBYTECODEOP_DUPOP_1OP_SPLITOP_DROPOP_4OP_EQUALOP_NOTIFOP_1OP_SPLIT',
+    );
+    expect(compact).toContain('OP_ENDIFOP_5OP_SPLITOP_SWAP0453434231OP_EQUALVERIFY');
+  });
+
   it('leaves an ungrouped single external call byte-identical to the explicit opt-out', () => {
     const source = `
       interface ICounter { function add(int amount) external; }

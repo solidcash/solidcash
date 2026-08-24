@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
+import { Op } from '@solidcash/utils';
 import {
   canMaterializeRepairedValueChunk,
   canApplyRepairedNftCommitment,
+  followsMutableNftOutputGuard,
+  isActiveVmControlBranch,
   isFixedStateRepairSlot,
   isForwardOutputOnlyRepairSlot,
   isForwardStateRepairCoordinate,
@@ -10,6 +13,39 @@ import {
   isRepairableNftOutput,
   isScidPlaceholderCommitment,
 } from '../../src/stateful/computed-output-repair.js';
+
+describe('isActiveVmControlBranch', () => {
+  it('rejects observer candidates from untaken branches', () => {
+    expect(isActiveVmControlBranch([])).toBe(true);
+    expect(isActiveVmControlBranch([true, true])).toBe(true);
+    expect(isActiveVmControlBranch([true, false, true])).toBe(false);
+  });
+});
+
+describe('followsMutableNftOutputGuard', () => {
+  it('recognizes only the compiler-authenticated mutable capability sequence', () => {
+    const prefix = [{ opcode: Op.OP_EQUALVERIFY }];
+    const mutable = [
+      { opcode: Op.OP_DUP },
+      { opcode: Op.OP_OUTPUTTOKENCATEGORY },
+      { opcode: Op.OP_DUP },
+      { opcode: 1, data: Uint8Array.of(32) },
+      { opcode: Op.OP_SPLIT },
+      { opcode: Op.OP_NIP },
+      { opcode: Op.OP_1 },
+      { opcode: Op.OP_EQUALVERIFY },
+    ];
+    expect(followsMutableNftOutputGuard([...prefix, ...mutable], 0)).toBe(true);
+    expect(followsMutableNftOutputGuard([
+      ...prefix,
+      ...mutable.map((instruction, index) => index === 6 ? { opcode: Op.OP_2 } : instruction),
+    ], 0)).toBe(false);
+    expect(followsMutableNftOutputGuard([
+      ...prefix,
+      ...mutable.map((instruction, index) => index === 1 ? { opcode: Op.OP_OUTPUTVALUE } : instruction),
+    ], 0)).toBe(false);
+  });
+});
 
 describe('isFixedStateRepairSlot', () => {
   it('recognizes explicit data UTXOs and mutable physical lineage', () => {

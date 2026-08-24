@@ -24580,9 +24580,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitExternalBatchBlobVerification(locationData: SingleLocationData): void {
     const accumulator = '__internal__external_batch_blob';
-    // [idx] -> verify first push is exactly minimal push4("message-bus batch"), retain remainder.
+    // [idx] -> verify the compiler-route selector is exactly minimal push4("message-bus batch"), retain remainder.
+    // A direct participant begins with that selector. A proxy implementation begins with one authenticated
+    // delegate-master input-index push, followed by the same selector. Discard only that complete first script
+    // push when byte zero is not the minimal push4 opcode; the subsequent exact five-byte comparison remains the
+    // authority for both the selector and its minimal framing.
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_INPUTBYTECODE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(hexToBin('04'), locationData);
+    this.emit(Op.OP_EQUAL, locationData);
+    this.emit(Op.OP_NOTIF, locationData);
+    this.emitConsumeFirstScriptPush(locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
     this.emit(encodeInt(5n), locationData);
     this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_SWAP, locationData);

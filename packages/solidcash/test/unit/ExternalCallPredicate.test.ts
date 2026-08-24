@@ -7,13 +7,15 @@ import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/index.js';
 import {
   canRefreshReachedCallFromPostState,
+  externalCallTargetSourceLockingBytecodeHex,
   externalReturnParamSlot,
   groupIndexForExternalCallSlot,
   inactiveMessageBusRouteWitness,
   isSdkResolvedExternalCallTopologyWitness,
+  physicalExternalCallSelectorHex,
 } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 
 type PredicateEvaluator = {
   _evaluateExternalExpression: (
@@ -155,6 +157,24 @@ describe('compiler-published external-call predicate evaluation', () => {
 });
 
 describe('conditional external-call topology', () => {
+  it('recognizes a state-derived external target as a direct physical identity', () => {
+    const physicalLock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x57), 0x87);
+    const owner = {
+      inputs: [],
+      externalCalls: [{
+        interfaceName: 'ITarget', functionName: 'run', requiredDataNftIndices: [],
+        addressStateVar: 'target',
+        addressSource: { kind: 'expression', expression: { kind: 'state', name: 'target' } },
+      }],
+    } as unknown as Artifact['abi'][number];
+    const resolved = evaluator._resolveExternalArgs(
+      [owner.externalCalls![0].addressSource!], [], artifact, { target: physicalLock }, owner.inputs,
+    )?.[0];
+
+    expect(externalCallTargetSourceLockingBytecodeHex(owner, 0, [], resolved))
+      .toBe(binToHex(physicalLock));
+  });
+
   it('retains a reached call when completed caller state invalidates its earlier guard', () => {
     const guard: ExternalCallExpression = {
       kind: 'binary',
@@ -207,6 +227,22 @@ describe('conditional external-call topology', () => {
     expect(externalReturnParamSlot('__internal__externalReturnOutputIdx0', externalCalls)).toBe(0);
     expect(externalReturnParamSlot('__internal__externalReturnOutputIdx1', externalCalls)).toBe(2);
     expect(externalReturnParamSlot('__internal__externalReturnOutputIdx2', externalCalls)).toBe(3);
+  });
+
+  it('follows a shared proxy master to its compiler-route selector', () => {
+    const proxy = {
+      functionName: '__forward', delegateCallGroupIndex: 0,
+      externalContract: { inner: { artifact: { abi: [{ name: '__forward', selector: 'aaaaaaaa' }] } } },
+    };
+    const sharedView = {
+      ...proxy, sharedGroupIndex: 0, delegateCallGroupIndex: undefined, functionName: 'userRegistered',
+    };
+    const delegate = {
+      functionName: '_batchRaw', compilerRoute: { selector: hexToBin('53434231') },
+      externalContract: { inner: { artifact: { abi: [{ name: '_batchRaw', selector: '53434231' }] } } },
+    };
+
+    expect(physicalExternalCallSelectorHex([proxy, sharedView], [delegate], 1)).toBe('53434231');
   });
 
   it('treats physical call bases and master indices as SDK-owned route witnesses', () => {

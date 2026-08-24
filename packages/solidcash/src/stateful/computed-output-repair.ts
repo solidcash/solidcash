@@ -1,6 +1,38 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import { Op } from '@solidcash/utils';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { isEmptyValueEntryCommitment } from './SortedList.js';
+
+type VmInstruction = { opcode: number; data?: Uint8Array };
+
+/** VM observers run before libauth's conditional-operation wrapper, including for opcodes in untaken branches. */
+export function isActiveVmControlBranch(controlStack: readonly boolean[]): boolean {
+  return controlStack.every((frame) => frame);
+}
+
+/**
+ * Recognize the compiler's exact mutable-NFT guard following an authenticated output-lock comparison:
+ * `DUP OUTPUTTOKENCATEGORY DUP 32 SPLIT NIP 1 EQUALVERIFY`.
+ *
+ * This guard is sufficient authority to materialize a missing token shell: later VM passes still authenticate
+ * the owner category and exact commitment, so no contract/function/collection knowledge is required here.
+ */
+export function followsMutableNftOutputGuard(
+  instructions: readonly VmInstruction[], equalVerifyIp: number,
+): boolean {
+  const tail = instructions.slice(equalVerifyIp + 1, equalVerifyIp + 9);
+  const pushes = (instruction: VmInstruction | undefined, byte: number): boolean => (
+    instruction?.data?.length === 1 && instruction.data[0] === byte
+  );
+  return tail[0]?.opcode === Op.OP_DUP
+    && tail[1]?.opcode === Op.OP_OUTPUTTOKENCATEGORY
+    && tail[2]?.opcode === Op.OP_DUP
+    && pushes(tail[3], 32)
+    && tail[4]?.opcode === Op.OP_SPLIT
+    && tail[5]?.opcode === Op.OP_NIP
+    && (tail[6]?.opcode === Op.OP_1 || pushes(tail[6], 1))
+    && tail[7]?.opcode === Op.OP_EQUALVERIFY;
+}
 
 /**
  * Whether a probe-observed NFT output may replace the builder's current commitment.

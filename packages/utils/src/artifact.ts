@@ -629,6 +629,8 @@ export interface ExternalCallAbi {
     logicalIndex: number;
     inputs: readonly AbiInput[];
     argSources?: readonly ArgSource[];
+    occurrence?: 'once' | 'conditional' | 'loop';
+    condition?: ExternalCallExpression;
   }[];
 }
 

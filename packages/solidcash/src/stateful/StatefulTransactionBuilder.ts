@@ -1476,6 +1476,19 @@ function isP2sh32LockScript(lock: Uint8Array | string | undefined): lock is Uint
   return lock[0] === 0xaa && lock[1] === 0x20 && lock[34] === 0x87;
 }
 
+/** Select the reconstructed P2SH32 operand opposite an introspected current output locking bytecode. */
+export function selectExpectedP2sh32OutputLock(
+  current: Uint8Array,
+  left: Uint8Array | undefined,
+  right: Uint8Array | undefined,
+): Uint8Array | undefined {
+  if (!left || !right) return undefined;
+  const currentHex = binToHex(current);
+  if (binToHex(left) === currentHex && isP2sh32LockScript(right)) return right;
+  if (binToHex(right) === currentHex && isP2sh32LockScript(left)) return left;
+  return undefined;
+}
+
 /**
  * Occupancy: every slot in `[band.start, band.start+nNew)` must be a jobEvents
  * continuation NFT. A shorter Created/Updated extract must not leave a P2PKH
@@ -2438,6 +2451,21 @@ export function reassertScidIdentityOutputs(
       && output.token.nft.commitment === commitment
       && lockHex(output.to) === wanted);
     if (already) continue;
+    // A compiler-authenticated output-bytecode repair can reveal that an SCID was provisionally placed on a
+    // coordinate owned by another covenant resource. Relocating that identity must also vacate the malformed
+    // replica; otherwise token conservation sees two copies and a later conservation pass can reclaim the same
+    // authenticated coordinate. Preserve the repaired locking bytecode and satoshi value while releasing only
+    // the misplaced immutable token.
+    for (let outputIndex = 0; outputIndex < outputs.length; outputIndex++) {
+      const output = outputs[outputIndex];
+      if (output?.token?.nft?.capability !== 'none'
+        || output.token.category !== category
+        || output.token.nft.commitment !== commitment) continue;
+      outputs[outputIndex] = {
+        to: output.to,
+        amount: output.amount,
+      };
+    }
     let target = -1;
     for (let outputIndex = outputs.length - 1; outputIndex >= 0; outputIndex--) {
       const output = outputs[outputIndex];
@@ -4166,6 +4194,8 @@ export class StatefulTransactionBuilder {
   private pendingEventPlaceholders: Array<{ eventSignature: string; emitIndex: number }> = [];
   /** Covenant-authenticated event outputs keyed by their physical coordinate. */
   private authenticatedEventOutputs = new Map<number, Output>();
+  /** Exact OUTPUTBYTECODE/EQUALVERIFY observations which remain authoritative during conservation replay. */
+  private authenticatedOutputLockingBytecodes = new Map<number, Uint8Array>();
 
   constructor(options: StatefulTransactionOptions) {
     this.builderOptions = options;
@@ -4261,7 +4291,12 @@ export class StatefulTransactionBuilder {
 
     // Flatten low-level call inputs (stateful groups + raw UTXOs)
     const lowLevelCallInputs: UnlockableUtxo[] = [];
-    for (const group of this.lowLevelCallUtxoGroups) {
+    const embeddedDelegateGroups = new Set(this.externalCallUtxoGroups.flatMap((group) => (
+      group.delegateEmbeddedInBlock && group.delegateCallGroupIndex !== undefined
+        ? [group.delegateCallGroupIndex] : []
+    )));
+    for (const [groupIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
+      if (embeddedDelegateGroups.has(groupIndex)) continue;
       lowLevelCallInputs.push(group.masterUtxo as UnlockableUtxo);
       lowLevelCallInputs.push(...group.dataNftUtxos);
     }
@@ -4522,11 +4557,27 @@ export class StatefulTransactionBuilder {
 
       // Fill the reserved gap (offsets between last readOnly and first entry/SC/TC)
       // with external outState and external call inputs
-      const gapInputs = [...externalOutStateInputs, ...externalCallInputs];
+      // A compiler-route delegate executes immediately after the complete owner block, and its own nested
+      // participants follow that implementation block. Placing those external participants into otherwise-empty
+      // owner offsets moves them before the executing delegate, while the generated route correctly requires
+      // `externalCallInputBase == OP_INPUTINDEX + blockSize`. Reserve the owner gaps with neutral funders and
+      // defer the delegate's external participants until after the implementation input band.
+      const deferredExternalCallInputs = this.compilerRouteDelegateBlock ? externalCallInputs : [];
+      const gapInputs = [
+        ...externalOutStateInputs,
+        ...(this.compilerRouteDelegateBlock ? [] : externalCallInputs),
+      ];
       let gapIdx = 0;
       for (let i = 0; i < positioned.length; i++) {
         if (positioned[i] === undefined && gapIdx < gapInputs.length) {
           positioned[i] = gapInputs[gapIdx++];
+        }
+      }
+      if (this.compilerRouteDelegateBlock) {
+        for (let i = 0; i < positioned.length; i++) {
+          if (positioned[i] !== undefined) continue;
+          const funder = funderPool.shift();
+          if (funder) positioned[i] = funder;
         }
       }
 
@@ -4588,6 +4639,8 @@ export class StatefulTransactionBuilder {
         ...(this.compilerRouteDelegateBlock ? lowLevelCallInputs : []),
         // Any overflow gap inputs that didn't fit
         ...gapInputs.slice(gapIdx),
+        // Nested calls owned by the compiler-route delegate begin after its implementation block.
+        ...deferredExternalCallInputs,
         // Remaining low-level call inputs not already positioned in block layout slots
         ...(this.compilerRouteDelegateBlock ? [] : lowLevelCallInputs.slice(llcIdx)), ...this.lowLevelCallRawInputs,
         // Legacy balanced layouts predate reserved trailing regions. Preserve their established dynamic
@@ -5125,6 +5178,7 @@ export class StatefulTransactionBuilder {
   /** Impl blocks, jobEvents band (and the INPUTINDEX+4 trailing write), writer returns. */
   private _scidReservedIndices(outputCount = this.allInputs.length): Set<number> {
     const reserved = new Set(this._emitDestinationIndices());
+    for (const index of this.authenticatedOutputLockingBytecodes.keys()) reserved.add(index);
     const band = this.getPublishJobEventsBand();
     if (band) {
       reserved.add(Math.max(0, band.start - 1));
@@ -7826,7 +7880,12 @@ export class StatefulTransactionBuilder {
       }
     }
     const lowLevelCallInputs: UnlockableUtxo[] = [];
-    for (const g of this.lowLevelCallUtxoGroups) {
+    const embeddedDelegateGroups = new Set(this.externalCallUtxoGroups.flatMap((group) => (
+      group.delegateEmbeddedInBlock && group.delegateCallGroupIndex !== undefined
+        ? [group.delegateCallGroupIndex] : []
+    )));
+    for (const [groupIndex, g] of this.lowLevelCallUtxoGroups.entries()) {
+      if (embeddedDelegateGroups.has(groupIndex)) continue;
       lowLevelCallInputs.push(g.masterUtxo as UnlockableUtxo, ...g.dataNftUtxos);
     }
     this.allInputs = this._buildInputs(
@@ -13817,12 +13876,52 @@ export class StatefulTransactionBuilder {
       delegateRepairOwnerCategory = repairOwnerCategory;
       associatedCategories.add(repairOwnerCategory);
     }
+    const pendingOutputBytecodeIndices = new WeakMap<object, { outputIndex: number; ip: number }>();
     const vm = createVirtualMachineBch2026ForProvider(this.builderOptions.provider, {
-      opcodes: new Set([Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCOMMITMENT]),
+      opcodes: new Set([
+        Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUAL, Op.OP_EQUALVERIFY,
+      ]),
       beforeOperation: (unknownState) => {
         const state = unknownState as {
           ip: number; instructions: Array<{ opcode: number; data?: Uint8Array }>; stack: Uint8Array[];
         };
+        const opcode = state.instructions[state.ip]?.opcode;
+        if (opcode === Op.OP_EQUAL) {
+          pendingOutputBytecodeIndices.delete(state.instructions);
+          return;
+        }
+        if (opcode === Op.OP_EQUALVERIFY && state.stack.length >= 2) {
+          const pending = pendingOutputBytecodeIndices.get(state.instructions);
+          pendingOutputBytecodeIndices.delete(state.instructions);
+          const reconstruction = pending === undefined ? []
+            : state.instructions.slice(pending.ip + 1, state.ip);
+          const reconstructsP2sh32 = reconstruction.some((instruction) => instruction.opcode === Op.OP_HASH256)
+            && reconstruction.some((instruction) => binToHex(instruction.data ?? new Uint8Array()) === 'aa20')
+            && reconstruction.some((instruction) => binToHex(instruction.data ?? new Uint8Array()) === '87');
+          const outputIndex = pending?.outputIndex;
+          if (reconstructsP2sh32 && outputIndex !== undefined
+            && outputIndex >= 0 && outputIndex < builder.outputs.length
+            && isOwnedStateRepairCoordinate({
+              inputIndex,
+              outputIndex,
+              delegateOwnedFixedState: fixedStateSlots.has(outputIndex)
+                && delegateRepairOwnerCategory !== undefined
+                && builder.outputs[outputIndex]?.token?.category === delegateRepairOwnerCategory,
+            })) {
+            const output = builder.outputs[outputIndex];
+            const currentLock = output.to instanceof Uint8Array
+              ? output.to : addressToLockScript(output.to);
+            const expected = selectExpectedP2sh32OutputLock(
+              currentLock,
+              state.stack[state.stack.length - 2],
+              state.stack[state.stack.length - 1],
+            );
+            if (expected && binToHex(expected) !== binToHex(currentLock)) {
+              lockingBytecodeRepairs.set(outputIndex, expected);
+            }
+          }
+          return;
+        }
         if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTTOKENCOMMITMENT
           && state.stack.length >= 2) {
           // Only the `OTC; EQUALVERIFY` pin names an authenticated output
@@ -13888,6 +13987,7 @@ export class StatefulTransactionBuilder {
         }
         if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTBYTECODE || state.stack.length < 2) return;
         const outputIndex = Number(decodeVmScriptNumber(state.stack[state.stack.length - 1]));
+        pendingOutputBytecodeIndices.set(state.instructions, { outputIndex, ip: state.ip });
         const expectedLockingBytecode = state.stack[state.stack.length - 2];
         const nextOpcode = state.instructions[state.ip + 1]?.opcode;
         const forwardOutputOnlySlot = isForwardOutputOnlyRepairSlot({
@@ -14171,6 +14271,7 @@ export class StatefulTransactionBuilder {
     for (const [outputIndex, lockingBytecode] of lockingBytecodeRepairs) {
       const current = builder.outputs[outputIndex];
       const currentLock = current.to instanceof Uint8Array ? current.to : addressToLockScript(current.to);
+      this.authenticatedOutputLockingBytecodes.set(outputIndex, lockingBytecode.slice());
       if (binToHex(currentLock) !== binToHex(lockingBytecode)) {
         repairDetails.push({
           outputIndex,

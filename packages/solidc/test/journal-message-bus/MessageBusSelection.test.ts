@@ -293,6 +293,34 @@ describe('message-bus compilation selection', () => {
     );
   });
 
+  it('preserves named refusals after binding the admitted verifier route', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function ping() external; }
+      contract Controller(address target) {
+        int[] values;
+        function run() public {
+          ITarget(target).ping();
+          require(true);
+        }
+        function resize(int value) public returns (int) {
+          values.push(value);
+          return values.length;
+        }
+      }
+    `, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus?.verifierProgram).toBeDefined();
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'resize')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'result-route-requires-effect-free-handlers',
+    });
+  });
+
   it('keeps valid external siblings when the fast route attributes one generated clone failure', () => {
     const artifact = compileString(`contract SelectiveRoute {
       struct Record { int value; }

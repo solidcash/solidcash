@@ -970,7 +970,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     // valid siblings. Bind exactly that admitted route. Recompiling the caller's original handler selection can
     // resurrect a refused clone, and even when it compiles it no longer describes the verifier program being
     // embedded. Handler names are the route selector's existing public selection unit.
-    const admittedMessageBusHandlers = artifact.messageBus.handlers
+    const speculativeHandlers = artifact.messageBus.handlers;
+    const admittedMessageBusHandlers = speculativeHandlers
       .filter((handler) => handler.eligible)
       .map((handler) => handler.name);
     // The bound route replaces the speculative embedded-verifier artifact wholesale. Release that often-large
@@ -987,7 +988,13 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       parseAndResolve(code, bindingOptions, errorListener, primaryContractName),
       code, bindingOptions,
     );
-    if (artifact.messageBus) artifact.messageBus.verifierProgram = verifierProgram;
+    if (artifact.messageBus) {
+      artifact.messageBus.verifierProgram = verifierProgram;
+      // The verifier-bound pass intentionally synthesizes only the admitted handler set. Preserve the first
+      // pass's named refusals for every other source entry point; replacing them with "not examined" hides the
+      // actual safety boundary and makes two compilations of the same source publish different diagnostics.
+      restoreSpeculativeMessageBusRefusals(artifact.messageBus.handlers, speculativeHandlers);
+    }
     if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
   }
   attachDelegateVariant(
@@ -999,6 +1006,21 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     diskCacheSet(cacheKey, artifact);
   }
   return cacheable ? cloneArtifact(artifact, suppressWarnings) : artifact;
+}
+
+function restoreSpeculativeMessageBusRefusals(
+  boundHandlers: NonNullable<Artifact['messageBus']>['handlers'],
+  speculativeHandlers: NonNullable<Artifact['messageBus']>['handlers'],
+): void {
+  for (const handler of boundHandlers) {
+    const speculative = speculativeHandlers.find((candidate) =>
+      candidate.selector === handler.selector && candidate.name === handler.name);
+    if (!speculative || speculative.eligible) continue;
+    handler.eligible = false;
+    handler.rejectionReason = speculative.rejectionReason;
+    handler.rejectionCode = speculative.rejectionCode;
+    handler.rejectionContext = speculative.rejectionContext;
+  }
 }
 
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
@@ -1087,7 +1109,8 @@ function attachDelegateVariant(
       );
       if (out.delegateFunctionsMarked > 0 && variant.messageBus?.verifierProgram) {
         const verifierProgram = variant.messageBus.verifierProgram;
-        const admittedMessageBusHandlers = variant.messageBus.handlers
+        const speculativeHandlers = variant.messageBus.handlers;
+        const admittedMessageBusHandlers = speculativeHandlers
           .filter((handler) => handler.eligible)
           .map((handler) => handler.name);
         const bindingOptions = normalizeCompilerOptions({
@@ -1100,7 +1123,10 @@ function attachDelegateVariant(
           parseAndResolve(code, bindingOptions, errorListener, primaryName),
           code, bindingOptions, false, true, true, true, true, true, undefined, false, boundOut,
         );
-        if (variant.messageBus) variant.messageBus.verifierProgram = verifierProgram;
+        if (variant.messageBus) {
+          variant.messageBus.verifierProgram = verifierProgram;
+          restoreSpeculativeMessageBusRefusals(variant.messageBus.handlers, speculativeHandlers);
+        }
         if (variant.compiler.options) delete variant.compiler.options.__messageBusVerifierProgram;
       }
       if (out.delegateFunctionsMarked > 0) {

@@ -4703,11 +4703,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const repeatedBatchSlot = this.externalCallSlots.find((slot) => (slot.batchInvocations?.length ?? 0) > 1);
     if (repeatedBatchSlot) {
+      // The final byte is the runtime row count. Logical callsites can sit behind branches or loops, so the
+      // compiler updates it as rows are appended rather than publishing the number of source callsites.
       const header = Uint8Array.from([
-        0x53, 0x43, 0x42, 0x31, 0x01, 0x00, repeatedBatchSlot.batchInvocations!.length,
+        0x53, 0x43, 0x42, 0x31, 0x01, 0x00, 0x00,
       ]);
       this.emit(header, { location: node.location, positionHint: PositionHint.START });
       this.pushToStack('__internal__external_batch_blob');
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack('__internal__external_batch_count');
     }
 
     this.sortedCompositeWritesRemaining.clear();
@@ -14816,14 +14820,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: ExternalFunctionCallNode,
     locationData: SingleLocationData,
   ): void {
-    const prefix = new Uint8Array(10);
-    prefix.set(row.selector, 0);
-    prefix[4] = row.logicalIndex & 0xff;
-    prefix[5] = (row.logicalIndex >>> 8) & 0xff;
-    prefix[6] = (row.logicalIndex >>> 16) & 0xff;
-    prefix[7] = (row.logicalIndex >>> 24) & 0xff;
-    // occurrence:u16 remains zero for straight-line v1 callsites.
-    this.emit(prefix, locationData);
+    const accumulator = '__internal__external_batch_blob';
+    const count = '__internal__external_batch_count';
+    // selector ++ runtime logical index:u32le ++ occurrence:u16. Runtime indices are canonical and contiguous
+    // across straight-line, conditional, and repeated loop rows; occurrence remains reserved in route v1.
+    this.emit(row.selector, locationData);
+    this.pushToStack('(__batch_selector)');
+    this.emit(encodeInt(BigInt(this.getStackIndex(count))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__batch_logical_index)');
+    this.emit(encodeInt(4n), locationData);
+    this.pushToStack('(__batch_index_width)');
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_logical_index_bytes)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_selector_index)');
+    this.emit(new Uint8Array(2), locationData);
+    this.pushToStack('(__batch_occurrence)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
     this.pushToStack('(__batch_row_prefix)');
 
     if (row.parameters.length === 0) {
@@ -14857,7 +14874,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__batch_row)');
 
-    const accumulator = '__internal__external_batch_blob';
     this.emit(encodeInt(BigInt(this.getStackIndex(accumulator))), locationData);
     this.emit(Op.OP_PICK, locationData);
     this.pushToStack('(__batch_old)');
@@ -14865,6 +14881,54 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);
     this.pushToStack('(__batch_new)');
+    this.emitReplace(this.getStackIndex(accumulator), node);
+    this.popFromStack();
+
+    // Advance the runtime row ordinal in place.
+    this.emit(encodeInt(BigInt(this.getStackIndex(count))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__batch_next_count)');
+    this.emit(encodeInt(1n), locationData);
+    this.pushToStack('(__batch_one)');
+    this.emit(Op.OP_ADD, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_next_count)');
+    this.emitReplace(this.getStackIndex(count), node);
+    this.popFromStack();
+
+    // Write the count byte into the envelope. Keeping the accumulator canonical after every row lets the
+    // ordinary epilogue compare it directly, regardless of which control-flow path reaches that epilogue.
+    this.emit(encodeInt(BigInt(this.getStackIndex(accumulator))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__batch_blob_copy)');
+    this.emit(encodeInt(6n), locationData);
+    this.pushToStack('(__batch_header_width)');
+    this.emit(Op.OP_SPLIT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_header_prefix)');
+    this.pushToStack('(__batch_rows)');
+    this.emit(Op.OP_SWAP, locationData);
+    const prefixName = this.stack[0];
+    this.stack[0] = this.stack[1];
+    this.stack[1] = prefixName;
+    this.emit(encodeInt(BigInt(this.getStackIndex(count))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__batch_count_copy)');
+    this.emit(encodeInt(1n), locationData);
+    this.pushToStack('(__batch_count_width)');
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_count_byte)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_header)');
+    this.emit(Op.OP_SWAP, locationData);
+    const rowsName = this.stack[0];
+    this.stack[0] = this.stack[1];
+    this.stack[1] = rowsName;
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__batch_canonical_blob)');
     this.emitReplace(this.getStackIndex(accumulator), node);
     this.popFromStack();
   }
@@ -23376,32 +23440,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ? msgSenderTemp!
         : inlinedLowLevelTarget ?? slot.addressParam;
       if (stateTarget) {
-        const offset = this.compactOffsetMap.get(stateTarget.nftIndex);
-        const readExecutingInput = offset !== undefined && !stateTarget.isDynamic
-          && (this.currentFunctionIsDelegate
-            || this.currentFunction?.modifiers.includes(FunctionModifier.DELEGATE))
-          && this.currentFunction?.name !== 'initialize'
-          && !(this.currentFunction?.name ?? '').startsWith('__init');
-        if (readExecutingInput) {
-          // Delegate initialize/update bodies often run on the proxy input. emitMasterInputIndex
-          // is INPUTINDEX-(1+dataNfts)=impl, whose nft 0 can still hold address(this). Read the
-          // executing input's data NFT instead (proxy storage; empty → prefer-lock rematerialize).
-          const fieldsInNft = this.stateVariables
-            .filter((variable) => variable.nftIndex === stateTarget.nftIndex)
-            .sort((a, b) => a.fieldIndex - b.fieldIndex);
-          this.emit(Op.OP_INPUTINDEX, locationData);
-          this.emit(encodeInt(BigInt(offset)), locationData);
-          this.emit(Op.OP_ADD, locationData);
-          this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-          this.emitStateFieldDecode(stateTarget, stateTarget.type, fieldsInNft, locationData);
-        } else {
-          const access = new StateAccessNode(stateTarget.name);
-          access.stateVariable = stateTarget;
-          access.type = stateTarget.type;
-          access.location = node.location;
-          this.visitStateAccess(access);
-          this.popFromStack();
-        }
+        // External-call targets are state, so delegates must resolve them from the authenticated proxy owner.
+        // `address(this)` remains execution context (OP_INPUTINDEX OP_UTXOBYTECODE), but storage never moves to
+        // the implementation input. Reuse the ordinary state read so direct delegates, message-bus routes, and
+        // invoked handlers all select their established owner block instead of an adjacent executor data NFT.
+        const access = new StateAccessNode(stateTarget.name);
+        access.stateVariable = stateTarget;
+        access.type = stateTarget.type;
+        access.location = node.location;
+        this.visitStateAccess(access);
+        this.popFromStack();
       } else if (addrName) {
         this.emitPickTrackedFromBottom(addrName, locationData);
       } else if (slot.addressLiteral !== undefined) {

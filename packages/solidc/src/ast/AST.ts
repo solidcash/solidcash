@@ -2324,6 +2324,10 @@ export interface ExternalCallSlot {
     parameterTypes: Type[];
     logicalIndex: number;
     argSources?: ExternalCallArgSource[];
+    /** Runtime cardinality of this source callsite within the grouped physical route. */
+    occurrence?: 'once' | 'conditional' | 'loop';
+    /** Compiler-serialized predicate guarding this logical row. */
+    condition?: ExternalCallExpression;
     opaqueReturn?: boolean;
     returnTypes?: Type[];
     /** @internal Conditional row whose arguments are entry-frame derivable and are committed eagerly. */

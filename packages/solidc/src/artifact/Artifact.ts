@@ -1066,7 +1066,11 @@ function buildFunctionAbiMetadata(
     }),
     ...(func.externalCalls && func.externalCalls.length > 0 && {
       externalCalls: func.externalCalls.map((ec) => {
-        const occurrenceInfo = occurrenceInfoOf(func, ec.sourceCallNode);
+        // A grouped call owns one physical route even when its logical rows are conditional or repeated.
+        // Publish row cardinality below; the outer callsite itself is the singular co-spend.
+        const occurrenceInfo = ec.batchInvocations
+          ? { occurrence: 'once' as const }
+          : occurrenceInfoOf(func, ec.sourceCallNode);
         const resultArrayOutput = !ec.condition && occurrenceInfo.occurrence === 'loop'
           ? resultArrayOutputOf(func.body, ec.sourceCallNode) : undefined;
         return {
@@ -1119,6 +1123,8 @@ function buildFunctionAbiMetadata(
                 name: `arg${index}`, type: abiTypeString(type),
               })),
               ...(row.argSources && { argSources: row.argSources }),
+              ...(row.occurrence && row.occurrence !== 'once' && { occurrence: row.occurrence }),
+              ...(row.condition && { condition: row.condition }),
             })),
           }),
         };

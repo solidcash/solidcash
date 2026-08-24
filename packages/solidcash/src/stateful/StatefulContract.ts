@@ -17463,8 +17463,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ? (proxyCallee.implementation.inner.artifact.abi as readonly AbiFunction[])
                   .find((fn) => fn.name === nested.functionName)
                 : undefined;
-              const selectedFn = proxyTargetFn
-                ?? childCompilerRoute?.abiFunction
+              // The compiler route is the physical implementation program. Keep the logical proxy target for
+              // return typing below, but size and fund the co-spent delegate from the route's authoritative block.
+              const selectedFn = childCompilerRoute?.abiFunction
+                ?? proxyTargetFn
                 ?? (callee.inner.artifact.abi as readonly AbiFunction[])
                   .find((fn) => fn.name === childFunctionName);
               if (!proxyCallee && selectedFn?.blockLayout) {
@@ -17776,8 +17778,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 commitment?: string; newCommitment?: string;
               }> = [];
               const selectedLayout = selectedFn?.blockLayout;
-              const routePlanningArgs = proxyTargetFn
-                ? nestedArgs : (childCompilerRoute?.args ?? childFunctionArgs);
+              const routePlanningArgs = childCompilerRoute?.args
+                ?? (proxyTargetFn ? nestedArgs : childFunctionArgs);
               let refreshChunkableRouteWitnesses: ((
                 rowArguments: readonly RouteExpressionKeyRow[] | undefined,
                 finalVisibleArgs: readonly FunctionArgument[],
@@ -18854,22 +18856,32 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   const physicalGroup = externalCallUtxoGroups[physicalGroupIndex];
                   const routeDerivedRefresher = refreshChunkableRouteWitnesses
                     ?? physicalGroup?.refreshRouteDerivedArguments;
-                  const nextCompilerRoute = currentCompilerRoute
-                    ? this._buildRepeatedExternalBatch(
-                      nested,
-                      delegateVisibleArgs,
-                      callee,
-                      callInfo.contract.inner.artifact,
-                      nextState as Record<string, StateValue>,
-                      proxyCallee?.implementation.inner.artifact.delegateArtifact
-                        ?? proxyCallee?.implementation.inner.artifact,
-                      delegateVisibleInputs,
-                      true,
-                      delegateSelfAddress,
-                      undefined,
-                      delegatePublicAddress,
-                    )
-                    : undefined;
+                  let nextCompilerRoute: NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined;
+                  try {
+                    nextCompilerRoute = currentCompilerRoute
+                      ? this._buildRepeatedExternalBatch(
+                        nested,
+                        delegateVisibleArgs,
+                        callee,
+                        callInfo.contract.inner.artifact,
+                        nextState as Record<string, StateValue>,
+                        proxyCallee?.implementation.inner.artifact.delegateArtifact
+                          ?? proxyCallee?.implementation.inner.artifact,
+                        delegateVisibleInputs,
+                        true,
+                        delegateSelfAddress,
+                        undefined,
+                        delegatePublicAddress,
+                      )
+                      : undefined;
+                  } catch (error) {
+                    // Caller-state convergence can expose a transiently invalid post-state expression (for
+                    // example, `array.length - 1` before the newly derived length is installed). A dry probe
+                    // reports pending work without mutating the route; the applying pass re-evaluates and still
+                    // throws if the authenticated caller state stabilizes with the same invalid value.
+                    if (!apply) return true;
+                    throw error;
+                  }
                   const logicalArgsChanged = !functionArgumentListsEqual(
                     currentLogicalArgs, nextLogicalArgs,
                   );
@@ -19798,7 +19810,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + externalReadUtxos.length + outStateInputCount + externalCallInputCount;
       const hasDelegatecallGroup = lowLevelCallUtxoGroups.some((g) => g.callMode === 'delegatecall');
       const compilerRouteDelegate = lowLevelCallUtxoGroups.find(
-        (g) => g.callMode === 'delegatecall' && g.compilerRoute?.abiFunction.blockLayout,
+        (g, groupIndex) => g.callMode === 'delegatecall'
+          && !nestedDelegateProxyGroupByLowLevel.has(groupIndex)
+          && g.compilerRoute?.abiFunction.blockLayout,
       );
       const compilerRouteDelegateLayout = compilerRouteDelegate?.compilerRoute?.abiFunction.blockLayout;
       timing('delegate-route-selected');
@@ -20846,8 +20860,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (graphOwned !== undefined) return graphOwned;
               return -1n;
             }
-            const graphCompilerRoute = group.compilerRoute?.internalArgs
-              ?.__internal__graphFixedSize !== undefined;
+            const graphFixedSize = group.compilerRoute?.internalArgs?.__internal__graphFixedSize;
+            // Repeated routes are first built with a -1 graph sentinel while the SDK discovers their call tree.
+            // Only the atomic composer publishes a non-negative fixed size and a complete ABI-positioned frame.
+            // Before that point, resolve visible and storage witnesses through the ordinary compact route path.
+            const graphCompilerRoute = typeof graphFixedSize === 'bigint' && graphFixedSize >= 0n;
             if (graphCompilerRoute
               && !isSdkResolvedExternalCallTopologyWitness(inp.name)
               && !isSdkResolvedParticipantStorageWitness(inp.name)) {
@@ -20855,10 +20872,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // visible-only argument list shifts every non-internal witness following the first graph field
               // (an address key then receives a bigint). Graph-owned internal values may be refreshed by name;
               // every other position remains exactly compilerRoute.args[inpIndex].
-              // publishJobEvent's Solidity-visible event is not a graph field: persist last-row
-              // Closed must not replace the current constructed JobEvent.
-              if (!inp.name.startsWith('__internal__')
-                && (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent') {
+              // Compiler-route args retain the compact visible-only frame during graph discovery. Consume every
+              // visible argument sequentially; graph-owned internal values are addressed by name below. Treating
+              // the compact frame as ABI-positioned shifts the first route witness by the graph-field count.
+              if (!inp.name.startsWith('__internal__')) {
                 return encodeVisibleArg(visibleFunctionArgs[visibleIndex++], inp.type);
               }
               // Graph composition publishes a complete fallback vector, but state/resource witnesses are derived
@@ -20884,6 +20901,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 : physicalReturnIndexForGroup.get(proxyExternalGroup) ?? -1);
             }
             if (inp.name === '__internal__valueChunkOutputBase') {
+              return -1n;
+            }
+            // Standalone route execution has no atomic verifier region. The compiler uses the same negative
+            // sentinel as _batchRaw to skip its optional verifier binder; graph composition replaces it with
+            // the finalized verifier input through the complete compiler-owned argument vector above.
+            if (inp.name === '__internal__activeVerifierIndex') {
               return -1n;
             }
             if (inp.name === '__internal__msgSenderCategory') {
@@ -21883,7 +21906,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // include its loop writes too or a graph-handler `mapping(K => V[]).push(...)` is funded as a generic
     // trailing placeholder rather than an entry-covenant NFT.
     const delegateRouteGroupIndex = lowLevelCallUtxoGroups.findIndex(
-      (group) => group.callMode === 'delegatecall' && group.compilerRoute?.abiFunction,
+      (group, groupIndex) => group.callMode === 'delegatecall'
+        && !nestedDelegateProxyGroupByLowLevel.has(groupIndex)
+        && group.compilerRoute?.abiFunction,
     );
     const delegateRouteGroup = delegateRouteGroupIndex >= 0
       ? lowLevelCallUtxoGroups[delegateRouteGroupIndex] : undefined;
@@ -21935,14 +21960,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // `this.inner.artifact` is the proxy artifact and does not necessarily declare implementation collections;
         // resolving only by name against it hashes the bare name and mints NEW at a different covenant address.
         lockingBytecode: entryNftLockingBytecodes.get(name)
-        ?? (delegateRouteGroup
+        ?? (delegatedLoop && delegateRouteGroup
           ? getEntryNftLockingBytecode(
             delegateRouteGroup.externalContract.inner,
             delegateStateCategoryId,
-            delegateRouteAbi?.entryLoopWriteSignatures?.[name] ?? name,
+            signature ?? name,
           )
           : undefined)
-        ?? getEntryNftLockingBytecode(this.inner, this.categoryId, name),
+        ?? getEntryNftLockingBytecode(this.inner, this.categoryId, signature ?? name),
       };
     });
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -22549,9 +22574,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // `lowLevelCalls`), otherwise a second wallet scan runs while the full route is resident.
           const signerUtxos = earlySignerUtxos ?? await this._signer.getUtxos();
           timing('funder-fetch-complete');
-          const consumedTxids = new Set(
-            (sharedFunderPool ?? []).map((f) => `${f.txid}:${f.vout}`),
-          );
+          // The shared pool contains the still-available snapshot tail. Excluding that tail inverted ownership:
+          // a fallback wallet scan could select only the outpoints already shifted into nested participant
+          // blocks, serializing one funder twice. Exclude the allocations themselves and leave the pool tail
+          // eligible for the caller's remaining structural slots.
+          const consumedTxids = new Set(consumedSharedFunders);
           const orderPlain = (utxos: Utxo[]): Utxo[] => utxos
             .filter((u) => !u.token && !consumedTxids.has(`${u.txid}:${u.vout}`))
             // A token-free vout 0 is still a potential CashTokens genesis input, so introspection exposes its
@@ -22577,19 +22604,43 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               plainUtxos = orderPlain(await signerUtxoSnapshot(this._signer));
             }
           }
-          if (plainUtxos.length < walletFunderCount) {
-            throw new Error(
-              `Signer has ${plainUtxos.length} available plain UTXO(s) but ${walletFunderCount} funder(s) needed, `
-              + 'and splitting a larger coin did not yield enough. '
-              + `Fund the signer address: ${this._signer.getAddress()}`,
-            );
-          }
-          const selected = plainUtxos.slice(0, walletFunderCount).map((u) => ({
+          const selectedPlain = plainUtxos.slice(0, walletFunderCount);
+          const selected: UnlockableUtxo[] = selectedPlain.map((u) => ({
             ...u, unlocker: this._signer!.unlockP2PKH(),
           }));
+          if (selected.length < walletFunderCount) {
+            const mockProvider = this.inner.provider as typeof this.inner.provider & {
+              addUtxo?: (lockingBytecode: string, utxo: Utxo) => Promise<void>;
+            };
+            if (!mockProvider.addUtxo) {
+              throw new Error(
+                `Signer has ${plainUtxos.length} available plain UTXO(s) but ${walletFunderCount} funder(s) needed, `
+                + 'and splitting a larger coin did not yield enough. '
+                + `Fund the signer address: ${this._signer.getAddress()}`,
+              );
+            }
+            // Mock providers can materialize neutral structural slots without another wallet fan-out. Keep every
+            // synthetic outpoint namespaced to this physical owner so independently-built transactions cannot
+            // alias one another, and retain any real signer input selected above for tx.origin/msg.sender.
+            for (let i = selected.length; i < walletFunderCount; i++) {
+              const seed = new TextEncoder().encode(
+                `SolidCash mock layout funder\0${this.categoryId}:${masterUtxo.txid}:${masterUtxo.vout}`
+                + `:${overrides?.blockBase ?? 0}:${i}`,
+              );
+              const dummy: Utxo = { txid: binToHex(sha256Sync(seed)), vout: 0, satoshis: 5000n };
+              void mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
+              selected.push({
+                ...dummy,
+                unlocker: {
+                  generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+                  generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+                },
+              });
+            }
+          }
           installFunders(await withRelocationReserve(selected));
           if (!overrides?.returnProbeOnly) {
-            retireSignerUtxos(this._signer, plainUtxos.slice(0, walletFunderCount));
+            retireSignerUtxos(this._signer, selectedPlain);
           }
           }
         } else if ((this.inner.provider as any).addUtxo) {
@@ -25014,13 +25065,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       selector: Uint8Array;
       blob: Uint8Array;
       args: FunctionArgument[];
+      internalArgs?: Record<string, FunctionArgument>;
       logicalSelectors: string[];
       rowArguments: Array<{ selector: string; args: FunctionArgument[]; handler: AbiFunction }>;
       eventSignaturesBySlot?: Array<string | undefined>;
     } | undefined {
-    const rows = externalCall.batchInvocations;
-    if (!rows) return undefined;
-    if (rows.length < 2) throw new Error('Repeated external message-bus batch batch must contain at least two rows');
+    const publishedRows = externalCall.batchInvocations;
+    if (!publishedRows) return undefined;
+    if (publishedRows.length < 2) {
+      throw new Error('Repeated external message-bus batch must contain at least two source callsites');
+    }
 
     const capability = calleeRouteArtifact.messageBus;
     if (!capability || capability.version !== 1 || capability.selector !== '53434231') {
@@ -25028,10 +25082,83 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         `${externalCall.interfaceName} does not advertise a compatible message-bus route`,
       );
     }
+    const rewriteOccurrenceIndex = <T>(value: T, occurrenceIndex: number, seen = new Map<object, unknown>()): T => {
+      if (!value || typeof value !== 'object') return value;
+      if (seen.has(value as object)) return seen.get(value as object) as T;
+      if (Array.isArray(value)) {
+        const result: unknown[] = [];
+        seen.set(value, result);
+        value.forEach((item) => result.push(rewriteOccurrenceIndex(item, occurrenceIndex, seen)));
+        return result as T;
+      }
+      const source = value as Record<string, unknown>;
+      const result: Record<string, unknown> = {};
+      seen.set(value as object, result);
+      for (const [key, child] of Object.entries(source)) {
+        result[key] = rewriteOccurrenceIndex(child, occurrenceIndex, seen);
+      }
+      if (source.kind === 'arrayElement') result.indexValue = occurrenceIndex;
+      return result as T;
+    };
+    const arrayParameterIndices = (value: unknown, indices = new Set<number>(), seen = new Set<object>()): Set<number> => {
+      if (!value || typeof value !== 'object' || seen.has(value as object)) return indices;
+      seen.add(value as object);
+      const source = value as { kind?: string; paramIndex?: number };
+      if (source.kind === 'arrayElement' && source.paramIndex !== undefined) indices.add(source.paramIndex);
+      for (const child of Object.values(value)) {
+        if (Array.isArray(child)) child.forEach((item) => arrayParameterIndices(item, indices, seen));
+        else arrayParameterIndices(child, indices, seen);
+      }
+      return indices;
+    };
+    const rows: Array<(typeof publishedRows)[number] & {
+      logicalIndex: number;
+      argSources?: (typeof publishedRows)[number]['argSources'];
+    }> = [];
+    for (const published of publishedRows) {
+      let occurrences = 1;
+      if (published.occurrence === 'loop') {
+        const indices = [...arrayParameterIndices(published.argSources)];
+        if (indices.length === 0) {
+          throw new Error('Repeated external message-bus loop has no compiler-authored array cardinality');
+        }
+        const lengths = indices.map((index) => {
+          const value = functionArgs[index];
+          if (!Array.isArray(value)) {
+            throw new Error(`Repeated external message-bus loop parameter ${index} is not an array`);
+          }
+          return value.length;
+        });
+        if (!lengths.every((length) => length === lengths[0])) {
+          throw new Error('Repeated external message-bus loop arrays have different runtime lengths');
+        }
+        occurrences = lengths[0];
+      }
+      for (let occurrenceIndex = 0; occurrenceIndex < occurrences; occurrenceIndex++) {
+        const condition = published.condition === undefined
+          ? true
+          : this._evaluateExternalExpression(
+            rewriteOccurrenceIndex(published.condition, occurrenceIndex),
+            functionArgs, callerArtifact, callerState, callerInputs, externalReturns,
+            occurrenceIndex, callerStateIncludesPriorWrites, callerSelfAddress,
+          );
+        if (condition === false) continue;
+        if (condition !== true) {
+          throw new Error('Could not resolve a repeated external message-bus row predicate');
+        }
+        rows.push({
+          ...published,
+          logicalIndex: rows.length,
+          ...(published.argSources && {
+            argSources: rewriteOccurrenceIndex(published.argSources, occurrenceIndex),
+          }),
+        });
+      }
+    }
     const minimumRows = capability.minimumRows ?? 1;
     if (rows.length < minimumRows || rows.length > capability.maximumRows) {
       throw new Error(
-        `Repeated external message-bus batch batch has ${rows.length} rows; callee requires `
+        `Repeated external message-bus batch has ${rows.length} runtime rows; callee requires `
         + `${minimumRows}..${capability.maximumRows}`,
       );
     }
@@ -25060,8 +25187,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       fn.externalCalls?.some((candidate) => (
         candidate === externalCall
         || (candidate.interfaceName === externalCall.interfaceName
-          && candidate.batchInvocations?.length === rows.length
-          && candidate.batchInvocations.every((row, index) => row.selector === rows[index].selector))
+          && candidate.batchInvocations?.length === publishedRows.length
+          && candidate.batchInvocations.every((row, index) => row.selector === publishedRows[index].selector))
       ))
     ))?.inputs;
     const rowArguments: Array<{ selector: string; args: FunctionArgument[]; handler: AbiFunction }> = [];
@@ -25217,11 +25344,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       });
     }
+    // Graph-enabled routes are first materialized by the ordinary builder while it discovers the complete call
+    // tree. These values only keep that provisional unlocker ABI-aligned: admission cannot succeed without the
+    // atomic manifest, and the composer replaces every field from its finalized graph before covenant preflight.
+    // Keeping the placeholders on the compiler route also distinguishes its full graph ABI from a standalone
+    // batch route without relying on any contract or handler name.
+    const provisionalGraphContext: Record<string, FunctionArgument> = {};
+    for (const input of capability.route.inputs) {
+      if (['__internal__activeVerifierIndex', '__internal__graphFixedSize', '__internal__graphBlockSize',
+        '__internal__graphSettlementBoundary', '__internal__blockhashInputIndex'].includes(input.name)) {
+        provisionalGraphContext[input.name] = -1n;
+      } else if (['__internal__graphEmissions', '__internal__graphCallers',
+        '__internal__graphCompletionPositions', '__internal__graphSettlementTable'].includes(input.name)) {
+        provisionalGraphContext[input.name] = new Uint8Array();
+      }
+    }
     return {
       abiFunction: capability.route,
       selector: hexToBin(capability.selector),
       blob,
       args: [blob, ...routeWitnesses],
+      ...(Object.keys(provisionalGraphContext).length > 0 && {
+        internalArgs: provisionalGraphContext,
+      }),
       logicalSelectors: rows.map((row) => row.selector),
       rowArguments,
       ...(eventSignaturesBySlot.some((signature) => signature !== undefined)

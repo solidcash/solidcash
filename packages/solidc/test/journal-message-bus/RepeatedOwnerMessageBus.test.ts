@@ -41,6 +41,32 @@ describe('inferred message-bus batching for repeated external callees', () => {
     expect(run?.externalCalls?.[0].batchInvocations?.every((row) => row.selector.length === 8)).toBe(true);
   });
 
+  it('publishes runtime loop cardinality for repeated calls to one owner', () => {
+    const artifact = compileString(`
+      interface ISink { function put(int value) external; }
+      contract Caller(address sink) {
+        function run(int first, int[] values) public {
+          ISink(sink).put(first);
+          for (int i = 0; i < values.length; i = i + 1) ISink(sink).put(values[i]);
+          require(first >= 0);
+        }
+      }
+    `);
+    const run = artifact.abi.find((fn) => fn.name === 'run');
+    expect(run?.externalCalls).toHaveLength(1);
+    expect(run?.externalCalls?.[0]).toMatchObject({
+      occurrence: 'once',
+      batchInvocations: [
+        { logicalIndex: 0, argSources: [{ kind: 'forward', paramIndex: 0 }] },
+        {
+          logicalIndex: 1,
+          occurrence: 'loop',
+          argSources: [{ kind: 'arrayElement', paramIndex: 1, indexValue: 0 }],
+        },
+      ],
+    });
+  });
+
   it('collapses the supported repeated-owner shape by default', () => {
     const artifact = compileString(SOURCE);
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(1);

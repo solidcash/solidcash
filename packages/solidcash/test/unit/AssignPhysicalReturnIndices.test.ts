@@ -112,6 +112,8 @@ import {
   reassertTokenInsertNewLock,
   stripSurplusEmptyCollectionEntries,
   stripSurplusValueChunkLocks,
+  reassertScidIdentityOutputs,
+  selectExpectedP2sh32OutputLock,
   persistUpdateRedeemLock,
   persistUpdateDigestLock,
   persistUpdateDestLock,
@@ -149,6 +151,53 @@ function group(partial: Partial<PhysicalReturnGroup> & Pick<PhysicalReturnGroup,
 }
 
 describe('assignPhysicalReturnIndices', () => {
+  it('retains an output index through deterministic P2SH32 reconstruction', () => {
+    const current = hexToBin(`aa20${'11'.repeat(32)}87`);
+    const expected = hexToBin(`aa20${'22'.repeat(32)}87`);
+    expect(selectExpectedP2sh32OutputLock(current, current, expected)).toEqual(expected);
+    expect(selectExpectedP2sh32OutputLock(current, expected, current)).toEqual(expected);
+    expect(selectExpectedP2sh32OutputLock(current, expected, Uint8Array.of(0x51))).toBeUndefined();
+  });
+
+  it('relocates a misplaced SCID without reclaiming its authenticated output coordinate', () => {
+    const compilerOwnedLock = hexToBin(`aa20${'11'.repeat(32)}87`);
+    const identityLock = hexToBin(`aa20${'22'.repeat(32)}87`);
+    const commitment = `5343494401${'00'.repeat(20)}`;
+    const outputs = [
+      {
+        to: compilerOwnedLock,
+        amount: 1200n,
+        token: {
+          category: 'aa',
+          amount: 0n,
+          nft: { capability: 'none' as const, commitment },
+        },
+      },
+      { to: Uint8Array.of(0x51), amount: 1000n },
+    ];
+    const inputs = [{
+      satoshis: 1200n,
+      token: {
+        category: 'aa',
+        amount: 0n,
+        nft: { capability: 'none' as const, commitment },
+      },
+      unlocker: { generateLockingBytecode: () => identityLock },
+    }];
+
+    expect(reassertScidIdentityOutputs(outputs, inputs, new Set([0]))).toBe(1);
+    expect(outputs[0]).toEqual({ to: compilerOwnedLock, amount: 1200n });
+    expect(outputs[1]).toEqual({
+      to: identityLock,
+      amount: 1200n,
+      token: {
+        category: 'aa',
+        amount: 0n,
+        nft: { capability: 'none', commitment },
+      },
+    });
+  });
+
   it('distinguishes fixed entry outputs from other mutable participant slots', () => {
     const layout = {
       blockSize: 4,

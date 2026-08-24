@@ -2546,13 +2546,51 @@ export default class SymbolTableTraversal extends AstTraversal {
           (this.compilerOptions as CompilerOptions & { __messageBusExplicitlyDisabled?: boolean })
             .__messageBusExplicitlyDisabled === true;
         if (!node.messageBusRoute) {
-          const directCalls = new Set<ExternalFunctionCallNode>();
-          for (const statement of node.body.statements ?? []) {
-            if (statement instanceof FunctionCallStatementNode
-              && statement.call instanceof ExternalFunctionCallNode) directCalls.add(statement.call);
-            if (statement instanceof MethodCallStatementNode
-              && statement.expression instanceof ExternalFunctionCallNode) directCalls.add(statement.expression);
-          }
+          const callOccursInLoop = (target: ExternalFunctionCallNode | undefined): boolean => {
+            if (!target) return false;
+            const seen = new Set<Node>();
+            const walk = (candidate: Node, inLoop = false): boolean => {
+              if (candidate === target) return inLoop;
+              if (seen.has(candidate)) return false;
+              seen.add(candidate);
+              const nestedLoop = inLoop || /^(WhileNode|DoWhileNode)$/.test(candidate.constructor.name);
+              for (const [key, child] of Object.entries(candidate)) {
+                if ([
+                  'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+                  'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+                ].includes(key)) continue;
+                if (child instanceof Node && walk(child, nestedLoop)) return true;
+                if (Array.isArray(child)) {
+                  for (const item of child) {
+                    if (item instanceof Node && walk(item, nestedLoop)) return true;
+                  }
+                }
+              }
+              return false;
+            };
+            return walk(node.body);
+          };
+          const hasUnresolvedExpression = (value: unknown, seen = new Set<object>()): boolean => {
+            if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
+            seen.add(value as object);
+            const kind = (value as { kind?: string }).kind;
+            if (kind === 'missing' || kind === 'unsupported' || kind === 'reference') return true;
+            return Object.values(value).some((child) => (
+              Array.isArray(child)
+                ? child.some((item) => hasUnresolvedExpression(item, seen))
+                : hasUnresolvedExpression(child, seen)
+            ));
+          };
+          const hasRuntimeArrayOccurrence = (value: unknown, seen = new Set<object>()): boolean => {
+            if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
+            seen.add(value as object);
+            if ((value as { kind?: string }).kind === 'arrayElement') return true;
+            return Object.values(value).some((child) => (
+              Array.isArray(child)
+                ? child.some((item) => hasRuntimeArrayOccurrence(item, seen))
+                : hasRuntimeArrayOccurrence(child, seen)
+            ));
+          };
           const byTarget = new Map<string, ExternalCallSlot[]>();
           const allByTarget = new Map<string, ExternalCallSlot[]>();
           const inferredSelectors = new Map<ExternalCallSlot, Uint8Array>();
@@ -2581,18 +2619,27 @@ export default class SymbolTableTraversal extends AstTraversal {
               allGroup.push(slot);
               allByTarget.set(ownerKey, allGroup);
             }
-            const eligible = identity !== '' && directCalls.has(slot.sourceCallNode!)
+            const loopOccurrence = callOccursInLoop(slot.sourceCallNode);
+            const eligible = identity !== ''
               && !slot.hasReturnValues && !slot.loopArrayVar && !slot.fnPtrCall
               && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
               && !!(slot.compileTimeSelector ?? inferredSelectors.get(slot))
-              && !(slot.argSources ?? []).some((source) => source.kind === 'expression');
+              && !(slot.argSources ?? []).some((source) => hasUnresolvedExpression(source))
+              // Runtime-sized grouped loops are reconstructed from the same compiler-authored argument array.
+              // A loop with no array-derived cardinality remains with the full graph planner.
+              && (!loopOccurrence || (slot.argSources ?? []).some(
+                (source) => hasRuntimeArrayOccurrence(source),
+              ));
             if (!eligible) continue;
             const key = `${identity}|${slot.interfaceName}|${slot.requiredDataNftIndices.join(',')}`;
             const group = byTarget.get(key) ?? [];
             group.push(slot);
             byTarget.set(key, group);
           }
-          const repeated = [...byTarget.values()].filter((group) => group.length > 1);
+          const repeated = [...byTarget.values()].filter((group) => group.length > 1
+            // The physical route must always have at least one row. Optional-only families remain with the
+            // graph planner until the route format grows an authenticated zero-row representation.
+            && group.some((slot) => !slot.condition && !callOccursInLoop(slot.sourceCallNode)));
           const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
           if (knownRepeated.length > 0 && messageBusExplicitlyDisabled) {
             const chains = knownRepeated.map((group) => group.map((slot) =>
@@ -2616,6 +2663,9 @@ export default class SymbolTableTraversal extends AstTraversal {
               const iface = this.interfaceMap.get(slot.interfaceName);
               const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
                 .find((fn) => fn.name === slot.functionName);
+              const occurrence = callOccursInLoop(slot.sourceCallNode)
+                ? 'loop' as const
+                : slot.condition ? 'conditional' as const : 'once' as const;
               return {
                 selector,
                 parameters: slot.sourceCallNode!.parameters,
@@ -2623,6 +2673,9 @@ export default class SymbolTableTraversal extends AstTraversal {
                   ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
                 logicalIndex,
                 argSources: slot.argSources,
+                occurrence,
+                ...(slot.condition && { condition: slot.condition }),
+                sourceCallNode: slot.sourceCallNode,
               };
             });
             representative.compileTimeSelector = Uint8Array.from([0x53, 0x43, 0x42, 0x31]);

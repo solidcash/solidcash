@@ -26,7 +26,10 @@ function expectPublishJobPostKeys(art: { abi: readonly { name: string; sortedUps
 
 const eaOpts = {
   solidityImportCompat: true,
+  messageBus: true,
+  messageBusGraphContext: true,
   optimizeForCompilationSpeed: true,
+  suppressWarnings: true,
   commitmentLimit: 128,
   maximumInputBytes: 10_000_000,
   ecrecover: 'p2pkh' as const,
@@ -40,17 +43,18 @@ describe('MarketplaceV1 publishJobPost upsert keys', () => {
     }));
   });
 
-  it('keeps jobs.length-1 on compileFileMulti and the delegate variant', () => {
+  it('keeps jobs.length-1 on compileFileMulti and the delegate-capable artifact', () => {
     const art = compileFileMulti(marketplaceV1, eaOpts).MarketplaceV1;
     expect(art).toBeDefined();
     expectPublishJobPostKeys(art!);
-    expect(art!.delegateArtifact).toBeDefined();
-    expectPublishJobPostKeys(art!.delegateArtifact!);
+    // Initializer inference can make the primary artifact itself the delegate implementation. Only standalone
+    // implementations receive a second, lazy delegateArtifact; both representations must preserve the key ABI.
+    expectPublishJobPostKeys(art!.delegateArtifact ?? art!);
   });
 
   it('classifies empty-commitment immutables from output j, not the zeroAmount boolean', () => {
     const art = compileFileMulti(marketplaceV1, eaOpts).MarketplaceV1;
-    const hex = art?.delegateArtifact?.functionBodies?.['9f3e4a91'];
+    const hex = (art?.delegateArtifact ?? art)?.functionBodies?.['9f3e4a91'];
     expect(typeof hex).toBe('string');
     const ops: number[] = [];
     const raw = Buffer.from((hex as string).replace(/\s+/g, ''), 'hex');

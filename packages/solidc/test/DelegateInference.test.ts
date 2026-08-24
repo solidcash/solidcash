@@ -358,4 +358,43 @@ describe('delegate inference', () => {
       else process.env.SOLIDC_COMPILE_CACHE = previous;
     }
   });
+
+  it('reads state-pinned external-call targets from proxy storage, not executor-adjacent NFTs', () => {
+    const artifact = compileString(`
+      interface Sink { function ping() external; }
+      contract DelegateTarget {
+        Sink sink;
+        uint counter;
+        function apply() public delegate {
+          counter = counter + 1;
+          sink.ping();
+        }
+      }
+    `);
+    const apply = artifact.abi.find((entry) => entry.name === 'apply');
+    expect(apply?.modifiers).toContain('delegate');
+
+    const bodies = [
+      artifact.functionBodies?.[apply!.selector!],
+      ...Object.values(artifact.debug?.invokeDebug ?? {}).map((entry) => entry.bytecode),
+    ].filter((body): body is string => body !== undefined)
+      .map((body) => decodeAuthenticationInstructions(hexToBin(body)));
+    const proxyStorageRead = bodies.some((instructions) => instructions.some((instruction, index) => (
+      instruction.opcode === OpcodesBCH.OP_INPUTINDEX
+      && instructions[index + 1]?.opcode === OpcodesBCH.OP_2
+      && instructions[index + 2]?.opcode === OpcodesBCH.OP_SUB
+      && instructions[index + 3]?.opcode === OpcodesBCH.OP_1ADD
+      && instructions[index + 4]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
+    )));
+    expect(proxyStorageRead).toBe(true);
+
+    // The implementation executes two inputs after the proxy master: proxy master, its one data NFT, executor.
+    // INPUTINDEX+1 therefore selects an executor-owned sibling, never the state used to pin `sink`.
+    const executorAdjacentRead = bodies.some((instructions) => instructions.some((instruction, index) => (
+      instruction.opcode === OpcodesBCH.OP_INPUTINDEX
+      && instructions[index + 1]?.opcode === OpcodesBCH.OP_1ADD
+      && instructions[index + 2]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
+    )));
+    expect(executorAdjacentRead).toBe(false);
+  });
 });

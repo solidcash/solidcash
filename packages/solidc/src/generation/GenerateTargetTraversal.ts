@@ -7212,9 +7212,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     locationData: SingleLocationData, includeWrittenOldChunks = false,
   ): void {
     const written = new Set(this.currentFunction.dynamicWrites ?? []);
-    // publishJobPost compiles the whitelist upsert before `jobs.push` records the write. A later
-    // static write of the same var must not be treated as a read-only trailing run on the output
-    // path (new chunks go to TXOUTPUTCOUNT-1-nNew).
+    // Code generation can reach a trailing collection write before a later statement records a dynamic write.
+    // Survey the complete body so that later-written values are not mistaken for read-only trailing runs on the
+    // output path (their new chunks belong at the suffix, while their old input chunks remain in the write path).
     if (this.currentFunction.body) {
       const writeKeys = new Set<string>();
       this.collectStateWriteKeys(this.currentFunction.body, writeKeys);
@@ -7226,6 +7226,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (includeWrittenOldChunks) {
       for (const name of written) names.add(name);
     }
+    // This helper is entered with the running trailing index as one raw stack item. Name that item while reading
+    // each dynamic length so every frame-relative lookup (including a generated handler's participant-owner
+    // witness) accounts for it. Leaving the partial untracked made successive OP_PICK depths select the value
+    // below the owner argument whenever this path ran inside an OP_INVOKE graph continuation.
+    const partialName = '(foreign_chunk_offset)';
+    if (names.size > 0) this.pushToStack(partialName);
     for (const name of names) {
       if (!includeWrittenOldChunks && written.has(name)) continue;
       const sv = this.stateVariables.find((v) => v.name === name && v.isDynamic);
@@ -7236,6 +7242,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
       this.emit(Op.OP_ADD, locationData);
     }
+    if (names.size > 0) this.popFromStack();
   }
 
   /** Add outputs emitted before scalar vmap NEW nodes: preserved iteration/read chunks and newly-written chunks. */
@@ -21358,7 +21365,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     fieldsInNft: StateVariableNode[],
     loc: SingleLocationData,
   ): void {
-    if (this.currentFunctionIsDelegate) {
+    if (this.usesMessageBusOwnerBlockBase() || this.usesProxyStateBlockBase()) {
       this.emitMasterInputIndex(loc);
       this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
       this.emit(Op.OP_ADD, loc);
@@ -24906,18 +24913,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
     if (this.usesMessageBusOwnerBlockBase()) {
-      if (!this.currentFunction.messageBusDelegatedOwner) {
-        // A direct route executes in its physical owner input. OP_INPUTINDEX is the consensus authority and avoids
-        // copying an equivalent hidden witness out of the still-live route frame.
-        this.emit(Op.OP_INPUTINDEX, locationData);
-      } else {
-        // A delegated handler executes in a distinct implementation input and must use its authenticated owner
-        // witness. Its local top-relative model includes every compiler-owned handler operand; a bottom ordinal
-        // would cross the caller's still-live route frame and select its oldest value instead.
-        const ownerIndex = this.getStackIndex('__internal__messageBusOwnerInput') + extraStackOffset;
-        this.emit(encodeInt(BigInt(ownerIndex)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-      }
+      // Every generated route handler receives its physical participant owner as an explicit compiler argument.
+      // Use that one authority for both direct routes (where the caller supplied OP_INPUTINDEX) and delegated
+      // routes (where the caller supplied its authenticated proxy witness). Deciding again from transient clone
+      // metadata is unsound: later lowering can preserve the owner parameter while losing the delegate marker,
+      // causing state reads to fall back to the implementation executor's adjacent inputs. The local top-relative
+      // frame includes every compiler-owned handler operand, so it does not cross the caller's still-live frame.
+      const ownerIndex = this.getStackIndex('__internal__messageBusOwnerInput') + extraStackOffset;
+      this.emit(encodeInt(BigInt(ownerIndex)), locationData);
+      this.emit(Op.OP_PICK, locationData);
     } else if (this.usesProxyStateBlockBase()) {
       if (!this.isDefineSubTraversal) {
         if (this.isCompilerMessageBusRoute()) {

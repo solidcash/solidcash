@@ -3749,7 +3749,6 @@ function synthesizeMessageBusRoute(
     .map((candidate) => candidate.name));
   for (const handler of contract.functions) {
     if (!routeOwnedCloneNames.has(handler.name)) continue;
-    handler.messageBusDelegatedOwner = isDelegateRoute;
     if (handler.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) continue;
     handler.parameters.push(Object.assign(
       new ParameterNode(PrimitiveType.BIGINT, MESSAGE_BUS_OWNER_INPUT), { location: handler.location },

@@ -448,9 +448,6 @@ export class FunctionDefinitionNode extends Node implements Named {
    * LowerCollectionJournalHelpers selects and updates those physical caches at runtime without expanding the
    * dispatcher's branches into their Cartesian product. */
   collectionJournalRuntimeAliases?: boolean;
-  /** Compiler-owned route handler: its physical participant block is a distinct delegated proxy input, so the
-   * hidden message-bus owner witness (rather than OP_INPUTINDEX) is the authoritative block base. */
-  messageBusDelegatedOwner?: boolean;
   // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   messageBusRoute?: boolean;

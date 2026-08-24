@@ -351,9 +351,73 @@ describe('delegate inference', () => {
         .find((candidate) => candidate.name === '__message_bus_graph_apply');
       expect(routedHandler).toBeDefined();
       const handler = decodeAuthenticationInstructions(hexToBin(routedHandler!.bytecode));
+      // address(this) remains the exact active executing input bytecode, independently of the state owner.
       expect(handler.some((instruction, index) =>
         instruction.opcode === OpcodesBCH.OP_INPUTINDEX
         && handler[index + 1]?.opcode === OpcodesBCH.OP_UTXOBYTECODE)).toBe(true);
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  it('tracks a live trailing index while graph handlers read dynamic lengths', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const artifact = compileString(`pragma solidity ^0.8.20;
+        interface Lookup { function lookup(string key) external returns (string); }
+        contract RoutedLoopWrite {
+          string[] public records;
+          mapping(uint => mapping(address => bool)) public allowed;
+          address public lookup;
+          modifier initializer() { _; }
+          function initialize(address value) public initializer { lookup = value; }
+          function apply(string[] memory tags, address[] memory workers) public {
+            uint hits = 0;
+            for (uint i = 0; i < tags.length; i++) {
+              if (bytes(Lookup(lookup).lookup(tags[i])).length != 0) hits = hits + 1;
+            }
+            records.push(tags[0]);
+            for (uint i = 0; i < workers.length; i++) allowed[hits][workers[i]] = true;
+            require(hits >= 0);
+          }
+        }
+      `, {
+        messageBus: true,
+        solidityImportCompat: true,
+        maximumInputBytes: 1_000_000,
+        optimizeForCompilationSpeed: true,
+        suppressWarnings: true,
+      });
+      const routedHandler = Object.values(artifact.debug?.invokeDebug ?? {})
+        .find((candidate) => candidate.name === '__message_bus_graph_apply');
+      expect(routedHandler).toBeDefined();
+      const instructions = decodeAuthenticationInstructions(hexToBin(routedHandler!.bytecode));
+      const readNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
+        if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
+        if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
+          return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
+        }
+        if (!instruction.data) return undefined;
+        const decoded = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
+        return typeof decoded === 'bigint' ? decoded : undefined;
+      };
+      const partialThenDynamicRead = instructions.findIndex((instruction, index) => (
+        readNumber(instruction) !== undefined
+        && instructions[index + 1]?.opcode === OpcodesBCH.OP_PICK
+        && readNumber(instructions[index + 2]) !== undefined
+        && instructions[index + 3]?.opcode === OpcodesBCH.OP_ADD
+        && readNumber(instructions[index + 4]) !== undefined
+        && instructions[index + 5]?.opcode === OpcodesBCH.OP_PICK
+        && instructions[index + 6]?.opcode === OpcodesBCH.OP_1
+        && instructions[index + 7]?.opcode === OpcodesBCH.OP_ADD
+        && instructions[index + 8]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
+      ));
+      expect(partialThenDynamicRead).toBeGreaterThanOrEqual(0);
+      const baseOwnerDepth = readNumber(instructions[partialThenDynamicRead]);
+      const dynamicOwnerDepth = readNumber(instructions[partialThenDynamicRead + 4]);
+      expect(dynamicOwnerDepth).toBe(baseOwnerDepth! + 1n);
     } finally {
       warn.mockRestore();
       log.mockRestore();

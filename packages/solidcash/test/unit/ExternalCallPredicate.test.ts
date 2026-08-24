@@ -143,6 +143,23 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(hash160(lockingBytecode));
   });
 
+  it('infers packed Solidity address types through array-element sources', () => {
+    const addressHash = new Uint8Array(20).fill(0x47);
+    const lockingBytecode = Uint8Array.of(0x76, 0xa9, 0x14, ...addressHash, 0x88, 0xac);
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked',
+      fields: [''],
+      args: [{
+        kind: 'source',
+        source: { kind: 'arrayElement', paramIndex: 0, indexValue: 0 },
+      }],
+    };
+
+    expect(evaluator._evaluateExternalExpression(
+      expression, [[lockingBytecode]], artifact, undefined, [{ type: 'address[]' }],
+    )).toEqual(addressHash);
+  });
+
   it('packs typed Solidity integers at natural width in big-endian order', () => {
     const expression: ExternalCallExpression = {
       kind: 'abiEncodePacked', fields: ['uint16', 'int16'],

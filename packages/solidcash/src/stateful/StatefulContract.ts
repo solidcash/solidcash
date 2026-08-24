@@ -24696,9 +24696,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     const inferredType = (candidate: ExternalCallExpression): string => {
       if (candidate.type) return candidate.type;
-      if (candidate.kind === 'source' && candidate.source?.kind === 'forward') {
-        const { paramIndex } = candidate.source;
-        return paramIndex === undefined ? '' : callerInputs?.[paramIndex]?.type ?? '';
+      if (candidate.kind === 'source' && candidate.source) {
+        const { source } = candidate;
+        if (source.kind === 'literal') return source.type ?? '';
+        if (source.kind === 'forward') {
+          return source.paramIndex === undefined ? '' : callerInputs?.[source.paramIndex]?.type ?? '';
+        }
+        if (source.kind === 'arrayElement' && source.paramIndex !== undefined) {
+          const arrayType = callerInputs?.[source.paramIndex]?.type ?? '';
+          return arrayType.match(/^(.*)\[(?:\d*)\]$/)?.[1] ?? '';
+        }
       }
       return '';
     };

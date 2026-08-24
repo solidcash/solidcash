@@ -72,14 +72,14 @@ describe('inferred message-bus batching for repeated external callees', () => {
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(1);
   });
 
-  it('accepts a proxy delegate-index push before the authenticated compiler-route selector', () => {
+  it('resolves a proxy delegate index to the authenticated compiler-route input', () => {
     const compact = compileString(SOURCE).bytecode.replace(/\s+/g, '');
-    // Direct participants start at push4(SCB1); proxy implementations prepend their authenticated master-input
-    // index. Branch on the actual first script byte, consume one complete optional push, then retain the exact
-    // minimal route-selector check for both shapes.
+    // Direct participants start at push4(SCB1). A proxy starts with its authenticated implementation-input index;
+    // decode that witness and inspect the implementation unlocking bytecode before checking the exact route frame.
     expect(compact).toContain(
-      'OP_INPUTBYTECODEOP_DUPOP_1OP_SPLITOP_DROPOP_4OP_EQUALOP_NOTIFOP_1OP_SPLIT',
+      'OP_INPUTBYTECODEOP_DUPOP_1OP_SPLITOP_DROPOP_4OP_EQUALOP_NOTIF',
     );
+    expect(compact).toContain('OP_DROPOP_INPUTBYTECODEOP_ENDIFOP_5OP_SPLIT');
     expect(compact).toContain('OP_ENDIFOP_5OP_SPLITOP_SWAP0453434231OP_EQUALVERIFY');
   });
 

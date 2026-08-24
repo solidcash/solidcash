@@ -24580,11 +24580,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitExternalBatchBlobVerification(locationData: SingleLocationData): void {
     const accumulator = '__internal__external_batch_blob';
-    // [idx] -> verify the compiler-route selector is exactly minimal push4("message-bus batch"), retain remainder.
-    // A direct participant begins with that selector. A proxy implementation begins with one authenticated
-    // delegate-master input-index push, followed by the same selector. Discard only that complete first script
-    // push when byte zero is not the minimal push4 opcode; the subsequent exact five-byte comparison remains the
-    // authority for both the selector and its minimal framing.
+    // [idx] -> resolve the input which executes the compiler route, verify its selector is exactly minimal
+    // push4("message-bus batch"), and retain its remainder. A direct participant executes the route at idx. A
+    // proxy participant's first unlocking argument is the implementation input index; the proxy authenticates
+    // that co-spend and forwards SCB1 separately. Decode that index and inspect the implementation input rather
+    // than mistaking the proxy's following ABI frame for the route's positional batch witness.
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_INPUTBYTECODE, locationData);
     this.emit(Op.OP_DUP, locationData);
@@ -24594,8 +24594,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(hexToBin('04'), locationData);
     this.emit(Op.OP_EQUAL, locationData);
     this.emit(Op.OP_NOTIF, locationData);
-    this.emitConsumeFirstScriptPush(locationData);
-    this.emit(Op.OP_NIP, locationData);
+    this.emitGenericPushdataDecode(PrimitiveType.BIGINT, locationData); // [idx, implementationIdx, remainder]
+    this.emit(Op.OP_DROP, locationData); // [idx, implementationIdx]
+    this.emit(Op.OP_INPUTBYTECODE, locationData); // [idx, implementationUnlocking]
     this.emit(Op.OP_ENDIF, locationData);
     this.emit(encodeInt(5n), locationData);
     this.emit(Op.OP_SPLIT, locationData);

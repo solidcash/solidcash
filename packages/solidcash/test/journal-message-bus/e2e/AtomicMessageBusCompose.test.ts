@@ -1780,6 +1780,61 @@ describe('messageBus.compose atomic transaction', () => {
     expect((await sink.getState()).lastFee).toBe(1n);
   }, 120_000);
 
+  it('decodes an authenticated dynamic Solidity return in a caller graph loop', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const sourceArtifact = compileString(`contract ComposeStringSource() {
+      function label(string shortForm) public pure returns (string) { return "DIGITAL_VIDEO"; }
+      function active() public pure returns (bool) { return true; }
+    }`, {
+      forceStateful: true, messageBus: true, solidityImportCompat: true, suppressWarnings: true,
+    });
+    const sourceBase = new Contract(sourceArtifact, [], { provider });
+    const sourceSetup = await setupStatefulUtxos(
+      provider, sourceBase, sourceArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const source = StatefulContract.withCategory(
+      sourceBase.withCategory(hexToBin(sourceSetup.categoryId)), sourceSetup.categoryId,
+    );
+
+    const rootArtifact = compileString(`
+      interface IComposeStringSource {
+        function label(string shortForm) external returns (string);
+        function active() external returns (bool);
+      }
+      contract ComposeStringRoot(address source) {
+        uint256 labelLength;
+        function run(string[] tags) public {
+          uint256 matches = 0;
+          for (uint256 i = 0; i < tags.length; i = i + 1) {
+            string value = IComposeStringSource(source).label(tags[i]);
+            if (bytes(value).length > 0) matches = matches + 1;
+          }
+          bool active = IComposeStringSource(source).active();
+          this.labelLength = matches;
+          require(this.labelLength == 1 && active);
+        }
+      }
+    `, {
+      forceStateful: true, messageBus: true, solidityImportCompat: true, suppressWarnings: true,
+    });
+    const rootBase = new Contract(rootArtifact, [source.inner.lockingBytecode], { provider });
+    const rootSetup = await setupStatefulUtxos(
+      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const root = StatefulContract.withCategory(
+      rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      calls: [root.call.run(['DV']), source.call.label('DV'), source.call.active()],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect((await root.getState()).labelLength).toBe(1n);
+  }, 120_000);
+
   it('binds an emitted event row to its absolute physical output', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeEventCallee() {

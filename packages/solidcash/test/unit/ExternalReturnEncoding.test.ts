@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { binToHex } from '@bitauth/libauth';
 import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
 import {
-  encodeExternalReturnValue, encodeLeadingRouteArrayPushes,
-  isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector, selectEvmScalarReturnCommitment,
+  decodeEvmReturnValue, encodeExternalReturnValue, encodeLeadingRouteArrayPushes,
+  isCanonicalEvmReturnBlob, isCanonicalEvmReturnSequence, isCanonicalEvmReturnVector,
+  isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector,
+  selectEvmReturnCommitment, selectEvmScalarReturnCommitment,
 } from '../../src/stateful/StatefulContract.js';
 import {
   selectMaterializedTailReturnEvents,
@@ -64,6 +67,42 @@ describe('encodeExternalReturnValue', () => {
   it('rejects a state-entry commitment from a framed Solidity return channel', () => {
     const entryCommitment = new Uint8Array(64).fill(0xca);
     expect(isCanonicalEvmScalarReturnBlob(entryCommitment, ['uint256'])).toBe(false);
+  });
+
+  it('selects a canonical dynamic string and boolean return over its provisional empty value', () => {
+    const result = new Uint8Array(128);
+    result[31] = 32;
+    result[63] = 13;
+    result.set(new TextEncoder().encode('DIGITAL_VIDEO'), 64);
+    result[127] = 1;
+    const framed = encodePushdataValue(result, 'bytes');
+    const provisional = new Uint8Array(96);
+    provisional[31] = 32;
+    provisional[95] = 1;
+
+    expect(isCanonicalEvmReturnSequence(result, [['string'], ['bool']])).toBe(true);
+    expect(isCanonicalEvmReturnVector(result, ['string', 'bool'])).toBe(false);
+    expect(isCanonicalEvmReturnBlob(framed, [['string'], ['bool']])).toBe(true);
+    expect(selectEvmReturnCommitment(
+      [framed, encodePushdataValue(provisional, 'bytes')], [['string'], ['bool']], false,
+    )).toBe(binToHex(result));
+    expect(decodeEvmReturnValue(result.slice(0, 96), 'string')).toBe('DIGITAL_VIDEO');
+    expect(decodeEvmReturnValue(result.slice(96), 'bool')).toBe(true);
+  });
+
+  it('rejects non-canonical dynamic offsets and non-zero tail padding', () => {
+    const wrongOffset = new Uint8Array(128);
+    wrongOffset[31] = 96;
+    wrongOffset[63] = 1;
+    expect(isCanonicalEvmReturnVector(wrongOffset, ['string', 'bool'])).toBe(false);
+
+    const dirtyPadding = new Uint8Array(128);
+    dirtyPadding[31] = 64;
+    dirtyPadding[63] = 1;
+    dirtyPadding[95] = 1;
+    dirtyPadding[96] = 0x61;
+    dirtyPadding[127] = 1;
+    expect(isCanonicalEvmReturnVector(dirtyPadding, ['string', 'bool'])).toBe(false);
   });
 });
 

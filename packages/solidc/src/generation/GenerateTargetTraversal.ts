@@ -15294,15 +15294,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // source-level `(success, data)` tuple at the callsite.
       return 1;
     }
-    if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
-      && returnTypes.every((type) => this.isEvmAbiWordType(type))) {
+    const evmGraphReturn = (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+      && returnTypes.every((type) => this.isEvmAbiWordType(type)
+        || type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined));
+    if (evmGraphReturn) {
       // The call manifest carries the producer's exact return-event bytes. Solidity-compatible producers publish
-      // static results as ABI words; decoding that vector as SolidCash pushdata sees the first zero-padding byte
-      // as OP_0 (notably turning ERC20 `true` into false in SafeERC20).
-      this.popFromStack();
-      this.emitEvmAbiDecode(returnTypes, locationData);
-      for (let i = 0; i < returnTypes.length; i++) {
-        this.pushToStack(`(__graph_result_value_${i})`);
+      // results as ABI tuples. Decoding that vector as SolidCash pushdata sees the first offset/zero-padding byte
+      // as OP_0 (turning dynamic values into empty bytes and notably turning ERC20 `true` into false).
+      if (returnTypes.some((type) => this.isDynamicAbiType(type))) {
+        this.emitEvmAbiDecodeDynamic(returnTypes, locationData);
+      } else {
+        this.popFromStack();
+        this.emitEvmAbiDecode(returnTypes, locationData);
+        for (let i = 0; i < returnTypes.length; i++) {
+          this.pushToStack(`(__graph_result_value_${i})`);
+        }
       }
       return returnTypes.length;
     }

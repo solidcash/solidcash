@@ -12,7 +12,7 @@ import type {
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import {
-  decodeEvmScalarReturn, evalComputedKey, isCanonicalEvmScalarReturnVector,
+  decodeEvmReturnValue, evalComputedKey, isCanonicalEvmScalarReturnVector,
   StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
 import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
@@ -791,16 +791,19 @@ export class AtomicMessageBusComposition {
       logicalIdentities.set(participant.participant, identity);
     }));
     const returning = plan.invocations.filter((invocation) => invocation.resultTypes.length > 0);
+    const preparedResults = Object.fromEntries(returning.flatMap((invocation) => {
+      const artifact = plan.participants[invocation.callee].artifact;
+      const prepared = preparedInvocationResult(
+        descriptors[invocation.index]?.provisionalResultCommitment,
+        artifact,
+        invocation.resultTypes,
+      );
+      return prepared === undefined ? [] : [[invocation.index, prepared] as const];
+    }));
     const provisionalResults = Object.fromEntries(returning.map((invocation) => {
       const artifact = plan.participants[invocation.callee].artifact;
-      return [
-        invocation.index,
-        preparedInvocationResult(
-          descriptors[invocation.index]?.provisionalResultCommitment,
-          artifact,
-          invocation.resultTypes,
-        ) ?? provisionalInvocationResult(artifact, invocation.resultTypes),
-      ];
+      return [invocation.index, preparedResults[invocation.index]
+        ?? provisionalInvocationResult(artifact, invocation.resultTypes)];
     }));
     const propagateResultDependentArguments = (
       results: Readonly<Record<number, string>>,
@@ -813,7 +816,7 @@ export class AtomicMessageBusComposition {
         const artifact = plan.participants[invocation.callee].artifact;
         let value: FunctionArgument | undefined;
         if (artifactUsesSolidityAbi(artifact)) {
-          value = decodeEvmScalarReturn(hexToBin(resultHex), invocation.resultTypes[0]);
+          value = decodeEvmReturnValue(hexToBin(resultHex), invocation.resultTypes[0]);
         } else {
           try {
             const bytes = hexToBin(resultHex);
@@ -837,14 +840,14 @@ export class AtomicMessageBusComposition {
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1' && siblingResults
           && descriptor.resolveArgsFromResults) {
-          console.error('atomic-result-argument-resolution', {
+          console.error('atomic-result-argument-resolution', JSON.stringify({
             invocation: index,
             functionName: descriptor.functionName,
             callsites: [...siblingResults.keys()],
             resolved: resolved !== undefined,
             changed: resolved !== undefined
               && semanticJson(resolved) !== semanticJson(descriptor.args),
-          });
+          }));
         }
         let args = descriptor.args;
         if (resolved && semanticJson(resolved) !== semanticJson(descriptor.args)) {
@@ -876,7 +879,10 @@ export class AtomicMessageBusComposition {
     // A graph-discovery seed is already semantically available on the first atomic pass. Rebuild expressions
     // which consume it before assembling the call manifest; waiting for the VM to discover a *different* result
     // leaves an unchanged seed permanently paired with the stale pre-discovery argument bytes.
-    const initialPropagation = propagateResultDependentArguments(provisionalResults);
+    // Only explicit/precomputed results are available before the first VM discovery pass. Synthetic empty/true
+    // seeds exist solely to let the route advance; feeding them into sibling arguments changes source semantics
+    // before any covenant has authenticated the value.
+    const initialPropagation = propagateResultDependentArguments(preparedResults);
     if (initialPropagation.propagated) {
       if (this.resultPropagationDepth >= descriptors.length) {
         throw new Error('messageBus: authenticated result arguments did not converge');
@@ -1650,6 +1656,7 @@ export class AtomicMessageBusComposition {
           provisional, participantBase + returnSlot.offset, executionInput, probeProgram,
           {
             resultTypes: owned.flatMap((invocation) => plan.invocations[invocation].resultTypes),
+            resultTypeGroups: owned.map((invocation) => plan.invocations[invocation].resultTypes),
             solidityAbi: artifactUsesSolidityAbi(participant.artifact),
           },
         );

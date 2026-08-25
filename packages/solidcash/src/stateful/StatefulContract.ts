@@ -4299,6 +4299,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // first hidden graph input into the wrong ABI slot.
         args: [blob, ...routeWitnesses],
         logicalSelectors: reachedHandlers.map((handler) => handler.selector),
+        ...(rowArguments !== undefined && {
+          rowArguments: rowArguments.map((row, index) => ({
+            ...row,
+            selector: row.handler.selector ?? reachedHandlers[index]?.selector ?? '',
+            args: [...row.args],
+          })),
+        }),
         // Keep the compiler route's positional frame visible-only and carry every hidden ABI value by name.
         // Resource witnesses that are inactive in this envelope still need their typed empty/default value;
         // omitting them makes the final ABI encoder receive `undefined`.
@@ -14710,7 +14717,46 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // at output[master+blockSize+i]. Both known EXACTLY off-chain (SortedList.find + arithmetic) - the covenant pins
     // them. A recipient with NO existing entry throws (insert-in-loop is a separate covenant); the shared v[] param
     // ties the credit total to the debit so supply is conserved.
-    for (const info of entryAbiFunction?.sortedUpsertLoopInfo ?? []) {
+    const selectedUpsertRows = (
+      (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments
+      ?? entryCompilerRoute?.rowArguments
+      ?? []
+    ).filter((row) => (row.handler.sortedUpsertLoopInfo?.length ?? 0) > 0);
+    const activeSelectedUpsertRows = selectedUpsertRows.filter((row) => (
+      row.handler.sortedUpsertLoopInfo ?? []
+    ).some((info) => {
+      const inputIndex = row.handler.inputs.findIndex((input) => input.name === info.varyingArrayParam);
+      const value = inputIndex < 0 ? undefined : row.args[inputIndex];
+      return !Array.isArray(value) || value.length > 0;
+    }));
+    if ((entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) === 0
+      && activeSelectedUpsertRows.length > 1) {
+      throw new Error(
+        'A message-bus envelope with runtime mapping loops in multiple selected rows requires '
+        + 'journalled predecessor planning; split the rows into separate transactions.',
+      );
+    }
+    const upsertPlanningFrames = (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
+      ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false }]
+      : activeSelectedUpsertRows.map((row) => ({
+        abiFunction: row.handler,
+        args: row.args as FunctionArgument[],
+        routed: true,
+      }));
+    for (const upsertFrame of upsertPlanningFrames) {
+      const loopAbiFunction = upsertFrame.abiFunction;
+      const loopArgs = upsertFrame.args;
+      const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
+        if (upsertFrame.routed) {
+          throw new Error(
+            `Message-bus runtime loop in '${loopAbiFunction.name}' requires argument reordering; `
+            + 'split this invocation into an order already accepted by the collection topology.',
+          );
+        }
+        loopArgs[index] = value;
+        finalArgs[index] = value;
+      };
+      for (const info of loopAbiFunction.sortedUpsertLoopInfo ?? []) {
       const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
       if (!collection) continue;
       const entryAddr = getEntryNftAddress(this.inner, this.categoryId, collection.signature);
@@ -14721,8 +14767,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const list = SortedList.fromUtxos(entries);
       const argOf = (name: string | undefined): unknown => {
         if (!name) return undefined;
-        const i = entryAbiFunction!.inputs.findIndex((p) => p.name === name);
-        return i >= 0 ? entryArgs[i] : undefined;
+        const i = loopAbiFunction.inputs.findIndex((p) => p.name === name);
+        return i >= 0 ? loopArgs[i] : undefined;
       };
       const keyTypes = collection.keyTypes ?? [collection.keyType];
       const encKey = (v: unknown, keyType: string): Uint8Array => (
@@ -14731,23 +14777,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             : v instanceof Uint8Array ? v
               : typeof v === 'boolean' ? bigIntToVmNumber(v ? 1n : 0n)
                 : encodePushdataValue(v as StateValue, keyType, stateLayout.structs));
-      let fixedSources = info.fixedKeySources ?? info.fixedKeyParams.map((paramName) => ({
+      const fixedSources = info.fixedKeySources ?? info.fixedKeyParams.map((paramName) => ({
         kind: 'param' as const, paramName,
       }));
-      // publishJobPost writes `jobs` then upserts whitelistWorkers[jobs.length-1][worker]. Route
-      // lowering can drop that computed outer key from sortedUpsertLoopInfo; recover it from the
-      // same-function dynamic array write so worker addresses are not encoded as uint256.
-      if (fixedSources.length === 0 && keyTypes.length > 1 && (keyTypes[0] === 'uint256' || keyTypes[0] === 'uint')) {
-        const arrayWrite = (entryAbiFunction?.dynamicWrites ?? []).find((name) => (
-          Array.isArray(onChainState.state[name])
-        ));
-        if (arrayWrite) {
-          fixedSources = [{
-            kind: 'expression',
-            expressionLabel: `binop:-(unop:.length(state:${arrayWrite}),lit:1)`,
-          }];
-        }
-      }
       const fixedBins = fixedSources.map((source, i) => {
         let value: unknown;
         if (source.kind === 'param') value = argOf(source.paramName);
@@ -14764,17 +14796,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           value = this._signer.getAddress();
         } else if (source.kind === 'expression') {
           const stateLengthDeltas = Object.fromEntries(
-            (entryAbiFunction?.dynamicWrites ?? []).map((name) => [name, 1n]),
+            (loopAbiFunction.dynamicWrites ?? []).map((name) => [name, 1n]),
           );
           value = evalComputedKey(
-            source.expressionLabel, entryArgs, entryAbiFunction!.inputs, onChainState.state, stateLengthDeltas,
+            source.expressionLabel, loopArgs, loopAbiFunction.inputs, onChainState.state, stateLengthDeltas,
           );
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
             console.error('sorted-upsert-expression-key', {
               collection: info.collection, label: source.expressionLabel,
               value: typeof value === 'bigint' ? value.toString() : value,
-              dynamicWrites: entryAbiFunction?.dynamicWrites,
+              dynamicWrites: loopAbiFunction.dynamicWrites,
               stateLengthDeltas,
               stateLengths: Object.fromEntries(Object.entries(onChainState.state)
                 .filter(([, candidate]) => Array.isArray(candidate))
@@ -14907,13 +14939,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (vArr) merged.set(h, info.op === 'set' ? vArr[i] : toBig(merged.get(h) ?? 0n) + toBig(vArr[i]));
           });
           keysArr = order.map((i) => kArr[i]);
-          const recipIdx = entryAbiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-          if (!runtimeFiltered && recipIdx >= 0) { entryArgs[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+          const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+          if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
           if (vArr) {
             valsArr = order.map((i) => merged.get(slotHexes[i])!);
-            const amtIdx = entryAbiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
+            const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
             if (!runtimeFiltered && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
-              entryArgs[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr;
+              replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
             }
           }
         }
@@ -14933,8 +14965,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             groups.get(h)!.push(i);
           });
           keysArr = firstOrder.flatMap((h) => groups.get(h)!).map((i) => kArr[i]);
-          const recipIdx = entryAbiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-          if (!runtimeFiltered && recipIdx >= 0) { entryArgs[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+          const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+          if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
         }
       }
       // SELF-TRANSFER: a recipient == the debited msg.sender nets out (`bal[msg.sender] -= a; bal[msg.sender] += a`).
@@ -14954,14 +14986,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           });
           if (keepIdx.length < kArr.length) {
             keysArr = keepIdx.map((i) => kArr[i]);
-            const recipIdx = entryAbiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-            if (!runtimeFiltered && recipIdx >= 0) { entryArgs[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+            const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+            if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
             if (perKey && Array.isArray(valsArr)) {
               const vArr = valsArr as unknown[];
               valsArr = keepIdx.map((i) => vArr[i]);
-              const amtIdx = entryAbiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
+              const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
               if (!runtimeFiltered && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
-                entryArgs[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr;
+                replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
               }
             }
           }
@@ -15019,28 +15051,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // Write the reordered arrays to BOTH args (read by other derivations) AND finalArgs (already copied from
           // args by the msg.sender/synthetic injection above - it builds the master unlocker, so the ENCODED tx
           // argument must carry the same order the commitments were built in, else the covenant OP_VERIFY fails).
-          const recipIdx = entryAbiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-          if (!runtimeFiltered && recipIdx >= 0) { entryArgs[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+          const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+          if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
           // Array-mutation operand arrays use the same loop index as the key array and must follow any covenant
           // adjacency reorder exactly.
           for (const pname of [info.mutationValueArrayParam, info.mutationIndexArrayParam]) {
             if (!pname) continue;
-            const pi = entryAbiFunction!.inputs.findIndex((p) => p.name === pname);
-            const pv = pi >= 0 ? entryArgs[pi] : undefined;
+            const pi = loopAbiFunction.inputs.findIndex((p) => p.name === pname);
+            const pv = pi >= 0 ? loopArgs[pi] : undefined;
             if (Array.isArray(pv)) {
               const reordered = order.map((i) => pv[i]);
               if (!runtimeFiltered) {
-                entryArgs[pi] = reordered;
-                finalArgs[pi] = reordered;
+                replaceLoopArgument(pi, reordered);
               }
             }
           }
           if (perKey && Array.isArray(valsArr)) {
             const vArr = valsArr as unknown[];
             valsArr = order.map((i) => vArr[i]);
-            const amtIdx = entryAbiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
+            const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
             if (!runtimeFiltered && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
-              entryArgs[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr;
+              replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
             }
           }
         }
@@ -15086,11 +15117,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           oldWitnesses.push(raw);
         }
-        const witnessIndex = entryAbiFunction!.inputs.findIndex((input) => input.name === info.oldValuesWitnessParam);
+        const witnessIndex = loopAbiFunction.inputs.findIndex((input) => input.name === info.oldValuesWitnessParam);
         if (witnessIndex < 0) {
           throw new Error(`vmap runtime struct loop ${info.collection}: missing old-value witness ABI input`);
         }
-        finalArgs[witnessIndex] = oldWitnesses;
+        replaceLoopArgument(witnessIndex, oldWitnesses);
         insertLoopPredecessors.push(...runtimeInputs);
         runtimeLoopDerivedCounts.set(info.collection, keysArr.length);
         if (collection.chunkableValue) addComputedValueChunkRun(info.collection);
@@ -15153,9 +15184,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           mutated.push(next);
         }
-        const wi = entryAbiFunction!.inputs.findIndex((p) => p.name === info.oldValuesWitnessParam);
+        const wi = loopAbiFunction.inputs.findIndex((p) => p.name === info.oldValuesWitnessParam);
         if (wi < 0) throw new Error(`vmap array mutation ${info.collection}: missing old-value witness ABI input`);
-        finalArgs[wi] = oldWitnesses;
+        replaceLoopArgument(wi, oldWitnesses);
         valsArr = mutated;
         perKey = true;
         perKeyRawbytes = true;
@@ -15320,6 +15351,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (commitments.length > 0) {
         const prior = sortedLoopCommitments.get(info.collection) ?? [];
         sortedLoopCommitments.set(info.collection, [...prior, ...commitments]);
+      }
       }
     }
 
@@ -18592,7 +18624,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     .sort((left, right) => left.chunkIndex - right.chunkIndex);
                   const activeWrite = selectedResources.dynamicWrites.includes(variable.name);
                   for (const { utxo } of chunks) {
-                    if (dynamicChunkOffset >= insertBase + (selectedLayout.trailingCapacity ?? 0)) {
+                    // A balanced compiler route publishes a finite trailing window shared by every participant.
+                    // Ordinary direct functions have no `trailingCapacity`: their runtime chunk run simply extends
+                    // past blockSize. Treating an absent capacity as zero rejected the first chunk of every nested
+                    // dynamic read (for example an external `itemAt()` call after items became non-empty).
+                    if (selectedLayout.trailingCapacity !== undefined
+                      && dynamicChunkOffset >= insertBase + selectedLayout.trailingCapacity) {
                       throw new Error(
                         `Nested dynamic state exceeds balanced trailing capacity for '${selectedFn?.name}'`,
                       );
@@ -22632,7 +22669,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && { lowLevelCallInputBase }),
       ...(compilerRouteDelegateLayout && { compilerRouteDelegateBlock: true }),
       ...(overrides?.omitLocalFeeTail && { preserveBlockLayoutWidth: true }),
-      ...(batchPredCommitments.size > 0 && { batchEntriesBeforeDynamicChunks: true }),
+      ...((batchPredCommitments.size > 0 || sortedLoopCommitments.size > 0)
+        && { loopEntriesBeforeDynamicChunks: true }),
       ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
       ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
       ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),

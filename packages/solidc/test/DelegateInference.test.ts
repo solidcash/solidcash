@@ -394,6 +394,9 @@ describe('delegate inference', () => {
         .find((candidate) => candidate.name === '__message_bus_graph_apply');
       expect(routedHandler).toBeDefined();
       const instructions = decodeAuthenticationInstructions(hexToBin(routedHandler!.bytecode));
+      const routeInstructions = decodeAuthenticationInstructions(hexToBin(
+        artifact.functionBodies?.[artifact.messageBus!.route!.selector]!,
+      ));
       const readNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
         if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
         if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
@@ -403,6 +406,17 @@ describe('delegate inference', () => {
         const decoded = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
         return typeof decoded === 'bigint' ? decoded : undefined;
       };
+      // The runtime mapping loop and the records.push write share the handler's trailing frame. Immediately before
+      // the dynamic chunk's OUTPUTBYTECODE check, the output index must add both the accumulated loop-entry width
+      // and the dynamic-loop index. Without the first PICK+ADD both covenants claim trailingBase.
+      expect(routeInstructions.some((instruction, index) => (
+        instruction.opcode === OpcodesBCH.OP_OUTPUTBYTECODE
+        && routeInstructions[index - 1]?.opcode === OpcodesBCH.OP_DUP
+        && routeInstructions[index - 2]?.opcode === OpcodesBCH.OP_ADD
+        && routeInstructions[index - 3]?.opcode === OpcodesBCH.OP_PICK
+        && routeInstructions[index - 5]?.opcode === OpcodesBCH.OP_ADD
+        && routeInstructions[index - 6]?.opcode === OpcodesBCH.OP_PICK
+      ))).toBe(true);
       const partialThenDynamicRead = instructions.findIndex((instruction, index) => (
         readNumber(instruction) !== undefined
         && instructions[index + 1]?.opcode === OpcodesBCH.OP_PICK
@@ -446,9 +460,6 @@ describe('delegate inference', () => {
         instruction.opcode === OpcodesBCH.OP_OUTPUTTOKENCOMMITMENT)).toBe(true);
       expect(instructions.some((instruction) =>
         instruction.opcode === OpcodesBCH.OP_OUTPUTTOKENCATEGORY)).toBe(true);
-      const routeInstructions = decodeAuthenticationInstructions(hexToBin(
-        artifact.functionBodies?.[artifact.messageBus!.route!.selector]!,
-      ));
       const entryOffset = artifact.messageBus?.route?.blockLayout?.slots
         .find((slot) => slot.kind === 'entry')?.offset;
       expect(entryOffset).toBeDefined();

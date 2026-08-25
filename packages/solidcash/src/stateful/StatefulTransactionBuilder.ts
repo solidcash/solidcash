@@ -3939,7 +3939,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   compilerRouteDelegateBlock?: boolean;
   /** Preserve every compiler-published block coordinate, including inactive union-route resource slots. */
   preserveBlockLayoutWidth?: boolean;
-  batchEntriesBeforeDynamicChunks?: boolean;
+  /** Place runtime mapping-entry outputs before newly written dynamic-storage chunks in the trailing frame. */
+  loopEntriesBeforeDynamicChunks?: boolean;
   iterationEntryInputs?: UnlockableUtxo[];
   // vmap diff-key insert loop: the N bracketing predecessors, co-spent at input[blockSize+c] but NOT preserved as
   // outputs (unlike iterationEntryInputs) - they are MODIFIED to P' which is emitted via loopEntryVars. Kept separate
@@ -4105,7 +4106,7 @@ export class StatefulTransactionBuilder {
   private lowLevelCallInputBase?: number;
   private compilerRouteDelegateBlock: boolean;
   private preserveBlockLayoutWidth: boolean;
-  private batchEntriesBeforeDynamicChunks: boolean;
+  private loopEntriesBeforeDynamicChunks: boolean;
   private iterationEntryInputs: UnlockableUtxo[];
   private iterationEntriesPlacedAtDelegateBase = false;
   private insertLoopPredecessorInputs: UnlockableUtxo[];
@@ -4245,7 +4246,7 @@ export class StatefulTransactionBuilder {
     this.lowLevelCallInputBase = options.lowLevelCallInputBase;
     this.compilerRouteDelegateBlock = options.compilerRouteDelegateBlock ?? false;
     this.preserveBlockLayoutWidth = options.preserveBlockLayoutWidth ?? false;
-    this.batchEntriesBeforeDynamicChunks = options.batchEntriesBeforeDynamicChunks ?? false;
+    this.loopEntriesBeforeDynamicChunks = options.loopEntriesBeforeDynamicChunks ?? false;
     this.entryNfts = options.entryNfts ?? [];
     this.entryNftLockingBytecodes = options.entryNftLockingBytecodes ?? new Map();
     this.dynamicChunkVars = options.dynamicChunkVars ?? [];
@@ -4424,8 +4425,8 @@ export class StatefulTransactionBuilder {
       let bhOrdinal = 0;
       let kIdx = 0; // keccak256 compute side-car index
       let erIdx = 0; // ecrecover recovery-pair side-car index (flat A0,B0,A1,B1..)
-      const loopAlignmentCount = this.batchEntriesBeforeDynamicChunks
-        ? Math.max(0, this._localLoopEntryOutputCount() - this.insertLoopPredecessorInputs.length)
+      const loopAlignmentCount = this.loopEntriesBeforeDynamicChunks
+        ? Math.max(0, this._trailingLoopEntryOutputCount() - this.insertLoopPredecessorInputs.length)
         : 0;
       const loopAlignmentFunders = funderPool.splice(0, loopAlignmentCount);
       // Input and output resource order intentionally differ when a sorted batch creates more entry outputs than
@@ -4437,7 +4438,7 @@ export class StatefulTransactionBuilder {
         ...this.iterationEntryInputs,
         ...this.dynamicChunkInputs,
         ...this.insertLoopPredecessorInputs,
-        ...(this.batchEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
+        ...(this.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
       ];
       let trailingIdx = 0;
       let trailingDisposalIdx = 0;
@@ -6960,11 +6961,7 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  /**
-   * Later participant/FT/SCID writers can overwrite impl+blockSize P'/NEW. Put the
-   * planned whitelist (or other delegate upsert) commitments back without splicing
-   * so assigned view tails stay put.
-   */
+  /** Restore planned delegate loop commitments at their compiler-owned coordinates without shifting later rows. */
   private _reassertDelegateLoopEntries(builder: TransactionBuilder): void {
     const delegateLoopVars = this._delegateLoopEntryVars();
     if (delegateLoopVars.length === 0) return;
@@ -6985,11 +6982,15 @@ export class StatefulTransactionBuilder {
     )) : -1;
     const delegateBase = delegateOutputIndex >= 0 ? delegateOutputIndex
       : this.blockLayout?.slots.find((slot) => slot.kind === 'lowLevelCall')?.offset;
-    let outputIndex = delegateBase !== undefined
-      ? delegateBase + (delegateAbiFunction?.blockLayout?.blockSize ?? 1)
-      : this.getLoopEntryOutputBase();
-    outputIndex += this.iterationEntryInputs.length + this.dynamicChunkInputs.length
-      + this.trailingDisposalInputs.length;
+    let outputIndex = this.compilerRouteDelegateBlock
+      ? this.getLoopEntryOutputBase()
+      : delegateBase !== undefined
+        ? delegateBase + (delegateAbiFunction?.blockLayout?.blockSize ?? 1)
+        : this.getLoopEntryOutputBase();
+    if (!this.compilerRouteDelegateBlock) {
+      outputIndex += this.iterationEntryInputs.length + this.dynamicChunkInputs.length
+        + this.trailingDisposalInputs.length;
+    }
     for (const lv of delegateLoopVars) {
       for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
         if (commitment === '' || commitment === '00') continue;
@@ -9504,8 +9505,8 @@ export class StatefulTransactionBuilder {
     }
     let base = this.getChunkOutputBase();
     for (const dv of this.dynamicChunkVars) base += (this.chunkRawCommitments.get(dv.name) ?? []).length;
-    if (!this.batchEntriesBeforeDynamicChunks) {
-      for (const lv of this.loopEntryVars) base += (this.loopEntryCommitments.get(lv.collection) ?? []).length;
+    if (!this.loopEntriesBeforeDynamicChunks) {
+      base += this._trailingLoopEntryOutputCount();
     }
     return base;
   }
@@ -9736,10 +9737,10 @@ export class StatefulTransactionBuilder {
     if (this.delegateEntriesAfterLowLevel) {
       // Delegate-only loop entries are appended after the caller's reserved trailing block. They must not move
       // the caller's dynamic-chunk base into that delegate suffix; only local loop entries precede local chunks.
-      return trailingBase + this._localLoopEntryOutputCount() + this._valueChunkOutputCount()
+      return trailingBase + this._trailingLoopEntryOutputCount() + this._valueChunkOutputCount()
         + this.pendingOutputs.length;
     }
-    return trailingBase + (this.batchEntriesBeforeDynamicChunks ? this._localLoopEntryOutputCount() : 0);
+    return trailingBase + (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0);
   }
 
   private _dynamicChunkOutputCount(): number {
@@ -9802,10 +9803,19 @@ export class StatefulTransactionBuilder {
     return n;
   }
 
-  private _localLoopEntryOutputCount(): number {
+  /** Runtime mapping entries physically owned by this builder's balanced trailing frame. */
+  private _trailingLoopEntryVars(): typeof this.loopEntryVars {
+    return this.loopEntryVars.filter((variable) => (
+      (variable.categoryId === undefined || variable.categoryId === this.categoryId)
+      // Legacy delegates own a transaction suffix outside the caller's block. A compiler-routed delegate instead
+      // executes against the authenticated participant owner, so its resources belong to that participant's frame.
+      && (variable.delegate !== true || this.compilerRouteDelegateBlock)
+    ));
+  }
+
+  private _trailingLoopEntryOutputCount(): number {
     let n = 0;
-    for (const lv of this.loopEntryVars) {
-      if (lv.delegate === true) continue;
+    for (const lv of this._trailingLoopEntryVars()) {
       n += (this.loopEntryCommitments.get(lv.collection) ?? []).length;
     }
     return n;
@@ -9817,15 +9827,14 @@ export class StatefulTransactionBuilder {
 
   /**
    * Output index where loop entry NFTs begin. They share the trailing region with dynamic chunks (mutually
-   * exclusive in a given function by construction), placed after any chunk outputs.
+   * exclusive in a given function by construction), placed after any chunk outputs. A compiler-routed delegate
+   * executes against its authenticated participant owner, so its loop entries remain inside that owner's declared
+   * trailing region; the `delegate` marker selects token ownership, not a transaction-suffix placement policy.
    */
   getLoopEntryOutputBase(): number {
-    if (this._delegateLoopEntryVars().length === this.loopEntryVars.length
-      && this.loopEntryVars.length > 0 && (this.blockLayout?.trailingCapacity ?? 0) > 0) {
-      return this.getChunkOutputBase() + (this.blockLayout?.trailingCapacity ?? 0) + this.pendingOutputs.length
-        + this.externalIdentityAnchorUtxos.length;
+    if (this.loopEntriesBeforeDynamicChunks) {
+      return this.getChunkOutputBase() - this._trailingLoopEntryOutputCount();
     }
-    if (this.batchEntriesBeforeDynamicChunks) return this.getChunkOutputBase() - this._localLoopEntryOutputCount();
     if (this.delegateEntriesAfterLowLevel) {
       return this.getChunkOutputBase() - this.pendingOutputs.length
         - this._valueChunkOutputCount() - this._loopEntryOutputCount();
@@ -11877,9 +11886,9 @@ export class StatefulTransactionBuilder {
       const resourceBases: number[] = [];
       if (this.iterationEntryInputs.length > 0 || this.dynamicChunkVars.length > 0) {
         resourceBases.push(this.getChunkOutputBase() - this.iterationEntryInputs.length
-          - (this.batchEntriesBeforeDynamicChunks ? this._localLoopEntryOutputCount() : 0));
+          - (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0));
       }
-      if (this.loopEntryVars.length > 0) resourceBases.push(this.getLoopEntryOutputBase());
+      if (this._trailingLoopEntryVars().length > 0) resourceBases.push(this.getLoopEntryOutputBase());
       if (this.valueChunkOutputs.length > 0 || this.valueChunkVars.size > 0) {
         resourceBases.push(this.getValueChunkOutputBase());
       }
@@ -11906,10 +11915,8 @@ export class StatefulTransactionBuilder {
       });
     }
 
-    if (this.batchEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel) {
-      for (const lv of this.loopEntryVars.filter((value) =>
-        value.delegate !== true
-          && (value.categoryId === undefined || value.categoryId === this.categoryId))) {
+    if (this.loopEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel) {
+      for (const lv of this._trailingLoopEntryVars()) {
         for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
           const entryOutput = {
             to: lv.lockingBytecode, amount: 1200n,
@@ -12030,10 +12037,8 @@ export class StatefulTransactionBuilder {
         commitments: this.loopEntryCommitments.get(value.collection),
       })));
     }
-    for (const lv of (this.batchEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel
-      ? [] : this.loopEntryVars.filter((value) =>
-        value.delegate !== true
-          && (value.categoryId === undefined || value.categoryId === this.categoryId)))) {
+    for (const lv of (this.loopEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel
+      ? [] : this._trailingLoopEntryVars())) {
       const commitments = this.loopEntryCommitments.get(lv.collection) ?? [];
       for (const commitment of commitments) {
         const entryOutput = {
@@ -12061,7 +12066,7 @@ export class StatefulTransactionBuilder {
       const trailingOutputCounts = {
         iterationEntries: this.iterationEntryInputs.length,
         dynamicChunks: this._dynamicChunkOutputCount(),
-        loopEntries: this._localLoopEntryOutputCount(),
+        loopEntries: this._trailingLoopEntryOutputCount(),
         literalValueChunks: this.valueChunkOutputs.length,
         derivedValueChunks: [...this.getValueChunkVars()].reduce(
           (sum, value) => sum + (this.valueChunkRawCommitments.get(value.id) ?? []).length,

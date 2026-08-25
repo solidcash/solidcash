@@ -84,6 +84,37 @@ function makeBaseOptions(overrides?: Partial<StatefulTransactionOptions>): State
 }
 
 describe('StatefulTransactionBuilder', () => {
+  describe('compiler-routed trailing resources', () => {
+    it('places routed loop entries before newly written dynamic chunks inside the participant frame', () => {
+      const entryLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x44), 0x87]);
+      const chunkLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x55), 0x87]);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        compilerRouteDelegateBlock: true,
+        loopEntriesBeforeDynamicChunks: true,
+        blockLayout: {
+          blockSize: 121,
+          trailingBase: 57,
+          trailingCapacity: 64,
+          slots: [
+            { kind: 'master', offset: 0 },
+            { kind: 'trailing', offset: 57, slotIndex: 0, conditional: true },
+          ],
+        },
+        loopEntryVars: [{
+          collection: 'entries', lockingBytecode: entryLock, categoryId, delegate: true,
+        }],
+        dynamicChunkVars: [{ name: 'records', type: 'Record[]', lockingBytecode: chunkLock, delegate: true }],
+      }));
+      builder.setLoopEntryCommitments('entries', ['00']);
+      builder.setChunkRawCommitments('records', ['00']);
+
+      expect(builder.getLoopEntryOutputBase()).toBe(57);
+      expect(builder.getChunkOutputBase()).toBe(58);
+      expect(builder.getChunkOutputBase()).toBeLessThan(121);
+    });
+  });
+
   describe('runtime-loop value chunk suffix layout', () => {
     const chunkA = new Uint8Array([0x51]);
     const chunkB = new Uint8Array([0x52]);

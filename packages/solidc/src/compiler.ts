@@ -568,7 +568,6 @@ const MESSAGE_BUS_CLONE_PREFIXES = [
  * explicitly rather than letting an internal OP_INVOKE body infer it from OP_INPUTINDEX.
  */
 const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
-const MESSAGE_BUS_BLOCK_SIZE = '__internal__graphBlockSize';
 
 const withinSpan = (location: Location, point: Point): boolean => {
   const after = point.line > location.start.line
@@ -3754,12 +3753,6 @@ function synthesizeMessageBusRoute(
     .map((candidate) => candidate.name));
   for (const handler of contract.functions) {
     if (!routeOwnedCloneNames.has(handler.name)) continue;
-    if (graphExecutionContext
-      && !handler.parameters.some((parameter) => parameter.name === MESSAGE_BUS_BLOCK_SIZE)) {
-      handler.parameters.push(Object.assign(
-        new ParameterNode(PrimitiveType.BIGINT, MESSAGE_BUS_BLOCK_SIZE), { location: handler.location },
-      ));
-    }
     if (handler.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) continue;
     handler.parameters.push(Object.assign(
       new ParameterNode(PrimitiveType.BIGINT, MESSAGE_BUS_OWNER_INPUT), { location: handler.location },
@@ -3815,9 +3808,7 @@ function synthesizeMessageBusRoute(
       const entryKeyArguments = (handler: FunctionDefinitionNode): string[] =>
         (handlerEntryKeys.get(handler) ?? []).map(({ base, perRow }) =>
           (perRow ? `${base}_r${rowIndex}` : base));
-      const ownerContextArgs = routeOwnedCloneNames.has(invokeName)
-        ? [...(graphExecutionContext ? [MESSAGE_BUS_BLOCK_SIZE] : []), routeOwnerInputExpression]
-        : [];
+      const ownerContextArgs = routeOwnedCloneNames.has(invokeName) ? [routeOwnerInputExpression] : [];
       if (fn.parameters.length === 0) {
         const logicalCaller = graphExecutionContext ? '__message_bus_graph_caller' : 'msg.sender';
         const selectedIsClone = invokeName !== fn.name;
@@ -4056,7 +4047,7 @@ function synthesizeMessageBusRoute(
   });
   const graphRouteParameters = !graphExecutionContext ? [] : [
     'bigint __internal__graphFixedSize',
-    `bigint ${MESSAGE_BUS_BLOCK_SIZE}`,
+    'bigint __internal__graphBlockSize',
     'bytes __internal__graphEmissions',
     'bytes __internal__graphCallers',
     'bigint __internal__graphSettlementBoundary',

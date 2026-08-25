@@ -1480,11 +1480,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       parameter.name === '__internal__messageBusOwnerInput') === true;
   }
 
-  /** A generated graph handler receives the authenticated route participant's complete physical block width. */
-  private hasMessageBusBlockSize(node = this.currentFunction): boolean {
-    return node.parameters?.some((parameter) => parameter.name === '__internal__graphBlockSize') === true;
-  }
-
   /**
    * Compute resources reached through either the physical route or one of its outlined handlers belong beside
    * the authenticated participant block. Handler clones are identified by their explicit hidden owner ABI,
@@ -25018,16 +25013,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(localBase)), locationData);
     } else {
       this.emitMasterInputIndex(locationData);
-      if (this.usesMessageBusOwnerBlockBase() && this.hasMessageBusBlockSize()) {
-        // Generated graph handlers share one route whose published participant width may exceed any handler's
-        // local block layout. The SDK authenticates and supplies that width; use it so trailing collection/chunk
-        // paths begin after the complete participant block rather than inside another handler's reserved slots.
-        const blockSizeIndex = this.getStackIndex('__internal__graphBlockSize') + 1;
-        this.emit(encodeInt(BigInt(blockSizeIndex)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-      } else {
-        this.emit(encodeInt(BigInt(localBase)), locationData);
-      }
+      this.emit(encodeInt(BigInt(localBase)), locationData);
     }
     this.emit(Op.OP_ADD, locationData);
   }

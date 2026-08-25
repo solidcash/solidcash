@@ -9207,16 +9207,18 @@ export class StatefulTransactionBuilder {
       let runLock: string | undefined;
       for (let offset = 0; offset < count; offset += 1) {
         const output = builder.outputs[start + offset];
+        const token = output?.token;
+        const nft = token?.nft;
         const lock = output?.to instanceof Uint8Array
           ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
         if (!isP2sh32LockScript(lock)
-          || output?.token?.category !== outputCategoryIds.get(carrier)
-          || output.token.nft?.capability !== 'mutable'
-          || valueChunkIndexFromCommitment(output.token.nft.commitment ?? '') !== offset) return false;
+          || token?.category !== outputCategoryIds.get(carrier)
+          || nft?.capability !== 'mutable'
+          || valueChunkIndexFromCommitment(nft.commitment) !== offset) return false;
         const lockHex = binToHex(lock);
         const expectedChunk = expected?.[offset];
         if (expectedChunk && (lockHex !== binToHex(expectedChunk.lockingBytecode)
-          || output.token.nft.commitment !== expectedChunk.commitment)) return false;
+          || nft.commitment !== expectedChunk.commitment)) return false;
         if (runLock !== undefined && lockHex !== runLock) return false;
         runLock = lockHex;
       }

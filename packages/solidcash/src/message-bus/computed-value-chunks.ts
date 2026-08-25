@@ -54,15 +54,17 @@ export function convergeMessageBusComputedValueChunkOutputs(
       const category = first?.token?.category;
       if (category === undefined || first.token?.nft?.capability !== 'mutable'
         || first.token.amount !== 0n
-        || valueChunkIndexFromCommitment(first.token.nft.commitment) !== 0
-        || !isP2sh32(first.to instanceof Uint8Array ? first.to : undefined)) continue;
+        || valueChunkIndexFromCommitment(first.token.nft.commitment) !== 0) continue;
       for (let outputIndex = outputBase; outputIndex < trailingEnd; outputIndex += 1) {
         const output = builder.outputs[outputIndex];
         const chunkIndex = outputIndex - outputBase;
         if (output?.token?.category !== category || output.token.nft?.capability !== 'mutable'
           || output.token.amount !== 0n
-          || valueChunkIndexFromCommitment(output.token.nft.commitment) !== chunkIndex
-          || !isP2sh32(output.to instanceof Uint8Array ? output.to : undefined)) break;
+          || valueChunkIndexFromCommitment(output.token.nft.commitment) !== chunkIndex) break;
+        // A computed run is intentionally born with the builder's non-P2SH placeholder lock: its exact P2SH32
+        // lock exists only on the complete graph VM stack below. Requiring the output to already be P2SH32 makes
+        // convergence circular. Ownership instead comes from the compiler witness, bounded trailing range, token
+        // category/capability, and contiguous self-describing chunk indices; proposals remain P2SH32-only.
         const inputs = owners.get(outputIndex) ?? new Set<number>();
         inputs.add(inputIndex);
         owners.set(outputIndex, inputs);

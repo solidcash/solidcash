@@ -256,9 +256,61 @@ describe('StatefulTransactionBuilder', () => {
       expect(internals._reconcileMaterializedValueChunkWitnesses(tx)).toBe(false);
     });
 
+    it('does not mistake an indexed dynamic-state run for a delegated value continuation', () => {
+      const dynamicLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x22), 0x87]);
+      const valueLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x44), 0x87]);
+      const implementationCategory = '55'.repeat(32);
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+      const tx = builder.build();
+      const provisionalBase = tx.outputs.length;
+      const chunk = (to: Uint8Array, index: number, tail: string) => ({
+        to, amount: 1200n,
+        token: { category: categoryId, amount: 0n,
+          nft: { capability: 'mutable' as const,
+            commitment: `${index.toString(16).padStart(2, '0')}00${tail}` } },
+      });
+      tx.outputs.push(
+        chunk(dynamicLock, 0, 'dd'), chunk(dynamicLock, 1, 'dd'),
+        chunk(valueLock, 0, 'aa'), chunk(valueLock, 1, 'bb'),
+      );
+      const refreshInternalArgs = vi.fn();
+      const carrier = {
+        categoryId: implementationCategory,
+        callMode: 'delegatecall' as const,
+        valueChunkOutputBase: provisionalBase,
+        valueChunkOutputCount: 2,
+        internalArgs: { __internal__valueChunkOutputBase: BigInt(provisionalBase) },
+        refreshInternalArgs,
+      };
+      const proxy = { categoryId, delegateCallGroupIndex: 0 };
+      const internals = builder as unknown as {
+        externalCallUtxoGroups: typeof proxy[];
+        lowLevelCallUtxoGroups: typeof carrier[];
+        derivedChunkOutputs: Map<number, {
+          commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
+        }>;
+        _reconcileMaterializedValueChunkWitnesses: (b: typeof tx) => boolean;
+      };
+      internals.externalCallUtxoGroups = [proxy];
+      internals.lowLevelCallUtxoGroups = [carrier];
+      internals.derivedChunkOutputs = new Map([
+        [provisionalBase, { commitment: '0000aa', lockingBytecode: valueLock, categoryId }],
+        [provisionalBase + 1, { commitment: '0100bb', lockingBytecode: valueLock, categoryId }],
+      ]);
+
+      expect(internals._reconcileMaterializedValueChunkWitnesses(tx)).toBe(true);
+      expect(carrier.valueChunkOutputBase).toBe(provisionalBase + 2);
+      expect(carrier.internalArgs.__internal__valueChunkOutputBase).toBe(BigInt(provisionalBase + 2));
+      expect(refreshInternalArgs).toHaveBeenCalledWith(
+        { __internal__valueChunkOutputBase: BigInt(provisionalBase + 2) },
+        { shiftPredOut: false },
+      );
+    });
+
     it('binds an unowned routed continuation run in absolute composition coordinates', () => {
       const stateLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x33), 0x87]);
       const valueLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x44), 0x87]);
+      const unrelatedValueLock = new Uint8Array([0xaa, 0x20, ...new Array(32).fill(0x55), 0x87]);
       const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
       const tx = builder.build();
       const blockBase = 121;
@@ -272,6 +324,15 @@ describe('StatefulTransactionBuilder', () => {
         chunk(stateLock, 0), chunk(stateLock, 1),
         chunk(valueLock, 0), chunk(valueLock, 1), chunk(valueLock, 2),
       );
+      builder.rememberObservedValueChunks(categoryId, 'records', [
+        { commitment: '0000aa', lockingBytecode: valueLock, categoryId },
+        { commitment: '0100aa', lockingBytecode: valueLock, categoryId },
+        { commitment: '0200aa', lockingBytecode: valueLock, categoryId },
+      ]);
+      builder.rememberObservedValueChunks(categoryId, 'archivedRecords', [
+        { commitment: '0000bb', lockingBytecode: unrelatedValueLock, categoryId },
+        { commitment: '0100bb', lockingBytecode: unrelatedValueLock, categoryId },
+      ]);
       const refreshInternalArgs = vi.fn();
       const carrier = {
         categoryId: '44'.repeat(32),
@@ -279,6 +340,9 @@ describe('StatefulTransactionBuilder', () => {
         stateLayout: {
           collections: [{
             name: 'records', signature: 'records:mapping(bytes32 => Record[])', kind: 'mapping',
+            keyType: 'bytes32', valueType: 'Record[]', sorted: true, chunkableValue: true,
+          }, {
+            name: 'archivedRecords', signature: 'archivedRecords:mapping(bytes32 => Record[])', kind: 'mapping',
             keyType: 'bytes32', valueType: 'Record[]', sorted: true, chunkableValue: true,
           }],
         },
@@ -288,8 +352,18 @@ describe('StatefulTransactionBuilder', () => {
         compilerRoute: {
           abiFunction: {
             name: '__route', inputs: [{ name: '__internal__valueChunkOutputBase', type: 'bigint' }],
-            outputs: [], entryAccesses: [{ collection: 'records', keyParams: [], operations: ['write'] }],
+            outputs: [], entryAccesses: [
+              { collection: 'records', keyParams: [], operations: ['write'] },
+              { collection: 'archivedRecords', keyParams: [], operations: ['write'] },
+            ],
+            messageBusActiveWriteCollections: ['records'],
           },
+          rowArguments: [{
+            selector: '00112233', args: [], handler: {
+              name: 'writeRecords', inputs: [], outputs: [],
+              entryAccesses: [{ collection: 'records', keyParams: [], operations: ['write'] }],
+            },
+          }],
         },
         refreshInternalArgs,
       };

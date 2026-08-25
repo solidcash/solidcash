@@ -1458,13 +1458,23 @@ function chunkableArrayWriteCollections(
   group: ExternalCallUtxoGroup,
   abiFunction: AbiFunction,
 ): string[] {
-  return (abiFunction.entryAccesses ?? []).flatMap((access) => {
-    if (!access.operations.includes('write')) return [];
+  const activeWriteCollections = (abiFunction as MessageBusRuntimeAbiFunction)
+    .messageBusActiveWriteCollections;
+  const activeFunctions = group.compilerRoute?.abiFunction === abiFunction
+    && (group.compilerRoute.rowArguments?.length ?? 0) > 0
+    ? group.compilerRoute.rowArguments!.map((row) => row.handler)
+    : [abiFunction];
+  return [...new Set(activeFunctions.flatMap((activeFunction) => (
+    activeFunction.entryAccesses ?? []
+  ).flatMap((access) => {
+    if (!access.operations.includes('write')
+      || (activeWriteCollections !== undefined
+        && !activeWriteCollections.includes(access.collection))) return [];
     const collection = group.stateLayout.collections?.find((candidate) =>
       candidate.name === access.collection || candidate.signature === access.collection);
     return collection?.chunkableValue === true && collection.valueType.endsWith('[]')
       ? [access.collection] : [];
-  });
+  })))];
 }
 
 /** Map a physical output index to a vmap entry slot offset using proxy and/or implementation layouts. */
@@ -22683,7 +22693,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Break the first-probe ordering cycle when a scalar vmap INSERT follows newly-written dynamic state chunks:
     // reserve one chunk candidate so NEW is placed after the dynamic region and the VM can reach both commitment
     // checks. Derivation replaces it with the exact count/commitments (or removes it for an empty final value).
-    if (sortedInserts.length > 0 || usesComposedDelegateDynamicTail) {
+    if (sortedInserts.length > 0 || usesComposedDelegateDynamicTail || computedValueChunkRuns.length > 0) {
       for (const dv of builder.getDynamicChunkVars()) {
         if (builder.getChunkRawCommitments(dv.name).length === 0) {
           // closeJob / in-place jobs writes keep the on-chain chunk count. A single
@@ -23810,25 +23820,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
       await builder.ensurePersistedJobEventsInputs();
       timing('persisted-inputs-ready');
-      const sharedChunkBand = builder.getPublishJobEventsBand();
-      if (sharedChunkBand) {
+      // The route ABI owns one continuation coordinate. Derivation executes this participant in an isolated
+      // transaction, so its witness must remain participant-local until every dynamic resource has converged.
+      // Only the finalized graph transaction uses the compiler-published absolute block coordinate.
+      const graphOwnsValueChunkWitness = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
+        ?.messageBusGraphExecution === true;
+      const valueChunkWitnessGroups = graphOwnsValueChunkWitness
+        ? [...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups()] : [];
+      const setGraphValueChunkOutputBase = (outputBase: number): boolean => {
         let refreshed = false;
-        for (const group of builder.getExternalCallUtxoGroups()) {
+        for (const group of valueChunkWitnessGroups) {
           const witness = valueChunkOutputWitnessCarrier(builder, group);
           if (!witness || !writesChunkableArrayValue(witness.carrier, witness.abiFunction)) continue;
-          group.valueChunkOutputBase = sharedChunkBand.start;
-          witness.carrier.valueChunkOutputBase = sharedChunkBand.start;
+          group.valueChunkOutputBase = outputBase;
+          witness.carrier.valueChunkOutputBase = outputBase;
           witness.carrier.internalArgs = {
             ...witness.carrier.internalArgs,
-            __internal__valueChunkOutputBase: BigInt(sharedChunkBand.start),
+            __internal__valueChunkOutputBase: BigInt(outputBase),
           };
           witness.carrier.refreshInternalArgs?.({
-            __internal__valueChunkOutputBase: BigInt(sharedChunkBand.start),
+            __internal__valueChunkOutputBase: BigInt(outputBase),
           });
           refreshed = true;
         }
         if (refreshed) builder._refreshInputs();
-      }
+        return refreshed;
+      };
+      setGraphValueChunkOutputBase(builder.getValueChunkOutputBase());
       if (applyMintingMasterFills()) builder._refreshInputs();
       timing('pre-derive-layout-ready');
       const persistBeforeDerive = isPersistedJobEventsReady() ? persistedJobEventsWidth() : 0;
@@ -23853,6 +23871,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // needs one: caller indices and output witnesses from the narrower geometry are no longer authoritative.
         if (dynamicLayoutChanged || deriveResult.vmErrored || persistBeforeDerive === 0) {
           if (dynamicLayoutChanged) {
+            setGraphValueChunkOutputBase(builder.getValueChunkOutputBase());
             refreshNestedIdentityAnchorWitnesses();
             refreshTopLevelIdentityAnchorWitnesses();
             if (applyMintingMasterFills()) builder._refreshInputs();
@@ -23871,6 +23890,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           });
         }
       }
+      setGraphValueChunkOutputBase(
+        (overrides?.blockBase ?? 0) + builder.getValueChunkOutputBase(),
+      );
       timing('derivation-complete');
       // Tag the builder with derivation result and a re-derive callback.
       // The callback enables re-derivation after transfers/overrides are applied.

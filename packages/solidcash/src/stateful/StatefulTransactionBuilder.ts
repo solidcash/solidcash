@@ -9144,8 +9144,64 @@ export class StatefulTransactionBuilder {
       carrier.valueChunkOutputBase === undefined ? [] : [carrier.valueChunkOutputBase]
     )));
     const changedCarriers = new Set<ExternalCallUtxoGroup>();
+    const expectedRuns = new Map<ExternalCallUtxoGroup, AuthenticatedValueChunk[] | undefined>();
+    const outputCategoryIds = new Map<ExternalCallUtxoGroup, string>();
+    for (const [carrierIndex, carrier] of carriers.entries()) {
+      const lowLevelIndex = carrierIndex - this.externalCallUtxoGroups.length;
+      const delegatedProxy = lowLevelIndex < 0 ? undefined : this.externalCallUtxoGroups.find(
+        (group) => group.delegateCallGroupIndex === lowLevelIndex,
+      );
+      const outputCategoryId = carrier.callMode === 'delegatecall'
+        ? delegatedProxy?.categoryId ?? this.categoryId
+        : carrier.categoryId;
+      outputCategoryIds.set(carrier, outputCategoryId);
+
+      // The derived pin at the provisional coordinate remains authoritative even if a later state materializer
+      // legitimately replaced that output. Its root-addressed lock distinguishes this computed-value run from a
+      // dynamic-state run, whose commitments also begin with little-endian indices 0, 1, ... .
+      const provisional = carrier.valueChunkOutputBase;
+      const provisionalChunk = provisional === undefined
+        ? undefined : this.derivedChunkOutputs.get(provisional);
+      let expected = provisionalChunk
+        && (provisionalChunk.categoryId ?? this.categoryId) === outputCategoryId
+        ? coherentAuthenticatedValueChunkRun([...this.derivedChunkOutputs.entries()]
+          .filter(([, chunk]) => (chunk.categoryId ?? this.categoryId) === outputCategoryId
+            && binToHex(chunk.lockingBytecode) === binToHex(provisionalChunk.lockingBytecode))
+          .sort(([left], [right]) => left - right)
+          .map(([, chunk]) => chunk))
+        : [];
+
+      if (expected.length === 0) {
+        const abiFunction = carrier.compilerRoute?.abiFunction
+          ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
+            ?.find((candidate) => candidate.name === carrier.functionName);
+        const observedRuns = (abiFunction?.entryAccesses ?? []).flatMap((access) => {
+          if (!access.operations.includes('write')) return [];
+          const collection = carrier.stateLayout.collections?.find((candidate) => (
+            candidate.name === access.collection || candidate.signature === access.collection
+          ));
+          if (collection?.chunkableValue !== true || !collection.valueType.endsWith('[]')) return [];
+          const run = coherentAuthenticatedValueChunkRun(observedValueChunksByCollection.get(
+            `${outputCategoryId.toLowerCase()}:${access.collection}`,
+          ) ?? []);
+          return run.length > 0 ? [run] : [];
+        });
+        const uniqueRuns = new Map(observedRuns.map((run) => [
+          run.map((chunk) => `${binToHex(chunk.lockingBytecode)}:${chunk.commitment}`).join('|'), run,
+        ]));
+        if (uniqueRuns.size === 1) expected = [...uniqueRuns.values()][0];
+      }
+      expectedRuns.set(carrier, expected.length > 0 ? expected : undefined);
+    }
+    const runIdentity = (carrier: ExternalCallUtxoGroup): string | undefined => {
+      const expected = expectedRuns.get(carrier);
+      if (!expected) return undefined;
+      return `${outputCategoryIds.get(carrier)}:${expected
+        .map((chunk) => `${binToHex(chunk.lockingBytecode)}:${chunk.commitment}`).join('|')}`;
+    };
     const isRun = (carrier: ExternalCallUtxoGroup, start: number): boolean => {
-      const count = carrier.valueChunkOutputCount ?? 1;
+      const expected = expectedRuns.get(carrier);
+      const count = expected?.length ?? carrier.valueChunkOutputCount ?? 1;
       if (count <= 0) return false;
       let runLock: string | undefined;
       for (let offset = 0; offset < count; offset += 1) {
@@ -9153,10 +9209,13 @@ export class StatefulTransactionBuilder {
         const lock = output?.to instanceof Uint8Array
           ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
         if (!isP2sh32LockScript(lock)
-          || output?.token?.category !== carrier.categoryId
+          || output?.token?.category !== outputCategoryIds.get(carrier)
           || output.token.nft?.capability !== 'mutable'
           || valueChunkIndexFromCommitment(output.token.nft.commitment ?? '') !== offset) return false;
         const lockHex = binToHex(lock);
+        const expectedChunk = expected?.[offset];
+        if (expectedChunk && (lockHex !== binToHex(expectedChunk.lockingBytecode)
+          || output.token.nft.commitment !== expectedChunk.commitment)) return false;
         if (runLock !== undefined && lockHex !== runLock) return false;
         runLock = lockHex;
       }
@@ -9175,16 +9234,25 @@ export class StatefulTransactionBuilder {
       if (materializedBase < 0) continue;
       occupiedBases.delete(currentBase);
       occupiedBases.add(materializedBase);
-      carrier.valueChunkOutputBase = materializedBase;
-      carrier.internalArgs = {
-        ...carrier.internalArgs,
-        __internal__valueChunkOutputBase: BigInt(materializedBase),
-      };
-      carrier.refreshInternalArgs?.(
-        { __internal__valueChunkOutputBase: BigInt(materializedBase) },
-        { shiftPredOut: false },
-      );
-      changedCarriers.add(carrier);
+      const identity = runIdentity(carrier);
+      // Proxy and delegate records can carry the same physical witness. Rebind only aliases proven to describe
+      // this exact authenticated run; unrelated writers that happened to share a provisional coordinate remain
+      // independent and will resolve against their own root lock.
+      const aliases = identity === undefined ? [carrier] : carriers.filter((candidate) => (
+        candidate.valueChunkOutputBase === currentBase && runIdentity(candidate) === identity
+      ));
+      for (const alias of aliases) {
+        alias.valueChunkOutputBase = materializedBase;
+        alias.internalArgs = {
+          ...alias.internalArgs,
+          __internal__valueChunkOutputBase: BigInt(materializedBase),
+        };
+        alias.refreshInternalArgs?.(
+          { __internal__valueChunkOutputBase: BigInt(materializedBase) },
+          { shiftPredOut: false },
+        );
+        changedCarriers.add(alias);
+      }
     }
     if (changedCarriers.size === 0) return false;
     this._syncRefreshedCarrierMasters(builder, changedCarriers);
@@ -9207,14 +9275,25 @@ export class StatefulTransactionBuilder {
         ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
           ?.find((candidate) => candidate.name === carrier.functionName);
       if (!abiFunction?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')) continue;
-      const chunkableCollections = (abiFunction.entryAccesses ?? []).flatMap((access) => {
-        if (!access.operations.includes('write')) return [];
+      const activeFunctions = carrier.compilerRoute?.abiFunction === abiFunction
+        && (carrier.compilerRoute.rowArguments?.length ?? 0) > 0
+        ? carrier.compilerRoute.rowArguments!.map((row) => row.handler)
+        : [abiFunction];
+      const activeWriteCollections = (abiFunction as AbiFunction & {
+        messageBusActiveWriteCollections?: readonly string[];
+      }).messageBusActiveWriteCollections;
+      const chunkableCollections = [...new Set(activeFunctions.flatMap((activeFunction) => (
+        activeFunction.entryAccesses ?? []
+      ).flatMap((access) => {
+        if (!access.operations.includes('write')
+          || (activeWriteCollections !== undefined
+            && !activeWriteCollections.includes(access.collection))) return [];
         const collection = carrier.stateLayout.collections?.find((candidate) => (
           candidate.name === access.collection || candidate.signature === access.collection
         ));
         return collection?.chunkableValue === true && collection.valueType.endsWith('[]')
           ? [access.collection] : [];
-      });
+      })))];
       if (chunkableCollections.length === 0) continue;
 
       const lowLevelIndex = carrierIndex - this.externalCallUtxoGroups.length;
@@ -9241,9 +9320,11 @@ export class StatefulTransactionBuilder {
           ) ?? []);
           return run.length > 0 ? [run] : [];
         });
-        if (observedRuns.length === 1) {
-          const run = observedRuns[0];
-          const matchesAt = (start: number): boolean => run.every((chunk, offset) => {
+        const uniqueRuns = new Map(observedRuns.map((run) => [
+          run.map((chunk) => `${binToHex(chunk.lockingBytecode)}:${chunk.commitment}`).join('|'), run,
+        ]));
+        const matchesAt = (run: readonly AuthenticatedValueChunk[], start: number): boolean => (
+          run.every((chunk, offset) => {
             const output = builder.outputs[start + offset];
             const lock = output?.to instanceof Uint8Array
               ? output.to : output?.to !== undefined ? addressToLockScript(output.to) : undefined;
@@ -9252,11 +9333,26 @@ export class StatefulTransactionBuilder {
               && output.token?.category === outputCategoryId
               && output.token?.nft?.capability === 'mutable'
               && output.token.nft.commitment === chunk.commitment;
-          });
+          })
+        );
+        const materializedRuns = [...uniqueRuns.values()].flatMap((run) => builder.outputs.flatMap(
+          (_, start) => matchesAt(run, start) ? [{ run, start }] : [],
+        ));
+        const preferredRun = preferredLocalBase === undefined ? undefined : materializedRuns.find(
+          ({ start }) => start === preferredLocalBase,
+        );
+        const selectedRun = preferredRun
+          ?? (materializedRuns.length === 1 ? materializedRuns[0] : undefined);
+        const soleObservedRun = uniqueRuns.size === 1 ? [...uniqueRuns.values()][0] : undefined;
+        const run = selectedRun?.run ?? soleObservedRun;
+        if (run) {
           const reserved = new Set(this.derivedChunkOutputs.keys());
-          const base = preferredLocalBase !== undefined && matchesAt(preferredLocalBase)
-            ? preferredLocalBase
-            : findDisposableValueChunkOutputBase(builder.outputs, this.allInputs, run.length, reserved);
+          let base: number | undefined;
+          if (selectedRun) {
+            base = selectedRun.start;
+          } else {
+            base = findDisposableValueChunkOutputBase(builder.outputs, this.allInputs, run.length, reserved);
+          }
           if (base !== undefined) {
             for (const [offset, chunk] of run.entries()) {
               const index = base + offset;

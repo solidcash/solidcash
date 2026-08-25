@@ -18988,9 +18988,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Verify the category on the stack shares the master's 32-byte category base. [cat] -> []. */
   private emitVerifyCatBaseEqMaster(locationData: SingleLocationData): void {
-    // Shared as a subroutine for non-delegate functions; delegate (altstack proxy index) inlines.
+    // The shared helper is captured in the ordinary active-input context. Frames which carry an explicit state
+    // owner must inline this check so emitMasterInputIndex can read that authenticated owner from the local frame;
+    // invoking the shared helper would silently compare against the executing implementation input instead.
     // Raw emit: callers manage the stack tracker.
-    if (!this.currentFunctionIsDelegate && this.invokeSubroutineIfDefined(
+    if (!this.usesMessageBusOwnerBlockBase()
+      && !this.usesProxyStateBlockBase()
+      && this.invokeSubroutineIfDefined(
       GenerateTargetTraversalWithLocation.CAT_BASE_EQ_MASTER_SUBROUTINE_ID, locationData)) {
       return;
     }

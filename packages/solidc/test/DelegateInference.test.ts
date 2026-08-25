@@ -422,6 +422,23 @@ describe('delegate inference', () => {
       const dynamicOwnerDepth = readNumber(instructions[partialThenDynamicRead + 4]);
       expect(dynamicOwnerDepth).toBe(baseOwnerDepth! + 1n);
 
+      // Category checks in an outlined route handler must use its authenticated physical-owner argument. The
+      // generic shared helper is defined in an active-input frame; invoking it here would compare an entry NFT
+      // against the executing implementation category rather than the proxy/participant which owns the entry.
+      const ownerBasedCategoryCheck = instructions.findIndex((instruction, index) => (
+        readNumber(instruction) === 32n
+        && instructions[index + 1]?.opcode === OpcodesBCH.OP_SPLIT
+        && instructions[index + 2]?.opcode === OpcodesBCH.OP_DROP
+        && readNumber(instructions[index + 3]) !== undefined
+        && instructions[index + 4]?.opcode === OpcodesBCH.OP_PICK
+        && instructions[index + 5]?.opcode === OpcodesBCH.OP_UTXOTOKENCATEGORY
+        && readNumber(instructions[index + 6]) === 32n
+        && instructions[index + 7]?.opcode === OpcodesBCH.OP_SPLIT
+        && instructions[index + 8]?.opcode === OpcodesBCH.OP_DROP
+        && instructions[index + 9]?.opcode === OpcodesBCH.OP_EQUALVERIFY
+      ));
+      expect(ownerBasedCategoryCheck).toBeGreaterThanOrEqual(0);
+
       // Runtime mapping loops settle their active rows inside the outlined graph handler. The aggregate route
       // reserves a fixed capacity slot for that handler, but an empty loop intentionally leaves it unfunded and
       // without an output. It must not append an unconditional second transition covenant for the reserved slot.

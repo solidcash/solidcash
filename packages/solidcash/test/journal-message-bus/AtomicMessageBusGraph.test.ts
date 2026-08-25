@@ -122,7 +122,9 @@ describe('atomic compiled invocation graph', () => {
       dynamicCall: () => ({ participant: target, function: 'approve', args: [Uint8Array.of(0x56)] }),
     });
     expect(derive(0).invocations.map((invocation) => invocation.function)).toEqual(['run']);
-    expect(derive(1).invocations.map((invocation) => invocation.function)).toEqual(['run', 'approve']);
+    const reached = derive(1);
+    expect(reached.invocations.map((invocation) => invocation.function)).toEqual(['run', 'approve']);
+    expect(reached.invocations[1].argsHex).toBe('0156');
   });
 
   it('preserves exact identities for omitted conditional siblings calling the same method', () => {
@@ -299,7 +301,7 @@ describe('atomic compiled invocation graph', () => {
     expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
   });
 
-  it('uses a delegate executor input as the nested raw-call identity', () => {
+  it('preserves the delegate owner as caller for a nested raw call', () => {
     const delegatedCaller = plan();
     delegatedCaller.participants[0] = {
       ...delegatedCaller.participants[0],
@@ -327,7 +329,7 @@ describe('atomic compiled invocation graph', () => {
     const finalized = messageBus.finalizeAtomicInvocationGraph(
       delegatedCaller, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
-    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '56', sourceOffset: 1 });
+    expect(finalized.callManifest.rows[1]).toMatchObject({ subjectHex: '51'.repeat(64), sourceOffset: 0 });
   });
 
   it('derives participant bases, identities, policies, and exact invocation rows', () => {

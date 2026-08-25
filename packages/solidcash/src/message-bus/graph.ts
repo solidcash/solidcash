@@ -19,8 +19,9 @@ export interface CompiledGraphParticipant {
   /**
    * Authenticated public target identity when it differs from the physical state owner, as it does for a
    * proxy/delegate execution or a contract with a published logical CREATE identity. This is the address a
-   * source-level call targets. Source-level `address(this)` and calls made by the contract both originate at the
-   * exact active input returned by OP_UTXOBYTECODE; they are never reconstructed from this logical identity.
+   * source-level call targets. Source-level `address(this)` still reads the exact active input returned by
+   * OP_UTXOBYTECODE; an outgoing call identifies its caller by the authenticated state owner, independently of
+   * whether the source encoded that call through an interface or a low-level address operation.
    */
   logicalLockingBytecode?: string;
   /**
@@ -1295,39 +1296,16 @@ export function resolveGraphAbiFunction(artifact: Artifact, name: string): AbiFu
   return matches[0];
 }
 
-type GraphCallerParticipant = Pick<CompiledGraphParticipant,
-'artifact' | 'lockingBytecode' | 'logicalLockingBytecode' | 'logicalIdentityOffset'> & {
-  executionKind?: 'owner' | 'delegate' | 0 | 1;
-  executorLockingBytecode?: string;
-  executorOffset?: number | null;
-};
+type GraphCallerParticipant = Pick<CompiledGraphParticipant, 'lockingBytecode'>;
 
 type GraphCallerInvocation = Pick<CompiledGraphInvocation,
 'parent' | 'callee' | 'function' | 'consumerCallsiteId'>;
 
 /**
- * Raw address calls originate at the exact covenant input executing the caller. Ordinary interface calls use the
- * caller's authenticated public identity, which remains stable across proxy upgrades. Source-level address(this)
- * is independent and always reads the active executing input directly.
+ * Every CALL/staticcall edge is made by the authenticated state owner. A delegate executor remains the exact
+ * source-level `address(this)` value, but choosing a low-level rather than interface call cannot change the
+ * callee's `msg.sender`: both are encodings of the same outgoing call from the same contract instance.
  */
-export function graphInvocationUsesExecutorCaller(
-  participants: readonly GraphCallerParticipant[],
-  invocations: readonly GraphCallerInvocation[],
-  invocation: GraphCallerInvocation,
-): boolean {
-  if (invocation.parent === null) return false;
-  const caller = participants[invocations[invocation.parent].callee];
-  if (caller.executionKind !== 'delegate' && caller.executionKind !== 1) return false;
-  const parent = invocations[invocation.parent];
-  const parentFunction = caller.artifact.abi
-    ? resolveGraphAbiFunction(caller.artifact, parent.function) : undefined;
-  const callsite = parentFunction?.externalCalls?.find((candidate) =>
-    invocation.consumerCallsiteId !== undefined
-      ? candidate.callsiteId === invocation.consumerCallsiteId
-      : candidate.functionName === invocation.function);
-  return callsite?.interfaceName === '__raw__' && callsite.functionName === '__raw__';
-}
-
 export function graphInvocationCallerIdentity(
   participants: readonly GraphCallerParticipant[],
   invocations: readonly GraphCallerInvocation[],
@@ -1337,16 +1315,6 @@ export function graphInvocationCallerIdentity(
     throw new Error('messageBus: transaction-origin invocation has no participant caller identity');
   }
   const caller = participants[invocations[invocation.parent].callee];
-  if (graphInvocationUsesExecutorCaller(participants, invocations, invocation)) {
-    const executorOffset = caller.executorOffset
-      ?? caller.artifact.messageBus?.route.blockLayout?.slots.find(
-        (slot) => slot.kind === 'lowLevelCall',
-      )?.offset;
-    if (!caller.executorLockingBytecode || executorOffset === undefined || executorOffset === null) {
-      throw new Error('messageBus: delegate caller has no authenticated executor identity');
-    }
-    return { lockingBytecode: caller.executorLockingBytecode, offset: executorOffset };
-  }
   return {
     lockingBytecode: caller.lockingBytecode,
     offset: 0,

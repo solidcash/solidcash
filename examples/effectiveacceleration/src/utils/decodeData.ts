@@ -3,7 +3,7 @@ import { toUtf8String, hexlify, getAddress, toBigInt, ZeroAddress } from "ethers
 // local decode utils
 export const decodeString = (ptr: {bytes: Uint8Array, index: number}): string => {
   const length = ptr.bytes[ptr.index];
-  ptr.index += 2;
+  ptr.index++;
   const result = toUtf8String(ptr.bytes.slice(ptr.index, ptr.index + length));
   ptr.index += length;
 
@@ -12,7 +12,7 @@ export const decodeString = (ptr: {bytes: Uint8Array, index: number}): string =>
 
 export const decodeBytes = (ptr: {bytes: Uint8Array, index: number}): string => {
   const length = ptr.bytes[ptr.index];
-  ptr.index += 2;
+  ptr.index++;
   const result = hexlify(ptr.bytes.slice(ptr.index, ptr.index + length));
   ptr.index += length;
 
@@ -21,7 +21,7 @@ export const decodeBytes = (ptr: {bytes: Uint8Array, index: number}): string => 
 
 export const decodeStringArray = (ptr: {bytes: Uint8Array, index: number}): string[] => {
   const length = ptr.bytes[ptr.index];
-  ptr.index += 2;
+  ptr.index++;
   const result: string[] = [];
   for (let i = 0; i < length; i++) {
     const str = decodeString(ptr);
@@ -33,12 +33,10 @@ export const decodeStringArray = (ptr: {bytes: Uint8Array, index: number}): stri
 
 export const decodeAddressArray = (ptr: {bytes: Uint8Array, index: number}): string[] => {
   const length = ptr.bytes[ptr.index];
-  ptr.index += 2;
+  ptr.index++;
   const result: string[] = [];
   for (let i = 0; i < length; i++) {
-    const address = getAddress(hexlify(ptr.bytes.slice(ptr.index, ptr.index + 20)));
-    ptr.index += 21;
-    result.push(address);
+    result.push(decodeAddress(ptr));
   }
 
   return result;

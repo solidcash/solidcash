@@ -1,4 +1,4 @@
-import { BytesLike, getBytes, hexlify, toUtf8String, toBigInt, getAddress } from "ethers";
+import { BytesLike, getBytes, hexlify, toBigInt, getAddress } from "ethers";
 import { decodeString, decodeBytes32, decodeBool, decodeStringArray, decodeAddress, decodeUint256, decodeUint32, decodeUint16, decodeBytes } from "./decodeData";
 import { decryptBinaryData, decryptUtf8Data } from "./encryption";
 import { JobCreatedEvent, JobUpdatedEvent, JobSignedEvent, JobRatedEvent, JobDisputedEvent, JobArbitratedEvent, JobMessageEvent, JobEventType, CustomJobEvent } from "../interfaces";
@@ -15,16 +15,7 @@ export const decodeJobCreatedEvent = (rawData: BytesLike): JobCreatedEvent => {
   result.token = decodeAddress(ptr);
   result.amount = decodeUint256(ptr);
   result.maxTime = decodeUint16(ptr);
-  // Find encodeString's [length, 0] prefix immediately after the fixed-width maxTime region. This remains
-  // deterministic for this schema and tolerates the compatibility backend's zero sign padding.
-  let deliveryPrefix = ptr.index;
-  while (deliveryPrefix + 2 < bytes.length
-    && !(bytes[deliveryPrefix] > 0 && bytes[deliveryPrefix + 1] === 0
-      && deliveryPrefix + 2 + bytes[deliveryPrefix] <= bytes.length)) deliveryPrefix++;
-  const deliveryLength = bytes[deliveryPrefix];
-  ptr.index = deliveryPrefix + 2;
-  result.deliveryMethod = toUtf8String(bytes.slice(ptr.index, ptr.index + deliveryLength));
-  ptr.index += deliveryLength;
+  result.deliveryMethod = decodeString(ptr);
   result.arbitrator = decodeAddress(ptr);
   result.whitelistWorkers = decodeBool(ptr);
   return result;

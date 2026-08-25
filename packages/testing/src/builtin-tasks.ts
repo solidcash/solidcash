@@ -148,6 +148,10 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
   .addFlag('quiet', 'Suppress per-file output')
   .addFlag('suppress-warnings', 'Suppress non-fatal compiler warnings')
   .addFlag('skip-split', 'Skip split-bundle attempts for oversized contracts')
+  .addFlag(
+    'iteration',
+    'Compile only requested sources after compiler changes, leaving the artifact tree marked stale',
+  )
   .addVariadicPositionalParam(
     'sources',
     'Optional source paths to recompile while preserving artifacts from the last complete build',
@@ -167,6 +171,10 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const artifactsDir = solidcashArtifactsPath(hre.config.paths.artifacts);
     const outputDir = `${artifactsDir}.tmp-${process.pid}`;
     const requestedSources = (args.sources as string[] | undefined) ?? [];
+    const iterationCompile = args.iteration === true;
+    if (iterationCompile && requestedSources.length === 0) {
+      throw new Error('The compile --iteration flag requires at least one requested source.');
+    }
     const contractsBase = path.basename(contractsDir); // mirror hardhat's `artifacts/<sources>/<File>/<Contract>.json`
     // Split when the unsplit redeem script exceeds the active provider's input-script ceiling. MistSwap's
     // mock publishes 100KB so the suite can exercise CONTRACT behaviour past the real 10KB frontier; the
@@ -203,7 +211,14 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     // artifact-affecting options. After compiler work, expand the first apparently-focused request to a complete
     // compile: otherwise the copied tree mixes fresh and stale contracts while publishArtifactTree refreshes every
     // file timestamp, hiding the mismatch from both humans and later tooling.
-    const focused = requestedSources.length > 0 && !contextChanged;
+    const focused = requestedSources.length > 0 && (!contextChanged || iterationCompile);
+    const leaveArtifactContextStale = contextChanged && iterationCompile;
+    if (leaveArtifactContextStale && !args.quiet) {
+      console.warn(
+        'Iteration compile is publishing only the requested sources; run a normal compile before handoff '
+        + 'to rebuild the complete artifact tree.',
+      );
+    }
     const effectiveRequestedSources = focused ? requestedSources : [];
     const formatArtifactModule = (artifact: unknown, jsonFilename: string): string => (
       hre.config.typegen?.jsonArtifactModules
@@ -366,7 +381,9 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     }
     publishArtifactTree(outputDir, artifactsDir);
     fs.mkdirSync(cacheDir, { recursive: true });
-    fs.writeFileSync(artifactContextFile, artifactContext);
+    // An iteration build intentionally publishes a mixed-context tree for a shorter local loop. Preserve the old
+    // marker so the next ordinary compile cannot mistake it for a complete build with the current compiler.
+    if (!leaveArtifactContextStale) fs.writeFileSync(artifactContextFile, artifactContext);
     const typegen = generateTypechainTargets({
       artifactsDir,
       contractsDir,
@@ -377,6 +394,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     if (!args.quiet) console.log(`Compiled ${ok + solOk}/${totalFiles} file(s), ${contracts} contract artifact(s).`);
     return {
       compiled: ok + solOk, total: totalFiles, contracts, compilerJobs, cacheHits, typegen,
+      artifactContextStale: leaveArtifactContextStale,
     };
   });
 

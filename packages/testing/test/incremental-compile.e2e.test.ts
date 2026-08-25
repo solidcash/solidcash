@@ -54,9 +54,9 @@ describe('incremental compile task', () => {
     const cold = await runTask('compile', { quiet: true }, hre) as {
       compilerJobs: number; cacheHits: number;
     };
-    expect(cold.compilerJobs).toBe(1);
+    expect(cold.compilerJobs).toBe(2);
     expect(cold.cacheHits).toBe(0);
-    expect(jobFiles(root)).toHaveLength(1);
+    expect(jobFiles(root)).toHaveLength(2);
     expect(loadArtifactByName(config.paths.artifacts, 'Root').contractName).toBe('Root');
     expect(loadArtifactByName(config.paths.artifacts, 'contracts/Root.sol:Root').contractName).toBe('Root');
 
@@ -64,16 +64,16 @@ describe('incremental compile task', () => {
       compilerJobs: number; cacheHits: number;
     };
     expect(warm.compilerJobs).toBe(0);
-    expect(warm.cacheHits).toBe(1);
-    expect(jobFiles(root)).toHaveLength(1);
+    expect(warm.cacheHits).toBe(2);
+    expect(jobFiles(root)).toHaveLength(2);
 
     fs.appendFileSync(path.join(root, 'contracts', 'Dependency.sol'), '\n// invalidate root');
     const invalidated = await runTask('compile', { quiet: true }, hre) as {
       compilerJobs: number; cacheHits: number;
     };
-    expect(invalidated.compilerJobs).toBe(1);
+    expect(invalidated.compilerJobs).toBe(2);
     expect(invalidated.cacheHits).toBe(0);
-    expect(jobFiles(root)).toHaveLength(2);
+    expect(jobFiles(root)).toHaveLength(4);
 
     const liveArtifact = path.join(root, 'artifacts', 'solidcash', 'Root.json');
     const lastKnownGood = fs.readFileSync(liveArtifact, 'utf8');
@@ -123,7 +123,9 @@ describe('incremental compile task', () => {
     }, hre) as { compilerJobs: number; total: number };
     expect(result.compilerJobs).toBe(1);
     expect(result.total).toBe(1);
-    expect(fs.readFileSync(path.join(artifactDir, 'Dependency.json'), 'utf8')).not.toBe(dependencyBefore);
+    // A focused root compile publishes only declarations owned by that source. Recompile Dependency.sol
+    // explicitly when its canonical artifact is also required in the iteration.
+    expect(fs.readFileSync(path.join(artifactDir, 'Dependency.json'), 'utf8')).toBe(dependencyBefore);
     expect(fs.readFileSync(path.join(artifactDir, 'Root.json'), 'utf8')).not.toBe(rootBefore);
     expect(fs.readFileSync(path.join(artifactDir, 'Unrelated.json'), 'utf8')).toBe(unrelatedBefore);
     expect(fs.statSync(artifactDir).ino).toBe(artifactDirectoryInode);
@@ -150,5 +152,40 @@ describe('incremental compile task', () => {
 
     expect(result.total).toBe(3);
     expect(result.compilerJobs).toBeGreaterThan(1);
+  });
+
+  it('keeps iteration compiles focused while leaving changed compiler context stale', async () => {
+    const root = tempProject();
+    fs.writeFileSync(path.join(root, 'contracts', 'Unrelated.sol'), 'contract Unrelated {}');
+    const configured = (extra: Record<string, unknown>) => resolveConfig({
+      paths: {
+        contracts: './contracts', artifacts: './artifacts', cache: './cache', tests: './test',
+      },
+      compiler: { solidityImportCompat: true, ...extra },
+    }, root);
+    await runTask('compile', { quiet: true, 'skip-split': true },
+      createHardhatRuntimeEnvironment(configured({ ecrecover: 'p2sh32' })));
+
+    const contextFile = path.join(root, 'cache', 'solidcash', 'artifact-context');
+    const oldContext = fs.readFileSync(contextFile, 'utf8');
+    const nextHre = createHardhatRuntimeEnvironment(configured({ ecrecover: 'p2pkh' }));
+    const iteration = await runTask('compile', {
+      quiet: true, iteration: true, 'skip-split': true, sources: ['Root.sol'],
+    }, nextHre) as { artifactContextStale: boolean; compilerJobs: number; total: number };
+
+    expect(iteration.total).toBe(1);
+    expect(iteration.compilerJobs).toBe(1);
+    expect(iteration.artifactContextStale).toBe(true);
+    expect(fs.readFileSync(contextFile, 'utf8')).toBe(oldContext);
+
+    // Because the iteration build did not claim a coherent artifact context, an ordinary focused request still
+    // expands to the complete authoritative build.
+    const authoritative = await runTask('compile', {
+      quiet: true, 'skip-split': true, sources: ['Root.sol'],
+    }, nextHre) as { artifactContextStale: boolean; compilerJobs: number; total: number };
+    expect(authoritative.total).toBe(3);
+    expect(authoritative.compilerJobs).toBeGreaterThan(1);
+    expect(authoritative.artifactContextStale).toBe(false);
+    expect(fs.readFileSync(contextFile, 'utf8')).not.toBe(oldContext);
   });
 });

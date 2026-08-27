@@ -67,6 +67,34 @@ contract Store {
     });
   });
 
+  it('still publishes a verifier program when cheap admission skips throwaway outlining', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+interface IHub { function ping() external; }
+contract Store {
+  IHub hub;
+  uint256 public x;
+  function set(uint256 v) public {
+    this.x = v;
+    hub.ping();
+    require(true);
+  }
+}
+    `, OPTIONS);
+    expect(artifact.messageBus?.verifierProgram).toBeDefined();
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
+    expect(selector).toBeDefined();
+    expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
+    expect(artifact.functionBodies![selector!].length).toBeGreaterThan(0);
+    const delegate = artifact.delegateArtifact;
+    expect(delegate).toBeDefined();
+    const delegateSelector = delegate!.abi.find((fn) => fn.name === 'set')?.selector;
+    expect(delegateSelector).toBeDefined();
+    expect(delegate!.functionBodies?.[delegateSelector!]).toBeTypeOf('string');
+    expect(delegate!.functionBodies![delegateSelector!].length).toBeGreaterThan(0);
+  });
+
   it('keeps a graph handler whose loop key array is a parameter', () => {
     const artifact = compileString(`
 pragma solidity ^0.8.0;

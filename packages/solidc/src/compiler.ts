@@ -186,6 +186,7 @@ type InternalCompilerOptions = CompilerOptions & {
   __messageBusExplicitlyDisabled?: boolean;
   __messageBusMode?: MessageBusMode;
   __cheapAdmissionCodegen?: boolean;
+  __parsedAst?: Ast;
 };
 
 interface OptionalLoweringFeatures {
@@ -701,9 +702,11 @@ function compileWithExternalAdmissionFallback(
   // Parse exactly once before entering the route-admission retry ladder. Syntax errors and custom listener
   // failures are properties of the source, not of a route candidate; replaying them at every rung duplicates
   // listener notifications and can replace the user's first diagnostic with retry noise.
-  let initialAst: Ast | undefined = parseAndResolve(
-    code, mergedCompilerOptions, errorListener, primaryContractName,
-  );
+  let initialAst: Ast | undefined = (mergedCompilerOptions as InternalCompilerOptions).__parsedAst
+    ?? parseAndResolve(
+      code, mergedCompilerOptions, errorListener, primaryContractName,
+    );
+  delete (mergedCompilerOptions as InternalCompilerOptions).__parsedAst;
   const messageBusMode = (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode ?? 'auto';
   if (messageBusMode === 'auto' && !hasMessageBusGraphEdge(initialAst)) {
     mergedCompilerOptions.messageBus = false;
@@ -957,6 +960,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     errorListener, primaryContractName, suppressWarnings = false, compileDeclarations: _compileDeclarations,
     ...artifactCompilerOptions
   } = compilerOptions;
+  const parsedAst = (compilerOptions as InternalCompilerOptions).__parsedAst;
+  delete (artifactCompilerOptions as InternalCompilerOptions).__parsedAst;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
     && !errorListener && !artifactCompilerOptions.importResolver
     // The diagnostic no-outline mode intentionally changes emitted bytecode. Never let it reuse or poison the
@@ -991,6 +996,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
+  if (parsedAst !== undefined) mergedCompilerOptions.__parsedAst = parsedAst;
   // The admission compile is discarded once the verifier-binder pass runs. Skip ordinary entry-point bodies
   // there: eligibility is decided in synthesis, and the verifier program only needs the route/verifier closure.
   if (mergedCompilerOptions.optimizeForCompilationSpeed
@@ -6252,7 +6258,8 @@ function compileResolvedAst(
     constructorParamLength,
   );
 
-  if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+  if (mergedCompilerOptions.optimizeForCompilationSpeed !== true
+    && traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
     && needsOptimiserCrossCheck(traversal.output)) {
     const optimisedBytecodeOld = optimiseBytecodeOld(traversal.output);
     if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
@@ -6981,6 +6988,9 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
 
   const map: ArtifactMap = {};
   const seen = new Set<string>();
+  for (const iface of interfaces) {
+    map[iface.name] = generateInterfaceArtifact(probe, iface.name, code);
+  }
   for (const contract of allContracts) {
     if (!contract || seen.has(contract.name)) continue;
     seen.add(contract.name);
@@ -7005,18 +7015,13 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
       ...artifactCompilerOptions,
       errorListener,
       primaryContractName: contract.name,
-    });
+      ...(contract === probe.contract ? { __parsedAst: probe } : {}),
+    } as CompileOptions);
     const compiled = map[contract.name];
     profileLog('multi-contract', contractStarted, {
       primary: contract.name,
       bytecodeBytes: compiled.debug?.bytecode ? compiled.debug.bytecode.length / 2 : undefined,
     });
-  }
-
-  // Contract-less: each interface -> an ABI-only declaration artifact (function dispatch for external calls).
-  for (const iface of interfaces) {
-    if (map[iface.name]) continue; // a concrete contract of the same name wins
-    map[iface.name] = generateInterfaceArtifact(probe, iface.name, code);
   }
 
   return map;
@@ -7828,7 +7833,8 @@ function compileReferencedContracts(
 
     // MD2: run the same backwards-compat cross-check on referenced/child contracts too (it was only applied to
     // the top-level contract, so an optimiser divergence in a child script would have shipped unchecked).
-    if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+    if (compilerOptions.optimizeForCompilationSpeed !== true
+      && traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
       && needsOptimiserCrossCheck(traversal.output)) {
       const optimisedOld = optimiseBytecodeOld(traversal.output);
       if (!scriptsEqual(optimisedOld, optimisationResult.script)) {

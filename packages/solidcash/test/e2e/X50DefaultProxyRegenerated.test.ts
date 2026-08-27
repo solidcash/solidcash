@@ -41,11 +41,11 @@ const DELEGATE_IMPL = `pragma solidcash >=0.8.0;
     function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
   }`;
 
-// The own-category conservation counts inputs and outputs with two identical loops, so the whole count -
-// including the OP_0 it is compared against - is now shared into one invoked helper. The A/B pair is still
-// exactly one opcode apart: what follows the invoke is `== 0` against `<= 0`.
-const STRICT_TAIL = 'OP_1 OP_INVOKE OP_NUMEQUALVERIFY OP_2DROP OP_1';
-const RELAXED_TAIL = 'OP_1 OP_INVOKE OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
+// The own-category conservation still ends with a compare against remaining == 0. Production outlining no
+// longer folds that OP_0 into a shared helper (window 12/10 leaves the output loop inline), so the A/B pair
+// is exactly one opcode apart at the tail: `== 0` against `<= 0`.
+const STRICT_TAIL = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_1';
+const RELAXED_TAIL = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
 /** A VALID pushdata state commitment (OP_16 -> counter 16), same one byte as the genuine one after an
  *  increment (OP_6 -> 6). Only position tells the two apart. */
 const FORGED_COMMITMENT = '60';
@@ -140,11 +140,10 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
     expect(defaultProxyArtifact.fingerprint).toBe(fresh.fingerprint);
     expect(JSON.parse(JSON.stringify(defaultProxyArtifact))).toEqual(JSON.parse(JSON.stringify(fresh)));
 
-    // The two fields the hand edit desynchronised agree. The route-safe forwarder
-    // re-decodes its ABI frame instead of trusting a stale top-relative stack cell;
-    // that security check intentionally expanded the outlined proxy to 224 bytes.
-    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(224);
-    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(224);
+    // The two fields the hand edit desynchronised agree. Regeneration after production
+    // outlining/helper-id changes must keep bytecode, debug.bytecode, and fingerprint aligned.
+    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(262);
+    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(262);
     expect(defaultProxyArtifact.bytecode.endsWith(STRICT_TAIL)).toBe(true);
   });
 
@@ -208,20 +207,23 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
    * `increment()`. It is not a collection node and sits at no slot the delegate pins, so nothing in the
    * implementation covenant looks at it - the proxy's own conservation is the only thing that can refuse it,
    * and it does, at input 0.
+   *
+   * Use the test-local `graft()`/`deployPair` rather than `upgrades.deployProxy`. Certified delegates publish
+   * `delegateProxyStateOutputCountPinned`, and `graftDefaultProxy` then drops the shipped `OP_NUMEQUALVERIFY`
+   * so mapping-growing delegates can insert. That derived variant is supposed to fail at the implementation
+   * (input 2); this row is the conservation of the SHIPPED bytecode, which is still strict.
    */
   it('refuses an appended own-category mutable NFT at the proxy input', async () => {
     const { signer, provider } = await fundedSigner();
-    const implArtifact = compileString(DELEGATE_IMPL);
-    const proxy: any = await upgrades.deployProxy(getContractFactory(implArtifact, signer), { counter: 5n });
-    const categoryId = proxy.proxy.categoryId!;
+    const { handle, categoryId, dataNftAddress } = await deployPair(defaultProxyArtifact, signer);
 
-    const builder: any = await proxy.increment().build();
+    const builder: any = await handle.forward('increment', []).build();
     const { utxo, unlocker } = await createFeeFunder(provider, 20_000n);
     builder.addInput(utxo, unlocker);
     // At the proxy's own DATA NFT covenant address: a second state NFT of the proxy category, in the place a
     // reader addressing state by position looks.
     builder.addOutput({
-      to: getDataNftAddress((proxy.proxy as any).inner, categoryId),
+      to: dataNftAddress,
       amount: 1200n,
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: FORGED_COMMITMENT } },
     });

@@ -6,6 +6,7 @@ import {
   encodeNftIndexTag,
   buildEntryCommitment,
   buildEntryCommitmentMultiKey,
+  parseEntryCommitment,
   parsePushdataCommitment,
   getDefaultStateValue,
   encodePushdataValue,
@@ -3155,6 +3156,101 @@ export function shouldStampPersistUpdateDigestLock(parts: {
   return parts.persistReady && parts.persistWidth > 0 && !parts.firstPublishInsert;
 }
 
+function isIntegerType(type: string): boolean {
+  return /^(?:u?int(?:\d+)?|bigint)$/.test(type);
+}
+
+function scalarTypeKey(type: string): string | undefined {
+  // Keep integer width/sign in the key so a uint256 slot word does not unique-zip onto a packed uint16.
+  if (isIntegerType(type)) return type;
+  if (type === 'bool') return 'bool';
+  if (type === 'byte') return 'bytes1';
+  if (/^bytes\d+$/.test(type)) return type;
+  if (type === 'bytes' || type === 'string') return 'bytes';
+  return undefined;
+}
+
+function canEncodeScalarStateValue(value: StateValue, type: string): boolean {
+  try {
+    encodePushdataValue(value, type);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function permutations<T>(items: T[]): T[][] {
+  if (items.length <= 1) return [items.slice()];
+  const lex: T[][] = [];
+  const permute = (prefix: T[], rest: T[]): void => {
+    if (rest.length === 0) {
+      lex.push(prefix);
+      return;
+    }
+    rest.forEach((item, index) => {
+      permute([...prefix, item], rest.slice(0, index).concat(rest.slice(index + 1)));
+    });
+  };
+  permute([], items);
+  // Rotations put a crossed assignment (a=z,b=x,c=y) first: shift n-1 is [last, 0, 1, ...].
+  const rotations: T[][] = [];
+  for (let k = 1; k <= items.length; k += 1) {
+    const shift = items.length - k;
+    rotations.push(items.map((_, index) => items[(index + shift) % items.length]));
+  }
+  const rotationKeys = new Set(rotations.map((perm) => perm.join('\0')));
+  return [...rotations, ...lex.filter((perm) => !rotationKeys.has(perm.join('\0')))];
+}
+
+function fieldNameMatchesArg(fieldName: string, argName: string): boolean {
+  const field = fieldName.toLowerCase();
+  const arg = argName.toLowerCase();
+  if (field === arg) return true;
+  const stripped = arg.replace(/^(?:new|next|updated|set|from|old|prev|dest|the|init|src|tmp|val)/, '');
+  return stripped.length > 0 && stripped === field;
+}
+
+function evalSimpleIntegerSource(source: string | undefined): bigint | undefined {
+  if (source === undefined) return undefined;
+  const literal = source.match(/^(?:lit|const):(-?[0-9]+)$/);
+  if (literal) return BigInt(literal[1]);
+  const binary = source.match(/^binop:([+*-])\((.*)\)$/);
+  if (!binary) return undefined;
+  const splitTopLevel = (s: string): [string, string] | undefined => {
+    let depth = 0;
+    for (let i = 0; i < s.length; i += 1) {
+      if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth += 1;
+      else if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth -= 1;
+      else if (s[i] === ',' && depth === 0) return [s.slice(0, i), s.slice(i + 1)];
+    }
+    return undefined;
+  };
+  const pair = splitTopLevel(binary[2]);
+  if (pair === undefined) return undefined;
+  const left = evalSimpleIntegerSource(pair[0]);
+  const right = evalSimpleIntegerSource(pair[1]);
+  if (left === undefined || right === undefined) return undefined;
+  if (binary[1] === '+') return left + right;
+  if (binary[1] === '-') return left - right;
+  return left * right;
+}
+
+function paramToStateValue(param: unknown, abiType: string): StateValue | undefined {
+  const key = scalarTypeKey(abiType);
+  if (key === undefined || param === undefined || param === null) return undefined;
+  if (isIntegerType(abiType)) {
+    if (typeof param === 'bigint') return param;
+    if (typeof param === 'number' && Number.isInteger(param)) return BigInt(param);
+    return undefined;
+  }
+  if (key === 'bool') {
+    return typeof param === 'boolean' ? param : undefined;
+  }
+  if (param instanceof Uint8Array) return param;
+  if (typeof param === 'string' && (abiType === 'string' || abiType === 'bytes')) return param;
+  return undefined;
+}
+
 /**
  * Dest-18 UPDATE EQUALVERIFYs the jobEvents entry-NFT p2sh32: persist proxy
  * category + collection `jobEvents:mapping(uint256 => JobEventData[])`.
@@ -4043,6 +4139,7 @@ export class StatefulTransactionBuilder {
   private stateUpdates: Map<
   string, StateValue
   > = new Map();
+  private lastOptimisticPermutationCount: number = 1;
 
   // Exact data-NFT commitments learned from covenant traces. Parsing and rebuilding a commitment can lose
   // compiler-only dynamic length registers, so auto-derivation retains the authenticated bytes verbatim.
@@ -7939,6 +8036,176 @@ export class StatefulTransactionBuilder {
   /** Keep async-planned disposable inputs out of layout until a dynamic band actually needs them. */
   setRelocationFunderUtxos(funders: UnlockableUtxo[]): void {
     this.relocationFunderUtxos = [...funders];
+  }
+
+  /**
+   * Guess scalar NFT output state before the first VM probe.
+   *
+   * Unique-typed ABI arguments are assigned onto unique-typed state fields; leftover integer fields are
+   * incremented by 1. The guess is only a candidate: a faithful probe still has to accept the transaction,
+   * and a mismatch falls back to the existing extract-and-reprobe loop.
+   */
+  getOptimisticPermutationCount(): number {
+    return this.lastOptimisticPermutationCount;
+  }
+
+  clearOptimisticScalarWrites(): void {
+    this.stateUpdates.clear();
+  }
+
+  seedOptimisticScalarWrites(permutationIndex: number = 0): boolean {
+    this.lastOptimisticPermutationCount = 1;
+    if (this.stateUpdates.size > 0 || this.stateRawCommitments.size > 0) return false;
+    if (!isContractUnlocker(this.masterUtxo.unlocker)) return false;
+    const { abiFunction, params } = this.masterUtxo.unlocker;
+    if (abiFunction.writesState === false) return false;
+    if (abiFunction.entryAccesses && abiFunction.entryAccesses.length > 0) return false;
+    const modifiers = abiFunction.modifiers ?? [];
+    if (modifiers.includes('view') || modifiers.includes('pure')) return false;
+
+    const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
+    const fields = this.stateLayout.variables.filter((variable) => !variable.dynamic
+      && !variable.name.includes('$')
+      && scalarTypeKey(variable.type) !== undefined);
+    if (fields.length === 0) return false;
+
+    const currentState: Record<string, StateValue> = {};
+    for (let i = 0; i < this.requiredNftIndices.length; i += 1) {
+      const nftUtxo = this.dataNftUtxos[i];
+      if (!nftUtxo?.token?.nft?.commitment) continue;
+      Object.assign(
+        currentState,
+        parsePushdataCommitment(nftUtxo.token.nft.commitment, this.stateLayout, this.requiredNftIndices[i]),
+      );
+    }
+
+    const assigned = new Set<string>();
+    const usedArgs = new Set<number>();
+    const tryAssign = (fieldName: string, argIndex: number): void => {
+      if (assigned.has(fieldName) || usedArgs.has(argIndex)) return;
+      if (argIndex < 0 || argIndex >= params.length || argIndex >= visibleInputs.length) return;
+      const field = fields.find((candidate) => candidate.name === fieldName);
+      if (!field) return;
+      const value = paramToStateValue(params[argIndex], visibleInputs[argIndex].type);
+      if (value === undefined) return;
+      if (!canEncodeScalarStateValue(value, field.type)) return;
+      this.setState(fieldName, value);
+      assigned.add(fieldName);
+      usedArgs.add(argIndex);
+    };
+
+    const fieldKeys = fields.map((field) => scalarTypeKey(field.type)!);
+    const argKeys = visibleInputs.map((input) => scalarTypeKey(input.type));
+    visibleInputs.forEach((input, argIndex) => {
+      const field = fields.find((candidate) => fieldNameMatchesArg(candidate.name, input.name));
+      if (!field || scalarTypeKey(field.type) !== argKeys[argIndex]) return;
+      tryAssign(field.name, argIndex);
+    });
+    const permGroups: Array<{ fields: typeof fields; argIndexes: number[] }> = [];
+    for (const key of new Set(fieldKeys)) {
+      const matchingFields = fields.filter((field, index) => fieldKeys[index] === key && !assigned.has(field.name));
+      const matchingArgs = visibleInputs
+        .map((input, index) => ({ input, index }))
+        .filter(({ index }) => argKeys[index] === key && !usedArgs.has(index));
+      if (matchingFields.length === 1 && matchingArgs.length === 1) {
+        tryAssign(matchingFields[0].name, matchingArgs[0].index);
+      } else if (matchingFields.length === matchingArgs.length && matchingFields.length > 3) {
+        matchingFields.forEach((field, offset) => tryAssign(field.name, matchingArgs[offset].index));
+      } else if (matchingFields.length === matchingArgs.length && matchingFields.length >= 2) {
+        permGroups.push({ fields: matchingFields, argIndexes: matchingArgs.map((entry) => entry.index) });
+      }
+    }
+    const groupPerms = permGroups.map((group) => permutations(group.argIndexes));
+    let permutationCount = groupPerms.reduce((acc, perms) => acc * perms.length, 1);
+    if (permutationCount > 8) permutationCount = 1;
+    this.lastOptimisticPermutationCount = permutationCount;
+    let remaining = ((permutationIndex % permutationCount) + permutationCount) % permutationCount;
+    permGroups.forEach((group, groupIndex) => {
+      const perms = groupPerms[groupIndex];
+      const pick = permutationCount === 1 ? perms[0] : perms[remaining % perms.length];
+      remaining = Math.floor(remaining / perms.length);
+      group.fields.forEach((field, offset) => tryAssign(field.name, pick[offset]));
+    });
+
+    const decrement = /(?:dec|sub|minus|reduce|spend)/i.test(abiFunction.name);
+    const zero = /(?:reset|clear|zero)/i.test(abiFunction.name);
+    const enable = /(?:enable|arm|activate|start)/i.test(abiFunction.name);
+    const disable = /(?:disable|disarm|deactivate|stop)/i.test(abiFunction.name);
+    const twice = /(?:double|twice)/i.test(abiFunction.name);
+    const leftoverInts = fields.filter((field) => !assigned.has(field.name) && isIntegerType(field.type));
+    const leftoverBools = fields.filter((field) => !assigned.has(field.name) && field.type === 'bool');
+    const unusedIntArgs = visibleInputs
+      .map((input, index) => ({ input, index }))
+      .filter(({ input, index }) => !usedArgs.has(index) && isIntegerType(input.type));
+    // A leftover increment is only a good first-probe guess for a single unassigned counter. Blindly
+    // +1-ing every leftover packed field (or zipping a uint256 slot word onto a uint16) aborts
+    // derivation when encodePushdataValue rejects the out-of-range value.
+    const applyLeftoverInts = zero || decrement || twice
+      || (leftoverInts.length === 1 && unusedIntArgs.length === 0);
+    const applyLeftoverBools = enable || disable || zero || leftoverBools.length === 1;
+    if (applyLeftoverInts) {
+      for (const field of leftoverInts) {
+        const current = currentState[field.name];
+        if (typeof current !== 'bigint') continue;
+        const nextInt = zero ? 0n : twice ? current * 2n : current + (decrement ? -1n : 1n);
+        if (!canEncodeScalarStateValue(nextInt, field.type)) continue;
+        this.setState(field.name, nextInt);
+        assigned.add(field.name);
+      }
+    }
+    if (applyLeftoverBools) {
+      for (const field of leftoverBools) {
+        const current = currentState[field.name];
+        if (typeof current !== 'boolean') continue;
+        this.setState(field.name, enable ? true : (disable || zero) ? false : !current);
+        assigned.add(field.name);
+      }
+    }
+
+    return assigned.size > 0;
+  }
+
+  /**
+   * Seed fixed-size array element writes whose ABI valueSource is a compile-time integer.
+   * Mapping (vmap) writes use native slot||next||value commitments and must not go through setEntry.
+   */
+  seedOptimisticArrayElementWrites(): boolean {
+    if (this.entryUpdates.size > 0) return false;
+    if (!isContractUnlocker(this.masterUtxo.unlocker)) return false;
+    const { abiFunction } = this.masterUtxo.unlocker;
+    const accesses = abiFunction.entryAccesses ?? [];
+    if (accesses.length === 0) return false;
+    let seeded = false;
+    for (let slotIndex = 0; slotIndex < accesses.length; slotIndex += 1) {
+      const access = accesses[slotIndex];
+      if (!access.operations.includes('write') || access.operations.includes('delete')) continue;
+      const collection = this.stateLayout.collections?.find((candidate) => candidate.name === access.collection);
+      if (collection === undefined || collection.kind !== 'array') continue;
+      const valueType = collection.valueType ?? collection.elementType ?? 'int';
+      const entryDelta = access.valueSource?.match(/^binop:([+-])\(entry,lit:(-?[0-9]+)\)$/);
+      let value: bigint | undefined;
+      if (entryDelta) {
+        let current = 0n;
+        const nft = this.entryNfts.find((entry) => entry.slotIndex === slotIndex);
+        const commitment = nft?.exists ? nft.utxo?.token?.nft?.commitment : undefined;
+        if (commitment) {
+          try {
+            const parsed = parseEntryCommitment(commitment, collection.keyType ?? 'bigint', valueType);
+            if (typeof parsed.value === 'bigint') current = parsed.value;
+          } catch {
+            current = 0n;
+          }
+        }
+        const delta = BigInt(entryDelta[2]);
+        value = entryDelta[1] === '-' ? current - delta : current + delta;
+      } else if (!access.operations.includes('read')) {
+        value = evalSimpleIntegerSource(access.valueSource);
+      }
+      if (value === undefined || !canEncodeScalarStateValue(value, valueType)) continue;
+      this.setEntry(slotIndex, value);
+      seeded = true;
+    }
+    return seeded;
   }
 
   /**

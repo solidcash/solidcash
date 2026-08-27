@@ -102,6 +102,7 @@ describe('Mapping array-element assignment', () => {
     const { sc } = await bootstrapWithEntry([10n, 20n, 30n]);
     const tx = await sc.setOneScore(alicePkh, 1n, 99n).send();
     expect(tx.txid).toBeDefined();
+    expect(sc.lastDerivationIterations).toBe(2);
     expect(readScoresFromTx(tx)).toEqual([10n, 99n, 30n]);
   });
 
@@ -109,6 +110,7 @@ describe('Mapping array-element assignment', () => {
     const { sc } = await bootstrapWithEntry([10n, 20n, 30n]);
     const tx = await sc.setOneScore(alicePkh, 0n, 7n).send();
     expect(tx.txid).toBeDefined();
+    expect(sc.lastDerivationIterations).toBe(2);
     expect(readScoresFromTx(tx)).toEqual([7n, 20n, 30n]);
   });
 
@@ -116,6 +118,7 @@ describe('Mapping array-element assignment', () => {
     const { sc } = await bootstrapWithEntry([10n, 20n, 30n]);
     const tx = await sc.setOneScore(alicePkh, 2n, 42n).send();
     expect(tx.txid).toBeDefined();
+    expect(sc.lastDerivationIterations).toBe(2);
     expect(readScoresFromTx(tx)).toEqual([10n, 20n, 42n]);
   });
 });

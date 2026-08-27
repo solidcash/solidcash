@@ -4322,14 +4322,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         () => leftoverWidth,
         'savings',
         5,
-        8192,
+        4096,
       );
       if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
         console.error('[outline-timing]', JSON.stringify({
           width: leftoverWidth,
           ranking: 'savings',
           minimumWindowElements: 5,
-          candidateGroupsPerRound: 8192,
+          candidateGroupsPerRound: 4096,
           bodyOrder: 'leftover',
           bodies: result.bodies.length,
           functions: leftover.functions.length,
@@ -4355,6 +4355,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             ...leftover.functions,
           ],
           savedBytes: result.savedBytes + leftover.savedBytes,
+        };
+      }
+      this.compactHelperIds.cheap = GenerateTargetTraversalWithLocation.compactPushIdsPreferringShort(
+        this.compactHelperIds.used,
+      );
+      const leftover4Width = this.compactHelperIds.cheap.length > 0
+        ? encodeDataPush(encodeInt(this.compactHelperIds.cheap[0])).length
+        : this.peekCompactHelperIdPushBytes();
+      const leftover4UserCount = result.bodies.length;
+      const leftover4 = outlineSharedSpans(
+        [
+          ...result.bodies.map((body, index) => ({
+            script: [...body.script],
+            locationData: [...body.locationData],
+            anchors: bodies[index].anchors?.map((anchor) => body.indexMap[anchor] ?? anchor),
+          })),
+          ...result.functions.map((fn) => ({
+            script: [...fn.script],
+            locationData: [...fn.locationData],
+          })),
+        ],
+        () => encodeInt(this.allocateCompactHelperId()),
+        () => leftover4Width,
+        'savings',
+        4,
+        8192,
+      );
+      if (leftover4.savedBytes > 0 && leftover4.functions.length > 0) {
+        result = {
+          bodies: leftover4.bodies.slice(0, leftover4UserCount).map((leftoverBody, index) => ({
+            ...leftoverBody,
+            indexMap: result!.bodies[index].indexMap.map((firstPos) =>
+              leftoverBody.indexMap[firstPos] ?? firstPos),
+          })),
+          functions: [
+            ...leftover4.bodies.slice(leftover4UserCount).map((body, index) => ({
+              ...result!.functions[index],
+              script: body.script,
+              locationData: body.locationData,
+            })),
+            ...leftover4.functions,
+          ],
+          savedBytes: result.savedBytes + leftover4.savedBytes,
         };
       }
     }

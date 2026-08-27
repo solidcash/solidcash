@@ -4550,16 +4550,43 @@ export default class SymbolTableTraversal extends AstTraversal {
         && expressionType?.toString() === vt.toString();
       const valueParam = wholeValueWrite && chunkableValue && directValueParam
         ? valueIdentifier.name : undefined;
+      // Whole-value literals and direct params are known off-chain. The SDK pins the vmap node so the
+      // first derivation probe already carries the covenant-computed tail. Skip RMW and computed
+      // expressions: those values still come from a faithful VM trace.
+      // A fixed-array element write `m[k][i]=v` is an RMW of the whole array, but the index and element
+      // are known off-chain: record them so the SDK substitutes into the current tail.
+      const arrayElementSource = node.arrayIndex !== undefined && !node.arrayPush && !node.arrayPop
+        && this.isOffChainEvaluableMappingValue(node.arrayIndex)
+        && this.isOffChainEvaluableMappingValue(node.expression)
+        ? `arrset(${this.canonicalizeExpression(node.arrayIndex)},${this.canonicalizeExpression(node.expression)})`
+        : undefined;
+      const valueSource: string | undefined = arrayElementSource
+        ?? (!wholeValueWrite || rmw ? undefined
+          : this.mappingLoopLastCounter(node)
+            ?? this.mappingRmwLiteralDelta(node)
+            ?? (node.expression instanceof IdentifierNode ? this.mappingLocalNetSource(node.expression.name) : undefined)
+            ?? (node.expression instanceof IntLiteralNode || node.expression instanceof BoolLiteralNode
+              ? this.canonicalizeExpression(node.expression)
+              : directValueParam ? `id:${valueIdentifier!.name}`
+                : node.expression instanceof TernaryOpNode || node.expression instanceof InstantiationNode
+                  || node.expression instanceof FunctionCallNode
+                  ? this.canonicalizeExpression(node.expression)
+                  : this.isOffChainEvaluableMappingValue(node.expression)
+                    ? this.canonicalizeExpression(node.expression) : undefined));
       if (existing) {
+        const alreadyWrote = existing.operations.includes('write');
         if (!existing.operations.includes('write')) existing.operations.push('write');
         if (rmw && !existing.operations.includes('read')) existing.operations.push('read');
         if (valueParam && existing.valueParam === undefined) existing.valueParam = valueParam;
+        if (alreadyWrote) existing.valueSource = valueSource;
+        else if (valueSource && existing.valueSource === undefined) existing.valueSource = valueSource;
       } else {
         const collSig = computeCollectionSignature(node.collection.name, node.collection.type.toString());
         map.set(slotKey, {
           collection: node.collection.name, collectionSignature: collSig,
           keyParams, keySources, operations: rmw ? ['read', 'write'] : ['write'], slotIndex: -1,
           ...(valueParam !== undefined && { valueParam }),
+          ...(valueSource !== undefined && { valueSource }),
         });
       }
       // Recurse into the value expression (may contain nested mapping accesses)
@@ -7342,6 +7369,340 @@ export default class SymbolTableTraversal extends AstTraversal {
       return false;
     };
     return scan(fn.body);
+  }
+
+  private splitTopLevelCanonical(s: string): [string, string] | undefined {
+    let depth = 0;
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s[i];
+      if (c === '(' || c === '[' || c === '{') depth += 1;
+      else if (c === ')' || c === ']' || c === '}') depth -= 1;
+      else if (c === ',' && depth === 0) return [s.slice(0, i), s.slice(i + 1)];
+    }
+    return undefined;
+  }
+
+  private splitCanonicalArgs(inner: string): string[] {
+    const parts: string[] = [];
+    let rest = inner;
+    while (rest.length > 0) {
+      const pair = this.splitTopLevelCanonical(rest);
+      if (pair === undefined) { parts.push(rest); break; }
+      parts.push(pair[0]);
+      rest = pair[1];
+    }
+    return parts;
+  }
+
+  private foldCanonicalBinop(op: string, left: string, right: string): string {
+    const lit = (s: string): bigint | undefined => {
+      const m = s.match(/^lit:(-?[0-9]+)$/);
+      return m ? BigInt(m[1]) : undefined;
+    };
+    const lv = lit(left);
+    const rv = lit(right);
+    if (lv !== undefined && rv !== undefined) {
+      if (op === '+') return `lit:${(lv + rv).toString()}`;
+      if (op === '-') return `lit:${(lv - rv).toString()}`;
+      if (op === '*') return `lit:${(lv * rv).toString()}`;
+    }
+    if ((op === '+' || op === '-') && rv !== undefined) {
+      const nested = left.match(/^binop:([+-])\((.*)\)$/);
+      if (nested) {
+        const pair = this.splitTopLevelCanonical(nested[2]);
+        if (pair && lit(pair[1]) !== undefined) {
+          const innerR = lit(pair[1])!;
+          const mag = nested[1] === '+'
+            ? (op === '+' ? innerR + rv : innerR - rv)
+            : (op === '+' ? -innerR + rv : -innerR - rv);
+          if (mag === 0n) return pair[0];
+          return mag > 0n
+            ? `binop:+(${pair[0]},lit:${mag.toString()})`
+            : `binop:-(${pair[0]},lit:${(-mag).toString()})`;
+        }
+      }
+    }
+    return `binop:${op}(${left},${right})`;
+  }
+
+  private rewriteCtorExpr(
+    expression: ExpressionNode,
+    local: string,
+    prevByField: Map<string, string> | undefined,
+  ): string | undefined {
+    if (expression instanceof IntLiteralNode || expression instanceof BoolLiteralNode) {
+      return this.canonicalizeExpression(expression);
+    }
+    if (expression instanceof IdentifierNode) {
+      if (this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name) === true) {
+        return `id:${expression.name}`;
+      }
+      return undefined;
+    }
+    if (expression instanceof FieldAccessNode && expression.expression instanceof IdentifierNode
+      && expression.expression.name === local) {
+      return prevByField?.get(expression.name) ?? this.canonicalizeExpression(expression);
+    }
+    if (expression instanceof BinaryOpNode
+      && (expression.operator === '+' || expression.operator === '-' || expression.operator === '*')) {
+      const left = this.rewriteCtorExpr(expression.left, local, prevByField);
+      const right = this.rewriteCtorExpr(expression.right, local, prevByField);
+      if (left === undefined || right === undefined) return undefined;
+      return this.foldCanonicalBinop(expression.operator, left, right);
+    }
+    return this.canonicalizeExpression(expression);
+  }
+
+  private composeStructCtorNet(
+    local: string,
+    expr: FunctionCallNode | InstantiationNode,
+    previous: string | undefined,
+  ): string | undefined {
+    const ctorName = expr.identifier.name;
+    const struct = this.structMap.get(ctorName);
+    if (!struct) return undefined;
+    const prefix = expr instanceof InstantiationNode ? 'new' : 'call';
+    let prevByField: Map<string, string> | undefined;
+    if (previous) {
+      const match = previous.match(new RegExp(`^(?:call|new):${ctorName}\\((.*)\\)$`));
+      if (match) {
+        const args = this.splitCanonicalArgs(match[1]);
+        if (args.length === struct.fields.length) {
+          prevByField = new Map(struct.fields.map((field, i) => [field.name, args[i]]));
+        }
+      }
+    }
+    const parts: string[] = [];
+    for (const parameter of expr.parameters) {
+      const part = this.rewriteCtorExpr(parameter, local, prevByField);
+      if (part === undefined) return undefined;
+      parts.push(part);
+    }
+    if (parts.length !== struct.fields.length) return undefined;
+    return `${prefix}:${ctorName}(${parts.join(',')})`;
+  }
+
+  /**
+   * Reconstruct a local's net integer source from straight-line assignments
+   * (`tmp = 3; tmp = tmp * 2` → `binop:*(lit:3,lit:2)`). Mapping reads abort: those still need a VM probe.
+   */
+  private mappingLocalNetSource(name: string): string | undefined {
+    if (!this.currentFunction) return undefined;
+    const steps: ExpressionNode[] = [];
+    const walk = (n: Node | undefined): void => {
+      if (!n) return;
+      if (n instanceof VariableDefinitionNode && n.name === name && n.expression) steps.push(n.expression);
+      if (n instanceof AssignNode && n.identifier.name === name) steps.push(n.expression);
+      for (const key of Object.keys(n)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const value = (n as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(this.currentFunction);
+    if (steps.length === 0) return undefined;
+    let source: string | undefined;
+    const isParam = (expression: ExpressionNode): boolean => (
+      expression instanceof IdentifierNode
+      && this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name) === true
+    );
+    const atom = (expression: ExpressionNode): string | undefined => {
+      if (expression instanceof IntLiteralNode || expression instanceof BoolLiteralNode) {
+        return this.canonicalizeExpression(expression);
+      }
+      if (isParam(expression)) return `id:${(expression as IdentifierNode).name}`;
+      return undefined;
+    };
+    for (const expr of steps) {
+      if (expr instanceof MappingAccessNode) {
+        // An entry-cache load (`tmp = m[k]`) is overwritten by a later literal. A load after a known
+        // value mixes on-chain state into the net and cannot be pinned.
+        if (source !== undefined) return undefined;
+        continue;
+      }
+      if (expr instanceof InstantiationNode || expr instanceof FunctionCallNode) {
+        source = this.composeStructCtorNet(name, expr, source) ?? this.canonicalizeExpression(expr);
+        continue;
+      }
+      const direct = atom(expr);
+      if (direct) {
+        source = direct;
+        continue;
+      }
+      if (expr instanceof BinaryOpNode && (expr.operator === '+' || expr.operator === '-' || expr.operator === '*')
+        && expr.left instanceof IdentifierNode && expr.left.name === name) {
+        const right = atom(expr.right);
+        if (source === undefined || right === undefined) return undefined;
+        source = `binop:${expr.operator}(${source},${right})`;
+        continue;
+      }
+      if (expr instanceof BinaryOpNode && expr.operator === '+'
+        && expr.right instanceof IdentifierNode && expr.right.name === name) {
+        const left = atom(expr.left);
+        if (source === undefined || left === undefined) return undefined;
+        source = `binop:+(${left},${source})`;
+        continue;
+      }
+      return undefined;
+    }
+    return source;
+  }
+
+  /**
+   * `for (int i = 0; i < n; i++) m[k] = i` flushes i == n-1. Record that so the SDK can pin the last
+   * counter value when n > 0. Loop-variable writes are not rmw deltas.
+   */
+  private mappingLoopLastCounter(node: MappingAssignNode): string | undefined {
+    if (!(node.expression instanceof IdentifierNode) || !this.currentFunction) return undefined;
+    const written = node.expression.name;
+    let bound: string | undefined;
+    const walk = (n: Node | undefined): void => {
+      if (!n || bound) return;
+      if (n instanceof WhileNode && n.condition instanceof BinaryOpNode && n.condition.operator === '<') {
+        const left = n.condition.left;
+        const right = n.condition.right;
+        if (left instanceof IdentifierNode && right instanceof IdentifierNode
+          && this.currentFunction?.parameters.some((parameter) => parameter.name === right.name)) {
+          const counter = left.name;
+          if (written === counter) {
+            bound = right.name;
+            return;
+          }
+          let assignsCounter = false;
+          const scanBody = (body: Node | undefined): void => {
+            if (!body || assignsCounter) return;
+            if (body instanceof AssignNode && body.identifier.name === written
+              && body.expression instanceof IdentifierNode && body.expression.name === counter) {
+              assignsCounter = true;
+              return;
+            }
+            for (const key of Object.keys(body)) {
+              if (RESOLVED_BACKREF_KEYS.has(key) || key === 'type' || key === 'symbolTable' || key === 'location') {
+                continue;
+              }
+              const value = (body as unknown as Record<string, unknown>)[key];
+              if (value instanceof Node) scanBody(value);
+              else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) scanBody(item);
+            }
+          };
+          scanBody(n.block);
+          if (assignsCounter) bound = right.name;
+        }
+      }
+      for (const key of Object.keys(n)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const value = (n as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(this.currentFunction);
+    return bound === undefined ? undefined : `loopLast:id:${bound}`;
+  }
+
+  /**
+   * `m[k] = m[k] ± C` (possibly after entry-cache lowering to a local) for a compile-time integer C.
+   * The SDK adds C to the current entry tail (`entry` is the on-chain value, not a function argument).
+   */
+  private mappingRmwLiteralDelta(node: MappingAssignNode): string | undefined {
+    const sameKey = (access: ExpressionNode): boolean => {
+      if (!(access instanceof MappingAccessNode)) return false;
+      if ((access.collection?.name ?? access.name) !== (node.collection?.name ?? node.name)) return false;
+      if (access.keys.length !== node.keys.length) return false;
+      return access.keys.every((key, index) => (
+        this.canonicalizeExpression(key) === this.canonicalizeExpression(node.keys[index])
+      ));
+    };
+    const literalDelta = (expr: ExpressionNode): { op: '+' | '-'; mag: bigint } | undefined => {
+      if (!(expr instanceof BinaryOpNode) || (expr.operator !== '+' && expr.operator !== '-')) return undefined;
+      let literal: IntLiteralNode | undefined;
+      if (sameKey(expr.left) && expr.right instanceof IntLiteralNode) literal = expr.right;
+      else if (expr.operator === '+' && sameKey(expr.right) && expr.left instanceof IntLiteralNode) {
+        literal = expr.left;
+      }
+      return literal === undefined ? undefined : { op: expr.operator, mag: literal.value };
+    };
+    const direct = literalDelta(node.expression);
+    if (direct) return `binop:${direct.op}(entry,lit:${direct.mag.toString()})`;
+    if (!(node.expression instanceof IdentifierNode) || !this.currentFunction) return undefined;
+    const local = node.expression.name;
+    const deltas: Array<{ op: '+' | '-'; mag?: bigint; param?: string }> = [];
+    let sawForeign = false;
+    const isParamIdent = (expression: ExpressionNode): expression is IdentifierNode => (
+      expression instanceof IdentifierNode
+      && this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name) === true
+    );
+    const identifierDelta = (
+      expr: ExpressionNode,
+    ): { op: '+' | '-'; mag?: bigint; param?: string } | undefined => {
+      if (!(expr instanceof BinaryOpNode) || (expr.operator !== '+' && expr.operator !== '-')) return undefined;
+      const leftId = expr.left instanceof IdentifierNode ? expr.left.name : undefined;
+      const rightId = expr.right instanceof IdentifierNode ? expr.right.name : undefined;
+      if (leftId === local && expr.right instanceof IntLiteralNode) {
+        return { op: expr.operator, mag: expr.right.value };
+      }
+      if (leftId === local && isParamIdent(expr.right)) {
+        return { op: expr.operator, param: expr.right.name };
+      }
+      if (expr.operator === '+' && rightId === local && expr.left instanceof IntLiteralNode) {
+        return { op: '+', mag: expr.left.value };
+      }
+      if (expr.operator === '+' && rightId === local && isParamIdent(expr.left)) {
+        return { op: '+', param: expr.left.name };
+      }
+      return undefined;
+    };
+    const consider = (targetName: string, expr: ExpressionNode): void => {
+      if (targetName !== local || sawForeign) return;
+      const delta = identifierDelta(expr);
+      if (delta) {
+        deltas.push(delta);
+        return;
+      }
+      if (sameKey(expr)) return;
+      sawForeign = true;
+    };
+    const walk = (n: Node | undefined): void => {
+      if (!n || sawForeign) return;
+      if (n instanceof VariableDefinitionNode && n.expression) consider(n.name, n.expression);
+      if (n instanceof AssignNode) consider(n.identifier.name, n.expression);
+      for (const key of Object.keys(n)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const value = (n as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(this.currentFunction);
+    if (sawForeign || deltas.length === 0) return undefined;
+    const paramDeltas = deltas.filter((delta) => delta.param !== undefined);
+    const literalDeltas = deltas.filter((delta) => delta.mag !== undefined);
+    if (paramDeltas.length === 1 && literalDeltas.length === 0) {
+      const delta = paramDeltas[0];
+      return `binop:${delta.op}(entry,id:${delta.param})`;
+    }
+    if (paramDeltas.length > 0) return undefined;
+    let net = 0n;
+    for (const delta of literalDeltas) net = delta.op === '+' ? net + delta.mag! : net - delta.mag!;
+    if (net === 0n) return undefined;
+    return net > 0n ? `binop:+(entry,lit:${net.toString()})` : `binop:-(entry,lit:${(-net).toString()})`;
+  }
+
+  /** Values the SDK's evalComputedKey can resolve from call arguments without a VM probe. */
+  private isOffChainEvaluableMappingValue(node: ExpressionNode): boolean {
+    const isParam = (expression: ExpressionNode): boolean => (
+      expression instanceof IdentifierNode
+      && this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name) === true
+    );
+    if (isParam(node) || node instanceof IntLiteralNode || node instanceof BoolLiteralNode) return true;
+    if (node instanceof ArrayAccessNode) {
+      return isParam(node.array) && (isParam(node.index) || node.index instanceof IntLiteralNode);
+    }
+    if (node instanceof BinaryOpNode && (node.operator === '+' || node.operator === '-' || node.operator === '*')) {
+      return this.isOffChainEvaluableMappingValue(node.left) && this.isOffChainEvaluableMappingValue(node.right);
+    }
+    return false;
   }
 
   private canonicalizeExpression(node: ExpressionNode): string {

@@ -455,6 +455,81 @@ contract Store {
     expect(artifact.functionBodies![selector!]!.length).toBeGreaterThan(0);
   });
 
+  it('keeps speed-hinted outline bodies after leftover window-4 at 8192 groups', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public delegate {
+          this.a = v;
+          this.b = v;
+          require(this.a == this.b);
+        }
+        function ping() public {
+          require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
+    expect(selector).toBeDefined();
+    expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
+    expect(artifact.functionBodies![selector!]!.length).toBeGreaterThan(0);
+    const ping = artifact.abi.find((fn) => fn.name === 'ping')?.selector;
+    expect(ping).toBeDefined();
+    expect(artifact.functionBodies?.[ping!]).toBeTypeOf('string');
+    expect(artifact.functionBodies![ping!]!.length).toBeGreaterThan(0);
+  });
+
+  it('keeps speed-hinted outline bodies after a leftover window-4 follow-up pass', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public delegate {
+          this.a = v;
+          this.b = v;
+          require(this.a == this.b);
+        }
+        function ping() public {
+          require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
+    expect(selector).toBeDefined();
+    expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
+    expect(artifact.functionBodies![selector!]!.length).toBeGreaterThan(0);
+    const ping = artifact.abi.find((fn) => fn.name === 'ping')?.selector;
+    expect(ping).toBeDefined();
+    expect(artifact.functionBodies?.[ping!]).toBeTypeOf('string');
+    expect(artifact.functionBodies![ping!]!.length).toBeGreaterThan(0);
+  });
+
+  it('keeps speed-hinted outline bodies after lowering leftover outline groups to 4096', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public delegate {
+          this.a = v;
+          this.b = v;
+          require(this.a == this.b);
+        }
+        function ping() public {
+          require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const selector = artifact.abi.find((fn) => fn.name === 'set')?.selector;
+    expect(selector).toBeDefined();
+    expect(artifact.functionBodies?.[selector!]).toBeTypeOf('string');
+    expect(artifact.functionBodies![selector!]!.length).toBeGreaterThan(0);
+    const ping = artifact.abi.find((fn) => fn.name === 'ping')?.selector;
+    expect(ping).toBeDefined();
+    expect(artifact.functionBodies?.[ping!]).toBeTypeOf('string');
+    expect(artifact.functionBodies![ping!]!.length).toBeGreaterThan(0);
+  });
+
   it('keeps speed-hinted outline bodies at the 8192-group cap', () => {
     const artifact = compileString(`
       contract Store() {

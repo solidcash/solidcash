@@ -710,6 +710,25 @@ describe('StatefulContract API', () => {
       expect(parsedState.counter).toBe(before + 1n);
       expect(parsedState.label).toEqual(labelC);
     });
+
+    it('accepts a unique-typed argument write and leftover integer increment on the first probe', async () => {
+      const isolatedProvider = createTestProvider();
+      const isolatedContract = new Contract(scArtifact, [], { provider: isolatedProvider });
+      const { categoryId: isolatedCategory } = await setupStatefulUtxos(
+        isolatedProvider, isolatedContract, scStateLayout, { counter: 0n, label: scZeroLabel },
+        { saltContract: true },
+      );
+      const sc = StatefulContract.withCategory(isolatedContract, isolatedCategory);
+      const label = new Uint8Array([0x11, 0x22, 0x33, 0x44]);
+      const tx = await sc.update(label).send();
+      expect(tx.txid).toBeDefined();
+      expect(sc.lastDerivationIterations).toBe(1);
+      const parsedState = parsePushdataCommitment(
+        getTxOutputs(tx)[1].token!.nft!.commitment, scStateLayout, 0,
+      );
+      expect(parsedState.counter).toBe(1n);
+      expect(parsedState.label).toEqual(label);
+    });
   });
 
   describe('call namespace fallback', () => {

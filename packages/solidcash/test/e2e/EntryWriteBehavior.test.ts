@@ -1,6 +1,6 @@
 // Mapping-entry write behavior pins: read-after-write, writes in loops, chained struct-field and
 // array-element writes.
-import { describe, it } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { compileString as _csRawSolidc } from '../direct-compile.js';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
   _csRawSolidc(s, o);
@@ -21,6 +21,7 @@ describe('read-after-write same key', () => {
     it('double read-modify-write accumulates (m[k]+1 twice -> +2, not +1)', async () => {
       const sc = await dep(M('function f(int k) external { m[k] = m[k] + 1; m[k] = m[k] + 1; require(true); }'));
       await sc.f(9n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chk(9n, 2n).send();
     });
 
@@ -38,12 +39,14 @@ describe('read-after-write same key', () => {
     it('write then read for a follow-on computation (m[k]=3; m[k]=m[k]*2 -> 6)', async () => {
       const sc = await dep(M('function f(int k) external { m[k] = 3; m[k] = m[k] * 2; require(true); }'));
       await sc.f(1n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chk(1n, 6n).send();
     });
 
     it('write one key then read it into another (m[a]=5; m[b]=m[a] -> m[b]=5)', async () => {
       const sc = await dep(M('function f(int a, int b) external { m[a] = 5; m[b] = m[a]; require(true); }'));
       await sc.f(1n, 2n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chk(2n, 5n).send();
     });
 
@@ -55,17 +58,20 @@ describe('read-after-write same key', () => {
     it('REGRESSION: single read-modify-write unchanged (+1)', async () => {
       const sc = await dep(M('function f(int k) external { m[k] = m[k] + 1; require(true); }'));
       await sc.f(1n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chk(1n, 1n).send();
     });
 
     it('REGRESSION: transfer across two different keys', async () => {
       const sc = await dep(M('function f(int a, int b, int v) external { m[a] = m[a] - v; m[b] = m[b] + v; require(true); }'));
       await sc.f(1n, 2n, 3n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
     });
 
     it('atomically inserts three targets sharing the HEAD predecessor', async () => {
       const sc = await dep(M('function f(int a, int b, int c) external { m[a] = 11; m[b] = 22; m[c] = 33; require(true); }'));
       await sc.f(1n, 2n, 3n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chk(1n, 11n).send();
       await sc.chk(2n, 22n).send();
       await sc.chk(3n, 33n).send();
@@ -115,6 +121,7 @@ describe('write in loop', () => {
     it('caches an invariant-key pure-write loop and persists the final value', async () => {
       const sc = await dep(MAP('function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = i; } require(true); }'));
       await sc.f(6n, 3n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chk(6n, 2n).send();
     });
 
@@ -134,6 +141,7 @@ describe('write in loop', () => {
     it('writes fixed-size state array elements over a constant range (unrolled)', async () => {
       const sc = await dep(ARR('function f() external { for (int i = 0; i < 3; i++) { a[i] = i + 1; } require(true); }'));
       await sc.f().send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chk(0n, 1n).send();
       await sc.chk(2n, 3n).send();
     });
@@ -141,6 +149,7 @@ describe('write in loop', () => {
     it('read-modify-writes fixed-size state array elements in a fixed loop (unrolled)', async () => {
       const sc = await dep(ARR('function f() external { for (int i = 0; i < 3; i++) { a[i] = a[i] + 1; } require(true); }'));
       await sc.f().send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chk(1n, 1n).send();
     });
 
@@ -185,18 +194,21 @@ describe('chained struct-field rmw', () => {
     it('literal write then read-modify-write of the same field accumulates (5 -> 6)', async () => {
       const sc = await dep('function f(int k) external { m[k].x = 5; m[k].x = m[k].x + 1; require(true); }');
       await sc.f(1n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chkX(1n, 6n).send();
     });
 
     it('compound += on the same field twice accumulates (-> 2)', async () => {
       const sc = await dep('function f(int k) external { m[k].x += 1; m[k].x += 1; require(true); }');
       await sc.f(1n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chkX(1n, 2n).send();
     });
 
     it('write one field, then write another field computed from the first', async () => {
       const sc = await dep('function f(int k, int a) external { m[k].x = a; m[k].y = m[k].x + 1; require(true); }');
       await sc.f(3n, 10n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chkX(3n, 10n).send();
       await sc.chkY(3n, 11n).send();
     });
@@ -204,6 +216,7 @@ describe('chained struct-field rmw', () => {
     it('single field read-modify-write still works (-> 1)', async () => {
       const sc = await dep('function f(int k) external { m[k].x = m[k].x + 1; require(true); }');
       await sc.f(1n).send();
+      expect(sc.lastDerivationIterations).toBe(1);
       await sc.chkX(1n, 1n).send();
     });
 

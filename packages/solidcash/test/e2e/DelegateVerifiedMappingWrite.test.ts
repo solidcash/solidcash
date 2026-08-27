@@ -141,8 +141,8 @@ describe('X11: delegate vmap sorted mapping write', () => {
     const proxyAbi = compileString(PROXY, { allowUnsafeOperations: true }).abi as any[];
     const libAbi = compileString(LIB).abi as any[];
     expect(proxyAbi.find((f) => f.name === '__fallback')?.entryAccesses ?? []).toEqual([]);
-    expect(libAbi.find((f) => f.name === 'setBal')?.entryAccesses).toEqual([
-      { collection: 'bal', keyParams: ['k'], operations: ['write'] },
+    expect(libAbi.find((f) => f.name === 'setBal')?.entryAccesses).toMatchObject([
+      { collection: 'bal', keyParams: ['k'], operations: ['write'], valueSource: 'id:v' },
     ]);
   });
 

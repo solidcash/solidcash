@@ -54,6 +54,7 @@ import {
   ExternalLibraryAbi,
   isComputedBlockhashKey,
   encodePushdataValue,
+  getDefaultStateValue,
   preferZeroPrefixedEventBlob,
   keccakComputeLockingBytecode,
   keccakComputeLockingBytecodeLegacy,
@@ -1724,9 +1725,10 @@ function extractCommitmentsFromTrace(
   expectedCount: number,
   outputIndexRange?: { min: number; max: number },
   scanFullTrace = false,
+  firstWriteWins = false,
 ): string[] | undefined {
   const commitmentsByOutputIndex = extractCommitmentMapFromTrace(
-    fullTrace, outputIndexRange, scanFullTrace,
+    fullTrace, outputIndexRange, scanFullTrace, firstWriteWins,
   );
   const commitments = Array.from(commitmentsByOutputIndex.entries())
     .sort(([a], [b]) => a - b)
@@ -2560,6 +2562,15 @@ export function evalComputedKey(
       if (m[1] === '*') return left * right;
       return undefined;
     }
+    m = s.match(/^ternary\((.*)\)$/);
+    if (m) {
+      const head = splitTopLevel(m[1]);
+      const rest = head ? splitTopLevel(head[1]) : undefined;
+      if (!head || !rest) return undefined;
+      const cond = evalValue(head[0]);
+      const taken = cond === true || cond === 1n || cond === 1;
+      return evalValue(taken ? rest[0] : rest[1]);
+    }
     m = s.match(/^call:(\w+)\((.*)\)$/);
     if (m) {
       const inner = encode(evalValue(m[2]));
@@ -2575,6 +2586,92 @@ export function evalComputedKey(
     return undefined;
   };
   return encode(evalValue(label));
+}
+
+/**
+ * Decode an inline (≤60-byte) vmap struct tail so coalesced field writes can keep the untouched
+ * members (`field:c(map:m(id:k))`) without a discovery probe. Chunked tails stay unpinned.
+ */
+function decodeInlineVmapValue(
+  value: Uint8Array | undefined,
+  present: boolean,
+  valueType: string,
+  chunkable: boolean,
+  structs: StateLayout['structs'],
+): StateValue | undefined {
+  try {
+    if (!present) return getDefaultStateValue(valueType, structs);
+    if (value === undefined) return undefined;
+    let raw = value;
+    if (chunkable) {
+      if (raw.length < 4) return undefined;
+      const len = raw[0] | (raw[1] << 8) | (raw[2] << 16) | (raw[3] << 24);
+      if (len > VALUE_INLINE_LIMIT) return undefined;
+      if (raw.length !== 4 + len) return undefined;
+      raw = raw.slice(4);
+    }
+    if (raw.length === 0) return getDefaultStateValue(valueType, structs);
+    return decodePushdataValue(raw, 0, valueType, structs).value;
+  } catch {
+    return undefined;
+  }
+}
+
+function decodeInlineVmapStruct(
+  value: Uint8Array | undefined,
+  present: boolean,
+  valueType: string,
+  chunkable: boolean,
+  structs: StateLayout['structs'],
+): Record<string, unknown> | undefined {
+  const decoded = decodeInlineVmapValue(value, present, valueType, chunkable, structs);
+  return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+    ? decoded as Record<string, unknown> : undefined;
+}
+
+/** Replace `field:f(map:collection(...))` with `lit:N` from the current (or default) struct. */
+function substPreservedStructFields(
+  expr: string,
+  collection: string,
+  fieldValue: (name: string) => bigint | undefined,
+): string | undefined {
+  const mapTok = `(map:${collection}(`;
+  let out = '';
+  let i = 0;
+  while (i < expr.length) {
+    const start = expr.indexOf('field:', i);
+    if (start < 0) {
+      out += expr.slice(i);
+      break;
+    }
+    out += expr.slice(i, start);
+    const nameStart = start + 'field:'.length;
+    const mapAt = expr.indexOf(mapTok, nameStart);
+    const name = mapAt < 0 ? '' : expr.slice(nameStart, mapAt);
+    if (mapAt < 0 || !/^[A-Za-z_]\w*$/.test(name)) {
+      out += 'field:';
+      i = nameStart;
+      continue;
+    }
+    let depth = 0;
+    let j = mapAt;
+    for (; j < expr.length; j += 1) {
+      if (expr[j] === '(') depth += 1;
+      else if (expr[j] === ')') {
+        depth -= 1;
+        if (depth === 0) {
+          j += 1;
+          break;
+        }
+      }
+    }
+    if (depth !== 0) return undefined;
+    const fv = fieldValue(name);
+    if (fv === undefined) return undefined;
+    out += `lit:${fv.toString()}`;
+    i = j;
+  }
+  return out;
 }
 
 /**
@@ -11262,6 +11359,40 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         if (debugTargetsThisDerivation) console.error('derive-phase2-loop-ready', { maxIterations });
 
+        // Unique-typed arguments and leftover integer increments are only a first-probe candidate.
+        // A faithful VM evaluation still has to accept the built transaction. Same-type unmatched
+        // fields try every permutation of the remaining arguments as extra first-probe candidates so
+        // a crossed assignment (a=z, b=x, c=y) can still pin on a faithful probe.
+        stb.seedOptimisticScalarWrites(0);
+        stb.seedOptimisticArrayElementWrites();
+        const optimisticPermutationCount = stb.getOptimisticPermutationCount();
+        if (optimisticPermutationCount > 1) {
+          let permutationAccepted = false;
+          for (let permutationIndex = 0; permutationIndex < optimisticPermutationCount; permutationIndex += 1) {
+            if (permutationIndex > 0) {
+              stb.clearOptimisticScalarWrites();
+              stb.seedOptimisticScalarWrites(permutationIndex);
+            }
+            const trialBuilder = stb.build();
+            if (delegatecallInputIndex !== undefined) {
+              stb.insertBeforeLateValueSuffix(trialBuilder, { to: dummyLbc, amount: 1000n });
+            }
+            const { transaction: trialTransaction, sourceOutputs: trialSources } = trialBuilder.buildLibauthProgram();
+            const trialTrace = evaluateProbeTrace(this.inner.provider, {
+              inputIndex: delegatecallInputIndex ?? 0,
+              sourceOutputs: trialSources,
+              transaction: trialTransaction,
+            }, false);
+            if (!trialTrace.some((state) => state.error !== undefined)) {
+              permutationAccepted = true;
+              break;
+            }
+          }
+          if (!permutationAccepted) {
+            stb.clearOptimisticScalarWrites();
+            stb.seedOptimisticScalarWrites(0);
+          }
+        }
         this.lastDerivationIterations = 0;
 	        for (let iter = 0; iter < maxIterations; iter++) {
 	          const debugIterationStartedAt = debugTargetsThisDerivation ? Date.now() : 0;
@@ -11327,10 +11458,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // nothing, its result is byte-for-byte the faithful verdict; if it does, the iteration remains marked as
           // failed and only supplies candidates for the next probe. This preserves the faithful fixed-point gate
           // without first executing the same multi-megabyte covenant to its first mismatch twice.
+          // Discover every output pin in one evaluation: a failing EQUALVERIFY is suppressed so later
+          // NFT commitments on the same input still appear in the trace. A suppressed verify is not a
+          // faithful success; the next iteration must confirm without a mismatch.
+          // Relaxed discovery is only a win when several data NFTs can be pinned in one probe.
+          // On a single-NFT layout it continues past the first failed EQUALVERIFY and later
+          // stack garbage is applied as the state commitment (fixed-size array writes).
+          // Scalar multi-NFT layouts already relax. Mapping-only functions have stateCount 0 and several
+          // entry NFTs; without relaxation the VM stops at the first EQUALVERIFY and each insert needs its
+          // own probe. Do not relax stateCount == 1, and do not relax fixed-size arrays (kind === 'array'):
+          // those clobber the first valid pin with later stack garbage.
+          const mappingEntryCount = (entryAccesses ?? []).filter((access) => (
+            stateLayout.collections?.some((collection) => (
+              collection.name === access.collection && collection.kind === 'mapping'
+            ))
+          )).length;
+          const relaxDiscovery = stateCount > 1 || (stateCount === 0 && mappingEntryCount > 1);
           const fullTrace2 = evaluateProbeTrace(
-            this.inner.provider, probeProgram, hasLoopOrChunkVars,
+            this.inner.provider, probeProgram, relaxDiscovery,
           );
-          const outputVerificationMismatchObserved = hasLoopOrChunkVars
+          const outputVerificationMismatchObserved = relaxDiscovery
             && cachedProbeVm(this.inner.provider, true).relaxationApplied;
           const faithfulProbeHadError = fullTrace2.some((state) => state.error !== undefined)
             || outputVerificationMismatchObserved;
@@ -11767,8 +11914,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   && candidate.token.nft?.capability === 'mutable'));
           const stateOutputBase = delegateMasterOutputIndex >= 0 ? delegateMasterOutputIndex + 1 : 1;
           const stateOutputRange = { min: stateOutputBase, max: stateOutputBase + stateCount };
+          // Relaxed discovery continues past a failed EQUALVERIFY so later NFT pins still appear. Later
+          // equalities then run on a corrupted stack and can clobber the first valid pin for the same
+          // output. Keep that first write when relaxation actually suppressed a verify.
           const stateCommits = extractCommitmentsFromTrace(
             fullTrace2, stateCount, stateOutputRange, delegatecallInputIndex !== undefined,
+            outputVerificationMismatchObserved,
           ) ?? [];
           commitmentProgress += stateCommits.length;
           let latestEntryCommits: string[] = [];
@@ -11802,6 +11953,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const entryOutputRange = { min: entryOutputBase, max: entryOutputBase + entryCount };
             const commitMap = extractCommitmentMapFromTrace(
               fullTrace2, entryOutputRange, delegatecallInputIndex !== undefined,
+              outputVerificationMismatchObserved,
             );
             const slotOrder = stb.getEntryOutputSlotOrder();
             const orderedCommits: string[] = [];
@@ -14458,17 +14610,174 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // target falls through StatefulTransactionBuilder's generic default encoder, which is intentionally the
           // old key/value commitment format and cannot encode a 32-byte hashed slot as an int/address key.
           const batchAccess = entryAccesses[slotIndex];
-          const resolvedWholeValue = batchAccess.valueSource
+          const entryDelta = batchAccess.valueSource?.match(
+            /^binop:([+-])\(entry,(?:lit:(-?[0-9]+)|id:([A-Za-z_][\w]*))\)$/,
+          );
+          let resolvedWholeValue = batchAccess.valueSource && entryDelta === null
+            && !batchAccess.valueSource.startsWith('loopLast:')
+            && !batchAccess.valueSource.startsWith('new:')
+            && !batchAccess.valueSource.startsWith('call:')
+            && !batchAccess.valueSource.startsWith('arrset(')
             ? evalComputedKey(batchAccess.valueSource, entryArgs, entryAbiFunction!.inputs) : undefined;
+          if (resolvedWholeValue === undefined && batchAccess.valueSource?.startsWith('loopLast:id:')) {
+            const boundName = batchAccess.valueSource.slice('loopLast:id:'.length);
+            const bound = entryArgs[entryAbiFunction!.inputs.findIndex((input) => input.name === boundName)];
+            if (typeof bound === 'bigint' && bound > 0n) resolvedWholeValue = bigIntToVmNumber(bound - 1n);
+          }
+          if (resolvedWholeValue === undefined && (batchAccess.valueSource?.startsWith('new:')
+            || batchAccess.valueSource?.startsWith('call:'))) {
+            const constructed = batchAccess.valueSource.match(/^(?:new|call):([A-Za-z_][\w]*)\((.*)\)$/);
+            if (constructed) {
+              const splitTopLevel = (s: string): [string, string] | undefined => {
+                let depth = 0;
+                for (let i = 0; i < s.length; i += 1) {
+                  if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth += 1;
+                  else if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth -= 1;
+                  else if (s[i] === ',' && depth === 0) return [s.slice(0, i), s.slice(i + 1)];
+                }
+                return undefined;
+              };
+              const parts: string[] = [];
+              let rest = constructed[2];
+              while (rest.length > 0) {
+                const pair = splitTopLevel(rest);
+                if (pair === undefined) {
+                  parts.push(rest);
+                  break;
+                }
+                parts.push(pair[0]);
+                rest = pair[1];
+              }
+              const fields: bigint[] = [];
+              let ok = true;
+              let preservedStruct: Record<string, unknown> | undefined;
+              let preservedStructResolved = false;
+              const preservedField = (name: string): bigint | undefined => {
+                if (!preservedStructResolved) {
+                  preservedStructResolved = true;
+                  preservedStruct = decodeInlineVmapStruct(
+                    list.has(slot) ? list.find(slot)!.value : undefined,
+                    list.has(slot),
+                    collection.valueType,
+                    collection.chunkableValue === true,
+                    stateLayout.structs,
+                  );
+                }
+                const fv = preservedStruct?.[name];
+                if (typeof fv === 'bigint') return fv;
+                if (typeof fv === 'boolean') return fv ? 1n : 0n;
+                return undefined;
+              };
+              for (const part of parts) {
+                const rewritten = substPreservedStructFields(part, batchAccess.collection, preservedField);
+                const encoded = rewritten === undefined
+                  ? undefined
+                  : evalComputedKey(rewritten, entryArgs, entryAbiFunction!.inputs);
+                const field = encoded === undefined
+                  ? undefined : vmNumberToBigInt(encoded, { requireMinimalEncoding: false });
+                if (typeof field !== 'bigint') {
+                  ok = false;
+                  break;
+                }
+                fields.push(field);
+              }
+              if (ok && fields.length === parts.length) {
+                try {
+                  resolvedWholeValue = encodePushdataValue(fields, collection.valueType, stateLayout.structs);
+                } catch {
+                  resolvedWholeValue = undefined;
+                }
+              }
+            }
+          }
+          if (resolvedWholeValue === undefined && batchAccess.valueSource?.startsWith('arrset(')) {
+            const inner = batchAccess.valueSource.slice('arrset('.length, -1);
+            const splitTopLevel = (s: string): [string, string] | undefined => {
+              let depth = 0;
+              for (let i = 0; i < s.length; i += 1) {
+                if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth += 1;
+                else if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth -= 1;
+                else if (s[i] === ',' && depth === 0) return [s.slice(0, i), s.slice(i + 1)];
+              }
+              return undefined;
+            };
+            const pair = splitTopLevel(inner);
+            if (pair) {
+              const idxEncoded = evalComputedKey(pair[0], entryArgs, entryAbiFunction!.inputs);
+              const valEncoded = evalComputedKey(pair[1], entryArgs, entryAbiFunction!.inputs);
+              const idx = idxEncoded === undefined
+                ? undefined : vmNumberToBigInt(idxEncoded, { requireMinimalEncoding: false });
+              const val = valEncoded === undefined
+                ? undefined : vmNumberToBigInt(valEncoded, { requireMinimalEncoding: false });
+              if (typeof idx === 'bigint' && typeof val === 'bigint' && idx >= 0n) {
+                const current = decodeInlineVmapValue(
+                  list.has(slot) ? list.find(slot)!.value : undefined,
+                  list.has(slot),
+                  collection.valueType,
+                  collection.chunkableValue === true,
+                  stateLayout.structs,
+                );
+                const n = Number(idx);
+                if (Array.isArray(current) && Number.isSafeInteger(n) && n < current.length
+                  && current.every((el) => typeof el === 'bigint')) {
+                  const next = current.slice();
+                  next[n] = val;
+                  try {
+                    resolvedWholeValue = encodePushdataValue(next, collection.valueType, stateLayout.structs);
+                  } catch {
+                    resolvedWholeValue = undefined;
+                  }
+                }
+              }
+            }
+          }
+          if (resolvedWholeValue === undefined && entryDelta) {
+            const current = list.has(slot)
+              ? vmNumberToBigInt(list.find(slot)!.value, { requireMinimalEncoding: false })
+              : 0n;
+            const rawDelta = entryDelta[2] !== undefined
+              ? BigInt(entryDelta[2])
+              : entryArgs[entryAbiFunction!.inputs.findIndex((input) => input.name === entryDelta[3])];
+            if (typeof current === 'bigint' && typeof rawDelta === 'bigint') {
+              resolvedWholeValue = bigIntToVmNumber(entryDelta[1] === '-' ? current - rawDelta : current + rawDelta);
+            }
+          }
+          if (resolvedWholeValue === undefined && batchAccess.valueSource?.startsWith('ternary(')) {
+            const inner = batchAccess.valueSource.slice('ternary('.length, -1);
+            const splitTopLevel = (s: string): [string, string] | undefined => {
+              let depth = 0;
+              for (let i = 0; i < s.length; i += 1) {
+                if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth += 1;
+                else if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth -= 1;
+                else if (s[i] === ',' && depth === 0) return [s.slice(0, i), s.slice(i + 1)];
+              }
+              return undefined;
+            };
+            const head = splitTopLevel(inner);
+            const rest = head ? splitTopLevel(head[1]) : undefined;
+            if (head && rest) {
+              const condBytes = evalComputedKey(head[0], entryArgs, entryAbiFunction!.inputs);
+              const taken = condBytes !== undefined && condBytes.length > 0;
+              if (taken) {
+                resolvedWholeValue = evalComputedKey(rest[0], entryArgs, entryAbiFunction!.inputs);
+              } else if (rest[1].startsWith('map:') && list.has(slot)) {
+                // Not-taken preserve: pin the current tail only when the key already exists. An absent
+                // key must stay unminted (default 0 is not a zero-value insert).
+                resolvedWholeValue = list.find(slot)!.value;
+              }
+            }
+          }
           let targetCommitment = out.commitment;
-          if (resolvedWholeValue !== undefined && collection.chunkableValue) {
+          if (resolvedWholeValue !== undefined) {
+            const valueTail = collection.chunkableValue
+              ? encodeChunkableValueTail(resolvedWholeValue)
+              : resolvedWholeValue;
             targetCommitment = encodeEntryCommitment(
-              slot, decodeEntryCommitment(out.commitment).nextKey,
-              encodeChunkableValueTail(resolvedWholeValue),
+              slot, decodeEntryCommitment(out.commitment).nextKey, valueTail,
             );
           }
           batchTargetPlaceholders.set(slotIndex, binToHex(targetCommitment));
-          if (resolvedWholeValue !== undefined && collection.chunkableValue) {
+          if (resolvedWholeValue !== undefined) {
             // The complete vmap node is known exactly. Batch verification authenticates the transition as a whole,
             // so generic OTC trace extraction can otherwise replace this value-bearing node with a structural
             // slot/next observation from the same output index.

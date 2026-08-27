@@ -35,6 +35,7 @@ describe('sorted address-keyed mapping (ERC20 balance shape)', () => {
       ];
     });
     const categoryId = result.categoryId;
+    const stateful = StatefulContract.withCategory(contract, categoryId);
     const ea = getEntryNftAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'bal');
     const valOf = async (addr: string): Promise<bigint | undefined> => {
       const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(slotOfAddr(addr));
@@ -42,13 +43,16 @@ describe('sorted address-keyed mapping (ERC20 balance shape)', () => {
     };
     const call = (fn: 'setBal' | 'check', ...a: unknown[]): Promise<{ txid: string }> => {
       type Caller = Record<string, (...args: unknown[]) => { send: () => Promise<{ txid: string }> }>;
-      return (StatefulContract.withCategory(contract, categoryId) as unknown as Caller)[fn](...a, alicePub, sig).send();
+      return (stateful as unknown as Caller)[fn](...a, alicePub, sig).send();
     };
 
     // setBal(bob) = 100.
     expect((await call('setBal', bobAddress, 100n)).txid).toBeDefined();
     expect(await valOf(bobAddress)).toBe(100n);
     await expect(call('check', bobAddress, 100n)).resolves.toBeDefined();
+    const bobAccountHex = `0x${binToHex(addressToLockScript(bobAddress).slice(3, 23))}`;
+    await expect((stateful as unknown as { bal: (address: string) => Promise<bigint> }).bal(bobAccountHex))
+      .resolves.toBe(100n);
 
     // A different address (alice) is a distinct entry, absent -> reads 0.
     await expect(call('check', aliceAddress, 0n)).resolves.toBeDefined();

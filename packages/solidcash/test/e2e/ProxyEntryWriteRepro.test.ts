@@ -53,6 +53,21 @@ const STRING_ENTRY_INIT = `pragma solidcash >=0.8.0;
     function initialize(bigint counter_) public { this.counter = counter_; this.tags["DA"] = "DIGITAL_AUDIO"; }
   }`;
 
+const SORTED_BATCH_ENTRY_INIT = `pragma solidcash >=0.8.0;
+  contract SortedBatchEntryInit() {
+    mapping(string => string) tags;
+    function initialize() public {
+      this.tags["DA"] = "DIGITAL_AUDIO";
+      this.tags["DV"] = "DIGITAL_VIDEO";
+      this.tags["DT"] = "DIGITAL_TEXT";
+      this.tags["DS"] = "DIGITAL_SOFTWARE";
+      this.tags["DO"] = "DIGITAL_OTHERS";
+      this.tags["NDG"] = "NON_DIGITAL_GOODS";
+      this.tags["NDS"] = "NON_DIGITAL_SERVICES";
+      this.tags["NDO"] = "NON_DIGITAL_OTHERS";
+    }
+  }`;
+
 const ENTRY_CALL = `pragma solidcash >=0.8.0;
   contract EntryCall() {
     bigint counter;
@@ -63,7 +78,7 @@ const ENTRY_CALL = `pragma solidcash >=0.8.0;
 async function fundedSigner(): Promise<Signer> {
   const provider = createTestProvider();
   const signer = new Signer(alicePriv, provider);
-  for (const seed of ['a1', 'b2', 'c3', 'd4']) {
+  for (const seed of Array.from({ length: 20 }, (_unused, index) => (index + 1).toString(16).padStart(2, '0'))) {
     await provider.addUtxo(signer.getAddress(), { txid: seed.repeat(32), vout: 0, satoshis: 1_000_000n });
   }
   return signer;
@@ -95,6 +110,13 @@ describe('mapping-entry write inside a proxy initializer', () => {
     const signer = await fundedSigner();
     const Impl = getContractFactory(compileString(STRING_ENTRY_INIT), signer);
     const proxy = await upgrades.deployProxy(Impl, [7n]);
+    await expect(proxy.waitForDeployment()).resolves.toBeDefined();
+  });
+
+  it('runs an initializer with a fixed sorted batch after its direct epilogue helper frame', async () => {
+    const signer = await fundedSigner();
+    const Impl = getContractFactory(compileString(SORTED_BATCH_ENTRY_INIT), signer);
+    const proxy = await upgrades.deployProxy(Impl, []);
     await expect(proxy.waitForDeployment()).resolves.toBeDefined();
   });
 

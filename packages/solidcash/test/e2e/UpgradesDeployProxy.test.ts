@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import { binToHex } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import {
   Signer, deriveLogicalCreateAddress, getContractFactory, resolveLogicalIdentity, upgrades,
 } from '../../src/index.js';
-import { parsePushdataCommitment } from '@solidcash/utils';
+import type { EventLog } from '../../src/index.js';
+import { encodeEventCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 
 // ethers/hardhat OpenZeppelin-upgrades-style proxy deploy for stateful contracts:
@@ -28,6 +30,19 @@ const DELEGATE_IMPL_MULTI = `pragma solidcash >=0.8.0;
     bigint total;
     function bump(bigint by) public { this.counter = this.counter + by; this.total = this.total + 1; }
     function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+  }`;
+
+const TIMED_DELEGATE_IMPL = `pragma solidcash >=0.8.0;
+  contract TimedDelegateImpl() {
+    int captured;
+    function initialize() public { this.captured = 0; }
+    function capture() public { this.captured = block.timestamp; }
+  }`;
+
+const ADDRESS_HOLDER_IMPL = `pragma solidcash >=0.8.0;
+  contract AddressHolderImpl() {
+    address saved;
+    function initialize(address target) public { this.saved = target; }
   }`;
 
 // A custom pinned proxy: `up(bytes input, address impl, ...)` takes the impl as a call param (the 'param' mode).
@@ -106,6 +121,28 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).counter).toBe(43n);
   });
 
+  it('stores a registered proxy argument as its physical master locking bytecode', async () => {
+    const signer = await fundedSigner();
+    await signer.provider.addUtxo(signer.getAddress(), {
+      txid: 'c8'.repeat(32), vout: 0, satoshis: 1_000_000n,
+    });
+    const target = await upgrades.deployProxy(
+      getContractFactory(compileString(DELEGATE_IMPL), signer), [1n],
+    );
+    const holder = await upgrades.deployProxy(
+      getContractFactory(compileString(ADDRESS_HOLDER_IMPL), signer), [target.address],
+    );
+
+    const state = await holder.proxy.getState();
+    expect(binToHex(state.saved as Uint8Array)).toBe(target.proxy.inner.lockingBytecode);
+
+    const direct = await getContractFactory(compileString(ADDRESS_HOLDER_IMPL), signer)
+      .deploy({ initialState: { saved: new Uint8Array() } });
+    await direct.call.initialize(target.address).send();
+    expect(binToHex((await direct.getState()).saved as Uint8Array))
+      .toBe(target.proxy.inner.lockingBytecode);
+  });
+
   it('the default proxy is layout-independent (multi-data-NFT implementation)', async () => {
     const signer = await fundedSigner();
     const implArtifact = compileString(DELEGATE_IMPL_MULTI);
@@ -158,6 +195,19 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     expect(await (proxy as any).a()).toBe(7n);
     const failing = await (proxy as any).requireUninitialized().build();
     expect(() => failing.debug()).toThrow('AlreadyInitialized');
+  });
+
+  it('refreshes a proxy block oracle after its initializer completes', async () => {
+    const signer = await fundedSigner();
+    const artifact = compileString(TIMED_DELEGATE_IMPL);
+    const proxy = await upgrades.deployProxy(getContractFactory(artifact, signer), []);
+
+    const deployed = await proxy.proxy.getState();
+    expect(deployed.__block_timestamp).toBeGreaterThan(0n);
+
+    const tx = await (proxy as any).capture().send();
+    expect(proxyState(tx, proxy.proxy.categoryId, artifact.stateLayout).captured)
+      .toBe(deployed.__block_timestamp);
   });
 
   it('auto-detects an OZ initializer in Solidity import-compat mode', async () => {
@@ -226,8 +276,10 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
   // A delegate fn that emits: the impl verifies its event at proxyMaster+offset, so the event NFT lands in the
   // PROXY block (proxy category, capability none) and the co-spent impl UTXOs shift after it.
   const EVENT_IMPL = `pragma solidcash >=0.8.0;
+    struct ChangeData { int value; string note; }
     contract EventImpl() {
       event Changed(int v);
+      event Detailed(int indexed id, ChangeData data);
       int version;
       address owner;
       function initialize(int v) public { this.owner = msg.sender; this.version = v; }
@@ -252,6 +304,58 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     expect(eventOut!.token!.nft!.commitment).toBe('0119');
     // Getter dispatch must retain the connected runner so its return-event output uses a real P2PKH funder.
     expect(await (proxy as any).version()).toBe(25n);
+  });
+
+  it('exposes implementation events through connected proxy handles', async () => {
+    const signer = await fundedSigner();
+    await signer.provider.addUtxo(signer.getAddress(), { txid: 'c6'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    const implArtifact = compileString(EVENT_IMPL);
+    const proxy = await upgrades.deployProxy(
+      getContractFactory(implArtifact, signer),
+      { version: 1n, owner: signer.getAddress() },
+      { initializer: false },
+    );
+    const connected = proxy.connect(signer);
+    const seen: Array<{ value: bigint; log: EventLog }> = [];
+    const listener = (value: bigint, log: EventLog): void => { seen.push({ value, log }); };
+
+    expect(connected.filters.Changed).toBeDefined();
+    await connected.addListener('Changed', listener);
+    await (connected as any).setVersion(26n).send();
+    await (connected as unknown as { _events(): { _pollEvents(): Promise<void> } })._events()._pollEvents();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].value).toBe(26n);
+    expect(seen[0].log.args.v).toBe(26n);
+    expect((await connected.queryFilter('Changed')).map((log) => log.args.v)).toEqual([26n]);
+
+    // The event facade must decode with implementation structs while continuing to query the proxy category.
+    const detailedDef = implArtifact.events!.find((event) => event.name === 'Detailed')!;
+    const detail = { value: 31n, note: 'proxy event' };
+    const facade = (connected as unknown as {
+      _events(): { getEventNftAddress(signature: string): string };
+    })._events();
+    await signer.provider.addUtxo(facade.getEventNftAddress(detailedDef.signature), {
+      txid: 'd7'.repeat(32),
+      vout: 0,
+      satoshis: 1000n,
+      token: {
+        category: proxy.proxy.categoryId,
+        amount: 0n,
+        nft: {
+          capability: 'none',
+          commitment: binToHex(encodeEventCommitment(detailedDef.parameters, [7n, detail], implArtifact.structs)),
+        },
+      },
+    });
+    const detailed = await connected.queryFilter('Detailed');
+    expect(detailed).toHaveLength(1);
+    expect(detailed[0].args.id).toBe(7n);
+    expect(detailed[0].args.data.value).toBe(31n);
+    expect(detailed[0].args.data.note).toBe('proxy event');
+
+    await proxy.removeListener('Changed', listener);
+    expect(await connected.listenerCount('Changed')).toBe(0);
   });
 
   const INHERITED_OWNER_IMPL = `pragma solidity ^0.8.0;
@@ -360,7 +464,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
       contract ValueSource() {
         int marker;
         function twice(int value) view returns (int) { return value * 2; }
-      }`);
+      }`, { solidityImportCompat: true });
     const implArtifact = compileString(`pragma solidcash >=0.8.0;
       interface IValueSource { function twice(int value) external view returns (int); }
       contract NestedCallImpl() {

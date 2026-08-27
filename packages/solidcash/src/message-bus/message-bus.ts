@@ -1,9 +1,12 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import {
   ArrayType, ATOMIC_MESSAGE_BUS_MAX_ROWS, decodePushdataValue, MAX_MESSAGE_BUS_BLOB_BYTES,
-  parseType, type Artifact, type StateValue, scriptToBytecode,
+  parseArrayTypeString, parseType, type Artifact, type StateValue, scriptToBytecode,
+  type StructDefinitionInfo,
 } from '@solidcash/utils';
-import { encodeFunctionArgument, isSignatureTemplateArray, type FunctionArgument } from '../Argument.js';
+import {
+  encodeFunctionArgument, isSignatureTemplateArray, type ConstructorArgument, type FunctionArgument,
+} from '../Argument.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
 
@@ -14,7 +17,7 @@ export interface MessageBatchCall {
   args?: readonly FunctionArgument[];
   /** Logical per-invocation satoshi delta when compiler-authored effects cannot derive it. */
   msgValue?: bigint;
-  /** Graph-authenticated logical caller locking bytecode for msg.sender-keyed resources. */
+  /** Graph-authenticated caller identity bytecode for msg.sender-keyed resources. */
   logicalCaller?: FunctionArgument;
 }
 
@@ -57,6 +60,30 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
   return result;
 };
 
+/**
+ * Encode a message-bus row's canonical argument vector.
+ *
+ * Scalars need a pushdata field frame. Structs and arrays already are self-delimiting canonical blobs, so an
+ * additional outer frame would make the wire format depend on which SDK path assembled the row and would be
+ * ambiguous with a composite's first field.
+ */
+export function encodeMessageBusArguments(
+  encoded: readonly Uint8Array[],
+  inputTypes: readonly string[],
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  if (encoded.length !== inputTypes.length) {
+    throw new Error(`Message-bus argument vector has ${encoded.length} values for ${inputTypes.length} types`);
+  }
+  return concat(...encoded.map((argument, index) => {
+    const typeName = inputTypes[index];
+    const type = parseType(typeName);
+    const composite = type instanceof ArrayType
+      || structs?.some((definition) => definition.name === typeName);
+    return composite ? argument : scriptToBytecode([argument]);
+  }));
+}
+
 const uintLe = (value: bigint, width: number): Uint8Array => {
   if (value < 0n || value >= (1n << BigInt(width * 8))) {
     throw new Error(`Unsigned ${width}-byte overflow`);
@@ -78,6 +105,29 @@ const signedValue = (value: bigint): Uint8Array => {
   return concat(Uint8Array.of(value < 0n ? 1 : 0), uintLe(magnitude, 8));
 };
 
+/** ABI-valid default for an inactive position in a bounded message-bus route. */
+export function inactiveMessageBusRouteWitness(type: string): FunctionArgument {
+  const array = parseArrayTypeString(type);
+  if (array) {
+    if (array.bound === undefined) return [];
+    return Array.from(
+      { length: array.bound },
+      () => inactiveMessageBusRouteWitness(array.elementType) as ConstructorArgument,
+    );
+  }
+  if (type === 'bool') return false;
+  if (type === 'string') return '';
+  if (type === 'address' || type === 'address payable') {
+    return encodeLockingBytecodeP2pkh(new Uint8Array(20));
+  }
+  if (type === 'byte') return new Uint8Array(1);
+  const fixedBytes = type.match(/^bytes(\d+)$/);
+  if (fixedBytes) return new Uint8Array(Number(fixedBytes[1]));
+  if (type === 'bytes' || type === 'sig' || type === 'datasig') return new Uint8Array();
+  if (type === 'pubkey') return new Uint8Array(33);
+  return 0n;
+}
+
 /**
  * Canonically encode real compiler-generated message-bus batch handlers without constructing a transaction.
  *
@@ -90,10 +140,9 @@ export function encodeMessageBatch(
   artifact: Artifact,
   invocations: readonly MessageBatchCall[],
   /**
-   * Values for route key witnesses no invocation binds. A mixed batch produces these by construction: a handler
-   * with a single mapping access binds only the shared entry, so the other row's row-local slot stays unbound
-   * even though the route still declares it and the covenant still requires it to address a real entry. The
-   * caller names that entry; the SDK cannot derive it, because no row touches it.
+   * Optional values for route key witnesses no invocation binds. Inactive fixed-row bands otherwise receive a
+   * type-correct neutral value; callers only need this override when another compiler-owned route resource gives
+   * an unselected position an explicit identity.
    */
   unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
 ): EncodedMessageBatch {
@@ -147,6 +196,57 @@ export function encodeMessageBatch(
   const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
   const modeVersion = invocations.some((invocation) => invocation.callMode !== undefined);
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
+  const swappableGlobals = new Map<string, { value: FunctionArgument; encoded: Uint8Array; rowBase: string }>();
+  // A resource route has one shared entry and one row-local alternative. The compiler can advertise the two as
+  // swappable, allowing the batch to choose the value common to every relevant row rather than assuming the
+  // source handler's first mapping access is globally shared.
+  const swappableBases = new Set(capability.handlers.flatMap((handler) =>
+    (handler.batchKeyWitnesses ?? []).filter((binding) => binding.swappable && !binding.perRow)
+      .map((binding) => binding.routeInput)));
+  for (const base of swappableBases) {
+    const choices: Array<Array<{ value: FunctionArgument; encoded: Uint8Array }>> = [];
+    let rowBase = `${base}_row`;
+    for (const invocation of invocations) {
+      const handler = capability.handlers.find((candidate) => candidate.name === invocation.function);
+      if (!handler) continue;
+      const bindings = handler.batchKeyWitnesses ?? [];
+      const shared = bindings.find((binding) => binding.routeInput === base);
+      const varying = bindings.find((binding) => binding.swappable && binding.perRow
+        && binding.routeInput === `${base}_row`);
+      const invocationArgs = invocation.args ?? [];
+      const relevant = varying ? [shared, varying] : [shared];
+      const rowChoices = relevant.flatMap((binding) => {
+        if (!binding || binding.source === 'msgSender' || binding.source === 'expression'
+          || binding.inputIndex < 0) return [];
+        const value = invocationArgs[binding.inputIndex];
+        const type = handler.inputs[binding.inputIndex]?.type;
+        if (value === undefined || !type) return [];
+        const encoded = encodeFunctionArgument(value, type, structs);
+        return encoded instanceof Uint8Array ? [{ value, encoded }] : [];
+      });
+      if (rowChoices.length > 0) choices.push(rowChoices);
+      if (varying) rowBase = varying.routeInput;
+    }
+    const suppliedValue = unboundRouteWitnesses[base];
+    const suppliedType = capability.route.inputs.find((input) => input.name === base)?.type;
+    const suppliedEncoded = suppliedValue === undefined || !suppliedType
+      ? undefined : encodeFunctionArgument(suppliedValue, suppliedType, structs);
+    const suppliedCandidate = suppliedEncoded instanceof Uint8Array
+      ? { value: suppliedValue!, encoded: suppliedEncoded } : undefined;
+    const suppliedFits = suppliedCandidate && (choices.length === 0 || choices.every((row) => row.some((choice) =>
+      binToHex(choice.encoded) === binToHex(suppliedCandidate.encoded))));
+    const selected = suppliedFits ? suppliedCandidate : choices[0]?.find((candidate) =>
+      choices.every((row) => row.some((choice) =>
+        binToHex(choice.encoded) === binToHex(candidate.encoded))));
+    if (!selected) {
+      throw new MessageBusDiagnosticError(
+        'L3_RESOURCE_UNRESOLVED',
+        `message-bus batch collection witness '${base}' has no shared physical entry orientation`,
+        { resourceIdentity: base },
+      );
+    }
+    swappableGlobals.set(base, { ...selected, rowBase });
+  }
   const signatureWitnessValues = new Map<string, FunctionArgument>();
   const results: { row: number; types: readonly string[] }[] = [];
   const projectedRows: {
@@ -183,19 +283,62 @@ export function encodeMessageBatch(
       signatureWitnessValues.set(`__message_bus_sig_${handlerIndex}_${index}_r${rowIndex}`, argument);
     });
     for (const binding of handler.batchKeyWitnesses ?? []) {
+      if (binding.swappable) {
+        if (binding.perRow) continue;
+        const global = swappableGlobals.get(binding.routeInput);
+        const varying = handler.batchKeyWitnesses?.find((candidate) => candidate.swappable
+          && candidate.perRow && candidate.routeInput === `${binding.routeInput}_row`);
+        if (!global || !varying || binding.inputIndex < 0 || varying.inputIndex < 0) {
+          throw new MessageBusDiagnosticError(
+            'L3_RESOURCE_UNRESOLVED',
+            `message-bus batch collection witness '${binding.routeInput}' lacks a swappable key pair`,
+            { handler: handler.name, resourceIdentity: binding.routeInput, invocationIds: [rowIndex] },
+          );
+        }
+        const sharedValue = args[binding.inputIndex];
+        const varyingValue = args[varying.inputIndex];
+        const sharedEncoded = encoded[binding.inputIndex];
+        const varyingEncoded = encoded[varying.inputIndex];
+        if (!(sharedEncoded instanceof Uint8Array) || !(varyingEncoded instanceof Uint8Array)) {
+          throw new MessageBusDiagnosticError(
+            'L3_RESOURCE_UNRESOLVED', 'message-bus swappable collection keys are not byte-encodable',
+            { handler: handler.name, resourceIdentity: binding.routeInput, invocationIds: [rowIndex] },
+          );
+        }
+        const sharedMatches = binToHex(sharedEncoded) === binToHex(global.encoded);
+        const varyingMatches = binToHex(varyingEncoded) === binToHex(global.encoded);
+        if (!sharedMatches && !varyingMatches) {
+          throw new MessageBusDiagnosticError(
+            'L3_RESOURCE_UNRESOLVED',
+            `message-bus batch collection witness '${binding.routeInput}' does not match either row key`,
+            { handler: handler.name, resourceIdentity: binding.routeInput, invocationIds: [rowIndex] },
+          );
+        }
+        keyWitnessValues.set(binding.routeInput, { value: global.value, encoded: global.encoded });
+        keyWitnessValues.set(`${varying.routeInput}_r${rowIndex}`, sharedMatches
+          ? { value: varyingValue, encoded: varyingEncoded }
+          : { value: sharedValue, encoded: sharedEncoded });
+        continue;
+      }
       const value = binding.source === 'msgSender'
         ? invocation.logicalCaller
-        : args[binding.inputIndex];
+        : binding.source === 'expression'
+          ? unboundRouteWitnesses[binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput]
+          : args[binding.inputIndex];
       if (value === undefined) {
         throw new MessageBusDiagnosticError(
           'L3_RESOURCE_UNRESOLVED',
-          `message-bus batch collection witness '${binding.routeInput}' requires an authenticated logical caller`,
+          `message-bus batch collection witness '${binding.routeInput}' requires an authenticated active caller`,
           { handler: handler.name, resourceIdentity: binding.routeInput, keyIdentity: 'msg.sender', invocationIds: [rowIndex] },
         );
       }
+      const routeInputName = binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
+      const routeInputType = capability.route.inputs.find((input) => input.name === routeInputName)?.type;
       const encodedValue = binding.source === 'msgSender'
         ? encodeFunctionArgument(value, 'address', structs)
-        : encoded[binding.inputIndex] as Uint8Array;
+        : binding.source === 'expression'
+          ? encodeFunctionArgument(value, routeInputType ?? 'bytes', structs)
+          : encoded[binding.inputIndex] as Uint8Array;
       if (!(encodedValue instanceof Uint8Array)) {
         throw new MessageBusDiagnosticError(
           'L3_RESOURCE_UNRESOLVED',
@@ -203,7 +346,7 @@ export function encodeMessageBatch(
           { handler: handler.name, resourceIdentity: binding.routeInput, invocationIds: [rowIndex] },
         );
       }
-      const routeInput = binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
+      const routeInput = routeInputName;
       const prior = keyWitnessValues.get(routeInput);
       if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
         throw new MessageBusDiagnosticError(
@@ -214,15 +357,11 @@ export function encodeMessageBatch(
       }
       if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
     }
-    const argsBlob = concat(...rowEncoded.map((argument, index) => {
-      const typeName = handler.inputs[index].type;
-      const type = parseType(typeName);
-      // Arrays and structs are already canonical composite blobs. Scalar
-      // arguments are raw VM values and require one field push.
-      const composite = type instanceof ArrayType
-        || structs?.some((definition) => definition.name === typeName);
-      return composite ? argument : scriptToBytecode([argument]);
-    }));
+    const argsBlob = encodeMessageBusArguments(
+      rowEncoded,
+      handler.inputs.map((input) => input.type),
+      structs,
+    );
     if (argsBlob.length > 0xffff) {
       throw new Error(`message-bus batch arguments for '${handler.name}' exceed 65535 bytes`);
     }
@@ -295,14 +434,11 @@ export function encodeMessageBatch(
         if (fallback) return fallback;
       }
       const supplied = unboundRouteWitnesses[input.name];
-      if (supplied === undefined) {
-        throw new MessageBusDiagnosticError(
-          'L3_RESOURCE_UNRESOLVED',
-          `Missing message-bus batch route witness '${input.name}'; no invocation binds it, so it must be supplied`,
-          { resourceIdentity: input.name, keyIdentity: input.name },
-        );
-      }
-      return supplied;
+      if (supplied !== undefined) return supplied;
+      // Route dispatch never observes an inactive row's key band. Keep it distinct from active identities: reusing
+      // an active family member manufactures a false same-target alias and can redirect a later row's journal to
+      // an inactive default-valued cache. The positional ABI only requires a type-correct value here.
+      return inactiveMessageBusRouteWitness(input.type);
     });
 
   return {

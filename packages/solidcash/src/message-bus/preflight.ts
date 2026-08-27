@@ -1,20 +1,31 @@
 /* eslint-disable max-len */
 import {
-  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
+  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstruction, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
   vmNumberToBigInt, type AuthenticationProgramStateCommon, type Output, type Transaction,
 } from '@bitauth/libauth';
+import type { Artifact } from '@solidcash/utils';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { generateLibauthSourceOutputs } from '../utils.js';
+import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import { rememberPreparedCovenantValidation } from '../network/createPreparedTxVerifier.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   deriveBalancedAssemblyFromInputs, preflightBalancedBlockAssembly,
 } from '../stateful/balancedBlocks.js';
 import type { BalancedAssembly, BalancedAssemblyOptions } from '../stateful/balancedBlocks.js';
+import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
+import {
+  selectSortedBatchTraceCommitment,
+  sortedBatchTraceCommitmentsShareNode,
+} from '../stateful/sorted-batch-activity.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { assertGraphTrailingCapacity, type GraphTrailingRegion } from './graph.js';
 import { ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES, decodeAtomicMessageEnvelope } from './atomic.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
+import { FailedRequireError } from '../Errors.js';
+import { resolveActiveRequire } from '../debug-attribution.js';
+import type { ContractUnlocker } from '../interfaces.js';
 
 /**
  * Measure each participant's ACTUAL runtime-resource run off the unsigned builder, and refuse a run the
@@ -130,6 +141,207 @@ const requireMessageBusBlockAssembly = (builder: TransactionBuilder): BalancedAs
     + 'assembly gate cannot run; every participant master input must expose its contract unlocker',
   );
 };
+
+export interface MessageBusComputedResourceConvergence {
+  /** Number of commitment writes applied to the unsigned builder. */
+  repairs: number;
+  /** Number of complete-transaction VM passes needed to reach the fixed point. */
+  rounds: number;
+  /** Physical output coordinates changed at least once. */
+  outputs: readonly number[];
+}
+
+/**
+ * Converge compiler-declared mutable outputs against the complete atomic transaction.
+ *
+ * Participant-local builders cannot derive state whose value depends on another participant: the covenant only
+ * sees that value once every block and the verifier tail have been assembled. This recovery therefore runs on
+ * the aggregate, before strict preflight and final signing, and accepts only an exact covenant equality witness:
+ * `expectedCommitment outputIndex OP_OUTPUTTOKENCOMMITMENT OP_EQUAL[VERIFY]`.
+ *
+ * The repair authority is deliberately structural. An evaluating input may update only a mutable `dataNft` or
+ * `entry` coordinate declared inside its own balanced participant block. Data NFTs must preserve category, value,
+ * and locking bytecode in place. Entry targets may also replace a token-free balanced input when the compiler
+ * reserved that exact entry slot. Dynamic chunks, events, transfers, read-only state, identities, verifiers, and
+ * the fee tail are never candidates. Conflicting covenant observations are refused rather than resolved by
+ * evaluation order.
+ */
+const convergeMessageBusMutableResourceOutputs = (
+  builder: TransactionBuilder,
+  includeEntries: boolean,
+): MessageBusComputedResourceConvergence => {
+  const assembly = requireMessageBusBlockAssembly(builder);
+  const ownedByBlock = new Map<number, Set<number>>();
+  const fixedStateOutputs = new Set<number>();
+  for (const block of assembly.blocks) {
+    const owned = new Set<number>();
+    const blockCategory = builder.inputs[block.base]?.token?.category?.toLowerCase();
+    for (const slot of block.blockLayout.slots) {
+      if (slot.kind !== 'dataNft' && (!includeEntries || slot.kind !== 'entry')) continue;
+      const outputIndex = block.base + slot.offset;
+      const input = builder.inputs[outputIndex];
+      const output = builder.outputs[outputIndex];
+      if (!input || output?.token?.nft?.capability !== 'mutable') continue;
+      if (slot.kind === 'dataNft') {
+        if (input.token?.nft?.capability !== 'mutable'
+          || input.token.category.toLowerCase() !== output.token.category.toLowerCase()
+          || input.token.amount !== output.token.amount
+          || input.satoshis !== output.amount) continue;
+        const inputLock = input.unlocker.generateLockingBytecode();
+        const outputLock = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
+        if (binToHex(inputLock) !== binToHex(outputLock)) continue;
+        fixedStateOutputs.add(outputIndex);
+      } else {
+        if (blockCategory === undefined || output.token.category.toLowerCase() !== blockCategory
+          || output.token.amount !== 0n) continue;
+        if (input.token !== undefined) {
+          if (input.token.nft?.capability !== 'mutable'
+            || input.token.category.toLowerCase() !== output.token.category.toLowerCase()
+            || input.token.amount !== output.token.amount
+            || input.satoshis !== output.amount) continue;
+          const inputLock = input.unlocker.generateLockingBytecode();
+          const outputLock = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
+          if (binToHex(inputLock) !== binToHex(outputLock)) continue;
+        }
+      }
+      owned.add(outputIndex);
+    }
+    ownedByBlock.set(block.participant, owned);
+  }
+
+  const candidateCount = [...ownedByBlock.values()].reduce((sum, owned) => sum + owned.size, 0);
+  if (candidateCount === 0) return { repairs: 0, rounds: 0, outputs: [] };
+
+  const changedOutputs = new Set<number>();
+  const seenStates = new Set<string>();
+  let repairs = 0;
+  const maximumRounds = candidateCount * 2 + 1;
+  for (let round = 1; round <= maximumRounds; round += 1) {
+    const stateKey = [...ownedByBlock.values()].flatMap((owned) => [...owned].sort((a, b) => a - b))
+      .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
+      .join('|');
+    if (seenStates.has(stateKey)) {
+      throw new Error('messageBus: mutable resource output convergence entered a repeated state');
+    }
+    seenStates.add(stateKey);
+
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const proposals = new Map<number, { commitment: Uint8Array; inputIndex: number; ip: number }>();
+    const observed = new Map<number, { commitment: Uint8Array; ip: number }>();
+    let owned = new Set<number>();
+    const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
+      opcodes: new Set([Op.OP_OUTPUTTOKENCOMMITMENT]),
+      beforeOperation: (unknownState) => {
+        const state = unknownState as AuthenticationProgramStateCommon;
+        if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
+          || state.stack.length < 2) return;
+        // Libauth invokes operation hooks for instructions in inactive IF/ELSE branches too. Those opcodes
+        // are not executed and their stack shape belongs to the active branch. Interpreting them as covenant
+        // observations can manufacture a preservation proposal from a write covenant's inactive read path.
+        if (state.controlStack.some((frame) => frame === false)) return;
+        const nextOpcode = state.instructions[state.ip + 1]?.opcode;
+        if (nextOpcode !== Op.OP_EQUAL && nextOpcode !== Op.OP_EQUALVERIFY) return;
+        let outputIndex: number;
+        try {
+          outputIndex = Number(vmNumberToBigInt(state.stack[state.stack.length - 1]));
+        } catch {
+          return;
+        }
+        if (!Number.isSafeInteger(outputIndex) || !owned.has(outputIndex)) return;
+        const commitment = state.stack[state.stack.length - 2].slice();
+        const current = observed.get(outputIndex);
+        if (current !== undefined && !fixedStateOutputs.has(outputIndex)) {
+          const selected = selectSortedBatchTraceCommitment(
+            binToHex(current.commitment), binToHex(commitment),
+          );
+          if (selected === binToHex(current.commitment)) return;
+        }
+        observed.set(outputIndex, { commitment, ip: state.ip });
+      },
+    });
+    for (const block of assembly.blocks) {
+      owned = ownedByBlock.get(block.participant)!;
+      if (owned.size === 0) continue;
+      for (let inputIndex = block.base;
+        inputIndex < block.base + block.blockLayout.blockSize;
+        inputIndex += 1) {
+        observed.clear();
+        const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+        if (vm.stateSuccess(evaluated) === true) continue;
+        for (const [outputIndex, { commitment, ip }] of observed) {
+          const current = proposals.get(outputIndex);
+          if (current !== undefined && binToHex(current.commitment) !== binToHex(commitment)) {
+            const currentHex = binToHex(current.commitment);
+            const candidateHex = binToHex(commitment);
+            if (!fixedStateOutputs.has(outputIndex)
+              && sortedBatchTraceCommitmentsShareNode(currentHex, candidateHex)) {
+              if (selectSortedBatchTraceCommitment(currentHex, candidateHex) === currentHex) continue;
+              proposals.set(outputIndex, { commitment, inputIndex, ip });
+              continue;
+            }
+            const witnessSummary = (index: number): string => {
+              const unlocker = builder.inputs[index]?.unlocker as unknown as {
+                abiFunction?: { inputs?: readonly { name: string }[] };
+                params?: readonly unknown[];
+              };
+              const rows = unlocker?.abiFunction?.inputs?.flatMap((input, paramIndex) => {
+                if (!/^__internal__vmapBatch(?:Proof|PredOut)_\d+$/.test(input.name)) return [];
+                const value = unlocker.params?.[paramIndex];
+                if (input.name.includes('PredOut') && value === -2n) return [];
+                return [`${input.name}=${value instanceof Uint8Array ? binToHex(value) : String(value)}`];
+              }) ?? [];
+              return rows.length === 0 ? 'no active batch witnesses' : rows.join(', ');
+            };
+            throw new Error(
+              `messageBus: participant ${block.participant} covenants disagree on mutable resource output `
+              + `${outputIndex}: input ${current.inputIndex} proposes ${binToHex(current.commitment)}, `
+              + `input ${inputIndex} proposes ${binToHex(commitment)} `
+              + `(instruction offsets ${current.ip} and ${ip}); `
+              + `input ${current.inputIndex}: ${witnessSummary(current.inputIndex)}; `
+              + `input ${inputIndex}: ${witnessSummary(inputIndex)}`,
+            );
+          }
+          proposals.set(outputIndex, { commitment, inputIndex, ip });
+        }
+      }
+    }
+
+    let changed = false;
+    for (const [outputIndex, { commitment: proposed }] of proposals) {
+      const output = builder.outputs[outputIndex];
+      if (!output?.token?.nft) continue;
+      const currentCommitment = output.token.nft.commitment;
+      const action = canApplyRepairedNftCommitment({
+        capability: output.token.nft.capability,
+        currentCommitmentHex: currentCommitment,
+        proposed,
+        hasLockingBytecode: false,
+        fixedStateSlot: fixedStateOutputs.has(outputIndex),
+        maximumCommitmentBytes: builder.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128,
+      });
+      if (action === 'skip') continue;
+      output.token.nft.commitment = binToHex(proposed);
+      changedOutputs.add(outputIndex);
+      repairs += 1;
+      changed = true;
+    }
+    if (!changed) return { repairs, rounds: round, outputs: [...changedOutputs].sort((a, b) => a - b) };
+  }
+  throw new Error(
+    `messageBus: mutable resource outputs did not converge after ${maximumRounds} complete-transaction passes`,
+  );
+};
+
+/** Complete-graph convergence for fixed state and compiler-declared sorted-entry targets. */
+export const convergeMessageBusComputedResourceOutputs = (
+  builder: TransactionBuilder,
+): MessageBusComputedResourceConvergence => convergeMessageBusMutableResourceOutputs(builder, true);
+
+/** Backwards-compatible fixed-state-only convergence entry point. */
+export const convergeMessageBusFixedStateOutputs = (
+  builder: TransactionBuilder,
+): MessageBusComputedResourceConvergence => convergeMessageBusMutableResourceOutputs(builder, false);
 
 /** Enforce the physical encoding assumed by the generated final-verifier loader. */
 const assertCanonicalMessageEnvelopePush = (
@@ -419,6 +631,32 @@ export interface FinalizedByteGateOptions {
 }
 
 /**
+ * Destination profile proven by a successful exact message-bus preflight. Kept outside TransactionBuilder's
+ * public options so relay/consensus policy cannot become another application-controlled construction switch.
+ * The final send still reassesses its current bytes; the receipt carries only which destination rules apply.
+ */
+const finalizedByteGateReceipts = new WeakMap<TransactionBuilder, FinalizedByteGateOptions>();
+
+export const finalizedByteGateReceiptOf = (
+  builder: TransactionBuilder,
+): FinalizedByteGateOptions | undefined => finalizedByteGateReceipts.get(builder);
+
+/**
+ * Make the finalized-byte gate judge the same profile as its destination provider.
+ *
+ * `consensusLimits` is already the provider's consensus authority, so a second boolean deciding whether those
+ * limits count would be contradictory. A transaction profile wider than the standard relay ceiling identifies
+ * a direct-submit/private profile; policy observations remain in the verdict but do not block that path.
+ */
+export const finalizedByteGateOptionsForProvider = (
+  provider: Pick<NetworkProvider, 'consensusLimits'>,
+): FinalizedByteGateOptions => ({
+  ...(provider.consensusLimits === undefined ? {} : { consensusLimits: provider.consensusLimits }),
+  ...((provider.consensusLimits?.maximumTransactionBytes ?? RELAY_TRANSACTION_SIZE_LIMIT)
+    > RELAY_TRANSACTION_SIZE_LIMIT ? { allowNonRelayable: true } : {}),
+});
+
+/**
  * Read each input's subject off a builder, for the gate's message. X158.
  *
  * A contract input publishes both halves; anything else - a P2PKH input, a side-car, a custom unlocker -
@@ -680,6 +918,12 @@ export function formatFinalizedByteVerdict(verdict: FinalizedByteVerdict): strin
   ].join(' | ');
 }
 
+const enforcedFinalizedByteRefusals = (
+  verdict: FinalizedByteVerdict, allowNonRelayable: boolean | undefined,
+): readonly FinalizedByteRefusal[] => allowNonRelayable === true
+  ? verdict.refusals.filter((row) => row.regime === 'consensus')
+  : verdict.refusals;
+
 /**
  * THE GATE. Refuse a finalized transaction that breaks a byte rule.
  *
@@ -694,9 +938,8 @@ export function assertFinalizedTransactionBytes(
   const verdict = assessFinalizedTransactionBytes(
     transaction, options.inputSubjects ?? [], options.consensusLimits,
   );
-  const consensus = verdict.refusals.filter((row) => row.regime === 'consensus');
   const policy = verdict.refusals.filter((row) => row.regime === 'policy');
-  const enforced = options.allowNonRelayable === true ? consensus : [...consensus, ...policy];
+  const enforced = enforcedFinalizedByteRefusals(verdict, options.allowNonRelayable);
   if (enforced.length === 0) return verdict;
   const lines = enforced.map((row) => `  [${row.regime}] ${row.rule} at ${row.where}: ${row.detail}`);
   const suppressed = options.allowNonRelayable === true && policy.length > 0
@@ -752,9 +995,56 @@ export function covenantObjectionOf(
   try {
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+    const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+    const requestedInput = debugEnv?.SOLIDC_DEBUG_ONLY_FINAL_INPUT === undefined
+      ? undefined : Number(debugEnv.SOLIDC_DEBUG_ONLY_FINAL_INPUT);
+    const narrow = requestedInput !== undefined && Number.isInteger(requestedInput)
+      && requestedInput >= 0 && requestedInput < transaction.inputs.length;
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      const objection = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
-      if (objection !== true) return `input ${inputIndex}: ${objection}`;
+      if (narrow && inputIndex !== requestedInput) continue;
+      const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+      const objection = vm.stateSuccess(evaluated);
+      if (objection !== true) {
+        if (debugEnv?.SOLIDC_DEBUG_FINAL_COVENANT === '1') {
+          const input = builder.inputs[inputIndex] as unknown as {
+            unlocker?: {
+              contract?: { artifact?: { contractName?: string } };
+              abiFunction?: { name?: string };
+            };
+          };
+          console.error('message-bus-final-covenant-failure', {
+            inputIndex,
+            contract: input?.unlocker?.contract?.artifact?.contractName,
+            functionName: input?.unlocker?.abiFunction?.name,
+            unlockingBytes: transaction.inputs[inputIndex]?.unlockingBytecode.length,
+            unlockingInstructions: decodeAuthenticationInstructions(
+              transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(),
+            ).map((instruction) => ({
+              opcode: instruction.opcode,
+              ...('data' in instruction && {
+                dataBytes: instruction.data.length,
+                dataHead: binToHex(instruction.data.slice(0, 24)),
+              }),
+            })),
+            sourceLockingBytes: sourceOutputs[inputIndex]?.lockingBytecode.length,
+            ip: evaluated.ip,
+            instructionCount: evaluated.instructions.length,
+            instructions: evaluated.instructions.slice(0, 24).map((instruction, ip) => ({
+              ip, opcode: instruction.opcode,
+              ...('data' in instruction && {
+                dataBytes: instruction.data.length,
+                dataHead: binToHex(instruction.data.slice(0, 24)),
+              }),
+            })),
+            error: evaluated.error,
+            stackDepth: evaluated.stack.length,
+            controlStack: evaluated.controlStack.map((frame) => typeof frame === 'object' ? {
+              ip: frame.ip, instructionCount: frame.instructions.length,
+            } : frame),
+          });
+        }
+        return `input ${inputIndex}: ${objection}`;
+      }
     }
     return undefined;
   } catch {
@@ -797,23 +1087,25 @@ export function covenantObjectionOf(
 export function assertFinalizedBytesWithCovenant(
   builder: TransactionBuilder, transaction: Transaction,
   subjects: readonly (FinalizedByteSubject | undefined)[],
-  options: Pick<FinalizedByteGateOptions, 'consensusLimits'> = {},
+  options: Omit<FinalizedByteGateOptions, 'inputSubjects'> = {},
 ): void {
   const verdict = assessFinalizedTransactionBytes(transaction, subjects, options.consensusLimits);
-  if (verdict.admitted) return;
+  const enforced = enforcedFinalizedByteRefusals(verdict, options.allowNonRelayable);
+  if (enforced.length === 0) return;
   const covenant = covenantObjectionOf(builder, transaction);
   // Byte-only: the one decider that speaks is the one that always spoke, with the message it always produced.
   if (covenant === undefined) {
     assertFinalizedTransactionBytes(transaction, {
       inputSubjects: subjects,
       consensusLimits: options.consensusLimits,
+      allowNonRelayable: options.allowNonRelayable,
     });
   }
   throw new Error(
-    `messageBus: finalized transaction refused by its covenant and ${verdict.refusals.length} byte rule(s) `
+    `messageBus: finalized transaction refused by its covenant and ${enforced.length} byte rule(s) `
     + `(${verdict.serializedBytes} serialized bytes, ${verdict.inputCount} inputs, `
     + `${verdict.outputCount} outputs):\n  [covenant] ${covenant}\n`
-    + verdict.refusals.map((row) => `  [${row.regime}] ${row.rule} at ${row.where}: ${row.detail}`).join('\n'),
+    + enforced.map((row) => `  [${row.regime}] ${row.rule} at ${row.where}: ${row.detail}`).join('\n'),
   );
 }
 
@@ -857,10 +1149,214 @@ const evaluateEveryInput = (
   }
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
   const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+  const debugOnlyInputValue = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ONLY_PREFLIGHT_INPUT;
+  const debugOnlyInput = debugOnlyInputValue === undefined ? undefined : Number(debugOnlyInputValue);
+  // A suite can assemble several smaller transactions before the one under diagnosis. Narrow only when the
+  // requested input exists in THIS transaction; otherwise skipping the entire loop would silently disable
+  // preflight and allow an intermediate/provisional transaction to reach the provider.
+  const narrowPreflight = debugOnlyInput !== undefined && Number.isInteger(debugOnlyInput)
+    && debugOnlyInput >= 0 && debugOnlyInput < transaction.inputs.length;
+  const debugTiming = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_PREFLIGHT_TIMING === '1';
+
+  const invokeDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+  const invokeDebugInput = Number(invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_INPUT ?? -1);
+  const invokeDebugId = Number(invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_ID ?? -1);
+  const invokeDebugAfter = Number(invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_AFTER ?? 0);
+  const invokeDebugWatchHex = invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_WATCH_HEX?.toLowerCase();
+  if (Number.isInteger(invokeDebugInput) && invokeDebugInput >= 0
+    && invokeDebugInput < transaction.inputs.length
+    && Number.isInteger(invokeDebugId) && invokeDebugId >= 0) {
+    type InvokeDebugState = AuthenticationProgramStateCommon & {
+      instructions: Array<{ opcode: number }>;
+    };
+    type PendingInvoke = {
+      callerInstructions: InvokeDebugState['instructions'];
+      resumeIp: number;
+    };
+    let pendingInvoke: PendingInvoke | undefined;
+    let activeInvoke: PendingInvoke | undefined;
+    let afterInvokeRemaining = 0;
+    let targetReturned = false;
+    let priorWatchShape = '';
+    const watchedBytes = invokeDebugWatchHex && invokeDebugWatchHex.length % 2 === 0
+      ? hexToBin(invokeDebugWatchHex) : undefined;
+    const watchOpcodes = new Set([
+      Op.OP_CAT, Op.OP_SPLIT, Op.OP_DROP, Op.OP_PICK, Op.OP_ROLL,
+      Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUAL, Op.OP_EQUALVERIFY,
+    ]);
+    const describeStack = (state: InvokeDebugState) => ({
+      depth: state.stack.length,
+      top: state.stack.slice(-12).map((item, offset, items) => ({
+        index: state.stack.length - items.length + offset,
+        fromTop: items.length - offset - 1,
+        bytes: item.length,
+        head: binToHex(item.slice(0, 32)),
+        ...(item.length > 32 ? { tail: binToHex(item.slice(-16)) } : {}),
+      })),
+      large: state.stack.flatMap((item, index) => item.length >= 100 ? [{
+        index,
+        fromTop: state.stack.length - index - 1,
+        bytes: item.length,
+        head: binToHex(item.slice(0, 32)),
+        tail: binToHex(item.slice(-16)),
+      }] : []),
+      watched: watchedBytes === undefined ? [] : state.stack.flatMap((item, index) => {
+        const byteOffset = binToHex(item).indexOf(invokeDebugWatchHex!);
+        return byteOffset < 0 ? [] : [{
+          index,
+          fromTop: state.stack.length - index - 1,
+          bytes: item.length,
+          byteOffset: byteOffset / 2,
+          head: binToHex(item.slice(0, 32)),
+          tail: binToHex(item.slice(-16)),
+        }];
+      }),
+    });
+    createVirtualMachineBch2026ForProvider(builder.provider, {
+      opcodes: new Set(Array.from({ length: 256 }, (_unused, opcode) => opcode)),
+      beforeOperation: (unknownState) => {
+        const state = unknownState as InvokeDebugState;
+        if (pendingInvoke !== undefined) {
+          activeInvoke = pendingInvoke;
+          pendingInvoke = undefined;
+          console.error('message-bus-invoke-entry', JSON.stringify({
+            inputIndex: invokeDebugInput,
+            functionId: invokeDebugId,
+            ip: state.ip,
+            instructionCount: state.instructions.length,
+            controlDepth: state.controlStack.length,
+            ...describeStack(state),
+          }));
+        } else if (activeInvoke !== undefined
+          && state.instructions === activeInvoke.callerInstructions
+          && state.ip === activeInvoke.resumeIp) {
+          console.error('message-bus-invoke-return', JSON.stringify({
+            inputIndex: invokeDebugInput,
+            functionId: invokeDebugId,
+            ip: state.ip,
+            instructionCount: state.instructions.length,
+            controlDepth: state.controlStack.length,
+            ...describeStack(state),
+          }));
+          activeInvoke = undefined;
+          targetReturned = true;
+          afterInvokeRemaining = Number.isInteger(invokeDebugAfter) && invokeDebugAfter > 0
+            ? invokeDebugAfter : 0;
+        }
+        if (targetReturned && watchedBytes !== undefined
+          && watchOpcodes.has(state.instructions[state.ip]?.opcode ?? -1)) {
+          const matches = state.stack.flatMap((item, index) => {
+            // Return vectors and their pushdata frames are small. Excluding larger items is both exact for this
+            // observer and critical for huge route frames, which can contain the 500KB active bytecode itself.
+            if (item.length < watchedBytes.length || item.length > 256) return [];
+            let offset = -1;
+            for (let start = 0; start <= item.length - watchedBytes.length; start += 1) {
+              let matchesAtStart = true;
+              for (let byte = 0; byte < watchedBytes.length; byte += 1) {
+                if (item[start + byte] !== watchedBytes[byte]) {
+                  matchesAtStart = false;
+                  break;
+                }
+              }
+              if (matchesAtStart) {
+                offset = start;
+                break;
+              }
+            }
+            return offset < 0 ? [] : [{
+              index,
+              fromTop: state.stack.length - index - 1,
+              bytes: item.length,
+              byteOffset: offset,
+              head: binToHex(item.slice(0, 16)),
+              tail: binToHex(item.slice(-16)),
+            }];
+          });
+          const shape = JSON.stringify(matches.map(({ bytes, byteOffset }) => ({ bytes, byteOffset })));
+          if (shape !== priorWatchShape) {
+            console.error('message-bus-invoke-watch', JSON.stringify({
+              ip: state.ip,
+              opcode: state.instructions[state.ip]?.opcode,
+              instructionCount: state.instructions.length,
+              matches,
+            }));
+            priorWatchShape = shape;
+          }
+        }
+        const functionId = state.stack.at(-1);
+        if (state.instructions[state.ip]?.opcode !== Op.OP_INVOKE
+          || functionId === undefined
+          || Number(vmNumberToBigInt(functionId)) !== invokeDebugId
+          || state.controlStack.some((item) => item === false)) return;
+        console.error('message-bus-invoke-call', JSON.stringify({
+          inputIndex: invokeDebugInput,
+          functionId: invokeDebugId,
+          ip: state.ip,
+          instructionCount: state.instructions.length,
+          controlDepth: state.controlStack.length,
+          ...describeStack(state),
+        }));
+        pendingInvoke = { callerInstructions: state.instructions, resumeIp: state.ip + 1 };
+        return;
+      },
+      operation: (opcode, unknownState, operation) => {
+        const state = unknownState as InvokeDebugState;
+        if (afterInvokeRemaining > 0) {
+          const rawDepth = state.stack.at(-1);
+          const selectedDepth = rawDepth === undefined ? -1 : Number(vmNumberToBigInt(rawDepth));
+          const selected = (opcode === Op.OP_PICK || opcode === Op.OP_ROLL) && selectedDepth >= 0
+            ? state.stack[state.stack.length - selectedDepth - 2] : undefined;
+          console.error('message-bus-invoke-after', JSON.stringify({
+            ip: state.ip,
+            opcode,
+            depth: state.stack.length,
+            top: state.stack.slice(-8).map((item) => `${item.length}:${binToHex(item.slice(0, 24))}`),
+            ...(selected === undefined ? {} : {
+              selectedDepth,
+              selectedBytes: selected.length,
+              selectedHead: binToHex(selected.slice(0, 32)),
+            }),
+          }));
+          afterInvokeRemaining -= 1;
+        }
+        const before = activeInvoke === undefined ? undefined : describeStack(state);
+        const next = operation(state as never) as unknown as InvokeDebugState;
+        if (activeInvoke !== undefined && next.error !== undefined) {
+          console.error('message-bus-invoke-failure', JSON.stringify({
+            inputIndex: invokeDebugInput,
+            functionId: invokeDebugId,
+            ip: next.ip,
+            opcode,
+            error: next.error,
+            before,
+            after: describeStack(next),
+          }));
+        }
+        return next as never;
+      },
+    }).evaluate({ inputIndex: invokeDebugInput, sourceOutputs, transaction });
+  }
 
   transaction.inputs.forEach((_input, inputIndex) => {
+    if (narrowPreflight && inputIndex !== debugOnlyInput) return;
+    const startedAt = debugTiming ? Date.now() : 0;
     const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
     const objection = vm.stateSuccess(evaluated);
+    if (debugTiming) {
+      console.error('preflight-input-timing', {
+        inputIndex,
+        ms: Date.now() - startedAt,
+        unlockingBytes: transaction.inputs[inputIndex]?.unlockingBytecode.length,
+        instructions: evaluated.instructions.length,
+        functionName: (builder.inputs[inputIndex] as unknown as {
+          unlocker?: { abiFunction?: { name?: string } };
+        })?.unlocker?.abiFunction?.name,
+        passed: objection === true,
+        ...(objection === true ? {} : { objection: String(objection) }),
+      });
+    }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_OUTLINE_COMPARE === '1' && inputIndex === 3) {
       const trace = vm.debug({ inputIndex, sourceOutputs, transaction });
@@ -873,13 +1369,268 @@ const evaluateEveryInput = (
       )));
     }
     if (objection !== true) {
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_FAILURE_RING === '1') {
+      const debugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+      const requestedTraceInput = debugEnv?.SOLIDC_TRACE_INPUT === undefined
+        ? undefined : Number(debugEnv.SOLIDC_TRACE_INPUT);
+      if (debugEnv?.SOLIDC_DEBUG_FAILURE_TAIL === '1'
+        && (requestedTraceInput === undefined || requestedTraceInput === inputIndex)) {
+        const tailIndexBytes = evaluated.stack.at(-1);
+        const tailIndex = tailIndexBytes === undefined ? -1 : Number(vmNumberToBigInt(tailIndexBytes));
+        const output = transaction.outputs[tailIndex];
+        const outputLock = output && binToHex(output.lockingBytecode);
+        const outputCategory = output?.token && binToHex(output.token.category);
+        const outputCommitment = output?.token?.nft && binToHex(output.token.nft.commitment);
+        console.error('message-bus-failure-tail', JSON.stringify({
+          inputIndex,
+          ip: evaluated.ip,
+          stackTail: evaluated.stack.slice(-4).map((item) => binToHex(item)),
+          output: output === undefined ? undefined : {
+            index: tailIndex,
+            lockingBytecode: outputLock,
+            category: outputCategory,
+            commitment: outputCommitment,
+            capability: output.token?.nft?.capability,
+          },
+          exactInputMatches: output === undefined ? [] : sourceOutputs.flatMap((source, sourceIndex) => (
+            binToHex(source.lockingBytecode) === outputLock
+              && (source.token === undefined ? undefined : binToHex(source.token.category)) === outputCategory
+              && (source.token?.nft === undefined
+                ? undefined : binToHex(source.token.nft.commitment)) === outputCommitment
+              && source.token?.nft?.capability === output.token?.nft?.capability
+              ? [sourceIndex] : []
+          )),
+        }));
+      }
+      if (debugEnv?.SOLIDC_DEBUG_CATEGORY_COUNTS === '1'
+        && (requestedTraceInput === undefined || requestedTraceInput === inputIndex)) {
+        const category = sourceOutputs[inputIndex]?.token?.category;
+        const categoryHex = category && binToHex(category);
+        console.error('message-bus-category-counts', {
+          inputIndex,
+          category: categoryHex,
+          inputs: categoryHex === undefined ? [] : sourceOutputs.flatMap((output, index) =>
+            output.token && binToHex(output.token.category) === categoryHex ? [{
+              index,
+              capability: output.token.nft?.capability,
+              commitment: output.token.nft && binToHex(output.token.nft.commitment).slice(0, 24),
+            }] : []),
+          outputs: categoryHex === undefined ? [] : transaction.outputs.flatMap((output, index) =>
+            output.token && binToHex(output.token.category) === categoryHex ? [{
+              index,
+              capability: output.token.nft?.capability,
+              commitment: output.token.nft && binToHex(output.token.nft.commitment).slice(0, 24),
+            }] : []),
+        });
+      }
+      if ((debugEnv?.SOLIDC_DEBUG_GRAPH_PARAMS === '1' || narrowPreflight)
+        && (requestedTraceInput === undefined || requestedTraceInput === inputIndex)) {
+        const unlocker = (builder.inputs[inputIndex] as unknown as {
+          unlocker?: {
+            abiFunction?: { inputs?: readonly { name: string }[] };
+            params?: readonly unknown[];
+          };
+        }).unlocker;
+        console.error('message-bus-graph-params', JSON.stringify(
+          unlocker?.abiFunction?.inputs?.flatMap<Record<string, unknown>>((input, index) => {
+            if (!input.name.startsWith('__internal__graph')) return [];
+            const value = unlocker.params?.[index];
+            if (input.name === '__internal__graphEmissions' && value instanceof Uint8Array) {
+              const rows: unknown[] = [];
+              let cursor = 0;
+              while (cursor + 2 <= value.length) {
+                const lbcLength = value[cursor] + value[cursor + 1] * 256;
+                const rowStart = cursor;
+                cursor += 2;
+                if (cursor + lbcLength + 7 > value.length) break;
+                const lockingBytecode = value.slice(cursor, cursor + lbcLength);
+                cursor += lbcLength;
+                const mode = value[cursor++];
+                const selector = value.slice(cursor, cursor + 4);
+                cursor += 4;
+                const argsLength = value[cursor] + value[cursor + 1] * 256;
+                cursor += 2;
+                const args = value.slice(cursor, cursor + argsLength);
+                cursor += argsLength;
+                if (cursor + 2 > value.length) break;
+                const resultLength = value[cursor] + value[cursor + 1] * 256;
+                cursor += 2;
+                const result = value.slice(cursor, cursor + resultLength);
+                cursor += resultLength;
+                rows.push({
+                  rowStart, rowLength: cursor - rowStart, lockingBytecode: binToHex(lockingBytecode), mode,
+                  selector: binToHex(selector), argsLength, args: binToHex(args),
+                  resultLength, result: binToHex(result),
+                });
+              }
+              return [{ name: input.name, length: value.length, rows, parsedLength: cursor }];
+            }
+            return [{
+              name: input.name,
+              value: value instanceof Uint8Array ? binToHex(value) : String(value),
+            }];
+          }) ?? [],
+        ));
+      }
+      if ((debugEnv?.SOLIDC_DEBUG_FAILURE_POINT === '1' || narrowPreflight)
+        && (requestedTraceInput === undefined || requestedTraceInput === inputIndex)) {
+        const failedUnlocker = (builder.inputs[inputIndex] as unknown as {
+          unlocker?: {
+            abiFunction?: { inputs?: readonly { name: string }[] };
+            params?: readonly unknown[];
+          };
+        }).unlocker;
+        const tailIndexBytes = evaluated.stack.at(-1);
+        const tailIndex = tailIndexBytes === undefined ? -1 : Number(vmNumberToBigInt(tailIndexBytes));
+        const tailOutput = transaction.outputs[tailIndex];
+        const tailLock = tailOutput && binToHex(tailOutput.lockingBytecode);
+        const tailCategory = tailOutput?.token && binToHex(tailOutput.token.category);
+        const tailCommitment = tailOutput?.token?.nft && binToHex(tailOutput.token.nft.commitment);
+        console.error('message-bus-failure-point', JSON.stringify({
+          inputIndex,
+          ip: evaluated.ip,
+          opcode: evaluated.instructions[evaluated.ip]?.opcode,
+          controlStack: evaluated.controlStack.map((item) => typeof item === 'object' ? {
+            ip: item.ip,
+            instructionCount: item.instructions.length,
+            opcode: item.instructions[item.ip]?.opcode,
+          } : item),
+          stack: (debugEnv?.SOLIDC_DEBUG_FAILURE_STACK_FULL === '1'
+            ? evaluated.stack : evaluated.stack.slice(-24)).map((item, offset, items) => (
+            `${evaluated.stack.length - items.length + offset}:${item.length}:${binToHex(item).slice(0, 70)}`
+          )),
+          // Many output-conservation loops retain their current output index at the top of the stack. Reporting
+          // the referenced tuple and all exact predecessor matches makes a failed preservation check diagnosable
+          // without another full VM trace. For failures with a non-index tail this remains an inert undefined row.
+          tailIndexedOutput: tailOutput === undefined ? undefined : {
+            index: tailIndex,
+            lockingBytecode: tailLock,
+            category: tailCategory,
+            commitment: tailCommitment,
+            capability: tailOutput.token?.nft?.capability,
+            exactInputMatches: sourceOutputs.flatMap((source, sourceIndex) => (
+              binToHex(source.lockingBytecode) === tailLock
+                && (source.token === undefined ? undefined : binToHex(source.token.category)) === tailCategory
+                && (source.token?.nft === undefined
+                  ? undefined : binToHex(source.token.nft.commitment)) === tailCommitment
+                && source.token?.nft?.capability === tailOutput.token?.nft?.capability
+                ? [sourceIndex] : []
+            )),
+          },
+          outputWindow: tailOutput === undefined ? undefined : transaction.outputs
+            .slice(Math.max(0, tailIndex - 4), tailIndex + 9)
+            .map((output, offset) => ({
+              index: Math.max(0, tailIndex - 4) + offset,
+              lockingBytecode: binToHex(output.lockingBytecode),
+              category: output.token && binToHex(output.token.category),
+              commitment: output.token?.nft && binToHex(output.token.nft.commitment),
+              capability: output.token?.nft?.capability,
+            })),
+          focus: {
+            inputs: builder.inputs.slice(Math.max(0, inputIndex - 2), inputIndex + 7)
+              .map((input, offset) => ({
+                index: Math.max(0, inputIndex - 2) + offset,
+                lockingBytecode: binToHex(sourceOutputs[Math.max(0, inputIndex - 2) + offset].lockingBytecode),
+                category: input.token?.category,
+                commitment: input.token?.nft?.commitment,
+                contract: (input as unknown as {
+                  unlocker?: { contract?: { artifact?: { contractName?: string } } };
+                }).unlocker?.contract?.artifact?.contractName,
+                functionName: (input as unknown as {
+                  unlocker?: { abiFunction?: { name?: string } };
+                }).unlocker?.abiFunction?.name,
+              })),
+            outputs: transaction.outputs.slice(Math.max(0, inputIndex - 2), inputIndex + 7)
+              .map((output, offset) => ({
+                index: Math.max(0, inputIndex - 2) + offset,
+                lockingBytecode: binToHex(output.lockingBytecode),
+                category: output.token && binToHex(output.token.category),
+                commitment: output.token?.nft && binToHex(output.token.nft.commitment),
+                capability: output.token?.nft?.capability,
+              })),
+          },
+          output26: transaction.outputs[26] && {
+            lockingBytecode: binToHex(transaction.outputs[26].lockingBytecode),
+            category: transaction.outputs[26].token && binToHex(transaction.outputs[26].token.category),
+            commitment: transaction.outputs[26].token?.nft
+              && binToHex(transaction.outputs[26].token.nft.commitment),
+            capability: transaction.outputs[26].token?.nft?.capability,
+            amount: transaction.outputs[26].token?.amount,
+          },
+          outputs: debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_FULL === '1'
+            ? transaction.outputs.map((output, outputIndex) => ({
+              outputIndex,
+              lockingBytecode: binToHex(output.lockingBytecode).slice(0, 16),
+              category: output.token && binToHex(output.token.category),
+              commitmentLength: output.token?.nft?.commitment.length,
+              commitmentHead: output.token?.nft && binToHex(output.token.nft.commitment.slice(0, 20)),
+              capability: output.token?.nft?.capability,
+              amount: output.token?.amount,
+            })) : undefined,
+          functionName: (builder.inputs[inputIndex] as unknown as {
+            unlocker?: { abiFunction?: { name?: string; selector?: string } };
+          }).unlocker?.abiFunction?.name,
+          selector: (builder.inputs[inputIndex] as unknown as {
+            unlocker?: { abiFunction?: { selector?: string } };
+          }).unlocker?.abiFunction?.selector,
+          routeParams: failedUnlocker?.abiFunction?.inputs?.flatMap((input, index) => {
+            if (!input.name.startsWith('__internal__graph')
+              && !input.name.startsWith('__internal__vmapBatch')) return [];
+            const value = failedUnlocker.params?.[index];
+            return [{
+              name: input.name,
+              value: value instanceof Uint8Array ? binToHex(value) : String(value),
+            }];
+          }),
+          inputs: debugEnv?.SOLIDC_DEBUG_FAILURE_POINT_FULL === '1'
+            ? builder.inputs.map((input, index) => ({
+              index,
+              category: input.token?.category,
+              commitmentLength: input.token?.nft?.commitment.length,
+              lockLen: sourceOutputs[index]?.lockingBytecode.length,
+              lockHead: sourceOutputs[index] && binToHex(sourceOutputs[index].lockingBytecode).slice(0, 16),
+              tokenCatLen: sourceOutputs[index]?.token?.category.length,
+              contract: (input as unknown as {
+                unlocker?: { contract?: { artifact?: { contractName?: string } } };
+              }).unlocker?.contract?.artifact?.contractName,
+              fn: (input as unknown as {
+                unlocker?: { abiFunction?: { name?: string } };
+              }).unlocker?.abiFunction?.name,
+            })) : undefined,
+          ipWindow: evaluated.instructions.slice(
+            Math.max(0, evaluated.ip - 20),
+            evaluated.ip + 8,
+          ).map((instruction, offset) => ({
+            ip: Math.max(0, evaluated.ip - 20) + offset,
+            opcode: instruction.opcode,
+            ...('data' in instruction && { data: binToHex(instruction.data).slice(0, 40) }),
+          })),
+          invokeWindow: evaluated.instructions.slice(72700, 72710).map((instruction, offset) => ({
+            ip: 72700 + offset,
+            opcode: instruction.opcode,
+            ...('data' in instruction && { data: binToHex(instruction.data) }),
+          })),
+          frameWindow: typeof evaluated.controlStack[0] === 'object'
+            ? {
+              instructionCount: (evaluated.controlStack[0] as { instructions: unknown[] }).instructions.length,
+              ip: (evaluated.controlStack[0] as { ip: number }).ip,
+            }
+            : undefined,
+        }, (_key, value) => typeof value === 'bigint' ? value.toString() : value));
+      }
+      const failureDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+      const failureDebugInput = Number(failureDebugEnv?.SOLIDC_DEBUG_ROUTE_INPUT_INDEX ?? inputIndex);
+      if (failureDebugEnv?.SOLIDC_DEBUG_FAILURE_RING === '1' && failureDebugInput === inputIndex) {
         const unlockingInstructions = decodeAuthenticationInstructions(transaction.inputs[inputIndex].unlockingBytecode);
         const redeemBytecode = (unlockingInstructions.at(-1) as { data?: Uint8Array } | undefined)?.data;
         const unlockerBytecodeHex = (builder.inputs[inputIndex] as unknown as {
           unlocker?: { contract?: { bytecode?: string } };
         }).unlocker?.contract?.bytecode;
+        const debugUnlocker = (builder.inputs[inputIndex] as unknown as {
+          unlocker?: {
+            params?: unknown[];
+            abiFunction?: { inputs?: Array<{ name: string; type: string }> };
+          };
+        }).unlocker;
         console.error('message-bus-failing-input', {
           inputIndex,
           builderInputKeys: Object.keys(builder.inputs[inputIndex] as unknown as object),
@@ -901,6 +1652,16 @@ const evaluateEveryInput = (
             ? undefined : binToHex(hash256(hexToBin(unlockerBytecodeHex))),
           lockingBytecode: binToHex(sourceOutputs[inputIndex].lockingBytecode),
           unlockingBytecode: binToHex(transaction.inputs[inputIndex].unlockingBytecode),
+          unlockerParams: debugUnlocker?.abiFunction?.inputs?.map((input, index) => {
+            const value = debugUnlocker.params?.[index];
+            return {
+              index, name: input.name, type: input.type,
+              value: value instanceof Uint8Array
+                ? `${value.length}:${binToHex(value.slice(0, 24))}`
+                : typeof value === 'bigint' ? value.toString()
+                  : Array.isArray(value) ? `array(${value.length})` : String(value),
+            };
+          }),
         });
         console.error('message-bus-selected-source-commitments', sourceOutputs.slice(105, 114).map((output, offset) => ({
           inputIndex: offset + 105,
@@ -947,34 +1708,93 @@ const evaluateEveryInput = (
           group.contracts.length > 0 || group.inputs.some((index) => index >= 90)
         )));
         const recent: Array<Record<string, unknown>> = [];
+        let priorProgramRecent: Array<Record<string, unknown>> = [];
+        let lastInstructionCount = -1;
         const inputReads: Array<Record<string, unknown>> = [];
         const largeEqualVerifies: Array<Record<string, unknown>> = [];
+        const failedVerifyPoints: Array<Record<string, unknown>> = [];
+        const outputCommitmentReads: Array<Record<string, unknown>> = [];
         let body29Captured = false;
         createVirtualMachineBch2026ForProvider(builder.provider, {
           opcodes: new Set(Array.from({ length: 256 }, (_, opcode) => opcode)),
           beforeOperation: (unknownState) => {
             const state = unknownState as AuthenticationProgramStateCommon;
+            const debugBodyLength = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_LENGTH ?? -1);
+            const debugBodyFrom = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_FROM ?? 0);
+            const debugBodyTo = Number(failureDebugEnv?.SOLIDC_DEBUG_STACK_BODY_TO ?? Number.MAX_SAFE_INTEGER);
+            if (state.instructions.length === debugBodyLength
+              && state.ip >= debugBodyFrom && state.ip <= debugBodyTo) {
+              console.error('[vm-stack]', JSON.stringify({
+                ip: state.ip,
+                opcode: state.instructions[state.ip]?.opcode,
+                depth: state.stack.length,
+                top: state.stack.slice(-4).map((item) => ({
+                  bytes: item.length,
+                  hex: binToHex(item).slice(0, 256),
+                })),
+              }));
+            }
+            if (lastInstructionCount !== -1 && state.instructions.length !== lastInstructionCount) {
+              priorProgramRecent = recent.slice();
+              recent.length = 0;
+            }
+            lastInstructionCount = state.instructions.length;
             if (!body29Captured && inputIndex === 105 && state.instructions.length === 29 && state.ip === 0) {
               body29Captured = true;
               console.error('message-bus-body29-entry', JSON.stringify(state.stack.map((item, index) => ({
                 index, fromTop: state.stack.length - index - 1, value: binToHex(item),
               }))));
             }
-            recent.push({
-              ip: state.ip,
-              opcode: state.instructions[state.ip]?.opcode,
-              instructionCount: state.instructions.length,
-              depth: state.stack.length,
-              top: state.stack.slice(-6).map((item) => `${item.length}:${binToHex(item.slice(0, 48))}`),
-            });
-            if (recent.length > 40) recent.shift();
-            if (state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY
-              && (state.stack.at(-1)?.length ?? 0) > 100
-              && (state.stack.at(-2)?.length ?? 0) > 100) {
+            if (state.controlStack.every((item) => item !== false)) {
+              recent.push({
+                ip: state.ip,
+                opcode: state.instructions[state.ip]?.opcode,
+                instructionCount: state.instructions.length,
+                depth: state.stack.length,
+                top: state.stack.slice(-6).map((item) => `${item.length}:${binToHex(item.slice(0, 48))}`),
+              });
+              if (recent.length > 40) recent.shift();
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY) {
               largeEqualVerifies.push({
+                ip: state.ip,
+                instructionCount: state.instructions.length,
                 left: binToHex(state.stack.at(-2)!), right: binToHex(state.stack.at(-1)!),
               });
-              if (largeEqualVerifies.length > 4) largeEqualVerifies.shift();
+              if (largeEqualVerifies.length > 12) largeEqualVerifies.shift();
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_VERIFY
+              && state.controlStack.every((item) => item !== false)
+              && (state.stack.at(-1)?.length === 0
+                || state.stack.at(-1)?.every((byte) => byte === 0))) {
+              failedVerifyPoints.push({
+                ip: state.ip,
+                instructionCount: state.instructions.length,
+                controlStack: state.controlStack.map((item) => typeof item === 'object' ? {
+                  ip: item.ip,
+                  instructionCount: item.instructions.length,
+                  opcode: item.instructions[item.ip]?.opcode,
+                } : item),
+                stack: state.stack.slice(-12).map((item) => `${item.length}:${binToHex(item)}`),
+                instructions: state.instructions.slice(Math.max(0, state.ip - 12), state.ip + 4)
+                  .map((instruction, offset) => ({
+                    ip: Math.max(0, state.ip - 12) + offset,
+                    opcode: instruction.opcode,
+                    ...('data' in instruction && { data: binToHex(instruction.data) }),
+                  })),
+              });
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_OUTPUTTOKENCOMMITMENT
+              && state.instructions.length > 10_000) {
+              const rawIndex = state.stack.at(-1);
+              const index = rawIndex ? Number(vmNumberToBigInt(rawIndex)) : -1;
+              outputCommitmentReads.push({
+                ip: state.ip,
+                index,
+                commitment: binToHex(transaction.outputs[index]?.token?.nft?.commitment ?? new Uint8Array()),
+                stack: state.stack.slice(-5).map((item) => `${item.length}:${binToHex(item)}`),
+              });
+              if (outputCommitmentReads.length > 40) outputCommitmentReads.shift();
             }
             if (state.instructions[state.ip]?.opcode === Op.OP_INPUTBYTECODE) {
               const rawIndex = state.stack.at(-1);
@@ -992,8 +1812,19 @@ const evaluateEveryInput = (
           },
         }).evaluate({ inputIndex, sourceOutputs, transaction });
         console.error('message-bus-failure-ring', recent);
+        console.error('message-bus-prior-program-ring', priorProgramRecent);
         console.error('message-bus-input-reads', inputReads);
-        console.error('message-bus-large-equals', largeEqualVerifies);
+        // Keep long equality operands on one line so focused diagnostics can be filtered without losing the
+        // continuation lines to terminal truncation.
+        console.error('message-bus-large-equals', JSON.stringify(largeEqualVerifies));
+        console.error('message-bus-failed-verifies', JSON.stringify(failedVerifyPoints));
+        console.error('message-bus-output-commitment-reads', JSON.stringify(outputCommitmentReads));
+        console.error('message-bus-return-band', transaction.outputs.map((output, index) => ({
+          index,
+          category: binToHex(output.token?.category ?? new Uint8Array()),
+          commitment: binToHex(output.token?.nft?.commitment ?? new Uint8Array()),
+          locking: binToHex(output.lockingBytecode),
+        })).slice(24, 34));
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
@@ -1066,7 +1897,7 @@ const evaluateEveryInput = (
             });
           },
         }).evaluate({ inputIndex, sourceOutputs, transaction });
-        console.error('message-bus-tracked-picks', trackedPicks);
+        console.error('message-bus-tracked-picks', JSON.stringify(trackedPicks.slice(-160)));
         const proxyBinding: Array<Record<string, unknown>> = [];
         const batchConstruction: Array<Record<string, unknown>> = [];
         const forwardSelectorHistory: Array<Record<string, unknown>> = [];
@@ -1173,27 +2004,109 @@ const evaluateEveryInput = (
         console.error('message-bus-cc-onsets', ccOnsets.slice(0, 8));
         console.error('message-bus-cc-history', ccHistory);
       }
-      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_ROUTE === '1') {
-        const trace = vm.debug({ inputIndex, sourceOutputs, transaction });
-        const failed = [...trace].reverse().find((state) => state.error) ?? trace.at(-1);
-        const failedIndex = failed ? trace.lastIndexOf(failed) : -1;
-        console.error('message-bus-preflight-failure', {
+      const routeDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+      const routeDebugInput = Number(routeDebugEnv?.SOLIDC_DEBUG_ROUTE_INPUT_INDEX ?? inputIndex);
+      if ((routeDebugEnv?.SOLIDC_DEBUG_PREFLIGHT_ROUTE === '1' || narrowPreflight)
+        && routeDebugInput === inputIndex) {
+        let failedComparison: {
+          ip: number; opcode?: number; instructionCount: number; left?: string; right?: string;
+          outputBytecodeRead?: { ip: number; outputIndex?: number };
+        } | undefined;
+        let lastOutputBytecodeRead: { ip: number; outputIndex?: number } | undefined;
+        createVirtualMachineBch2026ForProvider(builder.provider, {
+          opcodes: new Set([
+            Op.OP_VERIFY, Op.OP_EQUAL, Op.OP_EQUALVERIFY, Op.OP_NUMEQUAL, Op.OP_NUMEQUALVERIFY,
+            Op.OP_OUTPUTBYTECODE,
+          ]),
+          beforeOperation: (unknownState) => {
+            const state = unknownState as AuthenticationProgramStateCommon;
+            const opcode = state.instructions[state.ip]?.opcode;
+            if (opcode === Op.OP_OUTPUTBYTECODE) {
+              const encodedIndex = state.stack.at(-1);
+              let outputIndex: number | undefined;
+              try {
+                if (encodedIndex) outputIndex = Number(vmNumberToBigInt(encodedIndex));
+              } catch {
+                // Preserve the instruction coordinate even when the failing script supplied a non-number.
+              }
+              lastOutputBytecodeRead = { ip: state.ip, outputIndex };
+              return;
+            }
+            failedComparison = {
+              ip: state.ip,
+              opcode,
+              instructionCount: state.instructions.length,
+              left: state.stack.at(-2) && binToHex(state.stack.at(-2)!),
+              right: state.stack.at(-1) && binToHex(state.stack.at(-1)!),
+              outputBytecodeRead: lastOutputBytecodeRead,
+            };
+          },
+        }).evaluate({ inputIndex, sourceOutputs, transaction });
+        const stackLockingBytecodes = new Set(evaluated.stack
+          .filter((item) => item.length === 23 || item.length === 35)
+          .map(binToHex));
+        console.error('message-bus-preflight-failure', JSON.stringify({
           inputIndex,
-          ip: failed?.ip,
-          instructionCount: failed?.instructions.length,
-          stack: failed?.stack.slice(-6).map((item) => ({ bytes: item.length, hex: binToHex(item) })),
-          preceding: trace.slice(Math.max(0, failedIndex - 2), failedIndex + 1).map((state) => ({
-            ip: state.ip,
-            opcode: state.instructions[state.ip]?.opcode,
-            stack: state.stack.slice(-4).map((item) => ({ bytes: item.length, hex: binToHex(item) })),
+          ip: evaluated.ip,
+          opcode: evaluated.instructions[evaluated.ip]?.opcode,
+          instructionCount: evaluated.instructions.length,
+          error: evaluated.error,
+          failedComparison,
+          nearbyOutputs: failedComparison?.outputBytecodeRead?.outputIndex === undefined
+            ? undefined
+            : transaction.outputs.slice(
+              Math.max(0, failedComparison.outputBytecodeRead.outputIndex - 4),
+              failedComparison.outputBytecodeRead.outputIndex + 5,
+            ).map((output, offset) => ({
+              outputIndex: Math.max(0, failedComparison!.outputBytecodeRead!.outputIndex! - 4) + offset,
+              lockingBytecode: binToHex(output.lockingBytecode),
+              category: output.token === undefined ? undefined : binToHex(output.token.category),
+              capability: output.token?.nft?.capability,
+              commitment: output.token?.nft === undefined ? undefined : binToHex(output.token.nft.commitment),
+            })),
+          stack: evaluated.stack.slice(-8).map((item) => ({
+            bytes: item.length,
+            hex: binToHex(item).slice(0, 128),
+            ...(item.length > 64 && { truncated: true }),
           })),
-          outlined17: trace.flatMap((state, traceIndex) => state.instructions.length === 17
-            ? [{
-              traceIndex, ip: state.ip, opcode: state.instructions[state.ip]?.opcode,
-              stack: state.stack.slice(-12).map((item) => `${item.length}:${binToHex(item)}`),
-            }] : []).slice(-12),
-        });
+          instructions: evaluated.instructions.slice(
+            Math.max(0, evaluated.ip - 12), evaluated.ip + 3,
+          ).map((instruction, offset) => ({
+            ip: Math.max(0, evaluated.ip - 12) + offset,
+            opcode: instruction.opcode,
+            ...('data' in instruction && { data: binToHex(instruction.data).slice(0, 64) }),
+          })),
+          callers: evaluated.controlStack.slice(-8).map((frame) => typeof frame === 'object' ? {
+            ip: frame.ip,
+            opcode: frame.instructions[frame.ip]?.opcode,
+            instructionCount: frame.instructions.length,
+          } : frame),
+          // A chunk-cardinality failure leaves its root-addressed locking bytecode on the stack. Report every
+          // output carrying any stack-resident standard covenant lock so duplicate physical materialization can
+          // be distinguished from a compiler frame-selection error without application-specific knowledge.
+          stackLockMatches: transaction.outputs.flatMap((output, outputIndex) => {
+            const lockingBytecode = binToHex(output.lockingBytecode);
+            if (!stackLockingBytecodes.has(lockingBytecode)) return [];
+            return [{
+              outputIndex,
+              lockingBytecode,
+              category: output.token && binToHex(output.token.category),
+              capability: output.token?.nft?.capability,
+              commitment: output.token?.nft && binToHex(output.token.nft.commitment),
+            }];
+          }),
+          stackSourceLockMatches: sourceOutputs.flatMap((source, inputIndex) => {
+            const lockingBytecode = binToHex(source.lockingBytecode);
+            if (!stackLockingBytecodes.has(lockingBytecode)) return [];
+            return [{
+              inputIndex,
+              lockingBytecode,
+              category: source.token && binToHex(source.token.category),
+              capability: source.token?.nft?.capability,
+              commitment: source.token?.nft && binToHex(source.token.nft.commitment),
+            }];
+          }),
+        }));
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_INPUTS === '1') {
@@ -1206,27 +2119,189 @@ const evaluateEveryInput = (
           return `${i}${i === inputIndex ? '*FAIL' : ''}:${un.contract.name}.${un.abiFunction?.name ?? '-'}`;
         }).filter(Boolean).join(' | '));
       }
-      throw mapMessageBusVmFailure(builder, transaction, inputIndex, String(objection));
+      throw mapMessageBusVmFailure(builder, transaction, inputIndex, String(objection), evaluated);
     }
   });
+  if (!narrowPreflight) {
+    rememberPreparedCovenantValidation(builder.provider, transaction, sourceOutputs);
+  }
 };
 
-const firstPush = (bytecode: Uint8Array): Uint8Array | undefined => {
-  if (bytecode.length === 0) return undefined;
-  const opcode = bytecode[0];
+/**
+ * Size compiler-owned, dropped verifier reserves from the exact finalized program they fund.
+ *
+ * A fixed byte floor is only a starting point: operation cost varies with the authenticated participant/resource
+ * manifest. Evaluate under the provider's real BCH-2026 budget first, and only when density is the sole objection
+ * re-evaluate with that one budget relaxed to learn the complete operation cost. The rebuilt unlocker changes no
+ * covenant argument or output; strict preflight still evaluates the resized transaction from scratch afterwards.
+ */
+export const convergeMessageBusVerifierDensityReserves = (builder: TransactionBuilder): number => {
+  const relaxedOperationCostBudgetPerByte = 1_000_000_000;
+  const operationCostBudgetPerByte = builder.provider.consensusLimits?.operationCostBudgetPerByte
+    ?? ConsensusBch2026.operationCostBudgetPerByte;
+  let repairs = 0;
+  // Pushing the reserve itself has a small operation cost, so one exact resize can move the target by another
+  // byte. Re-evaluate the rebuilt transaction to solve that fixed point rather than baking in a guessed margin.
+  for (let round = 0; round < 8; round += 1) {
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const strictVm = createVirtualMachineBch2026ForProvider(builder.provider);
+    const relaxedVm = createVirtualMachineBch2026ForProvider(builder.provider, undefined, {
+      operationCostBudgetPerByte: relaxedOperationCostBudgetPerByte,
+    });
+    let roundRepairs = 0;
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      const unlocker = builder.inputs[inputIndex]?.unlocker as ContractUnlocker | undefined;
+      if (!unlocker?.withMinimumUnlockingBytecodeBytes) continue;
+      const strict = strictVm.evaluate({ inputIndex, sourceOutputs, transaction });
+      const strictObjection = strictVm.stateSuccess(strict);
+      if (strictObjection === true
+        || !String(strictObjection).includes('operation cost density limit')) continue;
+      const relaxed = relaxedVm.evaluate({ inputIndex, sourceOutputs, transaction });
+      if (relaxedVm.stateSuccess(relaxed) !== true) continue;
+      const strictMetrics = strict.metrics as { maximumOperationCost: number };
+      const relaxedMetrics = relaxed.metrics as { operationCost: number };
+      const densityControlLength = Math.floor(
+        strictMetrics.maximumOperationCost / operationCostBudgetPerByte,
+      );
+      const requiredDensityControlLength = Math.ceil(
+        relaxedMetrics.operationCost / operationCostBudgetPerByte,
+      );
+      const additionalBytes = Math.max(1, requiredDensityControlLength - densityControlLength);
+      const currentUnlockingBytes = transaction.inputs[inputIndex]!.unlockingBytecode.length;
+      const targetUnlockingBytes = currentUnlockingBytes + additionalBytes;
+      if (targetUnlockingBytes > (builder.provider.consensusLimits?.maximumInputBytes ?? 10_000)) continue;
+      builder.inputs[inputIndex]!.unlocker = unlocker.withMinimumUnlockingBytecodeBytes(targetUnlockingBytes);
+      roundRepairs += 1;
+    }
+    if (roundRepairs === 0) return repairs;
+    repairs += roundRepairs;
+  }
+  throw new Error('message bus verifier density reserve did not converge after 8 exact-cost rounds');
+};
+
+const readPush = (
+  bytecode: Uint8Array, offset: number,
+): { data: Uint8Array; nextOffset: number } | undefined => {
+  if (offset >= bytecode.length) return undefined;
+  const opcode = bytecode[offset];
   let width = 0;
   let length = 0;
-  if (opcode >= 1 && opcode <= 75) {
+  if (opcode === 0) {
+    width = 1;
+  } else if (opcode >= 1 && opcode <= 75) {
     width = 1;
     length = opcode;
-  } else if (opcode === 76 && bytecode.length >= 2) {
+  } else if (opcode === 76 && offset + 1 < bytecode.length) {
     width = 2;
-    length = bytecode[1];
-  } else if (opcode === 77 && bytecode.length >= 3) {
-    width = 3; length = bytecode[1] | (bytecode[2] << 8);
+    length = bytecode[offset + 1];
+  } else if (opcode === 77 && offset + 2 < bytecode.length) {
+    width = 3; length = bytecode[offset + 1] | (bytecode[offset + 2] << 8);
+  } else if (opcode === 78 && offset + 4 < bytecode.length) {
+    width = 5;
+    length = bytecode[offset + 1]
+      | (bytecode[offset + 2] << 8)
+      | (bytecode[offset + 3] << 16)
+      | (bytecode[offset + 4] << 24);
   }
-  if (width === 0 || width + length > bytecode.length) return undefined;
-  return bytecode.slice(width, width + length);
+  const dataOffset = offset + width;
+  const nextOffset = dataOffset + length;
+  if (width === 0 || length < 0 || nextOffset > bytecode.length) return undefined;
+  return { data: bytecode.slice(dataOffset, nextOffset), nextOffset };
+};
+
+/** Atomic graph-verifier unlocks place their L3V1 envelope in the first push. */
+const firstPush = (bytecode: Uint8Array): Uint8Array | undefined => readPush(bytecode, 0)?.data;
+
+/** A compiler route unlock starts with push4(SCB1), followed by its canonical batch blob. */
+const compilerRouteEnvelope = (bytecode: Uint8Array): Uint8Array | undefined => {
+  const selector = readPush(bytecode, 0);
+  if (!selector || binToHex(selector.data) !== '53434231') return undefined;
+  return readPush(bytecode, selector.nextOffset)?.data;
+};
+
+/** Validate the framing shared by canonical v1 and v2 route batches without interpreting typed arguments. */
+const isCanonicalCompilerRouteEnvelope = (envelope: Uint8Array): boolean => {
+  if (envelope.length < 7 || binToHex(envelope.slice(0, 4)) !== '53434231'
+    || (envelope[4] !== 1 && envelope[4] !== 2)
+    || (envelope[5] !== 0 && envelope[5] !== 1) || envelope[6] < 1) return false;
+  const version = envelope[4];
+  const valueMode = envelope[5] === 1;
+  let cursor = 7;
+  for (let row = 0; row < envelope[6]; row += 1) {
+    const headerLength = 12 + (version === 2 ? 1 : 0) + (valueMode ? 9 : 0);
+    if (cursor + headerLength > envelope.length) return false;
+    const argsLength = envelope[cursor + 10] | (envelope[cursor + 11] << 8);
+    if (version === 2 && envelope[cursor + 12] > 1) return false;
+    cursor += headerLength + argsLength;
+    if (cursor > envelope.length) return false;
+  }
+  return cursor === envelope.length;
+};
+
+/** Recover a compiler-published require reason from the exact bytecode body active at the VM failure. */
+const sourceRequireFailure = (
+  builder: TransactionBuilder,
+  inputIndex: number,
+  rawVmReason: string,
+  evaluated?: Pick<AuthenticationProgramStateCommon, 'instructions' | 'ip'>,
+): Error | undefined => {
+  if (!evaluated || evaluated.ip <= 0) return undefined;
+  const unlocker = (builder.inputs[inputIndex] as unknown as {
+    unlocker?: {
+      contract?: { artifact?: Artifact };
+      abiFunction?: { selector?: string };
+    };
+  } | undefined)?.unlocker;
+  const artifact = unlocker?.contract?.artifact;
+  const failingIp = evaluated.ip - 1;
+  const activeBytecode = binToHex(Uint8Array.from(evaluated.instructions.flatMap((instruction) => (
+    [...encodeAuthenticationInstruction(instruction)]
+  ))));
+  const participantArtifacts = builder.inputs.map((input) => (
+    input as unknown as { unlocker?: { contract?: { artifact?: Artifact } } }
+  ).unlocker?.contract?.artifact);
+  const active = resolveActiveRequire([artifact, ...participantArtifacts], activeBytecode, evaluated.ip);
+  if (active.matchedBody) {
+    if (!active.message) return undefined;
+    const selectedFunctionDebug = unlocker?.abiFunction?.selector === undefined || !artifact?.debug
+      ? undefined : artifact.debug.functionDebug?.[unlocker.abiFunction.selector.toLowerCase()];
+    const selectedRequirement = selectedFunctionDebug?.requires.find((entry) => entry.ip === active.requireIp);
+    const preferredSource = artifact
+      && selectedFunctionDebug
+      && selectedRequirement?.message === active.message
+      && artifact.functionBodies?.[unlocker!.abiFunction!.selector!.toLowerCase()] === activeBytecode
+      ? { artifact, debug: selectedFunctionDebug, requirement: selectedRequirement }
+      : undefined;
+    const source = active.source ?? preferredSource;
+    if (!source) return new Error(`${rawVmReason}; require: ${active.message}`);
+    return new FailedRequireError(
+      source.artifact,
+      active.requireIp ?? failingIp,
+      source.requirement,
+      inputIndex,
+      '',
+      rawVmReason,
+      source.debug.sourceMap,
+    );
+  }
+
+  if (!artifact?.debug) return undefined;
+  let bodyDebug = undefined;
+  {
+    const selector = unlocker?.abiFunction?.selector?.toLowerCase();
+    const functionDebug = selector === undefined ? undefined : artifact.debug.functionDebug?.[selector];
+    if (functionDebug?.requires.some((entry) => entry.ip === failingIp)) bodyDebug = functionDebug;
+  }
+  if (!bodyDebug && artifact.debug.requires.some((entry) => entry.ip === failingIp)) {
+    bodyDebug = artifact.debug;
+  }
+  if (!bodyDebug) return undefined;
+  const requireStatement = bodyDebug.requires.find((entry) => entry.ip === failingIp);
+  if (!requireStatement) return undefined;
+  return new FailedRequireError(
+    artifact, failingIp, requireStatement, inputIndex, '', rawVmReason, bodyDebug.sourceMap,
+  );
 };
 
 /** Preserve the VM's raw objection while naming malformed compiler-route envelopes at their exact input. */
@@ -1235,29 +2310,31 @@ export function mapMessageBusVmFailure(
   transaction: Transaction,
   inputIndex: number,
   rawVmReason: string,
+  evaluated?: Pick<AuthenticationProgramStateCommon, 'instructions' | 'ip'>,
 ): Error {
+  const sourceFailure = sourceRequireFailure(builder, inputIndex, rawVmReason, evaluated);
+  if (sourceFailure) return sourceFailure;
   const input = builder.inputs[inputIndex] as {
     unlocker?: { abiFunction?: { selector?: string; name?: string } }
   } | undefined;
   if (input?.unlocker?.abiFunction?.selector?.toLowerCase() !== '53434231') {
     return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}: ${rawVmReason}`);
   }
-  const envelope = firstPush(transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array());
+  const envelope = compilerRouteEnvelope(
+    transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(),
+  );
   const context = { inputIndex, rawVmReason, metadataField: 'message-bus batch.envelope' };
   if (envelope && envelope.length >= 5
-    && binToHex(envelope.slice(0, 4)) === '53434231' && envelope[4] !== 1) {
+    && binToHex(envelope.slice(0, 4)) === '53434231'
+    && envelope[4] !== 1 && envelope[4] !== 2) {
     return new MessageBusDiagnosticError(
       'L3_MESSAGE_BUS_VERSION_UNSUPPORTED',
       `BCH-2026 preflight failed at input ${inputIndex}: message-bus batch version ${envelope[4]} is unsupported; `
         + `VM: ${rawVmReason}`,
-      { ...context, metadataField: 'message-bus batch.version', actual: envelope[4], expected: 1 },
+      { ...context, metadataField: 'message-bus batch.version', actual: envelope[4], expected: [1, 2] },
     );
   }
-  const malformed = !envelope || envelope.length < 7
-    || binToHex(envelope.slice(0, 4)) !== '53434231'
-    || envelope[4] !== 1 || envelope[5] !== 0 || envelope[6] < 1
-    || envelope.length < 7 + envelope[6] * 12;
-  if (malformed) {
+  if (!envelope || !isCanonicalCompilerRouteEnvelope(envelope)) {
     return new MessageBusDiagnosticError(
       'L3_MESSAGE_BUS_ENVELOPE_MALFORMED',
       `BCH-2026 preflight failed at input ${inputIndex}: malformed message-bus batch envelope; VM: ${rawVmReason}`,
@@ -1311,6 +2388,14 @@ export const preflightMessageBusTransaction = (
   // of whether it would have relayed, and masking that diagnostic with a size or dust message would lose the
   // more informative half. Every existing per-input diagnostic therefore survives unchanged.
   assertFinalizedTransactionBytes(transaction, options);
+  if (options !== undefined) finalizedByteGateReceipts.set(builder, {
+    ...(options.consensusLimits === undefined ? {} : {
+      consensusLimits: { ...options.consensusLimits },
+    }),
+    ...(options.allowNonRelayable === undefined ? {} : {
+      allowNonRelayable: options.allowNonRelayable,
+    }),
+  });
   return transaction;
 };
 

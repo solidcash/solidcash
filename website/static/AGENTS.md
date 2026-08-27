@@ -44,6 +44,11 @@ incremental build metadata; do not replace the build with per-package `tsc -p` l
 artifacts only need regeneration when contract sources or emitted compiler JavaScript change; `.tsbuildinfo`
 and declaration/source-map timestamp changes must not invalidate them.
 
+After emitted compiler JavaScript changes, a project compile normally expands source selection to a complete rebuild
+so it cannot publish mixed-context artifacts. During a local codegen loop, `solidcash compile --iteration <source>`
+may regenerate only the requested source. It deliberately leaves the artifact context stale, so a normal
+`solidcash compile` still performs the required complete rebuild before handoff.
+
 Yarn workspaces already link local packages during install. Do not restore `lerna bootstrap` to `postinstall`;
 it performs a redundant second dependency resolution before the build.
 

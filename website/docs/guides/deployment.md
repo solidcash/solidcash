@@ -10,8 +10,16 @@ Deployment means two different things in SolidCash:
 - A **stateful** contract needs a CashToken genesis transaction. The genesis category authenticates its master,
   state, mapping, chunk, event, and other covenant NFTs.
 
-This guide covers the stateful path. For the data carried by each generated output, see
+This guide explains the Bitcoin Cash mechanics and verification requirements of deployment. To compile and run
+repeatable deployment scripts across mocknet, BCHN regtest, chipnet, and mainnet, see the
+[SolidHat project tooling guide](/docs/sdk/solidhat#write-a-deployment-script).
+
+For the data carried by each generated output, see
 [State Storage and NFT Layout](/docs/language/storage-model).
+
+:::tip
+If your contract only enforces spending conditions, use the contract address directly. Deployment is for systems where CashTokens identify and track contract state.
+:::
 
 ## Recommended: deploy with a signer
 

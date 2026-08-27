@@ -2344,7 +2344,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (!callerParam && (p.name === '__internal__proxyMasterOutputIndex'
         || p.name === '__internal__proxyMasterIndex')) return true;
       return !!callerParam && callerParam.type.toString() === p.type.toString()
-        && (FORWARDABLE.has(p.name) || p.name.startsWith('__internal__valueWitness_'));
+        && (FORWARDABLE.has(p.name) || p.name.startsWith('__internal__valueWitness_')
+          || p.name.startsWith('__internal__leadingPushValue_'));
     };
     if (!pending.every((p) => p.name === '__internal__returnOutputIdx' || canForwardByName(p))) return;
     for (const p of pending) {

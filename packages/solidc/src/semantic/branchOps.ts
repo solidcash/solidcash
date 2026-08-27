@@ -21,7 +21,17 @@ import {
   StateArrayDeleteNode,
   InstantiationNode,
   BranchOps,
+  ReturnNode,
+  RevertNode,
+  IntLiteralNode,
+  ExpressionNode,
+  IdentifierNode,
+  VariableDefinitionNode,
+  ConstantDefinitionNode,
+  CastNode,
+  UnaryOpNode,
 } from '../ast/AST.js';
+import { UnaryOperator } from '../ast/Operator.js';
 
 // Restricted (pre-allocated) operation counts for one block: writes/transfers/emits that a branch must reserve
 // stack slots for before its condition, so a conditionally-taken write still reaches the function epilogue.
@@ -45,19 +55,63 @@ function emptyCounts(): OpCounts {
   };
 }
 
+/**
+ * Whether an expression is a compile-time zero for transaction-topology purposes.
+ *
+ * Inlining deliberately preserves value-parameter copies as compiler-owned SSA aliases (`__rh*`/`__inl*`).
+ * Following only those aliases (plus actual constants) recognizes an imported helper called with zero without
+ * assuming that an ordinary user local still equals its initializer after later assignments.
+ */
+export function isStaticallyZeroCallValue(
+  value: ExpressionNode | undefined, seen: Set<ExpressionNode> = new Set<ExpressionNode>(),
+): boolean {
+  if (!value || seen.has(value)) return false;
+  seen.add(value);
+  if (value instanceof IntLiteralNode) return value.value === 0n;
+  if (value instanceof CastNode) return isStaticallyZeroCallValue(value.expression, seen);
+  if (value instanceof UnaryOpNode && value.operator === UnaryOperator.NEGATE) {
+    return isStaticallyZeroCallValue(value.expression, seen);
+  }
+  if (!(value instanceof IdentifierNode)) return false;
+  const definition = value.definition?.definition;
+  if (definition instanceof ConstantDefinitionNode) {
+    return isStaticallyZeroCallValue(definition.expression, seen);
+  }
+  if (definition instanceof VariableDefinitionNode
+      && /^__(?:rh|inl)/.test(definition.name) && definition.expression) {
+    return isStaticallyZeroCallValue(definition.expression, seen);
+  }
+  return false;
+}
+
+/** A statically-zero `{value:}` is transactionally identical to omitting the value option. */
+export function hasEffectiveCallValue(value: ExpressionNode | undefined): value is ExpressionNode {
+  return value !== undefined && !isStaticallyZeroCallValue(value);
+}
+
 export function countBranchOps(block: BlockNode): OpCounts {
   const result = emptyCounts();
   countBranchOpsRecursive(block, result);
   return result;
 }
 
+/** Whether every execution of this block exits before reaching the enclosing function epilogue. */
+function blockTerminates(block: BlockNode | undefined): boolean {
+  const last = block?.statements?.at(-1);
+  if (last instanceof ReturnNode || last instanceof RevertNode) return true;
+  return last instanceof BranchNode
+    && blockTerminates(last.ifBlock)
+    && last.elseBlock !== undefined
+    && blockTerminates(last.elseBlock);
+}
+
 function isValueTransferNode(node: Node): boolean {
   return node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
     || node instanceof AddressSendExpressionNode
-    || (node instanceof LowLevelCallStatementNode && !!node.callOptions?.value)
-    || (node instanceof MethodCallStatementNode && !!node.call.callOptions?.value)
+    || (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value))
+    || (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value))
     // `new C{value: x}()` transfers x from the contract's satoshi container to the child - a value transfer.
-    || (node instanceof InstantiationNode && !!node.callOptions?.value);
+    || (node instanceof InstantiationNode && hasEffectiveCallValue(node.callOptions?.value));
 }
 
 // Min and max value-transfers on any single execution path through `node`. Branch/switch arms are MUTUALLY
@@ -107,15 +161,15 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
     return;
   }
   // {value: X} call option creates an implicit transfer
-  if (node instanceof LowLevelCallStatementNode && node.callOptions?.value) {
+  if (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value)) {
     result.transfers++;
     // Don't return - we still need to recurse into child nodes
   }
-  if (node instanceof MethodCallStatementNode && node.call.callOptions?.value) {
+  if (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value)) {
     result.transfers++;
   }
   // `new C{value: x}()` transfers x from the contract's satoshi container to the child.
-  if (node instanceof InstantiationNode && node.callOptions?.value) {
+  if (node instanceof InstantiationNode && hasEffectiveCallValue(node.callOptions?.value)) {
     result.transfers++;
   }
   if (node instanceof EmitStatementNode) {
@@ -206,19 +260,28 @@ export function computeBranchOps(ifBlock: BlockNode, elseBlock?: BlockNode): Bra
   // keep the existing per-arm count (their nested-branch handling is unchanged here).
   const ifT = countTransfersMinMax(ifBlock);
   const elseT = elseBlock ? countTransfersMinMax(elseBlock) : { min: 0, max: 0 };
+  const ifTerminates = blockTerminates(ifBlock);
+  const elseTerminates = blockTerminates(elseBlock);
+  const reachableMin = (ifValue: number, elseValue: number): number => {
+    if (ifTerminates && !elseTerminates) return elseValue;
+    if (elseTerminates && !ifTerminates) return ifValue;
+    return Math.min(ifValue, elseValue);
+  };
 
   return {
     stateWriteKeys: new Set<string>([...ifCounts.stateWriteKeys, ...elseCounts.stateWriteKeys]),
     mappingWriteSlots: new Set<number>([...ifCounts.mappingWriteSlots, ...elseCounts.mappingWriteSlots]),
     mappingDeleteSlots: new Set<number>([...ifCounts.mappingDeleteSlots, ...elseCounts.mappingDeleteSlots]),
     transferCount: Math.max(ifT.max, elseT.max),
-    minTransferCount: Math.min(ifT.min, elseT.min),
+    minTransferCount: reachableMin(ifT.min, elseT.min),
     ifTransferCount: ifT.max,
     emitCount: Math.max(ifCounts.emits, elseCounts.emits),
-    minEmitCount: Math.min(ifCounts.emits, elseCounts.emits),
+    minEmitCount: reachableMin(ifCounts.emits, elseCounts.emits),
     ifEmitCount: ifCounts.emits,
     tokenContainerTransferCount: Math.max(ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers),
-    minTokenContainerTransferCount: Math.min(ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers),
+    minTokenContainerTransferCount: reachableMin(
+      ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers,
+    ),
     ifTokenContainerTransferCount: ifCounts.tokenContainerTransfers,
   };
 }

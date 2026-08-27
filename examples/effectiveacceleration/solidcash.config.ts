@@ -8,8 +8,12 @@ export default defineConfig({
     solidityImportCompat: true,
     // Keep the production state-partitioning layout while the mock VM relaxes execution ceilings.
     commitmentLimit: 128,
-    maximumInputBytes: 1_000_000,
+    maximumInputBytes: 10_000_000,
+    // This compatibility run exercises authenticated multi-contract call DAGs. Graph-free leaf contracts (the
+    // ERC-20 in particular) still need their route emitted because a routed parent can reach them repeatedly.
+    messageBus: true,
     optimizeForCompilationSpeed: true,
+    suppressWarnings: true,
     ecrecover: 'p2pkh',
     // Keep the Hardhat-compatible harness on the uniform fixed-entry backend.
     // Mocknet's relaxed limits remove the former need to selectively switch
@@ -17,6 +21,7 @@ export default defineConfig({
     sortedMappingsAll: false,
   },
   typegen: {
+    jsonArtifactModules: true,
     targets: [{
       target: 'ethers6', layout: 'typechain', outDir: 'typechain-types', sourceDir: 'contracts',
     }],
@@ -28,8 +33,8 @@ export default defineConfig({
     mock: {
       type: 'mock',
       consensus: {
-        maximumInputBytes: 1_000_000,
-        maximumStackItemBytes: 1_000_000,
+        maximumInputBytes: 10_000_000,
+        maximumStackItemBytes: 10_000_000,
         maximumTransactionBytes: 10_000_000,
         maximumNftCommitmentBytes: 1_000_000,
         operationCostBudgetPerByte: 10_000_000,

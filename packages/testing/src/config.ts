@@ -12,6 +12,8 @@ import type { TypegenTarget } from './typegen.js';
 export interface NetworkConfig {
   /** Which provider backs this network. */
   type?: 'mock' | 'regtest' | 'electrum' | 'bitcoin-rpc';
+  /** BCH network used by live providers. Inferred from the config key when omitted. */
+  network?: 'mainnet' | 'testnet3' | 'testnet4' | 'chipnet' | 'regtest';
   electrum?: { host: string; port?: number };
   rpc?: { url: string; user?: string; password?: string };
   /** Mock-only consensus overrides. Defaults to 1MB inputs/stack items and 10MB transactions. */
@@ -23,7 +25,10 @@ export interface NetworkConfig {
     operationCostBudgetPerByte: number;
     hashDigestIterationsPerByte: number;
   }>;
-  policy?: Partial<{ enforceDust: boolean }>;
+  policy?: Partial<{
+    enforceDust: boolean;
+    enforceProductionInputLimit: boolean;
+  }>;
 }
 
 export interface AccountsConfig {
@@ -37,6 +42,8 @@ export interface AccountsConfig {
 
 export interface TypegenConfig {
   targets: readonly { target: TypegenTarget; layout?: 'typechain'; outDir?: string; sourceDir?: string }[];
+  /** Emit tiny runtime modules which import the co-located JSON artifact instead of embedding it as TS. */
+  jsonArtifactModules?: boolean;
 }
 
 export interface SolidcashConfig {
@@ -68,7 +75,10 @@ export interface ResolvedConfig extends Required<Pick<SolidcashConfig, 'paths' |
   accounts?: AccountsConfig;
   solc?: Record<string, unknown>;
   compiler?: Record<string, unknown>;
-  typegen: { targets: { target: TypegenTarget; layout: 'typechain'; outDir: string; sourceDir?: string }[] };
+  typegen: {
+    targets: { target: TypegenTarget; layout: 'typechain'; outDir: string; sourceDir?: string }[];
+    jsonArtifactModules?: boolean;
+  };
 }
 
 /** Typed identity helper for `solidcash.config.ts` (mirrors hardhat `defineConfig`). */
@@ -124,6 +134,7 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
     solc: compiler,
     compiler,
     typegen: {
+      jsonArtifactModules: config.typegen?.jsonArtifactModules,
       targets: configuredTargets.map((target) => ({
         target: target.target,
         layout: target.layout ?? 'typechain',

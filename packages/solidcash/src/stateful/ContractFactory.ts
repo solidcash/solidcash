@@ -9,9 +9,9 @@ import {
   StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions,
 } from './StatefulContract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { addressToLockScript, getNetworkPrefix } from '../utils.js';
-import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress } from './logical-identity.js';
-import { registerDeployment } from './deployment-registry.js';
+import { getNetworkPrefix } from '../utils.js';
+import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } from './logical-identity.js';
+import { registerDeployment, registeredPhysicalLockingBytecode } from './deployment-registry.js';
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */
 export interface DeployContractOptions {
@@ -52,6 +52,18 @@ export type DeployedContract<T extends Artifact = Artifact> = ConnectedStatefulC
 
 function looksLikeOverrides(x: unknown): boolean {
   return typeof x === 'object' && x !== null && !(x instanceof Uint8Array) && !Array.isArray(x);
+}
+
+function normalizeRegisteredAddressArguments<T>(
+  provider: NetworkProvider,
+  inputs: readonly { type: string }[],
+  args: readonly T[],
+): T[] {
+  return args.map((arg, index) => {
+    const type = inputs[index]?.type;
+    if ((type !== 'address' && type !== 'address payable') || typeof arg !== 'string') return arg;
+    return (registeredPhysicalLockingBytecode(provider, arg) ?? arg) as T;
+  });
 }
 
 // A token genesis needs a fresh vout-0 UTXO, but each deploy strands its change at a non-zero vout - so a signer
@@ -134,9 +146,13 @@ export async function fanOutPlainUtxos(
   const current = plain(await signer.getUtxos());
   if (current.length >= needed) return current;
 
-  const fee = 1000n;
   const perOutput = 5000n;
   const missing = needed - current.length;
+  // One P2PKH input is ~148 bytes and each P2PKH output is ~34 bytes. A fixed 1000-satoshi fee stops meeting
+  // the 1 sat/byte relay floor once a wide compiler-authored block needs a few dozen positional funders. Keep a
+  // conservative linear margin (including compact-size growth and signature variance) without tying this helper
+  // to mock-provider internals.
+  const fee = BigInt(Math.max(1000, 250 + 40 * (missing + 1)));
   // Spend the largest coin only; splitting several would consume the very outpoints the caller still needs.
   const [largest] = [...current].sort((a, b) => (b.satoshis > a.satoshis ? 1 : -1));
   if (!largest || largest.satoshis < perOutput * BigInt(missing + 1) + fee) return undefined;
@@ -217,11 +233,23 @@ export class ContractFactory<T extends Artifact = Artifact> {
         && looksLikeOverrides(args[args.length - 1])) {
       overrides = args.pop() as DeployContractOptions;
     }
-    const constructorArgs = args.slice(0, ctorCount) as ConstructorArgument[];
-    const positionalInitArgs = args.slice(ctorCount) as NonNullable<DeployOptions['initArgs']>;
-
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = signer ? signer.provider : (this.runner as NetworkProvider);
+    const constructorArgs = normalizeRegisteredAddressArguments(
+      provider,
+      this.artifact.constructorInputs,
+      args.slice(0, ctorCount) as ConstructorArgument[],
+    );
+    const publicInitInputs = this.artifact.abi.find((f) => f.name === '__construct')?.inputs
+      .filter((input) => !input.name.startsWith('__internal__')) ?? [];
+    const positionalInitArgs = normalizeRegisteredAddressArguments(
+      provider,
+      publicInitInputs,
+      args.slice(ctorCount) as NonNullable<DeployOptions['initArgs']>,
+    );
+    const overrideInitArgs = overrides.initArgs
+      ? normalizeRegisteredAddressArguments(provider, publicInitInputs, overrides.initArgs)
+      : undefined;
 
     // Pure / library contracts (no CashToken state): inject a zero-width stateLayout so they can still
     // go through StatefulContract.deploy + the dispatch Proxy (MistSwap ChainlinkOracleV2 / RewarderBrokenMock
@@ -267,7 +295,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
     let result: Awaited<ReturnType<typeof StatefulContract.deploy<T>>>;
     try {
       const identityAnchors = overrides.identityAnchors ?? (logicalAddress ? [{
-        to: addressToLockScript(logicalAddress),
+        to: logicalAddress,
         commitment: buildLogicalIdentityCommitment(
           logicalIdentity!.deployer, logicalIdentity!.nonce,
           // Must mirror the DEPLOYED contract's options exactly, `salt` included: the anchor commits to an
@@ -290,7 +318,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         threadCount: overrides.threadCount,
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
-        initArgs: overrides.initArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
+        initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
         identityAnchors,
       });
       nonceReservation?.commit();
@@ -300,7 +328,27 @@ export class ContractFactory<T extends Artifact = Artifact> {
     }
 
     const contract = result.contract as DeployedContract<T>;
-    if (logicalAddress) (contract as StatefulContract)._logicalAddress = logicalAddress;
+    if (logicalAddress) {
+      (contract as StatefulContract)._logicalAddress = logicalAddress;
+      try {
+        const identity = await resolveLogicalIdentity(provider, logicalAddress);
+        if (identity.categoryId !== contract.categoryId) {
+          throw new Error(
+            `Logical identity at ${logicalAddress} binds category ${identity.categoryId}, `
+            + `not the deployed category ${contract.categoryId}.`,
+          );
+        }
+      } catch (error) {
+        const utxos = await provider.getUtxos(logicalAddress);
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `ContractFactory.deploy(${this.artifact.contractName}) did not leave exactly one authenticated `
+          + `SCID identity UTXO at getAddress() ${logicalAddress}: ${detail} `
+          + `(found ${utxos.length} UTXO(s): `
+          + `${utxos.map((utxo) => `${utxo.token?.nft?.capability ?? 'none'}:${(utxo.token?.nft?.commitment ?? '').slice(0, 16)}`).join(',') || 'none'})`,
+        );
+      }
+    }
     // ethers parity: `factory.deploy()` returns a contract CONNECTED to the factory's signer, so a call on it
     // needs no explicit `.connect(signer)`. Without `_signer` the builder computed `neededFunders` correctly and
     // then skipped provisioning them, because that whole block is gated on a signer being present. Nothing

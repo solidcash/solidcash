@@ -5,7 +5,8 @@ import {
   ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
 } from './types.js';
 import {
-  bigIntToVmNumber, binToHex, binToUtf8, hexToBin, utf8ToBin, vmNumberToBigInt, isVmNumberError,
+  bigIntToVmNumber, binToHex, binToUtf8, cashAddressToLockingBytecode, hexToBin, utf8ToBin,
+  vmNumberToBigInt, isVmNumberError,
 } from '@bitauth/libauth';
 import { hash256, sha256 } from './hash.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
@@ -467,6 +468,27 @@ export function encodePushdataValue(
   // Generic pushdata encode for int, int-like types, bytes1, bytes0, unbounded bytes, sig, datasig
   // At this point, struct types have already been handled and returned above
   let primitiveValue = value as PrimitiveStateValue;
+  // JobEventData.address_ is `bytes` but holds a packed BCH address (p2pkh=25, p2sh20=23, p2sh32=35).
+  // A CashAddress string (or UTF-8 of one) must become locking bytecode, not UTF-8 pushdata.
+  if (type === 'bytes' || /^bytes\d+$/.test(type)) {
+    primitiveValue = lockingBytecodeFromAddressBytes(primitiveValue);
+  }
+  // Solidity address(0) is empty locking bytecode. ethers.ZeroAddress is the 20-zero hex string; encoding
+  // that as UTF-8 or 20 zero bytes fails the emit EQUALVERIFY against the compiler's OP_0.
+  if (type === 'address' || type === 'address payable') {
+    if (typeof primitiveValue === 'string' && /^(0x)?0*$/i.test(primitiveValue)) {
+      primitiveValue = new Uint8Array(0);
+    } else {
+      primitiveValue = lockingBytecodeFromAddressBytes(primitiveValue);
+      if (
+        primitiveValue instanceof Uint8Array
+        && primitiveValue.length > 0
+        && primitiveValue.every((byte) => byte === 0)
+      ) {
+        primitiveValue = new Uint8Array(0);
+      }
+    }
+  }
   if (isIntLikeType(type)) {
     // ethers-parity: accept a JS `number` for an integer state value by coercing a safe integer to bigint, so
     // `deploy({ initialState: { count: 1 } })` works like ethers (numbers for uint/int).
@@ -505,6 +527,105 @@ export function encodePushdataValue(
   }
   const isIntLikeEnc = type === 'bytes1';
   return encodeGenericPushdataValue(bytes, isIntLikeEnc);
+}
+
+/** Concatenate pushdata-encoded event/struct fields in declaration order. */
+export function concatPushdataParts(parts: readonly Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, part) => n + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+/**
+ * Encode an event NFT commitment the way `visitEmitStatement` does: each parameter is
+ * pushdata-encoded, then the parts are concatenated. `emit JobEvent(0, ev)` is therefore
+ * `encode(0) || encode(ev)` (`00` + struct), not the struct alone.
+ */
+export function encodeEventCommitment(
+  parameters: readonly { type: string }[],
+  args: readonly StateValue[],
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  return concatPushdataParts(
+    parameters.map((parameter, i) => encodePushdataValue(
+      args[i] ?? getDefaultStateValue(parameter.type, structs),
+      parameter.type,
+      structs,
+    )),
+  );
+}
+
+/**
+ * A probe can capture only the last event parameter (commonly the struct) because
+ * `encode(0)` is a single `0x00`. Complete only when `derived` equals that last
+ * parameter's encoding, then prepend the other parameters. Empty stays empty.
+ */
+export function completeEventCommitment(
+  derived: Uint8Array,
+  parameters: readonly { type: string }[],
+  args: readonly StateValue[],
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  if (parameters.length < 2 || derived.length === 0) return derived;
+  const last = parameters[parameters.length - 1];
+  const lastArg = args[parameters.length - 1] ?? getDefaultStateValue(last.type, structs);
+  const lastEncoded = encodePushdataValue(lastArg, last.type, structs);
+  if (lastEncoded.length !== derived.length) return derived;
+  for (let i = 0; i < derived.length; i += 1) {
+    if (lastEncoded[i] !== derived[i]) return derived;
+  }
+  return encodeEventCommitment(parameters, args, structs);
+}
+
+/**
+ * `emit F(0, x)` is `encode(0) || encode(x)` (`0x00` + x). A probe EQUALVERIFY of
+ * that blob against a struct-only commitment looks like `00||x` vs `x`. Prefer the
+ * longer operand — that is the emit blob the covenant pins.
+ */
+export function preferZeroPrefixedEventBlob(below: Uint8Array, top: Uint8Array): Uint8Array | undefined {
+  const prefixed = (short: Uint8Array, long: Uint8Array): boolean => (
+    short.length > 1
+    && long.length === short.length + 1
+    && long[0] === 0x00
+    && short.every((byte, i) => long[i + 1] === byte)
+  );
+  if (prefixed(below, top)) return top;
+  if (prefixed(top, below)) return below;
+  return undefined;
+}
+
+function isPackedLockingBytecode(bytes: Uint8Array): boolean {
+  return (bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87)
+    || (bytes.length === 23 && bytes[0] === 0xa9 && bytes[1] === 0x14 && bytes[22] === 0x87)
+    || (bytes.length === 25 && bytes[0] === 0x76 && bytes[1] === 0xa9
+      && bytes[2] === 0x14 && bytes[23] === 0x88 && bytes[24] === 0xac);
+}
+
+function lockingBytecodeFromAddressBytes(value: PrimitiveStateValue): PrimitiveStateValue {
+  const fromCashAddress = (text: string): Uint8Array | undefined => {
+    if (!text.includes(':')) return undefined;
+    const decoded = cashAddressToLockingBytecode(text);
+    return typeof decoded === 'string' ? undefined : decoded.bytecode;
+  };
+  if (typeof value === 'string') {
+    const converted = fromCashAddress(value);
+    if (converted) return converted;
+    if (value.startsWith('0x') && value.length % 2 === 0) {
+      try { return hexToBin(value.slice(2)); } catch { /* keep string */ }
+    }
+    return value;
+  }
+  if (!(value instanceof Uint8Array) || value.length === 0 || isPackedLockingBytecode(value)) return value;
+  try {
+    const converted = fromCashAddress(binToUtf8(value));
+    if (converted) return converted;
+  } catch { /* not UTF-8 */ }
+  return value;
 }
 
 /**
@@ -1188,6 +1309,17 @@ export const VALUE_HEAD_SIZE = 28;
 export const VALUE_CHUNK_INDEX_SIZE = 2;
 export const VALUE_CHUNK_SIZE = 128 - VALUE_CHUNK_INDEX_SIZE;
 export const VALUE_CHUNK_MAX_COUNT = 1 << 15;
+export const VALUE_INLINE_LIMIT = 60;
+
+/** Encode the value portion of a sorted-map entry: len4 || inline, or len4 || root || head28. */
+export function encodeChunkableValueTail(value: Uint8Array): Uint8Array {
+  if (value.length > 0xffffffff) throw new RangeError('vmap value exceeds uint32 length');
+  const length = new Uint8Array(4);
+  new DataView(length.buffer).setUint32(0, value.length, true);
+  return value.length > VALUE_INLINE_LIMIT
+    ? new Uint8Array([...length, ...sha256(value), ...value.slice(0, VALUE_HEAD_SIZE)])
+    : new Uint8Array([...length, ...value]);
+}
 
 /** Split only the bytes after the VALUE_HEAD_SIZE-byte entry prefix into full 126-byte continuation chunks. */
 export function splitValueIntoValueChunks(value: Uint8Array): Uint8Array[] {
@@ -1229,7 +1361,9 @@ export function parseValueChunkCommitment(hex: string): { chunkIndex: number; ch
 export function joinValueChunks(
   headData: Uint8Array, chunks: readonly { chunkIndex: number; chunkData: Uint8Array }[], totalLength: number,
 ): Uint8Array {
-  if (!Number.isInteger(totalLength) || totalLength <= 60) throw new RangeError('chunked vmap value length must exceed 60');
+  if (!Number.isInteger(totalLength) || totalLength <= VALUE_INLINE_LIMIT) {
+    throw new RangeError(`chunked vmap value length must exceed ${VALUE_INLINE_LIMIT}`);
+  }
   if (headData.length !== VALUE_HEAD_SIZE) throw new RangeError(`vmap value head must contain exactly ${VALUE_HEAD_SIZE} bytes`);
   const remaining = totalLength - VALUE_HEAD_SIZE;
   const expectedCount = Math.ceil(remaining / VALUE_CHUNK_SIZE);
@@ -1361,8 +1495,12 @@ export function decodePackedEventArray(
   if (count < 0 || count > 10000) {
     throw new Error(`decodePackedEventArray: array length ${count} exceeds safe decoding limit (max 10000)`);
   }
-  const elemType = parseTypeStrict(arrInfo.elementType);
-  if (isFixedWidthType(elemType)) {
+  // User-defined struct names are resolved by decodePushdataValue below, not by the primitive type parser.
+  // Calling parseTypeStrict first made every chunked `Struct[]` mapping unreadable even when its artifact
+  // supplied the complete struct table (MarketplaceData.jobEvents is the representative shape).
+  const structElement = structs?.some((definition) => definition.name === arrInfo.elementType) === true;
+  const elemType = structElement ? undefined : parseTypeStrict(arrInfo.elementType);
+  if (elemType !== undefined && isFixedWidthType(elemType)) {
     const width = fixedWidthBytes(elemType);
     const blob = data.slice(offset + countBytes, offset + countBytes + count * width);
     return {

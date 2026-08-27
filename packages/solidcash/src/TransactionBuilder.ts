@@ -50,7 +50,9 @@ import {
   calculateDust,
 } from './utils.js';
 import { FailedTransactionError } from './Errors.js';
-import { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } from './message-bus/preflight.js';
+import {
+  assertFinalizedBytesWithCovenant, finalizedByteGateReceiptOf, inputSubjectsOfBuilder,
+} from './message-bus/preflight.js';
 import { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, WcSourceOutput, WcTransactionOptions } from './walletconnect-utils.js';
@@ -123,6 +125,7 @@ export class TransactionBuilder {
 
   public locktime: number = 0;
   public options: TransactionBuilderOptions;
+  private lastBuiltSourceOutputs?: LibauthTransaction['outputs'];
 
   constructor(
     options: TransactionBuilderOptions,
@@ -1039,10 +1042,15 @@ export class TransactionBuilder {
     }
   }
 
+  /** Validate token conservation without regenerating unlocking bytecode. */
+  validateTokenConservation(): void {
+    this.checkFungibleTokenBurn();
+    this.checkNftBurn();
+  }
+
   buildLibauthTransaction(skipChecks: boolean = false): LibauthTransaction {
     if (!skipChecks) {
-      this.checkFungibleTokenBurn();
-      this.checkNftBurn();
+      this.validateTokenConservation();
     }
 
     const inputs: LibauthTransaction['inputs'] = this.inputs.map((utxo) => ({
@@ -1063,6 +1071,7 @@ export class TransactionBuilder {
 
     // Generate source outputs from inputs (for signing with SIGHASH_UTXOS)
     const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
+    this.lastBuiltSourceOutputs = sourceOutputs;
 
     const inputScripts = this.inputs.map((input, inputIndex) => (
       input.unlocker.generateUnlockingBytecode({ transaction, sourceOutputs, inputIndex })
@@ -1073,6 +1082,14 @@ export class TransactionBuilder {
     });
 
     return transaction;
+  }
+
+  /** Build once and return the source-output vector already used while generating every unlocking bytecode. */
+  buildLibauthProgram(skipChecks: boolean = false): {
+    transaction: LibauthTransaction; sourceOutputs: LibauthTransaction['outputs'];
+  } {
+    const transaction = this.buildLibauthTransaction(skipChecks);
+    return { transaction, sourceOutputs: this.lastBuiltSourceOutputs! };
   }
 
   build(): string {
@@ -1183,7 +1200,8 @@ export class TransactionBuilder {
     }
 
     this.checkMaxFee(transaction);
-    const tx = binToHex(encodeTransaction(transaction));
+    const txBin = encodeTransaction(transaction);
+    const tx = binToHex(txBin);
 
     // X131, the finalized-bytes gate at `TransactionBuilder.send`, one of the seven live broadcast sites in
     // `src/`. It reads the DECODED broadcast bytes rather than a
@@ -1207,8 +1225,8 @@ export class TransactionBuilder {
     // policy refuses exactly the set the gate refuses, to the satoshi; `enforceDust: false` sets
     // `standard: false` and `dustRelayFeePerKb: 0n`, which is a harness that models no relay policy at all.
     // `MockNetworkProvider` is also the only provider in `src/network/` that publishes `policy`, so wiring it
-    // in here would soften the gate on the test harness and on nothing else. Only the caller's explicit
-    // `allowNonRelayable` may suppress a policy refusal.
+    // in here would soften the gate on the test harness and on nothing else. Only an exact preflight receipt
+    // from a protocol composer may carry a different destination profile into this second, final byte check.
     //
     // X158. THE OVER-LIMIT REFUSAL LIVES HERE, and this is the only place it can. `solidc` warns when the
     // un-constructed script passes 10,000 bytes and cannot do better: it does not know the constructor
@@ -1228,16 +1246,16 @@ export class TransactionBuilder {
     // through this site are byte-for-byte unaffected.
     assertFinalizedBytesWithCovenant(
       this,
-      decodeTransactionUnsafe(hexToBin(tx)),
+      transaction,
       inputSubjectsOfBuilder(this),
-      this.provider.policy?.enforceProductionInputLimit === false
-        ? { consensusLimits: this.provider.consensusLimits }
-        : {},
+      finalizedByteGateReceiptOf(this),
     );
 
     let txid: string;
     try {
-      txid = await this.provider.sendRawTransaction(tx);
+      txid = this.provider.sendPreparedTransaction
+        ? await this.provider.sendPreparedTransaction({ rawHex: tx, rawBytes: txBin, transaction })
+        : await this.provider.sendRawTransaction(tx);
     } catch (e: any) {
       const reason = e.error ?? e.message;
       let bitauthUri: string;
@@ -1247,7 +1265,6 @@ export class TransactionBuilder {
 
     // Verify the returned txid matches the locally computed hash (outside try/catch
     // so mismatch errors are not swallowed into FailedTransactionError with bitauthUri)
-    const txBin = hexToBin(tx);
     const expectedTxid = binToHex(hash256(txBin).reverse());
     if (txid !== expectedTxid) {
       throw new Error(

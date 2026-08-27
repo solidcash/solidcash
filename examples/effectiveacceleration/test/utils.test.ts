@@ -141,4 +141,13 @@ describe("utils", () => {
       expect(sessionKey).equal(otherSessionKey);
     });
   });
+
+  describe("offline IPFS mock", () => {
+    it("publishes and reads back without a daemon", async () => {
+      const { hash, cid } = await publishToIpfs("offline marketplace payload");
+      expect(cid.startsWith("Qm")).to.equal(true);
+      expect(await getFromIpfs(hash)).to.equal("offline marketplace payload");
+      expect(await getFromIpfs(cid)).to.equal("offline marketplace payload");
+    });
+  });
 });

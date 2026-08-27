@@ -41,9 +41,87 @@ describe('inferred message-bus batching for repeated external callees', () => {
     expect(run?.externalCalls?.[0].batchInvocations?.every((row) => row.selector.length === 8)).toBe(true);
   });
 
+  it('publishes runtime loop cardinality for repeated calls to one owner', () => {
+    const artifact = compileString(`
+      interface ISink { function put(int value) external; }
+      contract Caller(address sink) {
+        function run(int first, int[] values) public {
+          ISink(sink).put(first);
+          for (int i = 0; i < values.length; i = i + 1) ISink(sink).put(values[i]);
+          require(first >= 0);
+        }
+      }
+    `);
+    const run = artifact.abi.find((fn) => fn.name === 'run');
+    expect(run?.externalCalls).toHaveLength(1);
+    expect(run?.externalCalls?.[0]).toMatchObject({
+      occurrence: 'once',
+      batchInvocations: [
+        { logicalIndex: 0, argSources: [{ kind: 'forward', paramIndex: 0 }] },
+        {
+          logicalIndex: 1,
+          occurrence: 'loop',
+          argSources: [{ kind: 'arrayElement', paramIndex: 1, indexValue: 0 }],
+        },
+      ],
+    });
+  });
+
   it('collapses the supported repeated-owner shape by default', () => {
     const artifact = compileString(SOURCE);
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(1);
+  });
+
+  it('resolves a proxy delegate index to the authenticated compiler-route input', () => {
+    const compact = compileString(SOURCE).bytecode.replace(/\s+/g, '');
+    // Direct participants start at push4(SCB1). A proxy starts with its authenticated implementation-input index;
+    // decode that witness and inspect the implementation unlocking bytecode before checking the exact route frame.
+    expect(compact).toContain(
+      'OP_INPUTBYTECODEOP_DUPOP_1OP_SPLITOP_DROPOP_4OP_EQUALOP_NOTIF',
+    );
+    expect(compact).toContain('OP_DROPOP_INPUTBYTECODEOP_ENDIFOP_5OP_SPLIT');
+    expect(compact).toContain('OP_ENDIFOP_5OP_SPLITOP_SWAP0453434231OP_EQUALVERIFY');
+  });
+
+  it('replaces rather than retains the previous runtime batch count', () => {
+    const compact = compileString(SOURCE).bytecode.replace(/\s+/g, '');
+    // Rewriting SCB1's count splits after the six immutable header bytes, removes the old one-byte count, then
+    // concatenates the replacement count with only the actual row payload. The optimizer outlines the shared
+    // tail beginning at OP_NIP, so each of the two append sites ends this prefix with the same OP_INVOKE.
+    expect(compact.match(/OP_SPLITOP_1OP_SPLITOP_5OP_INVOKE/g)).toHaveLength(2);
+  });
+
+  it('publishes bounded pure-helper programs for external argument derivation', () => {
+    const artifact = compileString(`
+      pragma solidity >=0.8.0;
+      function prefixItems(string[] values) pure returns (bytes) {
+        bytes result = abi.encodePacked(uint8(values.length));
+        for (uint i = 0; i < values.length; i = i + 1) {
+          result = bytes.concat(result, abi.encodePacked(uint8(bytes(values[i]).length), values[i]));
+        }
+        return result;
+      }
+      interface ISink { function publish(bytes value) external; }
+      contract Caller(address sink) {
+        function run(string[] values) public {
+          ISink(sink).publish(prefixItems(values));
+          ISink(sink).publish(prefixItems(values));
+          require(values.length >= 0);
+        }
+      }
+    `, { solidityImportCompat: true });
+    const run = artifact.abi.find((candidate) => candidate.name === 'run');
+    const program = run?.externalCalls?.[0].batchInvocations?.[0]
+      .argSources?.[0].expression;
+
+    expect(program).toMatchObject({
+      kind: 'call',
+      parameters: ['values'],
+      statements: expect.arrayContaining([
+        expect.objectContaining({ kind: 'while' }),
+        expect.objectContaining({ kind: 'return' }),
+      ]),
+    });
   });
 
   it('leaves an ungrouped single external call byte-identical to the explicit opt-out', () => {

@@ -1,5 +1,35 @@
-import { Node } from '../ast/AST.js';
+import { IndirectCallNode, MethodCallNode, Node } from '../ast/AST.js';
 import { SolidCashError } from '../Errors.js';
+
+/**
+ * True when a function body contains a function-pointer table call (`fns[i](...)`).
+ *
+ * Used to skip graph-mode pointer-table expansion on sibling handlers that have no such call, so one IERC20
+ * transfer does not walk every getter looking for a table. Stops at the first hit.
+ */
+export function containsIndirectCall(node: Node | undefined): boolean {
+  if (!node) return false;
+  const seen = new Set<object>();
+  const stack: unknown[] = [node];
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (!(value instanceof Node) || seen.has(value)) continue;
+    seen.add(value);
+    if (value instanceof IndirectCallNode) return true;
+    if (value instanceof MethodCallNode && value.selectorArrayVar !== undefined) return true;
+    for (const key in value) {
+      if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+        || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
+        || key === 'collection' || key === 'location') continue;
+      const child = value[key as keyof Node];
+      if (child instanceof Node) stack.push(child);
+      else if (Array.isArray(child)) {
+        for (const item of child) if (item instanceof Node) stack.push(item);
+      }
+    }
+  }
+  return false;
+}
 
 /**
  * Largest pointer table the compiler expands. A proven bound above this is still a bound, but the expansion

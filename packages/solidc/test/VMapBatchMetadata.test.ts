@@ -26,6 +26,156 @@ describe('vmap fixed-write batch metadata', () => {
     }`, { forceStateful: true });
     expect(artifact.abi.find((f) => f.name === 'f')?.sortedBatchInfo)
       .toEqual([{ collection: 'm', slotIndices: [0] }]);
+    expect(artifact.abi.find((f) => f.name === 'f')?.entryAccesses?.[0]?.valueSource).toBe('id:v');
+  });
+
+  it('publishes exact literal and parameter-delta mapping values for faithful first probes', () => {
+    const artifact = compileString(`contract C {
+      mapping(int => int) m;
+      function seed(int k) external { m[k] = 5; require(true); }
+      function move(int a, int b, int v) external {
+        m[a] = m[a] - v; m[b] = m[b] + v; require(true);
+      }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((f) => f.name === 'seed')?.entryAccesses?.[0]?.valueSource).toBe('lit:5');
+    expect(artifact.abi.find((f) => f.name === 'move')?.entryAccesses
+      ?.map((access) => access.valueSource).sort())
+      .toEqual(['binop:+(entry,id:v)', 'binop:-(entry,id:v)']);
+  });
+
+  it('publishes a struct constructor value without contract-specific field knowledge', () => {
+    const artifact = compileString(`contract C {
+      struct S { uint256 a; uint256 b; uint256 c; uint256 d; }
+      mapping(uint256 => S) m;
+      function seed(uint256 k, uint256 a, uint256 b, uint256 c, uint256 d) external {
+        m[k] = S(a, b, c, d); require(true);
+      }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'seed')?.entryAccesses?.[0]?.valueSource)
+      .toBe('call:S(id:a,id:b,id:c,id:d)');
+  });
+
+  it('records a coalesced partial struct-field write as a constructor with preserved fields', () => {
+    const artifact = compileString(`contract C {
+      struct S { uint256 a; uint256 b; uint256 c; uint256 d; }
+      mapping(uint256 => S) m;
+      function updTwo(uint256 k, uint256 x, uint256 y) external {
+        m[k].a = x; m[k].b = y; require(true);
+      }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'updTwo')?.entryAccesses?.[0]?.valueSource)
+      .toBe('call:S(id:x,id:y,field:c(map:m(id:k)),field:d(map:m(id:k)))');
+  });
+
+  it('folds sequential coalesced struct-field writes into a net constructor valueSource', () => {
+    const artifact = compileString(`contract C {
+      struct S { int x; int y; }
+      mapping(int => S) m;
+      function litThenRmw(int k) external { m[k].x = 5; m[k].x = m[k].x + 1; require(true); }
+      function fromParam(int k, int a) external { m[k].x = a; m[k].y = m[k].x + 1; require(true); }
+      function plusTwice(int k) external { m[k].x += 1; m[k].x += 1; require(true); }
+      function plusOnce(int k) external { m[k].x = m[k].x + 1; require(true); }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'litThenRmw')?.entryAccesses?.[0]?.valueSource)
+      .toBe('call:S(lit:6,field:y(map:m(id:k)))');
+    expect(artifact.abi.find((fn) => fn.name === 'fromParam')?.entryAccesses?.[0]?.valueSource)
+      .toBe('call:S(id:a,binop:+(id:a,lit:1))');
+    expect(artifact.abi.find((fn) => fn.name === 'plusTwice')?.entryAccesses?.[0]?.valueSource)
+      .toBe('call:S(binop:+(field:x(map:m(id:k)),lit:2),field:y(map:m(id:k)))');
+    expect(artifact.abi.find((fn) => fn.name === 'plusOnce')?.entryAccesses?.[0]?.valueSource)
+      .toBe('call:S(binop:+(field:x(map:m(id:k)),lit:1),field:y(map:m(id:k)))');
+  });
+
+  it('records a mapping fixed-array element write as arrset valueSource', () => {
+    const artifact = compileString(`contract C {
+      mapping(bytes20 => bigint[3]) scores;
+      function setOneScore(bytes20 user, bigint index, bigint newValue) external {
+        this.scores[user][index] = newValue; require(true);
+      }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'setOneScore')?.entryAccesses?.[0]?.valueSource)
+      .toBe('arrset(id:index,id:newValue)');
+  });
+
+  it('records a follow-on literal multiply as a composed valueSource', () => {
+    const artifact = compileString(`contract C {
+      mapping(int => int) m;
+      function f(int k) external { m[k] = 3; m[k] = m[k] * 2; require(true); }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses?.[0]?.valueSource)
+      .toBe('binop:*(lit:3,lit:2)');
+  });
+
+  it('records a same-key literal copied onto a second key', () => {
+    const artifact = compileString(`contract C {
+      mapping(int => int) m;
+      function f(int a, int b) external { m[a] = 5; m[b] = m[a]; require(true); }
+    }`, { forceStateful: true });
+    const sources = artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses
+      ?.map((access) => access.valueSource);
+    expect(sources).toContain('lit:5');
+  });
+
+  it('records a single mapping read-modify-write of a literal delta as valueSource', () => {
+    const artifact = compileString(`contract C {
+      mapping(int => int) m;
+      function bump(int k) external { m[k] = m[k] + 1; require(true); }
+      function twice(int k) external { m[k] = m[k] + 1; m[k] = m[k] + 1; require(true); }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((f) => f.name === 'bump')?.entryAccesses?.[0]?.valueSource)
+      .toBe('binop:+(entry,lit:1)');
+    expect(artifact.abi.find((f) => f.name === 'twice')?.entryAccesses?.[0]?.valueSource)
+      .toBe('binop:+(entry,lit:2)');
+  });
+
+  it('records unrolled fixed-array element writes as integer valueSource', () => {
+    const artifact = compileString(`contract C {
+      int[3] a;
+      function f() external { for (int i = 0; i < 3; i++) { a[i] = i + 1; } require(true); }
+    }`, { forceStateful: true });
+    const sources = artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses
+      ?.map((access) => access.valueSource).sort();
+    expect(sources).toEqual(['binop:+(lit:0,lit:1)', 'binop:+(lit:1,lit:1)', 'binop:+(lit:2,lit:1)']);
+  });
+
+  it('records a 0..n-1 invariant-key loop flush as loopLast valueSource', () => {
+    const artifact = compileString(`contract C {
+      mapping(int => int) m;
+      function f(int k, int n) external { for (int i = 0; i < n; i++) { m[k] = i; } require(true); }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses?.[0]?.valueSource)
+      .toBe('loopLast:id:n');
+  });
+
+  it('records an if-converted mapping write as a ternary valueSource', () => {
+    const artifact = compileString(`contract C {
+      mapping(uint256 => uint256) m;
+      function setIf(uint256 k, uint256 v, bool d) external { if (d) { m[k] = v; } require(true); }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'setIf')?.entryAccesses?.[0]?.valueSource)
+      .toBe('ternary(id:d,id:v,map:m(id:k))');
+  });
+
+  it('records a mapping rmw of a parameter delta as valueSource', () => {
+    const artifact = compileString(`contract C {
+      mapping(int => int) m;
+      function f(int a, int b, int v) external { m[a] = m[a] - v; m[b] = m[b] + v; require(true); }
+    }`, { forceStateful: true });
+    const sources = artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses
+      ?.map((access) => access.valueSource).sort();
+    expect(sources).toEqual(['binop:+(entry,id:v)', 'binop:-(entry,id:v)']);
+  });
+
+  it('records unrolled array-element writes as arridx valueSource', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) bal;
+      function setAll(int[2] ks, int[2] vs) {
+        for (int i = 0; i < 2; i = i + 1) { bal[ks[i]] = vs[i]; }
+      }
+    }`, { forceStateful: true });
+    const sources = artifact.abi.find((f) => f.name === 'setAll')?.entryAccesses
+      ?.map((access) => access.valueSource).sort();
+    expect(sources).toEqual(['arridx(id:vs,lit:0)', 'arridx(id:vs,lit:1)']);
   });
 
   it('does not mislabel a constructed chunkable value as its first element parameter', () => {

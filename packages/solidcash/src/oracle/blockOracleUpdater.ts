@@ -3,13 +3,17 @@ import { ElectrumClient } from '@electrum-cash/network';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
   Artifact, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
-  scriptToBytecode, encodeInt, hash160,
+  buildPushdataCommitment, scriptToBytecode, encodeInt, hash160,
 } from '@solidcash/utils';
 import { Contract } from '../Contract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { Utxo, Unlocker } from '../interfaces.js';
 import { StatefulContract } from '../stateful/StatefulContract.js';
+import { getContractState, getDataNftAddress } from '../stateful/covenant-helpers.js';
+import { StateReader } from '../stateful/StateReader.js';
+import { listDeployments } from '../stateful/deployment-registry.js';
 import SignatureTemplate from '../SignatureTemplate.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 
 /**
  * Off-chain keeper for a contract's block.* oracles (docs/block-and-transaction-properties.md). It subscribes to Fulcrum
@@ -287,4 +291,199 @@ export class BlockOracleUpdater {
       await electrum.disconnect();
     };
   }
+}
+
+/** Block-info registers the mock tip can refresh without a signed `__updateBlockOracle` spend. */
+const MOCK_ORACLE_REGISTERS = [
+  '__block_number',
+  '__block_timestamp',
+  '__block_difficulty',
+  '__block_size',
+  '__block_totalFees',
+  '__block_coinbase',
+] as const;
+
+/**
+ * Map a mock provider's height/time onto the same field record `fetchBlockOracleFields` returns.
+ * Used when `evm_increaseTime` / `mine` must advance `__block_timestamp` without a keeper key.
+ */
+export function mockProviderBlockFields(provider: {
+  getBlockHeight(): Promise<number>;
+  getBlockTime(): number;
+}): Promise<BlockOracleFields> {
+  const coinbase = hexToBin(`76a914${'00'.repeat(20)}88ac`);
+  return provider.getBlockHeight().then((height) => ({
+    number: BigInt(height),
+    timestamp: BigInt(provider.getBlockTime()),
+    difficulty: 0n,
+    size: 1000n,
+    totalFees: 0n,
+    coinbase,
+  }));
+}
+
+type MockUtxoStorage = {
+  snapshot: () => { utxos: Map<string, {
+    outpoint: { txid: string; vout: number };
+    satoshis: bigint;
+    scriptHash: string;
+    height: number;
+    lockingBytecode: Uint8Array;
+    isCoinbase?: boolean;
+    tokenData?: {
+      category: string;
+      amount: bigint;
+      nft?: { commitment: string; capability: 'none' | 'mutable' | 'minting' };
+    };
+  }> };
+  _test?: {
+    utxo: {
+      add: (params: {
+        txid: string; vout: number; satoshis: bigint; scriptHash: string; height: number;
+        lockingBytecode?: Uint8Array; isCoinbase?: boolean;
+        tokenData?: {
+          category: string; amount: bigint;
+          nft?: { commitment: string; capability: 'none' | 'mutable' | 'minting' };
+        };
+      }) => void;
+      remove: (params: { txid: string; vout: number }) => void;
+    };
+  };
+};
+
+type OracleTarget = {
+  contract: Contract;
+  categoryId: string;
+  layout: NonNullable<Artifact['stateLayout']>;
+};
+
+function oracleTargetsFromDeployment(deployment: { contract: unknown }): OracleTarget[] {
+  const found: OracleTarget[] = [];
+  const seen = new Set<string>();
+  const push = (
+    contract: Contract | undefined, categoryId: string | undefined, layout: Artifact['stateLayout'],
+  ): void => {
+    if (!contract || !categoryId || !layout) return;
+    if (!layout.variables.some((variable) => (
+      (MOCK_ORACLE_REGISTERS as readonly string[]).includes(variable.name)
+    ))) return;
+    const key = `${categoryId}:${layout.variables.map((variable) => variable.name).join(',')}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push({ contract, categoryId, layout });
+  };
+  const wrapped = deployment.contract as {
+    inner?: Contract;
+    categoryId?: string;
+    implementation?: { inner?: Contract; categoryId?: string };
+    proxy?: { inner?: Contract; categoryId?: string };
+  };
+  const implArtifact = wrapped.implementation?.inner?.artifact;
+  // OZ proxy: application state (including __block_timestamp) lives on the proxy category
+  // under the implementation layout. The implementation artifact owns `__updateBlockOracle`.
+  if (implArtifact && BlockOracleUpdater.usesBlockInfo(implArtifact)) {
+    push(wrapped.proxy?.inner, wrapped.proxy?.categoryId, implArtifact.stateLayout);
+    push(wrapped.implementation?.inner, wrapped.implementation?.categoryId, implArtifact.stateLayout);
+  }
+  push(wrapped.inner, wrapped.categoryId, wrapped.inner?.artifact.stateLayout);
+  return found;
+}
+
+function replaceMockNftCommitment(
+  storage: MockUtxoStorage, utxo: Utxo, commitment: string,
+): boolean {
+  const key = `${utxo.txid}:${utxo.vout}`;
+  const entry = storage.snapshot().utxos.get(key);
+  if (!entry?.tokenData?.nft || !storage._test) return false;
+  if (entry.tokenData.nft.commitment === commitment) return false;
+  storage._test.utxo.remove({ txid: utxo.txid, vout: utxo.vout });
+  storage._test.utxo.add({
+    txid: utxo.txid,
+    vout: utxo.vout,
+    satoshis: entry.satoshis,
+    scriptHash: entry.scriptHash,
+    height: entry.height,
+    lockingBytecode: entry.lockingBytecode,
+    isCoinbase: entry.isCoinbase,
+    tokenData: {
+      category: entry.tokenData.category,
+      amount: entry.tokenData.amount,
+      nft: { capability: entry.tokenData.nft.capability, commitment },
+    },
+  });
+  return true;
+}
+
+/**
+ * Hardhat `evm_increaseTime` / `mine` analogue: write the mock tip into every deployed
+ * contract's `__block_*` registers. Official `syncOnce()` needs a keeper signature the
+ * unmodified suites never start; this uses the same field mapping and the live data-NFT
+ * commitments the covenant actually reads.
+ */
+async function syncMockBlockOracleDeployments(
+  provider: NetworkProvider,
+  deployments: Iterable<{ contract: unknown }>,
+): Promise<number> {
+  const storage = (provider as { indexer?: { storage?: MockUtxoStorage } }).indexer?.storage;
+  if (!storage?._test) return 0;
+  const fields = await mockProviderBlockFields({
+    getBlockHeight: () => provider.getBlockHeight(),
+    getBlockTime: () => (provider as unknown as { getBlockTime: () => number }).getBlockTime(),
+  });
+  const byRegister: Record<string, bigint | Uint8Array> = {
+    __block_number: fields.number,
+    __block_timestamp: fields.timestamp,
+    __block_difficulty: fields.difficulty,
+    __block_size: fields.size,
+    __block_totalFees: fields.totalFees,
+    __block_coinbase: fields.coinbase,
+  };
+  let updated = 0;
+  for (const deployment of deployments) {
+    for (const target of oracleTargetsFromDeployment(deployment)) {
+      const { contract, categoryId, layout } = target;
+      const touched = layout.variables.filter((variable) => (
+        (MOCK_ORACLE_REGISTERS as readonly string[]).includes(variable.name)
+      ));
+      if (touched.length === 0) continue;
+      let onChain;
+      try {
+        const dataNftAddr = getDataNftAddress(contract, categoryId);
+        const addresses = [contract.tokenAddress, dataNftAddr];
+        onChain = await new StateReader(layout).readStateFromChain(
+          contract.provider, categoryId, addresses, addresses,
+        );
+      } catch {
+        try {
+          onChain = await getContractState(contract, categoryId);
+        } catch {
+          continue;
+        }
+      }
+      const next = { ...onChain.state };
+      for (const variable of touched) {
+        next[variable.name] = byRegister[variable.name];
+      }
+      const nftIndices = new Set(touched.map((variable) => variable.nftIndex));
+      for (const nftIndex of nftIndices) {
+        const utxo = onChain.dataNftUtxos[nftIndex];
+        if (!utxo?.token?.nft) continue;
+        const commitment = buildPushdataCommitment(layout, next, nftIndex);
+        if (replaceMockNftCommitment(storage, utxo, commitment)) updated += 1;
+      }
+    }
+  }
+  return updated;
+}
+
+/** Refresh only one freshly deployed contract graph (including proxy/implementation pairs). */
+export async function syncMockBlockOracleDeployment(
+  provider: NetworkProvider,
+  deployment: { contract: unknown },
+): Promise<number> {
+  return syncMockBlockOracleDeployments(provider, [deployment]);
+}
+
+export async function syncMockBlockOracles(provider: NetworkProvider): Promise<number> {
+  return syncMockBlockOracleDeployments(provider, listDeployments(provider));
 }

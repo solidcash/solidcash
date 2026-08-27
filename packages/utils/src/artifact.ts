@@ -8,6 +8,24 @@ export type ImportResolverFn = (importPath: string, currentFile: string) => Reso
 export interface CompilerOptions {
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
+  /** Maximum message-bus blob/VM stack-item size; defaults to BCH's 520-byte consensus limit. */
+  maximumStackItemBytes?: number;
+  /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
+  optimizeForCompilationSpeed?: boolean;
+  /**
+   * Emit bytecode source maps on the artifact (`debug.sourceMap` and per-body maps). Default true.
+   * Set false to skip encoding maps at compile time and skip decoding them when attributing VM failures.
+   * Require/log instruction pointers and source line numbers are still recorded; BitAuth source comments
+   * and column-accurate failing snippets are not.
+   */
+  sourceMap?: boolean;
+  /** Suppress non-fatal compiler warnings while preserving errors and ordinary command output. */
+  suppressWarnings?: boolean;
+  /**
+   * Internal. Speculative message-bus admission only needs the verifier program and eligible handler names.
+   * Skip compiling ordinary entry-point bodies on that throwaway pass; the binder second pass emits them.
+   */
+  __cheapAdmissionCodegen?: boolean;
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
   __messageBusVerifierProgram?: {
     verifyFunctionId: number;
@@ -74,6 +92,17 @@ export interface CompilerOptions {
   // compilation and is rejected when semantic analysis finds a transaction shape that cannot be built without
   // one shared message bus. The resolved value is what the artifact publishes.
   messageBus?: boolean;
+  // Optional compile-time surface for large compatibility projects. Direct ABI entry points remain unchanged;
+  // only these named functions are cloned into the authenticated message-bus route. Omitted means all eligible
+  // entry points. This avoids cloning dozens of unrelated external handlers when one atomic DAG needs a few.
+  messageBusHandlers?: readonly string[];
+  // Compile an otherwise graph-free message-bus participant with the atomic graph envelope. Leaf participants
+  // still need per-row logical callers when one composed transaction reaches them from different parents.
+  // Omitted preserves the compact local-caller route used by standalone batching.
+  messageBusGraphContext?: boolean;
+  // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
+  // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
+  delegateArtifactContracts?: readonly string[];
 }
 
 export interface AbiInput {
@@ -126,6 +155,8 @@ export type BlockSlotKind =
   /** Child data-NFT genesis outputs that follow a `deploy` slot (factory createPair-style). */
   | 'deployDataNft'
   | 'lowLevelCall'
+  /** SDK-authenticated logical contract identity which is distinct from the physical participant master. */
+  | 'identityAnchor'
   | 'trailing';
 
 /** A single slot in the function's block layout. */
@@ -147,6 +178,8 @@ export interface FunctionBlockLayout {
   trailingBase?: number;
   /** Number of balanced slots reserved for chunks, loop entries, and loop sidecars. */
   trailingCapacity?: number;
+  /** Fixed slots after the runtime-variable region. Such a block cannot compact its trailing placeholders. */
+  fixedSuffix?: number;
 }
 
 /**
@@ -211,7 +244,43 @@ export interface AbiFunction {
       row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
     }[];
   };
+  /** Compiler-proven dense pagination of one authenticated mapping(K => V[]) entry. */
+  mappingArrayPagination?: {
+    collection: string;
+    keyParams: readonly string[];
+    indexParam: string;
+    limitParam: string;
+  };
+  /** Compiler-owned owner-local effect frame for an unrolled message-bus route.
+   * Dispatch site `s` owns `[base + s * width, base + (s + 1) * width)` for each effect kind. */
+  graphEffectFrame?: {
+    sites: number;
+    eventBase: number;
+    eventWidth: number;
+    eventOffset?: number;
+    transferBase: number;
+    transferWidth: number;
+    transferOffset?: number;
+    tokenTransferBase: number;
+    tokenTransferWidth: number;
+    tokenTransferOffset?: number;
+    tokenNftTransfers: boolean;
+  };
   entryAccesses?: readonly EntryAccessAbi[];
+  /**
+   * Exact collection entry returned by this function. Published only for a direct, unconditional return whose
+   * keys are visible function parameters; absence means consumers must execute the ordinary return covenant.
+   */
+  returnStateAccess?: {
+    collection: string;
+    keyParams: readonly string[];
+  };
+  /** Unconditional updates to visible struct arguments performed by the handler before their value is consumed. */
+  argumentFieldUpdates?: readonly {
+    parameter: string;
+    fieldPath: readonly string[];
+    source: 'blockTimestamp';
+  }[];
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];
   /** Local call-result values forwarded as arguments into later external callsites. */
@@ -272,6 +341,12 @@ export interface AbiFunction {
   lowLevelCalls?: readonly {
     callMode: 'call' | 'staticcall' | 'delegatecall';
     dataParamIndex?: number;
+    /**
+     * SDK-resolvable origin of the address consumed by this call. Unlike `target`, which is a conservative
+     * authority classification, this preserves the exact argument/expression needed to select a co-spent
+     * participant. Absent means the compiler could not serialize the target and consumers must fail closed.
+     */
+    targetSource?: ArgSource;
     /**
      * Where the call's TARGET address came from. Published by every compiler that knows how to answer, with
      * `computed` as the always-available fallback, so an absent `target` identifies an artifact compiled
@@ -442,6 +517,7 @@ export interface SortedInsertLoopAbi {
 export interface SortedUpsertLoopAbi {
   collection: string;
   fixedKeyParams: readonly string[];
+  fixedKeySources?: readonly KeySourceAbi[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
   /** The varying array contains ABI blobs; decode this tuple element to obtain each key. */
   keyDecodeTupleIndex?: number;
@@ -502,19 +578,28 @@ export interface ExternalReadAbi {
 }
 
 export interface ArgSource {
-  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'expression';
+  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'loopIndex'
+    | 'expression';
   paramIndex?: number;     // for 'forward': index into the user-visible function args
   indexParamIndex?: number; // for 'arrayElement': optional function parameter containing the element index
   indexValue?: number;     // for 'arrayElement': fixed index (loop call sites commonly begin at zero)
+  initialValue?: string;   // for 'loopIndex': value at occurrence zero
+  stepValue?: string;      // for 'loopIndex': delta per reached occurrence
   paramName?: string;      // for 'constructorArg': name of the constructor parameter
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string
   expression?: ExternalCallExpression;
+  /** Source-level `address(this)`: resolve through the authenticated stable identity anchor when available. */
+  logicalIdentity?: boolean;
 }
 
 export interface ExternalCallExpression {
   kind: string;
   name?: string;
+  /** Compiler-stable producer identity within the containing function. */
+  callsiteId?: number;
+  /** Authenticated receiver expression for a returning external call. */
+  target?: ExternalCallExpression;
   type?: string;
   value?: string | boolean;
   operator?: string;
@@ -527,6 +612,20 @@ export interface ExternalCallExpression {
   ifFalse?: ExternalCallExpression;
   args?: readonly ExternalCallExpression[];
   fields?: readonly string[];
+  /** Parameter names for a compiler-published pure helper body. */
+  parameters?: readonly string[];
+  /** Bounded statement program for a compiler-published pure helper body. */
+  statements?: readonly ExternalCallStatement[];
+}
+
+export interface ExternalCallStatement {
+  kind: 'variable' | 'assign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
+  name?: string;
+  type?: string;
+  expression?: ExternalCallExpression;
+  condition?: ExternalCallExpression;
+  statements?: readonly ExternalCallStatement[];
+  elseStatements?: readonly ExternalCallStatement[];
 }
 
 export interface ExternalCallAbi {
@@ -536,6 +635,10 @@ export interface ExternalCallAbi {
   sourceLocation?: { line: number; column: number };
   /** Source reachability class; loop/conditional rows require runtime occurrence proof. */
   occurrence?: 'once' | 'conditional' | 'loop';
+  /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
+  condition?: ExternalCallExpression;
+  /** ABI output array directly populated by this loop call (`result[i] = call(); return result`). */
+  resultArrayOutput?: number;
   /** Compiler-proven ceiling on reached rows. Absent means no ceiling was proven for this callsite. */
   maximumOccurrences?: number;
   /**
@@ -577,12 +680,15 @@ export interface ExternalCallAbi {
   opaqueReturn?: boolean; // `(bool,bytes)=addr.call(payload)`: opaque integrity-bound return, callee unknown at compile time
   argSources?: readonly ArgSource[];
   rawFunctionName?: string; // decoded abi.encodeCall target for a low-level call
+  rawSelector?: string; // decoded abi.encodeWithSelector selector when the source function name is unavailable
   rawArgSources?: readonly ArgSource[];
   batchInvocations?: readonly {
     selector: string;
     logicalIndex: number;
     inputs: readonly AbiInput[];
     argSources?: readonly ArgSource[];
+    occurrence?: 'once' | 'conditional' | 'loop';
+    condition?: ExternalCallExpression;
   }[];
 }
 
@@ -750,7 +856,10 @@ export const MAX_MESSAGE_BUS_BLOB_BYTES = 10_000;
 /** Shared wire constants for the atomic single-transaction message bus. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
 export const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;
-export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 24;
+// This is a wire-format bound, not an independent production policy: finalized-byte and VM preflight are the
+// authoritative network admission gates. Keeping a smaller arbitrary ceiling rejects otherwise valid graphs
+// before those exact checks (and makes the limit depend on how many authenticated resource rows a contract uses).
+export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 0xffff;
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
 export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
   'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
@@ -824,7 +933,14 @@ export interface Artifact {
       usesMsgValue?: boolean;
       emits?: readonly EmitAbi[];
       tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+      /** Per selected handler call, the visible parameter feeding keccak256 or null for a computed preimage. */
+      keccakPreimageParams?: readonly (string | null)[];
+      /** Explicit for every newly compiled handler, so an inactive recovery sibling is distinguishable from
+       * an older artifact which did not publish handler-local compute metadata. */
+      ecrecoverCompute?: boolean;
       ecrecoverArgParams?: readonly (readonly (string | null)[])[];
+      /** One entry per transitive recovery call, including `false` for native/P2PKH projections. */
+      ecrecoverEvmFlags?: readonly boolean[];
       transfers?: readonly {
         transferIndex: number;
         recipient: ArgSource;
@@ -853,9 +969,15 @@ export interface Artifact {
       batchKeyWitnesses?: {
         routeInput: string;
         inputIndex: number;
-        source?: 'argument' | 'msgSender';
+        source?: 'argument' | 'msgSender' | 'expression';
+        expressionLabel?: string;
         perRow?: boolean;
+        /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
+        swappable?: boolean;
       }[];
+      /** Route entry-slot ordinals which can be consumed by this selected handler. Used by composers to leave
+       * every other union-route entry coordinate as an inactive balanced slot. */
+      physicalEntrySlots?: readonly number[];
     }[];
   };
   diagnostics?: readonly {
@@ -1091,14 +1213,45 @@ export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: '
   return JSON.stringify(bundle, null, 2);
 }
 
+/** Restore `arr.length-1` on nested vmap upserts when codegen omitted fixedKeySources. */
+function patchArtifactUpsertFixedKeys(artifact: Artifact): void {
+  const patchAbi = (abi: Artifact['abi'] | undefined): void => {
+    for (const fn of abi ?? []) {
+      const writes = fn.dynamicWrites ?? [];
+      if (writes.length !== 1) continue;
+      for (const info of fn.sortedUpsertLoopInfo ?? []) {
+        if (info.fixedKeySources && info.fixedKeySources.length > 0) continue;
+        const patched = info as unknown as { fixedKeySources: KeySourceAbi[] };
+        patched.fixedKeySources = [{
+          kind: 'expression',
+          expressionLabel: `binop:-(unop:.length(state:${writes[0]}),lit:1)`,
+        }];
+      }
+    }
+  };
+  patchAbi(artifact.abi);
+  if (artifact.delegateArtifact) patchAbi(artifact.delegateArtifact.abi);
+}
+
 export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): string {
+  patchArtifactUpsertFixedKeys(artifact);
+  // Stringifying a live compile artifact can rebuild ABI via lazy getters (delegate variant).
+  // Re-apply after parse so published JSON keeps `jobs.length-1` even if those copies dropped it.
+  const normalisedArtifact = JSON.parse(JSON.stringify(artifact)) as Artifact;
+  patchArtifactUpsertFixedKeys(normalisedArtifact);
+  if (artifact.delegateProxyStateOutputCountPinned
+    || normalisedArtifact.abi?.some((fn) => fn.modifiers?.includes('delegate'))) {
+    normalisedArtifact.delegateProxyStateOutputCountPinned = true;
+  }
   if (format === 'ts') {
-    // We remove any undefined values to make the artifact serializable using stringifyAsTs
-    const normalisedArtifact = JSON.parse(JSON.stringify(artifact));
     return `export default ${stringifyAsTs(normalisedArtifact)} as const;\n`;
   }
 
-  return JSON.stringify(artifact, null, 2);
+  const compact = (globalThis as { process?: { env?: Record<string, string> } }).process
+    ?.env?.SOLIDC_COMPACT_ARTIFACT === '1'
+    || (typeof normalisedArtifact.debug?.bytecode === 'string'
+      && normalisedArtifact.debug.bytecode.length > 400_000);
+  return JSON.stringify(normalisedArtifact, null, compact ? 0 : 2);
 }
 
 const indent = (level: number): string => '  '.repeat(level);

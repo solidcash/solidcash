@@ -1,10 +1,25 @@
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { addressToLockScript } from '../utils.js';
 
 export interface RegisteredDeployment {
   contractName: string;
   address: string;
   lockingBytecode?: string;
   contract: unknown;
+}
+
+/** Exact covenant bytecode which executes calls made by a registered deployment. */
+export function registeredExecutionLockingBytecode(
+  deployment: RegisteredDeployment,
+): string | undefined {
+  const registered = deployment.contract as {
+    implementation?: { inner?: { lockingBytecode?: string } };
+    inner?: { lockingBytecode?: string };
+  };
+  return registered.implementation?.inner?.lockingBytecode
+    ?? registered.inner?.lockingBytecode
+    ?? deployment.lockingBytecode;
 }
 
 const deployments = new WeakMap<NetworkProvider, RegisteredDeployment[]>();
@@ -59,6 +74,16 @@ export function findDeploymentByAddress(
   for (let index = current.length - 1; index >= 0; index--) {
     if (current[index].address === addr) return current[index];
   }
+  // Token-aware and non-token cashaddrs share a lock script; string equality misses that pair.
+  try {
+    const wanted = binToHex(addressToLockScript(addr));
+    for (let index = current.length - 1; index >= 0; index--) {
+      const registered = current[index].address ?? '';
+      try {
+        if (binToHex(addressToLockScript(registered)) === wanted) return current[index];
+      } catch { /* not a cashaddr */ }
+    }
+  } catch { /* keep the string fallback below */ }
   // Fuzzy: cashaddr prefix variants / trailing payload match (MistSwap MasterChef lp.address forms).
   if (addr.length > 12) {
     const tail = addr.slice(-20);
@@ -72,6 +97,22 @@ export function findDeploymentByAddress(
   return undefined;
 }
 
+/**
+ * Resolve a registered Solidity-facing address to the physical locking bytecode held by the deployment.
+ *
+ * Stateful contracts expose a stable logical CREATE address, while covenant comparisons (`address(this)` and
+ * `msg.sender`) observe the exact locking bytecode of the executing input. Callers which persist an address after
+ * its deployment exists must therefore store this physical form. An unresolved address is deliberately left to
+ * the caller: it may be an EOA or a forward reference in a cyclic deployment graph.
+ */
+export function registeredPhysicalLockingBytecode(
+  provider: NetworkProvider,
+  address: string,
+): Uint8Array | undefined {
+  const physical = findDeploymentByAddress(provider, address)?.lockingBytecode;
+  return physical ? hexToBin(physical) : undefined;
+}
+
 /** All deployments for a provider (most recent last). */
 export function listDeployments(provider: NetworkProvider): readonly RegisteredDeployment[] {
   return deployments.get(provider) ?? [];
@@ -81,8 +122,20 @@ export function findDeploymentByLockingBytecode(
   provider: NetworkProvider, lockingBytecode: string,
 ): RegisteredDeployment | undefined {
   const current = deployments.get(provider) ?? [];
+  const wanted = lockingBytecode.replace(/^0x/, '').toLowerCase();
   for (let index = current.length - 1; index >= 0; index--) {
-    if (current[index].lockingBytecode === lockingBytecode) return current[index];
+    if (registeredExecutionLockingBytecode(current[index])?.replace(/^0x/, '').toLowerCase() === wanted) {
+      return current[index];
+    }
+    if (current[index].lockingBytecode?.replace(/^0x/, '').toLowerCase() === wanted) {
+      return current[index];
+    }
+    // Stateful registrations may use a physical covenant bytecode internally while exposing a stable logical
+    // address to other contracts. Resolve either identity through this bytecode-oriented API so every external
+    // call path follows the same registry semantics.
+    try {
+      if (binToHex(addressToLockScript(current[index].address)) === wanted) return current[index];
+    } catch { /* the registered address is not a cashaddr */ }
   }
   return undefined;
 }

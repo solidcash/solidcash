@@ -43,6 +43,17 @@ describe('FinalRequire: error by default, warning only under explicit opt-out', 
     warn.mockRestore();
   });
 
+  it('suppresses non-fatal warnings only when requested', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(compileStringRaw('contract C() { function f() pure {} }', {
+      messageBus: false,
+      enforceFinalRequire: false,
+      suppressWarnings: true,
+    }).contractName).toBe('C');
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('Warning:'));
+    log.mockRestore();
+  });
+
   it('allows a non-final require to gate the path (require not last)', () => {
     const a = compileString('contract C() { mapping(int=>int) m; function f(int k) { require(k > 0); delete m[k]; } }');
     expect(a.contractName).toBe('C');

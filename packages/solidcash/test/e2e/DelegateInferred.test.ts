@@ -336,6 +336,33 @@ describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
       expect(proxyCounter(tx, proxyCatId)).toBe(17n);
     });
 
+    it('reads proxy state through an outlined internal guard', async () => {
+      const provider = createTestProvider();
+      const guardedArtifact = compileString(`
+        pragma solidcash >=0.8.0;
+        contract GuardedCounter() {
+          bigint counter;
+          function current() public view returns (bigint) { return this.counter; }
+          function _check(bigint expected) internal view { require(current() == expected); }
+          function setIf(bigint expected, bigint next) public {
+            _check(expected);
+            this.counter = next;
+          }
+        }
+      `, { messageBus: true });
+      const proxyContract = new Contract(proxyArtifact, [], { provider });
+      const { categoryId: proxyCatId } = await setupStatefulUtxos(
+        provider, proxyContract, proxyArtifact.stateLayout!, { counter: 42n }, { saltContract: true },
+      );
+      const implContract = new Contract(guardedArtifact, [], { provider }).asDelegate();
+      const { categoryId: implCatId } = await setupStatefulUtxos(
+        provider, implContract, implContract.artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      const tx = await StatefulContract.withCategory(proxyContract, proxyCatId).call.__fallback()
+        .withDelegatecall(StatefulContract.withCategory(implContract, implCatId), 'setIf', [42n, 7n]).send();
+      expect(proxyCounter(tx, proxyCatId)).toBe(7n);
+    });
+
     // Every form that inference marks must actually run behind a proxy. This is the check that keeps marking
     // honest: a form that compiles but reverts at broadcast belongs in hasUnsupportedDelegateOperation instead.
     async function runForm(implSrc: string, fn: string, args: any[]): Promise<void> {

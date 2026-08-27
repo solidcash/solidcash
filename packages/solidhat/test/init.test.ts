@@ -3,6 +3,7 @@ import {
   existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
+import { createRequire } from 'node:module';
 import { join, resolve } from 'path';
 import { detectCompatibility, detectPackageManager, initializeProject } from '../src/init.js';
 import { compatibilityAliases } from '../src/vitest-preset.js';
@@ -31,12 +32,14 @@ describe('initializeProject', () => {
     expect(existsSync(join(directory, 'solidcash.config.ts'))).toBe(true);
     expect(existsSync(join(directory, 'contracts', 'Counter.scash'))).toBe(true);
     expect(existsSync(join(directory, 'test', 'Counter.test.ts'))).toBe(true);
+    expect(existsSync(join(directory, 'scripts', 'deploy.ts'))).toBe(true);
     expect(readFileSync(join(directory, 'README.md'), 'utf8')).toContain('# counter');
     expect(readFileSync(join(directory, 'README.md'), 'utf8')).toContain('Hardhat 3 and Ethers 6');
     const pkg = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
     expect(pkg.devDependencies['@solidcash/solidhat']).toBe('^0.13.0');
     expect(pkg.scripts['solidhat:compile']).toBe('solidhat compile');
     expect(pkg.scripts['solidhat:typegen']).toBe('solidhat typegen');
+    expect(pkg.scripts['solidhat:deploy']).toBe('solidhat deploy');
   });
 
   it('documents and scaffolds the JavaScript/pnpm template accurately', () => {
@@ -155,14 +158,20 @@ describe('initializeProject', () => {
   });
 
   it('generates explicit aliases for each compatibility generation', () => {
-    expect(compatibilityAliases({ hardhat: 2, ethers: 5 })).toMatchObject({
-      hardhat: '@solidcash/solidhat/hardhat2', ethers: '@solidcash/solidhat/ethers5',
-      '@nomicfoundation/hardhat-toolbox/network-helpers': '@solidcash/testing/network-helpers',
+    const aliases = compatibilityAliases({ hardhat: 2, ethers: 5 });
+    expect(aliases).toMatchObject({
+      hardhat: expect.stringContaining('solidhat/dist/hardhat2.js'),
+      ethers: expect.stringContaining('solidhat/dist/ethers5.js'),
+      '@nomicfoundation/hardhat-toolbox/network-helpers': expect.stringContaining('testing/dist/network-helpers.js'),
       '@nomicfoundation/hardhat-ethers/signers': expect.stringContaining('testing/dist/stubs/empty.js'),
-      chai: '@solidcash/testing/chai',
+      chai: expect.stringContaining('testing/dist/chai.js'),
     });
+    const require = createRequire(import.meta.url);
+    expect(aliases.solidcash).toBe(require.resolve('solidcash'));
+    expect(aliases['@solidcash/testing']).toBe(require.resolve('@solidcash/testing'));
     expect(compatibilityAliases({ hardhat: 3, ethers: 6 })).toMatchObject({
-      hardhat: '@solidcash/solidhat/hardhat3', ethers: '@solidcash/solidhat/ethers6',
+      hardhat: expect.stringContaining('solidhat/dist/hardhat3.js'),
+      ethers: expect.stringContaining('solidhat/dist/ethers6.js'),
     });
   });
 
@@ -217,6 +226,58 @@ describe('CLI entry points', () => {
     // Budget was 20s. This spawns a child process running the whole CLI compile-and-test cycle: measured
     // 10,069 ms on a quiet box (half the old budget) but 63,152 ms and 76,982 ms under concurrent
     // parallel-worker rounds. A hang is unbounded, so 180s still catches one; 20s only caught a busy box.
+  }, 180_000);
+
+  it('runs the generated deployment script on a selected mock network', () => {
+    const parent = temporaryDirectory('generated-deploy');
+    initializeProject({ cwd: parent, target: 'app', install: false });
+    const directory = join(parent, 'app');
+    symlinkSync(resolve('../../node_modules'), join(directory, 'node_modules'), 'dir');
+
+    const output = execFileSync(process.execPath, [solidhatCli, '--network', 'mock', 'deploy'], {
+      cwd: directory, encoding: 'utf8',
+    });
+
+    expect(output).toContain('Deploying on mock');
+    expect(output).toContain('"network": "mock"');
+    expect(output).toContain('"transaction":');
+  }, 180_000);
+
+  it('discovers the generated JavaScript deployment script', () => {
+    const parent = temporaryDirectory('generated-javascript-deploy');
+    initializeProject({
+      cwd: parent, target: 'app', template: 'javascript', install: false,
+    });
+    const directory = join(parent, 'app');
+    symlinkSync(resolve('../../node_modules'), join(directory, 'node_modules'), 'dir');
+
+    const output = execFileSync(process.execPath, [solidhatCli, 'deploy', '--network=mock'], {
+      cwd: directory, encoding: 'utf8',
+    });
+
+    expect(output).toContain('Deploying on mock');
+    expect(output).toContain('"network": "mock"');
+  }, 180_000);
+
+  it.runIf(process.env.TESTS_USE_REGTEST)('deploys the generated project through BCHN regtest', () => {
+    const parent = temporaryDirectory('generated-regtest-deploy');
+    initializeProject({ cwd: parent, target: 'app', install: false });
+    const directory = join(parent, 'app');
+    symlinkSync(resolve('../../node_modules'), join(directory, 'node_modules'), 'dir');
+
+    const output = execFileSync(process.execPath, [solidhatCli, 'deploy', '--network', 'regtest'], {
+      cwd: directory, encoding: 'utf8',
+      env: {
+        ...process.env,
+        REGTEST_RPC_URL: process.env.REGTEST_RPC_URL ?? 'http://127.0.0.1:18443',
+        REGTEST_RPC_USER: process.env.REGTEST_RPC_USER ?? 'user',
+        REGTEST_RPC_PASSWORD: process.env.REGTEST_RPC_PASSWORD ?? 'password',
+      },
+    });
+
+    expect(output).toContain('Deploying on regtest from bchreg:');
+    expect(output).toContain('"network": "regtest"');
+    expect(output).toContain('"address": "bchreg:');
   }, 180_000);
 });
 

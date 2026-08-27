@@ -22,8 +22,10 @@ describe('conditional entry write (if-converted)', () => {
     const sc = await getContractFactory(art, await fundedSigner()).deploy();
     await sc.put(2n, 9n).send();
     await sc.setIf(2n, 7n, false).send();
+    expect(sc.lastDerivationIterations).toBe(1);
     await expect(sc.chk(2n, 9n).send()).resolves.toBeDefined();   // preserved
     await sc.setIf(2n, 7n, true).send();
+    expect(sc.lastDerivationIterations).toBe(1);
     await expect(sc.chk(2n, 7n).send()).resolves.toBeDefined();   // updated
   });
 

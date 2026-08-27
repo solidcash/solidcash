@@ -21,7 +21,21 @@ type StatefulContractCtor =
   };
 export const StatefulContract = StatefulContractClass as unknown as StatefulContractCtor;
 export type StatefulContract<T extends Artifact = Artifact> = ConnectedStatefulContractType<T>;
-export { clearSoftBentoTotals, takeSoftStateSnapshot, type SoftStateSnapshot } from './StatefulContract.js';
+export {
+  clearSoftBentoTotals,
+  takeSoftStateSnapshot,
+  providerUnixLocktime,
+  selectorParamSlot,
+  groupIndexForExternalCallSlot,
+  externalReturnParamSlot,
+  isSdkResolvedExternalCallTopologyWitness,
+  parseRowArgsDecodeLabel,
+  visibleHandlerInputs,
+  matchingRouteRowsForExpressionKey,
+  resolveRouteRowExpressionKey,
+  type RouteExpressionKeyRow,
+  type SoftStateSnapshot,
+} from './StatefulContract.js';
 
 export {
   StatefulTransactionBuilder,
@@ -34,6 +48,18 @@ export {
   type ExternalCallUtxoGroup,
   type StatefulTransactionOptions,
 } from './StatefulTransactionBuilder.js';
+export {
+  clearCollectionValueRecords,
+  commitCollectionValue,
+  getCollectionValueRecord,
+  observeCollectionValueChunks,
+  stageCollectionValue,
+  type AuthenticatedValueChunk,
+  type CollectionValueIdentity,
+  type CollectionValueRecord,
+  type CollectionValueSpend,
+  type CollectionValueWrite,
+} from './ValueChunkPersistence.js';
 export {
   ContractBundle, resolveCategoryFromAddress, resolveCategoryFromLockingBytecode, type ContractBundleOptions,
 } from './ContractBundle.js';
@@ -49,12 +75,15 @@ export {
   deriveLogicalCreateAddress, deriveLogicalAddressFromSeed,
   encodeLogicalIdentityCommitment, decodeLogicalIdentityCommitment,
   encodeLogicalFacetCommitment, decodeLogicalFacetCommitment,
-  buildLogicalIdentityCommitment, resolveLogicalIdentity, resolveSplitLogicalIdentity,
-  createLogicalIdentityUnlocker,
+  buildLogicalIdentityCommitment, resolveLogicalIdentity, resolveLogicalIdentityFromAddresses,
+  resolveLogicalIdentityByCategory, requireMsgSenderIdentity, isZeroMsgSenderCategory,
+  resolveSplitLogicalIdentity,
+  createLogicalIdentityUnlocker, isScidIdentityCommitment,
+  logicalIdentityAddressVariants, sameLogicalIdentityAddress, logicalIdentityBandKey,
   type LogicalIdentityCommitment, type ResolvedLogicalIdentity, type ResolvedSplitLogicalIdentity,
 } from './logical-identity.js';
 export {
-  upgrades, deployProxy, ProxyContract,
+  upgrades, deployProxy, ProxyContract, mockProxyDensityReserveBytes,
   type DeployProxyOptions, type ProxyInitialState,
 } from './upgrades.js';
 export {
@@ -91,8 +120,8 @@ export {
 export { ThreadManager, ThreadHandle, type SplitOptions, type MergeOptions } from './ThreadManager.js';
 export { resolveDeployReads, type DeployReadResolveOptions } from './resolveDeployReads.js';
 export {
-  SortedList, keyToSlot, keyToSlotMulti, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
-  encodeEntryCommitment, decodeEntryCommitment, headSentinelCommitment,
+  SortedList, getCachedSortedList, keyToSlot, keyToSlotMulti, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
+  encodeEntryCommitment, decodeEntryCommitment, isEmptyValueEntryCommitment, headSentinelCommitment,
   type SortedEntry, type NonMembershipPlan, type MembershipPlan, type InsertPlan, type DeletePlan, type UpdatePlan,
 } from './SortedList.js';
 export {

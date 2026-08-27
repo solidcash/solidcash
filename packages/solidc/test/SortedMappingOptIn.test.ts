@@ -87,6 +87,17 @@ describe('sorted mapping opt-in (vmap)', () => {
     assertSortedCompile(`${MAP} function f(int k) { pos[k] = P(1, 2); } }`, 'pos');
   });
 
+  it('keeps a struct-valued mapping field read read-only', () => {
+    const artifact = compileString(
+      'contract C() { struct P { int x; int y; } mapping(int => P) pos; '
+        + 'function f(int k) { require(pos[k].x >= 0); } }',
+      { forceStateful: true },
+    );
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses).toMatchObject([{
+      collection: 'pos', operations: ['read'],
+    }]);
+  });
+
   it('compiles an unbounded bytes value type (P5a: value in the 64 B tail; >64 B fails closed at the VM)', () => {
     const MAP = 'contract C() { mapping(int => bytes) blob;';
     assertSortedCompile(`${MAP} function f(int k, bytes b) { blob[k] = b; } }`, 'blob');
@@ -173,5 +184,52 @@ describe('sorted mapping keyed by msg.sender / tx.origin compiles (msgSender key
     expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses?.[0])
       .toMatchObject({ collection: 'owner', keyParams: ['k'], operations: ['write'] });
     expect(artifact.debug.bytecode).not.toBe('');
+  });
+});
+
+describe('sorted mapping array push leading-value param', () => {
+  it('injects __internal__leadingPushValue_0 on a chunkable vmap push', () => {
+    const artifact = compileString(`
+      contract C() {
+        struct E { uint8 t; bytes a; }
+        mapping(int => E[]) items;
+        function push(int k, E e) { this.items[k].push(e); }
+      }
+    `, { forceStateful: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'push');
+    expect(fn?.inputs.some((input) => input.name === '__internal__leadingPushValue_0')).toBe(true);
+    expect(fn?.inputs.some((input) => input.name === '__internal__valueWitness_0')).toBe(true);
+  });
+
+  it('publishes unconditional block-timestamp updates by parameter and struct field', () => {
+    const artifact = compileString(`pragma solidity ^0.8.20;
+      contract C {
+        struct Notice { uint8 kind; bytes payload; uint32 recordedAt; }
+        mapping(uint256 => Notice[]) notices;
+        function record(uint256 key, Notice memory notice) public {
+          notice.recordedAt = uint32(block.timestamp);
+          notices[key].push(notice);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'record')?.argumentFieldUpdates)
+      .toEqual([{
+        parameter: 'notice',
+        fieldPath: ['recordedAt'],
+        source: 'blockTimestamp',
+      }]);
+  });
+
+  it('does not inject leadingPushValue on a read-only vmap getter', () => {
+    const artifact = compileString(`
+      contract C() {
+        struct E { uint8 t; bytes a; }
+        mapping(int => E[]) items;
+        function get(int k) returns (E[] memory) { return this.items[k]; }
+      }
+    `, { forceStateful: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'get');
+    expect(fn?.inputs.some((input) => input.name === '__internal__valueWitness_0')).toBe(true);
+    expect(fn?.inputs.some((input) => input.name.startsWith('__internal__leadingPushValue_'))).toBe(false);
   });
 });

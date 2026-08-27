@@ -1,10 +1,13 @@
 import {
   BlockNode,
+  BinaryOpNode,
   BranchNode,
   AssignNode,
   ArrayAccessNode,
   ArrayAssignNode,
   ArrayDeleteNode,
+  ArrayPopNode,
+  ArrayPushNode,
   ContractNode,
   EmitStatementNode,
   ExpressionNode,
@@ -14,6 +17,7 @@ import {
   FunctionModifier,
   IdentifierNode,
   IndirectCallNode,
+  IntLiteralNode,
   LiteralNode,
   MappingAccessNode,
   MappingAssignNode,
@@ -31,7 +35,8 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
-import { Type } from '@solidcash/utils';
+import { BinaryOperator } from '../ast/Operator.js';
+import { IntType, Type } from '@solidcash/utils';
 
 interface Candidate {
   fn: FunctionDefinitionNode;
@@ -46,6 +51,8 @@ interface JournalEntry {
   keyParameters: string[];
   journalName: string;
   valueType: Type;
+  /** The helper can change this entry; read-only journal values never require a physical write-back. */
+  mutates: boolean;
   /** Scope in which the source helper legally accessed an inherited private collection. */
   sourceScope?: string;
 }
@@ -53,6 +60,8 @@ interface JournalEntry {
 interface MultiCandidate {
   fn: FunctionDefinitionNode;
   entries: JournalEntry[];
+  /** Source ABI results carried after the pending journal values in the helper's combined return tuple. */
+  resultTypes: Type[];
 }
 
 /** Strip the compiler's synthetic batch-clone prefix so a diagnostic names the handler the user wrote. */
@@ -60,20 +69,41 @@ const sourceHandlerName = (name: string): string => name
   .replace(/^__message_bus_(?:resource|handler|dynamic|array|graph)_/, '')
   .replace(/_self_alias$/, '');
 
+interface ActiveMultiCacheLocal {
+  entry: JournalEntry;
+  name: string;
+  keys: ExpressionNode[];
+  keyIdentity: string[];
+  index: number;
+  /** At least one helper sharing this physical cache can change it. */
+  mutates: boolean;
+}
+
+interface ActiveMultiCacheBinding {
+  entry: JournalEntry;
+  local: ActiveMultiCacheLocal;
+  /** This particular helper can change the shared entry. */
+  mutates: boolean;
+  /** Earlier physical caches whose runtime key tuple can identify the same entry. */
+  runtimeAliases?: ActiveMultiCacheLocal[];
+  /** Per-call value selected from `local` or one of `runtimeAliases`. */
+  runtimeValueName?: string;
+  /** Index of the physical cache which supplied `runtimeValueName`. */
+  runtimeOwnerName?: string;
+  /** Index of the first active mutating cache which owns settlement for `runtimeValueName`.
+   * This can differ from `runtimeOwnerName`: an earlier read lane may supply the authenticated value while a
+   * later write lane must own the transition output. */
+  runtimeMutationOwnerName?: string;
+}
+
 interface ActiveMultiCache {
   target: MultiCandidate;
-  locals: Array<{
-    entry: JournalEntry;
-    name: string;
-    keys: ExpressionNode[];
-    keyIdentity: string[];
-  }>;
-  calls: WeakMap<FunctionCallNode, Array<{
-    entry: JournalEntry;
-    name: string;
-    keys: ExpressionNode[];
-  }>>;
+  locals: ActiveMultiCacheLocal[];
+  calls: WeakMap<FunctionCallNode, ActiveMultiCacheBinding[]>;
 }
+
+const COLLECTION_CACHE_LOADED_MASK = '__cj_cache_loaded_mask';
+const COLLECTION_CACHE_DIRTY_MASK = '__cj_cache_dirty_mask';
 
 /** Sink a cloned collection-cache flush immediately before every non-tail control-flow return. */
 class FlushCollectionCachesBeforeReturns extends AstTraversal {
@@ -111,6 +141,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   private current?: Candidate;
   private currentMulti?: MultiCandidate;
   private activeMultiCaches = new Map<FunctionDefinitionNode, ActiveMultiCache>();
+  /** Route dispatchers load only selected-row caches; selected compiler handlers already own their resources. */
+  private lazyMultiCaches = true;
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -167,12 +199,28 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       }
     }
     for (const fn of node.functions) {
-      if (!fn.body || fn.returnTypes.length !== 0
+      const statements = fn.body?.statements ?? [];
+      const terminalReturn = statements[statements.length - 1];
+      let returnCount = 0;
+      this.walk(fn.body, (candidate) => { if (candidate instanceof ReturnNode) returnCount += 1; });
+      // A compiler-owned pooled route clone may need two independent channels at its one physical exit: pending
+      // collection values for the route journal, followed by the source ABI result for its authenticated row.
+      // This is not specific to outgoing graph/effect handlers: a leaf getter sharing a route-wide collection
+      // pool has exactly the same frame. Leaving that getter out of the journal strands its entry read inside the
+      // OP_INVOKE body, where a decoded row expression allocates a second, unbound physical entry slot and returns
+      // the collection default. Keep the admission deliberately structural: one top-level terminal return, no
+      // early branch. `forceCollectionJournalPool` is compiler-owned and marks precisely these shared route frames.
+      const pooledTerminalResult = !!(fn.graphEmissionHandler || fn.forceCollectionJournalPool)
+        && fn.returnTypes.length > 0
+        && terminalReturn instanceof ReturnNode && returnCount === 1
+        && terminalReturn.expressions.length === fn.returnTypes.length;
+      if (!fn.body || (fn.returnTypes.length !== 0 && !pooledTerminalResult)
         || !(fn.modifiers.includes(FunctionModifier.INTERNAL)
           || fn.modifiers.includes(FunctionModifier.PRIVATE))
         // Compiler-owned graph clones retain `inheritedFrom` so private storage access is checked in the source
         // declaration's scope. They are nevertheless concrete helpers owned by this route and must be journalled.
-        || (fn.inheritedFrom && !fn.graphEmissionHandler) || constructorCalls.has(fn.name)
+        || (fn.inheritedFrom && !fn.graphEmissionHandler && !fn.forceCollectionJournalPool)
+        || constructorCalls.has(fn.name)
         || (nameCounts.get(fn.name) ?? 0) > 1) continue;
       // X118. An event emitted inside a value-threaded OP_INVOKE handler is dropped at the subroutine exit, so
       // code generation refuses this shape outright. It compiles on the pre-existing inline path, so do not
@@ -197,8 +245,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
           || candidate instanceof MappingDeleteNode) {
           if ((candidate instanceof MappingAccessNode && candidate.arrayIndex)
-            || (candidate instanceof MappingAssignNode
-              && (candidate.arrayIndex || candidate.arrayPush || candidate.arrayPop))) unsupported = true;
+            || (candidate instanceof MappingAssignNode && candidate.arrayIndex)) unsupported = true;
           accesses.push({ name: candidate.name, keys: candidate.keys, node: candidate });
         } else if (candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
           && collections.has(candidate.array.name)) {
@@ -224,18 +271,24 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const distinct = new Map<string, JournalEntry>();
       for (const access of leafAccesses) {
         const collection = collections.get(access.name);
-        if (!collection || collection.innermostValueType.toString().endsWith('[]')) {
+        if (!collection) {
           unsupported = true;
           break;
         }
         const keyParameters = access.keyParameters as string[];
         const identity = `${access.name}[${keyParameters.join(',')}]`;
-        if (!distinct.has(identity)) {
+        const mutates = !(access.node instanceof MappingAccessNode
+          || access.node instanceof ArrayAccessNode);
+        const existing = distinct.get(identity);
+        if (existing) {
+          existing.mutates ||= mutates;
+        } else {
           distinct.set(identity, {
             collection: access.name,
             keyParameters,
             journalName: `__cj_${fn.name}_${distinct.size}`,
             valueType: collection.innermostValueType,
+            mutates,
             sourceScope: fn.inheritedFrom,
           });
         }
@@ -251,7 +304,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.walk(fn.body, (candidate) => {
         if (candidate instanceof ReturnNode) hasEarlyReturn = true;
       });
-      if (hasEarlyReturn) {
+      if (hasEarlyReturn && !pooledTerminalResult) {
         throw new Error(
           `Collection journal helper '${sourceHandlerName(fn.name)}' cannot contain an early return; `
           + 'its journalled entry values are flushed only at the single function exit',
@@ -259,7 +312,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       }
       if (distinct.size > 1 || fn.forceCollectionJournalPool) {
         this.multiCandidates.set(`${fn.name}/${fn.parameters.length}`, {
-          fn, entries: [...distinct.values()],
+          fn, entries: [...distinct.values()], resultTypes: pooledTerminalResult ? [...fn.returnTypes] : [],
         });
         continue;
       }
@@ -272,6 +325,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
       console.error('collection-journal-message-bus-candidates', JSON.stringify({
+        contract: node.name,
         candidates: [...this.candidates.keys()],
         multiCandidates: [...this.multiCandidates.entries()].map(([key, candidate]) => ({
           key,
@@ -281,11 +335,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
             journalName: entry.journalName,
           })),
         })),
-        graphFunctions: node.functions.filter((fn) => fn.graphEmissionHandler).map((fn) => ({
-          name: fn.name, arity: fn.parameters.length, returns: fn.returnTypes.map((type) => type.toString()),
-          statements: fn.body?.statements?.map((statement) => statement.constructor.name),
-        })),
-      }, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
+        graphFunctions: node.functions.filter((fn) => fn.graphEmissionHandler).map((fn) => fn.name),
+      }, (_key, value) => typeof value === 'bigint' ? value.toString() : value));
     }
 
     // Rewrite call sites before changing arities.
@@ -296,12 +347,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.activeMultiCaches = this.currentMulti
         ? new Map()
         : this.prepareMultiCaches(fn.body, new Set(fn.parameters.map(({ name }) => name)));
+      this.lazyMultiCaches = !(fn.graphEmissionHandler || fn.forceCollectionJournalPool);
       fn.body = this.rewriteBlock(fn.body);
-      if (this.activeMultiCaches.size > 0) this.installMultiCaches(fn.body);
+      if (this.activeMultiCaches.size > 0) this.installMultiCaches(fn);
     }
     this.current = undefined;
     this.currentMulti = undefined;
     this.activeMultiCaches = new Map();
+    this.lazyMultiCaches = true;
 
     // Turn each selected helper into a state-independent value handler. It is
     // now safe for normal OP_DEFINE/OP_INVOKE lowering.
@@ -322,6 +375,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       candidate.fn.collectionJournal = true;
     }
     for (const candidate of this.multiCandidates.values()) {
+      const sourceReturn = candidate.resultTypes.length > 0
+        ? candidate.fn.body!.statements!.pop() as ReturnNode : undefined;
       candidate.fn.parameters.unshift(...candidate.entries.map((entry) =>
         this.at(new ParameterNode(entry.valueType, entry.journalName, []), candidate.fn)));
       for (const parameter of candidate.fn.parameters) {
@@ -331,16 +386,22 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         // as its last use; OP_ROLL then removes the declared argument from the OP_INVOKE frame and the later
         // conditional encoder reads an adjacent empty journal value. Keep the small declared handler frame
         // stable through its single exit, just as the entry-key parameters already are.
-        if (candidate.fn.graphEmissionHandler
+        if (candidate.fn.graphEmissionHandler || candidate.fn.forceCollectionJournalPool
           || candidate.entries.some((entry) => entry.keyParameters.includes(parameter.name))) {
           parameter.syntheticallyUsed = true;
         }
       }
-      candidate.fn.returnTypes = candidate.entries.map((entry) => entry.valueType);
+      candidate.fn.returnTypes = [
+        ...candidate.entries.map((entry) => entry.valueType),
+        ...candidate.resultTypes,
+      ];
+      candidate.fn.returnNames = [];
       const body = candidate.fn.body!;
       body.statements ??= [];
-      body.statements.push(this.at(new ReturnNode(candidate.entries.map((entry) =>
-        this.at(new IdentifierNode(entry.journalName), candidate.fn))), candidate.fn));
+      body.statements.push(this.at(new ReturnNode([
+        ...candidate.entries.map((entry) => this.at(new IdentifierNode(entry.journalName), candidate.fn)),
+        ...(sourceReturn?.expressions ?? []),
+      ]), sourceReturn ?? candidate.fn));
       // This pass runs between semantic traversals. The first traversal's
       // entry metadata describes the pre-lowered storage body; leaving it on
       // the node would make the second traversal retain vmap witness parameters
@@ -397,9 +458,35 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const target = this.resolveSingle(statement.call.identifier.name, statement.call.parameters.length);
       if (target) return this.rewriteCall(statement.call, target);
     }
+    if (statement instanceof AssignNode && statement.expression instanceof FunctionCallNode) {
+      const target = this.resolveMulti(
+        statement.expression.identifier.name, statement.expression.parameters.length,
+      );
+      if (target?.resultTypes.length === 1) {
+        return this.rewriteMultiResultCall(statement.expression, target, [{
+          name: statement.identifier.name,
+          type: target.resultTypes[0],
+          existing: true,
+        }]);
+      }
+    }
+    if (statement instanceof TupleAssignmentNode && statement.tuple instanceof FunctionCallNode) {
+      const target = this.resolveMulti(statement.tuple.identifier.name, statement.tuple.parameters.length);
+      if (target && target.resultTypes.length === statement.elements.length) {
+        return this.rewriteMultiResultCall(statement.tuple, target, statement.elements);
+      }
+    }
     if (this.currentMulti && statement instanceof MappingAssignNode) {
       const entry = this.multiEntry(statement.name, statement.keys);
       if (entry) {
+        if (statement.arrayPush) {
+          const push = this.at(new ArrayPushNode(
+            entry.journalName, this.rewriteExpression(statement.expression),
+          ), statement);
+          push.noArg = statement.noArg;
+          return push;
+        }
+        if (statement.arrayPop) return this.at(new ArrayPopNode(entry.journalName), statement);
         return this.at(new AssignNode(
           this.at(new IdentifierNode(entry.journalName), statement),
           this.rewriteExpression(statement.expression),
@@ -435,6 +522,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     }
     if (this.current && statement instanceof MappingAssignNode
       && statement.name === this.current.collection) {
+      if (statement.arrayPush) {
+        const push = this.at(new ArrayPushNode(
+          this.current.journalName, this.rewriteExpression(statement.expression),
+        ), statement);
+        push.noArg = statement.noArg;
+        return push;
+      }
+      if (statement.arrayPop) return this.at(new ArrayPopNode(this.current.journalName), statement);
       return this.at(new AssignNode(
         this.at(new IdentifierNode(this.current.journalName), statement),
         this.rewriteExpression(statement.expression),
@@ -608,6 +703,17 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   }
 
   private rewriteMultiCall(call: FunctionCallNode, target: MultiCandidate): StatementNode[] {
+    if (target.resultTypes.length > 0) {
+      throw new Error(`Result-producing collection journal '${target.fn.name}' requires an assignment target`);
+    }
+    return [this.rewriteMultiResultCall(call, target, [])];
+  }
+
+  private rewriteMultiResultCall(
+    call: FunctionCallNode,
+    target: MultiCandidate,
+    resultElements: TupleAssignmentNode['elements'],
+  ): StatementNode {
     const cache = this.activeMultiCaches.get(target.fn);
     if (!cache) {
       throw new Error(`Missing function-scoped collection journal for '${target.fn.name}'`);
@@ -618,24 +724,164 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const invoked = this.at(new FunctionCallNode(
       this.at(new IdentifierNode(call.identifier.name), call),
       [
-        ...callLocals.map(({ name }) => this.at(new IdentifierNode(name), call)),
+        ...callLocals.map(({ local, runtimeValueName }) =>
+          this.at(new IdentifierNode(runtimeValueName ?? local.name), call)),
         ...originalArgs,
       ],
     ), call);
-    // A pooled handler that touches one entry still returns a single value, not a one-element tuple.
-    if (callLocals.length === 1) {
-      return [this.at(new AssignNode(
-        this.at(new IdentifierNode(callLocals[0].name), call), invoked,
-      ), call)];
+    const loadLocal = (local: ActiveMultiCacheLocal): StatementNode => {
+      const read = this.at(new MappingAccessNode(local.entry.collection, local.keys.map((key) =>
+        cloneNode(key) as ExpressionNode)), call);
+      read.fromModifier = local.entry.sourceScope;
+      const load = this.at(new AssignNode(
+        this.at(new IdentifierNode(local.name), call), read,
+      ), call);
+      return this.at(new BranchNode(
+        this.cacheMaskIsClear(COLLECTION_CACHE_LOADED_MASK, local.index, call),
+        this.at(new BlockNode([
+          load,
+          this.setCacheMaskBit(COLLECTION_CACHE_LOADED_MASK, local.index, call),
+        ]), call),
+      ), call);
+    };
+    const runtimeDeclarations: StatementNode[] = [];
+    const runtimeSelections: StatementNode[] = [];
+    for (const binding of callLocals) {
+      const {
+        runtimeAliases, runtimeMutationOwnerName, runtimeOwnerName, runtimeValueName,
+      } = binding;
+      if (!runtimeAliases?.length || !runtimeOwnerName || !runtimeValueName) continue;
+      runtimeDeclarations.push(this.at(new VariableDefinitionNode(
+        binding.entry.valueType, [], runtimeValueName,
+        createDefaultValueExpression(binding.entry.valueType, call.location),
+      ), call));
+      runtimeDeclarations.push(this.at(new VariableDefinitionNode(
+        new IntType(false, 256), [], runtimeOwnerName,
+        this.at(new IntLiteralNode(BigInt(binding.local.index)), call),
+      ), call));
+      if (binding.mutates && runtimeMutationOwnerName) {
+        runtimeDeclarations.push(this.at(new VariableDefinitionNode(
+          new IntType(false, 256), [], runtimeMutationOwnerName,
+          this.at(new IntLiteralNode(BigInt(binding.local.index)), call),
+        ), call));
+      }
+      let selection = this.at(new BlockNode([
+        loadLocal(binding.local),
+        this.at(new AssignNode(
+          this.at(new IdentifierNode(runtimeValueName), call),
+          this.at(new IdentifierNode(binding.local.name), call),
+        ), call),
+      ]), call);
+      for (let index = runtimeAliases.length - 1; index >= 0; index--) {
+        const alias = runtimeAliases[index];
+        selection = this.at(new BlockNode([this.at(new BranchNode(
+          this.runtimeAliasCondition(binding.local, alias, call),
+          this.at(new BlockNode([
+            this.at(new AssignNode(
+              this.at(new IdentifierNode(runtimeValueName), call),
+              this.at(new IdentifierNode(alias.name), call),
+            ), call),
+            this.at(new AssignNode(
+              this.at(new IdentifierNode(runtimeOwnerName), call),
+              this.at(new IntLiteralNode(BigInt(alias.index)), call),
+            ), call),
+          ]), call),
+          selection,
+        ), call)]), call);
+      }
+      runtimeSelections.push(...(selection.statements ?? []));
+      if (binding.mutates && runtimeMutationOwnerName) {
+        let mutationSelection = this.at(new BlockNode([]), call);
+        for (let index = runtimeAliases.length - 1; index >= 0; index--) {
+          const alias = runtimeAliases[index];
+          mutationSelection = this.at(new BlockNode([this.at(new BranchNode(
+            this.runtimeAliasCondition(
+              binding.local, alias, call, COLLECTION_CACHE_DIRTY_MASK,
+            ),
+            this.at(new BlockNode([this.at(new AssignNode(
+              this.at(new IdentifierNode(runtimeMutationOwnerName), call),
+              this.at(new IntLiteralNode(BigInt(alias.index)), call),
+            ), call)]), call),
+            mutationSelection,
+          ), call)]), call);
+        }
+        runtimeSelections.push(...(mutationSelection.statements ?? []));
+      }
     }
-    const capture = this.at(new TupleAssignmentNode(
-      callLocals.map(({ entry, name }) => ({
-        name, type: entry.valueType, existing: true,
-      })),
-      invoked,
-      true,
-    ), call);
-    return [capture];
+    const ordinaryLocals = [...new Map(callLocals
+      .filter((binding) => !binding.runtimeValueName)
+      .map((binding) => [binding.local.name, binding.local])).values()];
+    const loads = this.lazyMultiCaches ? ordinaryLocals.map(loadLocal) : [];
+    // A void pooled handler touching one entry still returns a single journal value, not a one-element tuple.
+    let capture: StatementNode;
+    if (callLocals.length === 1 && resultElements.length === 0) {
+      capture = this.at(new AssignNode(
+        this.at(new IdentifierNode(
+          callLocals[0].runtimeValueName ?? callLocals[0].local.name,
+        ), call), invoked,
+      ), call);
+    } else {
+      capture = this.at(new TupleAssignmentNode(
+        [
+          ...callLocals.map(({ entry, local, mutates, runtimeValueName }) => ({
+            name: runtimeValueName ?? local.name, type: entry.valueType, existing: true,
+            // A read-only helper returns the cache solely because every pooled helper shares one physical tuple
+            // convention. Its value is provably unchanged, so discard that tuple field instead of rotating it
+            // through the route's deep frame and writing it back to the same local. Writers still replace the
+            // shared cache and are marked dirty below.
+            skip: !mutates,
+          })),
+          ...resultElements,
+        ],
+        invoked,
+        true,
+      ), call);
+    }
+    const ordinaryDirties = [...new Map(callLocals
+      .filter(({ mutates, runtimeValueName }) => mutates && !runtimeValueName)
+      .map(({ local }) => [local.name, local])).values()]
+      .map((local) => this.setCacheMaskBit(COLLECTION_CACHE_DIRTY_MASK, local.index, call));
+    const runtimeDirties = callLocals.flatMap((binding): StatementNode[] => {
+      if (!binding.mutates || !binding.runtimeValueName || !binding.runtimeOwnerName
+        || !binding.runtimeMutationOwnerName) return [];
+      const owners = [...new Map([
+        binding.local, ...(binding.runtimeAliases ?? []),
+      ].map((local) => [local.index, local])).values()];
+      const synchronizeValueSource = owners.map((owner) => this.at(new BranchNode(
+        this.at(new BinaryOpNode(
+          this.at(new IdentifierNode(binding.runtimeOwnerName!), call),
+          BinaryOperator.EQ,
+          this.at(new IntLiteralNode(BigInt(owner.index)), call),
+        ), call),
+        this.at(new BlockNode([
+          this.at(new AssignNode(
+            this.at(new IdentifierNode(owner.name), call),
+            this.at(new IdentifierNode(binding.runtimeValueName!), call),
+          ), call),
+          this.setCacheMaskBit(COLLECTION_CACHE_LOADED_MASK, owner.index, call),
+        ]), call),
+      ), call));
+      const settleMutationOwner = owners.map((owner) => this.at(new BranchNode(
+        this.at(new BinaryOpNode(
+          this.at(new IdentifierNode(binding.runtimeMutationOwnerName!), call),
+          BinaryOperator.EQ,
+          this.at(new IntLiteralNode(BigInt(owner.index)), call),
+        ), call),
+        this.at(new BlockNode([
+          this.at(new AssignNode(
+            this.at(new IdentifierNode(owner.name), call),
+            this.at(new IdentifierNode(binding.runtimeValueName!), call),
+          ), call),
+          this.setCacheMaskBit(COLLECTION_CACHE_LOADED_MASK, owner.index, call),
+          this.setCacheMaskBit(COLLECTION_CACHE_DIRTY_MASK, owner.index, call),
+        ]), call),
+      ), call));
+      return [...synchronizeValueSource, ...settleMutationOwner];
+    });
+    return this.at(new BlockNode([
+      ...runtimeDeclarations, ...loads, ...runtimeSelections, capture,
+      ...ordinaryDirties, ...runtimeDirties,
+    ]), call);
   }
 
   private prepareMultiCaches(
@@ -648,19 +894,20 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     // one collection it allocated a separate cache local - and therefore a separate vmap slot - per handler for
     // the same entry, which the SDK reports as a duplicate upsert slot.
     const sharedLocals: ActiveMultiCache['locals'] = [];
-    const calls: FunctionCallStatementNode[] = [];
+    const calls: FunctionCallNode[] = [];
+    let runtimeAliasCallOrdinal = 0;
     this.walk(body, (node) => {
-      if (node instanceof FunctionCallStatementNode) calls.push(node);
+      if (node instanceof FunctionCallNode
+        && this.resolveMulti(node.identifier.name, node.parameters.length)) calls.push(node);
     });
-    for (const statement of calls) {
-      if (!(statement instanceof FunctionCallStatementNode)) continue;
+    for (const call of calls) {
       const target = this.resolveMulti(
-        statement.call.identifier.name, statement.call.parameters.length,
+        call.identifier.name, call.parameters.length,
       );
       if (!target) continue;
       const keysFor = (entry: JournalEntry): ExpressionNode[] => entry.keyParameters.map((name) => {
         const parameterIndex = target.fn.parameters.findIndex((parameter) => parameter.name === name);
-        return cloneNode(statement.call.parameters[parameterIndex]) as ExpressionNode;
+        return cloneNode(call.parameters[parameterIndex]) as ExpressionNode;
       });
       const identitiesFor = (keys: ExpressionNode[]): string[] => keys.map((key) => {
         const identity = this.canonicalCacheKey(key, wrapperParameters);
@@ -679,7 +926,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         calls: new WeakMap(),
       };
       if (!caches.has(target.fn)) caches.set(target.fn, cache);
-      const callLocals = target.entries.map((entry) => {
+      const earlierLocals = [...cache.locals];
+      const runtimeAliasOrdinal = target.fn.collectionJournalRuntimeAliases
+        ? runtimeAliasCallOrdinal++ : undefined;
+      const callLocals = target.entries.map((entry, entryIndex): ActiveMultiCacheBinding => {
         const keys = keysFor(entry);
         const keyIdentity = identitiesFor(keys);
         const prior = cache.locals.find((local) =>
@@ -687,24 +937,50 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
           && local.keyIdentity.length === keyIdentity.length
           && local.keyIdentity.every((candidate, keyIndex) =>
             candidate === keyIdentity[keyIndex]));
-        if (prior) return prior;
-        const local = {
+        let local: ActiveMultiCacheLocal;
+        if (prior) {
+          prior.mutates ||= entry.mutates;
+          local = prior;
+        } else {
+          local = {
+            entry,
+            // Pool-scoped, not callee-scoped: the name identifies the entry inside this wrapper.
+            name: `__cj_cache_${sharedLocals.length}`,
+            keys,
+            keyIdentity,
+            index: sharedLocals.length,
+            mutates: entry.mutates,
+          };
+          cache.locals.push(local);
+        }
+        const runtimeAliases = runtimeAliasOrdinal === undefined ? [] : earlierLocals.filter((candidate) =>
+          candidate !== local
+          && candidate.entry.collection === entry.collection
+          && candidate.keys.length === keys.length);
+        // A later writer can select an earlier cache which was introduced by a read-only handler. Promote that
+        // physical cache to a possible writer so installMultiCaches reserves its dirty bit and conditional flush.
+        if (entry.mutates) for (const alias of runtimeAliases) alias.mutates = true;
+        return {
           entry,
-          // Pool-scoped, not callee-scoped: the name identifies the entry inside this wrapper.
-          name: `__cj_cache_${sharedLocals.length}`,
-          keys,
-          keyIdentity,
+          local,
+          mutates: entry.mutates,
+          ...(runtimeAliases.length > 0 && runtimeAliasOrdinal !== undefined ? {
+            runtimeAliases,
+            runtimeValueName: `__cj_runtime_value_${runtimeAliasOrdinal}_${entryIndex}`,
+            runtimeOwnerName: `__cj_runtime_owner_${runtimeAliasOrdinal}_${entryIndex}`,
+            ...(entry.mutates ? {
+              runtimeMutationOwnerName: `__cj_runtime_mutation_owner_${runtimeAliasOrdinal}_${entryIndex}`,
+            } : {}),
+          } : {}),
         };
-        cache.locals.push(local);
-        return local;
       });
-      cache.calls.set(statement.call, callLocals);
+      cache.calls.set(call, callLocals);
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1'
       && caches.size > 0) {
       console.error('collection-journal-message-bus-pool', JSON.stringify({
         pools: [...caches.entries()].map(([key, cache]) => ({
-          key,
+          key: key.name,
           targetEntries: cache.target.entries.map((entry) => ({
             collection: entry.collection,
             keys: entry.keyParameters,
@@ -714,9 +990,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
             name: local.name,
             collection: local.entry.collection,
             keyIdentity: local.keyIdentity,
+            mutates: local.mutates,
           })),
         })),
-      }, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
+      }, (_key, value) => typeof value === 'bigint' ? value.toString() : value));
     }
     return caches;
   }
@@ -743,25 +1020,66 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     return undefined;
   }
 
-  private installMultiCaches(body: BlockNode): void {
-    // Every cache shares one locals pool, so collapse to the distinct locals before emitting reads/write-backs.
+  private installMultiCaches(fn: FunctionDefinitionNode): void {
+    const body = fn.body!;
+    // Every cache shares one locals pool, so collapse to the distinct locals before emitting declarations and
+    // write-backs. Values are loaded lazily at the rewritten call site: a compiler-authored route contains every
+    // possible handler, but only the selected row has a physical entry resource. Loading every cache at function
+    // entry made an untaken handler validate a dummy slot (and writing every cache created phantom upserts).
     const pooled = [...new Set([...this.activeMultiCaches.values()].flatMap((cache) => cache.locals))];
     const caches = [{ locals: pooled }];
     const declarations = caches.flatMap((cache) => cache.locals.map(({ entry, name, keys }) => {
-      const read = this.at(new MappingAccessNode(entry.collection, keys.map((key) =>
-        cloneNode(key) as ExpressionNode)), body);
-      read.fromModifier = entry.sourceScope;
-      return this.at(new VariableDefinitionNode(entry.valueType, [], name, read), body);
+      let initial: ExpressionNode;
+      if (this.lazyMultiCaches) {
+        initial = createDefaultValueExpression(entry.valueType, body.location);
+      } else {
+        const read = this.at(new MappingAccessNode(entry.collection, keys.map((key) =>
+          cloneNode(key) as ExpressionNode)), body);
+        read.fromModifier = entry.sourceScope;
+        initial = read;
+      }
+      return this.at(new VariableDefinitionNode(entry.valueType, [], name, initial), body);
     }));
-    const writes = caches.flatMap((cache) => cache.locals.map(({ entry, name, keys }) => {
+    if (this.lazyMultiCaches && pooled.length > 0) {
+      const loadedWordCount = Math.ceil((Math.max(...pooled.map(({ index }) => index)) + 1) / 256);
+      for (let word = 0; word < loadedWordCount; word += 1) {
+        declarations.push(this.at(new VariableDefinitionNode(
+          new IntType(false, 256), [], `${COLLECTION_CACHE_LOADED_MASK}_${word}`,
+          this.at(new IntLiteralNode(0n), body),
+        ), body));
+      }
+    }
+    if (pooled.some(({ mutates }) => mutates)) {
+      const dirtyWordCount = Math.ceil((Math.max(...pooled.filter(({ mutates }) => mutates)
+        .map(({ index }) => index)) + 1) / 256);
+      for (let word = 0; word < dirtyWordCount; word += 1) {
+        declarations.push(
+          this.at(new VariableDefinitionNode(
+            new IntType(false, 256), [], `${COLLECTION_CACHE_DIRTY_MASK}_${word}`,
+            this.at(new IntLiteralNode(0n), body),
+          ), body),
+        );
+      }
+    }
+    // These declarations are prepended as one compiler-owned frame before any rewritten handler call. An
+    // invoked handler may leave runtime-only values above the statically tracked route stack, so codegen must
+    // address this complete cache/mask frame by its stable bottom ordinals rather than by fixed top depths.
+    fn.messageBusRouteFrameLocals = declarations.map(({ name }) => name);
+    const writes = caches.flatMap((cache) => cache.locals.filter(({ mutates }) => mutates)
+      .map(({ entry, name, keys, index }) => {
       const write = this.at(new MappingAssignNode(
         entry.collection,
         keys.map((key) => cloneNode(key) as ExpressionNode),
         this.at(new IdentifierNode(name), body),
       ), body);
       write.fromModifier = entry.sourceScope;
-      return write;
-    }));
+      const flush = this.at(new BranchNode(
+        this.cacheMaskIsSet(COLLECTION_CACHE_DIRTY_MASK, index, body),
+        this.at(new BlockNode([write]), body),
+      ), body);
+      flush.preserveConditionalEntryWrites = true;
+      return flush;
+      }));
     const statements = body.statements ?? [];
     // Keep a top-level tail return structurally visible to the later all-paths-return analysis. Its flush is
     // inserted immediately before it; only earlier/nested returns need block replacement.
@@ -778,6 +1096,70 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       tail.unshift(rewritten.pop()!);
     }
     body.statements = [...declarations, ...rewritten, ...writes, ...(tailReturn ? [tailReturn] : tail)];
+  }
+
+  private cacheMaskBit(index: number, source: Node): IntLiteralNode {
+    return this.at(new IntLiteralNode(1n << BigInt(index % 256)), source);
+  }
+
+  private runtimeAliasCondition(
+    current: ActiveMultiCacheLocal,
+    candidate: ActiveMultiCacheLocal,
+    source: Node,
+    maskName = COLLECTION_CACHE_LOADED_MASK,
+  ): ExpressionNode {
+    const keyEquality = current.keys.map((key, index) => this.at(new BinaryOpNode(
+      cloneNode(key) as ExpressionNode,
+      BinaryOperator.EQ,
+      cloneNode(candidate.keys[index]) as ExpressionNode,
+    ), source)).reduce((combined, equality) => this.at(new BinaryOpNode(
+      combined,
+      BinaryOperator.AND,
+      equality,
+    ), source));
+    return this.at(new BinaryOpNode(
+      this.cacheMaskIsSet(maskName, candidate.index, source),
+      BinaryOperator.AND,
+      keyEquality,
+    ), source);
+  }
+
+  private cacheMaskIsSet(name: string, index: number, source: Node): ExpressionNode {
+    const wordName = `${name}_${Math.floor(index / 256)}`;
+    return this.at(new BinaryOpNode(
+      this.at(new BinaryOpNode(
+        this.at(new IdentifierNode(wordName), source),
+        BinaryOperator.BIT_AND,
+        this.cacheMaskBit(index, source),
+      ), source),
+      BinaryOperator.NE,
+      this.at(new IntLiteralNode(0n), source),
+    ), source);
+  }
+
+  private cacheMaskIsClear(name: string, index: number, source: Node): ExpressionNode {
+    const wordName = `${name}_${Math.floor(index / 256)}`;
+    return this.at(new BinaryOpNode(
+      this.at(new BinaryOpNode(
+        this.at(new IdentifierNode(wordName), source),
+        BinaryOperator.BIT_AND,
+        this.cacheMaskBit(index, source),
+      ), source),
+      BinaryOperator.EQ,
+      this.at(new IntLiteralNode(0n), source),
+    ), source);
+  }
+
+  private setCacheMaskBit(name: string, index: number, source: Node): AssignNode {
+    const wordName = `${name}_${Math.floor(index / 256)}`;
+    return this.at(new AssignNode(
+      this.at(new IdentifierNode(wordName), source),
+      this.at(new BinaryOpNode(
+        this.at(new IdentifierNode(wordName), source),
+        BinaryOperator.BIT_OR,
+        this.cacheMaskBit(index, source),
+      ), source),
+    ), source);
   }
 
   private multiEntry(collection: string, keys: ExpressionNode[]): JournalEntry | undefined {

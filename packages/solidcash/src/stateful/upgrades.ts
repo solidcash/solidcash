@@ -6,7 +6,10 @@ import {
 import {
   ContractFactory, DeployedContract, DeployContractOptions,
 } from './ContractFactory.js';
-import { StatefulContract, StatefulFunctionCall, ContractRunner } from './StatefulContract.js';
+import {
+  StatefulContract, StatefulFunctionCall, ContractRunner, type ContractEventName, type EventListener,
+  type EventLog, type StatefulContractEvent,
+} from './StatefulContract.js';
 import Signer from '../Signer.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import { FunctionArgument } from '../Argument.js';
@@ -14,7 +17,10 @@ import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
-import { findDeploymentByAddress, registerDeployment } from './deployment-registry.js';
+import {
+  findDeploymentByAddress, registerDeployment, registeredPhysicalLockingBytecode,
+} from './deployment-registry.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -29,6 +35,39 @@ type ForwardMode = 'baked' | 'param' | 'fallback';
 interface ForwardShape {
   name: string;
   mode: ForwardMode;
+}
+
+// Event metadata belongs to the implementation, while event UTXOs belong to the proxy category. Keep a shared,
+// read-only facade per state holder rather than mutating the operational proxy artifact (which would also change
+// delegate transaction planning). Connected ProxyContract handles therefore observe the same subscriptions.
+const proxyEventFacades = new WeakMap<object, StatefulContract>();
+
+/**
+ * Extra CREATE2 salt bytes the default mock proxy carries as a BCH-2026 density reserve.
+ * Proxy unlocks are tiny (~260 bytes) while a delegate setter still runs its full body against
+ * that input's budget (`operationCostBudgetPerByte * densityControlLength`). Size the reserve
+ * from the largest non-route function body so admin calls clear the mock 10_000/byte budget.
+ */
+export function mockProxyDensityReserveBytes(
+  maximumInputBytes: number | undefined,
+  implArtifact?: {
+    functionBodies?: Record<string, string>;
+    messageBus?: { selector?: string };
+  },
+): number {
+  if ((maximumInputBytes ?? 10_000) <= 10_000) return 0;
+  let hasAdminBody = false;
+  const routeSelector = implArtifact?.messageBus?.selector;
+  for (const [selector, body] of Object.entries(implArtifact?.functionBodies ?? {})) {
+    if (selector === routeSelector || selector === '53434231') continue;
+    if (typeof body !== 'string') continue;
+    const bytes = body.length / 2;
+    if (bytes > 16_000) continue;
+    if (bytes > 1_000) hasAdminBody = true;
+  }
+  // CREATE2 salt cap. A 10KB Marketplace setter through the default proxy costs
+  // ~7.6M ops; 520 reserved bytes yields ~9.3M budget at 10_000/byte.
+  return hasAdminBody || !implArtifact?.functionBodies ? 520 : 96;
 }
 
 export interface DeployProxyOptions {
@@ -110,7 +149,8 @@ function deriveLargeMockInitializerState(
     if (variable && index < initialState.length) {
       const value = initialState[index];
       seeded[stateName] = variable.type === 'address' && typeof value === 'string'
-        ? (value.includes(':') ? addressToLockScript(value) : hexToBin(value.replace(/^0x/, '')))
+        ? (registeredPhysicalLockingBytecode(provider, value)
+          ?? (value.includes(':') ? addressToLockScript(value) : hexToBin(value.replace(/^0x/, ''))))
         : value;
     }
   });
@@ -184,6 +224,85 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
     return this.proxy.deploymentTransaction();
   }
 
+  private _events(): StatefulContract {
+    const existing = proxyEventFacades.get(this.proxy as object);
+    if (existing) return existing;
+    const implementationStructs = this.implementation.inner.artifact.structs
+      ?? this.implementation.inner.artifact.stateLayout?.structs;
+    const eventArtifact: Artifact = {
+      ...this.proxy.inner.artifact,
+      events: this.implementation.inner.artifact.events,
+      // Event arguments are decoded with the implementation ABI, including user-defined structs. Retain the
+      // proxy's operational state layout and bytecode, but give this read-only facade the matching struct table.
+      // Copy it in both artifact locations because older artifacts/consumers can use either representation.
+      structs: implementationStructs,
+      ...(this.proxy.inner.artifact.stateLayout && {
+        stateLayout: {
+          ...this.proxy.inner.artifact.stateLayout,
+          structs: implementationStructs,
+        },
+      }),
+    };
+    const facade = new StatefulContract(
+      this.proxy.categoryId,
+      eventArtifact,
+      this.proxy.inner.provider,
+      {
+        constructorArgs: this.proxy.inner.constructorArgs,
+        addressType: this.proxy.inner.addressType,
+      },
+    );
+    proxyEventFacades.set(this.proxy as object, facade);
+    return facade;
+  }
+
+  /** Event filter builders use the proxy's category, with definitions grafted from the implementation. */
+  get filters(): Record<string, StatefulContractEvent> { return this._events().filters; }
+
+  getEvent(nameOrSignature: string): StatefulContractEvent { return this._events().getEvent(nameOrSignature); }
+
+  queryFilter(
+    event: ContractEventName, fromBlock?: number | string, toBlock?: number | string,
+  ): Promise<EventLog[]> {
+    return this._events().queryFilter(event, fromBlock, toBlock);
+  }
+
+  get pollingInterval(): number { return this._events().pollingInterval; }
+
+  set pollingInterval(value: number) { this._events().pollingInterval = value; }
+
+  async on(event: ContractEventName, listener: EventListener): Promise<this> {
+    await this._events().on(event, listener);
+    return this;
+  }
+
+  async once(event: ContractEventName, listener: EventListener): Promise<this> {
+    await this._events().once(event, listener);
+    return this;
+  }
+
+  async off(event: ContractEventName, listener?: EventListener): Promise<this> {
+    await this._events().off(event, listener);
+    return this;
+  }
+
+  async removeAllListeners(event?: ContractEventName): Promise<this> {
+    await this._events().removeAllListeners(event);
+    return this;
+  }
+
+  listenerCount(event?: ContractEventName): Promise<number> { return this._events().listenerCount(event); }
+
+  listeners(event?: ContractEventName): Promise<EventListener[]> { return this._events().listeners(event); }
+
+  async addListener(event: ContractEventName, listener: EventListener): Promise<this> {
+    return this.on(event, listener);
+  }
+
+  async removeListener(event: ContractEventName, listener: EventListener): Promise<this> {
+    return this.off(event, listener);
+  }
+
   /** Rebind to a different runner for authorizing forwarded calls (ethers `connect`). */
   connect(runner: ContractRunner): ProxyContract<TImpl> {
     // Re-wrap so the connected handle keeps dispatching implementation functions (e.g. proxy.connect(s).fn()).
@@ -197,6 +316,9 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
   forward(
     implFunction: string, implArgs: FunctionArgument[] = [], extraForwardArgs: FunctionArgument[] = [],
   ): StatefulFunctionCall {
+    const debugForward = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_BUILDER_TIMING === '1';
+    if (debugForward) console.error('proxy-forward-start', { implFunction });
     const abiFn = (this.implementation.inner.artifact.abi as readonly AbiFunction[])
       .find((f) => f.name === implFunction);
     if (!abiFn) throw new Error(`Implementation '${this.implementation.inner.artifact.contractName}' has no function '${implFunction}'.`);
@@ -216,36 +338,36 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
       return index >= 0 ? [index] : [];
     }));
     const covenantArgs = implArgs.map((arg, index): FunctionArgument => {
-      if (!physicalTargetParams.has(index) || visibleInputs[index]?.type !== 'address' || typeof arg !== 'string') {
-        return arg;
-      }
+      if (visibleInputs[index]?.type !== 'address' || typeof arg !== 'string') return arg;
       const deployment = findDeploymentByAddress(this.proxy.inner.provider, arg);
       if (!deployment) return arg;
       const registered = deployment.contract as {
         _logicalAddress?: string;
         proxy?: StatefulContract & { _logicalAddress?: string };
       };
-      for (const call of abiFn.externalCalls ?? []) {
-        const sourceIndex = call.addressSource?.kind === 'forward' ? call.addressSource.paramIndex : undefined;
-        const namedIndex = call.addressParam
-          ? visibleInputs.findIndex((input) => input.name === call.addressParam) : -1;
-        if (sourceIndex === index || namedIndex === index) {
-          implSc._registerResolvedExternal(call.interfaceName, deployment.contract as StatefulContract);
+      if (physicalTargetParams.has(index)) {
+        for (const call of abiFn.externalCalls ?? []) {
+          const sourceIndex = call.addressSource?.kind === 'forward' ? call.addressSource.paramIndex : undefined;
+          const namedIndex = call.addressParam
+            ? visibleInputs.findIndex((input) => input.name === call.addressParam) : -1;
+          if (sourceIndex === index || namedIndex === index) {
+            implSc._registerResolvedExternal(call.interfaceName, deployment.contract as StatefulContract);
+          }
         }
+        // An external call to a CREATE-style deployment authenticates its immutable logical-identity anchor.
+        // Preserve that address only for the compiler-marked target parameter; ordinary address values use the
+        // physical locking bytecode, matching address(this), msg.sender, and on-chain address comparisons.
+        if (registered._logicalAddress || registered.proxy?._logicalAddress) return arg;
       }
-      // A CREATE-style deployment is authenticated by its immutable logical-identity anchor. Preserve the
-      // Solidity-visible address in calldata so the covenant can bind that anchor to the physical co-spent
-      // master. Replacing it with the physical P2SH bytecode while still supplying the anchor makes the two
-      // intentionally distinct identities compare equal and rejects every such call.
-      if (registered._logicalAddress || registered.proxy?._logicalAddress) return arg;
-      const physicalLockingBytecode = registered.proxy?.inner.lockingBytecode ?? deployment.lockingBytecode;
-      return physicalLockingBytecode ? hexToBin(physicalLockingBytecode) : arg;
+      return registeredPhysicalLockingBytecode(this.proxy.inner.provider, arg) ?? arg;
     });
+    if (debugForward) console.error('proxy-forward-args', { implFunction });
     // Connect the proxy to the runner so the forwarded call carries the signer. Its native P2PKH input funds the
     // tx and - crucially - is what the delegatecall'd impl's `emitTxOrigin` resolves `msg.sender` to. Without this
     // the proxy call has no _signer, the SDK funds with a dummy input, and a delegate impl that uses msg.sender
     // (e.g. `initialize` setting `this.owner = msg.sender`) reverts in emitTxOrigin.
     const runnerProxy = this.runner instanceof Signer ? this.proxy.connect(this.runner) : this.proxy;
+    if (debugForward) console.error('proxy-forward-connected', { implFunction });
     const proxyCall = (runnerProxy.call as Record<string, (...a: unknown[]) => StatefulFunctionCall>);
     const { name, mode } = this.forwardShape;
 
@@ -266,6 +388,7 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
         builder = proxyCall[name](selector, implLbc, ...authArgs, ...extraForwardArgs);
       }
     }
+    if (debugForward) console.error('proxy-forward-base-call', { implFunction });
     return builder.withDelegatecall(implSc, implFunction, covenantArgs);
   }
 }
@@ -296,9 +419,9 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
           const collectionName = paged[0].toLowerCase() + paged.slice(1);
           if (stateVars.has(collectionName)) {
             return async (indexValue: bigint | number, limitValue: bigint | number) => {
-              const entries = await target.proxy.getEntries(collectionName);
               const index = Number(indexValue);
               const limit = Number(limitValue);
+              const entries = await target.proxy.getEntries(collectionName);
               if (!Number.isSafeInteger(index) || index < 0 || index >= entries.length) {
                 throw new Error('index out of bounds');
               }
@@ -361,7 +484,22 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
           if ((fn?.outputs?.length ?? 0) > 0
             && (fn?.writesState === false
               || fn?.modifiers?.some((modifier) => modifier === 'view' || modifier === 'pure')
-              || /^(?:read|get|is|has)[A-Z_]/.test(prop))) {
+              || /^(?:read|get|is|has)[A-Z_]/.test(prop)
+              || /Length$/.test(prop))) {
+            // `fooLength()` is `return this.foo.length` in these Solidity ports. The proxy
+            // `__forward` view probe can decode an empty return slot as 0n even when the
+            // array is on-chain; read the grafted proxy state instead.
+            const lengthOf = /^(.*)Length$/.exec(prop)?.[1];
+            if (lengthOf && (fn?.inputs.filter((input) =>
+              !input.name.startsWith('__internal__')).length ?? 0) === 0) {
+              if (stateVars.has(lengthOf)) {
+                return (async () => {
+                  const state = await target.proxy.getState();
+                  const value = state[lengthOf];
+                  return BigInt(Array.isArray(value) ? value.length : 0);
+                })();
+              }
+            }
             const result = call.staticCall();
             const declared = requirements
               .flatMap((requirement) => requirement.message ? [requirement.message] : []);
@@ -457,18 +595,19 @@ function graftDefaultProxy(impl: Artifact): Artifact {
       },
     };
   });
-  // The shipped proxy remains strictly conserving. Current compiler-produced delegates additionally pin the
-  // exact proxy master/data output population, so their per-storage covenants can safely authorize mapping and
-  // dynamic-storage cardinality changes. Use a derived forwarder only for that explicitly certified artifact.
-  // The graft is a pure COMPARISON swap: strict equality of the proxy's output count becomes
-  // less-than-or-equal so a delegate may grow mapping / dynamic-storage cardinality. Pin the comparison
-  // suffix, not the operand that precedes it - the operand used to be a literal `OP_0` and is now
+  // The shipped proxy remains strictly conserving. Certified compiler-produced delegates additionally pin the
+  // exact proxy master/data output population, while their per-storage covenants authorize each dynamic-resource
+  // insertion, replacement, and deletion. For those artifacts the proxy's aggregate mutable-NFT count is both
+  // redundant and too strict: a one-way relaxation admits insertion but still rejects authenticated deletion.
+  // Derive a forwarder which consumes the two count operands without comparing them, only when the compiler's
+  // `delegateProxyStateOutputCountPinned` certificate is present. Pin the comparison suffix, not the operand that
+  // precedes it - the operand used to be a literal `OP_0` and is now
   // `... OP_1 OP_CAT OP_1 OP_INVOKE` since the outliner extracted the counting loop into a helper. Pinning
   // the operand made this fail closed on a shape change that does not affect the swap, while pinning the
   // suffix keeps the guarantee that actually matters: that slicing this tail off and appending the relaxed
   // one yields a well-formed script whose ONLY difference is the comparison.
   const strictTail = 'OP_NUMEQUALVERIFY OP_2DROP OP_1';
-  const relaxedTail = 'OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
+  const delegatedCardinalityTail = 'OP_2DROP OP_2DROP OP_1';
   const canDelegateCardinality = impl.delegateProxyStateOutputCountPinned === true;
   if (canDelegateCardinality && !defaultProxyArtifact.bytecode.endsWith(strictTail)) {
     throw new Error('Built-in proxy covenant shape changed; refusing to derive the delegate-authorized variant.');
@@ -476,12 +615,17 @@ function graftDefaultProxy(impl: Artifact): Artifact {
   return {
     ...defaultProxyArtifact,
     ...(canDelegateCardinality && {
-      bytecode: defaultProxyArtifact.bytecode.slice(0, -strictTail.length) + relaxedTail,
+      bytecode: defaultProxyArtifact.bytecode.slice(0, -strictTail.length) + delegatedCardinalityTail,
       debug: undefined,
       fingerprint: undefined,
     }),
     abi,
     stateLayout: { ...impl.stateLayout, constructorInputs: defaultProxyArtifact.stateLayout?.constructorInputs },
+    // The proxy owns the state/category while the pinned implementation executes the delegate route. Publish
+    // that verifier capability on the grafted deployment artifact so genesis mints a verifier branded to the
+    // proxy category; the implementation's own verifier is branded to its executor category and cannot
+    // authenticate a proxy-owned atomic participant.
+    ...(impl.messageBus && { messageBus: impl.messageBus }),
   } as Artifact;
 }
 
@@ -581,6 +725,16 @@ export async function deployProxy<TImpl extends Artifact>(
     const seededState = initializer
       ? (mockInitializerHasEntries ? undefined : mockInitializerState)
       : toInitialState(initialState, implArtifact);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_PROXY_STATE === '1') {
+      console.error('proxy-seeded-state', {
+        contract: implArtifact.contractName,
+        initializer,
+        owner: seededState?.OwnableStorage___owner instanceof Uint8Array
+          ? binToHex(seededState.OwnableStorage___owner) : seededState?.OwnableStorage___owner,
+        variableCount: Object.keys(seededState ?? {}).length,
+      });
+    }
 
     // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
     const implementation = await delegateFactory.deploy({
@@ -603,16 +757,27 @@ export async function deployProxy<TImpl extends Artifact>(
       // Relaxed mock consensus admits composed transactions far larger than production policy (Marketplace's
       // route has hundreds of outputs). The built-in proxy scans that shape, so give its covered bytecode a small
       // density reserve unless the caller selected an explicit CREATE2 salt. Production addresses remain stable.
-      if (proxyOverrides.salt === undefined
-        && ((runner instanceof Signer ? runner.provider : runner)?.consensusLimits?.maximumInputBytes ?? 10_000)
-          > 10_000) {
-        proxyOverrides.salt = new Uint8Array(96);
+      if (proxyOverrides.salt === undefined) {
+        const reserve = mockProxyDensityReserveBytes(
+          (runner instanceof Signer ? runner.provider : runner)?.consensusLimits?.maximumInputBytes,
+          implArtifact,
+        );
+        if (reserve > 0) proxyOverrides.salt = new Uint8Array(reserve);
       }
       proxy = await new ContractFactory(graftDefaultProxy(implArtifact), runner)
         .deploy(implLbc, {
           ...proxyOverrides, initialState: seededState, logicalNonce: false, logicalIdentity,
         });
       shape = { name: '__forward', mode: 'baked' };
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_PROXY_STATE === '1') {
+      const deployedState = await proxy.getState();
+      console.error('proxy-deployed-state', {
+        contract: implArtifact.contractName,
+        owner: deployedState.OwnableStorage___owner instanceof Uint8Array
+          ? binToHex(deployedState.OwnableStorage___owner) : deployedState.OwnableStorage___owner,
+      });
     }
 
     const handle = wrapDispatch(new ProxyContract<TImpl>(proxy, implementation, shape, auth, runner));
@@ -646,6 +811,12 @@ export async function deployProxy<TImpl extends Artifact>(
       }
       await initializerCall.send();
     }
+
+    // Mock chains do not run the production block-oracle keeper. Refresh only this completed deployment graph:
+    // doing it before the initializer would invalidate that transaction's authenticated state transition, while
+    // refreshing every registered deployment here makes unrelated contracts change out of band.
+    const { syncMockBlockOracleDeployment } = await import('../oracle/blockOracleUpdater.js');
+    await syncMockBlockOracleDeployment(proxy.inner.provider, { contract: handle });
 
     nonceReservation?.commit();
     return handle;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, decodeTransactionUnsafe, encodeTransactionBch, hexToBin,
+  createVirtualMachineBch2026, decodeTransactionUnsafe, encodeTransactionBch, hash256, hexToBin,
 } from '@bitauth/libauth';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import {
@@ -141,6 +141,105 @@ describe('X57 opcode observer survives providers without consensusLimits', () =>
     const { seen, observer } = recordingObserver([Op.OP_EQUALVERIFY]);
     createVirtualMachineBch2026ForProvider(provider, observer).evaluate(buildProgram([EQUALVERIFY_SCRIPT]));
     expect(seen).toEqual([Op.OP_EQUALVERIFY]);
+  });
+
+  it('keeps stock push-only semantics on the relaxed zero-copy VM path', () => {
+    const cases = [
+      Uint8Array.of(Op.OP_1),
+      Uint8Array.of(0x50), // OP_RESERVED is push-only, though execution rejects it.
+      Uint8Array.of(Op.OP_1, Op.OP_1, Op.OP_ADD),
+      Uint8Array.of(0x4c), // truncated OP_PUSHDATA1
+    ];
+    for (const unlocking of cases) {
+      const program = buildProgram([{ unlocking, locking: Uint8Array.of(Op.OP_1) }]);
+      const expected = createVirtualMachineBch2026().evaluate(program) as { error?: string; stack: Uint8Array[] };
+      const actual = createVirtualMachineBch2026ForProvider(new MockNetworkProvider())
+        .evaluate(program) as { error?: string; stack: Uint8Array[] };
+      expect(actual.error).toEqual(expected.error);
+      expect(actual.stack).toEqual(expected.stack);
+    }
+  });
+
+  it('keeps stock P2SH semantics while sharing immutable argument bytes', () => {
+    const payload = Uint8Array.of(1, 2, 3);
+    const reversed = payload.slice().reverse();
+    const redeem = Uint8Array.of(
+      Op.OP_DUP,
+      Op.OP_REVERSEBYTES,
+      reversed.length, ...reversed,
+      Op.OP_EQUALVERIFY,
+      payload.length, ...payload,
+      Op.OP_EQUAL,
+    );
+    const unlocking = Uint8Array.of(
+      payload.length, ...payload,
+      redeem.length, ...redeem,
+    );
+    const locking = Uint8Array.of(Op.OP_HASH256, 32, ...hash256(redeem), Op.OP_EQUAL);
+    const program = buildProgram([{ unlocking, locking }]);
+    const expected = createVirtualMachineBch2026().evaluate(program) as { error?: string; stack: Uint8Array[] };
+    const actual = createVirtualMachineBch2026ForProvider(new MockNetworkProvider())
+      .evaluate(program) as { error?: string; stack: Uint8Array[] };
+
+    expect(actual.error).toEqual(expected.error);
+    expect(actual.stack).toEqual(expected.stack);
+    expect(payload).toEqual(Uint8Array.of(1, 2, 3));
+  });
+
+  it('keeps stock OP_INVOKE semantics when decoded function bodies are reused', () => {
+    const functionBody = Uint8Array.of(Op.OP_1);
+    const locking = Uint8Array.of(
+      functionBody.length, ...functionBody,
+      Op.OP_0, Op.OP_DEFINE,
+      Op.OP_0, Op.OP_INVOKE,
+    );
+    const program = buildProgram([{ unlocking: Uint8Array.of(), locking }]);
+    const stock = createVirtualMachineBch2026();
+    const cached = createVirtualMachineBch2026ForProvider(new MockNetworkProvider());
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const expected = stock.evaluate(program) as { error?: string; stack: Uint8Array[] };
+      const actual = cached.evaluate(program) as { error?: string; stack: Uint8Array[] };
+      expect(actual.error).toEqual(expected.error);
+      expect(actual.stack).toEqual(expected.stack);
+    }
+  });
+
+  it('preserves sparse-probe results and base cost when skipping inactive branches', () => {
+    const cases = [
+      {
+        unlocking: Uint8Array.of(Op.OP_0),
+        locking: Uint8Array.of(
+          Op.OP_IF,
+          Op.OP_1, Op.OP_IF, 0x50, Op.OP_ENDIF,
+          Op.OP_ELSE, Op.OP_1,
+          Op.OP_ENDIF,
+        ),
+      },
+      {
+        unlocking: Uint8Array.of(Op.OP_1),
+        locking: Uint8Array.of(
+          Op.OP_IF, Op.OP_1,
+          Op.OP_ELSE,
+          Op.OP_0, Op.OP_IF, 0x50, Op.OP_ENDIF,
+          Op.OP_ENDIF,
+        ),
+      },
+    ];
+    for (const scripts of cases) {
+      const program = buildProgram([scripts]);
+      const expected = createVirtualMachineBch2026().evaluate(program) as {
+        error?: string; metrics: { evaluatedInstructionCount: number; operationCost: number }; stack: Uint8Array[];
+      };
+      const { observer } = recordingObserver([Op.OP_EQUALVERIFY]);
+      const actual = createVirtualMachineBch2026ForProvider(new MockNetworkProvider(), observer)
+        .evaluate(program) as typeof expected;
+
+      expect(actual.error).toEqual(expected.error);
+      expect(actual.stack).toEqual(expected.stack);
+      expect(actual.metrics.evaluatedInstructionCount).toBe(expected.metrics.evaluatedInstructionCount);
+      expect(actual.metrics.operationCost).toBe(expected.metrics.operationCost);
+    }
   });
 
   // GUARD: the two paths must stay distinct. A limits-less provider must keep REAL consensus limits, and a

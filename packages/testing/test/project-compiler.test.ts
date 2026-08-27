@@ -10,6 +10,7 @@ function project(files: Record<string, string>): string[] {
   dirs.push(dir);
   return Object.entries(files).map(([name, source]) => {
     const file = path.join(dir, name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, source);
     return file;
   });
@@ -20,7 +21,7 @@ afterEach(() => {
 });
 
 describe('compileSolidityProject', () => {
-  it('compiles an import DAG once from its root when transitive artifacts resolve dependencies', () => {
+  it('publishes canonical declarations while compiling an import DAG', () => {
     const files = project({
       'Leaf.sol': 'contract Leaf {}',
       'Middle.sol': 'import "./Leaf.sol"; contract Middle {}',
@@ -32,8 +33,91 @@ describe('compileSolidityProject', () => {
       return { Root: {}, Middle: {}, Leaf: {} };
     };
     const result = compileSolidityProject(files, { solidityImportCompat: true }, compile);
-    expect(calls).toEqual(['Root.sol']);
-    expect(Object.keys(result.artifacts)).toEqual(['Root', 'Middle', 'Leaf']);
+    expect(calls).toEqual(['Root.sol', 'Leaf.sol', 'Middle.sol']);
+    expect(Object.keys(result.artifacts)).toEqual(['Root', 'Leaf', 'Middle']);
+  });
+
+  it('lets a declaring file overwrite the artifact imported from another root', () => {
+    const files = project({
+      'Leaf.sol': 'contract Leaf {}',
+      'Root.sol': 'import "./Leaf.sol"; contract Root {}',
+    });
+    const compile = (file: string): any => {
+      const name = path.basename(file);
+      return name === 'Root.sol'
+        ? { Root: { from: 'root' }, Leaf: { from: 'root-import' } }
+        : { Leaf: { from: 'leaf-file' } };
+    };
+    const result = compileSolidityProject(files, { solidityImportCompat: true }, compile);
+    expect(result.artifacts.Leaf).toEqual({ from: 'leaf-file' });
+    expect(result.artifacts.Root).toEqual({ from: 'root' });
+  });
+
+  it('publishes only declarations owned by a focused source', () => {
+    const [root] = project({
+      'Root.sol': 'import "./Leaf.sol"; contract Root {}',
+      'Leaf.sol': 'contract Leaf {}',
+    });
+    const compile = (): any => ({
+      Root: { abi: [], from: 'root' },
+      Leaf: { abi: [], from: 'import' },
+    });
+
+    const result = compileSolidityProject([root], {}, compile);
+
+    expect(result.artifacts).toEqual({ Root: { abi: [], from: 'root' } });
+  });
+
+  it('publishes ABI declarations canonically owned by an external dependency', () => {
+    const [root] = project({
+      'Root.sol': 'import "@vendor/contracts/Errors.sol"; contract Root {}',
+      'node_modules/@vendor/contracts/Errors.sol': 'interface IERC20Errors {}',
+    });
+    const calls: string[] = [];
+    const compile = (file: string): any => {
+      const name = path.basename(file);
+      calls.push(name);
+      return name === 'Root.sol' ? {
+        Root: { abi: [], source: 'contract Root {}', from: 'root' },
+        // Imported artifacts inherit the primary root's compilation context and must not be published.
+        IERC20Errors: { abi: [], source: 'contract Root {}', from: 'root-import' },
+      } : {
+        IERC20Errors: {
+          abi: [], source: 'interface IERC20Errors {}',
+          errors: [{ name: 'ERC20InsufficientBalance' }], from: 'dependency',
+        },
+      };
+    };
+
+    const result = compileSolidityProject([root], {}, compile);
+
+    expect(result.artifacts).toEqual({
+      Root: { abi: [], source: 'contract Root {}', from: 'root' },
+      IERC20Errors: {
+        abi: [], source: 'interface IERC20Errors {}',
+        errors: [{ name: 'ERC20InsufficientBalance' }], from: 'dependency',
+      },
+    });
+    expect(calls).toEqual(['Root.sol', 'Errors.sol']);
+  });
+
+  it('asks the compiler to fully compile only declarations owned by the source file', () => {
+    const files = project({
+      'Leaf.sol': 'contract Leaf {}',
+      'Root.sol': 'import "./Leaf.sol"; contract Root {}',
+    });
+    const requested: Record<string, unknown> = {};
+    const compile = (file: string, options: Record<string, unknown>): any => {
+      requested[path.basename(file)] = options.compileDeclarations;
+      return path.basename(file) === 'Root.sol'
+        ? { Root: { abi: [] }, Leaf: { abi: [] } }
+        : { Leaf: { abi: [] } };
+    };
+
+    compileSolidityProject(files, { solidityImportCompat: true }, compile);
+
+    expect(requested['Root.sol']).toEqual(['Root']);
+    expect(requested['Leaf.sol']).toEqual(['Leaf']);
   });
 
   it('compiles a dependency when selective imports leave one of its declarations unresolved', () => {
@@ -66,15 +150,15 @@ describe('compileSolidityProject', () => {
 
     const first = compileSolidityProject(files, { optimize: true }, compile, cache);
     const second = compileSolidityProject(files, { optimize: true }, compile, cache);
-    expect(first.compiledRoots).toHaveLength(1);
+    expect(first.compiledRoots).toHaveLength(2);
     expect(second.compiledRoots).toHaveLength(0);
-    expect(second.cacheHits).toHaveLength(1);
-    expect(calls).toBe(1);
+    expect(second.cacheHits).toHaveLength(2);
+    expect(calls).toBe(2);
 
     fs.appendFileSync(files[0], '\n// dependency changed');
     const third = compileSolidityProject(files, { optimize: true }, compile, cache);
-    expect(third.compiledRoots).toHaveLength(1);
-    expect(calls).toBe(2);
+    expect(third.compiledRoots).toHaveLength(2);
+    expect(calls).toBe(4);
   });
 
   it('re-hashes a touched file but reuses the job when its contents are unchanged', () => {
@@ -91,6 +175,46 @@ describe('compileSolidityProject', () => {
     const result = compileSolidityProject([file], {}, compile, cache);
     expect(result.cacheHits).toHaveLength(1);
     expect(calls).toBe(1);
+  });
+
+  it('reuses bytecode jobs when only warning output is suppressed', () => {
+    const [file] = project({ 'Root.sol': 'contract Root {}' });
+    const cache = { directory: path.join(path.dirname(file), 'cache'), compilerVersion: 'test' };
+    let calls = 0;
+    const compile = (): any => {
+      calls++;
+      return { Root: {} };
+    };
+
+    compileSolidityProject([file], { suppressWarnings: false }, compile, cache);
+    const result = compileSolidityProject([file], { suppressWarnings: true }, compile, cache);
+
+    expect(result.cacheHits).toHaveLength(1);
+    expect(calls).toBe(1);
+  });
+
+  it('restores jobs.length-1 on upsert ABI that omitted fixedKeySources', () => {
+    const [file] = project({ 'Root.sol': 'contract Root {}' });
+    const compile = (): any => ({
+      Root: {
+        abi: [{
+          name: 'publishJobPost',
+          dynamicWrites: ['jobs'],
+          sortedUpsertLoopInfo: [{
+            collection: 'whitelistWorkers',
+            fixedKeyParams: [],
+            varyingArrayParam: 'allowedWorkers_',
+            valueConst: '1',
+            op: 'set',
+          }],
+        }],
+      },
+    });
+    const result = compileSolidityProject([file], {}, compile);
+    expect(result.artifacts.Root.abi[0].sortedUpsertLoopInfo[0].fixedKeySources).toEqual([{
+      kind: 'expression',
+      expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+    }]);
   });
 
   it('does not trust preserved mtime and size when file contents changed', () => {

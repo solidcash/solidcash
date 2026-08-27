@@ -15,7 +15,6 @@ describe('ERC20Mock approve (mistswap artifact)', () => {
   it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('approve bob and chef after MasterChef.add', async () => {
     const provider = createTestProvider();
     (provider as any).consensusLimits = { ...(provider as any).consensusLimits, ...limits };
-    if ((provider as any).policy) (provider as any).policy.enforceProductionInputLimit = false;
     const [alice, bob, dev] = await getSigners(3, { provider, fundingUtxos: 10 });
     const artifact = (name: string): any => JSON.parse(readFileSync(
       new URL(`../fixture/mistswap-artifacts/${name}.json`, import.meta.url), 'utf8',

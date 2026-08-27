@@ -53,6 +53,39 @@ describe('self-preserved-verifier balanced participant assembly', () => {
     ], 3)).toThrow(/inside another block's span/);
   });
 
+  it('treats a nested master at a declared low-level-call slot as an executor, not a participant', () => {
+    const ownerLayout: FunctionBlockLayout = {
+      blockSize: 2,
+      slots: [
+        { kind: 'master', offset: 0 },
+        { kind: 'lowLevelCall', offset: 1, slotIndex: 0 },
+      ],
+    };
+    expect(deriveBalancedAssemblyFromInputs([
+      master(ownerLayout), master(layout(1)), ordinary, ordinary,
+    ], 4)).toEqual({
+      blocks: [{ participant: 0, base: 0, blockLayout: ownerLayout }],
+      verifierInputs: [2],
+      verifierInput: 2,
+      feeInput: 3,
+      changeOutput: 3,
+      totalSlots: 4,
+    });
+  });
+
+  it('treats a nested master at a declared identity-anchor slot as participant-owned identity', () => {
+    const ownerLayout: FunctionBlockLayout = {
+      blockSize: 2,
+      slots: [
+        { kind: 'master', offset: 0 },
+        { kind: 'identityAnchor', offset: 1 },
+      ],
+    };
+    expect(deriveBalancedAssemblyFromInputs([
+      master(ownerLayout), master(layout(1)), ordinary, ordinary,
+    ], 4)?.blocks).toEqual([{ participant: 0, base: 0, blockLayout: ownerLayout }]);
+  });
+
   it('requires the declared fee and change indices to be the terminal slot', () => {
     expect(() => preflightBalancedBlockAssembly({
       inputs: [{ satoshis: 1_000n }, { satoshis: 1_000n }],
@@ -65,5 +98,26 @@ describe('self-preserved-verifier balanced participant assembly', () => {
       changeOutput: 1,
       totalSlots: 2,
     })).toThrow(/must follow participant region/);
+  });
+
+  it('allows an inactive conditional return slot without an event NFT', () => {
+    const voidLayout: FunctionBlockLayout = {
+      blockSize: 2,
+      slots: [
+        { kind: 'master', offset: 0 },
+        { kind: 'returnEvent', offset: 1, conditional: true },
+      ],
+    };
+    expect(() => preflightBalancedBlockAssembly({
+      inputs: Array.from({ length: 4 }, () => ({ satoshis: 1_000n })),
+      outputs: Array.from({ length: 4 }, () => ({ amount: 1_000n })),
+    }, {
+      blocks: [{ participant: 0, base: 0, blockLayout: voidLayout }],
+      verifierInputs: [2],
+      verifierInput: 2,
+      feeInput: 3,
+      changeOutput: 3,
+      totalSlots: 4,
+    })).not.toThrow();
   });
 });

@@ -4,8 +4,13 @@ title: Testing Setup
 
 For the ease of development, SolidCash has a `MockNetwork` environment where you can create virtual UTXOs. This has the advantages of not needing any testnet balances, not having to set up smart contract UTXOs and not having network latency. Because of this the MockNetwork environment is the ideal setup to run repeated automated tests with a testing framework for increased smart contract security.
 
+For a complete project workflow—including whole-project compilation, funded signers, Hardhat/Ethers-compatible
+imports, Vitest configuration, named networks, and deployment scripts—see the
+[SolidHat guide](/docs/sdk/solidhat). This page focuses on using the lower-level SDK testing primitives directly.
+
 :::tip
-For a quick start with a SolidCash testing setup, check out the [example testing-suite](https://github.com/CashScript/cashscript/tree/next/examples/testing-suite) that demonstrates a full development and testing environment for SolidCash contracts, similar to Hardhat on Ethereum.
+For a quick start, create a project with `npm create @solidcash/solidhat@latest`, or inspect the
+[example testing suite](https://github.com/CashScript/cashscript/tree/master/examples/testing-suite).
 :::
 
 ## MockNetworkProvider

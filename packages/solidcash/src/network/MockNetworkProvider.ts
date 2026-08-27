@@ -4,10 +4,11 @@ import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { Utxo, Network, VmTarget, TokenDetails } from '../interfaces.js';
-import NetworkProvider, { ConsensusLimits, NetworkPolicy } from './NetworkProvider.js';
+import NetworkProvider, { ConsensusLimits, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
+import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
 
 export interface TokenGenesisOutput {
   address: string;
@@ -21,6 +22,13 @@ export interface MockNetworkProviderOptions {
   /** Relaxed by default for test harnesses; override individual limits to test production boundaries. */
   consensusLimits: ConsensusLimits;
   policy: NetworkPolicy;
+}
+
+const mockNetworkResetHooks: Array<() => void> = [];
+
+/** Process-global, chain-derived caches must drop when the mock chain is wiped or rewound. */
+export function onMockNetworkProviderReset(hook: () => void): void {
+  mockNetworkResetHooks.push(hook);
 }
 
 export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptions, 'consensusLimits' | 'policy'>> & {
@@ -251,6 +259,7 @@ export default class MockNetworkProvider implements NetworkProvider {
   private snapshotRestorers = new Map<string, SnapshotRestorer>();
   private signerCache = new Map<string, HDSigner>();
   private fundedSignerKeys = new Set<string>();
+  private preparedTransaction?: PreparedTransaction;
   /**
    * ethers-v5 `provider._network.chainId` surface used by MistSwap digests
    * (`user.provider._network.chainId` in setMasterContractApproval).
@@ -300,14 +309,21 @@ export default class MockNetworkProvider implements NetworkProvider {
       hashDigestIterationsPerByteNonstandard:
         this.consensusLimits.hashDigestIterationsPerByteNonstandard ?? this.consensusLimits.hashDigestIterationsPerByte,
     };
-    const verifier = createTxVerifier({
+    const verifierConfig = {
       // Libauth's standard VM applies its own fixed dust policy after mem-cash's configurable check. Use the
       // consensus VM when dust is disabled; mem-cash still applies fee/value/finality validation and every
       // configured consensus override. Opting back into dust also restores the full production policy VM.
       vmVersion: this.vmTarget, standard: this.policy.enforceDust, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
       dustRelayFeePerKb: this.policy.enforceDust ? undefined : 0n,
       consensus: overrides,
-    } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides });
+    } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides };
+    const stockVerifier = createTxVerifier(verifierConfig);
+    const verifier = this.vmTarget === VmTarget.BCH_2026_05
+      && this.consensusLimits.maximumInputBytes > 10_000
+      ? createPreparedBch2026TxVerifier(
+        this, verifierConfig, () => this.preparedTransaction, stockVerifier,
+      )
+      : stockVerifier;
     this.indexer = createIndexer({ verifier });
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
@@ -332,6 +348,34 @@ export default class MockNetworkProvider implements NetworkProvider {
     }));
   }
 
+  async getUtxosByTokenCategory(categoryId: string): Promise<Utxo[]> {
+    const wanted = new Set([categoryId.toLowerCase()]);
+    try {
+      const reversed = binToHex(hexToBin(categoryId).reverse());
+      wanted.add(reversed.toLowerCase());
+    } catch { /* not hex */ }
+    const snap = this.indexer.storage.snapshot();
+    const live: typeof snap.utxos = new Map(snap.utxos);
+    for (const key of snap.mempoolSpends.keys()) live.delete(key);
+    for (const [key, entry] of snap.mempoolUtxos) live.set(key, entry);
+    const found: Utxo[] = [];
+    for (const entry of live.values()) {
+      const category = entry.tokenData?.category?.toLowerCase() ?? '';
+      if (!wanted.has(category) && !wanted.has(category.slice(0, 64))) continue;
+      found.push({
+        txid: entry.outpoint.txid,
+        vout: entry.outpoint.vout,
+        satoshis: entry.satoshis,
+        token: entry.tokenData ? {
+          amount: entry.tokenData.amount,
+          category: entry.tokenData.category,
+          nft: entry.tokenData.nft,
+        } : undefined,
+      });
+    }
+    return found;
+  }
+
   setBlockHeight(newBlockHeight: number): void {
     const time = this.getBlockTime();
     this.blockHeight = newBlockHeight;
@@ -346,6 +390,8 @@ export default class MockNetworkProvider implements NetworkProvider {
   // become final and each mined height is fresh.
   async mine(count: number = 1): Promise<void> {
     this.setBlockHeight(this.blockHeight + count);
+    const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
+    await syncMockBlockOracles(this);
   }
 
   /** hardhat-network-helpers `mineUpTo`: mine until the tip height equals `height` (no-op if already past). */
@@ -394,6 +440,9 @@ export default class MockNetworkProvider implements NetworkProvider {
       this.blockHeight = height;
       this.fundingNonce = fundingNonce;
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
+      // Snapshot restoration can abandon transactions just as completely as reset(). Any process-local cache
+      // derived from the prior chain tip is stale after this point and must be rebuilt from the restored UTXO set.
+      for (const hook of mockNetworkResetHooks) hook();
     };
     return { snapshotId, restore };
   }
@@ -420,14 +469,18 @@ export default class MockNetworkProvider implements NetworkProvider {
       case 'evm_mine':
         await this.mine(1);
         return '0x0';
+      case 'evm_increaseTime': {
+        const timestamp = this.increaseTime(Number(params[0]));
+        const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
+        await syncMockBlockOracles(this);
+        return timestamp;
+      }
       case 'hardhat_mine': {
         // hardhat_mine([blocks?, interval?]) - hex quantities; default 1 block. Interval (spacing) is a no-op here.
         const blocks = params[0] === undefined ? 1 : Number(params[0]);
         await this.mine(Math.max(1, blocks));
         return '0x0';
       }
-      case 'evm_increaseTime':
-        return this.increaseTime(Number(params[0]));
       case 'evm_setNextBlockTimestamp':
         this.setNextBlockTimestamp(Number(params[0]));
         return null;
@@ -454,6 +507,28 @@ export default class MockNetworkProvider implements NetworkProvider {
     return this.indexer.getRawTx(txid)!;
   }
 
+  async sendPreparedTransaction(prepared: PreparedTransaction): Promise<string> {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_COLLECTION_FETCH === '1') {
+      console.error('mock-prepared-transaction', {
+        inputs: prepared.transaction.inputs.length,
+        outputs: prepared.transaction.outputs.map((output, index) => ({
+          index,
+          lockingBytecode: binToHex(output.lockingBytecode),
+          category: output.token?.category && binToHex(output.token.category),
+          capability: output.token?.nft?.capability,
+          commitment: output.token?.nft?.commitment && binToHex(output.token.nft.commitment),
+        })),
+      });
+    }
+    this.preparedTransaction = prepared;
+    try {
+      return await this.sendRawTransaction(prepared.rawHex);
+    } finally {
+      if (this.preparedTransaction === prepared) this.preparedTransaction = undefined;
+    }
+  }
+
   async sendRawTransaction(txHex: string): Promise<string> {
     if (!this.options.updateUtxoSet) {
       const bin = hexToBin(txHex);
@@ -468,12 +543,18 @@ export default class MockNetworkProvider implements NetworkProvider {
     const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
     const previousStackItemLength = commonConsensus.maximumStackItemLength;
     commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;
+    const debugTiming = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_PREFLIGHT_TIMING === '1';
+    const submitStartedAt = debugTiming ? Date.now() : 0;
     let result;
     try {
       result = this.indexer.submitTransaction(txHex);
     } finally {
       commonConsensus.maximumStackItemLength = previousStackItemLength;
     }
+    if (debugTiming) console.error('mock-provider-timing', {
+      stage: 'submit-transaction', ms: Date.now() - submitStartedAt, success: result.success,
+    });
     if (!result.success) {
       throw new Error(result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error);
     }
@@ -481,7 +562,11 @@ export default class MockNetworkProvider implements NetworkProvider {
     // Mine a block to confirm the transaction immediately. This moves outputs
     // from the mempool to the confirmed UTXO set and clears mempool spend
     // tracking, matching the old MockNetworkProvider's simple UTXO-array behavior.
+    const mineStartedAt = debugTiming ? Date.now() : 0;
     this.indexer.mine();
+    if (debugTiming) console.error('mock-provider-timing', {
+      stage: 'mine', ms: Date.now() - mineStartedAt,
+    });
 
     return result.txid;
   }
@@ -549,6 +634,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
+    for (const hook of mockNetworkResetHooks) hook();
   }
 
   private nextFundingTxid(): string {

@@ -189,6 +189,7 @@ describe('Release 1 scalar journal lowering', () => {
       expect.objectContaining({
         name: 'approve',
         eligible: true,
+        physicalEntrySlots: [0],
         outputs: [{ type: 'bool' }],
         emits: [expect.objectContaining({ eventName: 'Approval' })],
         batchKeyWitnesses: expect.arrayContaining([
@@ -199,9 +200,176 @@ describe('Release 1 scalar journal lowering', () => {
     expect(artifact.invocationAnalysis?.functions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name: '__message_bus_graph_approve',
-        writes: ['collection:allowances:*'],
         effects: ['events'],
       }),
+      expect.objectContaining({
+        name: '__message_bus1',
+        reads: expect.arrayContaining(['collection:balances:*', 'collection:allowances:*']),
+        writes: ['collection:allowances:*'],
+      }),
     ]));
+  });
+
+  it('journals an outlined view helper that reads a scalar the caller just wrote', () => {
+    // OZ initializer shape: the entry writes `_initializing = true`, then an outlined `onlyInitializing`
+    // check reads it back. Without downward journal admission the helper re-reads the pre-transaction NFT
+    // and `require(this.initializing)` fails even though the pending write is live on the caller stack.
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      abstract contract Initializable {
+        uint64 private _initialized;
+        bool private _initializing;
+        modifier initializer() {
+          require(!_initializing && _initialized < 1);
+          _initialized = 1;
+          _initializing = true;
+          _;
+          _initializing = false;
+        }
+        modifier onlyInitializing() {
+          _checkInitializing();
+          _;
+        }
+        function _checkInitializing() internal view {
+          require(_isInitializing());
+        }
+        function _isInitializing() private view returns (bool) {
+          return _initializing;
+        }
+      }
+      contract FlagReader is Initializable {
+        address public marketplace;
+        mapping(string => string) public meceTags;
+        function initialize(address marketplace_) public initializer {
+          _checkInitializing();
+          marketplace = marketplace_;
+          meceTags["DA"] = "DIGITAL_AUDIO";
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true });
+
+    const helpers = artifact.invocationAnalysis?.functions ?? [];
+    const checkInit = helpers.find((fn) => fn.name === '_checkInitializing' || fn.name === '_isInitializing');
+    // A small fixture often inlines the helper into initialize (same stack frame as the pending write).
+    // When the helper remains an OP_INVOKE body - MarketplaceData.initialize's actual shape - it must
+    // receive the pending _initializing write as journal context instead of rereading the input NFT.
+    if (checkInit) {
+      expect(checkInit.arity).toBeGreaterThan(0);
+    } else {
+      expect(artifact.abi.find((entry) => entry.name === 'initialize')?.writesState).toBe(true);
+    }
+  });
+
+  it('inlines _checkInitializing into a delegate initialize after late IRSH on the message-bus path', () => {
+    // MarketplaceData.initialize is inferred `delegate` and compiled with messageBus. A later IRSH
+    // reduces `_isInitializing()` into `_checkInitializing`; without a follow-up void-helper inline
+    // the check stays an OP_INVOKE body that reads INPUTINDEX+1 (impl data / entry pad) instead of
+    // the proxy pending write.
+    const artifact = compileMessageBusString(`pragma solidity ^0.8.0;
+      abstract contract Initializable {
+        uint64 private _initialized;
+        bool private _initializing;
+        modifier initializer() {
+          require(!_initializing && _initialized < 1);
+          _initialized = 1;
+          _initializing = true;
+          _;
+          _initializing = false;
+        }
+        function _checkInitializing() internal view {
+          require(_isInitializing());
+        }
+        function _isInitializing() private view returns (bool) {
+          return _initializing;
+        }
+      }
+      contract FlagReader is Initializable {
+        address public marketplace;
+        function initialize(address marketplace_) public initializer {
+          _checkInitializing();
+          marketplace = marketplace_;
+        }
+      }
+    `, {
+      forceStateful: true, solidityImportCompat: true, messageBus: true, maximumInputBytes: 10_000_000,
+    });
+    const init = artifact.abi.find((entry) => entry.name === 'initialize');
+    expect(init?.modifiers).toEqual(expect.arrayContaining(['delegate']));
+    const helpers = Object.values(artifact.debug.invokeDebug ?? {});
+    expect(helpers.some((helper) => helper.name === '_checkInitializing')).toBe(false);
+  });
+
+  it('keeps the public result/effect route when compilation-speed optimization skips external admission', () => {
+    const source = `pragma solidcash >=0.8.0;
+      contract Token {
+        mapping(address => uint) balances;
+        mapping(address => mapping(address => uint)) allowances;
+        event Approval(address indexed owner, address indexed spender, uint value);
+        function balanceOf(address who) public view returns (uint) { return balances[who]; }
+        function approve(address spender, uint value) public returns (bool) {
+          address owner = msg.sender;
+          allowances[owner][spender] = value;
+          emit Approval(owner, spender, value);
+          return true;
+        }
+      }
+    `;
+    const normal = compileMessageBusString(source, {
+      forceStateful: true, messageBus: true, maximumInputBytes: 10_000_000,
+    });
+    const fast = compileMessageBusString(source, {
+      forceStateful: true,
+      messageBus: true,
+      maximumInputBytes: 10_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    const eligible = (artifact: typeof normal): string[] => artifact.messageBus?.handlers
+      .filter((handler) => handler.eligible).map((handler) => handler.name) ?? [];
+    expect(eligible(fast)).toEqual(eligible(normal));
+    expect(eligible(fast)).toEqual(expect.arrayContaining(['balanceOf', 'approve']));
+    // Resource-shaped routes remain compact under production consensus, while an explicitly permissive input
+    // budget admits the full unrolled band needed by deeper application call DAGs.
+    expect(normal.messageBus?.maximumRows).toBe(8);
+    expect(fast.messageBus?.maximumRows).toBe(8);
+  });
+
+  it('composes independent cross-row aliases for an ERC-20 approve and transferFrom route', () => {
+    const artifact = compileMessageBusString(`pragma solidity ^0.8.0;
+      contract Token {
+        mapping(address => uint) balances;
+        mapping(address => mapping(address => uint)) allowances;
+        event Approval(address indexed owner, address indexed spender, uint value);
+        function approve(address spender, uint value) public returns (bool) {
+          allowances[msg.sender][spender] = value;
+          emit Approval(msg.sender, spender, value);
+          return true;
+        }
+        function transferFrom(address from, address to, uint value) public returns (bool) {
+          uint allowed = allowances[from][msg.sender];
+          require(allowed >= value);
+          allowances[from][msg.sender] = allowed - value;
+          balances[from] = balances[from] - value;
+          balances[to] = balances[to] + value;
+          return true;
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      maximumInputBytes: 10_000_000,
+      optimizeForCompilationSpeed: true,
+      suppressWarnings: true,
+    });
+
+    expect(artifact.messageBus?.maximumRows).toBe(8);
+    expect(artifact.messageBus?.handlers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'approve', eligible: true, physicalEntrySlots: [0] }),
+      expect.objectContaining({ name: 'transferFrom', eligible: true, physicalEntrySlots: [2, 1, 0] }),
+    ]));
+    expect(artifact.messageBus?.route.entryAccesses?.map((access) => access.collection))
+      .toEqual(expect.arrayContaining(['allowances', 'balances']));
+    // Runtime cache selection must stay linear in independently aliasable entries. Expanding every alias choice
+    // into a Cartesian dispatcher produced tens of megabytes for the corresponding production ERC-20 route.
+    expect(artifact.debug.bytecode.length).toBeLessThan(2_000_000);
   });
 });

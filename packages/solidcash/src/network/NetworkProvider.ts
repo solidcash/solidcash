@@ -1,4 +1,12 @@
+import type { Transaction as LibauthTransaction } from '@bitauth/libauth';
 import { Utxo, Network } from '../interfaces.js';
+
+/** Exact transaction forms already materialized by an SDK builder. */
+export interface PreparedTransaction {
+  rawHex: string;
+  rawBytes: Uint8Array;
+  transaction: LibauthTransaction;
+}
 
 export interface ConsensusLimits {
   /** Maximum serialized unlocking/locking bytecode for one input script. */
@@ -32,12 +40,6 @@ export interface ConsensusLimits {
 export interface NetworkPolicy {
   /** Apply node relay dust thresholds when constructing and validating outputs. */
   enforceDust: boolean;
-  /**
-   * Enforce BCH's production 10,000-byte input-script ceiling in the SDK before submission. Defaults to true.
-   * Private test networks that deliberately publish a larger consensus limit may explicitly disable this gate;
-   * doing so produces transactions that cannot be relayed on BCH mainnet.
-   */
-  enforceProductionInputLimit?: boolean;
 }
 
 export default interface NetworkProvider {
@@ -66,6 +68,13 @@ export default interface NetworkProvider {
   getUtxosForLockingBytecode(lockingBytecode: Uint8Array | string): Promise<Utxo[]>;
 
   /**
+   * Optional: every live UTXO whose CashToken category is `categoryId` (either
+   * byte order). Used to find a CREATE identity NFT that no longer sits at the
+   * contract's cashaddr.
+   */
+  getUtxosByTokenCategory?(categoryId: string): Promise<Utxo[]>;
+
+  /**
    * @returns The current block height.
    */
   getBlockHeight(): Promise<number>;
@@ -85,4 +94,10 @@ export default interface NetworkProvider {
    * @returns The transaction ID corresponding to the broadcast transaction.
    */
   sendRawTransaction(txHex: string): Promise<string>;
+
+  /**
+   * Optional in-process fast path. Implementations must apply the same validation and acceptance semantics as
+   * `sendRawTransaction`; the extra forms only avoid decoding bytes the builder has just encoded.
+   */
+  sendPreparedTransaction?(prepared: PreparedTransaction): Promise<string>;
 }

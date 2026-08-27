@@ -198,4 +198,26 @@ describe('X163 Row B - the scope of the finalized-bytes refusal, and why it stop
     expect(() => messageBus.assertFinalizedTransactionBytes(transaction, { allowNonRelayable: true }))
       .toThrow(/\[consensus\] consensus-unlocking-bytes at input 0/);
   }, 120_000);
+
+  it('4c. derives the byte gate directly from the provider profile', () => {
+    const privateProvider = new MockNetworkProvider({
+      consensusLimits: { maximumInputBytes: 2_000_000, maximumTransactionBytes: 20_000_000 },
+    });
+    expect(messageBus.finalizedByteGateOptionsForProvider(privateProvider)).toMatchObject({
+      consensusLimits: {
+        maximumInputBytes: 2_000_000,
+        maximumTransactionBytes: 20_000_000,
+      },
+      allowNonRelayable: true,
+    });
+
+    expect(messageBus.finalizedByteGateOptionsForProvider({})).toEqual({});
+  });
+
+  it('4d. skips the covenant pass when the provider suppresses every byte refusal', async () => {
+    const builder = await dustBuilder(100n);
+    const transaction = decodeTransactionUnsafe(hexToBin(builder.build()));
+    const options = messageBus.finalizedByteGateOptionsForProvider(builder.provider);
+    expect(() => messageBus.assertFinalizedBytesWithCovenant(builder, transaction, [], options)).not.toThrow();
+  });
 });

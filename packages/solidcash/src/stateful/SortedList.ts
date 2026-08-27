@@ -84,6 +84,19 @@ export function decodeEntryCommitment(commitment: Uint8Array): { slot: Uint8Arra
   };
 }
 
+/**
+ * True when a 128-byte entry is slot||next||64-byte empty padding (an unfilled builder placeholder).
+ * H(uint256 0) is sha256('') with the high bit cleared, so a real UPDATE of key 0 also starts with
+ * `e3b0c442`. Only an all-zero value tail distinguishes that placeholder from slot||next||long-tail.
+ */
+export function isEmptyValueEntryCommitment(commitment: Uint8Array | string): boolean {
+  const bytes = typeof commitment === 'string'
+    ? (commitment.length === 0 ? new Uint8Array() : hexToBin(commitment))
+    : commitment;
+  if (bytes.length !== SLOT_BYTES * 2 + 64) return false;
+  return bytes.subarray(SLOT_BYTES * 2).every((byte) => byte === 0);
+}
+
 const ZERO_SLOT = new Uint8Array(SLOT_BYTES); // slot 0 = HEAD sentinel; nextKey 0 = +infinity
 
 /** Co-spend plan for a non-membership read `require(!m[k])` / absent branch. */
@@ -253,6 +266,23 @@ export class SortedList {
       predNewCommitment: encodeEntryCommitment(predecessor.slot, node.nextKey, predecessor.value), // splice out
     };
   }
+}
+
+/** Reuse one parsed list per (category, address) while assembling a nested route block. */
+export function getCachedSortedList(
+  cache: Map<string, SortedList>,
+  address: string,
+  categoryId: string,
+  utxos: readonly Utxo[],
+): SortedList {
+  const cacheKey = `${categoryId}:${address}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return hit;
+  const list = SortedList.fromUtxos(
+    utxos.filter((utxo) => utxo.token?.category === categoryId),
+  );
+  cache.set(cacheKey, list);
+  return list;
 }
 
 /** The empty-map genesis entry: HEAD[slot 0 | nextKey 0 (+inf)]. */

@@ -39,6 +39,8 @@ interface EntryOp {
   keys: ExpressionNode[];
   takenValue: ExpressionNode;
   loc: Location;
+  /** Scope in which the source write legally accessed an inherited private collection. */
+  sourceScope?: string;
 }
 
 // A scalar target seen across an if/else's two arms: its op in each arm (absent = preserve the current value).
@@ -46,6 +48,7 @@ interface MergedTarget {
   name: string;
   keys: ExpressionNode[];
   loc: Location;
+  sourceScope?: string;
   ifOp?: EntryOp;
   elseOp?: EntryOp;
 }
@@ -137,6 +140,11 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
 
   // Returns the replacement statements if the branch is a convertible conditional entry op, else undefined.
   private tryConvertBranch(node: BranchNode): StatementNode[] | undefined {
+    // Lazy collection-journal flushes encode physical handler reachability. Replacing one with
+    // `m[k] = dirty ? pending : m[k]` is value-equivalent only for inline entries: a chunk-backed preserve arm
+    // still emits and pins a fresh trailing chunk run. Keep the compiler-authored branch so inactive handlers
+    // consume and produce no write-only resources.
+    if (node.preserveConditionalEntryWrites) return undefined;
     // A vmap write whose key varies in a runtime loop has its own counter-indexed conditional output protocol.
     // Preserve the branch: predicating it into `cond ? value : old` would force an ordinary fixed-slot read for
     // the not-taken arm, but this entry deliberately has no fixed block slot.
@@ -184,12 +192,13 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
 
     // Predicate each scalar target: `m[k] = cond ? ifValue : elseValue`; a missing arm preserves the current value.
     for (const t of targets) {
-      const ifVal = t.ifOp ? t.ifOp.takenValue : this.readAccess(t.name, t.keys, t.loc);
-      const elseVal = t.elseOp ? t.elseOp.takenValue : this.readAccess(t.name, t.keys, t.loc);
+      const ifVal = t.ifOp ? t.ifOp.takenValue : this.readAccess(t.name, t.keys, t.loc, t.sourceScope);
+      const elseVal = t.elseOp ? t.elseOp.takenValue : this.readAccess(t.name, t.keys, t.loc, t.sourceScope);
       const ternary = new TernaryOpNode(condRef(), ifVal, elseVal);
       ternary.location = t.loc;
       const write = new MappingAssignNode(t.name, t.keys.map((k) => cloneNode(k) as ExpressionNode), ternary);
       write.location = t.loc;
+      write.fromModifier = t.sourceScope;
       out.push(write);
     }
 
@@ -240,7 +249,11 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
       const sig = this.targetSig(op.name, op.keys);
       if (sig === undefined) return false;
       let t = bySig.get(sig);
-      if (!t) { t = { name: op.name, keys: op.keys, loc: op.loc }; bySig.set(sig, t); order.push(sig); }
+      if (!t) {
+        t = { name: op.name, keys: op.keys, loc: op.loc, sourceScope: op.sourceScope };
+        bySig.set(sig, t);
+        order.push(sig);
+      }
       if (arm === 'if') t.ifOp = op; else t.elseOp = op;
       return true;
     };
@@ -260,9 +273,12 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     return sig;
   }
 
-  private readAccess(name: string, keys: ExpressionNode[], loc: Location): ExpressionNode {
+  private readAccess(
+    name: string, keys: ExpressionNode[], loc: Location, sourceScope?: string,
+  ): ExpressionNode {
     const read = new MappingAccessNode(name, keys.map((k) => cloneNode(k) as ExpressionNode));
     read.location = loc;
+    read.fromModifier = sourceScope;
     return read;
   }
 
@@ -291,7 +307,13 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     }
     const valueType = this.scalarMappingValueType(name, keys.length);
     if (!valueType) return undefined;
-    return { name, keys, takenValue: takenValue ?? createDefaultValueExpression(valueType, s.location), loc: s.location };
+    return {
+      name,
+      keys,
+      takenValue: takenValue ?? createDefaultValueExpression(valueType, s.location),
+      loc: s.location,
+      sourceScope: s.fromModifier,
+    };
   }
 
   // `delete m[k]` -> `m[k] = cond ? default : m[k]`; `m[k] = v` -> `m[k] = cond ? v : m[k]`. Built as
@@ -299,10 +321,12 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
   private buildPredicatedWrite(op: EntryOp, cond: ExpressionNode): StatementNode {
     const read = new MappingAccessNode(op.name, op.keys.map((k) => cloneNode(k) as ExpressionNode));
     read.location = op.loc;
+    read.fromModifier = op.sourceScope;
     const ternary = new TernaryOpNode(cloneNode(cond) as ExpressionNode, op.takenValue, read);
     ternary.location = op.loc;
     const write = new MappingAssignNode(op.name, op.keys, ternary);
     write.location = op.loc;
+    write.fromModifier = op.sourceScope;
     return write;
   }
 

@@ -3,8 +3,8 @@ import { describe, it, expect } from 'vitest';
 import { createVirtualMachineBch2026, hash256, hexToBin, binToHex } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';
 import {
-  SortedList, keyToSlot, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
-  encodeEntryCommitment, decodeEntryCommitment, headSentinelCommitment,
+  SortedList, getCachedSortedList, keyToSlot, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
+  encodeEntryCommitment, decodeEntryCommitment, isEmptyValueEntryCommitment, headSentinelCommitment,
 } from '../../src/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 
@@ -124,6 +124,20 @@ describe('SortedList SDK: slot hashing + commitment codec', () => {
     expect(binToHex(s)).toBe(binToHex(slot));
     expect(binToHex(n)).toBe(binToHex(next));
     expect(binToHex(v)).toBe('cafe');
+  });
+
+  it('does not treat a key-0 long-tail UPDATE as an empty placeholder', () => {
+    const emptySlot = keyToSlot(new Uint8Array());
+    const placeholder = encodeEntryCommitment(emptySlot, new Uint8Array(32), new Uint8Array(64));
+    const longTail = new Uint8Array(64);
+    longTail[0] = 0x6e;
+    longTail[4] = 0xab;
+    const update = encodeEntryCommitment(emptySlot, new Uint8Array(32), longTail);
+    expect(placeholder.length).toBe(128);
+    expect(binToHex(placeholder).startsWith('e3b0c44298fc1c14')).toBe(true);
+    expect(isEmptyValueEntryCommitment(placeholder)).toBe(true);
+    expect(isEmptyValueEntryCommitment(update)).toBe(false);
+    expect(isEmptyValueEntryCommitment(encodeEntryCommitment(emptySlot, new Uint8Array(32), hexToBin('37000000')))).toBe(false);
   });
 });
 
@@ -308,5 +322,27 @@ describe('SortedList SDK: plans satisfy the proven covenants (end to end)', () =
     expect(Number(bytesToSlotValue(final.find(s(70))!.nextKey))).toBe(0); // tail
     // Re-claiming a present key is refused off-chain (and the covenant would reject it on-chain).
     expect(() => final.planInsert(s(30))).toThrow();
+  });
+});
+
+describe('getCachedSortedList', () => {
+  it('reuses the parsed list for the same category and address', () => {
+    const cache = new Map<string, SortedList>();
+    const utxos = sampleUtxos();
+    const first = getCachedSortedList(cache, 'addr-a', CATEGORY, utxos);
+    const second = getCachedSortedList(cache, 'addr-a', CATEGORY, utxos);
+    expect(second).toBe(first);
+    expect(first.all).toHaveLength(4);
+  });
+
+  it('does not reuse a list from a different category or address', () => {
+    const cache = new Map<string, SortedList>();
+    const utxos = sampleUtxos();
+    const first = getCachedSortedList(cache, 'addr-a', CATEGORY, utxos);
+    const otherAddr = getCachedSortedList(cache, 'addr-b', CATEGORY, utxos);
+    const otherCat = getCachedSortedList(cache, 'addr-a', '22'.repeat(32), utxos);
+    expect(otherAddr).not.toBe(first);
+    expect(otherCat).not.toBe(first);
+    expect(otherCat.all).toHaveLength(0);
   });
 });

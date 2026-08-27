@@ -162,10 +162,11 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
 
   // Solidity-compat narrowing casts: `bytes20(address)` / `uint160(address)`. A SolidCash address is a
   // variable-length locking bytecode, not necessarily a 20-byte value. Preserve an already-raw Solidity
-  // address, extract the hash at offset 2 from P2SH20 (a914 <20> 87), or at offset 3 from P2PKH
-  // (76a914 <20> 88ac). This is lossy and warned in TypeCheckTraversal. Only bytes20 and int targets narrow;
-  // `bytes(address)` keeps the full locking bytecode. Other lengths deliberately take the P2PKH path and fail
-  // closed at OP_SPLIT if they cannot contain a 20-byte payload.
+  // address, extract the hash at offset 2 from P2SH20 (a914 <20> 87), take HASH160 of a P2SH32
+  // (aa20 <32> 87 — a 35-byte script whose 32-byte payload is not a 20-byte account id), or extract at
+  // offset 3 from P2PKH (76a914 <20> 88ac). This is lossy and warned in TypeCheckTraversal. Only bytes20
+  // and int targets narrow; `bytes(address)` keeps the full locking bytecode. Other lengths take the
+  // P2PKH path and fail closed at OP_SPLIT if they cannot contain a 20-byte payload.
   const extractAddressHash = (offset: bigint): Script => [
     encodeInt(offset), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP,
   ];
@@ -184,7 +185,13 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     Op.OP_IF,
     ...extractAddressHash(2n),
     Op.OP_ELSE,
+    Op.OP_SIZE, encodeInt(35n), Op.OP_EQUAL,
+    Op.OP_IF,
+    // P2SH32 is 35 bytes; the P2PKH offset-3 extract would take script-hash[1:21], not an identity.
+    Op.OP_HASH160,
+    Op.OP_ELSE,
     ...extractAddressHash(3n),
+    Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
@@ -193,11 +200,14 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     return narrowAddressTo20;
   }
   if (from instanceof AddressType && to instanceof IntType) {
-    // OP_BIN2NUM reads a sign-magnitude little-endian number; for unsigned targets append a 0x00 sign byte so
-    // the hash is a non-negative value (otherwise ~half of hashes fail the uint's >= 0 bounds check).
+    // Solidity treats the narrowed address as a big-endian uint160. Script numbers are little-endian, so reverse
+    // in compatibility mode; abi.encodePacked(uint160(address)) reverses it back while emitting the declared
+    // integer width and therefore produces the same 20 bytes as abi.encodePacked(address). For unsigned targets,
+    // append a 0x00 sign byte so hashes with their numeric high bit set remain non-negative.
+    const endian = solidityCompat ? [Op.OP_REVERSEBYTES] : [];
     return to.signed
-      ? [...narrowAddressTo20, Op.OP_BIN2NUM]
-      : [...narrowAddressTo20, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
+      ? [...narrowAddressTo20, ...endian, Op.OP_BIN2NUM]
+      : [...narrowAddressTo20, ...endian, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
   }
 
   // address casts are no-ops (stack value unchanged)

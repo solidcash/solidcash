@@ -3,6 +3,7 @@ import { scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { messageBus } from '../../src/index.js';
+import { encodeFunctionArgument } from '../../src/Argument.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract MessageBatchEncoding() {
@@ -16,6 +17,30 @@ contract MessageBusReturningBatch() {
   function twice(int n) public pure returns (int) { return n * 2; }
   function positive(int n) public pure returns (bool) { return n > 0; }
   function pair(int n) public pure returns (int, bool) { return (n + 1, n > 0); }
+}`;
+
+const COMPOSITE_SOURCE = `pragma solidcash >=0.8.0;
+contract MessageBusCompositeEncoding() {
+  struct Payload { uint8 kind; bytes note; bytes32[] tags; }
+  function publish(address target, Payload memory payload) public {
+    require(target == address(0) && payload.kind > 0);
+  }
+}`;
+
+const ROUTED_COLLECTION_SOURCE = `pragma solidity ^0.8.0;
+contract RoutedCollectionEncoding() {
+  mapping(address => uint) balances;
+  mapping(address => mapping(address => uint)) allowances;
+  function approve(address spender, address owner, uint amount) public {
+    allowances[owner][spender] = amount;
+    require(amount >= 0);
+  }
+  function transferFrom(address from, address to, address spender, uint amount) public {
+    allowances[from][spender] = allowances[from][spender] - amount;
+    balances[from] = balances[from] - amount;
+    balances[to] = balances[to] + amount;
+    require(amount >= 0);
+  }
 }`;
 
 const artifact = compileString(SOURCE, {
@@ -87,6 +112,54 @@ describe('messageBus.encodeMessageBatch', () => {
     expect(() => messageBus.decodeMessageBusResults(
       returning, encoded, scriptToBytecode([Uint8Array.from([...packed, 0])]),
     )).toThrow(/unchecked suffix/);
+  });
+
+  it('uses one canonical inline representation for composite row arguments', () => {
+    const composite = compileString(COMPOSITE_SOURCE, {
+      forceStateful: true,
+      messageBus: true,
+      solidityImportCompat: true,
+    });
+    const payload = {
+      kind: 4n,
+      note: Uint8Array.of(0xaa, 0xbb),
+      tags: [new Uint8Array(32).fill(0x11), new Uint8Array(32).fill(0x22)],
+    };
+    const payloadBytes = encodeFunctionArgument(payload, 'Payload', composite.structs) as Uint8Array;
+    const encoded = messageBus.encodeMessageBatch(composite, [{
+      function: 'publish', args: [new Uint8Array(), payload],
+    }]);
+
+    // The zero address is a scalar OP_0 field. The struct follows inline and begins with its own first field
+    // (OP_4), not an SDK-path-dependent outer pushdata frame.
+    expect(encoded.rows[0].argsHex).toBe(`00${binToHex(payloadBytes)}`);
+    expect(payloadBytes[0]).toBe(0x54);
+  });
+
+  it('keeps inactive row-local collection witnesses distinct from active identities', () => {
+    const routed = compileString(ROUTED_COLLECTION_SOURCE, {
+      forceStateful: true,
+      messageBus: true,
+      solidityImportCompat: true,
+      optimizeForCompilationSpeed: true,
+      suppressWarnings: true,
+    });
+    const source = new Uint8Array(25).fill(0x11);
+    const destination = new Uint8Array(25).fill(0x22);
+    const spender = new Uint8Array(25).fill(0x33);
+    const encoded = messageBus.encodeMessageBatch(routed, [
+      { function: 'approve', args: [spender, source, 80n] },
+      { function: 'transferFrom', args: [source, destination, spender, 30n] },
+    ]);
+    const visibleRouteInputs = routed.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const witness = (name: string) => encoded.routeWitnesses[visibleRouteInputs
+      .findIndex((input) => input.name === name)];
+
+    expect(witness('__message_bus_key_balances_0_row_r0')).toEqual(
+      messageBus.inactiveMessageBusRouteWitness('address'),
+    );
+    expect(witness('__message_bus_key_balances_0_row_r1')).toEqual(destination);
   });
 
   it('rejects non-advertised, ineligible, and malformed invocation plans', () => {

@@ -5,7 +5,8 @@
  */
 import { beforeAll, afterAll, beforeEach, afterEach, it, test, describe } from 'vitest';
 import {
-  clearDeployments, clearSoftBentoTotals, takeDeploymentRegistrySnapshot, takeSoftStateSnapshot,
+  clearCollectionValueRecords, clearDeployments, clearSoftBentoTotals,
+  takeDeploymentRegistrySnapshot, takeSoftStateSnapshot,
   type DeploymentRegistrySnapshot, type SnapshotRestorer, type SoftStateSnapshot,
 } from 'solidcash';
 import './chai.js';
@@ -162,7 +163,9 @@ globals.xit = typeof itSkip === 'function' ? runner(itSkip) : globals.it;
 globals.xdescribe = typeof describeSkip === 'function' ? runner(describeSkip) : suite;
 globals.xcontext = globals.xdescribe;
 
-const hre = await initHre(process.cwd());
+// Vitest's `root` changes discovery/resolution but deliberately leaves process.cwd() unchanged. A harness config
+// hosted above the ported project can provide its real root so the matching solidcash.config.ts is loaded.
+const hre = await initHre(process.env.SOLIDCASH_PROJECT_ROOT ?? process.cwd());
 // ethers.Contract shim and ported suites look up methods via globalThis.hre.ethers.getContractAt.
 (globalThis as { hre?: typeof hre }).hre = hre;
 
@@ -177,6 +180,7 @@ beforeEach(async () => {
   if (fixtureSnapshotReady) return;
   if (provider && typeof provider.reset === 'function') {
     provider.reset();
+    clearCollectionValueRecords();
     try { clearDeployments(provider as never); } catch { /* ignore */ }
     try { clearSoftBentoTotals(); } catch { /* ignore */ }
     // Re-fund signers after reset (getSigners only funds once per key without reset of fundedSignerKeys).

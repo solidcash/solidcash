@@ -225,10 +225,12 @@ export default abstract class AstVisitor<T> {
   }
 
   visitList(nodes: Node[]): T[] {
+    if (nodes.length === 0) return nodes as T[];
     return nodes.map((n) => this.visit(n));
   }
 
   visitOptionalList(nodes?: Node[]): T[] | undefined {
-    return nodes && this.visitList(nodes);
+    if (!nodes || nodes.length === 0) return nodes as T[] | undefined;
+    return this.visitList(nodes);
   }
 }

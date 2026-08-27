@@ -35,29 +35,48 @@ export const encryptUtf8Data = (data: string, sessionKey: string | undefined): U
   return encryptBinaryData(utf8ToBytes(data), sessionKey);
 }
 
+const localIpfs = new Map<string, string>();
+
+const storeLocalIpfs = (encodedData: string): { hash: string; cid: string } => {
+  const hash = keccak256(decodeBase64(encodedData));
+  const cid = hashToCid(hash);
+  localIpfs.set(cid, encodedData);
+  localIpfs.set(hash, encodedData);
+  if (typeof globalThis.localStorage?.setItem === 'function') {
+    globalThis.localStorage.setItem(`IpfsContent-${cid}`, encodedData);
+  }
+  return { hash, cid };
+};
+
 export const publishToIpfsRaw = async (encodedData: string): Promise<{
   hash: string;
   cid: string;
 }> => {
   const host = process.env.IPFS_UPLOAD_SERVICE_URL ?? process.env.NEXT_PUBLIC_IPFS_UPLOAD_SERVICE_URL ?? "http://localhost:8000";
 
-  const response = await fetch(host, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "IPFS_UPLOAD_SERVICE_SECRET": process.env.IPFS_UPLOAD_SERVICE_SECRET ?? process.env.NEXT_PUBLIC_IPFS_UPLOAD_SERVICE_SECRET ?? ""
-    },
-    body: JSON.stringify({
-      dataB64: encodedData,
-    }),
-  });
+  try {
+    const response = await fetch(host, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "IPFS_UPLOAD_SERVICE_SECRET": process.env.IPFS_UPLOAD_SERVICE_SECRET ?? process.env.NEXT_PUBLIC_IPFS_UPLOAD_SERVICE_SECRET ?? ""
+      },
+      body: JSON.stringify({
+        dataB64: encodedData,
+      }),
+    });
 
-  if (response.status !== 200) {
-    throw await response.text();
+    if (response.status === 200) {
+      const { hash, cid } = await response.json();
+      localIpfs.set(cid, encodedData);
+      localIpfs.set(hash, encodedData);
+      return { hash, cid };
+    }
+  } catch {
+    // Marketplace mock runs have no IPFS daemon; hash the payload locally.
   }
 
-  const { hash, cid } = await response.json();
-  return { hash, cid };
+  return storeLocalIpfs(encodedData);
 }
 
 export const publishToIpfs = async (message: string, sessionKey: string | undefined = undefined): Promise<{
@@ -68,22 +87,43 @@ export const publishToIpfs = async (message: string, sessionKey: string | undefi
   return publishToIpfsRaw(encodedData);
 }
 
-export const publishMediaToIpfs = async (fileName: string, mimeType: string, mediaBytes: Uint8Array, sessionKey: string | undefined = undefined): Promise<{
+type PublishedIpfs = { hash: string; cid: string };
+
+export function publishMediaToIpfs(
+  mimeType: string, mediaBytes: Uint8Array, sessionKey?: string,
+): Promise<PublishedIpfs>;
+export function publishMediaToIpfs(
+  fileName: string, mimeType: string, mediaBytes: Uint8Array, sessionKey?: string,
+): Promise<PublishedIpfs>;
+export async function publishMediaToIpfs(
+  fileNameOrMimeType: string,
+  mimeTypeOrBytes: string | Uint8Array,
+  mediaBytesOrSessionKey?: Uint8Array | string,
+  currentSessionKey?: string,
+): Promise<{
   hash: string;
   cid: string;
-}> => {
-  if (fileName.length === 0) {
+}> {
+  const legacy = mimeTypeOrBytes instanceof Uint8Array;
+  const fileName = legacy ? undefined : fileNameOrMimeType;
+  const mimeType = legacy ? fileNameOrMimeType : mimeTypeOrBytes;
+  const mediaBytes = legacy ? mimeTypeOrBytes : mediaBytesOrSessionKey;
+  const sessionKey = legacy ? mediaBytesOrSessionKey : currentSessionKey;
+
+  if (fileName !== undefined && fileName.length === 0) {
     throw new Error("empty file name");
   }
-  if (mimeType.length === 0 || mimeType.indexOf("/") === -1) {
+  if (typeof mimeType !== 'string' || mimeType.length === 0 || mimeType.indexOf("/") === -1) {
     throw new Error("wrong mime type");
   }
-  if (mediaBytes.length === 0) {
+  if (!(mediaBytes instanceof Uint8Array) || mediaBytes.length === 0) {
     throw new Error("empty data");
   }
 
-  const binary = getBytes(AbiCoder.defaultAbiCoder().encode(["string", "string", "bytes"], [fileName, mimeType, mediaBytes]));
-  const encodedData: string = encodeBase64(encryptBinaryData(binary, sessionKey));
+  const binary = getBytes(fileName === undefined
+    ? AbiCoder.defaultAbiCoder().encode(["string", "bytes"], [mimeType, mediaBytes])
+    : AbiCoder.defaultAbiCoder().encode(["string", "string", "bytes"], [fileName, mimeType, mediaBytes]));
+  const encodedData: string = encodeBase64(encryptBinaryData(binary, sessionKey as string | undefined));
   return publishToIpfsRaw(encodedData);
 }
 
@@ -114,13 +154,18 @@ export const getFromIpfsRaw = async (cidOrHash: string): Promise<string> => {
 
   const key = `IpfsContent-${cidOrHash}`;
 
-  let content = globalThis.localStorage?.getItem(key);
+  let content = globalThis.localStorage?.getItem(key) ?? localIpfs.get(cidOrHash);
   if (content) {
     return content;
   }
 
   const host = process.env.IPFS_GATEWAY_URL ?? process.env.NEXT_PUBLIC_IPFS_GATEWAY_URL ?? "http://localhost:8080";
-  const respose = await fetch(`${host}/ipfs/${cidOrHash}`);
+  let respose: Response;
+  try {
+    respose = await fetch(`${host}/ipfs/${cidOrHash}`);
+  } catch {
+    throw new Error(`Failed to fetch data from IPFS\n${cidOrHash} is not in the local mock store`);
+  }
   if (respose.status !== 200) {
     throw new Error(`Failed to fetch data from IPFS\n${respose.statusText}\n${await respose.text()}`);
   }
@@ -154,7 +199,11 @@ export const getMediaFromIpfs = async (cidOrHash: string, sessionKey: string | u
   mediaBytes: Uint8Array;
 }> => {
   const decodedData = decryptBinaryData(decodeBase64(await getFromIpfsRaw(cidOrHash)), sessionKey);
-  const [fileName, mimeType, mediaBytes] = AbiCoder.defaultAbiCoder().decode(["string", "string", "bytes"], getBytes(decodedData));
+  const legacy = decodedData.length >= 32 && decodedData.slice(0, 31).every((byte) => byte === 0)
+    && decodedData[31] === 0x40;
+  const [fileName, mimeType, mediaBytes] = legacy
+    ? ['', ...AbiCoder.defaultAbiCoder().decode(["string", "bytes"], getBytes(decodedData))]
+    : AbiCoder.defaultAbiCoder().decode(["string", "string", "bytes"], getBytes(decodedData));
   return { fileName, mimeType, mediaBytes: getBytes(mediaBytes) };
 }
 

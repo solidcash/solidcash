@@ -1,19 +1,3 @@
-import { defineConfig } from 'vitest/config';
-import { solidhatPreset } from '@solidcash/solidhat/vitest-preset';
-
-export default defineConfig(solidhatPreset(
-  { hardhat: 2, ethers: 6 },
-  {
-    cacheDir: '.marketplace/vite-cache',
-    test: {
-      include: ['.marketplace/project/test/marketplace.test.ts'],
-      testTimeout: 120_000,
-      hookTimeout: 120_000,
-      server: {
-        deps: {
-          inline: true,
-        },
-      },
-    },
-  },
-));
+// One authoritative Marketplace gate. Keeping the historical filename as an alias preserves focused commands
+// without allowing a copied test, stale bindings, or a different project root to change the measured result.
+export { default } from './vitest.marketplace.config.js';

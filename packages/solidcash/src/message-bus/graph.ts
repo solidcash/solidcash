@@ -14,7 +14,21 @@ import {
 
 export interface CompiledGraphParticipant {
   artifact: Artifact;
+  /** Physical covenant identity used to intern and position the participant's state-owner block. */
   lockingBytecode: string;
+  /**
+   * Authenticated public target identity when it differs from the physical state owner, as it does for a
+   * proxy/delegate execution or a contract with a published logical CREATE identity. This is the address a
+   * source-level call targets. Source-level `address(this)` still reads the exact active input returned by
+   * OP_UTXOBYTECODE; an outgoing call identifies its caller by the authenticated state owner, independently of
+   * whether the source encoded that call through an interface or a low-level address operation.
+   */
+  logicalLockingBytecode?: string;
+  /**
+   * Local balanced-block offset which authenticates `logicalLockingBytecode`. Offset zero is the physical
+   * state owner; proxy executors and immutable CREATE identity anchors occupy explicit non-zero offsets.
+   */
+  logicalIdentityOffset?: number;
   /** V1 authority mode. Omitted preserves the legacy/direct-owner participant route. */
   executionKind?: 'owner' | 'delegate';
   /** Immutable executor identity for the pinned one-hop delegate class. */
@@ -31,12 +45,19 @@ export interface CompiledGraphParticipant {
 export interface CompiledGraphInvocation {
   /**
    * Parent invocation index. `null` identifies the single transaction-origin root.
-   * The logical caller owner is derived as `invocations[parent].callee`; it is never witness-authored.
+   * The active caller owner is derived as `invocations[parent].callee`; it is never witness-authored.
    */
   parent: number | null;
   callee: number;
   function: string;
   args?: readonly FunctionArgument[];
+  /** Compiler-stable identity of the parent callsite reached by this invocation. */
+  consumerCallsiteId?: number;
+  /**
+   * Exact locking bytecode evaluated by the parent call expression. It may be the participant's physical
+   * owner or an authenticated public identity; settlement still belongs to `callee` in both cases.
+   */
+  targetLockingBytecode?: string;
   /**
    * Transaction-origin caller for the root row. This is required when the root handler derives a collection
    * key from `msg.sender`; nested callers remain compiler-derived from the authenticated parent participant.
@@ -58,6 +79,8 @@ export interface PlannedGraphInvocation {
   localRow: number;
   depth: number;
   function: string;
+  /** Canonical arguments resolved from compiler-authored callsite metadata during optimistic graph planning. */
+  args?: readonly FunctionArgument[];
   selectorHex: string;
   callMode: 'call' | 'staticcall';
   /**
@@ -77,6 +100,9 @@ export interface PlannedGraphInvocation {
    * for parents whose artifact publishes no matching callsite.
    */
   consumerCallsiteId?: number;
+  /** Exact source-level call target and the participant-local input which authenticates it. */
+  targetLockingBytecode: string;
+  targetIdentityOffset: number;
   /** Child invocation results which must exist before this invocation can resume. */
   resultDependencies: readonly number[];
 }
@@ -86,6 +112,9 @@ export interface CompiledParticipantExecution {
   /** Exact artifact whose route and state layout this physical owner executes. */
   artifact: Artifact;
   lockingBytecode: string;
+  logicalLockingBytecode?: string;
+  /** Local balanced-block offset of the authenticated public call target. */
+  logicalIdentityOffset: number;
   executionKind: 0 | 1;
   /** Local balanced-block offset of the distinct delegate executor input. */
   executorOffset: number | null;
@@ -109,6 +138,51 @@ export interface CompiledGraphPlan {
   invocations: readonly PlannedGraphInvocation[];
   /** Root `msg.sender`, carried from planning into finalization so collection-key and caller frames agree. */
   rootCallerLockingBytecode?: string;
+}
+
+/** Physical event offsets owned by the selected local rows of a compiler-published graph effect frame. */
+export function selectedGraphEventOffsets(
+  plan: CompiledGraphPlan,
+  participant: CompiledParticipantExecution,
+): ReadonlySet<number> | undefined {
+  const capability = participant.artifact.messageBus;
+  const eventSlots = participant.blockLayout!.slots
+    .filter((slot) => slot.kind === 'event' && slot.slotIndex !== undefined);
+  let frame = capability?.route?.graphEffectFrame;
+  if (!frame) {
+    // Older ordinary unrolled routes predate explicit graph-effect metadata. They still publish a canonical
+    // one-event-per-row prefix: exactly `maximumRows` consecutive slot indices beginning at zero. Infer only
+    // that narrow, independently checkable shape and only when every selected handler emits at most once.
+    const maximumRows = capability?.maximumRows ?? 0;
+    const selectedHandlers = participant.invocations.map((invocationIndex) => {
+      const invocation = plan.invocations[invocationIndex];
+      return capability?.handlers.find((handler) => handler.name === invocation.function);
+    });
+    const canonicalPrefix = maximumRows > 0 && eventSlots.length === maximumRows
+      && eventSlots.slice(0, maximumRows).every((slot, index) => slot.slotIndex === index);
+    if (canonicalPrefix && selectedHandlers.every((handler) => (handler?.emits?.length ?? 0) <= 1)) {
+      frame = {
+        sites: maximumRows, eventBase: 0, eventWidth: 1,
+        transferBase: 0, transferWidth: 0,
+        tokenTransferBase: 0, tokenTransferWidth: 0, tokenNftTransfers: false,
+      };
+    }
+  }
+  if (!frame || frame.eventWidth < 1) return undefined;
+  const offsetBySlot = new Map(eventSlots.map((slot) => [slot.slotIndex!, slot.offset]));
+  const selected = new Set<number>();
+  participant.invocations.forEach((invocationIndex, localRow) => {
+    if (localRow >= frame.sites) return;
+    const invocation = plan.invocations[invocationIndex];
+    const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+      candidate.name === invocation.function);
+    for (const emitted of handler?.emits ?? []) {
+      if (emitted.emitIndex < 0 || emitted.emitIndex >= frame.eventWidth) continue;
+      const offset = offsetBySlot.get(frame.eventBase + localRow * frame.eventWidth + emitted.emitIndex);
+      if (offset !== undefined) selected.add(offset);
+    }
+  });
+  return selected;
 }
 
 /**
@@ -202,9 +276,11 @@ export interface AtomicEventSlotEffect {
 export interface AtomicResourceSlotEffect {
   participant: number;
   offset: number;
-  /** 0 transition/preserve, 1 create, 2 delete. */
+  /** 0 transition/preserve, 1 create, 2 delete, 3 satoshi container, 4 token container, 5 replace. */
   mode: number;
   lockingBytecodeHex: string;
+  /** Required by mode 5, where one authenticated mutable resource replaces another at the same coordinate. */
+  outputLockingBytecodeHex?: string;
   tokenCategoryHex: string;
   outputTokenCategoryHex?: string;
   inputCommitmentHex: string;
@@ -242,6 +318,13 @@ export interface AtomicSidecarSlotEffect {
 }
 
 const uint8Hex = (value: number): string => value.toString(16).padStart(2, '0');
+
+const uint16LeHex = (value: number, field: string): string => {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff) {
+    throw new Error(`messageBus: ${field} does not fit uint16`);
+  }
+  return `${uint8Hex(value & 0xff)}${uint8Hex(value >>> 8)}`;
+};
 
 const uint64LeHex = (value: bigint, field: string): string => {
   if (value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new Error(`messageBus: ${field} is outside uint64`);
@@ -292,7 +375,7 @@ export function finalizeAtomicInvocationGraph(
   }
   const spans = plan.participants.map((participant, index) => {
     const block = participant.blockLayout!;
-    const fixedSize = block.trailingBase ?? block.blockSize;
+    const fixedSize = block.fixedSuffix ? block.blockSize : block.trailingBase ?? block.blockSize;
     const actualSize = actualSizes?.[index] ?? block.blockSize;
     if (!Number.isSafeInteger(actualSize) || actualSize < fixedSize || actualSize > block.blockSize) {
       throw new Error(
@@ -307,7 +390,7 @@ export function finalizeAtomicInvocationGraph(
     return slots.some((slot) => ![
       'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer',
       'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'keccakSideCar',
-      'ecrecoverSideCar', 'trailing',
+      'ecrecoverSideCar', 'trailing', 'lowLevelCall', 'identityAnchor',
     ].includes(slot.kind));
   });
   if (unsupported) {
@@ -323,16 +406,22 @@ export function finalizeAtomicInvocationGraph(
       throw new Error(`messageBus: participant ${index} master category must be 32-byte hex`);
     }
     const maximumSize = participant.blockLayout!.blockSize;
-    const fixedSize = participant.blockLayout!.trailingBase ?? maximumSize;
+    const fixedSize = participant.blockLayout!.fixedSuffix
+      ? maximumSize : participant.blockLayout!.trailingBase ?? maximumSize;
     const actualSize = spans[index];
     const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
+    const publishesResult = participant.invocations.some((invocation) =>
+      plan.invocations[invocation].resultTypes.length > 0);
     const lockingBytecode = participant.lockingBytecode.toLowerCase();
     const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
       lockingBytecode, stateCategory: internalCategory,
       fixedSize, actualSize, maximumSize,
       trailingUsed: actualSize - fixedSize,
-      returnOffset: returnSlot === undefined ? 0xffff : returnSlot.offset,
+      // Route layouts publish the union of every eligible handler, so a void selected batch can retain a physical
+      // return coordinate without activating it. Advertising that inactive coordinate makes the verifier demand
+      // the canonical encoded empty vector (`00`) from a deliberately token-free balanced output.
+      returnOffset: !publishesResult || returnSlot === undefined ? 0xffff : returnSlot.offset,
     };
   });
   const invocationRows = plan.invocations.map((invocation) => {
@@ -347,9 +436,11 @@ export function finalizeAtomicInvocationGraph(
       throw new Error(`messageBus: void invocation ${invocation.index} cannot carry a result`);
     }
     const caller = invocation.caller === null ? 0xff : invocation.caller;
+    const callerIdentity = invocation.parent === null
+      ? undefined : graphInvocationCallerIdentity(plan.participants, plan.invocations, invocation);
     const subjectHex = invocation.caller === null
       ? plan.rootCallerLockingBytecode ?? ''
-      : plan.participants[invocation.caller].lockingBytecode;
+      : callerIdentity!.lockingBytecode;
     const completion = plan.participants[invocation.callee].completionPositions[invocation.localRow];
     if (completion === undefined) {
       throw new Error(`messageBus: invocation ${invocation.index} has no compiler-authored completion position`);
@@ -357,8 +448,12 @@ export function finalizeAtomicInvocationGraph(
     return {
       kind: 0, owner: caller === 0xff ? invocation.callee : caller, consumer: invocation.callee,
       slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
-      sourceOffset: invocation.caller === null ? 0xffff : 0,
-      targetOffset: 0, selectorHex: invocation.selectorHex,
+      sourceOffset: invocation.caller === null
+        ? 0xffff : callerIdentity!.offset,
+      // Settlement belongs to the physical participant, while this edge authenticates the exact address value
+      // used by the source expression (physical owner or an explicit public identity anchor).
+      targetOffset: invocation.targetIdentityOffset,
+      selectorHex: invocation.selectorHex,
       position: completion, parent: invocation.parent ?? 0xffff, depth: invocation.depth,
       subtreeEnd: invocation.subtreeEnd, subjectHex, argsHex: invocation.argsHex, resultHex: result.toLowerCase(),
       effectHex: '',
@@ -374,22 +469,27 @@ export function finalizeAtomicInvocationGraph(
       const participant = plan.participants[effect.participant];
       if (!participant) throw new Error(`messageBus: resource effect names participant ${effect.participant}`);
       const slot = participant.blockLayout!.slots.find((candidate) =>
-        ['dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer', 'trailing']
+        ['dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer', 'trailing', 'lowLevelCall']
           .includes(candidate.kind)
         && candidate.offset === effect.offset);
       if (!slot) {
         throw new Error(`messageBus: participant ${effect.participant} has no resource slot ${effect.offset}`);
       }
       const satoshiContainer = slot.kind === 'satoshiContainer';
-      const tokenContainer = slot.kind === 'tokenContainer';
-      if (effect.mode < 0 || effect.mode > 4
+      // A co-spent delegate executor is a token-bearing covenant resource in the participant block. Model it
+      // through the same fully-authenticated input/output token row as a source-level token container; the SDK
+      // additionally requires exact preservation, and the executor's own master covenant independently binds it.
+      const tokenContainer = slot.kind === 'tokenContainer' || slot.kind === 'lowLevelCall';
+      if (effect.mode < 0 || effect.mode > 5
         || (satoshiContainer ? effect.mode !== 3 : effect.mode === 3)
         || (tokenContainer ? effect.mode !== 4 : effect.mode === 4)
-        || (!satoshiContainer && !tokenContainer && slot.kind !== 'trailing' && effect.mode !== 0)) {
+        || (!satoshiContainer && !tokenContainer
+          && slot.kind !== 'entry' && slot.kind !== 'trailing' && effect.mode !== 0)) {
         throw new Error(`messageBus: participant ${effect.participant} resource slot ${effect.offset} has invalid mode`);
       }
       for (const [field, value] of [
         ['locking bytecode', effect.lockingBytecodeHex], ['token category', effect.tokenCategoryHex],
+        ['output locking bytecode', effect.outputLockingBytecodeHex ?? ''],
         ['output token category', effect.outputTokenCategoryHex ?? ''],
         ['input commitment', effect.inputCommitmentHex], ['output commitment', effect.outputCommitmentHex],
       ] as const) {
@@ -409,7 +509,8 @@ export function finalizeAtomicInvocationGraph(
           || effect.inputValue === undefined || effect.outputValue === undefined
           : effect.tokenCategoryHex.length !== 66 || !effect.tokenCategoryHex.endsWith('01')
           || (effect.mode === 1 && effect.inputCommitmentHex.length !== 0)
-          || (effect.mode === 2 && effect.outputCommitmentHex.length !== 0)) {
+          || (effect.mode === 2 && effect.outputCommitmentHex.length !== 0)
+          || (effect.mode === 5 && !(effect.outputLockingBytecodeHex?.length))) {
         throw new Error(`messageBus: participant ${effect.participant} resource is not a mutable NFT`);
       }
       return {
@@ -431,13 +532,19 @@ export function finalizeAtomicInvocationGraph(
             + ((effect.outputTokenCategoryHex?.length ?? 0) === 0 ? ''
               : uint64LeHex(effect.outputValue!, 'token-container output amount')
                 + effect.outputCommitmentHex.toLowerCase())
-            : effect.outputCommitmentHex.toLowerCase(),
+            : effect.mode === 5
+              ? uint16LeHex(
+                (effect.outputLockingBytecodeHex?.length ?? 0) / 2,
+                'replacement output locking bytecode length',
+              ) + effect.outputLockingBytecodeHex!.toLowerCase() + effect.outputCommitmentHex.toLowerCase()
+              : effect.outputCommitmentHex.toLowerCase(),
       };
     });
   const effectKeys = new Set(eventEffects.map((effect) => `${effect.participant}:${effect.offset}`));
   if (effectKeys.size !== eventEffects.length) {
     throw new Error('messageBus: atomic event effects contain a duplicate participant slot');
   }
+  const eventOrdinals = new Map<number, number>();
   const eventRows = [...eventEffects]
     .sort((a, b) => a.participant - b.participant || a.offset - b.offset)
     .map((effect) => {
@@ -451,16 +558,53 @@ export function finalizeAtomicInvocationGraph(
       if (!effect.active) throw new Error('messageBus: inactive event slots must not produce callManifest rows');
       const eventSlotCount = participant.blockLayout!.slots.filter((candidate) => candidate.kind === 'event').length;
       const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
-      if (maximumRows < 1 || eventSlotCount % maximumRows !== 0 || slot.slotIndex === undefined) {
+      const eventOrdinal = eventOrdinals.get(effect.participant) ?? 0;
+      eventOrdinals.set(effect.participant, eventOrdinal + 1);
+      const emittingInvocations = participant.invocations.flatMap((invocationIndex) => {
+        const invocation = plan.invocations[invocationIndex];
+        const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+          candidate.name === invocation.function);
+        return Array.from({ length: handler?.emits?.length ?? 0 }, () => invocationIndex);
+      });
+      if (maximumRows < 1 || slot.slotIndex === undefined
+        || (emittingInvocations.length === 0 && eventSlotCount % maximumRows !== 0)) {
         throw new Error(`messageBus: participant ${effect.participant} has a non-canonical event frame`);
       }
-      const frameWidth = eventSlotCount / maximumRows;
-      const parent = participant.invocations[Math.floor(slot.slotIndex / frameWidth)];
+      const frameWidth = maximumRows > 0 && eventSlotCount % maximumRows === 0
+        ? eventSlotCount / maximumRows : 0;
+      // Physical event sites belong to the compiler's unrolled selector dispatcher and need not be compact row
+      // ordinals. Bind each discovered active event to the corresponding emitting invocation in execution order;
+      // the slot itself remains authenticated independently by sourceOffset/targetOffset.
+      // Older/minimal artifacts do not publish handler-level emit metadata. Keep their canonical physical-frame
+      // binding as a compatibility fallback; full artifacts use the reached emitting invocation sequence above.
+      const graphFrame = participant.artifact.messageBus?.route?.graphEffectFrame;
+      let parent: number | undefined;
+      if (graphFrame && graphFrame.eventWidth > 0
+        && slot.slotIndex >= graphFrame.eventBase
+        && slot.slotIndex < graphFrame.eventBase + graphFrame.sites * graphFrame.eventWidth) {
+        const relative = slot.slotIndex - graphFrame.eventBase;
+        const localRow = Math.floor(relative / graphFrame.eventWidth);
+        const emitIndex = relative % graphFrame.eventWidth;
+        const candidate = participant.invocations[localRow];
+        const invocation = candidate === undefined ? undefined : plan.invocations[candidate];
+        const handler = invocation === undefined ? undefined : participant.artifact.messageBus?.handlers
+          .find((entry) => entry.name === invocation.function);
+        if (handler?.emits?.some((emitted) => emitted.emitIndex === emitIndex)) parent = candidate;
+      } else {
+        parent = emittingInvocations[eventOrdinal]
+          ?? (frameWidth > 0 ? participant.invocations[Math.floor(slot.slotIndex / frameWidth)] : undefined);
+      }
       if (!/^(?:[0-9a-fA-F]{2})*$/.test(effect.lockingBytecodeHex)
         || !/^(?:[0-9a-fA-F]{2})*$/.test(effect.commitmentHex)) {
         throw new Error(`messageBus: participant ${participant.participant} event slot ${slot.offset} is not byte hex`);
       }
-      if (parent === undefined) throw new Error(`messageBus: event participant ${participant.participant} has no invocation`);
+      if (parent === undefined) {
+        throw new Error(
+          `messageBus: event participant ${participant.participant} '${participant.artifact.contractName}' `
+          + `slot ${slot.offset} has active ordinal ${eventOrdinal}, but its selected handlers declare `
+          + `${emittingInvocations.length} event emission(s) across ${participant.invocations.length} invocation(s)`,
+        );
+      }
       const invocation = plan.invocations[parent];
       return {
         kind: 2, owner: participant.participant, consumer: participant.participant,
@@ -696,12 +840,17 @@ export const GRAPH_MAX_BATCH_BLOB_BYTES = MAX_MESSAGE_BUS_BLOB_BYTES;
  * LARGER one is the drift that costs: the SDK encodes a blob its own encoder accepts, and the co-spent
  * participant verifier then refuses the whole transaction, naming nothing about blob width.
  */
-export function assertGraphBatchBlobEnvelope(artifact: Artifact, participant: number): void {
+export function assertGraphBatchBlobEnvelope(
+  artifact: Artifact, participant: number, maximumBlobBytes = GRAPH_MAX_BATCH_BLOB_BYTES,
+): void {
+  if (!Number.isSafeInteger(maximumBlobBytes) || maximumBlobBytes < 1) {
+    throw new Error('messageBus: graph maximum blob bytes must be a positive integer');
+  }
   const published = artifact.messageBus?.maximumBlobBytes;
-  if (published === undefined || published <= GRAPH_MAX_BATCH_BLOB_BYTES) return;
+  if (published === undefined || published <= maximumBlobBytes) return;
   throw new Error(
     `messageBus: participant ${participant} publishes an message-bus batch blob envelope of ${published} bytes, wider than the `
-    + `${GRAPH_MAX_BATCH_BLOB_BYTES} the atomic bus admits`,
+    + `${maximumBlobBytes} the atomic bus admits`,
   );
 }
 /** Bit 0 of the call-options byte: the compiler-proven read-only (`staticcall`) mode. */
@@ -747,11 +896,15 @@ function bindConsumerCallsites(
   reached: readonly string[],
 ): (ExternalCallAbi | undefined)[] {
   if (callsites.length === 0) return reached.map(() => undefined);
-  const singular = callsites.every((callsite) =>
-    callsite.occurrence === undefined || callsite.occurrence === 'once');
-  const sorted = (names: readonly string[]): string => [...names].sort().join('\x00');
-  const namesArePermuted = sorted(reached) === sorted(callsites.map((call) => call.functionName));
-  if (singular && callsites.length === reached.length && namesArePermuted) {
+  const singular = callsites.every((callsite) => (occurrenceBoundOf(callsite).maximum ?? 2) <= 1);
+  const positionallyCompatible = callsites.length === reached.length && reached.every((functionName, position) => {
+    const callsite = callsites[position];
+    return isRuntimeResolvedCallsite(callsite)
+      || (callsite.rawFunctionName ?? callsite.functionName) === functionName;
+  });
+  // A fully reached bounded conditional list remains in compiler callsite order. Preserve that stronger identity
+  // (including selector-only raw rows) rather than widening every raw callsite into a candidate for every child.
+  if (singular && positionallyCompatible) {
     return reached.map((functionName, position) => {
       const callsite = callsites[position];
       if (!isRuntimeResolvedCallsite(callsite) && callsite.functionName !== functionName) {
@@ -765,7 +918,9 @@ function bindConsumerCallsites(
   }
   return reached.map((functionName) => {
     const candidates = callsites.filter((callsite) =>
-      isRuntimeResolvedCallsite(callsite) || callsite.functionName === functionName);
+      (isRuntimeResolvedCallsite(callsite)
+        && (callsite.rawFunctionName === undefined || callsite.rawFunctionName === functionName))
+      || callsite.functionName === functionName);
     if (candidates.length === 0) return undefined;
     const contract = (callsite: ExternalCallAbi): string =>
       `${callsite.hasReturnValues === true}|${(callsite.returnTypes ?? []).join(',')}`;
@@ -787,9 +942,12 @@ function bindConsumerCallsites(
  * the global depth-first tree and each owner's exact message-bus batch execution blob, preventing a graph/local-policy
  * desynchronization.
  */
-export function assertPlannedOccurrenceCount(call: ExternalCallAbi, count: number): void {
+export function assertPlannedOccurrenceCount(
+  call: ExternalCallAbi, count: number, allowRuntimeBoundedLoop = false,
+): void {
   const bound = occurrenceBoundOf(call);
   if (bound.kind === 'loop' && bound.maximum === undefined) {
+    if (allowRuntimeBoundedLoop) return;
     throw new MessageBusDiagnosticError(
       'L3_UNBOUNDED_EXTERNAL_CALL_LOOP',
       `unbounded-external-call-loop-callManifest-ineligible: callsite ${call.callsiteId ?? '?'}`,
@@ -808,8 +966,27 @@ export function assertPlannedOccurrenceCount(call: ExternalCallAbi, count: numbe
  * callsite is reached at most once whether or not the compiler spent bytes saying so. Only a loop can leave
  * its ceiling unproven, and an unproven ceiling admits any count up to the global invocation bound.
  */
+const batchedCallsiteBounds = (call: ExternalCallAbi): { minimum: number; maximum: number } | undefined => {
+  if (call.batchInvocations === undefined) return undefined;
+  let minimum = 0;
+  let maximum = 0;
+  for (const row of call.batchInvocations) {
+    const occurrence = row.occurrence ?? 'once';
+    if (occurrence === 'once') {
+      minimum += 1;
+      maximum += 1;
+    } else if (occurrence === 'conditional') {
+      maximum += 1;
+    } else {
+      maximum = Number.POSITIVE_INFINITY;
+    }
+  }
+  return { minimum, maximum };
+};
+
 const callsiteRowCapacity = (call: ExternalCallAbi): number => {
-  if (call.batchInvocations !== undefined) return call.batchInvocations.length;
+  const batched = batchedCallsiteBounds(call);
+  if (batched !== undefined) return batched.maximum;
   const bound = occurrenceBoundOf(call);
   if (bound.kind !== 'loop') return 1;
   return bound.maximum ?? Number.POSITIVE_INFINITY;
@@ -830,12 +1007,14 @@ const callsiteRowCapacity = (call: ExternalCallAbi): number => {
  * callsite legitimately answers `batchInvocations.length` of them. Both stay many-to-one; the bound, not the
  * arity, is what separates them from rows a `once` callsite cannot have emitted.
  */
-function assertHandlerRowCapacity(callsites: readonly ExternalCallAbi[], rows: number): void {
+function assertHandlerRowCapacity(
+  callsites: readonly ExternalCallAbi[], rows: number, allowRuntimeBoundedLoops = false,
+): void {
   const unbounded = callsites.find((callsite) => {
     const bound = occurrenceBoundOf(callsite);
     return bound.kind === 'loop' && bound.maximum === undefined;
   });
-  if (unbounded) assertPlannedOccurrenceCount(unbounded, rows);
+  if (unbounded) assertPlannedOccurrenceCount(unbounded, rows, allowRuntimeBoundedLoops);
   if (callsites.length === 0 || rows === 0) return;
   const capacities = callsites.map(callsiteRowCapacity);
   const total = capacities.reduce((sum, capacity) => sum + capacity, 0);
@@ -848,10 +1027,8 @@ function assertHandlerRowCapacity(callsites: readonly ExternalCallAbi[], rows: n
   // exact count instead. `deriveCompiledGraphPlan` cannot reach this leg: it expands that callsite to exactly
   // `batchInvocations.length` rows by construction.
   if (batched !== undefined) {
-    throw new Error(
-      `messageBus: callsite ${callsites[last].callsiteId ?? '?'} collapses ${batched.length} repeated calls, `
-      + `but ${surplus} rows were planned`,
-    );
+    assertBatchedCallsiteRowCount(callsites[last], surplus);
+    throw new Error(`messageBus: batched callsite ${callsites[last].callsiteId ?? '?'} capacity drift`);
   }
   assertPlannedOccurrenceCount(callsites[last], surplus);
 }
@@ -866,9 +1043,27 @@ function assertHandlerRowCapacity(callsites: readonly ExternalCallAbi[], rows: n
  * zero: a branch that was not taken legitimately emits no row.
  */
 const callsiteRowFloor = (call: ExternalCallAbi): number => {
-  if (call.batchInvocations !== undefined) return call.batchInvocations.length;
+  const batched = batchedCallsiteBounds(call);
+  if (batched !== undefined) return batched.minimum;
   return occurrenceBoundOf(call).minimum ?? 0;
 };
+
+function assertBatchedCallsiteRowCount(call: ExternalCallAbi, count: number): void {
+  const bound = batchedCallsiteBounds(call);
+  if (!bound) return;
+  if (count >= bound.minimum && count <= bound.maximum) return;
+  if (bound.minimum === bound.maximum) {
+    throw new Error(
+      `messageBus: callsite ${call.callsiteId ?? '?'} identifies ${bound.minimum} batched rows, `
+      + `but ${count} were planned`,
+    );
+  }
+  const maximum = Number.isFinite(bound.maximum) ? String(bound.maximum) : 'an unbounded runtime maximum';
+  throw new Error(
+    `messageBus: callsite ${call.callsiteId ?? '?'} admits ${bound.minimum}..${maximum} batched rows, `
+    + `but ${count} were planned`,
+  );
+}
 
 /**
  * X179: refuse a caller-supplied row set that DROPS a row one handler must have emitted.
@@ -911,10 +1106,8 @@ function assertHandlerRowFloor(callsites: readonly ExternalCallAbi[], rows: numb
     // A collapsed repeated-call callsite is `once` yet emits every row it NAMES, so the occurrence wording
     // would read "reached at most once" against a callsite that legitimately emits several.
     if (callsite.batchInvocations !== undefined) {
-      throw new Error(
-        `messageBus: callsite ${callsite.callsiteId ?? '?'} collapses ${callsite.batchInvocations.length} `
-        + `repeated calls, but only ${remaining} rows were planned`,
-      );
+      assertBatchedCallsiteRowCount(callsite, remaining);
+      throw new Error(`messageBus: batched callsite ${callsite.callsiteId ?? '?'} floor drift`);
     }
     assertPlannedOccurrenceCount(callsite, remaining);
     // The shared bound admitted a count this floor does not, so the two have drifted. Refuse rather than
@@ -1116,6 +1309,31 @@ export function resolveGraphAbiFunction(artifact: Artifact, name: string): AbiFu
   return matches[0];
 }
 
+type GraphCallerParticipant = Pick<CompiledGraphParticipant, 'lockingBytecode'>;
+
+type GraphCallerInvocation = Pick<CompiledGraphInvocation,
+'parent' | 'callee' | 'function' | 'consumerCallsiteId'>;
+
+/**
+ * Every CALL/staticcall edge is made by the authenticated state owner. A delegate executor remains the exact
+ * source-level `address(this)` value, but choosing a low-level rather than interface call cannot change the
+ * callee's `msg.sender`: both are encodings of the same outgoing call from the same contract instance.
+ */
+export function graphInvocationCallerIdentity(
+  participants: readonly GraphCallerParticipant[],
+  invocations: readonly GraphCallerInvocation[],
+  invocation: GraphCallerInvocation,
+): { lockingBytecode: string; offset: number } {
+  if (invocation.parent === null) {
+    throw new Error('messageBus: transaction-origin invocation has no participant caller identity');
+  }
+  const caller = participants[invocations[invocation.parent].callee];
+  return {
+    lockingBytecode: caller.lockingBytecode,
+    offset: 0,
+  };
+}
+
 /**
  * Measure the call options one graph invocation's function carries that the executed message-bus batch route does not.
  *
@@ -1187,6 +1405,7 @@ export function assertNoUnboundCallOptions(
 export function planCompiledGraph(
   participants: readonly CompiledGraphParticipant[],
   invocations: readonly CompiledGraphInvocation[],
+  options: { allowRuntimeBoundedLoops?: boolean; maximumBlobBytes?: number } = {},
 ): CompiledGraphPlan {
   if (participants.length < 1 || participants.length > MAX_GRAPH_PARTICIPANTS) {
     throw new MessageBusDiagnosticError(
@@ -1213,18 +1432,47 @@ export function planCompiledGraph(
     if (!/^([0-9a-f]{2})+$/.test(lbc)) {
       throw new Error(`messageBus: participant ${index} locking bytecode must be hex bytes`);
     }
+    if (participant.logicalLockingBytecode !== undefined
+      && !/^([0-9a-f]{2})+$/.test(participant.logicalLockingBytecode.toLowerCase())) {
+      throw new Error(`messageBus: participant ${index} logical locking bytecode must be hex bytes`);
+    }
     if (identities.has(lbc)) {
       throw new Error('messageBus: two participant rows name the same physical locking bytecode');
     }
     identities.add(lbc);
     // X106: the artifact's published blob envelope has to fit the participant verifier's compiled-in bound.
     // Skipped for an artifact publishing no envelope at all, which fails later by name at `messageBus!`.
-    assertGraphBatchBlobEnvelope(participant.artifact, index);
+    assertGraphBatchBlobEnvelope(participant.artifact, index, options.maximumBlobBytes);
   });
   if (invocations.length === 0 || invocations[0].parent !== null
     || invocations.slice(1).some((invocation) => invocation.parent === null)) {
     throw new Error('messageBus: compiled graph requires exactly one root invocation at index 0');
   }
+  const invocationTargetIdentity = (
+    invocation: CompiledGraphInvocation, index: number,
+  ): { lockingBytecode: string; offset: number } => {
+    const participant = participants[invocation.callee];
+    const physical = participant.lockingBytecode.toLowerCase();
+    if (invocation.parent === null) {
+      if (invocation.targetLockingBytecode !== undefined
+        && invocation.targetLockingBytecode.toLowerCase() !== physical) {
+        throw new Error(`messageBus: root invocation ${index} cannot target a participant identity alias`);
+      }
+      return { lockingBytecode: physical, offset: 0 };
+    }
+    const logical = participant.logicalLockingBytecode?.toLowerCase();
+    const requested = invocation.targetLockingBytecode?.toLowerCase() ?? logical ?? physical;
+    if (!/^([0-9a-f]{2})+$/.test(requested)) {
+      throw new Error(`messageBus: invocation ${index} target locking bytecode must be hex bytes`);
+    }
+    if (requested === physical) return { lockingBytecode: physical, offset: 0 };
+    if (logical !== undefined && requested === logical) {
+      return { lockingBytecode: logical, offset: participant.logicalIdentityOffset ?? 0 };
+    }
+    throw new Error(
+      `messageBus: invocation ${index} target is not an authenticated identity of participant ${invocation.callee}`,
+    );
+  };
 
   const perOwner: MessageBatchCall[][] = participants.map(() => []);
   const globalByOwner: number[][] = participants.map(() => []);
@@ -1239,7 +1487,9 @@ export function planCompiledGraph(
       participants[parentInvocation.callee].artifact, parentInvocation.function,
     );
     const modes = [...new Set((parentFunction?.externalCalls ?? [])
-      .filter((call) => call.functionName === invocation.function)
+      .filter((call) => invocation.consumerCallsiteId !== undefined
+        ? call.callsiteId === invocation.consumerCallsiteId
+        : call.functionName === invocation.function)
       .map((call) => call.callMode ?? 'call'))];
     return modes.length === 1 && modes[0] === 'staticcall' ? 'staticcall' : 'call';
   };
@@ -1282,13 +1532,23 @@ export function planCompiledGraph(
         },
       );
     }
+    const rowHandler = participants[invocation.callee].artifact.messageBus?.handlers.find((handler) =>
+      handler.name === invocation.function);
     perOwner[invocation.callee].push({
       function: invocation.function,
       args: invocation.args,
+      // Graph admission rejects every unbound `{value: ...}` call option. A nested payable row therefore has
+      // exactly zero logical BCH value; publish that proof explicitly so a handler which conditionally reads
+      // msg.value (ERC20-vs-native payment) does not ask the SDK for a witness it already constrained to zero.
+      ...(invocation.parent !== null && rowHandler?.usesMsgValue && { msgValue: 0n }),
       ...(invocation.parent !== null && { callMode: encodedCallMode(invocation) }),
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
-        : { logicalCaller: hexToBin(participants[invocations[invocation.parent].callee].lockingBytecode) }),
+        : {
+          logicalCaller: hexToBin(graphInvocationCallerIdentity(
+            participants, invocations, invocation,
+          ).lockingBytecode),
+        }),
     });
     globalByOwner[invocation.callee].push(index);
   });
@@ -1338,6 +1598,16 @@ export function planCompiledGraph(
     return bits;
   });
 
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+    console.error('atomic-graph-owner-rows', participants.map((participant, owner) => ({
+      owner,
+      contract: participant.artifact.contractName,
+      rows: perOwner[owner].map((row) => ({ function: row.function, args: row.args })),
+      witnesses: participant.artifact.messageBus?.handlers.filter((handler) => handler.eligible)
+        .map((handler) => ({ name: handler.name, keys: handler.batchKeyWitnesses })),
+    })));
+  }
   const executions = participants.map((participant, owner) => {
     if (perOwner[owner].length === 0) {
       throw new Error(`messageBus: participant ${owner} has no invocation and must not be co-spent`);
@@ -1347,6 +1617,15 @@ export function planCompiledGraph(
       ? participant.artifact.messageBus?.route.blockLayout?.slots
         .filter((slot) => slot.kind === 'lowLevelCall') ?? []
       : [];
+    const logicalIdentityOffset = participant.logicalIdentityOffset ?? 0;
+    const participantBlockSize = participant.artifact.messageBus?.route.blockLayout?.blockSize ?? 0;
+    if (!Number.isInteger(logicalIdentityOffset)
+      || logicalIdentityOffset < 0 || logicalIdentityOffset >= participantBlockSize) {
+      throw new Error(`messageBus: participant ${owner} logical identity offset is outside its balanced block`);
+    }
+    if (participant.logicalLockingBytecode === undefined && logicalIdentityOffset !== 0) {
+      throw new Error(`messageBus: participant ${owner} cannot offset an undeclared logical identity`);
+    }
     if (executionKind === 1) {
       if (!/^([0-9a-fA-F]{2})+$/.test(participant.executorLockingBytecode ?? '')) {
         throw new Error(`messageBus: delegate participant ${owner} lacks canonical executor locking bytecode`);
@@ -1361,6 +1640,10 @@ export function planCompiledGraph(
       participant: owner,
       artifact: participant.artifact,
       lockingBytecode: participant.lockingBytecode.toLowerCase(),
+      ...(participant.logicalLockingBytecode !== undefined && {
+        logicalLockingBytecode: participant.logicalLockingBytecode.toLowerCase(),
+      }),
+      logicalIdentityOffset,
       executionKind,
       executorOffset: executionKind === 1 ? executorSlots[0].offset : null,
       executorInputIndex: executionKind === 1
@@ -1393,6 +1676,7 @@ export function planCompiledGraph(
     const row = execution.batch.rows[localRow];
     const result = execution.batch.results.find((candidate) => candidate.row === localRow);
     const caller = invocation.parent === null ? null : invocations[invocation.parent].callee;
+    const targetIdentity = invocationTargetIdentity(invocation, index);
     let callMode: 'call' | 'staticcall' = invocation.callMode ?? 'call';
     if (invocation.parent === null) {
       // X5: the transaction-origin row answers no callsite, so there is no published mode for a caller-supplied
@@ -1409,7 +1693,9 @@ export function planCompiledGraph(
       const parentArtifact = participants[parentInvocation.callee].artifact;
       const parentFunction = resolveGraphAbiFunction(parentArtifact, parentInvocation.function);
       const candidates = parentFunction?.externalCalls?.filter((call) =>
-        call.functionName === invocation.function) ?? [];
+        invocation.consumerCallsiteId !== undefined
+          ? call.callsiteId === invocation.consumerCallsiteId
+          : call.functionName === invocation.function) ?? [];
       const modes = [...new Set(candidates.map((call) => call.callMode ?? 'call'))];
       // The compiler-authored mode is read whether or not the caller supplied one. Reading it only on the
       // INFERENCE path meant an explicit `callMode: 'call'` executed a delegate edge as an ordinary call,
@@ -1451,11 +1737,14 @@ export function planCompiledGraph(
       localRow,
       depth: depths[index],
       function: row.function,
+      args: invocation.args,
       selectorHex: row.selectorHex,
       callMode,
       callOptions: (callMode === 'staticcall' ? CALL_OPTION_READ_ONLY : 0) | optionBits[index],
       argsHex: row.argsHex,
       resultTypes: Object.freeze([...(result?.types ?? [])]),
+      targetLockingBytecode: targetIdentity.lockingBytecode,
+      targetIdentityOffset: targetIdentity.offset,
     });
   });
   // Compiler-side diagnostic for §6.3's transitive rule. This is deliberately duplicated by the root
@@ -1501,11 +1790,46 @@ export function planCompiledGraph(
     // X36: the occurrence bound `deriveCompiledGraphPlan` applies during expansion, applied here to the rows
     // this entry point is handed instead. Ordered before the binding so a row count the handler cannot have
     // emitted is named as such rather than surfacing as a result-schema or covenant partition mismatch.
-    assertHandlerRowCapacity(parentFunction?.externalCalls ?? [], children.length);
-    const bindings = bindConsumerCallsites(
-      parent, parentFunction?.externalCalls ?? [],
-      children.map((child) => invocations[child].function),
+    assertHandlerRowCapacity(
+      parentFunction?.externalCalls ?? [], children.length, options.allowRuntimeBoundedLoops === true,
     );
+    const publishedCallsites = parentFunction?.externalCalls ?? [];
+    const identified = children.map((child) => invocations[child].consumerCallsiteId);
+    const hasIdentified = identified.some((callsiteId) => callsiteId !== undefined);
+    if (hasIdentified && identified.some((callsiteId) => callsiteId === undefined)) {
+      throw new Error(`messageBus: invocation ${parent} mixes identified and unidentified child callsites`);
+    }
+    const bindings = hasIdentified
+      ? identified.map((callsiteId, position) => {
+        const callsite = publishedCallsites.find((candidate) => candidate.callsiteId === callsiteId);
+        if (!callsite) {
+          throw new Error(
+            `messageBus: invocation ${parent} names absent compiler callsite ${callsiteId}`,
+          );
+        }
+        const reachedFunction = invocations[children[position]].function;
+        const expectedFunction = callsite.rawFunctionName ?? callsite.functionName;
+        if (!isRuntimeResolvedCallsite(callsite) && expectedFunction !== reachedFunction) {
+          throw new Error(
+            `messageBus: invocation ${parent} binds callsite ${callsiteId} to '${reachedFunction}', `
+            + `but the compiler publishes '${expectedFunction}'`,
+          );
+        }
+        return callsite;
+      })
+      : bindConsumerCallsites(
+        parent, publishedCallsites, children.map((child) => invocations[child].function),
+      );
+    if (hasIdentified) {
+      for (const callsite of publishedCallsites) {
+        const count = bindings.filter((binding) => binding?.callsiteId === callsite.callsiteId).length;
+        if (callsite.batchInvocations !== undefined) {
+          assertBatchedCallsiteRowCount(callsite, count);
+          continue;
+        }
+        assertPlannedOccurrenceCount(callsite, count, options.allowRuntimeBoundedLoops === true);
+      }
+    }
     children.forEach((child, position) => {
       const callsite = bindings[position];
       consumerCallsites[child] = callsite?.callsiteId;

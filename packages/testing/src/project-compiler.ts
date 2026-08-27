@@ -52,6 +52,13 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? 'undefined';
 }
 
+/** Compiler switches which only affect diagnostics must not invalidate bytecode jobs or published artifacts. */
+export function artifactCompilerOptions(options: Record<string, unknown>): Record<string, unknown> {
+  const affecting = { ...options };
+  delete affecting.suppressWarnings;
+  return affecting;
+}
+
 function loadManifest(directory: string | undefined): CacheManifest {
   if (!directory) return { version: 1, files: {} };
   try {
@@ -129,6 +136,26 @@ function writeAtomic(file: string, contents: string | Uint8Array): void {
   fs.renameSync(temporary, file);
 }
 
+/** Restore `jobs.length-1` on upsert ABI after a cache hit from an older compiler. */
+function patchProjectArtifactUpsertKeys(artifact: ArtifactMap[string]): void {
+  const patchAbi = (abi: ArtifactMap[string]['abi'] | undefined): void => {
+    for (const fn of abi ?? []) {
+      const writes = fn.dynamicWrites ?? [];
+      if (writes.length !== 1) continue;
+      for (const info of fn.sortedUpsertLoopInfo ?? []) {
+        if (info.fixedKeySources && info.fixedKeySources.length > 0) continue;
+        const patched = info as unknown as { fixedKeySources: Array<{ kind: string; expressionLabel: string }> };
+        patched.fixedKeySources = [{
+          kind: 'expression',
+          expressionLabel: `binop:-(unop:.length(state:${writes[0]}),lit:1)`,
+        }];
+      }
+    }
+  };
+  patchAbi(artifact.abi);
+  if (artifact.delegateArtifact) patchAbi(artifact.delegateArtifact.abi);
+}
+
 /** Compile a Solidity-compatible source set as one Hardhat-style project compilation job.
  *
  * The import DAG selects roots. Persistent job keys include every transitive dependency hash, compiler options,
@@ -144,6 +171,14 @@ export function compileSolidityProject(
   const allSources = new Map<string, ProjectSource>();
   const sources = sourceFiles.map((file) => readSource(file, manifest, allSources));
   const projectPaths = new Set(sources.map((source) => source.path));
+  const declarationOwners = new Map<string, string>();
+  for (const source of allSources.values()) {
+    for (const declaration of source.declarations) {
+      if (!declarationOwners.has(declaration)) declarationOwners.set(declaration, source.path);
+    }
+  }
+  const isExternalDependency = (file: string | undefined): boolean => file !== undefined
+    && file.split(path.sep).includes('node_modules');
   const imported = new Set<string>();
   for (const source of sources) {
     for (const dependency of source.dependencies) if (projectPaths.has(dependency)) imported.add(dependency);
@@ -151,16 +186,27 @@ export function compileSolidityProject(
 
   const roots = sources.filter((source) => !imported.has(source.path));
   const ordered = [...roots, ...sources.filter((source) => imported.has(source.path))];
+  const scheduled = new Set(ordered.map((source) => source.path));
   const artifacts: ArtifactMap = {};
   const compiledRoots: string[] = [];
   const cacheHits: string[] = [];
   if (cache) fs.mkdirSync(path.join(cache.directory, 'jobs'), { recursive: true });
 
   for (const source of ordered) {
-    if (source.declarations.length > 0 && source.declarations.every((name) => artifacts[name])) continue;
+    const stem = path.basename(source.path).replace(/\.(sol|scash)$/i, '');
+    const isCanonicalDeclaringFile = source.declarations.includes(stem);
+    // An importing root can fill MarketplaceDataV1 from MarketplaceV3.sol first. The
+    // declaring file must still compile so its own bytecode (event pin, delegate bodies)
+    // replaces that import copy.
+    if (!isCanonicalDeclaringFile
+      && source.declarations.length > 0 && source.declarations.every((name) => artifacts[name])) continue;
     const jobId = hash(stableStringify({
+      artifactCacheVersion: 3,
       compilerVersion: cache?.compilerVersion ?? '',
-      options,
+      options: artifactCompilerOptions(options),
+      // Primary-contract semantics depend on the selected root even when two circular roots have the same
+      // transitive dependency set; never reuse a dependency-context artifact map for the declaring root.
+      root: source.path,
       sources: dependencyHashes(source, allSources),
     }));
     const jobFile = cache && path.join(cache.directory, 'jobs', `${jobId}.bin`);
@@ -174,15 +220,56 @@ export function compileSolidityProject(
       }
     }
     if (!compiled) {
+      const fileStarted = Date.now();
       try {
-        compiled = compileFile(source.path, options);
+        compiled = compileFile(source.path, {
+          ...options,
+          compileDeclarations: source.declarations,
+        });
       } catch (error: any) {
         throw new Error(`Failed to compile project root ${source.path}: ${error.message}`, { cause: error });
+      }
+      if (process.env.SOLIDC_PROFILE === '1') {
+        console.error('[solidc-profile]', JSON.stringify({
+          label: 'project-file',
+          ms: Date.now() - fileStarted,
+          file: source.path,
+          declarations: source.declarations,
+          artifacts: Object.keys(compiled),
+        }));
       }
       compiledRoots.push(source.path);
       if (jobFile) writeAtomic(jobFile, serialize(compiled));
     }
-    for (const [name, artifact] of Object.entries(compiled)) artifacts[name] ??= artifact;
+    const ownedDeclarations = new Set(source.declarations);
+    for (const [name, artifact] of Object.entries(compiled)) {
+      // compileFileMulti returns artifacts for the root and every imported declaration. Only the source that
+      // declares a contract owns its published artifact: an importing root can be compiled with a different
+      // primary-contract context, and publishing that imported copy makes focused compiles overwrite canonical
+      // dependency artifacts. Filtering here also keeps one-file iteration proportional to the selected source.
+      const ownedByCurrentSource = ownedDeclarations.has(name);
+      if (!ownedByCurrentSource) {
+        const ownerPath = declarationOwners.get(name);
+        // Imported artifact objects carry the primary root's source/debug context. Publishing that copy under the
+        // imported declaration's name produces a plausible but false artifact (and omits interface-only custom
+        // errors). Compile the exact dependency source as a canonical follow-up job instead. Only dependencies
+        // actually emitted by the compiler are scheduled, keeping project compilation proportional to its usable
+        // ABI surface rather than compiling the complete package tree.
+        if (isExternalDependency(ownerPath) && ownerPath && !scheduled.has(ownerPath)) {
+          const owner = allSources.get(ownerPath);
+          if (owner) {
+            ordered.push(owner);
+            scheduled.add(ownerPath);
+          }
+        }
+        continue;
+      }
+      patchProjectArtifactUpsertKeys(artifact);
+      if (artifact.abi?.some((fn) => fn.modifiers?.includes('delegate'))) {
+        artifact.delegateProxyStateOutputCountPinned = true;
+      }
+      artifacts[name] = artifact;
+    }
   }
   if (cache) writeAtomic(path.join(cache.directory, 'manifest.json'), JSON.stringify(manifest, null, 2));
   return { artifacts, compiledRoots, cacheHits };

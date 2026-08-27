@@ -75,6 +75,46 @@ export function buildEcrecoverComputeSidecars(
   };
 }
 
+/**
+ * Build structurally valid probe placeholders for a recovery pair whose runtime (hash,v,r,s) arguments are not
+ * known until the complete routed transaction executes. The owning covenant reads A's first two pushes and stops
+ * at the argument bind, so the expensive recovery witness is intentionally absent. These placeholders must never
+ * be broadcast: the derivation loop replaces both unlockers and recreations with buildEcrecoverComputeSidecars.
+ */
+export function buildEcrecoverComputePlaceholders(
+  salt: Uint8Array, sidecarA: Utxo, sidecarB: Utxo,
+): { unlockerA: Unlocker; recreateA: Output; unlockerB: Unlocker; recreateB: Output } {
+  const lockA = ecrecoverComputeLockingBytecode(salt, 'A');
+  const lockB = ecrecoverComputeLockingBytecode(salt, 'B');
+  const redeemA = buildEcrecoverComputeRedeem(salt, 'A');
+  const redeemB = buildEcrecoverComputeRedeem(salt, 'B');
+  const placeholderArgs = new Uint8Array(97);
+  const unlocker = (lock: Uint8Array, redeem: Uint8Array, tailPushes: number): Unlocker => ({
+    generateUnlockingBytecode: () => Uint8Array.from([
+      ...pushDataBytes(new Uint8Array()),
+      ...pushDataBytes(placeholderArgs),
+      ...Array.from({ length: tailPushes }, () => pushDataBytes(new Uint8Array())).flat(),
+      ...pushDataBytes(redeem),
+    ]),
+    generateLockingBytecode: () => lock,
+  });
+  const recreate = (lock: Uint8Array, commitment: Uint8Array, source: Utxo): Output => ({
+    to: lock,
+    amount: source.satoshis,
+    token: {
+      category: source.token!.category,
+      amount: source.token?.amount ?? 0n,
+      nft: { capability: 'mutable', commitment: binToHex(commitment) },
+    },
+  });
+  return {
+    unlockerA: unlocker(lockA, redeemA, 2),
+    recreateA: recreate(lockA, new Uint8Array(32), sidecarA),
+    unlockerB: unlocker(lockB, redeemB, 3),
+    recreateB: recreate(lockB, new Uint8Array(34), sidecarB),
+  };
+}
+
 let probeVm: ReturnType<typeof createVirtualMachineBch2026> | undefined;
 
 /**

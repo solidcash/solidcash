@@ -165,9 +165,28 @@ export function deriveBalancedAssemblyFromInputs(
     );
   }
   const bases = new Set(blocks.map((block) => block.base));
-  const swallowed = published.find((index) => index < cursor && !bases.has(index));
+  const isDeclaredNestedIdentity = (index: number): boolean => {
+    const owner = blocks.find((block) => index > block.base
+      && index < block.base + block.blockLayout.blockSize);
+    if (!owner) return false;
+    return owner.blockLayout.slots.some((slot) => slot.offset === index - owner.base
+      && (slot.kind === 'lowLevelCall' || slot.kind === 'identityAnchor'));
+  };
+  // Low-level-call executors and logical-identity anchors are authenticated nested identities, not additional
+  // top-level participants. Their contract unlockers can legitimately publish standalone block layouts, but the
+  // enclosing block absorbs each at one explicitly declared offset. Every other nested master remains malformed.
+  const swallowed = published.find((index) =>
+    index < cursor && !bases.has(index) && !isDeclaredNestedIdentity(index));
   if (swallowed !== undefined) {
-    fail(`input ${swallowed} publishes a participant master block inside another block's span`);
+    const owner = blocks.find((block) => swallowed > block.base
+      && swallowed < block.base + block.blockLayout.blockSize);
+    const localOffset = owner === undefined ? undefined : swallowed - owner.base;
+    const slot = owner?.blockLayout.slots.find((candidate) => candidate.offset === localOffset);
+    fail(
+      `input ${swallowed} publishes a participant master block inside another block's span`
+      + (owner === undefined ? '' : ` (participant ${owner.participant}, local offset ${localOffset}, `
+        + `declared slot '${slot?.kind ?? 'missing'}')`),
+    );
   }
   if (cursor > totalSlots) {
     fail(`participant ${blocks.length - 1} block runs past the transaction's ${totalSlots} slots`);

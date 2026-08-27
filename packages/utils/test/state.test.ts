@@ -2,6 +2,9 @@ import {
   getDefaultStateValue,
   getMaxPushdataEncodedSize,
   encodePushdataValue,
+  encodeEventCommitment,
+  completeEventCommitment,
+  preferZeroPrefixedEventBlob,
   decodePushdataValue,
   attachDecodedAccessors,
   buildPushdataCommitment,
@@ -24,6 +27,8 @@ import {
   buildValueChunkCommitment,
   parseValueChunkCommitment,
   joinValueChunks,
+  encodeChunkableValueTail,
+  sha256,
   packFixedWidthArray,
   unpackFixedWidthArray,
   packFixedWidthElement,
@@ -33,6 +38,7 @@ import {
   scriptToBytecode,
   StructDefinitionInfo,
 } from '../src/index.js';
+import { binToHex, hexToBin, lockingBytecodeToCashAddress, utf8ToBin } from '@bitauth/libauth';
 
 describe('getDefaultStateValue', () => {
   it('should return 0n for "bigint"', () => {
@@ -239,6 +245,108 @@ describe('buildInitialStateCommitments with defaults', () => {
     const parsed = parsePushdataCommitment(commitments[0], layout, 0);
     expect(parsed.counter).toBe(42n);
     expect(parsed.label).toEqual(new Uint8Array(4));
+  });
+});
+
+describe('encodeEventCommitment', () => {
+  const jobEventStructs: StructDefinitionInfo[] = [{
+    name: 'JobEventData',
+    fields: [
+      { name: 'type_', type: 'uint8' },
+      { name: 'address_', type: 'bytes' },
+      { name: 'data_', type: 'bytes' },
+      { name: 'timestamp_', type: 'uint32' },
+    ],
+  }];
+
+  const lock = hexToBin('76a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac');
+  const event = { type_: 14n, address_: lock, data_: new Uint8Array(), timestamp_: 0n };
+  const structBytes = encodePushdataValue(event, 'JobEventData', jobEventStructs);
+
+  it('encodes JobEvent(uint256,JobEventData) as encode(jobId) || encode(struct)', () => {
+    expect(structBytes).toEqual(hexToBin('5e1976a91471782e8159265ed94bd35b8e699c08f53a6f38c688ac0000'));
+    const full = encodeEventCommitment(
+      [{ type: 'uint256' }, { type: 'JobEventData' }],
+      [0n, event],
+      jobEventStructs,
+    );
+    expect(full).toEqual(hexToBin(`00${binToHex(structBytes)}`));
+    expect(full.length).toBe(structBytes.length + 1);
+  });
+
+  it('completes a struct-only derived commitment with the jobId prefix', () => {
+    const completed = completeEventCommitment(
+      structBytes,
+      [{ type: 'uint256' }, { type: 'JobEventData' }],
+      [0n, event],
+      jobEventStructs,
+    );
+    expect(completed).toEqual(hexToBin(`00${binToHex(structBytes)}`));
+  });
+
+  it('does not complete when the last argument does not encode to derived', () => {
+    const other = encodePushdataValue(
+      { type_: 0n, address_: lock, data_: new Uint8Array(), timestamp_: 0n },
+      'JobEventData',
+      jobEventStructs,
+    );
+    expect(completeEventCommitment(
+      other,
+      [{ type: 'uint256' }, { type: 'JobEventData' }],
+      [0n, event],
+      jobEventStructs,
+    )).toEqual(other);
+  });
+
+  it('leaves an empty derived commitment empty', () => {
+    expect(completeEventCommitment(
+      new Uint8Array(),
+      [{ type: 'uint256' }, { type: 'JobEventData' }],
+      [0n, event],
+      jobEventStructs,
+    )).toEqual(new Uint8Array());
+  });
+
+  it('prefers the 00-prefixed emit blob over the struct-only operand', () => {
+    const full = hexToBin(`00${binToHex(structBytes)}`);
+    expect(preferZeroPrefixedEventBlob(structBytes, full)).toEqual(full);
+    expect(preferZeroPrefixedEventBlob(full, structBytes)).toEqual(full);
+    expect(preferZeroPrefixedEventBlob(structBytes, hexToBin('51'))).toBeUndefined();
+  });
+
+  it('leaves a non-suffix derived commitment unchanged', () => {
+    const other = hexToBin('51');
+    expect(completeEventCommitment(
+      other,
+      [{ type: 'uint256' }, { type: 'JobEventData' }],
+      [0n, event],
+      jobEventStructs,
+    )).toEqual(other);
+  });
+});
+
+describe('encodePushdataValue CashAddress bytes', () => {
+  it('encodes a CashAddress string as locking bytecode, not UTF-8', () => {
+    const pkh = hexToBin('71782e8159265ed94bd35b8e699c08f53a6f38c6');
+    const lock = new Uint8Array(25);
+    lock.set([0x76, 0xa9, 0x14], 0);
+    lock.set(pkh, 3);
+    lock.set([0x88, 0xac], 23);
+    const cashaddr = lockingBytecodeToCashAddress({
+      bytecode: lock, prefix: 'bchtest', tokenSupport: false,
+    });
+    const address = typeof cashaddr === 'string' ? cashaddr : cashaddr.address;
+    expect(address.includes(':')).toBe(true);
+    expect(encodePushdataValue(address, 'bytes')).toEqual(encodePushdataValue(lock, 'bytes'));
+    expect(encodePushdataValue(utf8ToBin(address), 'bytes')).toEqual(encodePushdataValue(lock, 'bytes'));
+  });
+
+  it('encodes ethers.ZeroAddress as empty locking bytecode, not UTF-8', () => {
+    const empty = encodePushdataValue(new Uint8Array(0), 'address');
+    expect(encodePushdataValue('0x0000000000000000000000000000000000000000', 'address')).toEqual(empty);
+    expect(encodePushdataValue('0x0', 'address')).toEqual(empty);
+    expect(encodePushdataValue(new Uint8Array(20), 'address')).toEqual(empty);
+    expect(empty).toEqual(new Uint8Array([0x00]));
   });
 });
 
@@ -830,6 +938,21 @@ describe('attachDecodedAccessors (typechain .toObject() / .toArray() at the user
 
 describe('root-addressed vmap value chunk codec', () => {
   const bytesOf = (n: number): Uint8Array => Uint8Array.from({ length: n }, (_v, i) => (i * 13 + 7) & 0xff);
+
+  it('encodes inline and long entry tails with their authoritative full length', () => {
+    const inline = bytesOf(60);
+    const inlineTail = encodeChunkableValueTail(inline);
+    expect(inlineTail).toHaveLength(64);
+    expect(new DataView(inlineTail.buffer).getUint32(0, true)).toBe(60);
+    expect(inlineTail.slice(4)).toEqual(inline);
+
+    const long = bytesOf(200);
+    const longTail = encodeChunkableValueTail(long);
+    expect(longTail).toHaveLength(4 + 32 + VALUE_HEAD_SIZE);
+    expect(new DataView(longTail.buffer).getUint32(0, true)).toBe(200);
+    expect(longTail.slice(4, 36)).toEqual(sha256(long));
+    expect(longTail.slice(36)).toEqual(long.slice(0, VALUE_HEAD_SIZE));
+  });
 
   it('keeps 28 bytes in the head and packs continuation commitments to 128 bytes', () => {
     const value = bytesOf(VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * 2 + 9);

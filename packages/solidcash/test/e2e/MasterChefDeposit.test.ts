@@ -15,7 +15,6 @@ describe('MasterChef deposit', () => {
   it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('approve then deposit', async () => {
     const provider = createTestProvider();
     (provider as any).consensusLimits = { ...(provider as any).consensusLimits, ...limits };
-    if ((provider as any).policy) (provider as any).policy.enforceProductionInputLimit = false;
     const [alice, bob, dev] = await getSigners(3, { provider, fundingUtxos: 20 });
     const artifact = (name: string): any => JSON.parse(readFileSync(
       new URL(`../fixture/mistswap-artifacts/${name}.json`, import.meta.url), 'utf8',

@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
+import {
+  decodeAuthenticationInstructions, hexToBin, OpcodesBCH, vmNumberToBigInt,
+} from '@bitauth/libauth';
 import { compileString } from './helpers.js';
+
+const readVmNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
+  if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
+  if (instruction.opcode === OpcodesBCH.OP_1NEGATE) return -1n;
+  if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
+    return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
+  }
+  if (!instruction.data) return undefined;
+  const decoded = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
+  return typeof decoded === 'bigint' ? decoded : undefined;
+};
 
 // Focused regression guards derived from the Solidity compiler corpus.
 describe('transient and storage declaration placement', () => {
@@ -1026,6 +1040,22 @@ describe('internal forwarding of chunked mapping value witnesses', () => {
   });
 });
 
+describe('chunkable mapping output-base witness', () => {
+  it('is selected by the storage effect rather than a function name', () => {
+    const artifact = compileString('contract C { mapping(uint256 => bytes) values;'
+      + ' function store(uint256 key, bytes calldata value) public {'
+      + ' values[key] = value; require(true); }'
+      + ' function publishJobEvent() public { require(true); } }',
+    { solidityImportCompat: true });
+    const store = artifact.abi.find((entry) => entry.name === 'store');
+    const sameHistoricalNameWithoutWrite = artifact.abi.find((entry) => entry.name === 'publishJobEvent');
+    expect(store?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')).toBe(true);
+    expect(sameHistoricalNameWithoutWrite?.inputs.some(
+      (input) => input.name === '__internal__valueChunkOutputBase',
+    )).toBe(false);
+  });
+});
+
 describe('synthesizes __extaddr for IFoo(<self-pinned state chain>).method() (EACC IERC20(job.token) shape)', () => {
   const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   const iface = 'interface ITok { function transfer(address to, uint256 v) external returns (bool); }';
@@ -1161,6 +1191,179 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
     const info = art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0];
     expect(info?.op).toBe('set');
   });
+  it('records a read-only dynamic array alongside a sorted upsert loop', () => {
+    const art = compileString(
+      'contract C() { string[] jobs; mapping(int => bool) m;'
+      + ' function f(int[] ks, pubkey pk, sig s) { require(checkSig(s, pk));'
+      + ' require(this.jobs.length >= 0);'
+      + ' for (int i = 0; i < ks.length; i++) { m[ks[i]] = true; } } }',
+      { forceStateful: true },
+    );
+    const fn = art.abi.find((candidate) => candidate.name === 'f');
+    expect(fn?.dynamicReads).toContain('jobs');
+    expect(fn?.sortedUpsertLoopInfo?.[0]?.op).toBe('set');
+  });
+  it('places read-only dynamic chunks before sorted-upsert inputs and outputs', () => {
+    const art = compileString(
+      'struct Job { int creator; int state; }'
+      + ' contract C() { Job[] jobs; mapping(int => mapping(int => bool)) whitelist;'
+      + ' function f(int jobId, int[] ks, pubkey pk, sig s) { require(checkSig(s, pk));'
+      + ' require(this.jobs[jobId].creator == 1);'
+      + ' for (int i = 0; i < ks.length; i++) { this.whitelist[jobId][ks[i]] = true; } } }',
+      { forceStateful: true },
+    );
+    const hex = art.debug!.bytecode;
+    const instructions = decodeAuthenticationInstructions(hexToBin(hex));
+    // encodeInt(119) ADD encodeInt(120) DIV — X151 foreign read-only chunk count
+    expect(hex).toContain('017793017896');
+    // The SDK preserves those read-only chunks in both halves of the transaction. Require the same chunk-count
+    // term in the output-index expression which immediately feeds a sorted mapping bytecode covenant; checking
+    // only that it occurs somewhere in the contract misses an input-correct/output-early split layout.
+    const sortedOutputAfterReadOnlyChunks = instructions.findIndex((instruction, index) => {
+      if (instruction.opcode !== OpcodesBCH.OP_OUTPUTBYTECODE
+        || instructions[index - 1]?.opcode !== OpcodesBCH.OP_DUP
+        || instructions[index - 2]?.opcode !== OpcodesBCH.OP_ADD
+        || instructions[index - 3]?.opcode !== OpcodesBCH.OP_PICK) return false;
+      const baseWindow = instructions.slice(Math.max(0, index - 36), index - 3);
+      return baseWindow.some((candidate, offset) => (
+        readVmNumber(candidate) === 119n
+        && baseWindow[offset + 1]?.opcode === OpcodesBCH.OP_ADD
+        && readVmNumber(baseWindow[offset + 2]) === 120n
+        && baseWindow[offset + 3]?.opcode === OpcodesBCH.OP_DIV
+        && baseWindow[offset + 4]?.opcode === OpcodesBCH.OP_ADD
+      ));
+    });
+    expect(sortedOutputAfterReadOnlyChunks).toBeGreaterThanOrEqual(0);
+    const fn = art.abi.find((candidate) => candidate.name === 'f');
+    expect(fn?.dynamicReads).toContain('jobs');
+    expect(fn?.sortedUpsertLoopInfo?.[0]?.collection).toBe('whitelist');
+  });
+  it('records jobs.length-1 as a fixed upsert key after a jobs.push (publishJobPost shape)', () => {
+    const art = compileString(
+      'contract C() { int[] jobs; mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function f(address[] allowedWorkers_) {'
+      + ' this.jobs.push(0);'
+      + ' uint jobId = this.jobs.length - 1;'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId][allowedWorkers_[i]] = true;'
+      + ' } } }',
+      { forceStateful: true },
+    );
+    const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toBe('allowedWorkers_');
+    expect(info?.fixedKeySources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'expression',
+        expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+      }),
+    ]));
+    // Old jobs chunks still occupy impl+trailingBase even though this function writes jobs.
+    expect(art.debug!.bytecode).toContain('017793017896');
+  });
+  it('records both allow and disallow upsert loops over the same whitelist mapping', () => {
+    const art = compileString(
+      'contract C() { mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function updateJobWhitelist(uint jobId_, address[] allowedWorkers_, address[] disallowedWorkers_) {'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId_][allowedWorkers_[i]] = true;'
+      + ' }'
+      + ' for (uint j = 0; j < disallowedWorkers_.length; j++) {'
+      + '   this.whitelistWorkers[jobId_][disallowedWorkers_[j]] = false;'
+      + ' } } }',
+      { forceStateful: true },
+    );
+    const infos = art.abi.find((candidate) => candidate.name === 'updateJobWhitelist')?.sortedUpsertLoopInfo ?? [];
+    expect(infos.map((info) => info.varyingArrayParam)).toEqual(['allowedWorkers_', 'disallowedWorkers_']);
+    expect(infos.map((info) => info.valueConst)).toEqual(['1', '0']);
+    expect(infos.every((info) => info.collection === 'whitelistWorkers' && info.op === 'set')).toBe(true);
+  });
+  it('records jobs.length-1 when the local is assigned after an empty declaration', () => {
+    const art = compileString(
+      'contract C() { int[] jobs; mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function f(address[] allowedWorkers_) {'
+      + ' this.jobs.push(0);'
+      + ' uint256 jobId;'
+      + ' jobId = this.jobs.length - 1;'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId][allowedWorkers_[i]] = true;'
+      + ' } } }',
+      { forceStateful: true, solidityImportCompat: true },
+    );
+    const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.fixedKeySources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'expression',
+        expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+      }),
+    ]));
+  });
+  it('records jobs.length-1 even when the upsert write only carries the worker key', () => {
+    // Same ABI obligation as publishJobPost: a nested mapping loop plus `jobId = jobs.length - 1`.
+    const art = compileString(
+      'contract C() { int[] jobs; mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function f(address[] allowedWorkers_) {'
+      + ' this.jobs.push(0);'
+      + ' uint256 jobId = this.jobs.length - 1;'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId][allowedWorkers_[i]] = true;'
+      + ' } } }',
+      { forceStateful: true },
+    );
+    const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.fixedKeySources?.[0]).toMatchObject({
+      kind: 'expression',
+      expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+    });
+  });
+  it('records jobs.length-1 after inlining the marketplace publishJobPost whitelist shape', () => {
+    const art = compileString(
+      'contract C() { int[] jobs; mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function updateJobWhitelist(uint jobId_, address[] allowedWorkers_, address[] disallowedWorkers_) {'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId_][allowedWorkers_[i]] = true;'
+      + ' }'
+      + ' for (uint i = 0; i < disallowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId_][disallowedWorkers_[i]] = false;'
+      + ' } }'
+      + ' function f(address[] allowedWorkers_) {'
+      + ' this.jobs.push(0);'
+      + ' uint256 jobId = this.jobs.length - 1;'
+      + ' if (allowedWorkers_.length > 0) {'
+      + '   updateJobWhitelist(jobId, allowedWorkers_, new address[](0));'
+      + ' } } }',
+      { forceStateful: true },
+    );
+    const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.fixedKeySources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'expression',
+        expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+      }),
+    ]));
+  });
+  it('records jobs.length-1 after inlining updateJobWhitelist(jobId, workers)', () => {
+    const art = compileString(
+      'contract C() { int[] jobs; mapping(uint => mapping(address => bool)) whitelistWorkers;'
+      + ' function updateJobWhitelist(uint jobId_, address[] allowedWorkers_) {'
+      + ' for (uint i = 0; i < allowedWorkers_.length; i++) {'
+      + '   this.whitelistWorkers[jobId_][allowedWorkers_[i]] = true;'
+      + ' } }'
+      + ' function f(address[] allowedWorkers_) {'
+      + ' this.jobs.push(0);'
+      + ' uint jobId = this.jobs.length - 1;'
+      + ' updateJobWhitelist(jobId, allowedWorkers_);'
+      + ' } }',
+      { forceStateful: true },
+    );
+    const info = art.abi.find((candidate) => candidate.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toBe('allowedWorkers_');
+    expect(info?.fixedKeySources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'expression',
+        expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
+      }),
+    ]));
+  });
   it('compiles an INVARIANT-PARAM value loop (m[ks[i]] = v) via the upsert loop (op=set, gains UPDATE support)', () => {
     // `= <param>` now routes to the upsert loop (was the insert-only range-splice) - update+insert, same-gap chaining.
     const info = abiOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = v; }')?.sortedUpsertLoopInfo?.[0];
@@ -1281,6 +1484,28 @@ describe('low-level .call target through inlined-local aliases traced to a self-
       + ' bool ok, bytes r = address(config.token).call(data); require(ok); this.d = sha256(data); } }';
     expect(compileString(direct, {}).abi.find((f) => f.name === 'f')?.externalCalls?.find((e) => e.opaqueReturn)
       ?.addressStateVar).toBe('ll_config_token');
+  });
+  it('pins every conditional forceApprove fallback to the same stable state-chain target', () => {
+    const force = 'pragma solidcash >=0.8.0;'
+      + ' interface IEcho { function ping(pubkey o, sig s); } struct Config { address token; }'
+      + ' library Address { function functionCall(address target, bytes data) internal returns (bytes) {'
+      + ' bool ok, bytes ret = target.call(data); require(ok); return ret; } }'
+      + ' library Safe { using Address for address;'
+      + ' function _callBool(IEcho tok, bytes data) internal returns (bool) {'
+      + ' bool ok, bytes r = address(tok).call(data); return ok; }'
+      + ' function _callVoid(IEcho tok, bytes data) internal {'
+      + ' bytes r = address(tok).functionCall(data); require(r.length >= 0); }'
+      + ' function force(IEcho tok, bytes data) internal {'
+      + ' if (!_callBool(tok, data)) { _callVoid(tok, data); _callVoid(tok, data); } } }'
+      + ' contract C() { Config config; int calls;'
+      + ' function f(bytes data, pubkey pk, sig s) { require(checkSig(s, pk));'
+      + ' IEcho token = IEcho(config.token); Safe.force(token, data); this.calls = this.calls + 1; } }';
+    const calls = compileString(force, { messageBus: true }).abi.find((f) => f.name === 'f')?.externalCalls
+      ?.filter((call) => call.opaqueReturn) ?? [];
+    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => call.addressStateVar)).toEqual([
+      'll_config_token', 'll_config_token', 'll_config_token',
+    ]);
   });
 
 });
@@ -1479,6 +1704,49 @@ describe('nested struct fields in mapping values', () => {
       + ' mapping(uint => S) data; function f(uint k) public {'
       + ' data[k].n.x = 3; data[k].n.y = 4; require(data[k].n.x == 3); } }',
     { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+  });
+});
+
+describe('message-bus mapping struct-field writes', () => {
+  it('derives the route key from a MappingFieldAssignNode', () => {
+    const artifact = compileString(`
+      contract C {
+        struct Record { address owner; uint16 fee; bool ready; }
+        mapping(uint256 => Record) records;
+        function set(uint256 id, address owner, uint16 fee) external {
+          records[id].owner = owner;
+          records[id].fee = fee;
+          records[id].ready = true;
+        }
+      }
+    `, { solidityImportCompat: true, messageBus: true });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set');
+    expect(handler?.eligible).toBe(true);
+    expect(handler?.batchKeyWitnesses).toEqual([{
+      routeInput: '__message_bus_key_records_0',
+      inputIndex: 0,
+      source: 'argument',
+    }]);
+  });
+
+  it('journals a push into a mapping dynamic-array value', () => {
+    const artifact = compileString(`
+      contract C {
+        struct Event { uint8 kind; bytes data; }
+        mapping(uint256 => Event[]) events;
+        function publish(uint256 id, Event memory event_) external {
+          events[id].push(event_);
+        }
+      }
+    `, {
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusHandlers: ['publish'],
+      maximumInputBytes: 10_000_000,
+    });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'publish');
+    expect(handler?.eligible).toBe(true);
+    expect(artifact.messageBus?.route.entryAccesses?.some((entry) => entry.collection === 'events')).toBe(true);
   });
 });
 
@@ -2236,5 +2504,42 @@ describe('transient state value types', () => {
       + ' function f(uint a) public { x = a; y = bytes32(a); require(x == a); } }',
       { solidityImportCompat: true },
     ).contractName).toBe('C');
+  });
+});
+
+describe('upgradeable implementation metadata', () => {
+  it('certifies Solidity-inferred delegate covenants for proxy mapping growth', () => {
+    const artifact = compileString(
+      'contract C { mapping(uint => uint) values; bool initialized;'
+      + ' modifier initializer() { require(!initialized); initialized = true; _; }'
+      + ' function initialize() public initializer { values[0] = 1; } }',
+      { solidityImportCompat: true },
+    );
+    expect(artifact.abi.find((fn) => fn.name === 'initialize')?.modifiers).toContain('delegate');
+    expect(artifact.delegateProxyStateOutputCountPinned).toBe(true);
+    expect(artifact.delegateArtifact).toBeUndefined();
+  });
+
+  it('inlines onlyOwner into the inferred delegate entry instead of outlining _checkOwner', () => {
+    const artifact = compileString(
+      'abstract contract OwnableUpgradeable {'
+      + ' address private _owner;'
+      + ' modifier onlyOwner() { _checkOwner(); _; }'
+      + ' function _checkOwner() internal view { require(owner() == msg.sender); }'
+      + ' function owner() public view returns (address) { return _owner; }'
+      + ' modifier initializer() { _; }'
+      + ' function __Ownable_init(address o) internal { _owner = o; }'
+      + '}'
+      + 'contract C is OwnableUpgradeable {'
+      + ' address public data;'
+      + ' function initialize(address o) public initializer { __Ownable_init(o); }'
+      + ' function setData(address d) public onlyOwner { data = d; }'
+      + '}',
+      { solidityImportCompat: true, forceStateful: true },
+    );
+    expect(artifact.abi.find((fn) => fn.name === 'setData')?.modifiers).toContain('delegate');
+    const outlined = Object.values(artifact.debug?.invokeDebug ?? {})
+      .map((entry) => entry.name);
+    expect(outlined).not.toContain('_checkOwner');
   });
 });

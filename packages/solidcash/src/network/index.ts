@@ -3,7 +3,7 @@ export { default as BitcoinRpcNetworkProvider } from './BitcoinRpcNetworkProvide
 export { default as ElectrumNetworkProvider } from './ElectrumNetworkProvider.js';
 export { default as FullStackNetworkProvider } from './FullStackNetworkProvider.js';
 export {
-  default as MockNetworkProvider, FailingMockNetworkProvider,
+  default as MockNetworkProvider, FailingMockNetworkProvider, onMockNetworkProviderReset,
   type TokenGenesisOutput, type SnapshotRestorer, MOCK_DEFAULT_BLOCK_TIME, MOCK_CONSENSUS_LIMITS,
   MOCK_RELAXED_OPERATION_COST,
 } from './MockNetworkProvider.js';

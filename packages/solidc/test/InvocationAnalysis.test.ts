@@ -213,6 +213,32 @@ describe('Release 0 shared invocation analysis', () => {
       .toEqual(summary.resultConsumers);
   });
 
+  it('publishes the producer callsite for a directly nested external-call argument', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProducer { function quote(bigint n) returns (bigint); }
+      interface IConsumer { function settle(bigint quoted); }
+      contract NestedResultFlow() {
+        function run(address producer, address consumer, bigint n) public {
+          IConsumer(consumer).settle(IProducer(producer).quote(n));
+          require(n >= 0);
+        }
+      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+    const calls = artifact.invocationAnalysis!.functions
+      .find((fn) => fn.name === 'run')!.externalCalls!;
+    expect(calls.map((call) => [call.callsiteId, call.functionName])).toEqual([
+      [0, 'quote'], [1, 'settle'],
+    ]);
+    expect(calls[1].argSources?.[0]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'externalCall',
+        name: 'IProducer.quote',
+        callsiteId: 0,
+        type: 'bigint',
+      },
+    });
+  });
+
   it('links each used tuple result through its synthetic local definition', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface IProducer { function quote(bigint n) returns (bigint, bool); }
@@ -229,5 +255,40 @@ describe('Release 0 shared invocation analysis', () => {
         { consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0 },
         { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0 },
       ]);
+  });
+
+  it('links a produced result through an exact state-field write to a later call', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProducer { function quote(bigint n) returns (bigint); }
+      interface IConsumer { function settle(bigint quoted); }
+      struct Item { bigint id; }
+      contract StateResultFlow() {
+        Item[] items;
+        function run(address producer, address consumer, bigint i, bigint n) public {
+          if (n > 0) { items[i].id = n; }
+          items[i].id = IProducer(producer).quote(n);
+          IConsumer(consumer).settle(items[i].id);
+          require(n >= 0);
+        }
+      }`, { forceStateful: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'run')!;
+    expect(fn.resultConsumers).toEqual([{
+      consumerCallsiteId: 1,
+      argument: 0,
+      producerCallsiteId: 0,
+    }]);
+    expect(fn.externalCalls?.[1].argSources?.[0]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'externalCall',
+        name: 'IProducer.quote',
+        callsiteId: 0,
+        type: 'bigint',
+        target: {
+          kind: 'source',
+          source: { kind: 'forward', paramIndex: 0 },
+        },
+      },
+    });
   });
 });

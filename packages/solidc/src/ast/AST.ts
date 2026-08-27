@@ -324,8 +324,15 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Compiler-owned message-bus handler mapping from its function-local entry
    * slot ordinals to the enclosing route's physical participant slots. */
   messageBusPhysicalEntrySlots?: number[];
+  /** Compiler-owned handler state-owner basis. Zero means the active route input; a positive value is the
+   * authenticated distance from the route executor to the participant master. Unlike a stack argument, this
+   * consensus-derived relation remains stable while the handler creates runtime-only operands. */
+  messageBusOwnerInputOffset?: number;
   /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
   messageBusHandlerManagedEntrySlots?: number[];
+  /** Compiler-generated locals allocated before a message-bus route can invoke a handler. Their tracked
+   * top-relative depths can be shadowed by handler runtime operands, but their bottom ordinals remain stable. */
+  messageBusRouteFrameLocals?: string[];
   tokenContainerAccesses?: TokenContainerAccessInfo[];
   externalReads?: ExternalReadSlot[];
   externalCalls?: ExternalCallSlot[];
@@ -379,6 +386,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // valueScalarParam (a loop-INVARIANT param, e.g. `+= amount` fixed-amount airdrop), or valueConst (an int literal).
   sortedUpsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
+    fixedKeySources?: KeySourceInfo[];
     keyDecodeTupleIndex?: number; keyDecodeTupleTypes?: string[];
     predicateArrayParam?: string; predicateEquals?: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
@@ -443,6 +451,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
    * single entry, so sibling handlers over the same entry resolve to one pending value and one vmap slot. */
   forceCollectionJournalPool?: boolean;
+  /** Compiler-owned pooled helper whose independently keyed entries can each alias an earlier route row.
+   * LowerCollectionJournalHelpers selects and updates those physical caches at runtime without expanding the
+   * dispatcher's branches into their Cartesian product. */
+  collectionJournalRuntimeAliases?: boolean;
   // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   messageBusRoute?: boolean;
@@ -461,8 +473,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusKeyWitnesses?: {
     routeInput: string;
     inputIndex: number;
-    source?: 'argument' | 'msgSender';
+    source?: 'argument' | 'msgSender' | 'expression';
+    expressionLabel?: string;
     perRow?: boolean;
+    /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
+    swappable?: boolean;
   }[];
 
   /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */
@@ -543,6 +558,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   ecrecoverEvmCallCount?: number; // number of ecrecoverEvm calls; each ALSO co-spends a keccak side-car (over the
   // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
   ecrecoverEvmFlags?: boolean[]; // per ecrecover call (emission order): is it the evm projection? (SDK keccak co-spend)
+  // Exact transitive recovery order for an entry point. Codegen-local ecrecoverEvmFlags is reset while emitting
+  // outlined helpers, so this closure copy remains available to artifact/SDK resource planning.
+  ecrecoverClosureEvmFlags?: boolean[];
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   impliedSelfdestruct = false;  // body-level selfdestruct(...) inferred the lifecycle modifier
   splitCountParam?: string;     // parameter name for split count
@@ -743,6 +761,11 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // The init of a C-style `for` loop. Block-scoped in Solidity but the for desugars to a flattened
   // `{ init; while }`, so a sequential loop reusing the same name may re-declare (overwrite) it.
   isLoopVariable?: boolean;
+  // Canonical arithmetic progression of a C-style for-loop variable. Published for consumers which must
+  // materialize one external-call argument frame per reached loop occurrence. Undefined for non-canonical
+  // updates, so metadata generation fails closed rather than guessing how a mutable local evolves.
+  loopInitialValue?: bigint;
+  loopStepValue?: bigint;
   // Exact method carried by a statically known external-function-pointer value whose runtime expression is not
   // itself a direct function reference (for example `function() external f = callbacks[1]`).
   functionPointerMethodAlias?: string;
@@ -857,6 +880,13 @@ export interface BranchOps {
 export class BranchNode extends StatementNode {
   // Populated by SymbolTableTraversal: operations that need pre-allocation
   branchOps?: BranchOps;
+
+  /**
+   * Compiler-owned entry flush whose absent arm must remain physically inactive. Ordinary source branches may be
+   * if-converted to an unconditional preserve/write, but doing that to a lazy journal flush creates trailing
+   * resources (notably chunk NFTs) for handlers which were never selected.
+   */
+  preserveConditionalEntryWrites?: boolean;
 
   constructor(
     public condition: ExpressionNode,
@@ -1159,6 +1189,7 @@ export class MappingAssignNode extends StatementNode implements Named {
   arrayPop?: boolean;  // Set for `map[k].pop()`: drop the last element of the entry's array value (expression unused)
   noArg?: boolean;     // Set for `map[k].push()`: `expression` is a placeholder, replaced with the element default
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
+  keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
 
   constructor(
     public name: string,
@@ -1226,6 +1257,7 @@ export class MappingDeleteNode extends StatementNode implements Named {
   collection?: CollectionNode;
   entrySlotIndex: number = -1;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
+  keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
 
   constructor(
     public name: string,
@@ -1406,6 +1438,11 @@ export class BinaryOpNode extends ExpressionNode {
 }
 
 export class UnaryOpNode extends ExpressionNode {
+  // Marks Solidity's `this` expression after lowering to active-input locking-bytecode introspection. Logical
+  // stateful identity may then use the participant's authenticated identity anchor without changing an explicit
+  // tx.inputs[i].lockingBytecode expression, which remains physical introspection.
+  isThisExpression = false;
+
   // Solidity before 0.8 permits unsigned negation and evaluates it modulo the
   // destination width (e.g. `d & -d` in FullMath).
   legacyWrappingNegation = false;
@@ -2180,19 +2217,28 @@ export class ExternalFunctionCallNode extends ExpressionNode {
 }
 
 export interface ExternalCallArgSource {
-  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'expression';
+  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'loopIndex'
+    | 'expression';
   paramIndex?: number;
   indexParamIndex?: number;
   indexValue?: number;
+  initialValue?: string;
+  stepValue?: string;
   paramName?: string;
   value?: string;
   type?: string;
   expression?: ExternalCallExpression;
+  /** Source-level `address(this)`, distinct from explicit physical active-input bytecode introspection. */
+  logicalIdentity?: boolean;
 }
 
 export interface ExternalCallExpression {
   kind: string;
   name?: string;
+  /** Compiler-stable producer identity within the containing function. */
+  callsiteId?: number;
+  /** Authenticated receiver expression for a returning external call. */
+  target?: ExternalCallExpression;
   type?: string;
   value?: string | boolean;
   operator?: string;
@@ -2205,6 +2251,18 @@ export interface ExternalCallExpression {
   ifFalse?: ExternalCallExpression;
   args?: ExternalCallExpression[];
   fields?: string[];
+  parameters?: string[];
+  statements?: ExternalCallStatement[];
+}
+
+export interface ExternalCallStatement {
+  kind: 'variable' | 'assign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
+  name?: string;
+  type?: string;
+  expression?: ExternalCallExpression;
+  condition?: ExternalCallExpression;
+  statements?: ExternalCallStatement[];
+  elseStatements?: ExternalCallStatement[];
 }
 
 export interface ExternalCallSlot {
@@ -2259,6 +2317,10 @@ export interface ExternalCallSlot {
   selectorArrayVar?: string;
   callMode?: ExternalCallMode;
   argSources?: ExternalCallArgSource[];
+  /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
+  condition?: ExternalCallExpression;
+  /** ABI output array directly populated by this loop call (`result[i] = call(); return result`). */
+  resultArrayOutput?: number;
   rawFunctionName?: string;
   rawArgSources?: ExternalCallArgSource[];
   /** Decoded arguments/types for an `abi.encodeCall` low-level payload. Compiler-internal only. */
@@ -2285,6 +2347,10 @@ export interface ExternalCallSlot {
     parameterTypes: Type[];
     logicalIndex: number;
     argSources?: ExternalCallArgSource[];
+    /** Runtime cardinality of this source callsite within the grouped physical route. */
+    occurrence?: 'once' | 'conditional' | 'loop';
+    /** Compiler-serialized predicate guarding this logical row. */
+    condition?: ExternalCallExpression;
     opaqueReturn?: boolean;
     returnTypes?: Type[];
     /** @internal Conditional row whose arguments are entry-frame derivable and are committed eagerly. */

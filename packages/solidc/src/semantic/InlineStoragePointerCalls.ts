@@ -79,7 +79,10 @@ import { AmbiguousInlineOverloadError, GraphEmissionEffectError } from '../Error
 const PREFIX = '__sp';
 
 export default class InlineStoragePointerCalls extends AstTraversal {
-  constructor(private readonly inlineSolidityInitializers = false) { super(); }
+  constructor(
+    private readonly inlineSolidityInitializers = false,
+    private readonly inlineDelegateStateHelpers = false,
+  ) { super(); }
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   // Overload-aware callee lookup keyed by inlineKey(name, arity): a name-only map returns the wrong overload for a
   // call whose arity differs (OZ ERC20 `_approve/3` -> `_approve/4`), so the arity-mismatched call is never inlined
@@ -210,7 +213,11 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // reserves an owner-local frame per dispatch site on their behalf (SymbolTableTraversal
       // planGraphEffectFrames) and pushes the site ordinal as hidden context, against which the subroutine
       // resolves its own event/transfer OUTPUT indices (GenerateTargetTraversal emitGraphEffectSlotIndex).
-      if (this.keepsGraphEmissionBinding(fn)) continue;
+      // Delegate initializer/owner guards must still flatten into the entry even when a message-bus
+      // clone would otherwise keep them behind OP_INVOKE. Those clones address INPUTINDEX, not the
+      // proxy pending write, so `initialize` fails `_checkInitializing` on a clean compile.
+      if (this.keepsGraphEmissionBinding(fn)
+        && !/^(?:_checkInitializing|_checkOwner|_requireNotPaused)$/.test(fn.name)) continue;
       // SEC-7. A TOKEN-CONTAINER operation is still refused, and for the reason X29 removed for events and
       // transfers rather than an unexamined one: `this.tokens[c].transfer(..)` needs a co-spent tokenContainer
       // INPUT slot as well as its tcTransfer outputs, and an input slot is not a per-site output frame - it
@@ -229,7 +236,19 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
       // dispatchable), internal helpers are dropped below.
-      const scalarJournalEligible = this.isScalarJournalEligible(fn);
+      // A scalar-state helper normally has enough context to remain an OP_INVOKE subroutine: both it and its
+      // caller address state relative to the active covenant input. A delegate build is different. Its entry
+      // points address the co-spent proxy block, while an ordinary internal helper would address the
+      // implementation's own block. Keep those reads/writes in the delegate entry traversal so they inherit the
+      // authenticated proxy-master basis. This also covers modifier wrappers such as
+      // `entry -> _checkOwner -> owner()` after the returning getter has been reduced into `_checkOwner`.
+      const scalarJournalEligible = !this.inlineDelegateStateHelpers && this.isScalarJournalEligible(fn);
+      // OZ `_checkInitializing` / `_checkOwner` often still look context-only after the first IRSH
+      // (ERC-7201 `$._initializing` / `owner()`). A later IRSH exposes the read, but a message-bus
+      // compile can leave the wrapper as OP_INVOKE. Force those guards into the delegate entry so
+      // they inherit proxy-master + pending writes instead of INPUTINDEX+1 on the impl.
+      const delegateGuard = this.inlineDelegateStateHelpers
+        && /^(?:_checkInitializing|_checkOwner|_requireNotPaused)$/.test(fn.name);
       // CashToken-container transfers are transaction effects rather than
       // value-like state: their authenticated input/output slots and transfer
       // occurrence indices belong to the physical entry point. Until an
@@ -240,6 +259,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       const hasPhysicalEffects = this.hasPhysicalEffects(fn);
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
+          || delegateGuard
           || (this.isInternalHelper(fn) && !valueReferenced.has(fn.name)
             && (this.readsEntry(fn) || (this.touchesScalarState(fn) && !scalarJournalEligible)
               || hasTokenContainerEffects

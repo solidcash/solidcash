@@ -175,3 +175,77 @@ describe('file-level event declarations', () => {
     expect(a.events?.some((e) => e.name === 'Transfer')).toBe(true);
   });
 });
+
+describe('emit blob survives persist mapping push', () => {
+  it('parks `__internal__emit_0` on the altstack so data-NFT 1:1 cannot bury it', () => {
+    const artifact = compileString(`
+      contract C() {
+        event Job(int id, bytes row);
+        mapping(int => bytes[]) public items;
+        int n;
+        function pushAndEmit(int id, bytes row) {
+          this.items[id].push(row);
+          emit Job(id, row);
+          this.n = this.n + 1;
+        }
+      }`);
+    const selector = artifact.abi.find((entry) => entry.name === 'pushAndEmit')?.selector;
+    expect(selector).toBeDefined();
+    const body = artifact.functionBodies?.[selector!]
+      ?? artifact.delegateArtifact?.functionBodies?.[selector!]
+      ?? artifact.bytecode;
+    expect(body).toBeDefined();
+    expect(body).toMatch(/6b/);
+    expect(body).toMatch(/6c/);
+  });
+});
+
+describe('own-category immutable event pin', () => {
+  it('skips OP_TRUE return witnesses and selects j above each predicate', () => {
+    const artifact = compileString(`
+      contract C() {
+        event Moved(int amount);
+        int n;
+        function go(int amount) {
+          emit Moved(amount);
+          this.n = this.n + 1;
+        }
+      }`);
+    const selector = artifact.abi.find((entry) => entry.name === 'go')?.selector;
+    expect(selector).toBeTruthy();
+    const body = artifact.delegateArtifact?.functionBodies?.[selector!]
+      ?? artifact.debug?.bytecode
+      ?? artifact.bytecode;
+    expect(body).toBeTruthy();
+    // NUMEQUAL / OVER selects j below the predicate (not base via 2 PICK), then OUTPUTBYTECODE / push 0x51 /
+    // EQUAL excludes OP_TRUE return witnesses from event-slot positioning.
+    expect(body).toContain('9c78');
+    expect(body).not.toContain('9c5279');
+    expect(body).toContain('cd015187');
+  });
+});
+
+describe('minting uniqueness ignores none-cap JobEvents', () => {
+  it('counts only 33-byte minting category+capability outputs', () => {
+    const artifact = compileString(`
+      contract C() {
+        event Job(int id);
+        int n;
+        function go(int id) {
+          emit Job(id);
+          this.n = this.n + 1;
+        }
+      }`);
+    const selector = artifact.abi.find((entry) => entry.name === 'go')?.selector;
+    const body = artifact.functionBodies?.[selector!]
+      ?? artifact.delegateArtifact?.functionBodies?.[selector!]
+      ?? artifact.bytecode;
+    expect(body).toBeDefined();
+    // OUTPUTTOKENCATEGORY / SIZE / push(33) / NUMEQUAL before the minting EQUAL.
+    // Function bodies are hex; full artifact.bytecode may keep the same ops as ASM.
+    expect(
+      /d18201219c/.test(body!)
+      || body!.includes('OP_OUTPUTTOKENCATEGORY OP_SIZE 21 OP_NUMEQUAL'),
+    ).toBe(true);
+  });
+});

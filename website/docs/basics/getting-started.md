@@ -25,6 +25,12 @@ Here are the 5 simple steps for creating your first smart contract transaction w
 
 To get started coding locally we will use a code editor and learn how to work with the `solidc` compiler to create SolidCash contract artifacts.
 
+:::tip Project tooling
+This page demonstrates the compiler and SDK directly so each layer is visible. For a batteries-included local
+project with compilation, testing, generated bindings, named networks, and deployment scripts, start with the
+[SolidHat guide](/docs/sdk/solidhat).
+:::
+
 ### Prerequisites
 
 To write SolidCash smart contracts locally you use a code editor. For the best developer experience, we recommend to use VS Code with the SolidCash extension. This way it will automatically recognize `.scash` files and offer highlighting and autocompletion.

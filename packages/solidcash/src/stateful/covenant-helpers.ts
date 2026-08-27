@@ -1,5 +1,5 @@
 import {
-  hexToBin, isHex, cashAddressToLockingBytecode, lockingBytecodeToCashAddress,
+  binToHex, hexToBin, isHex, cashAddressToLockingBytecode, lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
 import {
   AbiFunction,
@@ -34,6 +34,17 @@ import { Contract } from '../Contract.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createUnlockingBytecode, scriptToAddress, scriptToLockingBytecode } from '../utils.js';
 import { StateReader, OnChainState } from './StateReader.js';
+
+interface CachedCovenantContract {
+  contract: Contract<any, any>;
+  bytecode: Uint8Array;
+  lockingBytecode: Uint8Array;
+}
+
+// Stateful transaction derivation recreates relocated data/entry unlockers on every probe. Their numeric
+// witnesses vary, but the synthetic artifact, covenant bytecode, and locking bytecode do not. Retain one copy
+// per provider so debug metadata remains provider-correct without repeatedly disassembling the same script.
+const covenantContractCache = new WeakMap<NetworkProvider, Map<string, CachedCovenantContract>>();
 
 export function validateCategoryId(hex: string, paramName: string = 'categoryId'): void {
   if (!isHex(hex) || hex.length !== 64) {
@@ -168,11 +179,24 @@ export function createCovenantContractUnlocker(
   addressType: AddressType = contract.addressType,
 ): ContractUnlocker {
   const abiFunction: AbiFunction = { name: 'spend', inputs: abiInputs };
-  const artifact = buildCovenantArtifact(contractName, covenantScript, abiFunction);
-  const covenantContract = new Contract(artifact, [], {
-    provider: contract.provider,
-    addressType,
-  });
+  const covenantBytecodeBytes = scriptToBytecode(covenantScript);
+  const cacheKey = `${addressType}\u0000${contractName}\u0000${abiInputs
+    .map((input) => `${input.name}:${input.type}`).join(',')}\u0000${binToHex(covenantBytecodeBytes)}`;
+  let providerCache = covenantContractCache.get(contract.provider);
+  if (!providerCache) {
+    providerCache = new Map();
+    covenantContractCache.set(contract.provider, providerCache);
+  }
+  let cached = providerCache.get(cacheKey);
+  if (!cached) {
+    const artifact = buildCovenantArtifact(contractName, covenantScript, abiFunction);
+    cached = {
+      contract: new Contract(artifact, [], { provider: contract.provider, addressType }),
+      bytecode: covenantBytecodeBytes,
+      lockingBytecode: scriptToLockingBytecode(covenantScript, addressType),
+    };
+    providerCache.set(cacheKey, cached);
+  }
 
   // Covenant args are always plain values (never SignatureTemplates), so the cast is safe. Thread the struct
   // defs so struct-typed covenant args encode as their value-copy blob (same as the direct call path).
@@ -180,17 +204,15 @@ export function createCovenantContractUnlocker(
   const encodedArgs = args.map(
     (arg, i) => encodeFunctionArgument(arg, abiInputs[i].type, structs),
   ) as Uint8Array[];
-  const covenantBytecodeBytes = scriptToBytecode(covenantScript);
-
   // Note: args are passed in reverse stack order because createUnlockingBytecode reverses them.
   const generateUnlockingBytecode = (): Uint8Array => createUnlockingBytecode(
-    addressType, covenantBytecodeBytes, encodedArgs,
+    addressType, cached.bytecode, encodedArgs,
   );
-  const generateLockingBytecode = (): Uint8Array => scriptToLockingBytecode(covenantScript, addressType);
+  const generateLockingBytecode = (): Uint8Array => cached.lockingBytecode;
 
   return {
     generateUnlockingBytecode, generateLockingBytecode,
-    contract: covenantContract, params: args, abiFunction,
+    contract: cached.contract, params: args, abiFunction,
     covenantUnlocker: true,
   };
 }
@@ -224,10 +246,21 @@ export function getMessageBusVerifierLockingBytecode(
 ): Uint8Array {
   validateCategoryId(categoryId);
   assertMessageBusVerifierCommitmentCapacity(contract.provider);
-  const program = getMessageBusVerifierProgram(contract);
-  return scriptToLockingBytecode(buildMessageBusVerifierCovenantScript(
-    program, getMessageBusVerifierMaximumScriptBytes(contract.provider),
-  ), 'p2sh32');
+  return getMessageBusVerifierLockingBytecodeForArtifact(
+    contract.artifact, contract.provider.consensusLimits?.maximumInputBytes ?? 10_000,
+  );
+}
+
+/** Resolve a verifier from the artifact which executes a participant route. For delegate execution this is the
+ * implementation artifact, while the verifier NFT remains branded to and deployed under the physical owner. */
+export function getMessageBusVerifierLockingBytecodeForArtifact(
+  artifact: Artifact, maximumInputBytes = 10_000,
+): Uint8Array {
+  const program = artifact.messageBus?.verifierProgram;
+  if (!program) throw new Error(`Contract '${artifact.contractName}' publishes no message bus verifier program`);
+  return scriptToLockingBytecode(
+    buildMessageBusVerifierCovenantScript(program, maximumInputBytes), 'p2sh32',
+  );
 }
 
 export function getEntryNftAddress(
@@ -391,10 +424,12 @@ export const MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES = 9_000;
 
 export function createMessageBusVerifierUnlocker(
   contract: Contract<any, any>, categoryId: string, messageEnvelope: Uint8Array, verifierArgs: FunctionArgument[],
+  executionArtifact: Artifact = contract.artifact,
 ): ContractUnlocker {
   validateCategoryId(categoryId);
   assertMessageBusVerifierCommitmentCapacity(contract.provider);
-  const program = getMessageBusVerifierProgram(contract);
+  const program = executionArtifact.messageBus?.verifierProgram;
+  if (!program) throw new Error(`Contract '${executionArtifact.contractName}' publishes no message bus verifier program`);
   if (verifierArgs.length !== program.inputs.length) {
     throw new Error(`message bus verifier expects ${program.inputs.length} arguments, got ${verifierArgs.length}`);
   }
@@ -412,36 +447,43 @@ export function createMessageBusVerifierUnlocker(
     contract, `MessageBusVerifier_${categoryId.slice(0, 8)}`, covenantScript, abiInputs,
     [densityReserve, ...verifierArgs, messageEnvelope], 'p2sh32',
   );
-  const empty = create(new Uint8Array());
-  const emptyLength = empty.generateUnlockingBytecode({} as never).length;
-  let reserveLength = Math.max(0, MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES - emptyLength);
-  let unlocker = create(new Uint8Array(reserveLength));
-  let encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
-  if (encodedLength < MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES) {
-    reserveLength += MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES - encodedLength;
-    unlocker = create(new Uint8Array(reserveLength));
-    encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
-  }
-  if (encodedLength < MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES) {
-    throw new Error('message bus verifier density reserve calculation did not reach its encoded-byte floor');
-  }
-  const structs = contract.artifact.structs ?? contract.artifact.stateLayout?.structs;
-  const oversizedStackItem = unlocker.params
-    .map((argument, index) => encodeFunctionArgument(argument, abiInputs[index].type, structs))
-    .find((argument): argument is Uint8Array =>
-      argument instanceof Uint8Array && argument.length > maximumStackItemBytes);
-  if (oversizedStackItem) {
-    throw new Error(
-      `message bus verifier argument is ${oversizedStackItem.length} bytes; maximum stack item is `
-      + `${maximumStackItemBytes} bytes`,
-    );
-  }
-  if (encodedLength > maximumInputBytes) {
-    throw new Error(
-      `message bus verifier arguments require ${encodedLength} unlocking-bytecode bytes; maximum is ${maximumInputBytes}`,
-    );
-  }
-  return unlocker;
+  const createSized = (minimumBytes: number): ContractUnlocker => {
+    if (!Number.isSafeInteger(minimumBytes) || minimumBytes < 0) {
+      throw new Error('message bus verifier density reserve byte floor must be a non-negative safe integer');
+    }
+    const empty = create(new Uint8Array());
+    const emptyLength = empty.generateUnlockingBytecode({} as never).length;
+    let reserveLength = Math.max(0, minimumBytes - emptyLength);
+    let unlocker = create(new Uint8Array(reserveLength));
+    let encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
+    if (encodedLength < minimumBytes) {
+      reserveLength += minimumBytes - encodedLength;
+      unlocker = create(new Uint8Array(reserveLength));
+      encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
+    }
+    if (encodedLength < minimumBytes) {
+      throw new Error('message bus verifier density reserve calculation did not reach its encoded-byte floor');
+    }
+    const structs = executionArtifact.structs ?? executionArtifact.stateLayout?.structs;
+    const oversizedStackItem = unlocker.params
+      .map((argument, index) => encodeFunctionArgument(argument, abiInputs[index].type, structs))
+      .find((argument): argument is Uint8Array =>
+        argument instanceof Uint8Array && argument.length > maximumStackItemBytes);
+    if (oversizedStackItem) {
+      throw new Error(
+        `message bus verifier argument is ${oversizedStackItem.length} bytes; maximum stack item is `
+        + `${maximumStackItemBytes} bytes`,
+      );
+    }
+    if (encodedLength > maximumInputBytes) {
+      throw new Error(
+        `message bus verifier arguments require ${encodedLength} unlocking-bytecode bytes; maximum is ${maximumInputBytes}`,
+      );
+    }
+    unlocker.withMinimumUnlockingBytecodeBytes = createSized;
+    return unlocker;
+  };
+  return createSized(MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES);
 }
 
 export function createDataNftUnlocker(
@@ -554,13 +596,17 @@ export function createValueChunkUnlocker(
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(valueChunkSignature(collection));
   const covenantScript = buildValueChunkCovenantScript(hexToBin(categoryId), collectionHash, slot, root);
-  return createCovenantContractUnlocker(
+  const unlocker = createCovenantContractUnlocker(
     contract,
     `ValueChunkNft_${categoryId.slice(0, 8)}`,
     covenantScript,
     [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
     [1n, BigInt(masterInputIndex)],
   );
+  // This spend destroys an old root-addressed value version. Unlike preservation covenants, its aligned output
+  // may therefore carry the replacement version (whose value root and P2SH32 locking bytecode are different).
+  unlocker.allowsAlignedOutputReplacement = true;
+  return unlocker;
 }
 
 // Read-only unlocker for a dynamic-storage chunk NFT: flag=0 (preserve, output==input) so an on-chain
@@ -690,4 +736,20 @@ export function resolveEventSignature(artifact: Artifact, eventNameOrSignature: 
     );
   }
   return matches[0].signature;
+}
+
+/**
+ * `__internal__msgSenderCategory` for a delegatecall implementation unlocker.
+ * EVM delegatecall keeps the original caller. The implementation of THIS contract's
+ * proxy must see the user (32 zero bytes → emitMsgSender uses tx.origin). A nested
+ * proxy implementation (we called their proxy) sees us as msg.sender.
+ */
+export function delegateImplMsgSenderCategory(
+  nestedProxyCategoryId: string | undefined,
+  callerCategoryId: string,
+): Uint8Array {
+  if (!nestedProxyCategoryId || nestedProxyCategoryId === callerCategoryId) {
+    return new Uint8Array(32);
+  }
+  return hexToBin(callerCategoryId).reverse();
 }

@@ -3,7 +3,6 @@ import {
   AbiFunction,
   Artifact,
   asmToScript,
-  calculateBytesize,
   countOpcodes,
   generateContractBytecodeScript,
   hash256,
@@ -31,6 +30,49 @@ import {
 import type { TransactionBuilder } from './TransactionBuilder.js';
 import semver from 'semver';
 
+// Large generated contracts can carry multi-megabyte ASM listings. Stateful deployment and proxy wiring create
+// several Contract instances from the exact same artifact (withCategory, logical-address attachment, delegates).
+// Parsing that immutable listing for every instance retains enormous duplicate instruction/data graphs. Cache only
+// the artifact's category-independent base script; constructor arguments, category pins, salts, and library pads are
+// still composed independently below.
+const parsedArtifactScripts = new WeakMap<object, ReturnType<typeof asmToScript>>();
+const parsedBytecodeScripts = new Map<string, ReturnType<typeof asmToScript>>();
+const composedBytecodeScripts = new Map<string, Map<string, ReturnType<typeof asmToScript>>>();
+interface ComposedContractMetrics {
+  address: string;
+  tokenAddress: string;
+  bytecode: string;
+  bytecodeBin: Uint8Array;
+  lockingBytecode: string;
+  bytesize: number;
+  opcount: number;
+}
+const composedContractMetrics = new Map<string, Map<string, ComposedContractMetrics>>();
+const parsedFunctionBodies = new Map<string, Uint8Array>();
+
+function parsedFunctionBody(body: string): Uint8Array {
+  let parsed = parsedFunctionBodies.get(body);
+  if (!parsed) {
+    parsed = hexToBin(body);
+    parsedFunctionBodies.set(body, parsed);
+  }
+  return parsed;
+}
+
+function parsedArtifactScript(artifact: Artifact): ReturnType<typeof asmToScript> {
+  const key = artifact as object;
+  let script = parsedArtifactScripts.get(key);
+  if (!script) {
+    script = parsedBytecodeScripts.get(artifact.bytecode);
+    if (!script) {
+      script = asmToScript(artifact.bytecode);
+      parsedBytecodeScripts.set(artifact.bytecode, script);
+    }
+    parsedArtifactScripts.set(key, script);
+  }
+  return script;
+}
+
 export class Contract<
   TArtifact extends Artifact = Artifact,
   TResolved extends {
@@ -47,6 +89,7 @@ export class Contract<
   tokenAddress: string;
   lockingBytecode: string;
   bytecode: string;
+  private bytecodeBin: Uint8Array;
   bytesize: number;
   opcount: number;
   unlock: TResolved['unlock'];
@@ -126,7 +169,7 @@ export class Contract<
           // @ts-ignore TODO: see if we can use generics to make TypeScript happy
           this.unlock.receive = () => {
             const generateUnlockingBytecode = (): Uint8Array => (
-              createUnlockingBytecode(this.addressType, hexToBin(this.bytecode), [], undefined)
+              createUnlockingBytecode(this.addressType, this.bytecodeBin, [], undefined)
             );
             const generateLockingBytecode = (): Uint8Array => addressToLockScript(this.address);
             return {
@@ -191,20 +234,32 @@ export class Contract<
       }
     }
 
-    let contractBytecodeScript = generateContractBytecodeScript(
-      asmToScript(this.artifact.bytecode), this.encodedConstructorArgs,
-    );
-
     // Contracts using an INLINE-model external library (e.g. keccak256) are spent with a budget pad pushed
     // on top of the unlocking; the redeem drops it before any logic runs (see budgetPad / co-spend wiring).
     // Result-NFT (compute-and-commit) libraries need no pad: the side-car runs keccak in its OWN budget, so
     // the contract only reads the result by introspection (no blob loader, no OP_DROP).
     this.usesExternalLibraries = !!artifact.externalLibraries?.some((l) => !l.resultNft);
-    if (this.usesExternalLibraries) {
-      contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];
-    }
-
     this.isStateful = !!artifact.stateLayout;
+
+    const compositionKey = [
+      this.encodedConstructorArgs.map(binToHex).join(','),
+      this.usesExternalLibraries ? 'library-pad' : '',
+      this.isStateful && this.category ? binToHex(this.category) : '',
+      this.salt ? binToHex(this.salt) : '',
+    ].join('|');
+    let compositions = composedBytecodeScripts.get(artifact.bytecode);
+    if (!compositions) {
+      compositions = new Map();
+      composedBytecodeScripts.set(artifact.bytecode, compositions);
+    }
+    let contractBytecodeScript = compositions.get(compositionKey);
+    if (!contractBytecodeScript) {
+      contractBytecodeScript = generateContractBytecodeScript(
+        parsedArtifactScript(this.artifact), this.encodedConstructorArgs,
+      );
+      if (this.usesExternalLibraries) {
+        contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];
+      }
 
     // Category self-pin (stateful contracts): bake the category and verify the spent UTXO's category equals
     // it, so the address commits to the category (address => genuine state). This reworks the former dead
@@ -216,27 +271,52 @@ export class Contract<
     // 33-byte value (internal byte order + the 0x02 minting capability) and compare directly - no need to
     // split off the capability byte. This also pins the capability, rejecting a same-category UTXO with the
     // wrong capability. See docs/external-contract-calls.md.
-    if (this.isStateful && this.category && this.category.length > 0) {
-      const catWithCapability = Uint8Array.from([...this.category.slice().reverse(), 0x02]);
-      contractBytecodeScript = [
-        catWithCapability, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
-        ...contractBytecodeScript,
-      ];
-    }
+      if (this.isStateful && this.category && this.category.length > 0) {
+        const catWithCapability = Uint8Array.from([...this.category.slice().reverse(), 0x02]);
+        contractBytecodeScript = [
+          catWithCapability, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
+          ...contractBytecodeScript,
+        ];
+      }
 
     // User CREATE2 salt (optional, any contract): a dead push baked into the script for deterministic /
     // counterfactual address control. Separate, outermost segment (distinct from the category self-pin).
-    if (this.salt && this.salt.length > 0) {
-      contractBytecodeScript = [this.salt, Op.OP_DROP, ...contractBytecodeScript];
+      if (this.salt && this.salt.length > 0) {
+        contractBytecodeScript = [this.salt, Op.OP_DROP, ...contractBytecodeScript];
+      }
+      compositions.set(compositionKey, contractBytecodeScript);
     }
 
+    const metricsKey = `${this.provider.network}|${this.addressType}|${compositionKey}`;
+    let metricsByComposition = composedContractMetrics.get(artifact.bytecode);
+    if (!metricsByComposition) {
+      metricsByComposition = new Map();
+      composedContractMetrics.set(artifact.bytecode, metricsByComposition);
+    }
+    let metrics = metricsByComposition.get(metricsKey);
+    if (!metrics) {
+      const serialized = scriptToBytecode(contractBytecodeScript);
+      const bytecode = binToHex(serialized);
+      const address = scriptToAddress(contractBytecodeScript, this.provider.network, this.addressType, false);
+      metrics = {
+        address,
+        tokenAddress: scriptToAddress(contractBytecodeScript, this.provider.network, this.addressType, true),
+        bytecode,
+        bytecodeBin: serialized,
+        lockingBytecode: this.addressType === 'p2s' ? bytecode : binToHex(addressToLockScript(address)),
+        bytesize: serialized.byteLength,
+        opcount: countOpcodes(contractBytecodeScript),
+      };
+      metricsByComposition.set(metricsKey, metrics);
+    }
     this.name = artifact.contractName;
-    this.address = scriptToAddress(contractBytecodeScript, this.provider.network, this.addressType, false);
-    this.tokenAddress = scriptToAddress(contractBytecodeScript, this.provider.network, this.addressType, true);
-    this.bytecode = binToHex(scriptToBytecode(contractBytecodeScript));
-    this.lockingBytecode = this.addressType === 'p2s' ? this.bytecode : binToHex(addressToLockScript(this.address));
-    this.bytesize = calculateBytesize(contractBytecodeScript);
-    this.opcount = countOpcodes(contractBytecodeScript);
+    this.address = metrics.address;
+    this.tokenAddress = metrics.tokenAddress;
+    this.bytecode = metrics.bytecode;
+    this.bytecodeBin = metrics.bytecodeBin;
+    this.lockingBytecode = metrics.lockingBytecode;
+    this.bytesize = metrics.bytesize;
+    this.opcount = metrics.opcount;
 
     // Expose opaque loop-dispatch functions (the MultiCall pattern) as direct fluent methods, so a caller can
     // write `contract.multiCall({ callerUtxo, targets, funder })` instead of buildOpaqueLoopCallTransaction(...).
@@ -396,14 +476,14 @@ export class Contract<
         && abiFunction.inputs.length !== visibleInputs.length;
       const argInputs = internalsProvided ? abiFunction.inputs : visibleInputs;
 
-      const bytecode = hexToBin(this.bytecode);
+      const bytecode = this.bytecodeBin;
 
       // For multi-function contracts with OP_INVOKE dispatch, OP_CHECKSIG inside an
       // OP_INVOKE'd function uses the function body as coveredBytecode (not the full
       // redeemScript). Use the function body bytecode for signature computation.
       const selectorHex = selector ? binToHex(selector) : undefined;
       const signingBytecode = (selectorHex && this.artifact.functionBodies?.[selectorHex])
-        ? hexToBin(this.artifact.functionBodies[selectorHex])
+        ? parsedFunctionBody(this.artifact.functionBodies[selectorHex])
         : bytecode;
       const signingBytecodeForArgument = (inputName: string): Uint8Array => {
         const match = /^__message_bus_sig_(\d+)_\d+_r\d+$/.exec(inputName);
@@ -418,7 +498,7 @@ export class Contract<
           // performs CHECKSIG, the compiler always publishes signatureBytecode.
           return signingBytecode;
         }
-        return hexToBin(handlerBody);
+        return parsedFunctionBody(handlerBody);
       };
 
       const structs = this.artifact.structs ?? this.artifact.stateLayout?.structs;
@@ -434,12 +514,35 @@ export class Contract<
         if (Array.isArray(arg)) return arg.map(coerceArg);
         return arg;
       };
-      const encodedArgs = args
-        .map((arg, i) => encodeFunctionArgument(coerceArg(arg) as never, argInputs[i].type, structs));
+      const encodedArgs = args.map((arg, i) => {
+        try {
+          return encodeFunctionArgument(coerceArg(arg) as never, argInputs[i].type, structs);
+        } catch (error) {
+          throw new Error(
+            `Could not encode argument '${argInputs[i].name}' at index ${i} as ${argInputs[i].type}: `
+            + `${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
+          );
+        }
+      });
+
+      // Transaction builders call each unlocker repeatedly while deriving state commitments, fees, and the
+      // finalized transaction. Most covenant inputs have no signatures and already include every synthesized
+      // internal argument, so their unlocking bytecode is identical in every pass. Large delegate artifacts can
+      // otherwise copy and serialize hundreds of kilobytes per input on every probe.
+      const hasSignatures = encodedArgs.some(
+        (arg) => arg instanceof SignatureTemplate || isSignatureTemplateArray(arg),
+      );
+      const needsBlockhashIndex = !internalsProvided && abiFunction.inputs.some(
+        (input) => input.name === '__internal__blockhashInputIndex',
+      );
+      const cacheUnlockingBytecode = !hasSignatures && !needsBlockhashIndex;
+      let cachedUnlockingBytecode: Uint8Array | undefined;
 
       const generateUnlockingBytecode = (
         { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
+        if (cacheUnlockingBytecode && cachedUnlockingBytecode) return cachedUnlockingBytecode;
         const completeArgs = encodedArgs.map((arg, index) => {
           if (!(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg)) return arg;
 
@@ -465,7 +568,8 @@ export class Contract<
           ? [this.budgetPad(abiFunction, args), ...completeArgs, ...synthArgs]
           : [...completeArgs, ...synthArgs];
 
-        const unlockingBytecode = createUnlockingBytecode(this.addressType, hexToBin(this.bytecode), finalArgs, selector);
+        const unlockingBytecode = createUnlockingBytecode(this.addressType, bytecode, finalArgs, selector);
+        if (cacheUnlockingBytecode) cachedUnlockingBytecode = unlockingBytecode;
         return unlockingBytecode;
       };
 
@@ -491,46 +595,29 @@ export class Contract<
       // Preserve the historical positional frame without carrying the callManifest in the master. The
       // artifact-specialized verifier inputs carry the canonical callManifest.
       const messageEnvelopePlaceholder = scriptToBytecode([new Uint8Array()]);
+      let cachedOrdinary: Uint8Array | undefined;
+      let cachedCompilerRoute: Uint8Array | undefined;
       const generateUnlockingBytecode = (
         options: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
         const ordinary = unlocker.generateUnlockingBytecode(options);
-        const proxyMasterIndex = abiFunction.inputs.findIndex(
-          (input) => input.name === '__internal__proxyMasterIndex',
-        );
-        if (proxyMasterIndex === abiFunction.inputs.length - 1
-          && args.length === abiFunction.inputs.length) {
-          // createUnlockingBytecode reverses ABI arguments, so the final proxy-master witness is the first
-          // argument push after the selector. Delegate prologues address that witness from the physical bottom
-          // of their declared argument frame. Keep it below the message-bus positional blob/envelope; inserting
-          // those two values first would make OP_DEPTH-based lookup select the positional blob as a UTXO index.
-          const firstArgOffset = 5; // canonical push4 selector
-          const opcode = ordinary[firstArgOffset];
-          const firstArgLength = opcode === 0 || opcode > 78 ? 1
-            : opcode <= 75 ? 1 + opcode
-              : opcode === 76 ? 2 + ordinary[firstArgOffset + 1]
-                : opcode === 77
-                  ? 3 + ordinary[firstArgOffset + 1] + ordinary[firstArgOffset + 2] * 0x100
-                  : 5 + ordinary[firstArgOffset + 1] + ordinary[firstArgOffset + 2] * 0x100
-                    + ordinary[firstArgOffset + 3] * 0x10000
-                    + ordinary[firstArgOffset + 4] * 0x1000000;
-          const firstArgEnd = firstArgOffset + firstArgLength;
-          return new Uint8Array([
-            ...ordinary.slice(0, firstArgEnd),
-            ...positionalPush,
-            ...messageEnvelopePlaceholder,
-            ...ordinary.slice(firstArgEnd),
-          ]);
-        }
+        // The base unlocker returns the same byte-array instance when its witnesses are transaction-independent.
+        // Reuse the corresponding compiler-route frame too; otherwise every probe recopies the complete P2SH
+        // redeem script merely to insert two small positional pushes.
+        if (ordinary === cachedOrdinary && cachedCompilerRoute !== undefined) return cachedCompilerRoute;
         // The selector is always the minimal push4 frame (5 bytes). Duplicate
         // the executable blob here as the canonical positional second push;
-        // the message-bus batch covenant proves this copy equals its decoded batchBlob arg.
-        return new Uint8Array([
+        // the message-bus batch covenant proves this copy equals its decoded batchBlob arg. Both historical
+        // positional items stay below the complete ABI frame, so the route can discard them uniformly before
+        // any hidden argument is addressed.
+        cachedOrdinary = ordinary;
+        cachedCompilerRoute = new Uint8Array([
           ...ordinary.slice(0, 5),
           ...positionalPush,
           ...messageEnvelopePlaceholder,
           ...ordinary.slice(5),
         ]);
+        return cachedCompilerRoute;
       };
       // message-bus batch is a compiler-owned covenant even when the source handler has no state slots. Mark the master
       // unlocker itself so zero-state participant blocks receive the same best-effort artifact-debug treatment

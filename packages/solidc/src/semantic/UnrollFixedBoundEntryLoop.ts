@@ -68,6 +68,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private mutatedNames = new Set<string>(); // names ever reassigned / push / pop / element-written in the fn
 
   private currentFunction = '';
+  private currentGraphRuntime = false;
 
   constructor(
     private readonly indirectCallsOnly = false,
@@ -151,10 +152,15 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const prevName = this.currentFunction;
+    const prevGraphRuntime = this.currentGraphRuntime;
     this.currentFunction = node.name;
+    this.currentGraphRuntime = node.graphRuntimeEmissionHandler === true;
     const mutationScan = this.collectMutatedNames(node.body);
-    if (!mutationScan.hasCandidateLoop) {
+    // Graph-mode unrolling only expands pointer-table loops. Skip every other function so a contract with one
+    // graph edge does not try-unroll every sibling handler that merely contains a C-style loop.
+    if ((this.indirectCallsOnly && !mutationScan.hasIndirectCall) || !mutationScan.hasCandidateLoop) {
       this.currentFunction = prevName;
+      this.currentGraphRuntime = prevGraphRuntime;
       return node;
     }
     const prev = this.varTypes;
@@ -169,6 +175,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     this.newArrayLocalSizes = prevNewArr;
     this.mutatedNames = prevMutated;
     this.currentFunction = prevName;
+    this.currentGraphRuntime = prevGraphRuntime;
     return node;
   }
 
@@ -178,13 +185,20 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   // size can never be stale (sound regardless of control flow / scoping). Length-PRESERVING ops are deliberately
   // excluded so they don't over-block the fold: an element write `arr[i]=v` (ArrayAssignNode) and an element
   // delete `delete arr[i]` (ArrayDeleteNode) keep the length - e.g. EACC's `new address[](1); a[0]=w;` stays foldable.
-  private collectMutatedNames(body: Node | undefined): { names: Set<string>; hasCandidateLoop: boolean } {
+  private collectMutatedNames(body: Node | undefined): {
+    names: Set<string>; hasCandidateLoop: boolean; hasIndirectCall: boolean;
+  } {
     const names = new Set<string>();
     let hasCandidateLoop = false;
+    let hasIndirectCall = false;
     const walk = (n: Node | undefined): void => {
       if (!n) return;
       if (n instanceof WhileNode || (this.fixedCollectionIterations && n instanceof CollectionIterationNode)) {
         hasCandidateLoop = true;
+      }
+      if (n instanceof IndirectCallNode
+        || (n instanceof MethodCallNode && n.selectorArrayVar !== undefined)) {
+        hasIndirectCall = true;
       }
       if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) names.add(n.identifier.name);
       // A tuple assignment rebinds every non-skip slot. `(a, b) = (b, a)` swaps whole array values, so a
@@ -202,7 +216,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       }
     };
     walk(body);
-    return { names, hasCandidateLoop };
+    return { names, hasCandidateLoop, hasIndirectCall };
   }
 
   visitBlock(node: BlockNode): Node {
@@ -273,6 +287,11 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // array arg) is DEAD CODE: drop it entirely. The body never runs, so anything in it (a vmap sorted-mapping
     // write, an external call) is unreachable - sound regardless of body content or control flow.
     if (values.length === 0) return [];
+    // Fixed loops visible before route synthesis have already been expanded. A non-empty loop which becomes
+    // literal only after helper inlining must remain rolled in a runtime graph clone: its authenticated dynamic
+    // collection/emission journals own the reached rows. Unrolling here would manufacture fixed entry slots
+    // which belong only to the unused direct source body. Empty loops above are still erased as dead code.
+    if (this.currentGraphRuntime) return undefined;
 
     // Only unroll a NON-empty loop whose body writes a mapping OR calls keccak256 (else needless). A keccak256 in
     // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC

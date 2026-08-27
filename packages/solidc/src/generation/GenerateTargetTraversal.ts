@@ -3365,7 +3365,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       name: `compiler helper ${id}`,
       requires: optimisationResult.requires,
       logs: optimisationResult.logs,
-      sourceMap: generateSourceMap(optimisationResult.locationData),
+      sourceMap: generateSourceMap(optimisationResult.locationData, this.compilerOptions.sourceMap !== false),
     });
     const start = this.output.length;
     this.definedBodyRecords.push({
@@ -3798,7 +3798,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       logs: subTraversal.consoleLogs,
       sourceMap: generateSourceMap(GenerateTargetTraversalWithLocation.alignLocations(
         subTraversal.locationData, bodyScript.length, locationData,
-      )),
+      ), this.compilerOptions.sourceMap !== false),
     });
     this.emit(scriptToBytecode(bodyScript), locationData);
     this.emit(encodeInt(BigInt(func.functionId!)), locationData);
@@ -4154,7 +4154,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.entryPointDebugInfo.set(selectorHex, {
       requires: optimisationResult.requires,
-      sourceMap: generateSourceMap(optimisationResult.locationData),
+      sourceMap: generateSourceMap(optimisationResult.locationData, this.compilerOptions.sourceMap !== false),
       logs: optimisationResult.logs,
     });
 
@@ -4304,6 +4304,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ? encodeDataPush(encodeInt(this.compactHelperIds.cheap[0])).length
         : this.peekCompactHelperIdPushBytes();
       const leftoverUserCount = result.bodies.length;
+      const leftoverCache = new Map<string, unknown>();
       const leftover = outlineSharedSpans(
         [
           ...result.bodies.map((body, index) => ({
@@ -4323,7 +4324,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         'savings',
         5,
         4096,
-        undefined,
+        leftoverCache,
         2,
       );
       if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
@@ -4366,6 +4367,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ? encodeDataPush(encodeInt(this.compactHelperIds.cheap[0])).length
         : this.peekCompactHelperIdPushBytes();
       const leftover4UserCount = result.bodies.length;
+      const leftover4Start = Date.now();
+      const leftover4Cache = new Map<string, unknown>();
+      const leftoverIntern = leftoverCache.get('intern');
+      if (leftoverIntern !== undefined) leftover4Cache.set('intern', leftoverIntern);
       const leftover4 = outlineSharedSpans(
         [
           ...result.bodies.map((body, index) => ({
@@ -4383,9 +4388,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         'savings',
         4,
         8192,
-        undefined,
+        leftover4Cache,
         1,
       );
+      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
+        console.error('[outline-timing]', JSON.stringify({
+          width: leftover4Width,
+          ranking: 'savings',
+          minimumWindowElements: 4,
+          candidateGroupsPerRound: 8192,
+          bodyOrder: 'leftover4',
+          bodies: result.bodies.length,
+          functions: leftover4.functions.length,
+          savedBytes: leftover4.savedBytes,
+          elapsedMs: Date.now() - leftover4Start,
+        }));
+      }
       if (leftover4.savedBytes > 0 && leftover4.functions.length > 0) {
         result = {
           bodies: leftover4.bodies.slice(0, leftover4UserCount).map((leftoverBody, index) => ({
@@ -4466,7 +4484,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             data: entry.data.map((item) =>
               (typeof item === 'string' ? item : { ...item, ip: remap(item.ip) })),
           })),
-          sourceMap: generateSourceMap(body.locationData),
+          sourceMap: generateSourceMap(body.locationData, this.compilerOptions.sourceMap !== false),
         });
       }
     });
@@ -4481,7 +4499,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.invokeDebugInfo.set(functionId, {
             ...debugInfo,
             bytecode: binToHex(bytecode),
-            sourceMap: generateSourceMap(body.locationData),
+            sourceMap: generateSourceMap(body.locationData, this.compilerOptions.sourceMap !== false),
             requires: debugInfo.requires.map((entry) => ({ ...entry, ip: remap(entry.ip) })),
             logs: debugInfo.logs.map((entry) => ({
               ...entry,
@@ -4501,7 +4519,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.invokeDebugInfo.set(compilerHelperId, {
             ...debugInfo,
             bytecode: binToHex(bytecode),
-            sourceMap: generateSourceMap(body.locationData),
+            sourceMap: generateSourceMap(body.locationData, this.compilerOptions.sourceMap !== false),
             requires: debugInfo.requires.map((entry) => ({ ...entry, ip: remap(entry.ip) })),
             logs: debugInfo.logs.map((entry) => ({
               ...entry,
@@ -4522,7 +4540,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         name: `outlined source span ${id}`,
         requires: [],
         logs: [],
-        sourceMap: generateSourceMap(outlined.locationData),
+        sourceMap: generateSourceMap(outlined.locationData, this.compilerOptions.sourceMap !== false),
       });
       this.emit(bytecode, locationData);
       this.emit(outlined.id, locationData);

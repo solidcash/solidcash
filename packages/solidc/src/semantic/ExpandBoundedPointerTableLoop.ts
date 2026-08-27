@@ -39,6 +39,7 @@ import { BinaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
+  containsIndirectCall,
   MAXIMUM_POINTER_TABLE_BOUND, PointerTableBoundError, PointerTableExpansionMap, ProvenLoopCeilingMap,
   recordPointerTableExpansion, recordProvenLoopCeiling,
 } from './PointerTableBound.js';
@@ -192,6 +193,9 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    // Graph-mode expansion only rewrites pointer-table loops. Skip every other function so a contract with one
+    // graph edge does not prove loop ceilings on sibling getters.
+    if (!containsIndirectCall(node.body)) return node;
     const previous = this.provenBounds;
     const previousName = this.currentFunction;
     const previousMutations = this.functionMutations;

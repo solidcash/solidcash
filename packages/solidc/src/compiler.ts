@@ -97,7 +97,7 @@ import {
   LowLevelCallShapeError, validateFunctionLowLevelCallShapes, validateLowLevelCallShapes,
 } from './semantic/LowLevelCallShapes.js';
 import {
-  PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
+  containsIndirectCall, PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
 import LowerVMapCounterLoops from './semantic/LowerVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
@@ -245,19 +245,16 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let hasContractInstantiation = false;
   let deploysWithValue = false;
   let emitsEvent = false;
+  let hasFunctionPointers = false;
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
     seenNodes.add(node);
     if (node instanceof AssemblyStatementNode) {
+      // Yul lowering still needs the assembly pass. Other optional lowerings are surveyed from the
+      // nodes they actually rewrite so pointer-free assembly (OZ ERC-7201 sstore/sload) does not
+      // force msg.data / journal / oracle visitors.
       needsInlineAssembly = true;
-      needsBlockOracle = true;
-      needsMsgDataContext = true;
-      needsMsgSigContext = true;
-      needsSpecialMethodPruning = true;
-      needsDynamicStateJournal = true;
-      needsCollectionJournal = true;
-      needsExternalCallLowering = true;
     } else if ((node instanceof NullaryOpNode && String(node.operator).startsWith('block.'))
       || (node instanceof IdentifierNode && node.name === 'now')
       || (node instanceof FunctionCallNode
@@ -300,24 +297,9 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
         || ((value instanceof ArrayType || value instanceof MappingType
           || value instanceof StructType || value instanceof TupleType)
           && typeContainsFunction(value))) {
-        // Pointer-specific passes remain enabled, and conservatively retain the oracle traversal too. This keeps
-        // pointer-bearing contracts on their historical pipeline while pointer-free contracts get both gates
-        // from one structural survey.
-        return {
-          hasFunctionPointers: true,
-          needsBlockOracle: true,
-          needsMsgDataContext: true,
-          needsMsgSigContext: true,
-          needsSpecialMethodPruning: true,
-          needsDynamicStateJournal: true,
-          needsCollectionJournal: true,
-          needsExternalCallLowering: true,
-          needsInlineAssembly: true,
-          statefulnessSurveyComplete: false,
-          hasContractInstantiation,
-          deploysWithValue,
-          emitsEvent,
-        };
+        // Keep walking so assembly / msg.data / journal / oracle flags reflect the rest of the tree
+        // instead of forcing every optional lowering the moment a FunctionType appears (OZ imports).
+        hasFunctionPointers = true;
       }
       if ((value instanceof ArrayType || value instanceof MappingType
         || value instanceof StructType || value instanceof TupleType)
@@ -332,7 +314,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     }
   }
   return {
-    hasFunctionPointers: false,
+    hasFunctionPointers,
     needsBlockOracle,
     needsMsgDataContext,
     needsMsgSigContext,
@@ -1930,6 +1912,11 @@ function synthesizeMessageBusRoute(
     });
   }
   for (const fn of functions) {
+    if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'lifecycle-or-unsafe-handler';
+      continue;
+    }
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
     let routeUsesMsgSender = false;
@@ -5484,7 +5471,16 @@ function compileResolvedAst(
   }
   const pointerTableBounds = new Map<string, PointerTableExpansion[]>();
   const rolledLoopCeilings: ProvenLoopCeilingMap = new Map<string, number[]>();
-  if (messageBusGraphMode) {
+  // Graph-mode pointer-table expansion is per function. A contract whose only graph edge is an IERC20
+  // transfer must not walk every sibling getter looking for `fns[i](...)`. Skip the whole pass when no
+  // function has a table call; the visitors still skip remaining functions that do not.
+  const needsPointerTableWork = messageBusGraphMode && [
+    ...ast.contract.functions,
+    ast.contract.constructorDef,
+    ast.contract.fallbackDef,
+    ast.contract.receiveDef,
+  ].some((fn) => !!fn && containsIndirectCall(fn.body));
+  if (needsPointerTableWork) {
     ast = ast.accept(new UnrollFixedBoundEntryLoop(true, pointerTableBounds)) as Ast;
     // A pointer-table loop whose trip count is RUNTIME-sized survives the fixed-bound pass. Admit it only when a
     // dominating source guard proves a finite ceiling, expand it to that many guarded rows, and reject every
@@ -5834,7 +5830,7 @@ function compileResolvedAst(
 
   // `(new C()).m(args)` -> `C __newcall_N = new C(); __newcall_N.m(args)`, so the deploy-then-call fold
   // machinery (which tracks named deploy locals) applies to inline deploy receivers too.
-  ast = ast.accept(new HoistInlineDeployCalls()) as Ast;
+  if (hasContractInstantiation) ast = ast.accept(new HoistInlineDeployCalls()) as Ast;
 
   // `A.getter().m(args)` (getter returns a contract) -> `IReturn __chaincall_N = A.getter(); __chaincall_N.m(..)`,
   // so the chained call on the getter's (integrity-bound) return dispatches via the audited interface-local path.
@@ -5899,7 +5895,7 @@ function compileResolvedAst(
   if (needsExternalCallLowering) ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
   // A guarded pointer-table row hoists its element + runtime-selector locals inside the branch; move only their
   // DECLARATIONS to the body top so the epilogue can read them while the reads stay conditional.
-  if (messageBusGraphMode) ast = ast.accept(new HoistPointerTableBranchLocals()) as Ast;
+  if (needsPointerTableWork) ast = ast.accept(new HoistPointerTableBranchLocals()) as Ast;
   // A branch-local interface-cast external-call target variable -> hoist its DECLARATION to the body top so the
   // co-spend reads it at the epilogue (UniswapV2Pair mint's `migrator`); the external calls stay conditional.
   if (needsExternalCallLowering) ast = ast.accept(new HoistBranchLocalExtcallTargets()) as Ast;
@@ -6316,7 +6312,7 @@ function compileResolvedAst(
 
   const debug = {
     bytecode: binToHex(scriptToBytecode(optimisationResult.script)),
-    sourceMap: generateSourceMap(optimisationResult.locationData),
+    sourceMap: generateSourceMap(optimisationResult.locationData, mergedCompilerOptions.sourceMap !== false),
     logs: optimisationResult.logs,
     requires: optimisationResult.requires,
     ...(functionDebug && { functionDebug }),
@@ -8280,17 +8276,49 @@ const parseProfileTotals = { files: 0, sllFails: 0, bytes: 0, ms: 0 };
 // SolidCashParser.expression() prefix switch (`adaptivePredict(..., 343, ...)`). Guarded at install time by
 // rule name so a grammar regen that shifts decision numbers silently falls back to ATN prediction.
 const STATEMENT_DECISION = 167;
+const STATEMENT_ALT_PLACEHOLDER = 1;
 const STATEMENT_ALT_BLOCK = 2;
 const STATEMENT_ALT_REQUIRE = 11;
 const STATEMENT_ALT_IF = 12;
 const STATEMENT_ALT_EMIT = 15;
 const STATEMENT_ALT_RETURN = 16;
+const STATEMENT_ALT_LOOP = 13;
+const STATEMENT_ALT_TRY = 19;
+const STATEMENT_ALT_SELFDESTRUCT = 17;
+const STATEMENT_ALT_SWITCH = 24;
+const STATEMENT_ALT_UNCHECKED = 23;
+const STATEMENT_ALT_ASSEMBLY = 18;
+const STATEMENT_ALT_CONTINUE = 26;
+const STATEMENT_ALT_BREAK = 25;
+const STATEMENT_ALT_DELETE = 22;
+const STATEMENT_ALT_ASSERT = 21;
+const STATEMENT_ALT_REVERT = 20;
+const STATEMENT_ALT_CONSOLE = 14;
 const EXPRESSION_PREFIX_DECISION = 343;
 const EXPRESSION_POSTFIX_LOOP_DECISION = 359;
 const EXPRESSION_POSTFIX_INNER_DECISION = 358;
+const EXPRESSION_POSTFIX_CONTINUE = 1;
 const EXPRESSION_POSTFIX_STOP = 2;
 const EXPRESSION_POSTFIX_INDEXED = 12;
 const EXPRESSION_POSTFIX_INDEXED_CALL = 20;
+const EXPRESSION_POSTFIX_METHOD = 18;
+const EXPRESSION_POSTFIX_FIELD = 21;
+const EXPRESSION_POSTFIX_SLICE = 15;
+const EXPRESSION_POSTFIX_SPLIT = 14;
+const EXPRESSION_POSTFIX_UNARY_MEMBER = 13;
+const EXPRESSION_POSTFIX_INC = 22;
+const EXPRESSION_POSTFIX_TERNARY = 23;
+const EXPRESSION_POSTFIX_BITOR = 7;
+const EXPRESSION_POSTFIX_BITXOR = 6;
+const EXPRESSION_POSTFIX_BITAND = 5;
+const EXPRESSION_POSTFIX_SHIFT = 4;
+const EXPRESSION_POSTFIX_POW = 1;
+const EXPRESSION_POSTFIX_OR = 11;
+const EXPRESSION_POSTFIX_AND = 10;
+const EXPRESSION_POSTFIX_CMP = 8;
+const EXPRESSION_POSTFIX_EQ = 9;
+const EXPRESSION_POSTFIX_MUL = 2;
+const EXPRESSION_POSTFIX_ADD = 3;
 const EXPRESSION_ALT_GROUPED = 1;
 const EXPRESSION_ALT_CAST = 2;
 const EXPRESSION_ALT_CALL = 3;
@@ -8388,10 +8416,24 @@ function predictExpressionPrefix(input: { LA(i: number): number; LT(i: number): 
   return undefined;
 }
 
-function tokenTypeByLiteral(literal: string): number | undefined {
+const TOKEN_TYPE_BY_LITERAL = new Map<string, number>();
+function prefillParserTokenTypes(): void {
   const names = SolidCashParser.literalNames;
   for (let i = 0; i < names.length; i += 1) {
-    if (names[i] === literal) return i;
+    const name = names[i];
+    if (name !== null) TOKEN_TYPE_BY_LITERAL.set(name, i);
+  }
+}
+prefillParserTokenTypes();
+function tokenTypeByLiteral(literal: string): number | undefined {
+  const cached = TOKEN_TYPE_BY_LITERAL.get(literal);
+  if (cached !== undefined) return cached;
+  const names = SolidCashParser.literalNames;
+  for (let i = 0; i < names.length; i += 1) {
+    if (names[i] === literal) {
+      TOKEN_TYPE_BY_LITERAL.set(literal, i);
+      return i;
+    }
   }
   return undefined;
 }
@@ -8421,6 +8463,49 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
   const ifTok = tokenTypeByLiteral("'if'");
   const emitTok = tokenTypeByLiteral("'emit'");
   const returnTok = tokenTypeByLiteral("'return'");
+  const forTok = tokenTypeByLiteral("'for'");
+  const tryTok = tokenTypeByLiteral("'try'");
+  const selfdestructTok = tokenTypeByLiteral("'selfdestruct'");
+  const switchTok = tokenTypeByLiteral("'switch'");
+  const uncheckedTok = tokenTypeByLiteral("'unchecked'");
+  const assemblyTok = tokenTypeByLiteral("'assembly'");
+  const continueTok = tokenTypeByLiteral("'continue'");
+  const breakTok = tokenTypeByLiteral("'break'");
+  const deleteTok = tokenTypeByLiteral("'delete'");
+  const assertTok = tokenTypeByLiteral("'assert'");
+  const revertTok = tokenTypeByLiteral("'revert'");
+  const consoleTok = tokenTypeByLiteral("'console.log'");
+  const doTok = tokenTypeByLiteral("'do'");
+  const whileTok = tokenTypeByLiteral("'while'");
+  const valueTok = tokenTypeByLiteral("'.value'");
+  const sliceTok = tokenTypeByLiteral("'.slice'");
+  const splitTok = tokenTypeByLiteral("'.split'");
+  const reverseTok = tokenTypeByLiteral("'.reverse()'");
+  const lengthTok = tokenTypeByLiteral("'.length'");
+  const placeholderTok = tokenTypeByLiteral("'_'");
+  const minusminusTok = tokenTypeByLiteral("'--'");
+  const plusplusTok = tokenTypeByLiteral("'++'");
+  const qmarkTok = tokenTypeByLiteral("'?'");
+  const bitorTok = tokenTypeByLiteral("'|'");
+  const bitxorTok = tokenTypeByLiteral("'^'");
+  const bitandTok = tokenTypeByLiteral("'&'");
+  const shrTok = tokenTypeByLiteral("'>>'");
+  const shlTok = tokenTypeByLiteral("'<<'");
+  const powTok = tokenTypeByLiteral("'**'");
+  const ororTok = tokenTypeByLiteral("'||'");
+  const andandTok = tokenTypeByLiteral("'&&'");
+  const geTok = tokenTypeByLiteral("'>='");
+  const leTok = tokenTypeByLiteral("'<='");
+  const gtTok = tokenTypeByLiteral("'>'");
+  const ltTok = tokenTypeByLiteral("'<'");
+  const neqTok = tokenTypeByLiteral("'!='");
+  const eqTok = tokenTypeByLiteral("'=='");
+  const percentTok = tokenTypeByLiteral("'%'");
+  const slashTok = tokenTypeByLiteral("'/'");
+  const starTok = tokenTypeByLiteral("'*'");
+  const minusTok = tokenTypeByLiteral("'-'");
+  const plusTok = tokenTypeByLiteral("'+'");
+  const dotTok = tokenTypeByLiteral("'.'");
   interp.adaptivePredict = ((input, decision, ctx) => {
     if (prefixOk && decision === EXPRESSION_PREFIX_DECISION) {
       const alt = predictExpressionPrefix(input);
@@ -8432,22 +8517,168 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
         || token === rbrace || token === assign || token === -1) {
         return EXPRESSION_POSTFIX_STOP;
       }
+      if (token === valueTok) {
+        const next = input.LA(2);
+        if (next === lparen || next === lbrace) {
+          return parser.precpred(ctx, 24) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+        }
+        return parser.precpred(ctx, 21) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === sliceTok) {
+        return parser.precpred(ctx, 27) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === splitTok) {
+        return parser.precpred(ctx, 28) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === reverseTok) {
+        return parser.precpred(ctx, 29) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === lengthTok) {
+        const next = input.LA(2);
+        if (next === lparen || next === lbrace) {
+          return parser.precpred(ctx, 24) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+        }
+        return parser.precpred(ctx, 29) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === minusminusTok) {
+        return parser.precpred(ctx, 20) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === plusplusTok) {
+        return parser.precpred(ctx, 20) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === qmarkTok) {
+        return parser.precpred(ctx, 6) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === bitorTok) {
+        return parser.precpred(ctx, 11) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === bitxorTok) {
+        return parser.precpred(ctx, 12) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === bitandTok) {
+        return parser.precpred(ctx, 13) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === shrTok) {
+        return parser.precpred(ctx, 14) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === shlTok) {
+        return parser.precpred(ctx, 14) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === powTok) {
+        return parser.precpred(ctx, 17) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === ororTok) {
+        return parser.precpred(ctx, 7) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === andandTok) {
+        return parser.precpred(ctx, 8) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === geTok) {
+        return parser.precpred(ctx, 10) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === leTok) {
+        return parser.precpred(ctx, 10) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === gtTok) {
+        return parser.precpred(ctx, 10) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === ltTok) {
+        return parser.precpred(ctx, 10) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === neqTok) {
+        return parser.precpred(ctx, 9) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === eqTok) {
+        return parser.precpred(ctx, 9) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === percentTok) {
+        return parser.precpred(ctx, 16) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === slashTok) {
+        return parser.precpred(ctx, 16) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === starTok) {
+        return parser.precpred(ctx, 16) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === minusTok) {
+        return parser.precpred(ctx, 15) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === plusTok) {
+        return parser.precpred(ctx, 15) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === dotTok) {
+        return parser.precpred(ctx, 21) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === lbrack) {
+        return parser.precpred(ctx, 31) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
     }
     if (postfixInnerOk && decision === EXPRESSION_POSTFIX_INNER_DECISION) {
-      if (input.LA(1) === lbrack) {
+      const innerTok = input.LA(1);
+      if (innerTok === lbrack) {
         const after = skipBalanced(input, 1, lbrack, rbrack);
         const next = input.LA(after);
         if (next === lparen || next === lbrace) return EXPRESSION_POSTFIX_INDEXED_CALL;
         return EXPRESSION_POSTFIX_INDEXED;
       }
+      if (innerTok === valueTok) {
+        const next = input.LA(2);
+        if (next === lparen || next === lbrace) return EXPRESSION_POSTFIX_METHOD;
+        return EXPRESSION_POSTFIX_FIELD;
+      }
+      if (innerTok === sliceTok) return EXPRESSION_POSTFIX_SLICE;
+      if (innerTok === splitTok) return EXPRESSION_POSTFIX_SPLIT;
+      if (innerTok === reverseTok) return EXPRESSION_POSTFIX_UNARY_MEMBER;
+      if (innerTok === lengthTok) {
+        const next = input.LA(2);
+        if (next === lparen || next === lbrace) return EXPRESSION_POSTFIX_METHOD;
+        return EXPRESSION_POSTFIX_UNARY_MEMBER;
+      }
+      if (innerTok === minusminusTok) return EXPRESSION_POSTFIX_INC;
+      if (innerTok === plusplusTok) return EXPRESSION_POSTFIX_INC;
+      if (innerTok === qmarkTok) return EXPRESSION_POSTFIX_TERNARY;
+      if (innerTok === bitorTok) return EXPRESSION_POSTFIX_BITOR;
+      if (innerTok === bitxorTok) return EXPRESSION_POSTFIX_BITXOR;
+      if (innerTok === bitandTok) return EXPRESSION_POSTFIX_BITAND;
+      if (innerTok === shrTok) return EXPRESSION_POSTFIX_SHIFT;
+      if (innerTok === shlTok) return EXPRESSION_POSTFIX_SHIFT;
+      if (innerTok === powTok) return EXPRESSION_POSTFIX_POW;
+      if (innerTok === ororTok) return EXPRESSION_POSTFIX_OR;
+      if (innerTok === andandTok) return EXPRESSION_POSTFIX_AND;
+      if (innerTok === geTok) return EXPRESSION_POSTFIX_CMP;
+      if (innerTok === leTok) return EXPRESSION_POSTFIX_CMP;
+      if (innerTok === gtTok) return EXPRESSION_POSTFIX_CMP;
+      if (innerTok === ltTok) return EXPRESSION_POSTFIX_CMP;
+      if (innerTok === neqTok) return EXPRESSION_POSTFIX_EQ;
+      if (innerTok === eqTok) return EXPRESSION_POSTFIX_EQ;
+      if (innerTok === percentTok) return EXPRESSION_POSTFIX_MUL;
+      if (innerTok === slashTok) return EXPRESSION_POSTFIX_MUL;
+      if (innerTok === starTok) return EXPRESSION_POSTFIX_MUL;
+      if (innerTok === minusTok) return EXPRESSION_POSTFIX_ADD;
+      if (innerTok === plusTok) return EXPRESSION_POSTFIX_ADD;
     }
     if (statementOk && decision === STATEMENT_DECISION) {
       const token = input.LA(1);
+      if (token === placeholderTok) return STATEMENT_ALT_PLACEHOLDER;
       if (token === lbrace) return STATEMENT_ALT_BLOCK;
       if (token === requireTok) return STATEMENT_ALT_REQUIRE;
       if (token === ifTok) return STATEMENT_ALT_IF;
       if (token === emitTok) return STATEMENT_ALT_EMIT;
       if (token === returnTok) return STATEMENT_ALT_RETURN;
+      if (token === forTok) return STATEMENT_ALT_LOOP;
+      if (token === tryTok) return STATEMENT_ALT_TRY;
+      if (token === selfdestructTok) return STATEMENT_ALT_SELFDESTRUCT;
+      if (token === switchTok) return STATEMENT_ALT_SWITCH;
+      if (token === uncheckedTok) return STATEMENT_ALT_UNCHECKED;
+      if (token === assemblyTok) return STATEMENT_ALT_ASSEMBLY;
+      if (token === continueTok) return STATEMENT_ALT_CONTINUE;
+      if (token === breakTok) return STATEMENT_ALT_BREAK;
+      if (token === deleteTok) return STATEMENT_ALT_DELETE;
+      if (token === assertTok) return STATEMENT_ALT_ASSERT;
+      if (token === revertTok) return STATEMENT_ALT_REVERT;
+      if (token === consoleTok) return STATEMENT_ALT_CONSOLE;
+      if (token === doTok) return STATEMENT_ALT_LOOP;
+      if (token === whileTok) return STATEMENT_ALT_LOOP;
     }
     return orig(input, decision, ctx);
   }) as typeof interp.adaptivePredict;

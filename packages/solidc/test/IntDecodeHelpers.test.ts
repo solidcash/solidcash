@@ -1,6 +1,7 @@
 import { decodeAuthenticationInstructions, hexToBin, OpcodesBCH, vmNumberToBigInt } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { compileString, compileStringMulti } from '../src/index.js';
+import type { Artifact } from '@solidcash/utils';
 
 const readScriptNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
   if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
@@ -11,6 +12,40 @@ const readScriptNumber = (instruction: { opcode: number; data?: Uint8Array }): b
   if (!instruction.data) return undefined;
   const decoded = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
   return typeof decoded === 'bigint' ? decoded : undefined;
+};
+
+const SPEED_HINT_STORE = `
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `;
+
+const expectSpeedHintedOutline = (artifact: Artifact): void => {
+  const whole = artifact.debug?.bytecode ?? '';
+  expect(whole.length).toBeGreaterThan(0);
+  expect(decodeAuthenticationInstructions(hexToBin(whole))
+    .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+};
+
+const compileSpeedHintStore = (): Artifact => compileString(SPEED_HINT_STORE, {
+  messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+});
+
+const compileSpeedHintStoreMulti = (): Artifact => {
+  const map = compileStringMulti(SPEED_HINT_STORE, {
+    messageBus: true,
+    optimizeForCompilationSpeed: true,
+    maximumInputBytes: 1_000_000,
+    compileDeclarations: ['Store'],
+  });
+  const artifact = map.Store;
+  expect(artifact).toBeDefined();
+  expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  return artifact;
 };
 
 const invokesHelper = (bytecodeHex: string, helperId: bigint): boolean => {
@@ -157,6 +192,3163 @@ describe('shared integer helpers', () => {
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
   });
 
+  it('still speed-hint outlines when statement prediction skips ATN for while-loops', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = 0; while (i < 1) { i = i + 1; this.a = v; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for while-loops', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = 0; while (i < 1) { i = i + 1; this.a = v; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for do-loops', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = 0; do { i = i + 1; this.a = v; } while (i < 1);
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for do-loops', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = 0; do { i = i + 1; this.a = v; } while (i < 1);
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for console.log', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          console.log("x"); this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for console.log', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          console.log("x"); this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for revert', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          if (v == 0) { revert(); } this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for revert', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          if (v == 0) { revert(); } this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for assert', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          assert(v == v); this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for assert', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          assert(v == v); this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for delete', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 x = v; delete x; this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for delete', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 x = v; delete x; this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for break', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          for (uint256 i = 0; i < 1; i = i + 1) { this.a = v; break; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for break', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          for (uint256 i = 0; i < 1; i = i + 1) { this.a = v; break; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for continue', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          for (uint256 i = 0; i < 1; i = i + 1) { this.a = v; continue; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for continue', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          for (uint256 i = 0; i < 1; i = i + 1) { this.a = v; continue; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for assembly', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          assembly { } this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for assembly', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          assembly { } this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for unchecked', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          unchecked { this.a = v; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for unchecked', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          unchecked { this.a = v; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for switch', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          switch (v) { default: this.a = v; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for switch', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          switch (v) { default: this.a = v; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for selfdestruct', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for selfdestruct', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for try', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for try', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when optional-lowering prediction skips ATN for assembly-feature-survey', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact optional-lowering prediction skips ATN for assembly-feature-survey', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when optional-lowering prediction skips ATN for function-type-survey', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact optional-lowering prediction skips ATN for function-type-survey', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for index', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for index', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for member-dot', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for member-dot', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for plus', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v + uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for plus', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v + uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for minus', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v - uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for minus', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v - uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for star', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v * uint256(1);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for star', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v * uint256(1);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for slash', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v / uint256(1);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for slash', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v / uint256(1);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for percent', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v % uint256(2);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for percent', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v % uint256(2);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for eq', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for eq', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for neq', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v != v + uint256(1)); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for neq', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v != v + uint256(1)); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for lt', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v < v + uint256(1)); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for lt', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v < v + uint256(1)); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for gt', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v + uint256(1) > v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for gt', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v + uint256(1) > v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for le', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v <= v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for le', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v <= v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for ge', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v >= v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for ge', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v >= v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for andand', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(true && true); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for andand', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(true && true); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for oror', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(false || true); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for oror', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(false || true); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for pow', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = uint256(2) ** uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for pow', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = uint256(2) ** uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for shl', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v << uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for shl', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v << uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for shr', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v >> uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for shr', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v >> uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for bitand', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v & v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for bitand', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v & v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for bitxor', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v ^ uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for bitxor', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v ^ uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for bitor', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v | uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for bitor', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v | uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for qmark', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = true ? v : uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for qmark', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = true ? v : uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for plusplus', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = v; i++; this.a = i;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for plusplus', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = v; i++; this.a = i;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for minusminus', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = v; i--; this.a = i;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for minusminus', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = v; i--; this.a = i;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for placeholder', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for placeholder', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for singleton-group-sort', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for singleton-group-sort', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for under-cap-group-splice', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for under-cap-group-splice', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for prefix-unroll-4', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for prefix-unroll-4', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for collision-unroll-4', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for collision-unroll-4', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for packed-window-4', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-4', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for packed-window-5', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-5', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for hash-unroll-3', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-3', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for hash-unroll-6', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-6', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for hash-unroll-7', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-7', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for hash-unroll-9', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-9', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for hash-unroll-10', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-10', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for hash-unroll-11', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-11', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for plus', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v + uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for plus', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v + uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for minus', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v - uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for minus', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v - uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for star', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v * uint256(1);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for star', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v * uint256(1);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for slash', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v / uint256(1);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for slash', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v / uint256(1);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for percent', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v % uint256(2);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for percent', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v % uint256(2);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for eq', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for eq', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for neq', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v != v + uint256(1)); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for neq', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v != v + uint256(1)); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for lt', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v < v + uint256(1)); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for lt', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v < v + uint256(1)); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for gt', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v + uint256(1) > v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for gt', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v + uint256(1) > v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for le', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v <= v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for le', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v <= v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for ge', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v >= v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for ge', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(v >= v); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for andand', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(true && true); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for andand', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(true && true); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for oror', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(false || true); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for oror', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          require(false || true); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for pow', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = uint256(2) ** uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for pow', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = uint256(2) ** uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for shl', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v << uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for shl', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v << uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for shr', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v >> uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for shr', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v >> uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for bitand', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v & v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for bitand', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v & v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for bitxor', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v ^ uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for bitxor', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v ^ uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for bitor', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v | uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for bitor', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v | uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for qmark', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = true ? v : uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for qmark', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = true ? v : uint256(0);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for plusplus', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = v; i++; this.a = i;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for plusplus', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = v; i++; this.a = i;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for minusminus', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = v; i--; this.a = i;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for minusminus', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          uint256 i = v; i--; this.a = i;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for length', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = uint256(bytes(hex"aa").length);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for length', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = uint256(bytes(hex"aa").length);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for reverse', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes z = bytes(hex"aa").reverse(); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for reverse', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes z = bytes(hex"aa").reverse(); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for split', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes x; bytes y; (x, y) = bytes(hex"abcd").split(1); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for split', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes x; bytes y; (x, y) = bytes(hex"abcd").split(1); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for slice', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes z = bytes(hex"abcd").slice(0, 1); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for slice', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes z = bytes(hex"abcd").slice(0, 1); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for length', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = uint256(bytes(hex"aa").length);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for length', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = uint256(bytes(hex"aa").length);
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for reverse', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes z = bytes(hex"aa").reverse(); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for reverse', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes z = bytes(hex"aa").reverse(); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for split', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes x; bytes y; (x, y) = bytes(hex"abcd").split(1); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for split', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes x; bytes y; (x, y) = bytes(hex"abcd").split(1); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for slice', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes z = bytes(hex"abcd").slice(0, 1); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for slice', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes z = bytes(hex"abcd").slice(0, 1); this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix loop prediction skips ATN for value', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loop prediction skips ATN for value', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when expression postfix inner prediction skips ATN for value', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix inner prediction skips ATN for value', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when optional-lowering prediction skips ATN for inline-deploy-gate', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact optional-lowering prediction skips ATN for inline-deploy-gate', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when parser prediction skips ATN for token-type-prefill', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact parser prediction skips ATN for token-type-prefill', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for prefix-unroll-8', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for prefix-unroll-8', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for collision-unroll-8', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for collision-unroll-8', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for packed-window-8', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-8', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for packed-window-12', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-12', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for packed-window-3', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-3', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for packed-window-6', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-6', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for packed-window-7', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-7', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for packed-window-10', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for packed-window-10', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for hash-unroll-13', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-13', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for hash-unroll-14', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-14', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for hash-unroll-15', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-15', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when leftover prediction skips ATN for hash-unroll-16', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover prediction skips ATN for hash-unroll-16', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.a; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when .value field assignment is not parsed as a method call', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        struct Item { uint256 value; }
+        function set(uint256 v) public {
+          Item memory s;
+          s.value = v;
+          this.a = s.value; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact .value field assignment is not parsed as a method call', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        struct Item { uint256 value; }
+        function set(uint256 v) public {
+          Item memory s;
+          s.value = v;
+          this.a = s.value; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when .length() is parsed as a method call rather than the unary member', () => {
+    expectSpeedHintedOutline(compileString(`
+      library LengthLib {
+        function length(bytes memory self) public returns (uint256) { return uint256(bytes(self).length); }
+      }
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        using LengthLib for bytes;
+        function set(uint256 v) public {
+          bytes memory data = hex"abcd";
+          this.a = data.length();
+          this.b = v; require(this.a == this.b || this.a == uint256(4));
+        }
+      }
+    `, {
+      messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      solidityImportCompat: true,
+    }));
+  });
+
+  it('still speed-hint outlines when multi-artifact .length() is parsed as a method call rather than the unary member', () => {
+    const map = compileStringMulti(`
+      library LengthLib {
+        function length(bytes memory self) public returns (uint256) { return uint256(bytes(self).length); }
+      }
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        using LengthLib for bytes;
+        function set(uint256 v) public {
+          bytes memory data = hex"abcd";
+          this.a = data.length();
+          this.b = v; require(this.a == this.b || this.a == uint256(4));
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      solidityImportCompat: true,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for for-loops', () => {
+    expectSpeedHintedOutline(compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          for (uint256 i = 0; i < 1; i = i + 1) { this.a = v; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 }));
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for for-loops', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          for (uint256 i = 0; i < 1; i = i + 1) { this.a = v; }
+          this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    expect(map.Store.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+    expectSpeedHintedOutline(map.Store);
+  });
+
+  it('still speed-hint outlines when parser token-type lookups are interned', () => {
+    expectSpeedHintedOutline(compileSpeedHintStore());
+  });
+
+  it('still speed-hint outlines when multi-artifact parser token-type lookups are interned', () => {
+    expectSpeedHintedOutline(compileSpeedHintStoreMulti());
+  });
+
   it('still leftover-outlines after dropping full-body diagonal memo tables', () => {
     const artifact = compileString(`
       contract Store() {
@@ -171,6 +3363,206 @@ describe('shared integer helpers', () => {
     expect(whole.length).toBeGreaterThan(0);
     expect(decodeAuthenticationInstructions(hexToBin(whole))
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when leftover hashing defers singleton window groups', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover hashing defers singleton groups', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when leftover fingerprint intern is reused on the window-4 pass', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover fingerprint intern is reused', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when leftover hash collisions split on packed window keys', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover collisions split on packed keys', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when leftover window hashes are unrolled for widths 4 5 and 8', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover window hashes are unrolled', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when leftover hashing skips bodies shorter than the window', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact leftover hashing skips short bodies', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
   });
 
   it('still speed-hint outlines when chained method calls share a left-factored postfix', () => {

@@ -66,6 +66,7 @@ export function formatBitAuthScript(
   sourceCode: string,
   instructionReplacements: ReadonlyMap<number, string> = new Map(),
 ): string {
+  if (!sourceMap) return scriptToBitAuthAsm(bytecode);
   const lineToAsmMap = buildLineToAsmMap(bytecode, sourceMap, instructionReplacements);
 
   const escapedSourceCode = sourceCode.replaceAll('/*', '\\/*').replaceAll('*/', '*\\/');

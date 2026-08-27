@@ -25,7 +25,8 @@ import { FullLocationData, PositionHint } from './types.js';
  * 14:20:14:29;;:12::30;:34::43;
  *
  */
-export function generateSourceMap(locationData: FullLocationData): string {
+export function generateSourceMap(locationData: FullLocationData, enabled = true): string {
+  if (!enabled) return '';
   let prevStartLine = 0;
   let prevStartColumn = 0;
   let prevEndLine = 0;
@@ -104,6 +105,7 @@ export function normaliseSourceMapLocationData(locationData: FullLocationData): 
 }
 
 export const sourceMapToLocationData = (sourceMap: string): FullLocationData => {
+  if (!sourceMap) return [];
   let prevStartLine = 0;
   let prevStartColumn = 0;
   let prevEndLine = 0;

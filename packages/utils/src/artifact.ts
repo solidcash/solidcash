@@ -10,6 +10,13 @@ export interface CompilerOptions {
   maximumInputBytes?: number;
   /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
   optimizeForCompilationSpeed?: boolean;
+  /**
+   * Emit bytecode source maps on the artifact (`debug.sourceMap` and per-body maps). Default true.
+   * Set false to skip encoding maps at compile time and skip decoding them when attributing VM failures.
+   * Require/log instruction pointers and source line numbers are still recorded; BitAuth source comments
+   * and column-accurate failing snippets are not.
+   */
+  sourceMap?: boolean;
   /** Suppress non-fatal compiler warnings while preserving errors and ordinary command output. */
   suppressWarnings?: boolean;
   /**

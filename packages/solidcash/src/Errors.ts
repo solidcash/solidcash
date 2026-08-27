@@ -82,7 +82,7 @@ export class FailedRequireError extends FailedTransactionError {
     functionSourceMap?: string,
   ) {
     const { statement, lineNumber } = getLocationDataForInstructionPointer(
-      artifact, failingInstructionPointer, functionSourceMap,
+      artifact, failingInstructionPointer, functionSourceMap, requireStatement.line,
     );
 
     const baseMessage = `${artifact.contractName}.scash:${lineNumber} Require statement failed at input ${inputIndex} in contract ${artifact.contractName}.scash at line ${lineNumber}`;
@@ -97,10 +97,19 @@ const getLocationDataForInstructionPointer = (
   artifact: Artifact,
   instructionPointer: number,
   functionSourceMap?: string,
+  fallbackLine?: number,
 ): { lineNumber: number, statement: string } => {
   // For function body errors (OP_INVOKE'd entry-point functions), use the function's source map directly.
   // Function body IPs are relative to the function body, not the main script, so no constructor offset adjustment.
-  const sourceMap = functionSourceMap ?? artifact.debug!.sourceMap;
+  const sourceMap = functionSourceMap ?? artifact.debug?.sourceMap ?? '';
+  if (!sourceMap) {
+    const lines = artifact.source.split('\n');
+    const lineNumber = fallbackLine ?? 0;
+    const statement = lineNumber > 0 && lineNumber <= lines.length
+      ? lines[lineNumber - 1].trim()
+      : '<unknown>';
+    return { lineNumber, statement };
+  }
   const locationData = sourceMapToLocationData(sourceMap);
 
   // We subtract the constructor inputs because these are present in the evaluation (and thus the instruction pointer)

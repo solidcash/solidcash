@@ -359,6 +359,439 @@ function prepareCandidateCorpus(bodies: OutlineBody[], intern?: OutlineIntern): 
 // polynomial term exactly rather than merely producing an equivalent bucket distribution.
 const HASH_BASE_INVERSE = 3_186_588_639;
 
+// Hash-bucket collisions are split on the exact window. Decimal `id,id,` strings allocate and convert
+// every int32; four UTF-16 units per id pack the same identity without conversion.
+function packedWindowKey(ids: Int32Array, start: number, width: number): string {
+  if (width === 10) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    const v5 = ids[start + 5] | 0;
+    key += String.fromCharCode(
+      v5 & 0xff,
+      (v5 >>> 8) & 0xff,
+      (v5 >>> 16) & 0xff,
+      (v5 >>> 24) & 0xff,
+    );
+    const v6 = ids[start + 6] | 0;
+    key += String.fromCharCode(
+      v6 & 0xff,
+      (v6 >>> 8) & 0xff,
+      (v6 >>> 16) & 0xff,
+      (v6 >>> 24) & 0xff,
+    );
+    const v7 = ids[start + 7] | 0;
+    key += String.fromCharCode(
+      v7 & 0xff,
+      (v7 >>> 8) & 0xff,
+      (v7 >>> 16) & 0xff,
+      (v7 >>> 24) & 0xff,
+    );
+    const v8 = ids[start + 8] | 0;
+    key += String.fromCharCode(
+      v8 & 0xff,
+      (v8 >>> 8) & 0xff,
+      (v8 >>> 16) & 0xff,
+      (v8 >>> 24) & 0xff,
+    );
+    const v9 = ids[start + 9] | 0;
+    key += String.fromCharCode(
+      v9 & 0xff,
+      (v9 >>> 8) & 0xff,
+      (v9 >>> 16) & 0xff,
+      (v9 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 7) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    const v5 = ids[start + 5] | 0;
+    key += String.fromCharCode(
+      v5 & 0xff,
+      (v5 >>> 8) & 0xff,
+      (v5 >>> 16) & 0xff,
+      (v5 >>> 24) & 0xff,
+    );
+    const v6 = ids[start + 6] | 0;
+    key += String.fromCharCode(
+      v6 & 0xff,
+      (v6 >>> 8) & 0xff,
+      (v6 >>> 16) & 0xff,
+      (v6 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 6) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    const v5 = ids[start + 5] | 0;
+    key += String.fromCharCode(
+      v5 & 0xff,
+      (v5 >>> 8) & 0xff,
+      (v5 >>> 16) & 0xff,
+      (v5 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 3) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 12) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    const v5 = ids[start + 5] | 0;
+    key += String.fromCharCode(
+      v5 & 0xff,
+      (v5 >>> 8) & 0xff,
+      (v5 >>> 16) & 0xff,
+      (v5 >>> 24) & 0xff,
+    );
+    const v6 = ids[start + 6] | 0;
+    key += String.fromCharCode(
+      v6 & 0xff,
+      (v6 >>> 8) & 0xff,
+      (v6 >>> 16) & 0xff,
+      (v6 >>> 24) & 0xff,
+    );
+    const v7 = ids[start + 7] | 0;
+    key += String.fromCharCode(
+      v7 & 0xff,
+      (v7 >>> 8) & 0xff,
+      (v7 >>> 16) & 0xff,
+      (v7 >>> 24) & 0xff,
+    );
+    const v8 = ids[start + 8] | 0;
+    key += String.fromCharCode(
+      v8 & 0xff,
+      (v8 >>> 8) & 0xff,
+      (v8 >>> 16) & 0xff,
+      (v8 >>> 24) & 0xff,
+    );
+    const v9 = ids[start + 9] | 0;
+    key += String.fromCharCode(
+      v9 & 0xff,
+      (v9 >>> 8) & 0xff,
+      (v9 >>> 16) & 0xff,
+      (v9 >>> 24) & 0xff,
+    );
+    const v10 = ids[start + 10] | 0;
+    key += String.fromCharCode(
+      v10 & 0xff,
+      (v10 >>> 8) & 0xff,
+      (v10 >>> 16) & 0xff,
+      (v10 >>> 24) & 0xff,
+    );
+    const v11 = ids[start + 11] | 0;
+    key += String.fromCharCode(
+      v11 & 0xff,
+      (v11 >>> 8) & 0xff,
+      (v11 >>> 16) & 0xff,
+      (v11 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 8) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    const v5 = ids[start + 5] | 0;
+    key += String.fromCharCode(
+      v5 & 0xff,
+      (v5 >>> 8) & 0xff,
+      (v5 >>> 16) & 0xff,
+      (v5 >>> 24) & 0xff,
+    );
+    const v6 = ids[start + 6] | 0;
+    key += String.fromCharCode(
+      v6 & 0xff,
+      (v6 >>> 8) & 0xff,
+      (v6 >>> 16) & 0xff,
+      (v6 >>> 24) & 0xff,
+    );
+    const v7 = ids[start + 7] | 0;
+    key += String.fromCharCode(
+      v7 & 0xff,
+      (v7 >>> 8) & 0xff,
+      (v7 >>> 16) & 0xff,
+      (v7 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 5) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 4) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  let key = '';
+  for (let offset = 0; offset < width; offset += 1) {
+    const value = ids[start + offset] | 0;
+    key += String.fromCharCode(
+      value & 0xff,
+      (value >>> 8) & 0xff,
+      (value >>> 16) & 0xff,
+      (value >>> 24) & 0xff,
+    );
+  }
+  return key;
+}
+
 function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[] {
   const cached = prepared.windowHashes.get(width);
   if (cached !== undefined) return cached;
@@ -398,7 +831,167 @@ function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[]
     const cachedHashes = fingerprint?.hashes.get(width);
     if (cachedHashes !== undefined) return cachedHashes;
     const result = new Int32Array(Math.max(0, ids.length - width + 1));
-    if (width === 12) {
+    if (width === 8) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+      }
+    } else if (width === 5) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+      }
+    } else if (width === 3) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+      }
+    } else if (width === 6) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+      }
+    } else if (width === 7) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+      }
+    } else if (width === 9) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+      }
+    } else if (width === 10) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+      }
+    } else if (width === 11) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+      }
+    } else if (width === 13) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 11]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 12]) | 0;
+      }
+    } else if (width === 14) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 11]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 12]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 13]) | 0;
+      }
+    } else if (width === 15) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 11]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 12]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 13]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 14]) | 0;
+      }
+    } else if (width === 16) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 11]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 12]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 13]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 14]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 15]) | 0;
+      }
+    } else if (width === 4) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+      }
+    } else if (width === 12) {
       for (let start = 0; start < result.length; start += 1) {
         let hash = ids[start];
         hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
@@ -454,6 +1047,24 @@ function findCandidates(
     const leftLimit = left.length - leftStart;
     const rightLimit = right.length - rightStart;
     const limit = leftLimit < rightLimit ? leftLimit : rightLimit;
+    while (n + 8 <= limit
+      && left[leftStart + n] === right[rightStart + n]
+      && left[leftStart + n + 1] === right[rightStart + n + 1]
+      && left[leftStart + n + 2] === right[rightStart + n + 2]
+      && left[leftStart + n + 3] === right[rightStart + n + 3]
+      && left[leftStart + n + 4] === right[rightStart + n + 4]
+      && left[leftStart + n + 5] === right[rightStart + n + 5]
+      && left[leftStart + n + 6] === right[rightStart + n + 6]
+      && left[leftStart + n + 7] === right[rightStart + n + 7]) {
+      n += 8;
+    }
+    while (n + 4 <= limit
+      && left[leftStart + n] === right[rightStart + n]
+      && left[leftStart + n + 1] === right[rightStart + n + 1]
+      && left[leftStart + n + 2] === right[rightStart + n + 2]
+      && left[leftStart + n + 3] === right[rightStart + n + 3]) {
+      n += 4;
+    }
     while (n < limit && left[leftStart + n] === right[rightStart + n]) n += 1;
     return n;
   };
@@ -466,21 +1077,32 @@ function findCandidates(
     bestBytes: 0,
   };
 
-  // Seed groups are flat body/start pairs. Most windows are discarded before becoming candidates, so avoid an
-  // object allocation for every position in every outlining round.
+  // Seed groups are flat body/start pairs. Most leftover 4-grams are unique; delay allocating a group array
+  // until a hash is seen twice so singletons never become empty buckets.
   const windows = new Map<number, number[]>();
+  const firstBodyByHash = new Map<number, number>();
+  const firstStartByHash = new Map<number, number>();
   const windowHashes = hashesForWindow(prepared, minimumWindowElements);
   for (let bodyIndex = 0; bodyIndex < bodyIds.length; bodyIndex += 1) {
     const ids = bodyIds[bodyIndex];
+    if (ids.length < minimumWindowElements) continue;
     const hashes = windowHashes[bodyIndex];
     for (let i = 0; i + minimumWindowElements <= ids.length; i += 1) {
       const hash = hashes[i];
-      let group = windows.get(hash);
-      if (group === undefined) {
-        group = [];
-        windows.set(hash, group);
+      const group = windows.get(hash);
+      if (group !== undefined) {
+        group.push(bodyIndex, i);
+        continue;
       }
-      group.push(bodyIndex, i);
+      const firstBody = firstBodyByHash.get(hash);
+      if (firstBody === undefined) {
+        firstBodyByHash.set(hash, bodyIndex);
+        firstStartByHash.set(hash, i);
+        continue;
+      }
+      windows.set(hash, [firstBody, firstStartByHash.get(hash)!, bodyIndex, i]);
+      firstBodyByHash.delete(hash);
+      firstStartByHash.delete(hash);
     }
   }
 
@@ -496,7 +1118,32 @@ function findCandidates(
       const body = bucket[occurrenceIndex];
       const start = bucket[occurrenceIndex + 1];
       const ids = bodyIds[body];
-      for (let offset = 0; offset < minimumWindowElements; offset += 1) {
+      let offset = 0;
+      while (offset + 8 <= minimumWindowElements) {
+        if (ids[start + offset] !== firstIds[firstStart + offset]
+          || ids[start + offset + 1] !== firstIds[firstStart + offset + 1]
+          || ids[start + offset + 2] !== firstIds[firstStart + offset + 2]
+          || ids[start + offset + 3] !== firstIds[firstStart + offset + 3]
+          || ids[start + offset + 4] !== firstIds[firstStart + offset + 4]
+          || ids[start + offset + 5] !== firstIds[firstStart + offset + 5]
+          || ids[start + offset + 6] !== firstIds[firstStart + offset + 6]
+          || ids[start + offset + 7] !== firstIds[firstStart + offset + 7]) {
+          collision = true;
+          break;
+        }
+        offset += 8;
+      }
+      while (offset + 4 <= minimumWindowElements) {
+        if (ids[start + offset] !== firstIds[firstStart + offset]
+          || ids[start + offset + 1] !== firstIds[firstStart + offset + 1]
+          || ids[start + offset + 2] !== firstIds[firstStart + offset + 2]
+          || ids[start + offset + 3] !== firstIds[firstStart + offset + 3]) {
+          collision = true;
+          break;
+        }
+        offset += 4;
+      }
+      for (; !collision && offset < minimumWindowElements; offset += 1) {
         if (ids[start + offset] !== firstIds[firstStart + offset]) {
           collision = true;
           break;
@@ -512,11 +1159,7 @@ function findCandidates(
       const body = bucket[occurrenceIndex];
       const start = bucket[occurrenceIndex + 1];
       const ids = bodyIds[body];
-      let key = '';
-      for (let offset = 0; offset < minimumWindowElements; offset += 1) {
-        key += ids[start + offset];
-        key += ',';
-      }
+      const key = packedWindowKey(ids, start, minimumWindowElements);
       let group = exact.get(key);
       if (group === undefined) {
         group = [];
@@ -537,8 +1180,17 @@ function findCandidates(
     const seedBytes = bodyBytePrefixes[body][start + group.seed] - bodyBytePrefixes[body][start];
     group.rank = (group.occurrences.length / 2) * seedBytes;
   }
-  groups.sort((left, right) => right.rank! - left.rank!);
-  groups.splice(candidateGroupsPerRound);
+  if (groups.length > 1) groups.sort((left, right) => right.rank! - left.rank!);
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process
+    ?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
+    console.error('[outline-groups]', JSON.stringify({
+      minimumWindowElements,
+      candidateGroupsPerRound,
+      hashBuckets: windows.size,
+      rankedGroups: groups.length,
+    }));
+  }
+  if (groups.length > candidateGroupsPerRound) groups.splice(candidateGroupsPerRound);
 
   // A large repeated constant never reaches the window length, however many times it appears and however big
   // it is: 256-bit arithmetic bounds are emitted inline at every overflow check, 32 bytes a time. Seed those
@@ -717,14 +1369,18 @@ export function outlineSharedSpans(
   }));
   const functions: OutlinedFunction[] = [];
   const claimed: Uint8Array[] = [];
-  const intern: OutlineIntern = {
+  const intern: OutlineIntern = (initialCandidateCache?.get('intern') as OutlineIntern | undefined) ?? {
     keyIds: new Map(),
     bodyByScript: new WeakMap(),
   };
+  initialCandidateCache?.set('intern', intern);
   let savedBytes = 0;
 
   const rounds = maximumRounds < 1 ? 1 : maximumRounds;
+  const debugRounds = (globalThis as { process?: { env?: Record<string, string> } }).process
+    ?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1';
   for (let round = 0; round < rounds; round += 1) {
+    const roundStarted = debugRounds ? Date.now() : 0;
     // Outlined bodies join the corpus so a repeat that only becomes visible after sharing is still found.
     const corpus = [
       ...working,
@@ -871,6 +1527,18 @@ export function outlineSharedSpans(
 
     for (const entry of applied) functions.push(entry.definition);
     savedBytes += roundSaved;
+    if (debugRounds) {
+      console.error('[outline-round]', JSON.stringify({
+        round,
+        minimumWindowElements,
+        candidateGroupsPerRound,
+        corpus: corpus.length,
+        candidates: candidates.length,
+        applied: applied.length,
+        roundSaved,
+        elapsedMs: Date.now() - roundStarted,
+      }));
+    }
   }
 
   const rewritten: OutlinedBody[] = working.map((body, index) => {

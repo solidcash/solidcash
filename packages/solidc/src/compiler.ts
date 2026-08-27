@@ -8358,15 +8358,11 @@ function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
 class PackedCharStream {
   name = '<empty>';
   private readonly strdata: string;
-  private readonly data: Uint16Array;
   private _index = 0;
   private readonly _size: number;
 
   constructor(str: string) {
     this.strdata = str;
-    const data = new Uint16Array(str.length);
-    for (let i = 0; i < str.length; i += 1) data[i] = str.charCodeAt(i);
-    this.data = data;
     this._size = str.length;
   }
 
@@ -8382,7 +8378,7 @@ class PackedCharStream {
     if (offset < 0) offset += 1;
     const i = this._index + offset - 1;
     if (i < 0 || i >= this._size) return -1;
-    return this.data[i];
+    return this.strdata.charCodeAt(i);
   }
   LT(offset: number): number { return this.LA(offset); }
   mark(): number { return -1; }

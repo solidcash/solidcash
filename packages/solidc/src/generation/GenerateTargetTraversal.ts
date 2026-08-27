@@ -1443,6 +1443,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static alignLocations(
     locations: FullLocationData, length: number, fallback: SingleLocationData,
   ): FullLocationData {
+    if (locations.length === length) return locations;
     const aligned = locations.slice(0, length);
     while (aligned.length < length) aligned.push(locations[locations.length - 1] ?? fallback);
     return aligned;
@@ -1453,8 +1454,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // opcodes and location records dominated throwaway body generation on Marketplace-scale contracts.
     if (this.isSubroutineUseProbe) return;
     if (Array.isArray(op)) {
-      op.forEach((element) => this.output.push(element as Op));
-      op.forEach(() => this.locationData.push(locationData));
+      for (let i = 0; i < op.length; i += 1) {
+        this.output.push(op[i] as Op);
+        this.locationData.push(locationData);
+      }
     } else {
       this.output.push(op);
       this.locationData.push(locationData);

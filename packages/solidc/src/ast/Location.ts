@@ -96,14 +96,27 @@ export class Location implements LocationI {
   }
 }
 
+let cachedOffsetCode: string | undefined;
+let cachedLineStarts: number[] | undefined;
+function lineStartsFor(code: string): number[] {
+  if (cachedOffsetCode === code && cachedLineStarts !== undefined) return cachedLineStarts;
+  const starts = [0];
+  for (let i = 0; i < code.length; i += 1) {
+    if (code.charCodeAt(i) === 10) starts.push(i + 1);
+  }
+  cachedOffsetCode = code;
+  cachedLineStarts = starts;
+  return starts;
+}
+
 export class Point {
   constructor(public line: number, public column: number) {}
 
   offset(code: string): number {
-    const lines = code.split('\n');
+    const starts = lineStartsFor(code);
     const newLines = this.line - 1;
-    const lineOffset = lines.slice(0, newLines).reduce((acc, curr) => acc + curr.length, 0);
-    return lineOffset + newLines + this.column;
+    const lineOffset = starts[Math.min(newLines, starts.length - 1)] ?? 0;
+    return lineOffset + this.column;
   }
 
   toString(): string {

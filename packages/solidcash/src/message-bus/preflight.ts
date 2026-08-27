@@ -220,37 +220,39 @@ const convergeMessageBusMutableResourceOutputs = (
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const proposals = new Map<number, { commitment: Uint8Array; inputIndex: number; ip: number }>();
+    const observed = new Map<number, { commitment: Uint8Array; ip: number }>();
+    let owned = new Set<number>();
+    const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
+      opcodes: new Set([Op.OP_OUTPUTTOKENCOMMITMENT]),
+      beforeOperation: (unknownState) => {
+        const state = unknownState as AuthenticationProgramStateCommon;
+        if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
+          || state.stack.length < 2) return;
+        // Libauth invokes operation hooks for instructions in inactive IF/ELSE branches too. Those opcodes
+        // are not executed and their stack shape belongs to the active branch. Interpreting them as covenant
+        // observations can manufacture a preservation proposal from a write covenant's inactive read path.
+        if (state.controlStack.some((frame) => frame === false)) return;
+        const nextOpcode = state.instructions[state.ip + 1]?.opcode;
+        if (nextOpcode !== Op.OP_EQUAL && nextOpcode !== Op.OP_EQUALVERIFY) return;
+        let outputIndex: number;
+        try {
+          outputIndex = Number(vmNumberToBigInt(state.stack[state.stack.length - 1]));
+        } catch {
+          return;
+        }
+        if (!Number.isSafeInteger(outputIndex) || !owned.has(outputIndex)) return;
+        observed.set(outputIndex, {
+          commitment: state.stack[state.stack.length - 2].slice(), ip: state.ip,
+        });
+      },
+    });
     for (const block of assembly.blocks) {
-      const owned = ownedByBlock.get(block.participant)!;
+      owned = ownedByBlock.get(block.participant)!;
       if (owned.size === 0) continue;
       for (let inputIndex = block.base;
         inputIndex < block.base + block.blockLayout.blockSize;
         inputIndex += 1) {
-        const observed = new Map<number, { commitment: Uint8Array; ip: number }>();
-        const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
-          opcodes: new Set([Op.OP_OUTPUTTOKENCOMMITMENT]),
-          beforeOperation: (unknownState) => {
-            const state = unknownState as AuthenticationProgramStateCommon;
-            if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
-              || state.stack.length < 2) return;
-            // Libauth invokes operation hooks for instructions in inactive IF/ELSE branches too. Those opcodes
-            // are not executed and their stack shape belongs to the active branch. Interpreting them as covenant
-            // observations can manufacture a preservation proposal from a write covenant's inactive read path.
-            if (state.controlStack.some((frame) => frame === false)) return;
-            const nextOpcode = state.instructions[state.ip + 1]?.opcode;
-            if (nextOpcode !== Op.OP_EQUAL && nextOpcode !== Op.OP_EQUALVERIFY) return;
-            let outputIndex: number;
-            try {
-              outputIndex = Number(vmNumberToBigInt(state.stack[state.stack.length - 1]));
-            } catch {
-              return;
-            }
-            if (!Number.isSafeInteger(outputIndex) || !owned.has(outputIndex)) return;
-            observed.set(outputIndex, {
-              commitment: state.stack[state.stack.length - 2].slice(), ip: state.ip,
-            });
-          },
-        });
+        observed.clear();
         const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
         if (vm.stateSuccess(evaluated) === true) continue;
         for (const [outputIndex, { commitment, ip }] of observed) {

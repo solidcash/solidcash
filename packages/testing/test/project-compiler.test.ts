@@ -67,6 +67,25 @@ describe('compileSolidityProject', () => {
     expect(result.artifacts).toEqual({ Root: { abi: [], from: 'root' } });
   });
 
+  it('asks the compiler to fully compile only declarations owned by the source file', () => {
+    const files = project({
+      'Leaf.sol': 'contract Leaf {}',
+      'Root.sol': 'import "./Leaf.sol"; contract Root {}',
+    });
+    const requested: Record<string, unknown> = {};
+    const compile = (file: string, options: Record<string, unknown>): any => {
+      requested[path.basename(file)] = options.compileDeclarations;
+      return path.basename(file) === 'Root.sol'
+        ? { Root: { abi: [] }, Leaf: { abi: [] } }
+        : { Leaf: { abi: [] } };
+    };
+
+    compileSolidityProject(files, { solidityImportCompat: true }, compile);
+
+    expect(requested['Root.sol']).toEqual(['Root']);
+    expect(requested['Leaf.sol']).toEqual(['Leaf']);
+  });
+
   it('compiles a dependency when selective imports leave one of its declarations unresolved', () => {
     const files = project({
       'Library.sol': 'contract Used {} contract Unused {}',

@@ -192,7 +192,7 @@ export function compileSolidityProject(
     if (!isCanonicalDeclaringFile
       && source.declarations.length > 0 && source.declarations.every((name) => artifacts[name])) continue;
     const jobId = hash(stableStringify({
-      artifactCacheVersion: 2,
+      artifactCacheVersion: 3,
       compilerVersion: cache?.compilerVersion ?? '',
       options: artifactCompilerOptions(options),
       sources: dependencyHashes(source, allSources),
@@ -208,10 +208,23 @@ export function compileSolidityProject(
       }
     }
     if (!compiled) {
+      const fileStarted = Date.now();
       try {
-        compiled = compileFile(source.path, options);
+        compiled = compileFile(source.path, {
+          ...options,
+          compileDeclarations: source.declarations,
+        });
       } catch (error: any) {
         throw new Error(`Failed to compile project root ${source.path}: ${error.message}`, { cause: error });
+      }
+      if (process.env.SOLIDC_PROFILE === '1') {
+        console.error('[solidc-profile]', JSON.stringify({
+          label: 'project-file',
+          ms: Date.now() - fileStarted,
+          file: source.path,
+          declarations: source.declarations,
+          artifacts: Object.keys(compiled),
+        }));
       }
       compiledRoots.push(source.path);
       if (jobFile) writeAtomic(jobFile, serialize(compiled));

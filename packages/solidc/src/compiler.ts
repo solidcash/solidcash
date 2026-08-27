@@ -27,7 +27,7 @@ import {
   ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
-  StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
+  StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode, NewArrayNode,
   FunctionCallStatementNode,
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
@@ -185,6 +185,7 @@ type MessageBusMode = 'disabled' | 'auto' | 'enabled' | 'required';
 type InternalCompilerOptions = CompilerOptions & {
   __messageBusExplicitlyDisabled?: boolean;
   __messageBusMode?: MessageBusMode;
+  __cheapAdmissionCodegen?: boolean;
 };
 
 interface OptionalLoweringFeatures {
@@ -369,6 +370,23 @@ export interface CompileOptions extends CompilerOptions {
   errorListener?: SolidCashErrorListener;
   /** Select a named top-level contract instead of the source file's last concrete contract. */
   primaryContractName?: string;
+  /**
+   * Fully compile only these contract names. Other imported concrete contracts are omitted from the
+   * ArtifactMap (interfaces still get ABI-only artifacts). Project compilation uses this so an importing
+   * root does not pay a second full pipeline for declarations its declaring file will compile.
+   */
+  compileDeclarations?: readonly string[];
+}
+
+function compilerProfileEnabled(): boolean {
+  return (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_PROFILE === '1';
+}
+
+function profileLog(label: string, startedAt: number, extra?: Record<string, unknown>): void {
+  if (!compilerProfileEnabled()) return;
+  console.error('[solidc-profile]', JSON.stringify({
+    label, ms: Date.now() - startedAt, ...extra,
+  }));
 }
 
 export interface SplitCompileOptions extends CompileOptions {
@@ -699,10 +717,25 @@ function compileWithExternalAdmissionFallback(
   ): Artifact => {
     const ast = initialAst ?? parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
     initialAst = undefined;
-    const artifact = compileResolvedAst(
-      ast, code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
-      admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
-    );
+    const onceStarted = Date.now();
+    let artifact: Artifact;
+    try {
+      artifact = compileResolvedAst(
+        ast, code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+        admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
+      );
+    } catch (error) {
+      profileLog('compileOnce:throw', onceStarted, {
+        primary: primaryContractName,
+        admitExternalHandlers,
+        normalizeBareEntries,
+        relaxResultRouteEffects,
+        admitMixedScalarHandlers,
+        admitBareForwardingHandlers,
+        message: error instanceof Error ? error.message.split('\n')[0].slice(0, 240) : String(error).slice(0, 240),
+      });
+      throw error;
+    }
     if (messageBusMode === 'required' && !artifact.messageBus) {
       throw new Error('messageBus: required route generation did not produce a composable artifact');
     }
@@ -921,7 +954,8 @@ function compileWithExternalAdmissionFallback(
 
 function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const {
-    errorListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
+    errorListener, primaryContractName, suppressWarnings = false, compileDeclarations: _compileDeclarations,
+    ...artifactCompilerOptions
   } = compilerOptions;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
     && !errorListener && !artifactCompilerOptions.importResolver
@@ -957,11 +991,28 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
+  // The admission compile is discarded once the verifier-binder pass runs. Skip ordinary entry-point bodies
+  // there: eligibility is decided in synthesis, and the verifier program only needs the route/verifier closure.
+  if (mergedCompilerOptions.optimizeForCompilationSpeed
+    && mergedCompilerOptions.messageBus
+    && !artifactCompilerOptions.__messageBusVerifierProgram) {
+    mergedCompilerOptions.__cheapAdmissionCodegen = true;
+  }
+  const admissionStarted = Date.now();
   let artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
+  profileLog('admission', admissionStarted, { primary: primaryContractName });
   if (mergedCompilerOptions.__messageBusMode === 'required' && !artifact.messageBus) {
     throw new Error('messageBus: required route generation did not produce a composable artifact');
+  }
+  if (mergedCompilerOptions.__cheapAdmissionCodegen && !artifact.messageBus?.verifierProgram) {
+    // Cheap admission produced no binder continuation. Recompile fully so ABI function bodies are present.
+    const fullOptions = { ...mergedCompilerOptions };
+    delete fullOptions.__cheapAdmissionCodegen;
+    artifact = compileWithExternalAdmissionFallback(
+      code, fullOptions, errorListener, primaryContractName,
+    );
   }
   if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1'
     && !artifactCompilerOptions.__messageBusVerifierProgram && artifact.messageBus?.verifierProgram) {
@@ -984,10 +1035,15 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       messageBusHandlers: admittedMessageBusHandlers,
       __messageBusVerifierProgram: verifierProgram,
     });
+    const binderStarted = Date.now();
     artifact = compileResolvedAst(
       parseAndResolve(code, bindingOptions, errorListener, primaryContractName),
       code, bindingOptions,
     );
+    profileLog('binder', binderStarted, {
+      primary: primaryContractName,
+      handlers: admittedMessageBusHandlers.length,
+    });
     if (artifact.messageBus) {
       artifact.messageBus.verifierProgram = verifierProgram;
       // The verifier-bound pass intentionally synthesizes only the admitted handler set. Preserve the first
@@ -997,6 +1053,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     }
     if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
   }
+  // Cheap admission is only for the discarded speculative pass. The delegate variant recompiles from
+  // these options (including its own binder), so leaving the flag set would skip user/graph bodies in
+  // the shipped proxy artifact.
+  delete mergedCompilerOptions.__cheapAdmissionCodegen;
   attachDelegateVariant(
     artifact, code, mergedCompilerOptions, errorListener, primaryContractName,
     cacheable || !suppressWarnings,
@@ -1094,6 +1154,7 @@ function attachDelegateVariant(
       ...mergedCompilerOptions,
       autoDelegate: true,
       messageBus: (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode === 'enabled',
+      __cheapAdmissionCodegen: false,
     };
     const out = { delegateFunctionsMarked: 0 };
     let variantFailure: string | undefined;
@@ -1378,6 +1439,10 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
     'a handler that ITERATES a collection reads every entry of it, and the route addresses entries through '
     + 'per-entry witnesses fixed at compile time, so an unbounded iteration has no representation in the '
     + 'block layout: read the entries the batch needs by key, or keep the iteration on the direct route',
+  'verified-mapping-runtime-loop-write-unsupported':
+    'a graph clone cannot represent a verified-mapping write whose loop key array is a local constructed in '
+    + 'the handler closure rather than a parameter (or a zero-length `new T[](0)` that never iterates): keep '
+    + 'that write on the direct route, or pass the key array as a handler parameter',
   'nested-dynamic-array-route-not-enabled':
     'nested dynamic-array state does not yet have a bounded message-bus row encoding; keep this handler on the '
     + 'direct route or flatten the nested array into separately keyed state',
@@ -1648,6 +1713,125 @@ function synthesizeMessageBusRoute(
       return { name: base.name, keys, chain };
     }
     return undefined;
+  };
+  const isZeroLengthNewArray = (expression: ExpressionNode | undefined): boolean =>
+    expression instanceof NewArrayNode
+    && expression.size instanceof IntLiteralNode
+    && expression.size.value === 0n;
+  const expressionIdentifier = (expression: ExpressionNode): string | undefined => {
+    if (expression instanceof IdentifierNode) return expression.name;
+    if (expression instanceof CastNode) return expressionIdentifier(expression.expression);
+    return undefined;
+  };
+  const localInitOf = (fn: FunctionDefinitionNode, name: string): ExpressionNode | undefined => {
+    let init: ExpressionNode | undefined;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof VariableDefinitionNode && node.name === name && node.expression) {
+        init = node.expression;
+      }
+    });
+    return init;
+  };
+  /**
+   * Graph clones of a source handler inline its closure. A verified-mapping write `m[k][xs[i]] = v` in a
+   * runtime loop is only representable when `xs` is a parameter of THAT source handler (the SDK reads it from
+   * the row) or a zero-length `new T[](0)` that never iterates. A locally constructed non-empty array
+   * (`address[] memory xs = new address[](1); ... m[k][xs[i]] = v`) reaches code generation as an unsupported
+   * insert/update loop shape and used to fail only after lowering+semantic+partial codegen of the clone.
+   * Refuse the graph handler here so admission does not replay that compile.
+   */
+  const arraySupportedFromSource = (
+    arrayName: string,
+    owner: FunctionDefinitionNode,
+    source: FunctionDefinitionNode,
+    closure: Set<string>,
+    visiting: Set<string>,
+  ): boolean => {
+    const seen = `${owner.name}\0${arrayName}`;
+    if (visiting.has(seen)) return false;
+    visiting.add(seen);
+    if (owner === source) {
+      if (source.parameters.some((parameter) => parameter.name === arrayName)) return true;
+      const init = localInitOf(owner, arrayName);
+      if (isZeroLengthNewArray(init)) return true;
+      const alias = init === undefined ? undefined : expressionIdentifier(init);
+      return alias !== undefined && arraySupportedFromSource(alias, owner, source, closure, visiting);
+    }
+    const paramIndex = owner.parameters.findIndex((parameter) => parameter.name === arrayName);
+    if (paramIndex >= 0) {
+      let sawCall = false;
+      let allSupported = true;
+      for (const callerName of closure) {
+        for (const caller of byName.get(callerName) ?? []) {
+          // walkInvocationAst is synchronous; these accumulators do not escape this iteration.
+          // eslint-disable-next-line @typescript-eslint/no-loop-func
+          walkInvocationAst(caller.body, (node) => {
+            if (!(node instanceof FunctionCallNode) || node.identifier.name !== owner.name) return;
+            sawCall = true;
+            const argument = node.parameters[paramIndex];
+            if (isZeroLengthNewArray(argument)) return;
+            const argumentName = argument === undefined ? undefined : expressionIdentifier(argument);
+            if (argumentName === undefined
+              || !arraySupportedFromSource(argumentName, caller, source, closure, visiting)) {
+              allSupported = false;
+            }
+          });
+        }
+      }
+      return sawCall && allSupported;
+    }
+    const init = localInitOf(owner, arrayName);
+    if (isZeroLengthNewArray(init)) return true;
+    const alias = init === undefined ? undefined : expressionIdentifier(init);
+    return alias !== undefined && arraySupportedFromSource(alias, owner, source, closure, visiting);
+  };
+  const hasUnsupportedSortedRuntimeLoopWrite = (source: FunctionDefinitionNode): boolean => {
+    const closure = collectNamedFunctionClosure(source, byName);
+    let unsupported = false;
+    for (const name of closure) {
+      if (unsupported) break;
+      for (const candidate of byName.get(name) ?? []) {
+        if (unsupported) break;
+        const bound = locallyBoundNames(candidate);
+        // walkInvocationAst is synchronous; `unsupported` is the intended accumulator for this scan.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        walkInvocationAst(candidate.body, (node) => {
+          if (unsupported) return;
+          const bare = bareEntryAccessOf(node, bound);
+          const access = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+            || node instanceof MappingDeleteNode
+            ? { name: node.name, keys: node.keys as ExpressionNode[] }
+            : ((node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode) && bare
+              ? { name: bare.name, keys: bare.keys } : undefined);
+          if (!access || !collectionByName.has(access.name)) return;
+          const collection = collectionByName.get(access.name);
+          if (!(collection?.type instanceof MappingType)) return;
+          const occurrence = occurrenceInfoOf(candidate, node);
+          if (occurrence.occurrence !== 'loop' || occurrence.maximumOccurrences !== undefined) return;
+          let varyingName: string | undefined;
+          let varyingUnsupported = false;
+          for (let index = access.keys.length - 1; index >= 0; index -= 1) {
+            const key = access.keys[index];
+            if (!(key instanceof ArrayAccessNode)) continue;
+            if (key.array instanceof IdentifierNode) {
+              varyingName = key.array.name;
+              break;
+            }
+            varyingUnsupported = true;
+            break;
+          }
+          if (varyingUnsupported) {
+            unsupported = true;
+            return;
+          }
+          if (varyingName === undefined) return;
+          if (!arraySupportedFromSource(varyingName, candidate, source, closure, new Set())) {
+            unsupported = true;
+          }
+        });
+      }
+    }
+    return unsupported;
   };
   /**
    * X187. A method call whose receiver is a CONTRACT/INTERFACE-TYPED VARIABLE - `bar.log()` for `IBar bar` -
@@ -2607,6 +2791,8 @@ function synthesizeMessageBusRoute(
     } else if (!reason && (footprint.unknown
       || (!graphTailCallEligible && footprint.effects.some((effect) => effect === 'external-call')))) {
       reason = 'unresolved-or-effectful-handler';
+    } else if (!reason && graphTailCallEligible && hasUnsupportedSortedRuntimeLoopWrite(fn)) {
+      reason = 'verified-mapping-runtime-loop-write-unsupported';
     }
     fn.messageBusEligible = reason === undefined;
     fn.messageBusRejectionReason = reason;
@@ -5109,6 +5295,23 @@ function compileResolvedAst(
   fnPtrArraysPreLowered = false,
   out?: { delegateFunctionsMarked: number },
 ): Artifact {
+  const resolvedStarted = Date.now();
+  let phaseStarted = resolvedStarted;
+  let currentPhase = 'start';
+  const contractName = ast.contract?.name;
+  const mark = (phase: string): void => {
+    profileLog(`resolved:${phase}`, phaseStarted, { contract: contractName });
+    currentPhase = phase;
+    phaseStarted = Date.now();
+  };
+  const throwProfile = (error: unknown): never => {
+    profileLog('resolved:throw', resolvedStarted, {
+      contract: contractName,
+      after: currentPhase,
+      message: error instanceof Error ? error.message.split('\n')[0].slice(0, 240) : String(error).slice(0, 240),
+    });
+    throw error;
+  };
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
   // (internal/unmarked) functions has no entry point and cannot be compiled standalone.
@@ -5858,6 +6061,7 @@ function compileResolvedAst(
     }
   }
 
+  mark('lowering');
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
   // Bare msg.sender collection accesses are normalized to compiler-owned route parameters before semantic
@@ -6024,10 +6228,16 @@ function compileResolvedAst(
 
   refuseEmittingReturningStateHelpers(ast.contract);
 
+  mark('semantic');
   // Code generation
   const traversal = new GenerateTargetTraversal(mergedCompilerOptions);
   traversal.compiledBytecodes = compiledBytecodes;
-  ast = ast.accept(traversal) as Ast;
+  try {
+    ast = ast.accept(traversal) as Ast;
+  } catch (error) {
+    throwProfile(error);
+  }
+  mark('codegen');
 
   const constructorParamLength = ast.contract.parameters.length;
 
@@ -6078,9 +6288,15 @@ function compileResolvedAst(
 
   const fingerprint = computeBytecodeFingerprintWithConstructorArgs(optimisationResult.script, constructorParamLength);
 
+  mark('optimise');
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  mark('artifact');
+  profileLog('resolved', resolvedStarted, {
+    contract: artifact.contractName,
+    bytecodeBytes: artifact.debug?.bytecode ? artifact.debug.bytecode.length / 2 : undefined,
+  });
   // Solidity-compatible upgradeable contracts are marked delegate in the primary compilation pass (the
   // initializer/reinitializer inference above), rather than through the lazy `autoDelegate` variant. They use
   // the same pinned delegate covenant and must publish the same certificate; otherwise the SDK keeps the
@@ -6747,13 +6963,19 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
 }
 
 function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptions): ArtifactMap {
-  const { errorListener, ...artifactCompilerOptions } = compilerOptions;
+  const { errorListener, compileDeclarations, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
+  const requested = compileDeclarations === undefined ? undefined : new Set(compileDeclarations);
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
+  const probeStarted = Date.now();
   const probe = parseAndResolve(code, mergedCompilerOptions, errorListener);
+  profileLog('multi-probe', probeStarted, {
+    imported: probe.importedContracts.length,
+    interfaces: (probe.interfaceDefinitions ?? []).length,
+  });
   const allContracts = [...probe.importedContracts, probe.contract].filter(Boolean);
   const interfaces = probe.interfaceDefinitions ?? [];
 
@@ -6769,15 +6991,25 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
     // constructor effects (events/state writes) no transaction block layout.
     if (contract.isAbstract
       || contract.constructorDef?.modifiers.includes(FunctionModifier.INTERNAL)) continue;
+    if (requested && !requested.has(contract.name)) {
+      profileLog('multi-skip', Date.now(), { primary: contract.name });
+      continue;
+    }
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
     // Use the same complete pipeline as the single-artifact API. In particular, message-bus compilation is a
     // two-pass operation: the first pass extracts the verifier program and the second binds the compact route to
     // it. Calling the lower-level admission ladder here published route ABI from pass one beside bytecode that
     // could not select a participant-local verifier in an atomic graph.
+    const contractStarted = Date.now();
     map[contract.name] = compileStringUnchecked(code, {
       ...artifactCompilerOptions,
       errorListener,
       primaryContractName: contract.name,
+    });
+    const compiled = map[contract.name];
+    profileLog('multi-contract', contractStarted, {
+      primary: contract.name,
+      bytecodeBytes: compiled.debug?.bytecode ? compiled.debug.bytecode.length / 2 : undefined,
     });
   }
 

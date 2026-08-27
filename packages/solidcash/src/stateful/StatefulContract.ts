@@ -2758,6 +2758,45 @@ interface CachedProbeVm {
 // step is therefore pure overhead. Keep the VM and its observer closure, resetting only the small trace buffer.
 const probeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
 const relaxedProbeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
+const debugVmCache = new WeakMap<NetworkProvider, ReturnType<typeof createVirtualMachineBch2026ForProvider>>();
+
+function cachedDebugVm(provider: NetworkProvider): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
+  const existing = debugVmCache.get(provider);
+  if (existing) return existing;
+  const vm = createVirtualMachineBch2026ForProvider(provider);
+  debugVmCache.set(provider, vm);
+  return vm;
+}
+
+function fingerprintBytecode(bytes: Uint8Array, cache: WeakMap<Uint8Array, string>): string {
+  const cached = cache.get(bytes);
+  if (cached !== undefined) return cached;
+  const fingerprint = binToHex(hash256Sync(bytes));
+  cache.set(bytes, fingerprint);
+  return fingerprint;
+}
+
+/** Content-sensitive tx identity without serializing multi-megabyte unlocking scripts on every probe. */
+export function fingerprintLibauthTransaction(
+  transaction: Parameters<typeof encodeTransaction>[0],
+  bytecodeCache: WeakMap<Uint8Array, string>,
+): string {
+  const inputs = transaction.inputs.map((input) => [
+    binToHex(input.outpointTransactionHash),
+    String(input.outpointIndex),
+    String(input.sequenceNumber),
+    fingerprintBytecode(input.unlockingBytecode, bytecodeCache),
+  ].join(':'));
+  const outputs = transaction.outputs.map((output) => [
+    output.valueSatoshis.toString(),
+    fingerprintBytecode(output.lockingBytecode, bytecodeCache),
+    output.token?.category === undefined ? '' : binToHex(output.token.category),
+    output.token?.amount?.toString() ?? '',
+    output.token?.nft?.capability ?? '',
+    output.token?.nft?.commitment === undefined ? '' : binToHex(output.token.nft.commitment),
+  ].join(':'));
+  return `${transaction.version}|${transaction.locktime}|${inputs.join(',')}|${outputs.join(',')}`;
+}
 
 function cachedProbeVm(provider: NetworkProvider, relaxOutputVerifications = false): CachedProbeVm {
   const cache = relaxOutputVerifications ? relaxedProbeVmCache : probeVmCache;
@@ -2928,7 +2967,7 @@ function evaluateProbeTrace(
     || debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS === '1';
   if (preferFullDebug && !relaxOutputVerifications) {
     try {
-      const full = createVirtualMachineBch2026ForProvider(provider)
+      const full = cachedDebugVm(provider)
         .debug(program) as AuthenticationProgramStateCommon[];
       // Live-network pairing fix (solidcash_v0.13.1): `extractCommitmentMapFromTrace` pairs a commitment
       // read with the OP_EQUALVERIFY that FOLLOWS it and resets on any other opcode, which only holds for
@@ -3770,6 +3809,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * Increase only if your contract has many interdependent state variables.
    */
   maxDerivationIterations: number = 20;
+
+  /**
+   * VM evaluations performed by the most recent auto-derivation (Phase 2 probe loop).
+   * Zero when derivation was skipped (read-only getter / nothing to derive).
+   */
+  lastDerivationIterations: number = 0;
 
   // ethers-v6-flavored constructor. Two forms:
   //  - internal `(contract, categoryId)` - used by withCategory / from / deploy.
@@ -11217,6 +11262,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         if (debugTargetsThisDerivation) console.error('derive-phase2-loop-ready', { maxIterations });
 
+        this.lastDerivationIterations = 0;
 	        for (let iter = 0; iter < maxIterations; iter++) {
 	          const debugIterationStartedAt = debugTargetsThisDerivation ? Date.now() : 0;
 	          const probeBuilder2 = stb.build();
@@ -11241,7 +11287,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // derivation ceiling to 64, but no commitment can make the rejected call advance. Detect the fixed point
           // from the complete VM program rather than a partial commitment fingerprint, so legitimate multi-probe
           // derivations continue whenever even one input/output byte changes.
-	          const transactionFingerprint = binToHex(hash256Sync(encodeTransaction(transaction2)));
+	          const transactionFingerprint = fingerprintLibauthTransaction(
+	            transaction2, lockingBytecodeFingerprintCache,
+	          );
 	          const debugTransactionHashedAt = debugTargetsThisDerivation ? Date.now() : 0;
 	          const sourceOutputFingerprint = sourceOutputs2.map((output) => [
 	            output.valueSatoshis.toString(),
@@ -11259,6 +11307,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 	          const probeFingerprint = `${transactionFingerprint}|${sourceOutputFingerprint}`;
           if (probeFingerprint === previousProbeFingerprint) break;
           previousProbeFingerprint = probeFingerprint;
+          this.lastDerivationIterations = iter + 1;
           const debugIterationBuiltAt = debugTargetsThisDerivation ? Date.now() : 0;
           if (debugTargetsThisDerivation) console.error('derive-phase2-transaction-built', {
             iter,
@@ -12734,20 +12783,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (delegatecallInputIndex !== undefined) {
               stb.insertBeforeLateValueSuffix(cleanedProbe, { to: dummyLbc, amount: 1000n });
             }
+            const { transaction, sourceOutputs } = cleanedProbe.buildLibauthProgram();
             const cleanedProgram = {
               inputIndex: delegatecallInputIndex ?? 0,
-              sourceOutputs: generateLibauthSourceOutputs(cleanedProbe.inputs),
-              transaction: cleanedProbe.buildLibauthTransaction(),
+              sourceOutputs,
+              transaction,
             };
-            const faithfulCleanedTrace = evaluateProbeTrace(this.inner.provider, cleanedProgram);
-            const faithfulCleanedHadError = faithfulCleanedTrace.some((state) => state.error !== undefined);
-            const cleanedTrace = faithfulCleanedHadError
-              ? evaluateProbeTrace(this.inner.provider, cleanedProgram, true)
-              : faithfulCleanedTrace;
+            // Same single-pass discovery as Phase 2: the relaxed VM is byte-for-byte the faithful
+            // verdict when it suppresses nothing, so do not evaluate the covenant twice.
+            const cleanedTrace = evaluateProbeTrace(this.inner.provider, cleanedProgram, true);
+            const outputVerificationMismatchObserved = cachedProbeVm(this.inner.provider, true)
+              .relaxationApplied;
+            const faithfulCleanedHadError = cleanedTrace.some((state) => state.error !== undefined)
+              || outputVerificationMismatchObserved;
             if (debugTargetsThisDerivation) console.error('derive-cleaned-evaluated', {
               iter, evaluateMs: Date.now() - cleanedStartedAt,
-              faithfulError: faithfulCleanedTrace.at(-1)?.error,
+              faithfulError: cleanedTrace.at(-1)?.error,
               states: cleanedTrace.length,
+              relaxationApplied: outputVerificationMismatchObserved,
             });
 	            lastTrace = retainDiagnosticTrace(cleanedTrace);
             let changed = false;

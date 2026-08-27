@@ -189,6 +189,7 @@ describe('Release 1 scalar journal lowering', () => {
       expect.objectContaining({
         name: 'approve',
         eligible: true,
+        physicalEntrySlots: [0],
         outputs: [{ type: 'bool' }],
         emits: [expect.objectContaining({ eventName: 'Approval' })],
         batchKeyWitnesses: expect.arrayContaining([
@@ -362,8 +363,8 @@ describe('Release 1 scalar journal lowering', () => {
 
     expect(artifact.messageBus?.maximumRows).toBe(8);
     expect(artifact.messageBus?.handlers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'approve', eligible: true }),
-      expect.objectContaining({ name: 'transferFrom', eligible: true }),
+      expect.objectContaining({ name: 'approve', eligible: true, physicalEntrySlots: [0] }),
+      expect.objectContaining({ name: 'transferFrom', eligible: true, physicalEntrySlots: [2, 1, 0] }),
     ]));
     expect(artifact.messageBus?.route.entryAccesses?.map((access) => access.collection))
       .toEqual(expect.arrayContaining(['allowances', 'balances']));

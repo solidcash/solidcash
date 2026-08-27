@@ -1780,10 +1780,13 @@ describe('messageBus.compose atomic transaction', () => {
     expect((await sink.getState()).lastFee).toBe(1n);
   }, 120_000);
 
-  it('decodes an authenticated dynamic Solidity return in a caller graph loop', async () => {
+  it('decodes each authenticated dynamic Solidity return in a repeated caller graph loop', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const sourceArtifact = compileString(`contract ComposeStringSource() {
-      function label(string shortForm) public pure returns (string) { return "DIGITAL_VIDEO"; }
+      function label(string shortForm) public pure returns (string) {
+        if (shortForm == "DV") return "DIGITAL_VIDEO";
+        return "";
+      }
       function active() public pure returns (bool) { return true; }
     }`, {
       forceStateful: true, messageBus: true, solidityImportCompat: true, suppressWarnings: true,
@@ -1826,10 +1829,33 @@ describe('messageBus.compose atomic transaction', () => {
     );
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({
-      calls: [root.call.run(['DV']), source.call.label('DV'), source.call.active()],
+      calls: [
+        root.call.run(['DV', 'test']),
+        source.call.label('DV'),
+        source.call.label('test'),
+        source.call.active(),
+      ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
+
+    const forged = await composition.build();
+    const sourceMaster = forged.inputs.findIndex((input) => input.token?.category === sourceSetup.categoryId
+      && input.token.nft?.capability === 'minting');
+    const firstLogicalSlot = sourceArtifact.messageBus!.route.blockLayout!.slots.find((slot) =>
+      slot.kind === 'returnEvent' && slot.slotIndex === 0)!;
+    const firstLogicalOutput = forged.outputs[sourceMaster + firstLogicalSlot.offset];
+    const exactCommitment = firstLogicalOutput.token!.nft!.commitment;
+    firstLogicalOutput.token!.nft!.commitment = `${exactCommitment.slice(0, -2)}${exactCommitment.endsWith('00') ? '01' : '00'}`;
+    const forgedTransaction = forged.buildLibauthTransaction();
+    const forgedSourceOutputs = generateLibauthSourceOutputs(forged.inputs);
+    const forgedVm = createVirtualMachineBch2026ForProvider(provider);
+    const rejected = forgedTransaction.inputs.some((_input, inputIndex) => (
+      forgedVm.evaluate({ inputIndex, sourceOutputs: forgedSourceOutputs, transaction: forgedTransaction }) as {
+        error?: unknown;
+      }
+    ).error !== undefined);
+    expect(rejected).toBe(true);
 
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect((await root.getState()).labelLength).toBe(1n);

@@ -171,6 +171,14 @@ export function compileSolidityProject(
   const allSources = new Map<string, ProjectSource>();
   const sources = sourceFiles.map((file) => readSource(file, manifest, allSources));
   const projectPaths = new Set(sources.map((source) => source.path));
+  const declarationOwners = new Map<string, string>();
+  for (const source of allSources.values()) {
+    for (const declaration of source.declarations) {
+      if (!declarationOwners.has(declaration)) declarationOwners.set(declaration, source.path);
+    }
+  }
+  const isExternalDependency = (file: string | undefined): boolean => file !== undefined
+    && file.split(path.sep).includes('node_modules');
   const imported = new Set<string>();
   for (const source of sources) {
     for (const dependency of source.dependencies) if (projectPaths.has(dependency)) imported.add(dependency);
@@ -178,6 +186,7 @@ export function compileSolidityProject(
 
   const roots = sources.filter((source) => !imported.has(source.path));
   const ordered = [...roots, ...sources.filter((source) => imported.has(source.path))];
+  const scheduled = new Set(ordered.map((source) => source.path));
   const artifacts: ArtifactMap = {};
   const compiledRoots: string[] = [];
   const cacheHits: string[] = [];
@@ -222,7 +231,23 @@ export function compileSolidityProject(
       // declares a contract owns its published artifact: an importing root can be compiled with a different
       // primary-contract context, and publishing that imported copy makes focused compiles overwrite canonical
       // dependency artifacts. Filtering here also keeps one-file iteration proportional to the selected source.
-      if (!ownedDeclarations.has(name)) continue;
+      const ownedByCurrentSource = ownedDeclarations.has(name);
+      if (!ownedByCurrentSource) {
+        const ownerPath = declarationOwners.get(name);
+        // Imported artifact objects carry the primary root's source/debug context. Publishing that copy under the
+        // imported declaration's name produces a plausible but false artifact (and omits interface-only custom
+        // errors). Compile the exact dependency source as a canonical follow-up job instead. Only dependencies
+        // actually emitted by the compiler are scheduled, keeping project compilation proportional to its usable
+        // ABI surface rather than compiling the complete package tree.
+        if (isExternalDependency(ownerPath) && ownerPath && !scheduled.has(ownerPath)) {
+          const owner = allSources.get(ownerPath);
+          if (owner) {
+            ordered.push(owner);
+            scheduled.add(ownerPath);
+          }
+        }
+        continue;
+      }
       patchProjectArtifactUpsertKeys(artifact);
       if (artifact.abi?.some((fn) => fn.modifiers?.includes('delegate'))) {
         artifact.delegateProxyStateOutputCountPinned = true;

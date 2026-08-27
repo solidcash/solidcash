@@ -1015,6 +1015,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.subroutineUseCount.delete(id);
       probe.subroutineUseCount.set(moved, uses);
     }
+    if (this.intDecodeIntSlot.id !== undefined) {
+      const movedIntDecode = relocated.get(this.intDecodeIntSlot.id);
+      if (movedIntDecode !== undefined) this.intDecodeIntSlot.id = movedIntDecode;
+    }
+    for (const slot of [
+      this.intEncodeSlot, this.bytesNonEmptySlot, this.evmWordSlot, this.take32Slot, this.drop32Slot,
+    ]) {
+      if (slot.id === undefined) continue;
+      const moved = relocated.get(slot.id);
+      if (moved !== undefined) slot.id = moved;
+    }
   }
 
   private snapshotCompactHelperIds(): { next: bigint; used: bigint[]; cheap: bigint[]; allocated: bigint[] } {
@@ -1339,6 +1350,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // active trace shape and can make a valid chunk region unobservable, so these contracts keep their bodies inline.
   private currentContractRequiresTraceStableBodies: boolean = false;
   private currentContractEmitsEvent: boolean = false;
+  /** Compact-pool id for the int-like pushdata decoder wrapper; allocated on first int decode site. */
+  private intDecodeIntSlot: { id: bigint | undefined } = { id: undefined };
+  /** Compact-pool ids for stack-neutral compiler primitives, allocated on first use. */
+  private intEncodeSlot: { id: bigint | undefined } = { id: undefined };
+  private bytesNonEmptySlot: { id: bigint | undefined } = { id: undefined };
+  private evmWordSlot: { id: bigint | undefined } = { id: undefined };
+  private take32Slot: { id: bigint | undefined } = { id: undefined };
+  private drop32Slot: { id: bigint | undefined } = { id: undefined };
+
+  /** Share contract-wide dynamic helper identities with a child traversal or copy them back from a probe. */
+  private shareDynamicPrimitiveSlotsWith(target: GenerateTargetTraversalWithLocation): void {
+    target.intDecodeIntSlot = this.intDecodeIntSlot;
+    target.intEncodeSlot = this.intEncodeSlot;
+    target.bytesNonEmptySlot = this.bytesNonEmptySlot;
+    target.evmWordSlot = this.evmWordSlot;
+    target.take32Slot = this.take32Slot;
+    target.drop32Slot = this.drop32Slot;
+  }
 
   /** X12. This contract is a split FACET: `delegateOnly`, so its own data NFTs are never materialized. */
   private currentContractIsSplitFacet: boolean = false;
@@ -1387,6 +1416,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emit(op: OpOrData | OpOrData[], locationData: SingleLocationData): void {
+    // The usage probe only needs helper-site counts and compact-id allocation. Appending discarded
+    // opcodes and location records dominates throwaway body generation on large contracts.
+    if (this.isSubroutineUseProbe) return;
     if (Array.isArray(op)) {
       op.forEach((element) => this.output.push(element as Op));
       op.forEach(() => this.locationData.push(locationData));
@@ -1475,6 +1507,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !this.usesMessageBusOwnerBlockBase();
   }
 
+  /**
+   * Push the physical resource-block base selected by the ordinary delegate layout authenticated at entry.
+   * Compact composition puts implementation resources after the executor; balanced composition puts the
+   * executor after the complete proxy-owned block. Both layouts carry the same authenticated proxy-master ABI
+   * witness, so use its compact-offset relation to select the only corresponding resource base.
+   */
+  private emitDelegateResourceBlockBase(
+    locationData: SingleLocationData, extraStackOffset = 0,
+  ): void {
+    if (!this.usesDelegateExecutorBlockBase()) {
+      this.emitMasterInputIndex(locationData, extraStackOffset);
+      return;
+    }
+    this.emitMasterInputIndex(locationData, extraStackOffset); // [proxyMaster]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    this.emit(encodeInt(BigInt(1 + this.dataNftCount)), locationData);
+    this.emit(Op.OP_SUB, locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_INPUTINDEX, locationData); // compact resources are executor-relative
+    this.emit(Op.OP_ENDIF, locationData); // balanced resources retain the proxy-master base
+  }
+
   /** A compiler-generated route handler receives its physical owner identity as an explicit hidden argument. */
   private usesMessageBusOwnerBlockBase(): boolean {
     return this.hasMessageBusParticipantOwner(this.currentFunction);
@@ -1509,6 +1566,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || node?.messageBusRoute === true
       || (node?.name.startsWith('__message_bus') === true
         && node.parameters?.some((parameter) => parameter.name === 'batchBlob') === true);
+  }
+
+  /** Whether a compiler-generated route local was allocated before any handler can add runtime-only operands. */
+  private isCompilerMessageBusRouteFrameLocal(name: string, node = this.currentFunction): boolean {
+    return this.isCompilerMessageBusRoute(node)
+      && node.messageBusRouteFrameLocals?.includes(name) === true;
   }
 
   /**
@@ -1546,10 +1609,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // must be excluded from an input-relative offset - otherwise the funding input is read one-too-high per
     // preceding output-only slot (e.g. a value-RETURNING deploy function has a returnEvent output before it).
     if (kind === 'deploy') offset -= this.countOutputOnlySlotsBefore(offset);
-    // Delegate state lives in the proxy block, but execution-owned resources belong to the co-spent
-    // implementation block. This includes output-only effects and the self-preserving compute side-cars which
-    // execute beside the implementation. Basing either family on the proxy can overlap proxy data or grafted
-    // entry outputs whenever the implementation follows the proxy at a non-zero input index.
+    // Delegate state lives in the proxy block, while execution-owned resources use the physical resource base
+    // authenticated by the delegate prologue. In compact composition that base is the executor; in balanced
+    // composition it is the proxy master whose complete published block already contains the resource slots.
+    // Applying the same selector to output-only effects and self-preserving compute side-cars keeps every slot in
+    // one compiler-published coordinate system rather than mixing a balanced input frame with compact outputs.
     const delegateImplementationRelative = this.usesDelegateExecutorBlockBase()
       && new Set<BlockSlotKind>([
         'keccakSideCar', 'ecrecoverSideCar',
@@ -1564,7 +1628,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (delegateImplementationRelative && this.currentContractIsSplitFacet) {
       offset -= this.countDataNftSlotsBefore(offset);
     }
-    if (delegateImplementationRelative) this.emit(Op.OP_INPUTINDEX, locationData);
+    if (delegateImplementationRelative) this.emitDelegateResourceBlockBase(locationData, extraStackOffset);
     else this.emitMasterInputIndex(locationData, extraStackOffset);
     if (offset > 0) {
       this.emit(encodeInt(BigInt(offset)), locationData);
@@ -1790,10 +1854,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Token-free genesis-capable inputs can expose a potential category through introspection. Entry NFTs always
     // carry a non-empty slot commitment, so commitment presence distinguishes an entry from a plain slot funder.
     this.emit(kind === 'entry' ? Op.OP_UTXOTOKENCOMMITMENT : Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emitBytesNonEmpty(locationData);
+  }
+
+  /** [bytes] -> [1 if nonempty else 0]. Stack-neutral; shared when profitable. */
+  private emitBytesNonEmptyInline(locationData: SingleLocationData): void {
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.emit(encodeInt(0n), locationData);
     this.emit(Op.OP_GREATERTHAN, locationData);
+  }
+
+  private emitBytesNonEmpty(locationData: SingleLocationData): void {
+    if (this.bytesNonEmptySlot.id === undefined) {
+      this.bytesNonEmptySlot.id = this.allocateCompactHelperId();
+    }
+    if (this.invokeSubroutineIfDefined(this.bytesNonEmptySlot.id, locationData)) return;
+    this.emitBytesNonEmptyInline(locationData);
+  }
+
+  /** [blob] -> [first 32 bytes]. Stack-neutral. */
+  private emitTakeFirst32Inline(locationData: SingleLocationData): void {
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+  }
+
+  private emitTakeFirst32(locationData: SingleLocationData): void {
+    if (this.take32Slot.id === undefined) this.take32Slot.id = this.allocateCompactHelperId();
+    if (this.invokeSubroutineIfDefined(this.take32Slot.id, locationData)) return;
+    this.emitTakeFirst32Inline(locationData);
+  }
+
+  /** [blob] -> [blob without the first 32 bytes]. Stack-neutral. */
+  private emitDropFirst32Inline(locationData: SingleLocationData): void {
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_NIP, locationData);
+  }
+
+  private emitDropFirst32(locationData: SingleLocationData): void {
+    if (this.drop32Slot.id === undefined) this.drop32Slot.id = this.allocateCompactHelperId();
+    if (this.invokeSubroutineIfDefined(this.drop32Slot.id, locationData)) return;
+    this.emitDropFirst32Inline(locationData);
   }
 
   private getMostRecentInstructionPointer(): number {
@@ -2094,24 +2197,48 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const emitIntEncode = (t: GenerateTargetTraversalWithLocation): void => {
       t.emitGenericPushdataEncode(PrimitiveType.BIGINT, loc);
     };
-    const defineIntEncode = this.capturedSubroutineIsProfitable(INTENC, count(INTENC), emitIntEncode);
+    const intEncodeId = this.intEncodeSlot.id ?? INTENC;
+    const defineIntEncode = this.intEncodeSlot.id !== undefined
+      && this.capturedSubroutineIsProfitable(intEncodeId, count(intEncodeId), emitIntEncode);
     // When int-encode is its own subroutine it absorbs its per-site frame, leaving only
     // bytes-branch frames for the shared frame routine.
-    const frameUses = defineIntEncode ? count(FRAME) - count(INTENC) : count(FRAME);
+    const frameUses = defineIntEncode ? count(FRAME) - count(intEncodeId) : count(FRAME);
 
     // Emit OP_DEFINEs before bodies, recording spans for the dead-DEFINE splice.
     const spans: Array<{ id: bigint; span: { start: number; end: number } }> = [];
     if (count(DECODE) >= 2) {
       spans.push({ id: DECODE, span: this.emitWithSpan(() => this.emitIntDecodeSubroutine(node)) });
     }
+    if (this.intDecodeIntSlot.id !== undefined && count(this.intDecodeIntSlot.id) >= 2
+      && this.subroutineDefined.get(DECODE)) {
+      const decodeIntId = this.intDecodeIntSlot.id;
+      spans.push({
+        id: decodeIntId,
+        span: this.emitWithSpan(() => this.emitIntDecodeIntSubroutine(node, decodeIntId)),
+      });
+    }
     if (this.capturedSubroutineIsProfitable(FRAME, frameUses, emitFrame)) {
       spans.push({ id: FRAME, span: this.defineCapturedSubroutine(FRAME, emitFrame, loc) });
     }
-    if (defineIntEncode) {
+    if (defineIntEncode && this.intEncodeSlot.id !== undefined) {
       spans.push({
-        id: INTENC,
-        span: this.defineCapturedSubroutine(INTENC, emitIntEncode, loc),
+        id: this.intEncodeSlot.id,
+        span: this.defineCapturedSubroutine(this.intEncodeSlot.id, emitIntEncode, loc),
       });
+    }
+    const dynamicPrimitives: Array<{
+      slot: { id: bigint | undefined };
+      emitInline: (t: GenerateTargetTraversalWithLocation) => void;
+    }> = [
+      { slot: this.bytesNonEmptySlot, emitInline: (t) => t.emitBytesNonEmptyInline(loc) },
+      { slot: this.evmWordSlot, emitInline: (t) => t.emitEvmWordFromUintInline(loc) },
+      { slot: this.take32Slot, emitInline: (t) => t.emitTakeFirst32Inline(loc) },
+      { slot: this.drop32Slot, emitInline: (t) => t.emitDropFirst32Inline(loc) },
+    ];
+    for (const { slot, emitInline } of dynamicPrimitives) {
+      if (slot.id === undefined
+        || !this.capturedSubroutineIsProfitable(slot.id, count(slot.id), emitInline)) continue;
+      spans.push({ id: slot.id, span: this.defineCapturedSubroutine(slot.id, emitInline, loc) });
     }
     // Master self-preservation and minting uniqueness (non-delegate); capture needs a function node.
     const MSP = GenerateTargetTraversalWithLocation.MASTER_SELF_PRES_SUBROUTINE_ID;
@@ -3159,6 +3286,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
     sub.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     sub.compactHelperIds = this.compactHelperIds;
+    this.shareDynamicPrimitiveSlotsWith(sub);
     inlineEmit(sub);
     this.subroutineDependencies.set(id, new Set(
       [...sub.subroutineUseCount]
@@ -3230,6 +3358,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.dataNftCommitPreserveIds = this.dataNftCommitPreserveIds;
     sub.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     sub.compactHelperIds = this.compactHelperIds;
+    this.shareDynamicPrimitiveSlotsWith(sub);
     inlineEmit(sub);
     // Measured on the body that would actually be defined, i.e. the optimised one, or the decision is taken
     // against a size the emitted subroutine never has.
@@ -3249,6 +3378,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
     ]);
     if (!GenerateTargetTraversalWithLocation.EXTRACT_EVEN_IF_OUTLINABLE.includes(id)
+      && !this.currentContractRequiresTraceStableBodies
+      && this.compilerOptions.optimizeForCompilationSpeed !== true
       && optimised.length >= MINIMUM_WINDOW_ELEMENTS
       && !optimised.some((op) => typeof op === 'number' && barriers.has(op))) {
       return false;
@@ -3345,6 +3476,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.dataNftPreserveIds = new Map(probe.dataNftPreserveIds);
       this.dataNftCommitPreserveIds = new Map(probe.dataNftCommitPreserveIds);
       this.dataNftOutputCommitmentIds = new Map(probe.dataNftOutputCommitmentIds);
+      probe.shareDynamicPrimitiveSlotsWith(this);
       this.compactHelperIds = probe.compactHelperIds;
       this.rehomeHotHelperIds(probe);
       return probe.subroutineUseCount;
@@ -3541,6 +3673,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.ecrecoverSideCarBasis = func.functionId === undefined
       ? undefined : this.ecrecoverSideCarBasisByFunctionId.get(func.functionId);
     subTraversal.outlinedComputeBlockBaseFunctionIds = this.outlinedComputeBlockBaseFunctionIds;
+    this.shareDynamicPrimitiveSlotsWith(subTraversal);
+    // The usage probe discards emitted bytes. Child traversals must inherit the flag so they skip the
+    // five-level int-decode inline and the throwaway serialisation below.
+    subTraversal.isSubroutineUseProbe = this.isSubroutineUseProbe;
 
     // Visit the function definition to generate its body bytecode
     subTraversal.currentFunction = func;
@@ -3553,6 +3689,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X170. An outlined body is compiled on its own traversal, which never runs `visitContract`. Hand its
     // chunk-read bases back or the contract-level check sees an empty list and passes vacuously.
     this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
+
+    if (this.isSubroutineUseProbe) return;
 
     // Serialize the function body to bytecode data.
     //
@@ -3656,7 +3794,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Emit the shared OP_DEFINE subroutine for the generic pushdata decode. Stack: [blob] ->
-   * [raw_bytes, remainder]. Type-agnostic (raw bytes for all types); int callers add BIN2NUM.
+   * [raw_bytes, remainder]. Type-agnostic (raw bytes for all types); int callers add BIN2NUM
+   * via a compact wrapper helper or an inline epilogue.
    * Handles OP_0, OP_1NEGATE, OP_1-OP_16, PUSHDATA1/2, and standard pushdata (1-75).
    */
   private emitIntDecodeSubroutine(node: ContractNode): void {
@@ -3767,6 +3906,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Int-like decode: invoke the raw pushdata decoder, then convert [raw, remainder] to [int, remainder].
+   * One definition replaces SWAP BIN2NUM SWAP at every uint256/bigint site.
+   */
+  private emitIntDecodeIntSubroutine(node: ContractNode, id: bigint): void {
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    const body: (Op | Uint8Array)[] = [
+      encodeInt(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID),
+      Op.OP_INVOKE,
+      Op.OP_SWAP,
+      Op.OP_BIN2NUM,
+      Op.OP_SWAP,
+    ];
+    this.emit(scriptToBytecode(body as Script), loc);
+    this.emit(encodeInt(id), loc);
+    this.emit(Op.OP_DEFINE, loc);
+    this.subroutineDefined.set(id, true);
+  }
+
+  /**
    * Compile an entry-point function body to standalone bytecode and emit OP_DEFINE.
    *
    * Unlike emitFunctionDefine (for internal functions), entry-point functions need
@@ -3844,6 +4002,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // argument. Dropping this set here compiled direct calls with the old arity while the shared helper was
       // compiled with the widened frame, shifting its declared parameters by one stack item.
       subTraversal.outlinedComputeBlockBaseFunctionIds = this.outlinedComputeBlockBaseFunctionIds;
+      this.shareDynamicPrimitiveSlotsWith(subTraversal);
+      subTraversal.isSubroutineUseProbe = this.isSubroutineUseProbe;
 
       // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
       // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
@@ -3879,6 +4039,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X151. Entry-point bodies are compiled on their own traversal, which never runs `visitContract`. Hand the
     // chunk-read basis facts back or the contract-level check sees an empty list and passes vacuously.
     this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
+
+    // The usage probe only needs helper-site counts and id allocation. Peephole, source maps and the
+    // OP_DEFINE payload are rebuilt on the real pass.
+    if (this.isSubroutineUseProbe) return;
 
     // Normalize the output
     const normalizedOutput = normaliseScript(subTraversal.output);
@@ -4686,15 +4850,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMNOTEQUAL, loc); // [idx, bool]
       this.emit(Op.OP_VERIFY, loc);      // [idx]
 
-      // Ordinary delegate executors immediately follow the proxy's master/data-NFT region. A compiler-owned
-      // message-bus route instead places its executor at the end of the complete published owner block. Bind the
-      // witness to that compiler-authored offset so a route cannot execute from an arbitrary interior input.
-      this.emit(Op.OP_INPUTINDEX, loc);
-      this.emit(encodeInt(BigInt(this.isCompilerMessageBusRoute(node)
-        ? node.blockLayout?.blockSize ?? (1 + this.dataNftCount)
-        : 1 + this.dataNftCount)), loc);
-      this.emit(Op.OP_SUB, loc);
-      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      // A direct delegate executor follows the compact proxy state prefix. Balanced composition instead places
+      // it after the function's complete compiler-published block, including entry inputs and funders paired with
+      // output-only slots. These are the only two legal physical forms: accept both for an ordinary delegate whose
+      // full block is wider, while a compiler route retains its one exact published offset.
+      const compactProxyOffset = 1 + this.dataNftCount;
+      const publishedProxyOffset = node.blockLayout?.blockSize ?? compactProxyOffset;
+      if (!this.isCompilerMessageBusRoute(node) && publishedProxyOffset !== compactProxyOffset) {
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_INPUTINDEX, loc);
+        this.emit(encodeInt(BigInt(compactProxyOffset)), loc);
+        this.emit(Op.OP_SUB, loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_OVER, loc);
+        this.emit(Op.OP_INPUTINDEX, loc);
+        this.emit(encodeInt(BigInt(publishedProxyOffset)), loc);
+        this.emit(Op.OP_SUB, loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_BOOLOR, loc);
+        this.emit(Op.OP_VERIFY, loc);
+        // Both comparisons consume duplicates of the authenticated proxy index. Remove the original too: this
+        // prologue is a verifier, not part of the generated handler frame, and must be stack-neutral just like the
+        // single-offset OP_NUMEQUALVERIFY form below.
+        this.emit(Op.OP_DROP, loc);
+      } else {
+        this.emit(Op.OP_INPUTINDEX, loc);
+        this.emit(encodeInt(BigInt(this.isCompilerMessageBusRoute(node)
+          ? publishedProxyOffset : compactProxyOffset)), loc);
+        this.emit(Op.OP_SUB, loc);
+        this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      }
     }
 
     // Load each external library this function uses and OP_DEFINE it once, before the body. Inlined
@@ -5485,7 +5670,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (elem.skip) {
           this.emit(Op.OP_DROP, loc);
         } else {
-          this.emitReplace(this.getStackIndex(elem.name!), node);
+          if (this.isCompilerMessageBusRouteFrameLocal(elem.name!)) {
+            this.emitReplaceCompilerRouteFrameValue(elem.name!, node);
+          } else {
+            this.emitReplace(this.getStackIndex(elem.name!), node);
+          }
         }
         this.popFromStack();
       }
@@ -5548,7 +5737,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     node.expression = this.visit(node.expression);
     if (this.scopeDepth > 0) {
-      this.emitReplace(this.getStackIndex(node.identifier.name), node);
+      if (this.isCompilerMessageBusRouteFrameLocal(node.identifier.name)) {
+        this.emitReplaceCompilerRouteFrameValue(node.identifier.name, node);
+      } else {
+        this.emitReplace(this.getStackIndex(node.identifier.name), node);
+      }
       this.popFromStack();
     } else {
       this.popFromStack();
@@ -5563,8 +5756,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitAssignmentExpression(node: AssignmentExpressionNode): Node {
     this.visit(node.assign);
     const locationData = { location: node.location, positionHint: PositionHint.END };
-    this.emit(encodeInt(BigInt(this.getStackIndex(node.assign.identifier.name))), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    if (this.isCompilerMessageBusRouteFrameLocal(node.assign.identifier.name)) {
+      this.emitPickTrackedFromBottom(node.assign.identifier.name, locationData);
+    } else {
+      this.emit(encodeInt(BigInt(this.getStackIndex(node.assign.identifier.name))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    }
     this.pushToStack('(value)');
     return node;
   }
@@ -5579,7 +5776,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Replace the variable on the stack (same as visitAssign)
     if (this.scopeDepth > 0) {
-      this.emitReplace(this.getStackIndex(node.identifier.name), node);
+      if (this.isCompilerMessageBusRouteFrameLocal(node.identifier.name)) {
+        this.emitReplaceCompilerRouteFrameValue(node.identifier.name, node);
+      } else {
+        this.emitReplace(this.getStackIndex(node.identifier.name), node);
+      }
       this.popFromStack();
     } else {
       this.popFromStack();
@@ -7081,7 +7282,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 1. Entry address (constant for the collection) -> tracked, reused per entry (the address pin below).
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.emit(encodeInt(32n), locationData); this.emit(Op.OP_SPLIT, locationData); this.emit(Op.OP_DROP, locationData);
+    this.emitTakeFirst32(locationData);
     this.pushToStack('(__iter_entryaddr)');
     this.emitSortedEntryAddress(collectionHash, locationData);
     this.popFromStack(); // emitP2sh32FromCovenant re-tracks the address as '(value)'; relabel it.
@@ -8028,7 +8229,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     //    and compares to a pubkey literal: split off parity, drop the LE number's sign/pad byte, reverse Qx to BE.
     slotIdx('B', true); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);        // [Q34]
     this.emit(encodeInt(1n), loc); this.emit(Op.OP_SPLIT, loc);            // [parity, Qx33LE]
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [parity, Qx32LE]
+    this.emitTakeFirst32(loc); // [parity, Qx32LE]
     this.emit(Op.OP_REVERSEBYTES, loc); this.emit(Op.OP_CAT, loc);          // [pubkey33]
 
     // 5. project: pubkey = the compressed key; p2pkh = 0x76a914 || hash160(key) || 0x88ac; evm = keccak256(key)[12:]
@@ -8094,7 +8295,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       keccakIdx(true, 0); this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);        // [R = keccak256(P)]
       if (statefulEvmKeccak && evmKeccakBatchWidth > 1) {
         if (evmKeccakWithinBatch > 0) dropFirst(32 * evmKeccakWithinBatch);
-        this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+        this.emitTakeFirst32(loc);
       }
       this.emit(encodeInt(12n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [R[12:32] = addr20]
     }
@@ -11515,7 +11716,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     const stackIndex = this.getStackIndex(node.name);
-    this.emit(encodeInt(BigInt(stackIndex)), { location: node.location, positionHint: PositionHint.START });
+    const locationData = { location: node.location, positionHint: PositionHint.START };
+    const definition = node.definition?.definition;
+    const routeFrameBinding = this.isCompilerMessageBusRoute()
+      && ((definition instanceof ParameterNode
+        && (this.currentFunction.parameters.includes(definition)
+          || this.contractParameters.includes(definition)))
+        || this.isCompilerMessageBusRouteFrameLocal(node.name));
+
+    // A generated route can invoke several outlined handlers before it next reads an ABI parameter. Those
+    // handlers may intentionally retain runtime-only graph/result operands which are not represented in this
+    // traversal's static stack model. A literal top-relative PICK/ROLL therefore no longer identifies the
+    // binding. Parameters and explicitly marked compiler locals are allocated before route execution and retain
+    // a stable ordinal from the bottom; derive their live depth at every read. This applies to the complete
+    // generated-route frame rather than to any particular verifier, collection, or handler shape.
+    if (routeFrameBinding) {
+      const bottomOrdinalPlusOne = this.stack.length - stackIndex;
+      this.emit(Op.OP_DEPTH, locationData);
+      this.emit(encodeInt(BigInt(bottomOrdinalPlusOne)), locationData);
+      this.emit(Op.OP_SUB, locationData);
+    } else {
+      this.emit(encodeInt(BigInt(stackIndex)), locationData);
+    }
 
     // If the final use is inside an if-statement, we still OP_PICK it
     // We do this so that there's no difference in stack depths between execution paths
@@ -11527,10 +11749,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ip: this.getMostRecentInstructionPointer(),
       };
 
-      this.emit(Op.OP_ROLL, { location: node.location, positionHint: PositionHint.START });
+      this.emit(Op.OP_ROLL, locationData);
       this.removeFromStack(stackIndex);
     } else {
-      this.emit(Op.OP_PICK, { location: node.location, positionHint: PositionHint.START });
+      this.emit(Op.OP_PICK, locationData);
     }
 
     this.pushToStack('(value)');
@@ -12455,13 +12677,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // [uint on stack] -> its 32-byte big-endian ABI word. NUM2BIN to 33 fits positive values including the
   // high-bit (>= 2^255) case; drop the sign byte, reverse to big-endian. (evmCompat)
-  private emitEvmWordFromUint(loc: SingleLocationData): void {
+  private emitEvmWordFromUintInline(loc: SingleLocationData): void {
     this.emit(encodeInt(33n), loc);
     this.emit(Op.OP_NUM2BIN, loc);
     this.emit(encodeInt(32n), loc);
     this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_REVERSEBYTES, loc);
+  }
+
+  private emitEvmWordFromUint(loc: SingleLocationData): void {
+    if (this.evmWordSlot.id === undefined) this.evmWordSlot.id = this.allocateCompactHelperId();
+    if (this.invokeSubroutineIfDefined(this.evmWordSlot.id, loc)) return;
+    this.emitEvmWordFromUintInline(loc);
   }
 
   // evmCompat: encode a static value type as one 32-byte big-endian EVM ABI word. Numbers left-pad (value in
@@ -12735,7 +12963,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // pushdata(N) ++ per-element pushdata. Sequential (canonical order): skip the head, then decode each element
   // (read its length word, take that many bytes, skip padding) and re-encode via emitPushdataEncode. Loop-safe.
   private emitEvmDynamicArrayDecode(elemType: Type, loc: SingleLocationData): void {
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // drop the offset word
+    this.emitDropFirst32(loc); // drop the offset word
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [lenWord, rest]
     this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [rest, N]
     this.emit(Op.OP_DUP, loc); this.emitPushdataEncode(PrimitiveType.BIGINT, loc); // [rest, N, acc=pushdata(N)]
@@ -12898,7 +13126,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEvmStructDecodeDynamic(type: StructType, loc: SingleLocationData): void {
     const fields = type.fields;
     const n = fields.length;
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // strip top-level offset
+    this.emitDropFirst32(loc); // strip top-level offset
     this.emitEvmAbiDecodeDynamic(fields.map((f) => f.type), loc); // [v0..v(n-1)] tracked
     // re-frame: bring each field value (deepest first) up, pushdata-encode, concatenate into the struct blob.
     fields.forEach((f, i) => {
@@ -13222,23 +13450,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     node.parameters.forEach((param, i) => {
       const evmPacked = this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat;
-      // Ethereum's `uint160(address)` *is* the address bytes. A BCH address is the locking bytecode
-      // (p2sh32 = 35 bytes), which cannot be reconstructed from the 20-byte P2PKH/HASH160 extract.
-      // Packed `uint160(address)` therefore publishes the original locking bytecode.
-      const packedAddressAsUint = param instanceof CastNode
-        && param.expression?.type instanceof AddressType
-        && param.type instanceof IntType;
-      if (packedAddressAsUint && param instanceof CastNode) {
-        this.visit(param.expression);
-        node.parameters[i] = param;
-      } else {
-        param = this.visit(param);
-        node.parameters[i] = param;
+      param = this.visit(param);
+      node.parameters[i] = param;
 
-        // For packed encoding, pad numeric types to their declared byte width
-        if (evmPacked) {
-          this.emitEvmPackedValue(param.type!, locationData);
-        } else if (param.type === PrimitiveType.BOOL) {
+      // For packed encoding, pad numeric types to their declared byte width. Casts are evaluated first: in
+      // particular, `uint160(address)` narrows the native locking bytecode to its 20-byte Solidity identity and
+      // converts that big-endian identity to a VM number before this converts it back to packed big-endian bytes.
+      if (evmPacked) {
+        this.emitEvmPackedValue(param.type!, locationData);
+      } else if (param.type === PrimitiveType.BOOL) {
         // OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF [1] OP_NUM2BIN -> canonical 0x00/0x01
         this.emit(Op.OP_IF, locationData);
         this.emit(encodeInt(1n), locationData);
@@ -13257,7 +13477,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Pad VM number to declared byte width
         this.emit(encodeInt(BigInt(param.type.byteWidth)), locationData);
         this.emit(Op.OP_NUM2BIN, locationData);
-      }
       }
 
       // CAT with previous if not the first
@@ -13561,9 +13780,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const isIntLike = type === PrimitiveType.BIGINT || type instanceof IntType
       || type instanceof FixedType || (type instanceof BytesType && type.bound === 1);
 
-    // The int-like branch is shared via a subroutine when used >=2 times.
-    if (isIntLike
-      && this.invokeSubroutineIfDefined(GenerateTargetTraversalWithLocation.INT_ENCODE_SUBROUTINE_ID, locationData)) {
+    // The int-like branch is shared via a compact compiler helper when profitable.
+    if (isIntLike) {
+      if (this.intEncodeSlot.id === undefined) this.intEncodeSlot.id = this.allocateCompactHelperId();
+      if (this.invokeSubroutineIfDefined(this.intEncodeSlot.id, locationData)) {
+        this.popFromStack();
+        this.pushToStack('(value)');
+        return;
+      }
+    }
+
+    // Usage probe already counted INT_ENCODE (and will count FRAME via the bump below). Do not inline the
+    // special-case ladder into a throwaway body; the inner standard-frame site is absorbed when encode is
+    // extracted (`frameUses = count(FRAME) - count(INTENC)`).
+    if (isIntLike && this.isSubroutineUseProbe) {
+      this.bumpSubroutineUse(GenerateTargetTraversalWithLocation.PUSHDATA_FRAME_SUBROUTINE_ID);
       this.popFromStack();
       this.pushToStack('(value)');
       return;
@@ -13708,6 +13939,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.invokeSubroutineIfDefined(GenerateTargetTraversalWithLocation.PUSHDATA_FRAME_SUBROUTINE_ID, locationData)) {
       return;
     }
+    if (this.isSubroutineUseProbe) return;
 
     // Get size
     this.emit(Op.OP_SIZE, locationData);
@@ -14081,10 +14313,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const isIntLike = type === PrimitiveType.INT || type === PrimitiveType.BIGINT
       || type instanceof IntType || type instanceof FixedType;
 
-    // Use shared OP_DEFINE subroutine when available.
-    // The subroutine returns [raw_bytes, remainder]. For int types, add BIN2NUM.
-    if (!this.currentFunctionIsDelegate
-      && this.subroutineDefined.get(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID)) {
+    // Use the shared OP_DEFINE subroutine when available. This helper is a pure data-stack
+    // transformation and does not read the delegate proxy index off the altstack, so delegate
+    // implementation bodies can invoke it. Skipping them inlined the full five-level pushdata
+    // decoder at every Solidity uint256 state/ABI site.
+    if (isIntLike) {
+      if (this.intDecodeIntSlot.id === undefined) {
+        this.intDecodeIntSlot.id = this.allocateCompactHelperId();
+      }
+      if (this.invokeSubroutineIfDefined(this.intDecodeIntSlot.id, locationData)) return;
+    }
+    if (this.subroutineDefined.get(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID)) {
       this.emit(encodeInt(GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID), locationData);
       this.emit(Op.OP_INVOKE, locationData);
       // Subroutine returns [raw_bytes, remainder]. Convert raw to int if needed.
@@ -14095,6 +14334,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return;
     }
+
+    // The usage probe has already counted this site. Do not inline the five-level decoder into a
+    // throwaway body: Marketplace-scale contracts repeat it at every uint256 ABI/state site, and the
+    // probe previously spent most of codegen emitting and peephole-optimising those copies.
+    if (this.isSubroutineUseProbe) return;
 
     // Inline fallback path (used when subroutine is not defined)
     // Empty blob decodes as [0, empty] — SPLIT 1 on a zero-length item is invalid.
@@ -16141,7 +16385,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DUP, loc); this.emit(encodeInt(60n), loc); this.emit(Op.OP_GREATERTHAN, loc); // [rest, len, long]
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc); // [root32 || headData28]
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [root]
+    this.emitTakeFirst32(loc); // [root]
     // OP_INVOKE binds a route's physical witness to this handler-local parameter. Keep the body expressed in
     // its own entry-slot coordinates: the same clone can be mapped to a different physical route layout without
     // changing its frame or reaching into the caller's parameter namespace.
@@ -16333,7 +16577,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // emitP2sh32FromCovenant's popFromStack consumes IT (not a real tracked var), then untrack the address.
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [Hk32, categoryId]
+    this.emitTakeFirst32(loc); // [Hk32, categoryId]
     this.pushToStack('(sortedaddr)');
     this.emitSortedEntryAddress(collectionHash, loc); // [Hk32, entryAddr]
     this.popFromStack();
@@ -16612,6 +16856,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitVerifySortedValueOutput(
     loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
+    untrackedStackItems = 1,
   ): void {
     const id = GenerateTargetTraversalWithLocation.SORTED_VALUE_OUTPUT_SUBROUTINE_ID;
     this.bumpSubroutineUse(id);
@@ -16631,20 +16876,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       return;
     }
-    this.emitVerifySortedValueOutputInline(loc, addrDepth, f1Depth, f2Depth, f3Depth);
+    this.emitVerifySortedValueOutputInline(
+      loc, addrDepth, f1Depth, f2Depth, f3Depth, untrackedStackItems,
+    );
   }
 
   private emitVerifySortedValueOutputInline(
     loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
-    consumeFrame = false,
+    untrackedStackItems = 1, consumeFrame = false,
   ): void {
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);      // [.., outIdx, outbc]
     this.emit(encodeInt(BigInt(addrDepth + 1)), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);                                    // bytecode == entryAddr
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [.., outIdx, cat]
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_DUP, loc); this.emitDropFirst32(loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);           // capability mutable
-    this.emitVerifyCatBaseEqMaster(loc, 2);                               // base == master -> [.., outIdx]
+    this.emitVerifyCatBaseEqMaster(loc, untrackedStackItems + 1);         // +1: category above working area
     this.emit(encodeInt(BigInt(f1Depth)), loc); this.emit(Op.OP_PICK, loc);      // f1 (baseline)
     this.emit(encodeInt(BigInt(f2Depth + 1)), loc); this.emit(Op.OP_PICK, loc);  // f2 (+1: f1 copy)
     this.emit(Op.OP_CAT, loc);                                           // f1||f2
@@ -16703,7 +16950,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       this.emitEntryInputIndex(slotIndex, loc, 0);
       this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // coSlot
+      this.emitTakeFirst32(loc); // coSlot
       this.emitCopyUpsertHashFromAltstack(loc);
       this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc); // 1 if coSlot != Hk (insert)
     }
@@ -16720,7 +16967,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emitTakeFirst32(loc);
     this.pushToStack('(vc_chunkaddr)');
     this.emitValueChunkP2sh32(chunkHash, '(vc_slot)', '(vc_digest)', loc);
     this.stack[0] = '(vc_chunkaddr)'; // the helper renamed the top to '(value)'
@@ -16924,7 +17171,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // active-slot gate; in that layout a funded fixed slot really is the inactive alias representation.
       const trackedBeforeGate = [...this.stack];
       this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitTakeFirst32(loc);
       this.emitSortedEntryAddress(collectionHash, loc);
       this.emitBlockSlotIndex('entry', slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
       this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
@@ -16932,7 +17179,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
       this.stack = [...trackedBeforeGate];
       this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitTakeFirst32(loc);
       this.emitSortedEntryAddress(collectionHash, loc);
       this.emitBlockSlotIndex('entry', slotIndex, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
       this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
@@ -16979,7 +17226,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Collection-specific entry address -> [v, Hk, addr].
       this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitTakeFirst32(loc);
       this.pushToStack('(batchaddr)');
       this.emitSortedEntryAddress(collectionHash, loc);
       this.popFromStack();
@@ -17022,7 +17269,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
       this.emit(Op.OP_FROMALTSTACK, loc);
       this.emitEntryOutputIndex(slotIndex, loc, 4);
-      this.emitVerifySortedValueOutput(loc, 2, 3, 1, 4);
+      this.emitVerifySortedValueOutput(loc, 2, 3, 1, 4, 4);
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // next, addr, H
       this.emit(Op.OP_DROP, loc); this.popFromStack(); // v
       if (aliasOwner !== undefined) {
@@ -17084,8 +17331,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // 3. entry address -> [v, Hk32, entryAddr]
-    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emitMasterInputIndex(loc, 1); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
     this.pushToStack('(sortedaddr)');
     this.emitSortedEntryAddress(collectionHash, loc);
     this.popFromStack();
@@ -17114,11 +17361,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc);                                           // 0 -> use coNext32
       this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_ENDIF, loc);                                             // else repoint is effNext
       this.emitEntryOutputIndex(slotIndex, loc, 7);                    // [.., coValue, effNext, outIdx]
-      this.emitVerifySortedValueOutput(loc, 5, 4, 1, 7);              // addr5, coSlot32 d4, effNext d1, v d7
+      this.emitVerifySortedValueOutput(loc, 5, 4, 1, 7, 7);           // addr5, coSlot32 d4, effNext d1, v d7
       this.emit(Op.OP_DROP, loc);                                     // drop effNext -> [.., coValue] (6 raw, matches INSERT)
     } else {
       this.emitEntryOutputIndex(slotIndex, loc, 6);                    // [.., coValue, outIdx]
-      this.emitVerifySortedValueOutput(loc, 4, 3, 2, 6);             // addr4, coSlot32 d3, coNext32 d2, v d6
+      this.emitVerifySortedValueOutput(loc, 4, 3, 2, 6, 6);          // addr4, coSlot32 d3, coNext32 d2, v d6
     }
     // One recreated node, plus one per co-spent read slot, is the whole collection footprint of an update.
     if (pinsCollectionOutputCount) this.emit(encodeInt(1n + extraCollectionOutputs), loc);
@@ -17135,14 +17382,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc); // H(k) < coNext
     this.emit(Op.OP_ENDIF, loc);                                        // [.., coValue]
     this.emitEntryOutputIndex(slotIndex, loc, 6);                       // P' outIdx -> [.., coValue, poutIdx]
-    this.emitVerifySortedValueOutput(loc, 4, 3, 5, 1);                  // P' = coSlot32 d3 || Hk32 d5 || coValue d1
+    this.emitVerifySortedValueOutput(loc, 4, 3, 5, 1, 6);               // P' = coSlot32 d3 || Hk32 d5 || coValue d1
     // Dynamic-output accounting can leave transient untracked values above this working area. Recompute the
     // collection address next to the NEW output index rather than recovering the older copy by a fragile raw depth.
-    this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emitMasterInputIndex(loc, 5); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
     this.pushToStack('(__new_entry_category)');
     this.emitSortedEntryAddress(collectionHash, loc);
-    this.emitTrailingBlockBase(blockSize, loc); // NEW outIdx
+    this.emitTrailingBlockBase(blockSize, loc, undefined, 5); // NEW outIdx
     const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some(
       (slot) => slot.kind === 'returnEvent',
     ) ?? false;
@@ -17159,7 +17406,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X102. Five untracked vmap fields remain above the tracked frame here. Both the iteration-count terms and
     // dynamic values are call-site-relative; the other callers have only the running partial and keep depth 0.
     if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc, 5);
-    this.emitVerifySortedValueOutput(loc, 1, 6, 3, 7);                  // NEW = Hk32 || coNext32 || v
+    this.emitVerifySortedValueOutput(loc, 1, 6, 3, 7, 6);               // NEW = Hk32 || coNext32 || v
     this.emit(Op.OP_DROP, loc); this.popFromStack();                    // recomputed entry address
     // Predecessor plus new node, plus one per co-spent read slot, is the whole footprint of an insert.
     if (pinsCollectionOutputCount) this.emit(encodeInt(2n + extraCollectionOutputs), loc);
@@ -18327,7 +18574,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitBlockSlotIndex('entry', guard.slotIndex, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
       this.emit(encodeInt(64n), loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc); this.emit(Op.OP_IF, loc);
-      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitTakeFirst32(loc);
       this.emitPickVMapWitness(`__internal__vmapBatchSlot_${guard.slotIndex}`, loc);
       this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_ENDIF, loc);
@@ -18632,10 +18879,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
           commitmentField(() => { proofIndex(slot, extra); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); }, field);
         };
-        // Message-bus routes expose the union of all handlers in one ABI. A target unused by the selected handler
-        // has no proof input or output and is authenticated by the same -2 sentinel as a general batch target.
-        arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
-        bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
+        // Message-bus routes expose the union of all handlers in one ABI. Only -1 (UPDATE) and nonnegative
+        // (INSERT predecessor) witnesses own a mutation. Lower sentinels cover inactive/alias lanes and active
+        // read-only lanes; the latter still authenticate a proof input but must not create a target output.
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE);
+        bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_IF);
         // One logical target has no intra-batch topology: its final next must equal the authenticated old next.
         directProofField('next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
         directProofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
@@ -18780,10 +19028,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         };
 
         for (const slot of targets) {
-        // Runtime aliases have no proof input or target output. Their sentinel/hash equivalence was authenticated
-        // above; all remaining topology checks operate on the canonical first occurrence.
-          arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
-          bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
+        // Runtime aliases and inactive lanes have no proof input; an active read-only lane can retain a proof but
+        // owns no target output. All mutation sentinels are >= -1, independent of the no-output sentinel kind.
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE);
+          bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_IF);
           arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_TOALTSTACK);
           proofIndex(slot); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); bin(Op.OP_TOALTSTACK);
 
@@ -18811,8 +19059,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // Every target lying in this original proof gap is at or after plannedNext (so none can be skipped).
           for (const other of targets) {
             if (other === slot) continue;
-            arg(`__internal__vmapBatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
-            bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
+            arg(`__internal__vmapBatchPredOut_${other}`); bin(Op.OP_1NEGATE);
+            bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_IF);
             batchField(slot, 'slot'); bin(Op.OP_BIN2NUM); batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
             bin(Op.OP_LESSTHAN); // h < other
             proofField(slot, 'next', 1); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
@@ -18862,8 +19110,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }
           bin(Op.OP_VERIFY);
           for (const other of targets) {
-            arg(`__internal__vmapBatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
-            bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
+            arg(`__internal__vmapBatchPredOut_${other}`); bin(Op.OP_1NEGATE);
+            bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_IF);
             proofField(slot, 'slot'); bin(Op.OP_BIN2NUM);
             batchField(other, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_LESSTHAN);
             proofField(slot, 'next', 1); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
@@ -18897,9 +19145,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bin(Op.OP_ELSE); this.emit(encodeInt(BigInt(targets.length)), loc); bin(Op.OP_ENDIF);
       } else {
         this.emit(encodeInt(BigInt(targets.length)), loc);
-        // `-2` excludes both a later same-target alias and an inactive fixed-route row. The first row of a
-        // route family has no runtimeAliasPriorSlots, but it can still be inactive; counting only alias-capable
-        // rows therefore invents one output whenever the first admitted handler is absent from the envelope.
+        // Only -2 owns no collection output: it is an inactive lane or a duplicate proof alias. An authenticated
+        // read-only lane uses -3 and preserves its uniquely-owned proof input at the fixed slot. The SDK assigns
+        // duplicate reads -2, so each remaining -3 contributes exactly one collection-address output.
         for (const slot of targets) {
           arg(`__internal__vmapBatchPredOut_${slot}`, 1);
           this.emit(encodeInt(-2n), loc); bin(Op.OP_NUMEQUAL); bin(Op.OP_SUB);
@@ -18964,7 +19212,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the runtime trailing region, not a fixed `entry[N]` block slot. The counter is incremented only after the
       // write, so every read during this iteration addresses the exact co-spend consumed by the transition body.
       const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
-      this.emitTrailingWriteInputBase(blockSize, locationData);
+      this.emitTrailingWriteInputBase(blockSize, locationData, undefined, extraStackOffset);
       if (loopContext.grouped) {
         this.emit(encodeInt(BigInt(this.getStackIndex(loopContext.inputBaseName) + extraStackOffset + 1)), locationData);
         this.emit(Op.OP_PICK, locationData);
@@ -18986,7 +19234,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     if (this.usesDelegateExecutorBlockBase()) {
-      this.emit(Op.OP_INPUTINDEX, locationData);
+      this.emitDelegateResourceBlockBase(locationData, extraStackOffset);
       const offset = this.getBlockSlotOffset('entry', slotIndex);
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
@@ -19004,14 +19252,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEntryOutputIndex(
     slotIndex: number,
     locationData: SingleLocationData,
-    _extraStackOffset: number,
+    extraStackOffset: number,
   ): void {
     // In 1:1 block layout, output index = input index
     if (this.usesDelegateExecutorBlockBase()) {
-      this.emit(Op.OP_INPUTINDEX, locationData);
+      this.emitDelegateResourceBlockBase(locationData, extraStackOffset);
       const offset = this.getBlockSlotOffset('entry', slotIndex);
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
-    } else this.emitBlockSlotIndex('entry', slotIndex, locationData);
+    } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
   }
 
   /**
@@ -19534,7 +19782,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Entry NFT address (loop-invariant) = base(master category) wrapped in the collection's entry covenant.
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emitTakeFirst32(loc);
     this.pushToStack(this.sortedInsertLoopAddrName);
     this.emitSortedEntryAddress(collectionHash, loc);
     this.stack[0] = this.sortedInsertLoopAddrName; // helper renamed top to '(value)'
@@ -19554,11 +19802,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [addr, P_slot, P_oldnext, P_value]
 
     // Read P' = output[master+blockSize+0]; verify bytecode==addr + category (mutable, base==master); read fields.
-    this.emitTrailingBlockBase(blockSize, loc); // [.., Poutidx(u)]
+    this.emitTrailingBlockBase(blockSize, loc, undefined, 3); // [.., Poutidx(u)]
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);
     this.emit(encodeInt(BigInt(addrD() + 5)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // [.., Poutidx]
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_DUP, loc); this.emitDropFirst32(loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emitVerifyCatBaseEqMaster(loc, 2); // [.., Poutidx]
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
@@ -19593,7 +19841,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // top). `extraUntracked` = untracked stack items already on top when called, so the counter PICK depth is right.
   private emitSortedInsertLoopSlotIndex(mult: number, add: number, extraUntracked: number, loc: SingleLocationData): void {
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
-    this.emitTrailingBlockBase(blockSize, loc); // write-path trailing base (1 partial on top)
+    this.emitTrailingBlockBase(blockSize, loc, undefined, extraUntracked); // write-path trailing base (1 partial on top)
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopCounterName) + extraUntracked + 1)), loc);
     this.emit(Op.OP_PICK, loc); // counter copy
     if (mult !== 1) { this.emit(encodeInt(BigInt(mult)), loc); this.emit(Op.OP_MUL, loc); }
@@ -19627,7 +19875,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedInsertLoopAddrName) + 2)), loc);
     this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc); // bytecode == addr
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_DUP, loc); this.emitDropFirst32(loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emitVerifyCatBaseEqMaster(loc, 2); // [.., nodeIdx]
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
@@ -20206,7 +20454,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Entry NFT address (loop-invariant) = base(master category) wrapped in the collection's entry covenant.
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emitTakeFirst32(loc);
     this.pushToStack(this.sortedUpsertLoopAddrName);
     this.emitSortedEntryAddress(collectionHash, loc);
     this.stack[0] = this.sortedUpsertLoopAddrName;
@@ -20314,8 +20562,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const pNext = this.sortedUpsertPendNextName;
     // pendingValid = size(pu_slot) > 0
     this.emit(encodeInt(BigInt(this.getStackIndex(pSlot))), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc);
+    this.emitBytesNonEmpty(loc);
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
     // outIdx = master + write-path trailing base + outCounter (U=1)
@@ -20357,7 +20604,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const amt = '(credit_amt)';
     // mintIdx: push output index master + blockSize + outCounter + add (u = untracked count currently above)
     const mintIdx = (add: number, u: number): void => {
-      this.emitTrailingWriteOutputBase(blockSize, loc);
+      this.emitTrailingWriteOutputBase(blockSize, loc, undefined, u);
       if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(Op.OP_ADD, loc); }
       if (this.sortedUpsertGrouped) {
         this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertOutputBaseName) + u + 1)), loc);
@@ -20367,7 +20614,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     // pendingValid = size(pu_slot) > 0
     this.emit(encodeInt(BigInt(this.getStackIndex(pSlot))), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHAN, loc); // U=1
+    this.emitBytesNonEmpty(loc); // U=1
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
     // DUPLICATE of the pending entry (Hk == pu_slot): the SAME key listed again. Accumulate into the pending instead of
@@ -20478,9 +20725,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Emit `master + blockSize + <persistent counter> + add`, leaving an output/input index on top (U untracked above).
     const pushIdx = (counterName: string, add: number, u: number): void => {
       if (counterName === this.sortedUpsertLoopOutCounterName) {
-        this.emitTrailingWriteOutputBase(blockSize, loc);
+        this.emitTrailingWriteOutputBase(blockSize, loc, undefined, u);
       } else {
-        this.emitTrailingWriteInputBase(blockSize, loc);
+        this.emitTrailingWriteInputBase(blockSize, loc, undefined, u);
       }
       if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(Op.OP_ADD, loc); }
       if (this.sortedUpsertGrouped) {
@@ -20521,7 +20768,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
       this.emit(encodeInt(BigInt(addrIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
       this.emit(Op.OP_DUP, loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_DUP, loc); this.emitDropFirst32(loc);
       this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);
       this.emitVerifyCatBaseEqMaster(loc, 2);
       this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
@@ -20558,7 +20805,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         // ---- UPDATE (debit/delete loops): mint output[..+outCounter] = coSlot|coNext|newValue immediately ----
         pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                  // outIdx (U=4)
-        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1);        // addr, coSlot, coNext, newValue
+        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1, 4);     // addr, coSlot, coNext, newValue
         this.emit(Op.OP_1, loc);                                             // delta = 1 (U=4)
       }
       this.emit(Op.OP_ELSE, loc);
@@ -20575,7 +20822,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);       // Hk < coNext (U=3)
       this.emit(Op.OP_ENDIF, loc);                                                                    // [.., coSlot, coNext, coValue] U=3
       pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                    // P' outIdx (U=4)
-      this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1); // P' = coSlot|Hk|coValue
+      this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1, 4); // P' = coSlot|Hk|coValue
       if (this.sortedUpsertPendActive) {
         // CHAIN-DEFER: defer the NEW node (pu_slot=Hk, pu_val=amt, pu_next=coNext) instead of minting it, so a further
         // new key in this SAME gap chains off it - even when the predecessor is UNTOUCHED or the HEAD sentinel (a
@@ -20589,7 +20836,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_1, loc);                                             // delta = 1 (U=4)
       } else {
         pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                  // NEW outIdx2 (U=4)
-        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4); // NEW = Hk|coNext|v[i]
+        this.emitVerifySortedValueOutput(loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4, 4); // NEW = Hk|coNext|v[i]
         this.emit(Op.OP_2, loc);                                             // delta = 2 (U=4)
       }
       this.scopeDepth -= 1;
@@ -20612,7 +20859,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitEntryInputIndex(this.sortedUpsertMergeDebitSlot, loc, 0);
         this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
         this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
-        this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [.., dSlot, dNext] U=2
+        this.emitTakeFirst32(loc); // [.., dSlot, dNext] U=2
         // isMerge = dSlot < Hk AND (dNext == 0 OR Hk < dNext)
         this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);   // dSlot# (U=3)
         this.emit(encodeInt(BigInt(hkIdx() + 3)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
@@ -21002,7 +21249,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const tracked = [...this.stack];
         const collectionHash = computeCollectionHash(this.entrySlots[slotIdx].collectionSignature);
         this.emitMasterInputIndex(loc); this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-        this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+        this.emitTakeFirst32(loc);
         this.emitSortedEntryAddress(collectionHash, loc);
         this.emitBlockSlotIndex('entry', slotIdx, loc); this.emit(Op.OP_UTXOBYTECODE, loc);
         this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_IF, loc);
@@ -21183,6 +21430,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDynamicWriteVerification(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_DYNAMIC_BASE === '1') {
+      console.error('dynamic-write-verifier-frame', JSON.stringify({
+        function: node.name,
+        define: this.isDefineSubTraversal,
+        route: this.isCompilerMessageBusRoute(node),
+        participantOwner: this.hasMessageBusParticipantOwner(node),
+        blockSize,
+        trailingBase: node.blockLayout?.trailingBase,
+        dynamicWrites: node.dynamicWrites,
+        sortedBatches: node.sortedBatchInfo?.map((batch) => batch.collection),
+        batchCountParameter: node.parameters.some(
+          (parameter) => parameter.name === '__internal__vmapBatchTrailingCount',
+        ),
+        batchCountStackIndex: this.getStackIndex('__internal__vmapBatchTrailingCount', true),
+        stackTail: this.stack.slice(-24),
+      }));
+    }
     const CHUNK = 120;
     // A compact layout counts a returnEvent slot which a plain send does not materialize, so its trailing chunks
     // shift down when returnOutputIdx < 0. A balanced layout with an explicit trailingBase retains that slot as
@@ -21403,7 +21668,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.currentFunctionIsDelegate) {
         this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', loc);
         this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-        this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+        this.emitTakeFirst32(loc);
         this.pushToStack('(dyn_chunkaddr_check)');
         this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, chunkHash), loc);
         this.popFromStack();
@@ -21458,7 +21723,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.currentFunctionIsDelegate) {
         this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', loc);
         this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-        this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+        this.emitTakeFirst32(loc);
         this.pushToStack('(dyn_chunkaddr)');
         this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, chunkHash), loc);
         this.stack[0] = '(dyn_chunkaddr)';
@@ -25080,15 +25345,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
     if (this.usesMessageBusOwnerBlockBase()) {
-      // Every generated route handler receives its physical participant owner as an explicit compiler argument.
-      // Use that one authority for both direct routes (where the caller supplied OP_INPUTINDEX) and delegated
-      // routes (where the caller supplied its authenticated proxy witness). Deciding again from transient clone
-      // metadata is unsound: later lowering can preserve the owner parameter while losing the delegate marker,
-      // causing state reads to fall back to the implementation executor's adjacent inputs. The local top-relative
-      // frame includes every compiler-owned handler operand, so it does not cross the caller's still-live frame.
-      const ownerIndex = this.getStackIndex('__internal__messageBusOwnerInput') + extraStackOffset;
-      this.emit(encodeInt(BigInt(ownerIndex)), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      // The route entry has already authenticated this exact physical relation: direct handlers own the active
+      // route input, while delegated handlers own the participant master at INPUTINDEX - route blockSize. Recompute
+      // that consensus-derived identity at every use. A stack-relative lookup is not an invariant here: caller
+      // operands remain below the OP_INVOKE frame and runtime graph operands can accumulate above it, so neither a
+      // fixed top depth nor a bottom ordinal continues to identify the hidden owner argument.
+      const ownerOffset = this.currentFunction.messageBusOwnerInputOffset;
+      if (ownerOffset === undefined) {
+        throw new Error(`Generated handler '${this.currentFunction.name}' has no authenticated owner basis`);
+      }
+      this.emit(Op.OP_INPUTINDEX, locationData);
+      if (ownerOffset > 0) {
+        this.emit(encodeInt(BigInt(ownerOffset)), locationData);
+        this.emit(Op.OP_SUB, locationData);
+      }
     } else if (this.usesProxyStateBlockBase()) {
       if (!this.isDefineSubTraversal) {
         if (this.isCompilerMessageBusRoute()) {
@@ -25097,10 +25367,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // ordinal rather than guessing a physical distance from the executor's active input.
           this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
         } else {
-          // Ordinary delegate executors have the compact physical relation authenticated at entry.
-          this.emit(Op.OP_INPUTINDEX, locationData);
-          this.emit(encodeInt(BigInt(1 + this.dataNftCount)), locationData);
-          this.emit(Op.OP_SUB, locationData);
+          // An ordinary delegate entry authenticates its declared proxy-master witness against every supported
+          // compiler layout in the prologue. State access must reuse that witness: deriving the owner again from
+          // the compact executor offset would contradict the fully balanced layout admitted by the same gate.
+          // Bottom-relative recovery remains stable if helper execution leaves runtime-only values above the ABI.
+          this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
         }
       } else {
         // Compiler-invoked handlers have a locally tracked call frame.
@@ -25159,7 +25430,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Push the first trailing input/output index after all fixed covenant blocks. */
   private emitTrailingBlockBase(
-    blockSize: number, locationData: SingleLocationData, trailingBase?: number,
+    blockSize: number, locationData: SingleLocationData, trailingBase?: number, extraStackOffset = 0,
   ): void {
     const localBase = trailingBase ?? this.currentFunction.blockLayout?.trailingBase ?? blockSize;
     if (this.usesDelegateExecutorBlockBase()) {
@@ -25170,7 +25441,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INPUTINDEX, locationData);
       this.emit(encodeInt(BigInt(localBase)), locationData);
     } else {
-      this.emitMasterInputIndex(locationData);
+      this.emitMasterInputIndex(locationData, extraStackOffset);
       this.emit(encodeInt(BigInt(localBase)), locationData);
     }
     this.emit(Op.OP_ADD, locationData);
@@ -25182,23 +25453,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * same-function `jobs.push` whose old chunks still occupy this input band).
    */
   private emitTrailingWriteInputBase(
-    blockSize: number, locationData: SingleLocationData, trailingBase?: number,
+    blockSize: number, locationData: SingleLocationData, trailingBase?: number, extraStackOffset = 0,
   ): void {
-    this.emitTrailingBlockBase(blockSize, locationData, trailingBase);
+    this.emitTrailingBlockBase(blockSize, locationData, trailingBase, extraStackOffset);
     this.emitAddCollectionIterCounts(locationData);
     this.emitAddForeignReadOnlyChunkCounts(locationData, true); // written old chunks occupy trailing inputs
   }
 
   /**
-   * Push the first runtime mapping-write OUTPUT index. Collection-iteration outputs precede this family, but old
-   * dynamic chunks exist only in the INPUT run. Newly written dynamic chunks follow runtime mapping entries, so
-   * neither old nor new dynamic widths shift this base.
+   * Push the first runtime mapping-write OUTPUT index. Collection-iteration outputs and preserved read-only
+   * dynamic chunks precede this family. Dynamic values written by this function are deliberately excluded from
+   * the read-only count: their newly emitted chunks follow the runtime mapping entries.
    */
   private emitTrailingWriteOutputBase(
-    blockSize: number, locationData: SingleLocationData, trailingBase?: number,
+    blockSize: number, locationData: SingleLocationData, trailingBase?: number, extraStackOffset = 0,
   ): void {
-    this.emitTrailingBlockBase(blockSize, locationData, trailingBase);
+    this.emitTrailingBlockBase(blockSize, locationData, trailingBase, extraStackOffset);
     this.emitAddCollectionIterCounts(locationData);
+    this.emitAddForeignReadOnlyChunkCounts(locationData);
   }
 
   /**
@@ -25766,10 +26038,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.pushToStack('(imm_cat)');
 
-    // Block base: allowed offsets are relative to the master's input index - except inside a delegate function,
-    // whose output-only slots are IMPLEMENTATION-relative. Mirrors emitBlockSlotIndex's `delegateOutputOnly`,
-    // so the admitted index is exactly the one emitEventCovenantVerification checked.
-    if (this.usesDelegateExecutorBlockBase()) this.emit(Op.OP_INPUTINDEX, loc);
+    // Block base: use the same authenticated compact-or-balanced resource coordinate as the event covenant.
+    // Comparing against OP_INPUTINDEX unconditionally would admit compact offsets while the balanced event itself
+    // is owner-relative, causing the uniqueness scan to subtract the executor from a valid owner-block output.
+    if (this.usesDelegateExecutorBlockBase()) this.emitDelegateResourceBlockBase(loc);
     else this.emitMasterInputIndex(loc);
     this.pushToStack('(imm_base)');
 
@@ -28093,10 +28365,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Check if TC exists via input introspection (funder has no tokens)
     this.emitBlockSlotIndex('tokenContainer', slotIndex, locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_GREATERTHAN, locationData);
+    this.emitBytesNonEmpty(locationData);
 
     // OP_IF (container exists)
     this.emit(Op.OP_IF, locationData);

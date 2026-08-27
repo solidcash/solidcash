@@ -324,8 +324,15 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Compiler-owned message-bus handler mapping from its function-local entry
    * slot ordinals to the enclosing route's physical participant slots. */
   messageBusPhysicalEntrySlots?: number[];
+  /** Compiler-owned handler state-owner basis. Zero means the active route input; a positive value is the
+   * authenticated distance from the route executor to the participant master. Unlike a stack argument, this
+   * consensus-derived relation remains stable while the handler creates runtime-only operands. */
+  messageBusOwnerInputOffset?: number;
   /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
   messageBusHandlerManagedEntrySlots?: number[];
+  /** Compiler-generated locals allocated before a message-bus route can invoke a handler. Their tracked
+   * top-relative depths can be shadowed by handler runtime operands, but their bottom ordinals remain stable. */
+  messageBusRouteFrameLocals?: string[];
   tokenContainerAccesses?: TokenContainerAccessInfo[];
   externalReads?: ExternalReadSlot[];
   externalCalls?: ExternalCallSlot[];

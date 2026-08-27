@@ -764,6 +764,22 @@ describe('Debugging tests', () => {
       await expect(transaction).toBeRevertedWith(/1 should equal 2/);
     });
 
+    it('toBeRevertedWith sends through a call composer when its finalized builder has custom unlockers', async () => {
+      let sent = false;
+      const call = {
+        build: async () => ({
+          debug: () => { throw new Error('Cannot debug a transaction with custom unlocker'); },
+        }),
+        send: async () => {
+          sent = true;
+          throw new Error('not creator');
+        },
+      };
+
+      await expect(call as any).toBeRevertedWith('not creator');
+      expect(sent).toBe(true);
+    });
+
     it('not.toBeRevertedWith should pass when message does not match', async () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())

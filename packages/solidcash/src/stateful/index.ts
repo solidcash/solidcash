@@ -49,6 +49,18 @@ export {
   type StatefulTransactionOptions,
 } from './StatefulTransactionBuilder.js';
 export {
+  clearCollectionValueRecords,
+  commitCollectionValue,
+  getCollectionValueRecord,
+  observeCollectionValueChunks,
+  stageCollectionValue,
+  type AuthenticatedValueChunk,
+  type CollectionValueIdentity,
+  type CollectionValueRecord,
+  type CollectionValueSpend,
+  type CollectionValueWrite,
+} from './ValueChunkPersistence.js';
+export {
   ContractBundle, resolveCategoryFromAddress, resolveCategoryFromLockingBytecode, type ContractBundleOptions,
 } from './ContractBundle.js';
 export {

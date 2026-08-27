@@ -245,6 +245,20 @@ export interface AbiFunction {
     tokenNftTransfers: boolean;
   };
   entryAccesses?: readonly EntryAccessAbi[];
+  /**
+   * Exact collection entry returned by this function. Published only for a direct, unconditional return whose
+   * keys are visible function parameters; absence means consumers must execute the ordinary return covenant.
+   */
+  returnStateAccess?: {
+    collection: string;
+    keyParams: readonly string[];
+  };
+  /** Unconditional updates to visible struct arguments performed by the handler before their value is consumed. */
+  argumentFieldUpdates?: readonly {
+    parameter: string;
+    fieldPath: readonly string[];
+    source: 'blockTimestamp';
+  }[];
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];
   /** Local call-result values forwarded as arguments into later external callsites. */
@@ -305,6 +319,12 @@ export interface AbiFunction {
   lowLevelCalls?: readonly {
     callMode: 'call' | 'staticcall' | 'delegatecall';
     dataParamIndex?: number;
+    /**
+     * SDK-resolvable origin of the address consumed by this call. Unlike `target`, which is a conservative
+     * authority classification, this preserves the exact argument/expression needed to select a co-spent
+     * participant. Absent means the compiler could not serialize the target and consumers must fail closed.
+     */
+    targetSource?: ArgSource;
     /**
      * Where the call's TARGET address came from. Published by every compiler that knows how to answer, with
      * `computed` as the always-available fallback, so an absent `target` identifies an artifact compiled

@@ -76,7 +76,7 @@ function decodeCachedP2sh(
   const key = binToHex(lockingBytecode);
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
-  const decoded = decodeAuthenticationInstructions(redeemBytecode);
+  const decoded = decodeAuthenticationInstructionViews(redeemBytecode);
   if (cache.size >= MAX_CACHED_P2SH_SCRIPTS) {
     const oldest = cache.keys().next().value as string | undefined;
     if (oldest !== undefined) cache.delete(oldest);
@@ -194,12 +194,14 @@ function installCachedP2shEvaluator(
         `Top stack item: "${binToHex(top)}".`,
       );
     }
-    // Exclude the authenticated redeem script before deep-cloning the argument stack. Cloning it only to pop it
-    // immediately is particularly expensive for generated contracts, while cloning the evaluated arguments keeps
-    // libauth's isolation semantics for the P2SH execution.
+    // Exclude the authenticated redeem script before cloning the argument-stack container. VM operations consume
+    // and replace Uint8Array stack items; they never edit an existing item in place (byte-transforming opcodes
+    // first take a slice). A shallow container clone therefore provides the same isolation as libauth's deep
+    // clone without copying every routed argument on every fixed-point probe. Generated message-bus frames can
+    // contain megabytes of immutable arguments, so deep-cloning here otherwise dominates both time and memory.
     const unlockingStack = [...unlockingResult.stack];
     const p2shScript = unlockingStack.pop() ?? Uint8Array.of();
-    const p2shStack = structuredClone(unlockingStack);
+    const p2shStack = unlockingStack.slice();
     if (p2sh20 && p2shStack.length === 0 && isWitnessProgram(p2shScript)) return lockingResult;
     const p2shInstructions = decodeCachedP2sh(provider, lockingBytecode, p2shScript);
     const p2shResult = authenticationInstructionsAreMalformed(p2shInstructions)
@@ -372,15 +374,18 @@ export function createVirtualMachineBch2026ForProvider(
       opcode: number, state: unknown, operation: (state: never) => unknown,
     ) => unknown;
   },
-  options?: { standard?: boolean },
+  options?: { standard?: boolean; operationCostBudgetPerByte?: number },
 ): ReturnType<typeof createVirtualMachineBch2026> {
   const standard = options?.standard ?? true;
   const limits = provider?.consensusLimits;
   // Nothing to customise. This is not a silent drop: with no limits AND no observer, libauth's own factory
   // builds precisely the instruction set the rest of this function would assemble.
-  if (limits === undefined && observer === undefined) return createVirtualMachineBch2026(standard);
-  const consensus = limits === undefined ? ConsensusBch2026 : {
+  if (limits === undefined && observer === undefined && options?.operationCostBudgetPerByte === undefined) {
+    return createVirtualMachineBch2026(standard);
+  }
+  const consensus = {
     ...ConsensusBch2026,
+    ...(limits === undefined ? {} : {
     maximumBytecodeLength: limits.maximumInputBytes,
     maximumStackItemLength: limits.maximumStackItemBytes,
     maximumTransactionLengthBytes: limits.maximumTransactionBytes,
@@ -394,6 +399,10 @@ export function createVirtualMachineBch2026ForProvider(
       limits.hashDigestIterationsPerByteStandard ?? limits.hashDigestIterationsPerByte,
     hashDigestIterationsPerByteNonstandard:
       limits.hashDigestIterationsPerByteNonstandard ?? limits.hashDigestIterationsPerByte,
+    }),
+    ...(options?.operationCostBudgetPerByte === undefined ? {} : {
+      operationCostBudgetPerByte: options.operationCostBudgetPerByte,
+    }),
   };
   const instructionSet = createInstructionSetBch2026(standard, {
     consensus, ripemd160, secp256k1, sha1, sha256,

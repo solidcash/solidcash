@@ -20,6 +20,14 @@ export default defineConfig({
     optimizeForCompilationSpeed: true,
     suppressWarnings: true,
   },
+  typegen: {
+    targets: [{
+      target: 'ethers6',
+      layout: 'typechain',
+      outDir: '.marketplace/project/typechain-types',
+      sourceDir: '.marketplace/contracts',
+    }],
+  },
   // Same mnemonic/path as the EffectiveAcceleration Hardhat project so getSigners() and
   // config.networks.hardhat.accounts.mnemonic stay aligned with marketplace.test.ts.
   mnemonic: 'rebuild always symbol rabbit sunset napkin laundry diary doll chalk valid train',

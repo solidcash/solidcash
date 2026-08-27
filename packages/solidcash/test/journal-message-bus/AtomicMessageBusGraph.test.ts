@@ -47,6 +47,14 @@ const plan = (): messageBus.CompiledGraphPlan => ({
 });
 
 describe('atomic compiled invocation graph', () => {
+  it('scans every prepared occurrence of an unbounded source loop', () => {
+    expect(messageBus.preparedExternalCallOccurrenceScanLimit({}, 'loop', 3)).toBe(3);
+    expect(messageBus.preparedExternalCallOccurrenceScanLimit({}, 'conditional', 3)).toBe(1);
+    expect(messageBus.preparedExternalCallOccurrenceScanLimit(
+      { maximumOccurrences: 2 }, 'loop', 3,
+    )).toBe(2);
+  });
+
   it('uses a runtime occurrence proof for a bounded conditional raw edge', () => {
     const capability = (
       name: string,

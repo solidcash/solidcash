@@ -26,6 +26,33 @@ describe('vmap fixed-write batch metadata', () => {
     }`, { forceStateful: true });
     expect(artifact.abi.find((f) => f.name === 'f')?.sortedBatchInfo)
       .toEqual([{ collection: 'm', slotIndices: [0] }]);
+    expect(artifact.abi.find((f) => f.name === 'f')?.entryAccesses?.[0]?.valueSource).toBe('id:v');
+  });
+
+  it('publishes exact literal and parameter-delta mapping values for faithful first probes', () => {
+    const artifact = compileString(`contract C {
+      mapping(int => int) m;
+      function seed(int k) external { m[k] = 5; require(true); }
+      function move(int a, int b, int v) external {
+        m[a] = m[a] - v; m[b] = m[b] + v; require(true);
+      }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((f) => f.name === 'seed')?.entryAccesses?.[0]?.valueSource).toBe('lit:5');
+    expect(artifact.abi.find((f) => f.name === 'move')?.entryAccesses
+      ?.map((access) => access.valueSource).sort())
+      .toEqual(['binop:+(entry,id:v)', 'binop:-(entry,id:v)']);
+  });
+
+  it('publishes a struct constructor value without contract-specific field knowledge', () => {
+    const artifact = compileString(`contract C {
+      struct S { uint256 a; uint256 b; uint256 c; uint256 d; }
+      mapping(uint256 => S) m;
+      function seed(uint256 k, uint256 a, uint256 b, uint256 c, uint256 d) external {
+        m[k] = S(a, b, c, d); require(true);
+      }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'seed')?.entryAccesses?.[0]?.valueSource)
+      .toBe('call:S(id:a,id:b,id:c,id:d)');
   });
 
   it('does not mislabel a constructed chunkable value as its first element parameter', () => {

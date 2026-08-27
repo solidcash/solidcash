@@ -6,6 +6,7 @@ import {
   encodeNftIndexTag,
   buildEntryCommitment,
   buildEntryCommitmentMultiKey,
+  parseEntryCommitment,
   parsePushdataCommitment,
   getDefaultStateValue,
   encodePushdataValue,
@@ -76,12 +77,26 @@ import {
   isOwnedStateRepairCoordinate,
   isRepairableNftOutput,
 } from './computed-output-repair.js';
+import { computedValueChunkOutputPin } from './computed-value-chunk-pin.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { encodeEntryCommitment, isEmptyValueEntryCommitment, keyToSlot } from './SortedList.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import {
   buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
 } from '../keccak/keccakComputeSidecar.js';
+import {
+  clearCollectionValueRecords,
+  coherentAuthenticatedValueChunkRun,
+  commitCollectionValue,
+  commitInlineCollectionValue,
+  getCollectionValueRecord,
+  observeCollectionValueChunks,
+  selectObservedValueChunkRun,
+  type AuthenticatedValueChunk,
+  type CollectionValueSpend,
+  type CollectionValueWrite,
+} from './ValueChunkPersistence.js';
+import { sortedBatchReadOnlyProofOffsets } from './sorted-batch-activity.js';
 
 const decodeVmScriptNumber = (bytes: Uint8Array): bigint => {
   let value = 0n;
@@ -96,38 +111,6 @@ const decodeVmScriptNumber = (bytes: Uint8Array): bigint => {
 const cloneToken = <T extends Utxo['token']>(token: T): T => (token === undefined
   ? token
   : { ...token, nft: token.nft === undefined ? undefined : { ...token.nft } } as T);
-
-const persistedJobEventsByCategory = new Map<string, Array<{
-  commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
-}>>();
-const observedValueChunksByCollection = new Map<string, AuthenticatedValueChunk[]>();
-const persistedJobEventsValues = new Map<string, Uint8Array>();
-const persistedJobEventsLocks = new Map<string, Uint8Array>();
-const persistedJobEventsSpends = new Map<string, Array<{
-  txid: string;
-  vout: number;
-  satoshis: bigint;
-  token: NonNullable<Utxo['token']>;
-  lockingBytecode: Uint8Array;
-}>>();
-const persistedJobEventsRecipes = new Map<string, {
-  slot: Uint8Array;
-  root: Uint8Array;
-  collection: string;
-  categoryId: string;
-}>();
-const stagedJobEventsValues = new Map<string, Uint8Array>();
-const createdDigestLocks = new Set<string>();
-const persistedCreatedValues = new Map<string, Uint8Array>();
-let persistedJobEventsSendReady = false;
-/** Persist-v empty root. Dest-18 UPDATE HASH256es redeem(this), not sha256(Created blob). */
-const EMPTY_PERSIST_ROOT = sha256Sync(new Uint8Array());
-
-function isCreatedPersistValue(value: Uint8Array | undefined): boolean {
-  if (!value || value.length === 0) return false;
-  const hex = binToHex(value);
-  return hex.includes('4372656174') || hex.includes('00004cb4');
-}
 
 /**
  * The in-block return NFT is owned by one logical callsite. A later write fused onto the first
@@ -172,6 +155,15 @@ export function groupOwnsInBlockReturnEvent(
   return !hasWriter && groupIdx === physicalIdx;
 }
 
+/** An absolute trailing coordinate is reusable; a learned entry transition remains valid only for the exact
+ * compiler-authenticated collection lock which owned that coordinate when it was observed. */
+export function cachedEntryOutputOwnsLock(
+  lockingBytecodeHex: string,
+  currentLockingBytecode: Uint8Array,
+): boolean {
+  return lockingBytecodeHex === binToHex(currentLockingBytecode);
+}
+
 /** Writer groups share the fused in-block identity; views keep their own group index. */
 export function logicalReturnGroupIndex(
   groups: ReadonlyArray<InBlockReturnGroup>,
@@ -194,6 +186,7 @@ export type PhysicalReturnGroup = InBlockReturnGroup & {
   loopReturnCommitments?: { length: number };
   batchPredecessorOutputs?: Array<{ outputBlockSlot: number }>;
   valueChunkOutputCount?: number;
+  collectionValueWrites?: readonly unknown[];
 };
 
 export type MaterializedReturnEvent = {
@@ -293,23 +286,6 @@ export function selectMaterializedTailReturnEvents(
  * after the last occupied participant output, proxy `__forward` first.
  */
 /**
- * ERC-20 writers that co-spend FakeToken's minting UTXO and collide with the
- * publishJobEvent value-chunk band. `transfer` (timeout refund) is the same
- * occupant as `transferFrom` (escrow debit); occupancy that only names
- * transferFrom leaves the refund group's master on jobEvents and lets view-tail
- * repack overwrite a callee lock (updateJobPost input-5 @ output 20).
- */
-export function isMintingBandTokenWriter(name: string | undefined): boolean {
-  return name === 'transferFrom' || name === 'transfer' || name === 'approve';
-}
-
-/** Only these sit on FakeToken's minting UTXO *and* collide with jobEvents. */
-export function isMintingBandSwapFunction(name: string | undefined): boolean {
-  return name === 'transferFrom' || name === 'transfer';
-}
-
-/** In-block extraTransfer return after the minting master (post-rotate). */
-/**
  * Canonicalize a scalar writer return for the encoding its callee covenant
  * authenticates. VM booleans use `01`, native ABI booleans use the pushdata
  * opcode `51`, and Solidity ABI booleans use a 32-byte word.
@@ -345,17 +321,47 @@ export function shouldReplaceReturnEventCommitment(
   return existingProvisional === true || incomingProvisional === false;
 }
 
+type ReturnEventLayout = {
+  slots?: ReadonlyArray<{ kind: string; offset: number; slotIndex?: number }>;
+};
+
+/** Aggregate proof slot produced by the returning function itself. */
+export function aggregateReturnEventSlot(layout: ReturnEventLayout | undefined) {
+  return layout?.slots?.find((slot) => slot.kind === 'returnEvent' && slot.slotIndex === undefined);
+}
+
+/** First producer-authenticated result coordinate visible to an external caller. */
+export function logicalReturnEventSlot(layout: ReturnEventLayout | undefined) {
+  return layout?.slots?.find((slot) => slot.kind === 'returnEvent' && slot.slotIndex === 0)
+    ?? aggregateReturnEventSlot(layout);
+}
+
+/** Resolve a logical call through its shared physical carrier before reading its caller-visible return slot. */
+export function physicalLogicalReturnEventSlot<T extends {
+  sharedGroupIndex?: number;
+  blockLayout?: ReturnEventLayout;
+}>(groups: readonly T[], groupIndex: number) {
+  const logical = groups[groupIndex];
+  if (!logical) return undefined;
+  return logicalReturnEventSlot(groups[logical.sharedGroupIndex ?? groupIndex]?.blockLayout);
+}
+
 export function tokenWriterReturnIndex(
   master: number,
-  blockLayout?: { blockSize?: number; slots?: ReadonlyArray<{ kind: string; offset: number }> },
+  blockLayout?: {
+    blockSize?: number;
+    slots?: ReadonlyArray<{ kind: string; offset: number; slotIndex?: number }>;
+  },
   band?: { start: number; end: number },
   occupied?: ReadonlySet<number>,
 ): number {
-  const returnSlot = blockLayout?.slots?.find((slot) => slot.kind === 'returnEvent');
+  // Compiler-owned routes keep their aggregate proof in the unindexed returnEvent and publish individually
+  // authenticated invocation results in the indexed band. Ordinary entry points have only the unindexed slot.
+  const returnSlot = logicalReturnEventSlot(blockLayout);
   const inBlock = master + (returnSlot?.offset ?? (blockLayout?.blockSize ?? 8) - 1);
   // Persist nNew=3 at 25–27 collides with FakeToken extraTransfer at master+7.
   // Marketplace EQUALVERIFYs dest master+7 live; only slide when that dest is
-  // inside the jobEvents band. Identity SCIDs on dest 31 are overwritten.
+  // inside the collection-value band. Identity SCIDs on the destination are overwritten.
   let dest = (band && inBlock >= band.start && inBlock <= band.end) ? band.end + 1 : inBlock;
   if (occupied && dest !== inBlock) {
     while (occupied.has(dest)) dest += 1;
@@ -363,7 +369,7 @@ export function tokenWriterReturnIndex(
   return dest;
 }
 
-/** Persist dests, SCID identity dests, and the live jobEvents band. */
+/** Persist destinations, SCID identities, and the live collection-value band. */
 export function tokenWriterOccupiedDests(parts: {
   band?: { start: number; end: number };
   persistDests?: readonly number[];
@@ -381,7 +387,7 @@ export function tokenWriterOccupiedDests(parts: {
   }
   // Identity SCIDs land on the in-block return dest (master+7) before the
   // return NFT is placed. Reserve that dest and the next three so extraTransfer
-  // EQUALVERIFYs dest 35, not dest 31's SCID. First publishJobPost still
+  // EQUALVERIFYs its shifted destination, not the prior SCID coordinate. The first write still
   // EQUALVERIFYs dest 31 even if initialize persist left persistDests nonempty.
   if (parts.reserveIdentityDests && parts.tokenMaster !== undefined && parts.tokenMaster >= 0) {
     const identityStart = parts.tokenMaster + 7;
@@ -442,10 +448,10 @@ export function shouldRetainMintingOutputSwap(
   return start >= chunkBase + nNew || start === previous.from + previous.width;
 }
 
-/** Output width of the publishJobEvent / value-chunk band that FakeToken must clear. */
+/** Output width of a collection-value continuation band that a colliding participant must clear. */
 /**
  * Extra real signer funders so `_swapMintingOffValueChunkBand` can clear a
- * jobEvents band wider than the historical 4-wide rotate. Timeout refunds
+ * continuation band wider than a fixed relocation. Later writers
  * need nNew=6 and only had 5 trailing P2PKH; one more unused wallet UTXO
  * (not a synthetic outpoint) lets FakeToken start at 26.
  */
@@ -454,13 +460,14 @@ export function liveChunkSlotsByOwner(
   groups: ReadonlyArray<{
     sharedGroupIndex?: number;
     valueChunkOutputCount?: number;
-    functionName?: string;
-    logicalFunctionName?: string;
+    collectionValueWrites?: readonly unknown[];
   }>,
 ): Map<number, number> {
   const byOwner = new Map<number, number>();
   for (const [index, group] of groups.entries()) {
-    if (isMintingBandSwapFunction(group.functionName ?? group.logicalFunctionName)) continue;
+    // `valueChunkOutputCount` is also used by other trailing resource families. Only compiler-resolved
+    // chunkable collection writes own a collection-value band; function names and token capabilities do not.
+    if ((group.collectionValueWrites?.length ?? 0) === 0) continue;
     const owner = group.sharedGroupIndex ?? index;
     const nNew = group.valueChunkOutputCount ?? 0;
     byOwner.set(owner, Math.max(byOwner.get(owner) ?? 0, nNew));
@@ -473,8 +480,7 @@ export function liveChunkWidthForGroup(
   groups: ReadonlyArray<{
     sharedGroupIndex?: number;
     valueChunkOutputCount?: number;
-    functionName?: string;
-    logicalFunctionName?: string;
+    collectionValueWrites?: readonly unknown[];
   }>,
   groupIndex: number,
 ): number {
@@ -555,14 +561,14 @@ export function participantRelocationExtraFunders(parts: {
 export function valueChunkBandWidth(parts: {
   minimum?: number;
   planned?: number;
-  jobEventsCount?: number;
+  observedCount?: number;
   derivedEnd?: number;
   chunkBase?: number;
 }): number {
   const derivedWidth = parts.derivedEnd !== undefined && parts.chunkBase !== undefined
     ? Math.max(0, parts.derivedEnd - parts.chunkBase + 1)
     : 0;
-  return Math.max(parts.minimum ?? 3, parts.planned ?? 0, parts.jobEventsCount ?? 0, derivedWidth);
+  return Math.max(parts.minimum ?? 3, parts.planned ?? 0, parts.observedCount ?? 0, derivedWidth);
 }
 
 /** First output coordinate available before a reverse-indexed authenticated suffix and its terminal anchor. */
@@ -608,13 +614,65 @@ export function findDisposableValueChunkOutputBase(
 }
 
 /**
- * Exclusive output range where publishJobEvent value chunks are verified
+ * Whether a computed continuation may occupy an input-aligned output coordinate.
+ *
+ * Token-free inputs have no token covenant to preserve. A tokenized input is protected unless its unlocker
+ * explicitly publishes replacement authority; inferring that authority from a P2SH shape, mutable capability,
+ * or short commitment would conflate unrelated state resources with old root-addressed value chunks.
+ */
+export function allowsAlignedValueChunkReplacement(
+  input: Pick<UnlockableUtxo, 'token' | 'unlocker'> | undefined,
+): boolean {
+  if (input?.token === undefined) return true;
+  return isContractUnlocker(input.unlocker)
+    && input.unlocker.allowsAlignedOutputReplacement === true;
+}
+
+/**
+ * Select the first local output range after a colliding run whose absolute input-aligned coordinates are free.
+ * Existing members of the run are reusable because relocation retires them before materializing the new range;
+ * every other coordinate must already be a token-free alignment pad.
+ */
+export function findRelocatedValueChunkOutputBase(
+  outputs: readonly Output[],
+  inputs: readonly Pick<UnlockableUtxo, 'token' | 'unlocker'>[],
+  parts: {
+    currentBase: number;
+    width: number;
+    compositionBase?: number;
+    currentRun: ReadonlySet<number>;
+    reserved?: ReadonlySet<number>;
+  },
+): number | undefined {
+  const compositionBase = parts.compositionBase ?? 0;
+  const reserved = parts.reserved ?? new Set<number>();
+  if (!Number.isSafeInteger(parts.currentBase) || parts.currentBase < 0
+    || !Number.isSafeInteger(parts.width) || parts.width <= 0) return undefined;
+  for (let start = parts.currentBase + 1; start + parts.width <= outputs.length; start += 1) {
+    let available = true;
+    for (let offset = 0; offset < parts.width; offset += 1) {
+      const localIndex = start + offset;
+      const inputIndex = compositionBase + localIndex;
+      if (reserved.has(localIndex)
+        || !allowsAlignedValueChunkReplacement(inputs[inputIndex])
+        || (!parts.currentRun.has(localIndex) && !isDisposableAlignmentPad(outputs[localIndex]))) {
+        available = false;
+        break;
+      }
+    }
+    if (available) return start;
+  }
+  return undefined;
+}
+
+/**
+ * Exclusive output range where collection-value continuations are verified
  * (`INPUTINDEX + blockSize` for `nNew` slots). View tails, FakeToken, and
  * identity pads must not occupy this range.
  */
 /**
  * Extra occupancy for view-tail packing. Tails that already sit *before* the
- * live jobEvents band (arbitratorRegistered at 17, meceTags at 19) must stay;
+ * live continuation band must stay;
  * moving them after a getEvents-populated write-count makes the next
  * updateJobPost read an empty bool (ip 8913 "arbitrator not registered").
  * Only tails that land inside the band are pushed past `band.end`.
@@ -638,7 +696,7 @@ export type ViewTailPackOptions = {
 
 /**
  * Keep planned view witnesses (16/17) when a prior getEvents grew nNew and
- * packing would land on the jobEvents band or the terminal OP_RETURN. A
+ * packing would land on the continuation band or the terminal OP_RETURN. A
  * FakeToken writer still parks tails after its swapped block.
  */
 export function clampViewTailPlacement(parts: {
@@ -672,7 +730,7 @@ export function clampViewTailPlacement(parts: {
 }
 
 /** Occupancy width: planned write, last extracted/persisted v, and already-derived slots. */
-export function liveJobEventsBandWidth(parts: {
+export function liveCollectionValueOutputWidth(parts: {
   plannedWidth?: number;
   persistWidth?: number;
   derivedWidth?: number;
@@ -702,12 +760,12 @@ export function scaledEventOutputIndex(inputIndex: number, scale: number): numbe
   return endExclusive < 0 ? -1 : endExclusive - 1;
 }
 
-export function computePublishJobEventsBand(parts: {
+export function computeCollectionValueOutputBand(parts: {
   implIndex?: number;
   blockSize?: number;
   start?: number;
   plannedWidth?: number;
-  jobEventsCount?: number;
+  observedCount?: number;
   derivedIndices?: readonly number[];
   liveWidth?: number;
   /** Absent-key INSERT places chunks after the NEW node (master+blockSize+1). */
@@ -731,69 +789,12 @@ export function computePublishJobEventsBand(parts: {
       planned: derivedInBand.length > 0
         ? Math.min(parts.plannedWidth ?? Number.POSITIVE_INFINITY, derivedInBand.length)
         : (parts.plannedWidth ?? 0),
-      jobEventsCount: parts.jobEventsCount,
+      observedCount: parts.observedCount,
       derivedEnd: derivedInBand.length === 0 ? undefined : Math.max(...derivedInBand),
       chunkBase: start,
     });
   if (nNew <= 0) return undefined;
   return { start, end: start + nNew - 1, nNew };
-}
-
-type AuthenticatedValueChunk = {
-  commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
-};
-
-function usableAuthenticatedValueChunks(
-  chunks: ReadonlyArray<AuthenticatedValueChunk>,
-): AuthenticatedValueChunk[] {
-  return chunks.filter((chunk) => {
-    if (chunk.commitment.length < 3 || chunk.commitment === '00') return false;
-    // A 12-byte 05||00… tail is a padded split, not a live continuation.
-    // Keep short stubs (unit tests) and 1-byte occupancy dummies.
-    return !(chunk.commitment.length >= 16 && isEmptyValueChunkCommitment(chunk.commitment));
-  });
-}
-
-/** Recover one canonical, root-addressed run from a cache that may mix versions. */
-function coherentAuthenticatedValueChunkRun(
-  chunks: ReadonlyArray<AuthenticatedValueChunk>,
-): AuthenticatedValueChunk[] {
-  const byLock = new Map<string, {
-    chunks: Map<number, AuthenticatedValueChunk>;
-    lastSeen: number;
-  }>();
-  for (const [order, chunk] of usableAuthenticatedValueChunks(chunks).entries()) {
-    const chunkIndex = valueChunkIndexFromCommitment(chunk.commitment);
-    if (chunkIndex === undefined) continue;
-    const lock = binToHex(chunk.lockingBytecode);
-    const group = byLock.get(lock) ?? { chunks: new Map(), lastSeen: order };
-    group.chunks.set(chunkIndex, chunk);
-    group.lastSeen = order;
-    byLock.set(lock, group);
-  }
-  let selected: AuthenticatedValueChunk[] = [];
-  let selectedAt = -1;
-  for (const group of byLock.values()) {
-    const run: AuthenticatedValueChunk[] = [];
-    for (let index = 0; group.chunks.has(index); index++) run.push(group.chunks.get(index)!);
-    if (run.length > selected.length || (run.length === selected.length && group.lastSeen > selectedAt)) {
-      selected = run;
-      selectedAt = group.lastSeen;
-    }
-  }
-  return selected;
-}
-
-/**
- * Prefer a newly authenticated chunk run over a fallback, even when the value
- * became shorter. An unusable observation leaves the prior run intact.
- */
-export function selectObservedValueChunkRun(
-  fallback: ReadonlyArray<AuthenticatedValueChunk>,
-  observed: ReadonlyArray<AuthenticatedValueChunk>,
-): AuthenticatedValueChunk[] {
-  const current = coherentAuthenticatedValueChunkRun(observed);
-  return current.length > 0 ? current : coherentAuthenticatedValueChunkRun(fallback);
 }
 
 /** Select the first usable run in explicit authority order. */
@@ -807,212 +808,13 @@ function firstUsableValueChunkRun(
   return [];
 }
 
-const MAX_PERSISTED_JOB_EVENTS_BYTES = VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * 32;
-
-function valueChunkCountFor(value: Uint8Array): number {
-  if (value.length <= VALUE_HEAD_SIZE || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return 0;
-  return Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
-}
-
-/** Live continuation count of the last Updated extract for `categoryId`. */
-export function persistedJobEventsWidth(categoryId?: string): number {
-  if (!categoryId) {
-    let widest = 0;
-    for (const chunks of persistedJobEventsByCategory.values()) {
-      widest = Math.max(widest, coherentAuthenticatedValueChunkRun(chunks).length);
-    }
-    for (const value of persistedJobEventsValues.values()) {
-      widest = Math.max(widest, valueChunkCountFor(value));
-    }
-    return Math.min(32, widest);
-  }
-  const fromChunks = coherentAuthenticatedValueChunkRun(
-    persistedJobEventsByCategory.get(categoryId) ?? [],
-  ).length;
-  const fromValue = valueChunkCountFor(persistedJobEventsValues.get(categoryId) ?? new Uint8Array());
-  return Math.min(32, Math.max(fromChunks, fromValue));
-}
-
-function jobEventsSlotCandidates(): Uint8Array[] {
-  const slots: Uint8Array[] = [keyToSlot(new Uint8Array()), keyToSlot(Uint8Array.of(0x00))];
-  for (const type of ['int', 'uint', 'uint256', 'bigint'] as const) {
-    try {
-      slots.push(keyToSlot(encodePushdataValue(0n, type)));
-    } catch { /* type not encodable as a mapping key */ }
-  }
-  return slots;
-}
-
-/** Recover slot+root so the next UPDATE can spend persist chunks with a real unlocker. */
-export function rememberJobEventsUnlockRecipe(categoryId: string): boolean {
-  const pairs: Array<{ value: Uint8Array; lock: Uint8Array }> = [];
-  const localValue = persistedJobEventsValues.get(categoryId);
-  const localLock = persistedJobEventsLocks.get(categoryId);
-  if (localValue && localLock) pairs.push({ value: localValue, lock: localLock });
-  for (const value of persistedJobEventsValues.values()) {
-    for (const lock of persistedJobEventsLocks.values()) {
-      if (localValue && localLock && value === localValue && lock === localLock) continue;
-      pairs.push({ value, lock });
-    }
-  }
-  const collections = [
-    'jobEvents',
-    'jobEvents:mapping(uint256 => JobEventData[])',
-    'jobEvents:mapping(uint256=>JobEventData[])',
-  ];
-  for (const { value, lock } of pairs) {
-    const root = sha256Sync(value);
-    for (const slot of jobEventsSlotCandidates()) {
-      for (const cat of new Set([categoryId, ...persistedJobEventsLocks.keys(), ...persistedJobEventsValues.keys()])) {
-        for (const collection of collections) {
-          try {
-            const expected = getValueChunkLockingBytecode(cat, collection, slot, root);
-            if (binToHex(expected) === binToHex(lock)) {
-              const recipe = { slot, root, collection, categoryId: cat };
-              persistedJobEventsRecipes.set(categoryId, recipe);
-              persistedJobEventsRecipes.set(cat, recipe);
-              return true;
-            }
-          } catch { /* category, collection, or slot rejected */ }
-        }
-      }
-    }
-  }
-  return false;
-}
-
-export function persistedJobEventsUnlockRecipe(categoryId: string): {
-  slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string;
-} | undefined {
-  return latestPersisted(persistedJobEventsRecipes, categoryId);
-}
-
 /**
- * Dest-15 UPDATE dest-20 lock: emitValueChunkP2sh32(master category, H(0), sha256(v)).
- * Do not use a persist unlock recipe — that recipe matches the dummy
- * `aa20||sha256(v)||87` first-publish lock, not dest 15's pin.
- */
-export function persistValueChunkLock(
-  categoryId: string | undefined,
-  value?: Uint8Array,
-): Uint8Array | undefined {
-  if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId) || !value || value.length === 0) {
-    return undefined;
-  }
-  const root = sha256Sync(value);
-  const slot = keyToSlot(new Uint8Array());
-  for (const collection of [
-    'jobEvents',
-    'jobEvents:mapping(uint256 => JobEventData[])',
-    'jobEvents:mapping(uint256=>JobEventData[])',
-  ]) {
-    try {
-      return getValueChunkLockingBytecode(categoryId, collection, slot, root);
-    } catch { /* collection rejected */ }
-  }
-  return undefined;
-}
-
-/**
- * Stage the value this tx will write. Do not overwrite persist until send succeeds —
- * withdraw must still spend the previous digest.
- */
-export function stageJobEventsValue(categoryId: string, value: Uint8Array): void {
-  if (value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return;
-  stagedJobEventsValues.delete(categoryId);
-  stagedJobEventsValues.set(categoryId, value);
-}
-
-/** Full last committed jobEvents blob (not a Created probe). Latest commit wins. */
-export function rememberJobEventsValue(categoryId: string, value: Uint8Array): void {
-  if (value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return;
-  // Planning knows the value this transaction intends to authenticate. Later
-  // VM probes can still encounter a consumed predecessor, so their temporal
-  // order does not make them more authoritative than the staged write.
-  const authoritative = stagedJobEventsValues.get(categoryId) ?? value;
-  persistedJobEventsValues.delete(categoryId);
-  persistedJobEventsValues.set(categoryId, authoritative);
-  if (isCreatedPersistValue(authoritative) && !persistedCreatedValues.has(categoryId)) {
-    persistedCreatedValues.set(categoryId, authoritative);
-  }
-  rememberJobEventsUnlockRecipe(categoryId);
-}
-
-function latestPersisted<T>(map: Map<string, T>, categoryId?: string): T | undefined {
-  if (categoryId && map.has(categoryId)) return map.get(categoryId);
-  let latest: T | undefined;
-  for (const value of map.values()) latest = value;
-  return latest;
-}
-
-export function persistedJobEventsValue(categoryId: string): Uint8Array | undefined {
-  return persistedJobEventsValues.get(categoryId);
-}
-
-/** Redeem p2sh32 from emitValueChunkP2sh32 / getValueChunkLockingBytecode — not aa20||sha256(v)||87. */
-export function rememberJobEventsLock(categoryId: string, lock: Uint8Array): void {
-  if (lock.length !== 35 || lock[0] !== 0xaa || lock[1] !== 0x20 || lock[34] !== 0x87) return;
-  // Created digest (first publishJobPost persist) is the UPDATE dest-18 pin.
-  // Later persist-v rematerialize must not replace it.
-  if (createdDigestLocks.has(categoryId)) return;
-  persistedJobEventsLocks.set(categoryId, lock);
-  const value = persistedJobEventsValues.get(categoryId)
-    ?? latestPersisted(persistedJobEventsValues, categoryId);
-  const hex = value ? binToHex(value) : '';
-  if (hex.includes('4372656174') || hex.includes('00004cb4')) {
-    createdDigestLocks.add(categoryId);
-  }
-  rememberJobEventsUnlockRecipe(categoryId);
-}
-
-export function persistedJobEventsLock(categoryId: string): Uint8Array | undefined {
-  return persistedJobEventsLocks.get(categoryId);
-}
-
-/**
- * UPDATE rematerialization must reuse the persist redeem lock the impl
- * EQUALVERIFYs (`getValueChunkLockingBytecode` of the Created root), not
- * `aa20||sha256(v)||87` and not a consumed UTXO's previous physical lock.
- */
-export function persistUpdateRedeemLock(
-  categoryId: string | undefined,
-  sessionLock?: Uint8Array,
-): Uint8Array | undefined {
-  if (sessionLock && sessionLock.length === 35 && sessionLock[0] === 0xaa && sessionLock[34] === 0x87) {
-    return sessionLock;
-  }
-  if (!categoryId) return undefined;
-  const recipe = persistedJobEventsUnlockRecipe(categoryId);
-  if (recipe) {
-    try {
-      return getValueChunkLockingBytecode(categoryId, recipe.collection, recipe.slot, recipe.root);
-    } catch { /* invalid recipe */ }
-    try {
-      return getValueChunkLockingBytecode(recipe.categoryId, recipe.collection, recipe.slot, recipe.root);
-    } catch { /* invalid recipe */ }
-  }
-  return persistedJobEventsLock(categoryId);
-}
-
-/** True only after a successful publishJobEvent send, not compose/extract. */
-export function isPersistedJobEventsReady(): boolean {
-  return persistedJobEventsSendReady;
-}
-
-/**
- * After a successful publishJobEvent the next update can place continuations
- * from persist instead of burning the 64-probe budget to rediscover them.
+ * Collection writes can require additional convergence passes while their continuation run is discovered.
  */
 export function boundedDerivationIterations(parts: {
   defaultIterations: number;
-  persistWidth: number;
   hasLoopOrChunkVars: boolean;
 }): number {
-  // Persist seeds known jobEvents chunks so we do not need the 64-probe discovery
-  // loop. A single probe is not enough: the first evaluation still reveals other
-  // write pins (proxy data-NFT reconstruction, emit blobs) that only land on the
-  // next materialization.
-  if (parts.persistWidth > 0) return Math.min(parts.defaultIterations, 8);
   if (parts.hasLoopOrChunkVars) return Math.max(parts.defaultIterations, 64);
   return parts.defaultIterations;
 }
@@ -1042,7 +844,7 @@ export function shouldGrowSpeculativeChunkRegion(parts: {
     && parts.allCommitmentsArePlaceholders;
 }
 
-/** Materialize persist/compose `v` onto the live jobEvents band. */
+/** Materialize a persisted or composed value onto its live continuation band. */
 export function seedChunksFromPersistedValue(
   setChunk: (
     outputIndex: number,
@@ -1054,7 +856,7 @@ export function seedChunksFromPersistedValue(
   categoryId?: string,
 ): number {
   const chunks = applyRedeemLockToChunks(
-    chunksFromJobEventsValue(value, lock, categoryId),
+    chunksFromCollectionValue(value, lock, categoryId),
     lock,
   );
   let placed = 0;
@@ -1096,6 +898,13 @@ export function selectHashedValueForChunkPin(
   stacks: ReadonlyArray<ReadonlyArray<Uint8Array>>,
   pinLock?: Uint8Array,
   minChunks = 0,
+  owner?: {
+    categoryId: string;
+    collectionName: string;
+    slot: Uint8Array;
+    /** Exact value reconstructed from typed state and route arguments before the probe. */
+    knownValue?: Uint8Array;
+  },
 ): { value: Uint8Array; lockingBytecode: Uint8Array } | undefined {
   // Sparse probe states share immutable stack-item byte arrays. Large routed scripts can remain on the stack for
   // hundreds of observed operations; hashing each repeated reference turned one logical candidate into gigabytes
@@ -1119,6 +928,48 @@ export function selectHashedValueForChunkPin(
   const pinIsP2sh32 = !!pinLock
     && pinLock.length === 35 && pinLock[0] === 0xaa && pinLock[1] === 0x20 && pinLock[34] === 0x87;
   const pinDigest = pinIsP2sh32 ? binToHex(pinLock!.subarray(2, 34)) : undefined;
+  const chunkCount = (value: Uint8Array): number => (
+    value.length > VALUE_HEAD_SIZE
+      ? Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE)
+      : 0
+  );
+  if (owner?.knownValue && chunkCount(owner.knownValue) >= minChunks) {
+    const expected = getValueChunkLockingBytecode(
+      owner.categoryId,
+      owner.collectionName,
+      owner.slot,
+      digestOf(owner.knownValue),
+    );
+    if (!pinIsP2sh32 || binToHex(expected) === binToHex(pinLock!)) {
+      return { value: owner.knownValue, lockingBytecode: expected };
+    }
+  }
+  if (pinIsP2sh32 && owner) {
+    const seen = new Set<Uint8Array>();
+    for (const stack of stacks) {
+      for (const item of stack) {
+        if (item.length <= VALUE_HEAD_SIZE || seen.has(item) || chunkCount(item) < minChunks) continue;
+        seen.add(item);
+        const expected = getValueChunkLockingBytecode(
+          owner.categoryId,
+          owner.collectionName,
+          owner.slot,
+          digestOf(item),
+        );
+        if (binToHex(expected) === binToHex(pinLock!)) {
+          return { value: item, lockingBytecode: pinLock! };
+        }
+      }
+    }
+    // A compiler-published collection identity is an ownership boundary. A value from another collection, key,
+    // or routed payload can have its own valid P2SH32 pin, but it cannot authenticate this continuation merely
+    // because it appears in the same VM trace.
+    return undefined;
+  }
+  // Once the compiler publishes a storage identity, a value may only enter that continuation run through an
+  // exact typed reconstruction or an identity-matching output pin. Without either proof, scanning the shared VM
+  // stack would allow an unrelated routed payload to determine this collection's output geometry.
+  if (owner) return undefined;
   if (pinDigest) {
     const seen = new Set<Uint8Array>();
     for (const stack of stacks) {
@@ -1131,11 +982,6 @@ export function selectHashedValueForChunkPin(
       }
     }
   }
-  const chunkCount = (value: Uint8Array): number => (
-    value.length > VALUE_HEAD_SIZE
-      ? Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE)
-      : 0
-  );
   const lockFor = (value: Uint8Array, stack?: ReadonlyArray<Uint8Array>): Uint8Array => {
     if (pinIsP2sh32) return pinLock!;
     const digest = digestOf(value);
@@ -1178,16 +1024,14 @@ export function selectHashedValueForChunkPin(
   return best;
 }
 
-/** Split a persisted/extracted jobEvents blob into continuation NFTs. */
-export function chunksFromJobEventsValue(
+/** Split an extracted collection value into continuation NFTs. */
+export function chunksFromCollectionValue(
   value: Uint8Array,
   lockingBytecode?: Uint8Array,
   categoryId?: string,
 ): AuthenticatedValueChunk[] {
   if (value.length <= VALUE_HEAD_SIZE) return [];
   const lock = lockingBytecode
-    ?? persistValueChunkLock(categoryId, value)
-    ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined)
     ?? p2sh32LockFromValueRoot(sha256Sync(value));
   return splitValueIntoValueChunks(value).map((data, index) => ({
     commitment: buildValueChunkCommitment(index, data),
@@ -1199,7 +1043,7 @@ export function chunksFromJobEventsValue(
 
 /**
  * First index after a token writer's physical block (master+blockSize) and
- * any in-block return slot. Change relocated out of the jobEvents band must
+ * any in-block return slot. Change relocated out of a continuation band must
  * insert here — splicing at the first token-free pad (often 29) shifts the
  * FakeToken return at master+7 off its witnessed index.
  */
@@ -1213,7 +1057,22 @@ export function valueChunkIndexFromCommitment(commitment: string): number | unde
 }
 
 /**
- * Persist jobEvents value-chunks: uint16-le index heads (`0000`/`0100`/`0200`)
+ * A derived continuation is either the one-pass address probe (`00`) or the
+ * canonical uint16-le chunk index followed by at least one data byte.
+ *
+ * Primary sorted-entry commitments can also be 128 bytes long, so length
+ * alone must never admit them to the continuation-output cache.
+ */
+export function isDerivedValueChunkCommitment(commitment: string): boolean {
+  const hex = String(commitment ?? '').toLowerCase();
+  if (hex === '00') return true;
+  return hex.length >= 6 && hex.length <= 256 && hex.length % 2 === 0
+    && /^[0-9a-f]+$/.test(hex)
+    && valueChunkIndexFromCommitment(hex) !== undefined;
+}
+
+/**
+ * Persist collection value chunks: uint16-le index heads (`0000`/`0100`/`0200`)
  * or the empty-root digest (`e3b0c442…`). Data-NFT tags (`0023…`, `51…`) are not.
  */
 export function isPersistValueChunkCommitment(commitment: string): boolean {
@@ -1370,13 +1229,13 @@ export function writerBlockOccupancyEnd(
   return end;
 }
 
-/** Insert a relocated change output after the jobEvents band and reserved writer occupancy. */
+/** Insert relocated change after the continuation band and reserved writer occupancy. */
 /**
  * Keep [jobs chunks][OP_RETURN] contiguous. SCIDs and token-free pads that
  * landed inside that suffix are moved in front so TXOUTPUTCOUNT-1-nNew
  * still names the first jobs chunk.
  */
-export function packJobsAgainstOpReturn<T extends {
+export function packCollectionValuesBeforeOpReturn<T extends {
   to?: Uint8Array | string;
   token?: { nft?: { capability?: string; commitment?: string } };
 }>(
@@ -1492,11 +1351,11 @@ export function selectExpectedP2sh32OutputLock(
 }
 
 /**
- * Occupancy: every slot in `[band.start, band.start+nNew)` must be a jobEvents
+ * Occupancy: every slot in `[band.start, band.start+nNew)` must be a collection
  * continuation NFT. A shorter Created/Updated extract must not leave a P2PKH
  * hole (history nNew=6 at slot 25) — derivation overwrites the placeholder.
  */
-export function fillJobEventsBandHoles(
+export function fillCollectionValueBandHoles(
   outputs: Array<{
     to?: Uint8Array | string;
     amount?: bigint;
@@ -1553,7 +1412,7 @@ export function fillJobEventsBandHoles(
   return filled;
 }
 
-/** View tails / token-free pads that derived jobEvents chunks must replace. */
+/** View tails or token-free pads that derived collection-value chunks may replace. */
 export function isOverwritableValueChunkOccupant(output: {
   to?: Uint8Array | string;
   token?: { nft?: { capability?: string; commitment?: Uint8Array | string } };
@@ -1565,12 +1424,7 @@ export function isOverwritableValueChunkOccupant(output: {
   return false;
 }
 
-/** Same K-rotate as `_swapMintingOffValueChunkBand` (at least 4, at least band overlap). */
-export function mintingSwapShift(start: number, chunkBase: number, nNew: number): number {
-  return Math.max(4, Math.max(1, chunkBase + nNew - start));
-}
-
-/** Slot-index prefix plus an all-zero payload — surplus empty jobEvents / value-chunk. */
+/** Slot-index prefix plus an all-zero payload: a surplus empty collection-value chunk. */
 export function isEmptyValueChunkCommitment(hex: string): boolean {
   const body = hex.startsWith('0x') ? hex.slice(2) : hex;
   if (body.length < 4) return false;
@@ -1601,19 +1455,6 @@ export function preferChunkCommitment(existing: string | undefined, incoming: st
 }
 
 /**
- * Rotate FakeToken only when enough trailing funders exist to clear the
- * jobEvents band. An undersized 4-wide fallback leaves the minting master
- * on a value-chunk slot (timeout refund: output 24).
- */
-export function chooseMintingSwapShift(availableFunders: number, minShift: number): number {
-  if (minShift <= 0 || availableFunders < minShift) return 0;
-  // Prefer the historical 4-wide rotate when the band is narrower so
-  // transferFrom publishJobPost stays off jobEvents. Never go below minShift.
-  const preferred = Math.max(minShift, 4);
-  return availableFunders >= preferred ? preferred : minShift;
-}
-
-/**
  * Choose a relocation only after reserving every output-only slot in the moved participant.
  * The funders used to shift the token-bearing prefix cannot also balance its trailing slots.
  */
@@ -1622,10 +1463,9 @@ export function chooseParticipantRelocationShift(
   minShift: number,
   trailingSlots: number,
 ): number {
-  return chooseMintingSwapShift(
-    Math.max(0, availableFunders - Math.max(0, trailingSlots)),
-    minShift,
-  );
+  if (!Number.isSafeInteger(minShift) || minShift <= 0) return 0;
+  const usableForShift = Math.max(0, availableFunders - Math.max(0, trailingSlots));
+  return usableForShift >= minShift ? minShift : 0;
 }
 
 /** Gather already-serialized plain funders next to a block so it can rotate without growing the input list. */
@@ -1674,7 +1514,7 @@ export function gatherContiguousPlainFunders<T extends {
 
 /**
  * Last mutable p2sh32 writer that sits on a planned view-tail index, extended
- * through the contiguous collection band (jobEvents). Token-free pads and the
+ * through the contiguous collection-value band. Token-free pads and the
  * trailing jobs suffix (separated by a pad or OP_RETURN) are not included.
  */
 export function lastCollidingMutableWriterIndex(
@@ -1703,7 +1543,7 @@ export function lastCollidingMutableWriterIndex(
 }
 
 /**
- * Slots that can host OP_TRUE none-cap view tails without stealing jobEvents,
+ * Slots that can host OP_TRUE none-cap view tails without stealing collection values,
  * jobs suffix chunks, or SCID identity. Prefers existing view tails and
  * token-free OP_TRUE / P2PKH alignment pads.
  */
@@ -1988,7 +1828,7 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
 /**
  * OP_TRUE + none-cap is a view/loop return witness. Nested events and identity
  * tags must displace it, not overwrite: same-category is not enough to treat it
- * as an empty event hole (`arbitratorRegistered` and `publishJobEvent` share MD).
+ * as an empty event hole when unrelated logical calls share one category.
  */
 export function isViewReturnTailOutput(output: {
   to?: Uint8Array | string;
@@ -2211,7 +2051,7 @@ export function clearMutableCollectionOutputsOutsideAuthoritativeRun(
 /** Token-free OP_TRUE or P2PKH pads used only to keep TXOUTPUTCOUNT aligned. */
 /**
  * Same-collection empty-value placeholders (128-byte slot||next||64-zero) inflate
- * insert-loop output counts (jobEvents teardown: expected P'+NEW=2, leftover
+ * insert-loop output counts (expected P'+NEW=2, with a leftover
  * e3b0c442 placeholder makes the scan 3). Convert extras to token-free pads
  * in place so view tails and the jobs suffix do not move.
  *
@@ -2270,22 +2110,70 @@ export function stripSurplusEmptyCollectionEntries(
   return stripped;
 }
 
-/** True when a composed group is the Solidity publishJobEvent write, not a proxy `__forward`. */
-export function groupWritesPublishedJobEvents(group: {
-  functionName?: string;
-  logicalFunctionName?: string;
-  compilerRoute?: { abiFunction?: { name?: string; entryLoopWrites?: readonly string[] } };
+/** True when compiler/runtime metadata resolves at least one chunkable collection write. */
+export function groupWritesChunkableCollectionValue(group: {
+  collectionValueWrites?: readonly CollectionValueWrite[];
 }): boolean {
-  const names = [
-    group.logicalFunctionName,
-    group.compilerRoute?.abiFunction?.name,
-    group.functionName,
-  ].filter((name): name is string => !!name && name !== '__forward');
-  return names.includes('publishJobEvent');
+  return (group.collectionValueWrites?.length ?? 0) > 0;
 }
 
-/** Same-index mutable jobEvents entry UTXOs. View tails must not replace these. */
-export function jobEventsEntryOneToOneIndices(
+/**
+ * Exact entry covenants affected by compiler-resolved chunkable collection writes.
+ * Duplicate logical/physical carriers for one storage identity are counted once.
+ */
+export function collectionValueEntryPlans(
+  groups: ReadonlyArray<{ collectionValueWrites?: readonly CollectionValueWrite[] }>,
+  loopVariables: ReadonlyArray<{
+    collection: string;
+    lockingBytecode: Uint8Array;
+    chunkable?: boolean;
+  }> = [],
+  requiredLoopEntryCount: (collection: string) => number = () => 0,
+): Array<{ lockingBytecode: Uint8Array; plannedCount: number }> {
+  const byLock = new Map<string, {
+    lockingBytecode: Uint8Array;
+    identities: Set<string>;
+    loopCount: number;
+  }>();
+  for (const group of groups) {
+    for (const write of group.collectionValueWrites ?? []) {
+      const lock = write.lockingBytecode;
+      if (!lock || lock.length === 0) continue;
+      const key = binToHex(lock);
+      const plan = byLock.get(key) ?? {
+        lockingBytecode: lock,
+        identities: new Set<string>(),
+        loopCount: 0,
+      };
+      plan.identities.add(
+        `${write.identity.categoryId.toLowerCase()}:${write.identity.collectionSignature}`
+        + `:${binToHex(write.identity.slot)}`,
+      );
+      byLock.set(key, plan);
+    }
+  }
+  for (const variable of loopVariables) {
+    if (variable.chunkable !== true || variable.lockingBytecode.length === 0) continue;
+    const key = binToHex(variable.lockingBytecode);
+    const plan = byLock.get(key) ?? {
+      lockingBytecode: variable.lockingBytecode,
+      identities: new Set<string>(),
+      loopCount: 0,
+    };
+    const required = requiredLoopEntryCount(variable.collection);
+    plan.loopCount = Math.max(plan.loopCount, required > 0 ? required : 2);
+    byLock.set(key, plan);
+  }
+  return [...byLock.values()].map((plan) => ({
+    lockingBytecode: plan.lockingBytecode,
+    // One sorted mapping mutation can materialize predecessor and NEW. Multiple resolved identities sharing
+    // a covenant retain their independent pairs; loop metadata supplies its exact runtime width when known.
+    plannedCount: Math.max(plan.loopCount, plan.identities.size * 2),
+  })).filter((plan) => plan.plannedCount > 0);
+}
+
+/** Same-index mutable collection entry UTXOs. View tails must not replace these. */
+export function collectionEntryOneToOneIndices(
   inputs: ReadonlyArray<{
     token?: { nft?: { capability?: string } };
     unlocker?: { generateLockingBytecode: () => Uint8Array };
@@ -2327,38 +2215,48 @@ export function isDisposableAlignmentPad(output: {
  * conservation helper leave -1 on the stack (0x81) so `0 GTE VERIFY` fails.
  */
 /**
- * FakeToken.transferFrom lays out P' at master+2 and NEW at master+4 (pred+2).
- * A later same-category mapping (allowance) can occupy +4 with a different
- * collection lock; the covenant EQUALVERIFYs OUTPUTBYTECODE[+4] against P'.
+ * Every sorted-list edge and its referenced successor belong to the same collection covenant. Repair a
+ * successor whose output coordinate retained another collection lock, using the authenticated next-slot link
+ * rather than a contract method name or fixed block offsets.
  */
-export function reassertTokenInsertNewLock(
+export function reassertSortedEntrySuccessorLocks(
   outputs: Array<{
     to?: Uint8Array | string;
     amount?: bigint;
     token?: { category?: string; amount?: bigint; nft?: { capability?: string; commitment?: string | Uint8Array } };
   }>,
-  masterIndex: number,
   categoryId: string,
-  predOffset = 2,
-  newOffset = 4,
-): boolean {
-  const pred = outputs[masterIndex + predOffset];
-  const neu = outputs[masterIndex + newOffset];
-  if (!pred?.token || pred.token.category !== categoryId || pred.token.nft?.capability !== 'mutable') {
-    return false;
+): number {
+  let repaired = 0;
+  for (const [predecessorIndex, predecessor] of outputs.entries()) {
+    if (predecessor.token?.category !== categoryId
+      || predecessor.token.nft?.capability !== 'mutable') continue;
+    const predecessorCommitment = commitmentHexOf(predecessor.token.nft.commitment);
+    if (!isSortedEntryNodeCommitment(predecessorCommitment)
+      || predecessorCommitment.length < SLOT_HEX * 2) continue;
+    const nextSlot = predecessorCommitment.slice(SLOT_HEX, SLOT_HEX * 2).toLowerCase();
+    if (nextSlot === '0'.repeat(SLOT_HEX)) continue;
+    const successors = outputs.flatMap((candidate, candidateIndex) => {
+      if (candidateIndex === predecessorIndex
+        || candidate.token?.category !== categoryId
+        || candidate.token.nft?.capability !== 'mutable') return [];
+      const commitment = commitmentHexOf(candidate.token.nft.commitment).toLowerCase();
+      return commitment.startsWith(nextSlot) ? [{ candidate, candidateIndex }] : [];
+    });
+    // An ambiguous slot cannot authorize a repair. A valid sorted collection has exactly one successor.
+    if (successors.length !== 1) continue;
+    const predecessorLock = predecessor.to instanceof Uint8Array ? predecessor.to : undefined;
+    const successorLock = successors[0].candidate.to instanceof Uint8Array
+      ? successors[0].candidate.to as Uint8Array : undefined;
+    if (!predecessorLock || !successorLock || predecessorLock.length !== successorLock.length) continue;
+    if (predecessorLock.every((byte, offset) => byte === successorLock[offset])) continue;
+    outputs[successors[0].candidateIndex] = {
+      ...successors[0].candidate,
+      to: predecessorLock,
+    };
+    repaired += 1;
   }
-  if (!neu?.token || neu.token.category !== categoryId || neu.token.nft?.capability !== 'mutable') {
-    return false;
-  }
-  const predLock = pred.to instanceof Uint8Array ? pred.to : undefined;
-  const newLock = neu.to instanceof Uint8Array ? neu.to : undefined;
-  if (!predLock || !newLock || predLock.length !== newLock.length) return false;
-  if (predLock.every((byte, offset) => byte === newLock[offset])) return false;
-  outputs[masterIndex + newOffset] = {
-    ...neu,
-    to: predLock,
-  };
-  return true;
+  return repaired;
 }
 
 /**
@@ -2405,7 +2303,7 @@ export function stripSurplusValueChunkLocks(
 /** Recreate every consumed SCID v1 identity NFT. Prefer a same-lock pad, then a
  * token-free disposable output (not a view tail). Never skip: dropping the NFT
  * makes the next non-zero msg.sender call unsatisfiable. Do not overwrite
- * minting/mutable occupants, reserved occupancy (impl trailing / jobEvents /
+ * minting/mutable occupants, reserved occupancy (implementation trailing / collection values /
  * writer returns), or append past an OP_RETURN jobs suffix. */
 export function reassertScidIdentityOutputs(
   outputs: Array<{
@@ -2673,6 +2571,25 @@ export function shouldOverwriteForSameIndexTwin(existing: {
 }
 
 /**
+ * Place an output at an absolute transaction index without shifting any later
+ * compiler-owned coordinate. A not-yet-materialized gap is alignment space;
+ * an existing value is displaced only after the caller resolves ownership.
+ */
+export function placeOutputAtExactIndex<T>(
+  outputs: T[],
+  index: number,
+  output: T,
+  alignmentPad: () => T,
+): void {
+  if (!Number.isSafeInteger(index) || index < 0) {
+    throw new Error(`Invalid absolute output index: ${index}`);
+  }
+  while (outputs.length < index) outputs.push(alignmentPad());
+  if (outputs.length === index) outputs.push(output);
+  else outputs[index] = output;
+}
+
+/**
  * Write a nested mutable at its input index without splicing. Park a displaced
  * event/view on a later alignment pad so view tails and the jobs suffix stay put.
  */
@@ -2718,7 +2635,7 @@ export type SameIndexTwinOptions = {
   suffixStart: number;
   /** Leave these indexes for INSERT NEW / other reserved band members. */
   reservedIndexes?: readonly number[];
-  /** Skip pads that still sit inside these collection locks (jobEvents, etc.). */
+  /** Skip pads that still sit inside compiler-resolved collection locks. */
   skipLocks?: readonly Uint8Array[];
 };
 
@@ -2882,68 +2799,8 @@ export function emitDestCollidesPreservedInput(input?: {
   return capability === 'minting' || capability === 'mutable';
 }
 
-export function publishJobEventOutputIndex(implIndex: number, eventOffset = 4): number {
+export function blockSlotOutputIndex(implIndex: number, eventOffset = 4): number {
   return implIndex < 0 ? -1 : implIndex + eventOffset;
-}
-
-/** Created JobEvent CAT (`005e19…` / `5e19…`). */
-export function isCreatedJobEventCommitment(commitment: string): boolean {
-  const hex = commitment.toLowerCase();
-  return hex.startsWith('005e') || hex.startsWith('5e19');
-}
-
-/**
- * JobEvent dest is `INPUTINDEX + event.offset` of the executing publishJobEvent.
- * Occupancy may park Created later (dest 26); move it onto the executing dest
- * and clear the stray so uniqueness WITHIN[4,5) sees dest 22, not dest 26.
- */
-export function relocateJobEventEmitToDest(
-  outputs: Array<{
-    to?: Uint8Array | string;
-    amount?: bigint;
-    token?: { amount?: bigint; category?: string; nft?: { capability?: string; commitment?: string } };
-  }>,
-  dest: number,
-  options?: { consumedMutableOk?: boolean; preferCreated?: boolean },
-): boolean {
-  if (dest < 0) return false;
-  while (outputs.length <= dest) {
-    outputs.push({ to: Uint8Array.of(0x51), amount: 1000n });
-  }
-  const destCommit = String(outputs[dest]?.token?.nft?.commitment ?? '');
-  if (outputs[dest]?.token?.nft?.capability === 'none' && isJobEventEmitCommitment(destCommit)) {
-    for (let index = 0; index < outputs.length; index++) {
-      if (index === dest) continue;
-      const other = outputs[index];
-      if (other?.token?.nft?.capability !== 'none') continue;
-      if (!isJobEventEmitCommitment(String(other.token?.nft?.commitment ?? ''))) continue;
-      outputs[index] = { to: Uint8Array.of(0x51), amount: 1000n };
-    }
-    return true;
-  }
-  // First publish parks Created at dest 26; later updates must not steal persist.
-  if (options?.preferCreated === false) return false;
-  let source = -1;
-  for (let index = 0; index < outputs.length; index++) {
-    if (index === dest) continue;
-    const other = outputs[index];
-    if (other?.token?.nft?.capability !== 'none') continue;
-    const commit = String(other.token?.nft?.commitment ?? '');
-    if (!isCreatedJobEventCommitment(commit)) continue;
-    source = index;
-    break;
-  }
-  if (source < 0) return false;
-  const occupant = outputs[dest];
-  if (occupant && !isOverwritableEmitOccupant(occupant, {
-    consumedMutableOk: options?.consumedMutableOk,
-  })) {
-    return false;
-  }
-  const moved = outputs[source];
-  outputs[dest] = moved;
-  outputs[source] = { to: Uint8Array.of(0x51), amount: 1000n };
-  return true;
 }
 
 const SCID_COMMIT_PREFIX = '53434944';
@@ -3075,221 +2932,14 @@ export function resolveNamedEventValues(
   return values.every((value) => value !== undefined) ? values : undefined;
 }
 
-/** JobEvent.type_ from a positional tuple or named struct. */
-export function jobEventTypeOf(event: unknown): number | undefined {
-  const raw = Array.isArray(event)
-    ? event[0]
-    : event && typeof event === 'object' && !Array.isArray(event)
-      ? (event as { type_?: unknown }).type_
-      : undefined;
-  if (typeof raw === 'bigint' || typeof raw === 'number') {
-    const type = Number(raw);
-    return Number.isInteger(type) && type >= 0 && type <= 16 ? type : undefined;
-  }
-  return undefined;
-}
-
-function jobEventFieldEmpty(value: unknown): boolean {
-  if (value === undefined || value === null || value === 0 || value === 0n || value === '') return true;
-  if (value instanceof Uint8Array) return value.length === 0;
-  return false;
-}
-
-export function stampEmptyJobEventTimestamp(event: unknown, timestamp: bigint): unknown {
-  if (timestamp <= 0n) return event;
-  if (Array.isArray(event)) {
-    if (!jobEventFieldEmpty(event[3])) return event;
-    const next = [...event];
-    next[3] = timestamp;
-    return next;
-  }
-  if (event && typeof event === 'object') {
-    const record = event as { timestamp_?: unknown };
-    if (!jobEventFieldEmpty(record.timestamp_)) return event;
-    return { ...record, timestamp_: timestamp };
-  }
-  return event;
-}
-
 /**
- * Persist UPDATE rematerialize (Created digest + persist `v`) is only for
- * empty-address JobEvents (Closed / CollateralWithdrawn). Created and
- * Whitelisted carry an address and are INSERT/dest rows — restamping persist
- * `v` there rewrites second-publish nNew and the whitelist dest.
- */
-export function isWithdrawShapedJobEvent(event: unknown): boolean {
-  if (jobEventTypeOf(event) === undefined) return false;
-  if (Array.isArray(event)) return jobEventFieldEmpty(event[1]);
-  if (event && typeof event === 'object') {
-    return jobEventFieldEmpty((event as { address_?: unknown }).address_);
-  }
-  return false;
-}
-
-export function shouldRematerializePersistUpdate(parts: {
-  persistReady: boolean;
-  publishJobPost: boolean;
-  event?: unknown;
-  plannedInserts?: number;
-}): boolean {
-  if (!parts.persistReady || parts.publishJobPost) return false;
-  if ((parts.plannedInserts ?? 0) > 0) return false;
-  return isWithdrawShapedJobEvent(parts.event);
-}
-
-/** First-publish Created / whitelist INSERT dests must keep their own redeem lock. */
-export function isInsertShapedJobEvent(event: unknown): boolean {
-  const type = jobEventTypeOf(event);
-  return type === 0 || type === 14 || type === 15;
-}
-
-/**
- * Persist UPDATE band slots (updateJobPost nNew=3) EQUALVERIFY the Created
- * digest redeem. First-publish INSERT dests and whitelist writes must not.
- */
-export function shouldStampPersistUpdateDigestLock(parts: {
-  persistReady: boolean;
-  persistWidth: number;
-  firstPublishInsert: boolean;
-}): boolean {
-  return parts.persistReady && parts.persistWidth > 0 && !parts.firstPublishInsert;
-}
-
-/**
- * Dest-18 UPDATE EQUALVERIFYs the jobEvents entry-NFT p2sh32: persist proxy
- * category + collection `jobEvents:mapping(uint256 => JobEventData[])`.
- * That is emitSortedEntryAddress, not a value-chunk domain lock.
- */
-export function persistUpdateDigestLock(
-  categoryId?: string,
-  _extraCategories: readonly string[] = [],
-): Uint8Array | undefined {
-  if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId)) return undefined;
-  try {
-    const collectionHash = computeCollectionHash(
-      computeCollectionSignature('jobEvents', 'mapping(uint256 => JobEventData[])'),
-    );
-    return scriptToLockingBytecode(
-      buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash),
-      'p2sh32',
-    );
-  } catch {
-    return undefined;
-  }
-}
-
-/** Dest 18 is the jobEvents entry lock; dest 19+ keep the consumed persist-v lock. */
-export function persistUpdateDestLock(parts: {
-  destOffset: number;
-  entryLock?: Uint8Array;
-  persistLock?: Uint8Array;
-  inputLock?: Uint8Array;
-}): Uint8Array | undefined {
-  if (parts.destOffset === 0) return parts.entryLock ?? parts.persistLock ?? parts.inputLock;
-  return parts.persistLock ?? parts.inputLock ?? parts.entryLock;
-}
-
-/** Close / CollateralWithdrawn (and similar) carry empty address/data/timestamp. */
-export function isEmptyPayloadJobEvent(event: unknown): boolean {
-  if (jobEventTypeOf(event) === undefined) return false;
-  if (Array.isArray(event)) {
-    return jobEventFieldEmpty(event[1]) && jobEventFieldEmpty(event[2]) && jobEventFieldEmpty(event[3]);
-  }
-  if (event && typeof event === 'object') {
-    const record = event as { address_?: unknown; data_?: unknown; timestamp_?: unknown };
-    return jobEventFieldEmpty(record.address_)
-      && jobEventFieldEmpty(record.data_)
-      && jobEventFieldEmpty(record.timestamp_);
-  }
-  return false;
-}
-
-function jobEventTimestampOf(event: unknown): bigint | undefined {
-  const raw = Array.isArray(event)
-    ? event[3]
-    : (event && typeof event === 'object'
-      ? (event as { timestamp_?: unknown }).timestamp_
-      : undefined);
-  if (typeof raw === 'bigint') return raw;
-  if (typeof raw === 'number' && Number.isFinite(raw)) return BigInt(raw);
-  return undefined;
-}
-
-/**
- * Emit blob for an empty-payload JobEvent: `00||OP_type||00 00 || timestamp`.
- * Persist last-row Closed is `0057000000`; CollateralWithdrawn with a stamp is
- * `0060000004…` — the impl EQUALVERIFYs that CAT, not the unstamped `0060000000`.
- */
-export function encodeEmptyJobEventEmitCommitment(jobId: unknown, event: unknown): string | undefined {
-  const type = jobEventTypeOf(event);
-  if (type === undefined) return undefined;
-  const addressEmpty = Array.isArray(event)
-    ? jobEventFieldEmpty(event[1])
-    : jobEventFieldEmpty((event as { address_?: unknown })?.address_);
-  const dataEmpty = Array.isArray(event)
-    ? jobEventFieldEmpty(event[2])
-    : jobEventFieldEmpty((event as { data_?: unknown })?.data_);
-  if (!addressEmpty || !dataEmpty) return undefined;
-  const id = typeof jobId === 'bigint' || typeof jobId === 'number' ? Number(jobId) : 0;
-  if (!Number.isInteger(id) || id < 0 || id > 16) return undefined;
-  const idHex = id === 0 ? '00' : (id + 0x50).toString(16).padStart(2, '0');
-  const typeHex = type === 0 ? '00' : (type + 0x50).toString(16).padStart(2, '0');
-  const timestamp = jobEventTimestampOf(event);
-  if (timestamp !== undefined && timestamp > 0n) {
-    const stamped = encodeDataPush(encodeInt(timestamp));
-    if (stamped.length > 0) {
-      return `${idHex}${typeHex}0000${binToHex(stamped)}`;
-    }
-  }
-  return `${idHex}${typeHex}000000`;
-}
-
-/** Same CAT the emit covenant uses: pushdata(jobId) || pushdata(event). */
-export function encodeJobEventEmitCommitment(
-  jobId: unknown,
-  event: unknown,
-  structs?: Artifact['structs'],
-): string | undefined {
-  try {
-    const jobEnc = encodePushdataValue(jobId as StateValue, 'uint256');
-    const eventEnc = encodePushdataValue(event as StateValue, 'JobEventData', structs);
-    if (!(jobEnc instanceof Uint8Array) || !(eventEnc instanceof Uint8Array)) return undefined;
-    const out = new Uint8Array(jobEnc.length + eventEnc.length);
-    out.set(jobEnc, 0);
-    out.set(eventEnc, jobEnc.length);
-    return binToHex(out);
-  } catch {
-    return encodeEmptyJobEventEmitCommitment(jobId, event);
-  }
-}
-
-/** JobEvent NFT commitment: 00||struct (005e19… / 005f19… / 0023aa20…) not a value-chunk 00||120B. */
-export function isJobEventEmitCommitment(commitment: string): boolean {
-  const hex = commitment.toLowerCase();
-  if (hex.startsWith('53434944')) return false;
-  // CollateralWithdrawn (type 16 / OP_16). Timestamp-stamped rows are longer
-  // than Closed leftovers (`0057000000`) and must not share that classifier.
-  if (hex.startsWith('0060') && hex.length >= 10 && hex.length <= 48) return true;
-  if (hex.length < 20 || hex.length > 160) return false;
-  // OP_1..OP_16 after jobId 0 covers Created (5e), Whitelisted (5f), Closed (57), …
-  if (/^00(5[1-9a-f]|60)/.test(hex)) return true;
-  if (hex.startsWith('5e19') || hex.startsWith('5f19')) return true;
-  return hex.startsWith('0019') || hex.startsWith('0023') || hex.startsWith('00aa20');
-}
-
-/**
- * Any emit-slot commitment the covenant EQUALVERIFYs — JobEvent blobs and
- * typed events such as Initialized(uint64)=`51` or packed addresses.
- * SCID identity and empty probes are not emits.
+ * Any non-empty, non-SCID commitment learned at an emit verification. The compiler-owned coordinate supplies
+ * event identity, so this intentionally does not classify application payload encodings.
  */
 export function isLearnedEventEmitCommitment(commitment: string): boolean {
   const hex = commitment.toLowerCase();
   if (!hex || hex.startsWith('53434944') || /^(00)+$/.test(hex)) return false;
-  if (isJobEventEmitCommitment(hex)) return true;
-  // Script-number events (Initialized(1) → OP_1).
-  if (hex.length <= 2) return hex === '01' || /^5[1-9a-f]$/.test(hex) || hex === '60';
-  // Packed ABI payloads (OwnershipTransferred, ArbitratorRegistered, …).
-  return hex.length >= 4 && hex.length <= 256;
+  return /^[0-9a-f]+$/.test(hex) && hex.length % 2 === 0 && hex.length <= 256;
 }
 
 /**
@@ -3336,108 +2986,6 @@ export function demoteUnclaimedConditionalEventOutput(output: {
   return true;
 }
 
-function isEmptySameCategoryNoneCap(
-  output: {
-    token?: { category?: string; nft?: { capability?: string; commitment?: string } };
-  } | undefined,
-  category: string,
-): boolean {
-  if (output?.token?.category !== category || output.token.nft?.capability !== 'none') return false;
-  const commit = String(output.token.nft.commitment ?? '');
-  return commit === '' || /^0+$/.test(commit);
-}
-
-/** Last writer for publishJobEvent: impl+event.offset, and drop a cloned stub on dest+1. */
-export function placePublishJobEventOutput(
-  outputs: Array<{
-    to?: Uint8Array | string;
-    amount?: bigint;
-    token?: { amount?: bigint; category?: string; nft?: { capability?: string; commitment?: string } };
-  }>,
-  dest: number,
-  placed: {
-    to: Uint8Array;
-    amount?: bigint;
-    token: { amount: bigint; category: string; nft: { capability: 'none'; commitment: string } };
-  },
-  options?: {
-    clearClonedStub?: boolean;
-    refuseEmpty?: boolean;
-    consumedMutableOk?: boolean;
-    destInput?: { token?: { nft?: { capability?: string } } };
-  },
-): boolean {
-  if (dest < 0) return false;
-  const destinationInputCapability = options?.destInput?.token?.nft?.capability;
-  if (emitDestCollidesPreservedInput(options?.destInput)
-    && !(options?.consumedMutableOk === true && destinationInputCapability === 'mutable')) return false;
-  const placedCommit = String(placed.token.nft.commitment ?? '');
-  // Persist dest sits inside the MD minting uniqueness window. An empty or
-  // short `0057000000` same-category none-cap there is minting-shaped
-  // (input 14 / 0 GTE VERIFY). First publish still places an empty event NFT
-  // so extract can read Created. Persist waits for a real JobEvent blob.
-  if (options?.refuseEmpty === true && !isJobEventEmitCommitment(placedCommit)) {
-    if (dest < outputs.length && (
-      isEmptySameCategoryNoneCap(outputs[dest], placed.token.category)
-      || (outputs[dest]?.token?.category === placed.token.category
-        && outputs[dest]?.token?.nft?.capability === 'none'
-        && String(outputs[dest]?.token?.nft?.commitment ?? '') === '0057000000')
-    )) {
-      outputs[dest] = { to: Uint8Array.of(0x51), amount: 1000n };
-    }
-    return false;
-  }
-  while (outputs.length <= dest) {
-    outputs.push({ to: Uint8Array.of(0x51), amount: 1000n });
-  }
-  const current = outputs[dest];
-  const commit = String(current?.token?.nft?.commitment ?? '');
-  const alreadyEvent = current?.token?.nft?.capability === 'none'
-    && commit.length > 20
-    && !commit.startsWith('53434944')
-    && (
-      current.token.category === placed.token.category
-      || isJobEventEmitCommitment(commit)
-    );
-  if (alreadyEvent) {
-    // A JobEvent token parked on a P2PKH (or other) lock still fails the event-covenant
-    // OUTPUTBYTECODE pin. Keep the commitment, restore the event locking bytecode.
-    outputs[dest] = {
-      to: placed.to,
-      amount: placed.amount ?? current?.amount ?? 1200n,
-      token: current!.token,
-    };
-  } else {
-    if (current && !isOverwritableEmitOccupant(current, {
-      consumedMutableOk: options?.consumedMutableOk,
-    })) {
-      return false;
-    }
-    outputs[dest] = { to: placed.to, amount: placed.amount ?? 1200n, token: placed.token };
-  }
-  if (options?.clearClonedStub === true) {
-    const next = outputs[dest + 1];
-    if (next?.token?.category === placed.token.category
-      && next.token.nft?.capability !== 'none'
-      && isOverwritableEmitOccupant(next)) {
-      outputs[dest + 1] = { to: Uint8Array.of(0x51), amount: 1000n };
-    }
-  }
-  // Only a JobEvent dest needs a unique sibling. Typed events
-  // (OwnershipTransferred, Initialized) share the proxy category.
-  if (isJobEventEmitCommitment(placedCommit)) {
-    for (let index = 0; index < outputs.length; index++) {
-      if (index === dest) continue;
-      const other = outputs[index];
-      if (other?.token?.category !== placed.token.category) continue;
-      if (other.token.nft?.capability !== 'none') continue;
-      if (!isJobEventEmitCommitment(String(other.token.nft?.commitment ?? ''))) continue;
-      outputs[index] = { to: Uint8Array.of(0x51), amount: 1000n };
-    }
-  }
-  return true;
-}
-
 /**
  * INSERT P' is a trailing output at the participant's runtime-resource base (+ ordinal). Negative
  * values are covenant sentinels (update / alias). A planner that still emits a
@@ -3460,6 +3008,183 @@ export function groupLayoutTrailingBase(group: {
 }): number {
   const layout = group.blockLayout ?? group.compilerRoute?.abiFunction?.blockLayout;
   return layout?.trailingBase ?? layout?.blockSize ?? 8;
+}
+
+/**
+ * Compiler-owned trailing families share one block-relative coordinate system. Batch predecessor recreations
+ * occupy the prefix because their authenticated count shifts dynamic-state verification; dynamic chunks follow,
+ * and chunkable collection-value continuations begin after both input-bearing families.
+ */
+export function planCompilerTrailingResources(parts: {
+  trailingBase: number;
+  batchPredecessorCount: number;
+  dynamicChunkCount: number;
+  collectionValueChunkCount: number;
+}): {
+    batchPredecessorBase: number;
+    dynamicChunkBase: number;
+    collectionValueChunkBase: number;
+    end: number;
+  } {
+  const counts = [
+    parts.trailingBase,
+    parts.batchPredecessorCount,
+    parts.dynamicChunkCount,
+    parts.collectionValueChunkCount,
+  ];
+  if (counts.some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw new Error('Compiler trailing resource coordinates require non-negative safe integers');
+  }
+  const batchPredecessorBase = parts.trailingBase;
+  const dynamicChunkBase = batchPredecessorBase + parts.batchPredecessorCount;
+  const collectionValueChunkBase = dynamicChunkBase + parts.dynamicChunkCount;
+  return {
+    batchPredecessorBase,
+    dynamicChunkBase,
+    collectionValueChunkBase,
+    end: collectionValueChunkBase + parts.collectionValueChunkCount,
+  };
+}
+
+/**
+ * First continuation coordinate owned by a state-owner/executor pair.
+ *
+ * A legacy proxy call and its delegate are two independent frames, so their continuation cannot overlap either
+ * frame. A compiler-routed participant is different: its published owner block already contains the executor and
+ * reserves a trailing resource region inside that block. Moving that region past the embedded executor duplicates
+ * the same logical run in a later owner's coordinates (and can overwrite a reverse-indexed root suffix).
+ */
+export function collectionValueOutputBaseForPhysicalExecutor(parts: {
+  owner: {
+    valueChunkOutputBase?: number;
+    blockLayout?: { blockSize?: number; trailingBase?: number };
+    compilerRoute?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
+  };
+  ownerMaster: number;
+  executor?: {
+    valueChunkOutputBase?: number;
+    blockLayout?: { blockSize?: number; trailingBase?: number };
+    compilerRoute?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
+  };
+  executorMaster?: number;
+  /** The owner's compiler-published block already contains the executor input and its trailing resource region. */
+  ownerContainsExecutor?: boolean;
+  requestedBase?: number;
+}): number {
+  const executor = parts.executor ?? parts.owner;
+  const executorMaster = parts.executorMaster ?? parts.ownerMaster;
+  if (parts.ownerMaster < 0 || executorMaster < 0) return -1;
+  const ownerBase = parts.ownerMaster + groupLayoutTrailingBase(parts.owner);
+  const structuralBase = parts.ownerContainsExecutor
+    ? ownerBase
+    : Math.max(ownerBase, executorMaster + groupLayoutTrailingBase(executor));
+  const requestedBase = parts.requestedBase
+    ?? executor.valueChunkOutputBase
+    ?? parts.owner.valueChunkOutputBase;
+  return requestedBase !== undefined && requestedBase >= structuralBase
+    ? requestedBase : structuralBase;
+}
+
+type CollectionValueBandCarrier = {
+  sharedGroupIndex?: number;
+  delegateCallGroupIndex?: number;
+  delegateEmbeddedInBlock?: boolean;
+  collectionValueWrites?: readonly unknown[];
+  valueChunkOutputBase?: number;
+  blockLayout?: { blockSize?: number; trailingBase?: number };
+  compilerRoute?: { abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } } };
+};
+
+/**
+ * Bind every compiler-declared chunkable collection write to the physical state owner and executor whose
+ * coordinates its covenant authenticates. Logical aliases may share an owner; delegated execution may use a
+ * distinct implementation master unless the owner layout explicitly embeds that executor.
+ */
+export function collectionValuePhysicalBindings<T extends CollectionValueBandCarrier>(parts: {
+  externalGroups: readonly T[];
+  lowLevelGroups: readonly T[];
+  externalMaster: (groupIndex: number) => number;
+  lowLevelMaster: (groupIndex: number) => number;
+  requestedBase?: (group: T) => number | undefined;
+}): Array<{
+    writeGroup: T;
+    owner: T;
+    ownerIndex: number;
+    ownerMaster: number;
+    executor: T;
+    executorIndex?: number;
+    executorMaster: number;
+    start: number;
+  }> {
+  const bindings: Array<{
+    writeGroup: T;
+    owner: T;
+    ownerIndex: number;
+    ownerMaster: number;
+    executor: T;
+    executorIndex?: number;
+    executorMaster: number;
+    start: number;
+  }> = [];
+  const add = (
+    writeGroup: T,
+    owner: T,
+    ownerIndex: number,
+    ownerMaster: number,
+    executor: T,
+    executorMaster: number,
+    executorIndex?: number,
+  ): void => {
+    if ((writeGroup.collectionValueWrites?.length ?? 0) === 0) return;
+    const start = collectionValueOutputBaseForPhysicalExecutor({
+      owner,
+      ownerMaster,
+      executor,
+      executorMaster,
+      ownerContainsExecutor: owner.delegateEmbeddedInBlock === true,
+      requestedBase: parts.requestedBase?.(writeGroup),
+    });
+    if (start >= 0) bindings.push({
+      writeGroup, owner, ownerIndex, ownerMaster, executor, executorIndex, executorMaster, start,
+    });
+  };
+
+  for (const [index, group] of parts.externalGroups.entries()) {
+    const ownerIndex = group.sharedGroupIndex ?? index;
+    const owner = parts.externalGroups[ownerIndex] ?? group;
+    const executorIndex = group.delegateCallGroupIndex ?? owner.delegateCallGroupIndex;
+    const executor = executorIndex === undefined ? owner : parts.lowLevelGroups[executorIndex] ?? owner;
+    add(
+      group,
+      owner,
+      ownerIndex,
+      parts.externalMaster(ownerIndex),
+      executor,
+      executorIndex === undefined ? parts.externalMaster(ownerIndex) : parts.lowLevelMaster(executorIndex),
+      executorIndex,
+    );
+  }
+
+  for (const [index, group] of parts.lowLevelGroups.entries()) {
+    const proxyIndex = parts.externalGroups.findIndex((candidate, candidateIndex) => {
+      const ownerIndex = candidate.sharedGroupIndex ?? candidateIndex;
+      const owner = parts.externalGroups[ownerIndex] ?? candidate;
+      return (candidate.delegateCallGroupIndex ?? owner.delegateCallGroupIndex) === index;
+    });
+    const ownerIndex = proxyIndex < 0
+      ? -1 : (parts.externalGroups[proxyIndex].sharedGroupIndex ?? proxyIndex);
+    const owner = ownerIndex < 0 ? group : parts.externalGroups[ownerIndex];
+    add(
+      group,
+      owner,
+      ownerIndex,
+      ownerIndex < 0 ? parts.lowLevelMaster(index) : parts.externalMaster(ownerIndex),
+      group,
+      parts.lowLevelMaster(index),
+      index,
+    );
+  }
+  return bindings;
 }
 
 /** True when an absolute output is owned by a slot of `kind` in a participant's fixed block. */
@@ -3510,20 +3235,20 @@ export function materializedPredOutBase(group: {
 }
 
 /**
- * INSERT/UPDATE P' follows the token block and the live jobEvents band.
+ * INSERT/UPDATE P' follows the token block and the live collection-value band.
  * If assigned view tails already occupy that slot, slide P' to after the last
  * view rather than overwriting an OP_TRUE none-cap return (input-5 leftover 01).
  */
 export function predOutBaseAfterOccupancy(parts: {
   master: number;
   blockSize: number;
-  jobEventsEnd?: number;
+  collectionValueEnd?: number;
   viewTailStart?: number;
   viewTailEnd?: number;
 }): number {
   const natural = parts.master + parts.blockSize;
-  const afterJobEvents = (parts.jobEventsEnd ?? -1) + 1;
-  let base = Math.max(natural, afterJobEvents);
+  const afterCollectionValues = (parts.collectionValueEnd ?? -1) + 1;
+  let base = Math.max(natural, afterCollectionValues);
   if (
     parts.viewTailStart !== undefined
     && parts.viewTailEnd !== undefined
@@ -3611,6 +3336,108 @@ export function inheritWriterBatchPlan<T, P>(
   return true;
 }
 
+/** Logical groups fused onto an earlier physical participant can carry copied writer witnesses, but they do not
+ * own another output block. Only the primary external carrier and concrete low-level/delegate carriers may
+ * materialize predecessor outputs. */
+export function physicalBatchOutputOwners<T extends { sharedGroupIndex?: number }, U>(
+  externalGroups: readonly T[],
+  lowLevelGroups: readonly U[],
+): Array<T | U> {
+  return [
+    ...externalGroups.filter((group) => group.sharedGroupIndex === undefined),
+    ...lowLevelGroups,
+  ];
+}
+
+/**
+ * Resolve compiler-declared read-only sorted-batch proof owners from materialized route unlockers.
+ *
+ * A `-3` predecessor witness authenticates `output[proof input index] == proof input`. The serialized unlocker's
+ * ABI vector is authoritative after route fusion and witness refresh; composition-side group metadata can be a
+ * logical projection and need not retain the final vector. Project each materialized ABI witness through its own
+ * compiler-published block layout so final output conservation treats these proofs as input-bearing owners rather
+ * than disposable block funders.
+ */
+export function compilerReadOnlyBatchProofInputs(
+  inputs: readonly UnlockableUtxo[],
+): UnlockableUtxo[] {
+  const result = new Map<number, UnlockableUtxo>();
+  for (const [masterIndex, masterInput] of inputs.entries()) {
+    const unlocker = masterInput.unlocker as {
+      abiFunction?: Pick<AbiFunction, 'name' | 'inputs' | 'blockLayout'>;
+      params?: readonly unknown[];
+    } | undefined;
+    const abiFunction = unlocker?.abiFunction;
+    const params = unlocker?.params;
+    if (!abiFunction?.blockLayout || !params) continue;
+    const internalArgs = Object.fromEntries(abiFunction.inputs.map((input, index) => (
+      [input.name, params[index]]
+    )));
+    const offsets = sortedBatchReadOnlyProofOffsets(abiFunction.blockLayout, internalArgs);
+    if (offsets.length === 0) continue;
+    for (const offset of offsets) {
+      const inputIndex = masterIndex + offset;
+      const input = inputs[inputIndex];
+      if (!input) {
+        throw new Error(
+          `Sorted-batch read-only proof offset ${offset} exceeds its materialized participant block`,
+        );
+      }
+      result.set(inputIndex, input);
+    }
+  }
+  return [...result.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, input]) => input);
+}
+
+/**
+ * Reassert every fixed-slot read-only batch proof immediately before a transaction is admitted.
+ *
+ * Both standalone builders and atomic composers can materialize output-only resources after their participant
+ * blocks were assembled. The compiler's `-3` witness remains the ownership authority at either boundary, so the
+ * same invariant must be applied to the final transaction rather than inferred from composition-local metadata.
+ */
+export function reassertCompilerReadOnlyBatchProofOutputs(
+  outputs: Output[],
+  inputs: readonly UnlockableUtxo[],
+): number {
+  const proofInputs = compilerReadOnlyBatchProofInputs(inputs);
+  const restored = reassertReadOnlyMutableOneToOnes(outputs, inputs, proofInputs);
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_READ_ONLY_PROOFS === '1' && inputs.length > 400) {
+    const proofIndices = new Set(proofInputs.map((proof) => inputs.indexOf(proof)));
+    console.error('compiler-read-only-batch-proof-admission', JSON.stringify({
+      inputCount: inputs.length,
+      outputCount: outputs.length,
+      restored,
+      proofs: [...proofIndices].map((index) => ({
+        index,
+        inputLock: binToHex(inputs[index]!.unlocker.generateLockingBytecode()),
+        outputLock: outputs[index]?.to instanceof Uint8Array ? binToHex(outputs[index].to) : outputs[index]?.to,
+        inputCategory: inputs[index]?.token?.category,
+        outputCategory: outputs[index]?.token?.category,
+        inputCommitment: inputs[index]?.token?.nft?.commitment,
+        outputCommitment: outputs[index]?.token?.nft?.commitment,
+      })),
+      routes: inputs.flatMap((input, masterIndex) => {
+        const unlocker = input.unlocker as {
+          abiFunction?: Pick<AbiFunction, 'name' | 'inputs'>;
+          params?: readonly unknown[];
+        };
+        const witnesses = unlocker.abiFunction?.inputs.flatMap((argument, index) => (
+          /^__internal__vmapBatchPredOut_\d+$/.test(argument.name)
+            ? [{ name: argument.name, value: typeof unlocker.params?.[index] === 'bigint'
+              ? String(unlocker.params[index]) : unlocker.params?.[index] }]
+            : []
+        )) ?? [];
+        return witnesses.length === 0 ? [] : [{ masterIndex, route: unlocker.abiFunction!.name, witnesses }];
+      }),
+    }));
+  }
+  return restored;
+}
+
 /**
  * Own-category none-cap NFTs are event-pin candidates. Only the layout event
  * slots and the witnessed in-block return may carry that shape. Logical
@@ -3665,6 +3492,18 @@ export function remapInsertPredOuts(
     }
   }
   return updates;
+}
+
+/** Resolve collection metadata for a physical entry slot. A compiler route owns the complete fixed block, while
+ * logical handlers only own their local layouts and are valid fallbacks when no route is present. */
+export function physicalEntryAccessForSlot(
+  route: Pick<AbiFunction, 'entryAccesses'> | undefined,
+  logicalFunctions: readonly Pick<AbiFunction, 'entryAccesses'>[],
+  slotIndex: number,
+): EntryAccessAbi | undefined {
+  return route?.entryAccesses?.[slotIndex]
+    ?? logicalFunctions.map((candidate) => candidate.entryAccesses?.[slotIndex])
+      .find((candidate) => candidate !== undefined);
 }
 
 export interface EntryNftInfo {
@@ -3805,10 +3644,9 @@ export interface ExternalCallUtxoGroup {
   /** X13: B's block carries a funding input at its published returnEvent offset, so B's return-event NFT is
    * emitted at that offset instead of appended after the whole participant region. */
   returnEventInBlock?: boolean;
-  /** A route's chunkable vmap WRITE pins its value chunks as outputs in the callee's TRAILING band. The value is
-   * computed on-chain (`publishJobEvent` stamps `block.timestamp` before storing), so the SDK cannot build the
-   * chunks off-chain the way `valueChunkMints` does for a caller-known value - the commitments are extracted
-   * from the callee's derivation probe and placed here, keyed by block slot. */
+  /** A computed chunkable collection write pins continuation outputs in the callee's trailing band. */
+  collectionValueWrites?: CollectionValueWrite[];
+  /** VM-authenticated trailing outputs, keyed by block slot. */
   derivedTrailingOutputs?: Map<number, { commitment: string; lockingBytecode: Uint8Array }>;
   /** B's event NFT outputs (from auto-derivation of B's VM trace) */
   eventOutputs?: Array<{
@@ -3846,7 +3684,7 @@ export interface ExternalCallUtxoGroup {
   }>;
   /** Absolute output index of the first trailing INSERT predecessor after MD tails. */
   relocatedPredOutBase?: number;
-  /** Planned continuation-NFT count for a chunkable vmap write (publishJobEvent). */
+  /** Planned continuation-NFT count for a chunkable collection write. */
   valueChunkOutputCount?: number;
   /** Absolute first continuation output selected for this composed write. */
   valueChunkOutputBase?: number;
@@ -3860,6 +3698,51 @@ export interface ExternalCallUtxoGroup {
   dynamicChunkResources?: Array<{
     blockSlot: number; name: string; type: string; write: boolean;
   }>;
+}
+
+/**
+ * Select the Solidity-visible arguments owned by one physical ABI frame.
+ *
+ * Compiler routes can carry both a synthetic route frame and the source-level invocation represented by that
+ * frame. Source-level arguments belong to the physical ABI only when it is that handler (with matching visible
+ * arity); otherwise the compiler route's arguments remain authoritative.
+ */
+export function argumentsForPhysicalAbiFrame<T>(parts: {
+  abiFunction?: { name: string; inputs: readonly { name: string }[] };
+  physicalFunctionArgs: readonly T[];
+  logicalFunctionName?: string;
+  logicalFunctionArgs?: readonly T[];
+  compilerRoute?: {
+    abiFunction: { name: string; inputs: readonly { name: string }[] };
+    args: readonly T[];
+  };
+}): readonly T[] {
+  const visibleInputCount = parts.abiFunction?.inputs.filter(
+    (input) => !input.name.startsWith('__internal__'),
+  ).length;
+  const logicalArgs = parts.logicalFunctionArgs;
+  if (parts.abiFunction && logicalArgs !== undefined
+    && parts.logicalFunctionName === parts.abiFunction.name
+    && logicalArgs.length === visibleInputCount) {
+    return logicalArgs;
+  }
+  if (parts.abiFunction && parts.compilerRoute
+    && parts.compilerRoute.abiFunction === parts.abiFunction) {
+    return parts.compilerRoute.args;
+  }
+  return parts.physicalFunctionArgs;
+}
+
+/** Event signatures in the compiler-published physical slot order. */
+export function groupEventSignatures(
+  group: Pick<ExternalCallUtxoGroup, 'compilerRoute'>,
+  abiFunction?: Pick<AbiFunction, 'emits'>,
+): Array<string | undefined> {
+  const published = group.compilerRoute?.eventSignaturesBySlot ?? [];
+  const declared = abiFunction?.emits ?? [];
+  return Array.from({ length: Math.max(published.length, declared.length) }, (_, index) => (
+    published[index] ?? declared[index]?.eventSignature
+  ));
 }
 
 export interface StatefulTransactionOptions extends TransactionBuilderOptions {
@@ -3896,6 +3779,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   ecrecoverComputeRecreates?: Output[];       // parallel recreation OUTPUTS (A commits H_A, B commits the pubkey Q)
   entryNfts?: EntryNftInfo[];
   entryAccesses?: readonly EntryAccessAbi[];
+  /** Compiler-declared chunkable writes after their runtime mapping keys resolve to storage slots. */
+  collectionValueWrites?: CollectionValueWrite[];
   entryNftLockingBytecodes?: Map<string, Uint8Array>; // collection name -> locking bytecode
   // Dynamic-storage vars (string / unbounded bytes): chunk NFTs created as trailing outputs.
   dynamicChunkVars?: Array<{
@@ -3925,7 +3810,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   delegateEntriesAfterLowLevel?: boolean;
   /** Keep routed delegate dynamic chunks in the compiler's output-count-relative suffix without reordering inputs. */
   delegateDynamicChunksAtSuffix?: boolean;
-  /** Extra funder pads so nested callees start after a long publishJobEvent value-chunk band. */
+  /** Extra funder pads so nested callees start after a long collection-value band. */
   delegatedValueChunkPad?: number;
   /**
    * X56. The delegate return-event output follows the implementation's own event outputs rather than its
@@ -3950,6 +3835,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   keccakLoopRecreates?: Output[];          // ... and their recreation OUTPUTS (R_i per iteration), parallel
   checkMinRelayFee?: boolean; // enforce fee >= feePerByte * txSize
   minRelayFeePerKb?: bigint;  // satoshis per 1000 bytes; default 1000n (1 sat/byte)
+  /** Absolute output coordinate represented by local builder output 0. */
+  compositionOutputBase?: number;
   blockLayout?: FunctionBlockLayout;
   funderUtxos?: UnlockableUtxo[];     // funder UTXOs for output-only slots
   /** Immutable SCID anchor co-spent outside every fixed participant block to authenticate a stable logical
@@ -3987,6 +3874,38 @@ export type ParticipantImmutableEventDestination = {
 };
 
 /**
+ * Resolve the category which owns state written by a physical low-level execution group.
+ *
+ * Ordinary calls mutate the callee's state. A delegate call executes implementation bytecode against the
+ * proxy's state, so every state-derived output must retain the proxy category. Several logical calls may share
+ * one physical proxy/implementation pair; shared groups are therefore collapsed to their physical owner before
+ * the category is selected.
+ */
+export function lowLevelCallStateOwnerCategory(
+  groupIndex: number,
+  group: Pick<ExternalCallUtxoGroup, 'categoryId' | 'callMode'>,
+  proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
+  'categoryId' | 'delegateCallGroupIndex' | 'sharedGroupIndex'>>,
+  rootStateOwnerCategory = group.categoryId,
+  rootDelegateGroupIndex?: number,
+): string {
+  if (group.callMode !== 'delegatecall') return group.categoryId;
+  // A compiler route can execute the builder's own proxy block. Logical external calls carried by that route
+  // may reference the same low-level group index, but they are callees, not owners of the root storage frame.
+  if (groupIndex === rootDelegateGroupIndex) return rootStateOwnerCategory;
+  const ownerCategories = new Set<string>();
+  for (const [candidateIndex, candidate] of proxyGroups.entries()) {
+    const ownerIndex = candidate.sharedGroupIndex ?? candidateIndex;
+    const owner = proxyGroups[ownerIndex] ?? candidate;
+    const delegateIndex = candidate.delegateCallGroupIndex ?? owner.delegateCallGroupIndex;
+    if (delegateIndex === groupIndex) ownerCategories.add(owner.categoryId);
+  }
+  if (ownerCategories.size === 0) return rootStateOwnerCategory;
+  if (ownerCategories.size === 1) return [...ownerCategories][0];
+  throw new Error(`Delegate execution group ${groupIndex} has multiple physical state owners`);
+}
+
+/**
  * Absolute immutable-event coordinates owned by low-level execution frames.
  *
  * A delegate implementation authenticates the physical coordinate relative to its own input, while the NFT is
@@ -4002,10 +3921,7 @@ export function lowLevelCallImmutableEventDestinations(
   for (const [groupIndex, group] of groups.entries()) {
     const base = inputBaseForGroup(groupIndex);
     if (base < 0) continue;
-    const proxyGroup = group.callMode === 'delegatecall'
-      ? proxyGroups.find((candidate) => candidate.delegateCallGroupIndex === groupIndex)
-      : undefined;
-    const categoryId = proxyGroup?.categoryId ?? group.categoryId;
+    const categoryId = lowLevelCallStateOwnerCategory(groupIndex, group, proxyGroups);
     const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
     for (const slot of layout?.slots ?? []) {
       if (slot.kind === 'event' || slot.kind === 'returnEvent') {
@@ -4023,11 +3939,105 @@ export function lowLevelCallImmutableEventDestinations(
  * - Input 1..N: data NFT UTXOs carrying state commitments
  * - Corresponding outputs preserve locking bytecode, token category, and NFT capability
  */
+function isIntegerType(type: string): boolean {
+  return /^(?:u?int(?:\d+)?|bigint)$/.test(type);
+}
+
+function scalarTypeKey(type: string): string | undefined {
+  if (isIntegerType(type)) return type;
+  if (type === 'bool') return 'bool';
+  if (type === 'byte') return 'bytes1';
+  if (/^bytes\d+$/.test(type)) return type;
+  if (type === 'bytes' || type === 'string') return 'bytes';
+  return undefined;
+}
+
+function canEncodeScalarStateValue(value: StateValue, type: string): boolean {
+  try {
+    encodePushdataValue(value, type);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function permutations<T>(items: T[]): T[][] {
+  if (items.length <= 1) return [items.slice()];
+  const lex: T[][] = [];
+  const permute = (prefix: T[], rest: T[]): void => {
+    if (rest.length === 0) {
+      lex.push(prefix);
+      return;
+    }
+    rest.forEach((item, index) => {
+      permute([...prefix, item], rest.slice(0, index).concat(rest.slice(index + 1)));
+    });
+  };
+  permute([], items);
+  const rotations: T[][] = [];
+  for (let k = 1; k <= items.length; k += 1) {
+    const shift = items.length - k;
+    rotations.push(items.map((_, index) => items[(index + shift) % items.length]));
+  }
+  const rotationKeys = new Set(rotations.map((perm) => perm.join('\0')));
+  return [...rotations, ...lex.filter((perm) => !rotationKeys.has(perm.join('\0')))];
+}
+
+function fieldNameMatchesArg(fieldName: string, argName: string): boolean {
+  const field = fieldName.toLowerCase();
+  const arg = argName.toLowerCase();
+  if (field === arg) return true;
+  const stripped = arg.replace(/^(?:new|next|updated|set|from|old|prev|dest|the|init|src|tmp|val)/, '');
+  return stripped.length > 0 && stripped === field;
+}
+
+function evalSimpleIntegerSource(source: string | undefined): bigint | undefined {
+  if (source === undefined) return undefined;
+  const literal = source.match(/^(?:lit|const):(-?[0-9]+)$/);
+  if (literal) return BigInt(literal[1]);
+  const binary = source.match(/^binop:([+*-])\((.*)\)$/);
+  if (!binary) return undefined;
+  const splitTopLevel = (s: string): [string, string] | undefined => {
+    let depth = 0;
+    for (let i = 0; i < s.length; i += 1) {
+      if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth += 1;
+      else if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth -= 1;
+      else if (s[i] === ',' && depth === 0) return [s.slice(0, i), s.slice(i + 1)];
+    }
+    return undefined;
+  };
+  const pair = splitTopLevel(binary[2]);
+  if (pair === undefined) return undefined;
+  const left = evalSimpleIntegerSource(pair[0]);
+  const right = evalSimpleIntegerSource(pair[1]);
+  if (left === undefined || right === undefined) return undefined;
+  if (binary[1] === '+') return left + right;
+  if (binary[1] === '-') return left - right;
+  return left * right;
+}
+
+function paramToStateValue(param: unknown, abiType: string): StateValue | undefined {
+  const key = scalarTypeKey(abiType);
+  if (key === undefined || param === undefined || param === null) return undefined;
+  if (isIntegerType(abiType)) {
+    if (typeof param === 'bigint') return param;
+    if (typeof param === 'number' && Number.isInteger(param)) return BigInt(param);
+    return undefined;
+  }
+  if (key === 'bool') return typeof param === 'boolean' ? param : undefined;
+  if (param instanceof Uint8Array) return param;
+  if (typeof param === 'string' && (abiType === 'string' || abiType === 'bytes')) return param;
+  return undefined;
+}
+
 export class StatefulTransactionBuilder {
   private builderOptions: TransactionBuilderOptions;
   private _checkMinRelayFee: boolean;
   private _minRelayFeePerKb: bigint;
   private _maximumFeeSatoshis?: bigint;
+  private compositionOutputBase: number;
+  /** Builder-scoped local coordinates; carrier objects can be shared by parent and isolated child builders. */
+  private localValueChunkOutputBases = new WeakMap<ExternalCallUtxoGroup, number>();
   private strictVmPreflight = false;
   private resultDependentArgumentRefresher?: (builder: TransactionBuilder) => boolean;
   private allInputs: UnlockableUtxo[];
@@ -4043,6 +4053,7 @@ export class StatefulTransactionBuilder {
   private stateUpdates: Map<
   string, StateValue
   > = new Map();
+  private lastOptimisticPermutationCount: number = 1;
 
   // Exact data-NFT commitments learned from covenant traces. Parsing and rebuilding a commitment can lose
   // compiler-only dynamic length registers, so auto-derivation retains the authenticated bytes verbatim.
@@ -4097,8 +4108,6 @@ export class StatefulTransactionBuilder {
   private lowLevelCallRawInputs: UnlockableUtxo[];
   private delegateEntriesAfterLowLevel: boolean;
   private delegateDynamicChunksAtSuffix: boolean;
-  /** Latched on first build() so first publish cannot reassert after persist becomes ready mid-send. */
-  private emitReassertAllowed: boolean | undefined;
   private delegatedValueChunkPad: number;
   private mintingOutputSwap?: { from: number; width: number; categoryId: string };
   private viewTailRepackAttempted = false;
@@ -4133,7 +4142,9 @@ export class StatefulTransactionBuilder {
   // (or predecessor P') entry at that slot; a NEW insert node rides the trailing region below.
   private externalCallEntryOutputs: Map<string, Map<number, string>> = new Map();
   /** Physical output index -> derived entry commitment. The VM pin names this index; block-slot walk can drift. */
-  private externalCallEntryOutputsByIndex: Map<number, { categoryId: string; commitment: string }> = new Map();
+  private externalCallEntryOutputsByIndex: Map<number, {
+    categoryId: string; commitment: string; lockingBytecodeHex: string;
+  }> = new Map();
   // Trailing NEW entry nodes minted for a cross-contract callee INSERT (per group: address lbc + commitment hex),
   // placed right after the group's block (B's covenant mints the NEW at masterInputIndex + blockSize).
   private externalCallEntryInserts: Array<{ categoryId: string; to: Uint8Array; commitment: string }> = [];
@@ -4145,6 +4156,7 @@ export class StatefulTransactionBuilder {
   private builtReturnEventOutputIndices = new Map<string, number>();
 
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
+  private collectionValueWrites: CollectionValueWrite[];
   private pinnedEntrySlots: Set<number> = new Set(); // slots whose commitment is known exactly (never re-derive)
   private dynamicChunkVars: Array<{ name: string; type: string; lockingBytecode: Uint8Array }> = [];
   private dynamicChunkInputs: UnlockableUtxo[] = [];
@@ -4174,24 +4186,8 @@ export class StatefulTransactionBuilder {
     /** The compiler received this absolute output base explicitly; never fold it into a legacy shared band. */
     fixedIndex?: boolean;
   }>();
-  /** Survives probe rebuilds that drop `derivedChunkOutputs` before send(). */
-  private pendingJobEventsPredecessors: UnlockableUtxo[] = [];
-  private persistedJobEventsChunks: Array<{
-    commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
-  }> = [];
-  /** Last VM pin redeem lock for the jobEvents band (emitValueChunkP2sh32). */
-  private jobEventsRedeemLock?: Uint8Array;
-  /** Persist band must start after the executing emit dest (INPUTINDEX+4). */
-  private forcedJobEventsBandStart?: number;
   /** Monotonic signal for structural growth discovered while probing dynamic output regions. */
   private dynamicLayoutRevision = 0;
-
-  setJobEventsRedeemLock(lock: Uint8Array): this {
-    if (lock.length === 35 && lock[0] === 0xaa && lock[1] === 0x20 && lock[34] === 0x87) {
-      this.jobEventsRedeemLock = lock;
-    }
-    return this;
-  }
 
   private lateValueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
   // P5b (computed values): collections whose value chunks are DERIVED from the trace (the SDK has no value param to
@@ -4207,6 +4203,7 @@ export class StatefulTransactionBuilder {
 
   constructor(options: StatefulTransactionOptions) {
     this.builderOptions = options;
+    this.compositionOutputBase = options.compositionOutputBase ?? 0;
     this._checkMinRelayFee = options.checkMinRelayFee ?? true;
     this._minRelayFeePerKb = options.minRelayFeePerKb ?? 1000n;
     this.stateLayout = options.stateLayout;
@@ -4246,8 +4243,21 @@ export class StatefulTransactionBuilder {
     this.lowLevelCallInputBase = options.lowLevelCallInputBase;
     this.compilerRouteDelegateBlock = options.compilerRouteDelegateBlock ?? false;
     this.preserveBlockLayoutWidth = options.preserveBlockLayoutWidth ?? false;
-    this.loopEntriesBeforeDynamicChunks = options.loopEntriesBeforeDynamicChunks ?? false;
+    // A balanced compiler route addresses runtime mapping-entry outputs before dynamic-state chunks (the
+    // generated dynamic verifier adds the accumulated loop-entry width to `trailingBase`). Make that published
+    // frame order the default whenever both locally owned families are present. The explicit option remains for
+    // legacy layouts whose artifacts predate a balanced trailing frame.
+    const ownsTrailingLoopEntries = (options.loopEntryVars ?? []).some((variable) => (
+      (variable.categoryId === undefined || variable.categoryId === options.categoryId)
+      && (variable.delegate !== true || this.compilerRouteDelegateBlock
+        || options.blockLayout?.trailingBase !== undefined)
+    ));
+    this.loopEntriesBeforeDynamicChunks = options.loopEntriesBeforeDynamicChunks
+      ?? (options.blockLayout?.trailingBase !== undefined
+        && (options.dynamicChunkVars?.length ?? 0) > 0
+        && ownsTrailingLoopEntries);
     this.entryNfts = options.entryNfts ?? [];
+    this.collectionValueWrites = options.collectionValueWrites ?? [];
     this.entryNftLockingBytecodes = options.entryNftLockingBytecodes ?? new Map();
     this.dynamicChunkVars = options.dynamicChunkVars ?? [];
     this.dynamicChunkInputs = options.dynamicChunkInputs ?? [];
@@ -4356,8 +4366,6 @@ export class StatefulTransactionBuilder {
     debugInputAssembly('constructed');
     this._swapMintingOffValueChunkBand();
     debugInputAssembly('minting-band-relocated');
-    this._placeJobEventsPredecessorInputs(this.pendingJobEventsPredecessors);
-    debugInputAssembly('predecessors-placed');
     // Callee anchors precede the caller's own: emitLogicalMsgSenderAnchorResolution resolves the caller's
     // identity from the LAST input, so that tail position must stay the caller's.
     this.allInputs.push(...this.externalIdentityAnchorUtxos);
@@ -4871,134 +4879,7 @@ export class StatefulTransactionBuilder {
     return this.allInputs.length;
   }
 
-  /** Collection entry lock next to the jobEvents band (not the value-chunk redeem). */
-  entryLockNearJobEventsBand(): Uint8Array | undefined {
-    const band = this.getPublishJobEventsBand();
-    const chunkLock = this.jobEventsRedeemLock;
-    const chunkHex = chunkLock ? binToHex(chunkLock) : '';
-    const prefer = band ? [band.start - 1, band.start - 2, band.start] : [];
-    for (const index of prefer) {
-      const input = this.allInputs[index];
-      if (!input?.token || input.token.nft?.capability !== 'mutable') continue;
-      if (!('unlocker' in input) || !input.unlocker) continue;
-      const lock = input.unlocker.generateLockingBytecode();
-      if (lock.length === 35 && lock[0] === 0xaa && binToHex(lock) !== chunkHex) return lock;
-    }
-    for (const input of this.allInputs) {
-      if (!input?.token || input.token.nft?.capability !== 'mutable') continue;
-      if (!('unlocker' in input) || !input.unlocker) continue;
-      const lock = input.unlocker.generateLockingBytecode();
-      if (lock.length === 35 && lock[0] === 0xaa && binToHex(lock) !== chunkHex) return lock;
-    }
-    return undefined;
-  }
-
-  rememberJobEventsChunks(
-    categoryId: string,
-    chunks: ReadonlyArray<{ commitment: string; lockingBytecode: Uint8Array; categoryId?: string }>,
-  ): void {
-    const next = selectObservedValueChunkRun(
-      persistedJobEventsByCategory.get(categoryId) ?? this.persistedJobEventsChunks,
-      chunks,
-    );
-    if (next.length === 0) return;
-    this.persistedJobEventsChunks = next;
-    persistedJobEventsByCategory.set(categoryId, next);
-  }
-
-  /** Retain a VM-authenticated computed-value run across probe/final participant builder instances. */
-  rememberObservedValueChunks(
-    categoryId: string,
-    collection: string,
-    chunks: ReadonlyArray<AuthenticatedValueChunk>,
-  ): void {
-    const key = `${categoryId.toLowerCase()}:${collection}`;
-    const next = selectObservedValueChunkRun(observedValueChunksByCollection.get(key) ?? [], chunks);
-    if (next.length > 0) observedValueChunksByCollection.set(key, next);
-  }
-
-  static clearPersistedJobEvents(categoryId?: string): void {
-    if (categoryId) {
-      persistedJobEventsByCategory.delete(categoryId);
-      persistedJobEventsValues.delete(categoryId);
-      persistedJobEventsLocks.delete(categoryId);
-      persistedJobEventsSpends.delete(categoryId);
-      persistedJobEventsRecipes.delete(categoryId);
-      stagedJobEventsValues.delete(categoryId);
-      createdDigestLocks.delete(categoryId);
-      persistedCreatedValues.delete(categoryId);
-      const prefix = `${categoryId.toLowerCase()}:`;
-      for (const key of observedValueChunksByCollection.keys()) {
-        if (key.startsWith(prefix)) observedValueChunksByCollection.delete(key);
-      }
-    } else {
-      persistedJobEventsByCategory.clear();
-      persistedJobEventsValues.clear();
-      persistedJobEventsLocks.clear();
-      persistedJobEventsSpends.clear();
-      persistedJobEventsRecipes.clear();
-      stagedJobEventsValues.clear();
-      createdDigestLocks.clear();
-      persistedCreatedValues.clear();
-      observedValueChunksByCollection.clear();
-    }
-    persistedJobEventsSendReady = false;
-  }
-
-  private _rootIsPublishJobPost(): boolean {
-    return this.lowLevelCallUtxoGroups.some((group) => group.functionName === 'publishJobPost')
-      || this.externalCallUtxoGroups.some((group) =>
-        (group.functionName ?? group.logicalFunctionName) === 'publishJobPost');
-  }
-
-  /** Persist UPDATE rematerialize only for empty-address dest, never INSERT/whitelist dest. */
-  private _shouldRematerializePersistUpdate(): boolean {
-    const plannedInserts = Math.max(
-      0,
-      ...this.externalCallUtxoGroups.map((group) => group.plannedEntryInserts?.length ?? 0),
-      ...this.lowLevelCallUtxoGroups.map((group) => group.plannedEntryInserts?.length ?? 0),
-    );
-    for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
-      const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
-      if (!names.includes('publishJobEvent')) continue;
-      const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
-      if (shouldRematerializePersistUpdate({
-        persistReady: isPersistedJobEventsReady(),
-        publishJobPost: this._rootIsPublishJobPost(),
-        event,
-        plannedInserts,
-      })) return true;
-    }
-    return false;
-  }
-
-  private _isFirstPublishJobEventsInsert(): boolean {
-    if (this._rootIsPublishJobPost()) return true;
-    const plannedInserts = Math.max(
-      0,
-      ...this.externalCallUtxoGroups.map((group) => group.plannedEntryInserts?.length ?? 0),
-      ...this.lowLevelCallUtxoGroups.map((group) => group.plannedEntryInserts?.length ?? 0),
-    );
-    if (plannedInserts > 0) return true;
-    for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
-      const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
-      if (!names.includes('publishJobEvent')) continue;
-      const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
-      if (isInsertShapedJobEvent(event)) return true;
-    }
-    return false;
-  }
-
-  private _shouldStampPersistUpdateDigestLock(): boolean {
-    const categoryId = this._persistJobEventsTokenCategory();
-    return shouldStampPersistUpdateDigestLock({
-      persistReady: isPersistedJobEventsReady(),
-      persistWidth: categoryId ? persistedJobEventsWidth(categoryId) : persistedJobEventsWidth(),
-      firstPublishInsert: this._isFirstPublishJobEventsInsert(),
-    });
-  }
-
-  /** Every delegate `INPUTINDEX*scale-k` 1:1 window (Marketplace impl 5 → 21–24). */
+  /** Every delegate `INPUTINDEX*scale-k` one-to-one preservation window. */
   private _scaledPreserveRanges(): Array<{ start: number; endExclusive: number }> {
     const ranges: Array<{ start: number; endExclusive: number }> = [];
     for (const [llcIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
@@ -5015,139 +4896,34 @@ export class StatefulTransactionBuilder {
     return ranges;
   }
 
-  /** Restore 1:1 on the executing impl's INPUTINDEX*scale-k window after other writers. */
-  private _reassertScaledPreserveOneToOnes(builder: TransactionBuilder): void {
-    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return;
-    const emitDests = new Set(this._emitDestinationIndices());
-    const emitDest = this._scaledEmitOutputIndex(builder.outputs.length);
-    if (emitDest !== undefined) emitDests.add(emitDest);
-    const persistBand = this.getPublishJobEventsBand();
-    const returnWitnesses = returnWitnessOutputIndices(this.externalCallUtxoGroups);
-    for (const group of this.externalCallUtxoGroups) {
-      if (!isMintingBandSwapFunction(
-        group.functionName ?? group.compilerRoute?.abiFunction.name ?? group.logicalFunctionName,
-      )) continue;
-      const master = this.findMintingInputIndex(group.categoryId);
-      if (master >= 0) {
-        returnWitnesses.add(tokenWriterReturnIndex(master, group.blockLayout, persistBand));
-      }
-    }
-    const restore = (start: number, endExclusive: number): void => {
-      for (let index = start; index < endExclusive; index++) {
-        if (emitDests.has(index)) continue;
-        if (returnWitnesses.has(index)) continue;
-        if (persistBand && index >= persistBand.start && index <= persistBand.end) continue;
-        const input = this.allInputs[index];
-        if (!input || !('unlocker' in input) || !input.unlocker || input.token) continue;
-        builder.outputs[index] = {
-          to: input.unlocker.generateLockingBytecode(),
-          amount: input.satoshis,
-        };
-      }
-    };
-    const entry = this._entryScaledPreserveRange();
-    if (entry) restore(entry.start, entry.endExclusive);
-    for (const [index, input] of this.allInputs.entries()) {
-      if (input?.token?.nft?.capability !== 'minting') continue;
-      const endExclusive = scaledInputPreserveExclusiveEnd(index, 5);
-      if (endExclusive <= 0 || endExclusive > builder.outputs.length + 5) continue;
-      restore(endExclusive - 4, endExclusive - 1);
-    }
+  private _collectionValueBandCollisionIndex(
+    band = this.getCollectionValueOutputBand(),
+  ): number {
+    if (!band) return -1;
+    return collidingParticipantGroupIndex(
+      this.externalCallUtxoGroups,
+      (categoryId) => this.findMintingInputIndex(categoryId),
+      band,
+    );
   }
 
-  private _publishJobEventAbi(): AbiFunction | undefined {
-    for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
-      const abi = (group.externalContract?.inner?.artifact?.abi ?? []) as AbiFunction[];
-      const fromAbi = abi.find((fn) => fn.name === 'publishJobEvent');
-      if (fromAbi) return fromAbi;
-      const routed = group.compilerRoute?.abiFunction;
-      if (routed?.name === 'publishJobEvent') return routed;
-    }
-    return undefined;
-  }
-
-  /** The input that actually evaluates publishJobEvent (`OP_INPUTINDEX`). */
-  getPublishJobEventInputIndex(): number {
-    return this._publishJobEventInputIndex();
-  }
-
-  isRootPublishJobPost(): boolean {
-    return this._rootIsPublishJobPost();
-  }
-
-  private _persistDigestCategories(): string[] {
-    const cats: string[] = [];
-    const push = (value?: string): void => {
-      if (value && !cats.includes(value)) cats.push(value);
-    };
-    push(this._jobEventsPublishCategory());
-    push(this._persistJobEventsTokenCategory());
-    for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
-      push(group.categoryId);
-    }
-    return cats;
-  }
-
-  hasMintingBandTokenWriter(): boolean {
-    return this.externalCallUtxoGroups.some((group) =>
-      isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
-        ?? group.logicalFunctionName))
-      || this.mintingOutputSwap !== undefined;
+  hasCollectionValueBandCollision(): boolean {
+    return this.mintingOutputSwap !== undefined
+      || this._collectionValueBandCollisionIndex() >= 0;
   }
 
   tokenWriterOccupancy(
     tokenMaster: number,
     outputs?: ReadonlyArray<{ token?: { nft?: { commitment?: string } } }>,
   ): Set<number> {
-    return persistAndTokenWriterOccupancy({
-      persistReady: isPersistedJobEventsReady(),
-      firstPublish: this._rootIsPublishJobPost(),
-      hasTokenWriter: this.hasMintingBandTokenWriter(),
-      implIndex: this._publishJobEventInputIndex(),
-      band: this.getPublishJobEventsBand(),
+    return tokenWriterOccupiedDests({
+      band: this.getCollectionValueOutputBand(),
       tokenMaster,
       outputs,
     });
   }
 
-  /** The input that actually evaluates publishJobEvent (`OP_INPUTINDEX`). */
-  private _publishJobEventInputIndex(): number {
-    // Dest is INPUTINDEX+4 of the earliest executing publishJobEvent. Occupied
-    // dests are displaced; do not relocate dest because persist sits at +4.
-    const candidates: number[] = [];
-    for (const [index, input] of this.allInputs.entries()) {
-      const name = (input as { unlocker?: { abiFunction?: { name?: string } } })
-        .unlocker?.abiFunction?.name ?? '';
-      if (name === 'publishJobEvent' || name.includes('publishJobEvent')) candidates.push(index);
-    }
-    for (const [llcIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
-      const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
-      if (!names.some((name) => name === 'publishJobEvent' || String(name ?? '').includes('publishJobEvent'))) {
-        continue;
-      }
-      const master = this.getLowLevelCallMasterInputIndex(llcIndex);
-      if (master >= 0) candidates.push(master);
-    }
-    if (candidates.length > 0) return Math.min(...candidates);
-    return -1;
-  }
-
-  /** publishJobEvent emit is implementation-relative (`INPUTINDEX + event.offset`). */
-  private _scaledEmitOutputIndex(outputCount: number): number | undefined {
-    // First publish already fills Created in the callee walk at layout dest.
-    if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return undefined;
-    const impl = this._publishJobEventInputIndex();
-    // No executing publishJobEvent: do not invent dest as preserve-range-1
-    // (that clobbered registerArbitrator dest 7 after persist became ready).
-    if (impl < 0) return undefined;
-    const offset = this._publishJobEventAbi()?.blockLayout?.slots
-      .find((slot) => slot.kind === 'event')?.offset ?? 4;
-    const dest = publishJobEventOutputIndex(impl, offset);
-    if (dest >= 0 && (outputCount <= 0 || dest < outputCount)) return dest;
-    return undefined;
-  }
-
-  /** Event dests that scaled 1:1 must not restore as tokenless P2PKH pads. */
+  /** Compiler-owned event coordinates must not be reclaimed as tokenless alignment pads. */
   private _emitDestinationIndices(): number[] {
     // `blockLayout` is the builder's effective physical layout. It can be a
     // compiler-selected message-bus route rather than the public entry ABI,
@@ -5156,8 +4932,6 @@ export class StatefulTransactionBuilder {
     const dests = (this.blockLayout?.slots ?? [])
       .filter((slot) => slot.kind === 'event')
       .map((slot) => slot.offset);
-    const scaled = this._scaledEmitOutputIndex(this.allInputs.length);
-    if (scaled !== undefined && scaled >= 0) dests.push(scaled);
     dests.push(...externalCallEventDestinations(
       this.externalCallUtxoGroups,
       (groupIndex) => this.getExternalCallOutputBase(groupIndex),
@@ -5175,26 +4949,14 @@ export class StatefulTransactionBuilder {
     return dests;
   }
 
-  /** JobEvents band uses the executing Marketplace impl window, not nested MD. */
-  private _entryScaledPreserveRange(): { start: number; endExclusive: number } | undefined {
-    const ranges = this._scaledPreserveRanges();
-    if (ranges.length === 0) return undefined;
-    return ranges.reduce((earliest, range) =>
-      (earliest.start < range.start ? earliest : range));
-  }
-
-  /** Impl blocks, jobEvents band (and the INPUTINDEX+4 trailing write), writer returns. */
+  /** Compiler-owned implementation blocks, collection bands, and return witnesses. */
   private _scidReservedIndices(outputCount = this.allInputs.length): Set<number> {
     const reserved = new Set(this._emitDestinationIndices());
     for (const index of this.authenticatedOutputLockingBytecodes.keys()) reserved.add(index);
-    const band = this.getPublishJobEventsBand();
+    const band = this.getCollectionValueOutputBand();
     if (band) {
       reserved.add(Math.max(0, band.start - 1));
       for (let index = band.start; index <= band.end; index++) reserved.add(index);
-    }
-    const eventSlot = this._entryScaledPreserveRange();
-    if (eventSlot && isPersistedJobEventsReady() && !this._rootIsPublishJobPost()) {
-      reserved.add(eventSlot.endExclusive - 1);
     }
     for (const [llcIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
       if (group.callMode !== 'delegatecall') continue;
@@ -5218,10 +4980,9 @@ export class StatefulTransactionBuilder {
     for (const range of this._scaledPreserveRanges()) {
       for (let index = range.start; index < range.endExclusive; index++) reserved.add(index);
     }
-    for (const group of this.externalCallUtxoGroups) {
-      if (!isMintingBandSwapFunction(
-        group.functionName ?? group.compilerRoute?.abiFunction.name ?? group.logicalFunctionName,
-      )) continue;
+    for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
+      if (group.sharedGroupIndex !== undefined
+        || !groupOwnsInBlockReturnEvent(this.externalCallUtxoGroups, groupIndex)) continue;
       const master = this.findMintingInputIndex(group.categoryId);
       if (master >= 0) reserved.add(tokenWriterReturnIndex(master, group.blockLayout, band));
     }
@@ -5235,140 +4996,156 @@ export class StatefulTransactionBuilder {
 
   viewTailPackOptions(suffixStart?: number): ViewTailPackOptions {
     return {
-      band: this.getPublishJobEventsBand(),
+      band: this.getCollectionValueOutputBand(),
       // Input and output counts are independent once return witnesses, computed
       // outputs, and suffix sidecars are materialized. Only enforce a suffix
       // boundary when the caller derived it from an actual output layout.
       suffixStart,
-      tokenWriterPresent: this.externalCallUtxoGroups.some((group) =>
-        isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
-          ?? group.logicalFunctionName)),
+      tokenWriterPresent: this.hasCollectionValueBandCollision(),
     };
   }
 
-  /**
-   * Live publishJobEvent value-chunk band (`impl + blockSize` for `nNew` slots).
-   * Occupancy, view tails, and FakeToken rotation all share this range.
-   */
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined {
-    const publishLlcIndex = this.lowLevelCallUtxoGroups.findIndex((group) =>
-      group.functionName === 'publishJobEvent');
-    const publishExternalIndex = this.externalCallUtxoGroups.findIndex((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent');
-    const publishExternal = publishExternalIndex < 0
-      ? undefined : this.externalCallUtxoGroups[publishExternalIndex];
-    if (publishLlcIndex < 0 && !publishExternal) return undefined;
-    const publishFn = publishLlcIndex >= 0
-      ? (this.lowLevelCallUtxoGroups[publishLlcIndex].compilerRoute?.abiFunction
-        ?? this.lowLevelCallUtxoGroups[publishLlcIndex].externalContract?.inner.artifact.abi
-          .find((fn: { name: string }) => fn.name === 'publishJobEvent'))
-      : publishExternal?.compilerRoute?.abiFunction
-        ?? publishExternal?.blockLayout
-        ?? undefined;
-    const publishBlockSize = (publishFn as AbiFunction | undefined)?.blockLayout?.blockSize
-      ?? publishExternal?.blockLayout?.blockSize
-      ?? 5;
-    // A delegate implementation can be the executing verifier even when the
-    // state-owning proxy master sits earlier. Include both structural bases;
-    // the later verifier base is the first safe continuation coordinate.
-    const bases: number[] = [];
-    if (publishLlcIndex >= 0) {
-      const master = this.getLowLevelCallMasterInputIndex(publishLlcIndex);
-      if (master >= 0) bases.push(master + publishBlockSize);
+  /** @internal Bind a carrier's absolute witness to this builder's local output coordinate space. */
+  setLocalValueChunkOutputBase(carrier: ExternalCallUtxoGroup, localBase: number): void {
+    if (!Number.isSafeInteger(localBase) || localBase < 0) {
+      throw new Error('Collection value output base must be a non-negative safe integer');
     }
-    if (publishExternal?.categoryId) {
-      const master = this.findMintingInputIndex(publishExternal.categoryId);
-      if (master >= 0) {
-        bases.push(master + (publishExternal.blockLayout?.blockSize ?? publishBlockSize));
-      }
-    }
-    for (const [llcIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
-      if (group.callMode !== 'delegatecall') continue;
-      const impl = this.getLowLevelCallMasterInputIndex(llcIndex);
-      if (impl < 0) continue;
-      const blockSize = group.compilerRoute?.abiFunction?.blockLayout?.blockSize
-        ?? group.blockLayout?.blockSize
-        ?? publishBlockSize;
-      bases.push(impl + blockSize);
-    }
-    const plannedWidth = Math.max(
-      0,
-      liveChunkWidthForGroup(this.externalCallUtxoGroups, publishExternalIndex),
-      ...this.lowLevelCallUtxoGroups
-        .filter((group) => group.functionName === 'publishJobEvent')
-        .map((group) => group.valueChunkOutputCount ?? 0),
-    );
-    const jobEventsCount = [...new Set(
-      this.getLoopEntryCommitments('jobEvents')
-        .filter((commitment) => !isEmptyValueChunkCommitment(commitment)),
-    )].length;
-    const publishCategory = publishExternal?.categoryId
-      ?? (publishLlcIndex >= 0 ? this.lowLevelCallUtxoGroups[publishLlcIndex].categoryId : undefined);
-    const persistWidth = isPersistedJobEventsReady() && !this._rootIsPublishJobPost()
-      ? persistedJobEventsWidth(publishCategory) : 0;
-    const plannedInserts = Math.max(
-      0,
-      ...(publishExternal?.plannedEntryInserts?.length !== undefined
-        ? [publishExternal.plannedEntryInserts.length] : []),
-      ...this.lowLevelCallUtxoGroups
-        .filter((group) => group.functionName === 'publishJobEvent')
-        .map((group) => group.plannedEntryInserts?.length ?? 0),
-    );
-    const insertShift = persistWidth > 0 ? 0
-      : (plannedInserts > 0 || jobEventsCount === 0 ? 1 : 0);
-    // Persist dest is INPUTINDEX+event.offset of the executing publishJobEvent.
-    // The value-chunk band is impl+blockSize. If those disagree, dest can land
-    // on a persist predecessor (output 20/21) and mutable conservation fails.
-    if (persistWidth > 0) {
-      const emitImpl = this._publishJobEventInputIndex();
-      const emitOffset = (publishFn as AbiFunction | undefined)?.blockLayout?.slots
-        .find((slot) => slot.kind === 'event')?.offset ?? 4;
-      if (emitImpl >= 0) bases.push(emitImpl + emitOffset + 1);
-    }
-    const layoutStart = bases.length > 0 ? Math.max(...bases) + insertShift : undefined;
-    const forcedStart = this.forcedJobEventsBandStart;
-    const publishImpl = this._publishJobEventInputIndex();
-    const tokenWriter = this.externalCallUtxoGroups.find((group) =>
-      isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
-        ?? group.logicalFunctionName));
-    const tokenMaster = tokenWriter?.categoryId
-      ? this.findMintingInputIndex(tokenWriter.categoryId) : -1;
-    const keepAtLayout = shouldKeepPersistAtLayoutBase({
-      persistReady: isPersistedJobEventsReady(),
-      firstPublish: this._rootIsPublishJobPost(),
-      layoutDestOccupiedByMintingWriter: tokenMaster >= 0 || this.mintingOutputSwap !== undefined,
-    });
-    const layoutDest = persistValueChunkBase(publishImpl, publishBlockSize);
-    // Persist UPDATE + FakeToken on dest 20: keep persist at dest 20 and swap
-    // FakeToken after dest+nNew. Whitelist pads keep the dest-25 slide.
-    const preserveEndExclusive = keepAtLayout
-      ? -1
-      : (isPersistedJobEventsReady() && !this._rootIsPublishJobPost()
-        ? (this._entryScaledPreserveRange()?.endExclusive ?? -1)
-        : -1);
-    const forcedLayoutStart = keepAtLayout && layoutDest >= 0 ? layoutDest : undefined;
-    let derivedWidth = 0;
-    if (layoutStart !== undefined) {
-      while (this.derivedChunkOutputs.has(layoutStart + derivedWidth)) derivedWidth += 1;
-    }
-    // Live covenant nNew (extracted/persisted v) wins over a short compose plan
-    // so the missing continuation (first post slot 25) is reserved. Persist is
-    // cleared on deploy, so a prior test's Created extract cannot inflate this.
-    return computePublishJobEventsBand({
-      start: forcedLayoutStart ?? layoutStart,
-      preserveEndExclusive: Math.max(preserveEndExclusive, forcedStart ?? -1),
-      plannedWidth,
-      jobEventsCount,
-      liveWidth: liveJobEventsBandWidth({ plannedWidth, persistWidth, derivedWidth }),
-    });
+    this.localValueChunkOutputBases.set(carrier, localBase);
   }
 
-  /** Grow publishJobEvent `valueChunkOutputCount` to the extracted continuation width. */
-  bumpPublishJobEventsWidth(nNew: number): boolean {
+  /** @internal Read a carrier coordinate only in this builder's local output space. */
+  getLocalValueChunkOutputBase(carrier: ExternalCallUtxoGroup): number | undefined {
+    return this.localValueChunkOutputBases.get(carrier);
+  }
+
+  /** Compiler-owned continuation regions for resolved chunkable collection writes. */
+  getCollectionValueOutputBands(): Array<{
+    start: number;
+    end: number;
+    nNew: number;
+    writes: readonly CollectionValueWrite[];
+  }> {
+    const candidates: Array<{
+      start: number;
+      nNew: number;
+      writes: readonly CollectionValueWrite[];
+    }> = [];
+    const add = (
+      writeGroup: ExternalCallUtxoGroup,
+      owner: ExternalCallUtxoGroup,
+      ownerMaster: number,
+      executor: ExternalCallUtxoGroup = owner,
+      executorMaster = ownerMaster,
+      resolvedStart?: number,
+    ): void => {
+      const writes = writeGroup.collectionValueWrites ?? [];
+      if (writes.length === 0) return;
+      const start = resolvedStart ?? collectionValueOutputBaseForPhysicalExecutor({
+        owner,
+        ownerMaster,
+        executor,
+        executorMaster,
+        ownerContainsExecutor: owner.delegateEmbeddedInBlock === true,
+        requestedBase: this.getLocalValueChunkOutputBase(writeGroup)
+          ?? (this.compositionOutputBase === 0 ? writeGroup.valueChunkOutputBase : undefined),
+      });
+      if (start < 0) return;
+      let observedWidth = 0;
+      for (const write of writes) {
+        // An exact current value supersedes the prior committed version. In particular, an inline replacement
+        // has zero continuations and must not inherit the spent run of the long value it replaces.
+        if (write.value !== undefined) continue;
+        const record = getCollectionValueRecord(write.identity);
+        observedWidth = Math.max(observedWidth, record?.chunks.length ?? 0);
+        if (record?.value && record.value.length > VALUE_HEAD_SIZE) {
+          observedWidth = Math.max(
+            observedWidth,
+            Math.ceil((record.value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE),
+          );
+        }
+      }
+      let derivedWidth = 0;
+      while (this.derivedChunkOutputs.has(start + derivedWidth)) derivedWidth += 1;
+      const nNew = Math.max(writeGroup.valueChunkOutputCount ?? 0, observedWidth, derivedWidth);
+      if (nNew > 0) candidates.push({ start, nNew, writes });
+    };
+    for (const binding of collectionValuePhysicalBindings({
+      externalGroups: this.externalCallUtxoGroups,
+      lowLevelGroups: this.lowLevelCallUtxoGroups,
+      externalMaster: (index) => this.getExternalCallMasterInputIndex(index),
+      lowLevelMaster: (index) => this.getLowLevelCallMasterInputIndex(index),
+      requestedBase: (group) => this.getLocalValueChunkOutputBase(group)
+        ?? (this.compositionOutputBase === 0 ? group.valueChunkOutputBase : undefined),
+    })) {
+      add(
+        binding.writeGroup,
+        binding.owner,
+        binding.ownerMaster,
+        binding.executor,
+        binding.executorMaster,
+        binding.start,
+      );
+    }
+    // Root collection continuations are already allocated by getValueChunkOutputBase() in the authenticated
+    // transaction suffix. These bands describe nested participant-local trailing frames only; folding the root
+    // suffix into participant collision handling would reserve it twice.
+    const byStart = new Map<number, {
+      start: number;
+      end: number;
+      nNew: number;
+      writes: CollectionValueWrite[];
+    }>();
+    for (const candidate of candidates) {
+      const existing = byStart.get(candidate.start);
+      if (!existing) {
+        byStart.set(candidate.start, {
+          start: candidate.start,
+          end: candidate.start + candidate.nNew - 1,
+          nNew: candidate.nNew,
+          writes: [...candidate.writes],
+        });
+        continue;
+      }
+      existing.nNew = Math.max(existing.nNew, candidate.nNew);
+      existing.end = existing.start + existing.nNew - 1;
+      for (const write of candidate.writes) {
+        if (!existing.writes.some((current) => (
+          current.identity.categoryId === write.identity.categoryId
+          && current.identity.collectionSignature === write.identity.collectionSignature
+          && binToHex(current.identity.slot) === binToHex(write.identity.slot)
+        ))) existing.writes.push(write);
+      }
+    }
+    return [...byStart.values()].sort((left, right) => left.start - right.start);
+  }
+
+  /** A single shared continuation region; ambiguous layouts must use the full region list. */
+  getCollectionValueOutputBand(): {
+    start: number; end: number; nNew: number; writes: readonly CollectionValueWrite[];
+  } | undefined {
+    const bands = this.getCollectionValueOutputBands();
+    return bands.length === 1 ? bands[0] : undefined;
+  }
+
+  /** Grow the compiler-declared continuation width after a VM-authenticated observation. */
+  bumpCollectionValueOutputWidth(nNew: number): boolean {
     if (nNew <= 0) return false;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_VALUE_CHUNK_OWNERSHIP === '1') {
+      console.error('collection-value-width-growth', {
+        requestedWidth: nNew,
+        carriers: [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+          .filter((group) => (group.collectionValueWrites?.length ?? 0) > 0)
+          .map((group) => ({
+            functionName: group.logicalFunctionName ?? group.functionName,
+            previousWidth: group.valueChunkOutputCount,
+            valueBytes: group.collectionValueWrites?.map((write) => write.value?.length),
+          })),
+      });
+    }
     let changed = false;
     for (const group of this.externalCallUtxoGroups) {
-      if ((group.functionName ?? group.logicalFunctionName) !== 'publishJobEvent') continue;
+      if ((group.collectionValueWrites?.length ?? 0) === 0) continue;
       const next = Math.max(group.valueChunkOutputCount ?? 0, nNew);
       if (next !== group.valueChunkOutputCount) {
         group.valueChunkOutputCount = next;
@@ -5376,7 +5153,7 @@ export class StatefulTransactionBuilder {
       }
     }
     for (const group of this.lowLevelCallUtxoGroups) {
-      if (group.functionName !== 'publishJobEvent') continue;
+      if ((group.collectionValueWrites?.length ?? 0) === 0) continue;
       const next = Math.max(group.valueChunkOutputCount ?? 0, nNew);
       if (next !== group.valueChunkOutputCount) {
         group.valueChunkOutputCount = next;
@@ -5394,7 +5171,7 @@ export class StatefulTransactionBuilder {
 
   /** Move a participant block off a compiler-owned dynamic-output band without changing existing order. */
   private _swapMintingOffValueChunkBand(): void {
-    const band = this.getPublishJobEventsBand();
+    const band = this.getCollectionValueOutputBand();
     if (!band) return;
     const collisionIndex = collidingParticipantGroupIndex(
       this.externalCallUtxoGroups,
@@ -5408,27 +5185,10 @@ export class StatefulTransactionBuilder {
     const previousSwap = this.mintingOutputSwap;
     const start = this.findMintingInputIndex(tokenGroup.categoryId);
     if (start < 0) { this.mintingOutputSwap = undefined; return; }
-    const { start: jobEventsStart, nNew } = band;
-    const persistUpdate = isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
-    const keepAtLayout = shouldKeepPersistAtLayoutBase({
-      persistReady: persistUpdate,
-      firstPublish: this._rootIsPublishJobPost(),
-      layoutDestOccupiedByMintingWriter: this.hasMintingBandTokenWriter(),
-    });
-    const persistDests = persistUpdatePredecessorDests({
-      implIndex: this._publishJobEventInputIndex(),
-      persistUpdate,
-      keepAtLayout,
-      bandStart: jobEventsStart,
-      nNew,
-    });
-    const persistStart = persistDests[0] ?? jobEventsStart;
-    const persistEndExclusive = persistDests.length > 0
-      ? persistDests[persistDests.length - 1] + 1 : jobEventsStart;
-    const chunkBase = keepAtLayout && persistStart >= 0
-      ? Math.min(jobEventsStart, persistStart) : jobEventsStart;
+    const { start: bandStart, nNew } = band;
+    const chunkBase = bandStart;
     const plannedWidth = nNew;
-    const bandEnd = Math.max(band.end + 1, persistEndExclusive);
+    const bandEnd = band.end + 1;
     // Count the full consecutive token run (master + data + existing entries).
     // A band-limited width of 1 tries to swap the minting NFT with the data NFT
     // and aborts, leaving minting on chunk slot 22 so jobs derive 0 of 2.
@@ -5445,21 +5205,19 @@ export class StatefulTransactionBuilder {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
       console.error('minting-swap-band', {
-        chunkBase, jobEventsStart, bandEnd, start, tokenWidth, plannedWidth, nNew,
-        inBand: start < bandEnd && start + tokenWidth > jobEventsStart,
+        chunkBase, bandStart, bandEnd, start, tokenWidth, plannedWidth, nNew,
+        inBand: start < bandEnd && start + tokenWidth > bandStart,
       });
     }
-    if (start >= bandEnd || start + tokenWidth <= jobEventsStart) {
+    if (start >= bandEnd || start + tokenWidth <= bandStart) {
       // Probe builds reuse `allInputs`. Once the first pass rotates this token block, the next pass sees the
       // already-correct master and must retain the relocation metadata so output materialization still
       // places view tails. Exact `from+width` is too brittle: a later 2-wide shift (26→28) would drop
       // the flag, skip tail placement, and compact `meceTags` onto `arbitratorRegistered`.
       if (shouldRetainMintingOutputSwap(start, chunkBase, nNew, previousSwap, tokenGroup.categoryId)) {
-        this._placeJobEventsPredecessorInputs(this.pendingJobEventsPredecessors);
         return;
       }
       this.mintingOutputSwap = undefined;
-      this._placeJobEventsPredecessorInputs(this.pendingJobEventsPredecessors);
       return;
     }
     this.mintingOutputSwap = undefined;
@@ -5476,7 +5234,7 @@ export class StatefulTransactionBuilder {
         (candidate) => `${candidate.txid}:${candidate.vout}` !== key,
       );
     };
-    const preferredShift = Math.max(fullMinShift, 4);
+    const preferredShift = fullMinShift;
     const prospectiveWidth = materializedParticipantWidth(
       tokenGroup,
       start + preferredShift,
@@ -5506,7 +5264,6 @@ export class StatefulTransactionBuilder {
     const funderBlock = this.allInputs.slice(start + tokenWidth, start + tokenWidth + shift);
     this.allInputs.splice(start, tokenWidth + shift, ...funderBlock, ...tokenBlock);
     this.mintingOutputSwap = { from: start, width: shift, categoryId: tokenGroup.categoryId };
-    this._placeJobEventsPredecessorInputs(this.pendingJobEventsPredecessors);
     const newMaster = this.findMintingInputIndex(tokenGroup.categoryId);
     if (newMaster < 0) return;
     // Sparse blocks still own their output-only coordinates. Keep later
@@ -5551,268 +5308,7 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  private _jobEventsPublishCategory(): string | undefined {
-    return this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')?.categoryId
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent')?.categoryId;
-  }
-
-  /** Persist chunks are proxy-category; the LLC master is the impl minting category. */
-  private _persistJobEventsTokenCategory(): string | undefined {
-    const impl = this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent')?.categoryId;
-    for (const categoryId of persistedJobEventsLocks.keys()) {
-      if (categoryId && categoryId !== impl) return categoryId;
-    }
-    for (const categoryId of persistedJobEventsRecipes.keys()) {
-      if (categoryId && categoryId !== impl) return categoryId;
-    }
-    return this._jobEventsPublishCategory();
-  }
-
-  /** ExtraTransfer swap parks p2pkh funders on the jobEvents band. Put predecessor chunks back. */
-  private _placeJobEventsPredecessorInputs(extras: UnlockableUtxo[] = []): void {
-    // A compiler-published balanced block is a complete ownership map. Legacy persistence recovery infers
-    // destinations from cached input shape, so applying it after fixed-width assembly can replace a declared
-    // route slot with an unrelated resource. Compiler routes must receive every live/disposal input through the
-    // ordinary builder options and leave the materialized block immutable.
-    if (this.preserveBlockLayoutWidth || this.compilerRouteDelegateBlock
-      || this.blockLayout?.trailingCapacity !== undefined) return;
-    const band = this.getPublishJobEventsBand();
-    if (!band) return;
-    const categoryId = this._jobEventsPublishCategory();
-    const persistUpdate = isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
-    const persistCategory = persistUpdate
-      ? (this._persistJobEventsTokenCategory() ?? categoryId) : categoryId;
-    const persistLock = (persistCategory ? persistedJobEventsLocks.get(persistCategory) : undefined)
-      ?? (categoryId ? persistedJobEventsLocks.get(categoryId) : undefined);
-    const persistHex = persistLock ? binToHex(persistLock) : '';
-    const candidates: UnlockableUtxo[] = [];
-    const seen = new Set<string>();
-    const consider = (input: UnlockableUtxo | undefined, fromPersistExtras = false): void => {
-      if (!input?.token?.nft || input.token.nft.capability !== 'mutable' || !input.unlocker) return;
-      const key = `${input.txid}:${input.vout}`;
-      if (seen.has(key)) return;
-      const lock = input.unlocker.generateLockingBytecode();
-      if (lock.length !== 35 || lock[0] !== 0xaa) return;
-      const commitment = String(input.token.nft.commitment ?? '');
-      // Continuation NFTs are unambiguously indexed by their uint16 prefix. A sorted-map entry may share the
-      // category and even the same P2SH32 family, but its commitment begins with the 32-byte key slot instead.
-      if (valueChunkIndexFromCommitment(commitment) === undefined) return;
-      const sameLock = persistHex !== '' && binToHex(lock) === persistHex;
-      // Category and commitment shape do not identify a resource covenant. Entry NFTs and value-chunk NFTs
-      // intentionally share both, so accepting either as a substitute can move a fixed entry proof out of its
-      // compiler-declared input slot. Locally discovered candidates must match the authenticated redeem-script
-      // identity; explicitly fetched candidates were already checked against that identity by their caller.
-      if (!fromPersistExtras && !sameLock) return;
-      seen.add(key);
-      candidates.push(input);
-    };
-    for (const extra of extras) consider(extra, true);
-    for (const input of this.allInputs) consider(input);
-    if (persistUpdate) {
-      for (const info of this.entryNfts) {
-        if (!info.exists || !info.utxo) continue;
-        if (!/jobEvents/i.test(info.collection ?? '')) continue;
-        consider(info.utxo);
-      }
-    }
-    const ordered = orderPersistPredecessorCandidates(candidates, persistUpdate);
-    candidates.length = 0;
-    candidates.push(...ordered);
-    const needed = persistPredecessorPlaceCount(band.nNew, candidates.length, persistUpdate);
-    const keepAtLayout = shouldKeepPersistAtLayoutBase({
-      persistReady: persistUpdate,
-      firstPublish: this._rootIsPublishJobPost(),
-      layoutDestOccupiedByMintingWriter: this.hasMintingBandTokenWriter(),
-    });
-    const dests = persistUpdatePredecessorDests({
-      implIndex: this._publishJobEventInputIndex(),
-      persistUpdate,
-      keepAtLayout,
-      bandStart: band.start,
-      nNew: needed,
-    });
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_OCCUPANCY === '1') {
-      const dest18 = this.allInputs[18];
-      console.error('persist-place-occupancy', {
-        persistUpdate,
-        keepAtLayout,
-        persistReady: isPersistedJobEventsReady(),
-        firstPublish: this._rootIsPublishJobPost(),
-        hasTokenWriter: this.hasMintingBandTokenWriter(),
-        impl: this._publishJobEventInputIndex(),
-        band,
-        dests,
-        dest18cap: dest18?.token?.nft?.capability ?? 'plain',
-        dest18cat: dest18?.token?.category?.slice(0, 16),
-        dest18commit: String(dest18?.token?.nft?.commitment ?? '').slice(0, 16),
-      });
-    }
-    const placements = assignPersistPredecessors(
-      dests, candidates, this._publishJobEventInputIndex(), persistUpdate,
-    );
-    for (const { dest, candidate: wanted } of placements) {
-      if (dest < 0 || dest >= this.allInputs.length) continue;
-      const occupant = this.allInputs[dest];
-      const occupantLock = occupant && 'unlocker' in occupant && occupant.unlocker
-        ? occupant.unlocker.generateLockingBytecode() : undefined;
-      const occupantIsPad = !occupant?.token
-        || (!!occupantLock && occupantLock.length === 25 && occupantLock[0] === 0x76)
-        || (!!occupantLock && occupantLock.length === 1 && occupantLock[0] === 0x51);
-      const already = this.allInputs.findIndex((input) =>
-        input?.txid === wanted.txid && input.vout === wanted.vout);
-      if (already === dest) continue;
-      if (!persistOccupantDisplaceable({
-        occupantIsPad,
-        persistUpdate,
-        keepAtLayout,
-        occupantCapability: occupant?.token?.nft?.capability,
-        occupantCommitment: occupant?.token?.nft?.commitment,
-      })) continue;
-      if (already >= 0) {
-        const displaced = this.allInputs[dest];
-        this.allInputs[dest] = this.allInputs[already];
-        this.allInputs[already] = displaced;
-        continue;
-      }
-      const displaced = this.allInputs[dest];
-      this.allInputs[dest] = wanted;
-      if (!displaced) continue;
-      let parked = false;
-      for (let index = band.end + 1; index < this.allInputs.length; index++) {
-        if (this.allInputs[index]?.token) continue;
-        this.allInputs[index] = displaced;
-        parked = true;
-        break;
-      }
-      if (!parked) {
-        for (let index = this.allInputs.length - 1; index > band.end; index--) {
-          if (this.allInputs[index]?.token) continue;
-          this.allInputs[index] = displaced;
-          parked = true;
-          break;
-        }
-      }
-    }
-  }
-
-  /**
-   * After extraTransfer, persist predecessors are often missing from `allInputs`.
-   * Fetch the last successful jobEvents spends and pin them on the live band.
-   */
-  async ensurePersistedJobEventsInputs(): Promise<void> {
-    if (this._rootIsPublishJobPost()) return;
-    const tokenWriterPresent = this.externalCallUtxoGroups.some((group) =>
-      isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
-        ?? group.logicalFunctionName));
-    if (!tokenWriterPresent) return;
-    const writerNames = new Set([
-      ...this.lowLevelCallUtxoGroups.map((group) => group.functionName),
-      ...this.externalCallUtxoGroups.map((group) => group.logicalFunctionName ?? group.functionName),
-    ]);
-    if (!writerNames.has('withdrawCollateral') && !writerNames.has('updateJobPost')) return;
-    const band = this.getPublishJobEventsBand();
-    const categoryId = this._persistJobEventsTokenCategory() ?? this._jobEventsPublishCategory();
-    if (!band || !categoryId || !isPersistedJobEventsReady()) return;
-    const persistLock = persistedJobEventsLocks.get(categoryId)
-      ?? latestPersisted(persistedJobEventsLocks, categoryId);
-    const persistValue = persistedJobEventsValues.get(categoryId)
-      ?? latestPersisted(persistedJobEventsValues, categoryId);
-    const spends = persistedJobEventsSpends.get(categoryId)
-      ?? latestPersisted(persistedJobEventsSpends, categoryId)
-      ?? [];
-    const extras: UnlockableUtxo[] = [];
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
-    const contract = publish?.externalContract?.inner;
-    if (persistValue && persistLock) rememberJobEventsUnlockRecipe(categoryId);
-    const recipe = persistedJobEventsUnlockRecipe(categoryId);
-    const unlockCategory = recipe?.categoryId ?? categoryId;
-    const unlockMaster = this.findMintingInputIndex(unlockCategory);
-    const unlocker = contract && unlockMaster >= 0 && recipe
-      ? createValueChunkUnlocker(
-        contract, unlockMaster, unlockCategory, recipe.collection, recipe.slot, recipe.root,
-      )
-      : undefined;
-    const unlockerLock = unlocker?.generateLockingBytecode();
-    if (unlocker) {
-      for (const spend of spends) {
-        const spendLock = spend.lockingBytecode;
-        // An unlocker and its source locking bytecode are one cryptographic identity. Never pair a cached
-        // outpoint with a recipe for another P2SH script: changing only generateLockingBytecode makes the source
-        // output look plausible but guarantees a redeem-script hash failure at consensus validation.
-        if (!unlockerLock || binToHex(spendLock) !== binToHex(unlockerLock)) continue;
-        extras.push({
-          txid: spend.txid,
-          vout: spend.vout,
-          satoshis: spend.satoshis,
-          token: spend.token,
-          unlocker,
-        });
-      }
-    }
-    if (extras.length === 0 && unlocker && unlockerLock && this.builderOptions.provider) {
-      try {
-        const encoded = lockingBytecodeToCashAddress({
-          bytecode: unlockerLock,
-          prefix: this.builderOptions.provider.network === 'mainnet' ? 'bitcoincash' : 'bchtest',
-          tokenSupport: true,
-        });
-        const address = typeof encoded === 'string' ? encoded : undefined;
-        if (address) {
-          const fetched = await this.builderOptions.provider.getUtxos(address);
-          for (const utxo of fetched.filter((item) => item.token?.category === unlockCategory
-            && item.token?.nft?.capability === 'mutable')) {
-            extras.push({ ...utxo, unlocker });
-          }
-        }
-      } catch { /* persist fetch is best-effort */ }
-    }
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
-      console.error('jobevents-persist-inputs', {
-        categoryId,
-        band,
-        persistValue: persistValue?.length ?? 0,
-        persistLock: persistLock ? binToHex(persistLock).slice(0, 20) : '',
-        recipe: recipe ? binToHex(recipe.slot).slice(0, 16) : '',
-        spends: spends.length,
-        extras: extras.length,
-        unlockCategory: unlockCategory.slice(0, 16),
-        unlockMaster,
-        hasContract: !!contract,
-      });
-    }
-    this.pendingJobEventsPredecessors = extras;
-    this._placeJobEventsPredecessorInputs(extras);
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1' && band) {
-      console.error('jobevents-band-inputs', {
-        start: band.start,
-        slots: Array.from({ length: band.nNew }, (_, offset) => {
-          const input = this.allInputs[band.start + offset];
-          const lock = input && 'unlocker' in input && input.unlocker
-            ? binToHex(input.unlocker.generateLockingBytecode()).slice(0, 20) : '';
-          return {
-            index: band.start + offset,
-            lock,
-            cap: input?.token?.nft?.capability ?? 'plain',
-            cat: String(input?.token?.category ?? '').slice(0, 8),
-            commit: String(input?.token?.nft?.commitment ?? '').slice(0, 16),
-          };
-        }),
-      });
-    }
-  }
-
-  /**
-   * After the 4-wide swap, conditional entry slots whose blockInputs were funders
-   * emit as P2PKH. FakeToken.transferFrom then reads master+4 (output 30) as a
-   * pred-out/entry and fails GTE on an empty token category. Re-fill those holes
-   * with same-category mutable placeholders so derivation can reveal the commitment.
-   */
+  /** Restore predecessor chunks displaced by a relocated participant block. */
   private _fillSwappedTokenEntryHoles(builder: TransactionBuilder): void {
     if (!this.mintingOutputSwap) return;
     const master = this.findMintingInputIndex(this.mintingOutputSwap.categoryId);
@@ -5898,14 +5394,16 @@ export class StatefulTransactionBuilder {
       group.functionName,
     ].filter((name): name is string => name !== undefined));
     const routedFunction = group.compilerRoute?.abiFunction;
-    const abiFunctions = [
-      routedFunction && functionNames.has(routedFunction.name) ? routedFunction : undefined,
-      ...artifacts.flatMap((artifact) => (artifact.abi as readonly AbiFunction[])
-        .filter((candidate) => functionNames.has(candidate.name))),
-    ].filter((candidate): candidate is AbiFunction => candidate !== undefined);
-    const entryAccess = abiFunctions
-      .map((candidate) => candidate.entryAccesses?.[slot.slotIndex ?? 0])
-      .find((candidate) => candidate !== undefined);
+    const logicalFunctions = artifacts.flatMap((artifact) => (artifact.abi as readonly AbiFunction[])
+      .filter((candidate) => functionNames.has(candidate.name)));
+    // A compiler route is the authoritative physical block even when a proxy executes it through a differently
+    // named forwarding function. Logical handler names describe calls inside that route; using them to resolve
+    // a route slot can select a different collection at the same local slot ordinal.
+    const entryAccess = physicalEntryAccessForSlot(
+      routedFunction,
+      logicalFunctions,
+      slot.slotIndex ?? 0,
+    );
     const collections = [group.stateLayout, ...artifacts.map((artifact) => artifact.stateLayout)]
       .flatMap((layout) => layout?.collections ?? [])
       .filter((collection, index, all) => all.findIndex((candidate) => (
@@ -6237,51 +5735,19 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  /** Drop leftover empty-value entry placeholders that share a live collection lock. */
+  /** Drop leftover empty-value entry placeholders that share a compiler-resolved collection lock. */
   private _stripSurplusEmptyCollectionEntries(builder: TransactionBuilder): void {
-    const writesJobEvents = this.externalCallUtxoGroups.some(groupWritesPublishedJobEvents)
-      || this.lowLevelCallUtxoGroups.some(groupWritesPublishedJobEvents)
-      || this.loopEntryVars.some((variable) => variable.collection === 'jobEvents');
-    if (!writesJobEvents) return;
-    const plannedByLock = new Map<string, { lock: Uint8Array; planned: number }>();
-    const remember = (lock: Uint8Array, planned: number): void => {
-      if (lock.length === 0 || planned <= 0) return;
-      const key = binToHex(lock);
-      const existing = plannedByLock.get(key);
-      plannedByLock.set(key, { lock, planned: Math.max(existing?.planned ?? 0, planned) });
-    };
-    for (const variable of this.loopEntryVars) {
-      if (variable.collection !== 'jobEvents' && variable.chunkable !== true) continue;
-      const required = this.getRequiredLoopEntryCount(variable.collection);
-      remember(variable.lockingBytecode, required > 0 ? required : 2);
-    }
-    // Nested MarketplaceData jobEvents often live on the data-NFT category while the
-    // executing group is the implementation minting category. Key by lockscript, and
-    // only the collection whose values carry a JobEvent payload — never every p2sh32
-    // (users/arbitrator inserts also mix empty+real mutables).
-    if (writesJobEvents) {
-      const byLock = new Map<string, { lock: Uint8Array; commitments: string[] }>();
-      for (const output of builder.outputs) {
-        const lock = output.to instanceof Uint8Array ? output.to : undefined;
-        if (!lock || lock.length !== 35 || lock[0] !== 0xaa || lock[1] !== 0x20) continue;
-        if (output.token?.nft?.capability !== 'mutable') continue;
-        const key = binToHex(lock);
-        const raw = output.token.nft?.commitment as Uint8Array | string | undefined;
-        const commitment = raw instanceof Uint8Array ? binToHex(raw) : (raw ?? '');
-        const group = byLock.get(key) ?? { lock, commitments: [] };
-        group.commitments.push(commitment);
-        byLock.set(key, group);
-      }
-      for (const { lock, commitments } of byLock.values()) {
-        const eventPayload = commitments.some((commitment) => {
-          const hex = commitment.toLowerCase();
-          return hex.includes('437265617465') || hex.includes('57686974656c697374');
-        });
-        if (eventPayload) remember(lock, 2);
-      }
-    }
-    for (const { lock, planned } of plannedByLock.values()) {
-      stripSurplusEmptyCollectionEntries(builder.outputs, lock, planned);
+    const plans = collectionValueEntryPlans(
+      [
+        { collectionValueWrites: this.collectionValueWrites },
+        ...this.externalCallUtxoGroups,
+        ...this.lowLevelCallUtxoGroups,
+      ],
+      this.loopEntryVars,
+      (collection) => this.getRequiredLoopEntryCount(collection),
+    );
+    for (const { lockingBytecode, plannedCount } of plans) {
+      stripSurplusEmptyCollectionEntries(builder.outputs, lockingBytecode, plannedCount);
     }
   }
 
@@ -6396,22 +5862,15 @@ export class StatefulTransactionBuilder {
         amount: input.satoshis,
         token: twinToken,
       };
-      const skipLocks: Uint8Array[] = [];
-      for (const variable of this.loopEntryVars) {
-        if (variable.collection === 'jobEvents' && variable.lockingBytecode.length > 0) {
-          skipLocks.push(variable.lockingBytecode);
-        }
-      }
-      for (const output of builder.outputs) {
-        const lock = output.to instanceof Uint8Array ? output.to : undefined;
-        if (!lock || lock.length !== 35 || lock[0] !== 0xaa) continue;
-        if (output.token?.nft?.capability !== 'mutable') continue;
-        const raw = output.token.nft?.commitment as Uint8Array | string | undefined;
-        const hex = raw instanceof Uint8Array ? binToHex(raw) : (raw ?? '');
-        if (hex.toLowerCase().includes('437265617465') || hex.toLowerCase().includes('57686974656c697374')) {
-          skipLocks.push(lock);
-        }
-      }
+      const skipLocks = collectionValueEntryPlans(
+        [
+          { collectionValueWrites: this.collectionValueWrites },
+          ...this.externalCallUtxoGroups,
+          ...this.lowLevelCallUtxoGroups,
+        ],
+        this.loopEntryVars,
+        (collection) => this.getRequiredLoopEntryCount(collection),
+      ).map((plan) => plan.lockingBytecode);
       const reservedNew = plannedInsert.outputIndex;
       const twinOptions = {
         tailStart: Number.isFinite(tailStart) ? tailStart : suffixStart,
@@ -6545,154 +6004,7 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  /**
-   * publishJobEvent's event slot is impl+offset. Occupancy parks SCID/short
-   * data-NFT clones there; the emit pin still names that coordinate.
-   */
-  private _reassertNestedEmitEvents(builder: TransactionBuilder): void {
-    const publishFn = this._publishJobEventAbi();
-    const eventOffset = publishFn?.blockLayout?.slots.find((slot) => slot.kind === 'event')?.offset ?? 4;
-    const proxyGroup = this.externalCallUtxoGroups.find((candidate) => {
-      const candidateNames = [
-        candidate.logicalFunctionName, candidate.functionName, candidate.compilerRoute?.abiFunction?.name,
-      ];
-      return candidateNames.includes('publishJobEvent');
-    });
-    const llcIndex = this.lowLevelCallUtxoGroups.findIndex((group) => {
-      const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
-      return names.includes('publishJobEvent');
-    });
-    const impl = this._publishJobEventInputIndex();
-    const dest = this._scaledEmitOutputIndex(builder.outputs.length)
-      ?? publishJobEventOutputIndex(impl, eventOffset);
-    const persistEmitEarly = this._shouldRematerializePersistUpdate();
-    if (dest < 0 || (impl >= 0 && dest <= impl)) {
-      const fallback = publishJobEventOutputIndex(impl, eventOffset);
-      if (fallback >= 0) {
-        relocateJobEventEmitToDest(builder.outputs, fallback, {
-          consumedMutableOk: persistEmitEarly,
-          preferCreated: this._rootIsPublishJobPost(),
-        });
-      }
-      return;
-    }
-    const categoryId = proxyGroup?.categoryId
-      ?? (llcIndex >= 0 ? this.lowLevelCallUtxoGroups[llcIndex].categoryId : undefined);
-    const emitInfo = publishFn?.emits?.[0];
-    const derived = proxyGroup?.eventOutputs?.[0]
-      ?? (llcIndex >= 0 ? this.lowLevelCallUtxoGroups[llcIndex].eventOutputs?.[0] : undefined);
-    const debugEventIndex = Number.parseInt(
-      (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-        ?.SOLIDC_DEBUG_EVENT_INDEX ?? '',
-      10,
-    );
-    if (debugEventIndex === dest) {
-      console.error('stateful-nested-event-owner', {
-        impl,
-        dest,
-        categoryId,
-        selectedExternalGroup: proxyGroup && {
-          index: this.externalCallUtxoGroups.indexOf(proxyGroup),
-          categoryId: proxyGroup.categoryId,
-          functionName: proxyGroup.functionName,
-          logicalFunctionName: proxyGroup.logicalFunctionName,
-          delegateCallGroupIndex: proxyGroup.delegateCallGroupIndex,
-          route: proxyGroup.compilerRoute?.abiFunction.name,
-        },
-        selectedLowLevelGroup: llcIndex >= 0 ? {
-          index: llcIndex,
-          categoryId: this.lowLevelCallUtxoGroups[llcIndex].categoryId,
-          functionName: this.lowLevelCallUtxoGroups[llcIndex].functionName,
-          logicalFunctionName: this.lowLevelCallUtxoGroups[llcIndex].logicalFunctionName,
-          route: this.lowLevelCallUtxoGroups[llcIndex].compilerRoute?.abiFunction.name,
-        } : undefined,
-        matchingExternalGroups: this.externalCallUtxoGroups.flatMap((group, index) => {
-          const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
-          return names.includes('publishJobEvent') ? [{
-            index,
-            categoryId: group.categoryId,
-            functionName: group.functionName,
-            logicalFunctionName: group.logicalFunctionName,
-            delegateCallGroupIndex: group.delegateCallGroupIndex,
-            sharedGroupIndex: group.sharedGroupIndex,
-            route: group.compilerRoute?.abiFunction.name,
-          }] : [];
-        }),
-      });
-    }
-    if (!categoryId) return;
-    const minting = this.findMintingInputIndex(categoryId);
-    if (minting >= 0 && dest === minting) return;
-    const addressType = proxyGroup?.externalContract?.inner?.addressType
-      ?? (llcIndex >= 0 ? this.lowLevelCallUtxoGroups[llcIndex].externalContract?.inner?.addressType : undefined)
-      ?? 'p2sh32';
-    const emitSignature = emitInfo?.eventSignature ?? 'JobEvent(uint256,JobEventData)';
-    const lockingBytecode = scriptToLockingBytecode(
-      buildEventNftCovenantScript(hexToBin(categoryId), computeEventNameHash(emitSignature)),
-      addressType,
-    );
-    const visibleArgs = proxyGroup?.logicalFunctionArgs ?? proxyGroup?.functionArgs
-      ?? (llcIndex >= 0
-        ? this.lowLevelCallUtxoGroups[llcIndex].logicalFunctionArgs
-          ?? this.lowLevelCallUtxoGroups[llcIndex].functionArgs
-        : undefined);
-    const structs = proxyGroup?.externalContract?.inner?.artifact?.structs
-      ?? (llcIndex >= 0
-        ? this.lowLevelCallUtxoGroups[llcIndex].externalContract?.inner?.artifact?.structs
-        : undefined);
-    const now = BigInt((this.builderOptions.provider as { getBlockTime?: () => number })
-      .getBlockTime?.() ?? 0);
-    const eventType = visibleArgs && visibleArgs.length >= 2
-      ? jobEventTypeOf(visibleArgs[1]) : undefined;
-    const emptyAddressEvent = eventType !== undefined
-      && (Array.isArray(visibleArgs![1])
-        ? jobEventFieldEmpty(visibleArgs![1][1])
-        : jobEventFieldEmpty((visibleArgs![1] as { address_?: unknown }).address_));
-    // Closed (7) dest stays `0057000000` — the MD data-NFT pin EQUALVERIFYs that.
-    // CollateralWithdrawn (16) dest is `0060000004||time` — the impl emit pin.
-    const stampWithdraw = emptyAddressEvent && eventType === 16 && now > 0n;
-    const emitEvent = stampWithdraw
-      ? stampEmptyJobEventTimestamp(visibleArgs![1], now)
-      : visibleArgs?.[1];
-    const constructedCommit = emptyAddressEvent && emitEvent !== undefined
-      ? encodeJobEventEmitCommitment(visibleArgs![0], emitEvent, structs)
-      : undefined;
-    const persistEmit = this._shouldRematerializePersistUpdate();
-    placePublishJobEventOutput(builder.outputs, dest, {
-      to: lockingBytecode,
-      amount: 1200n,
-      token: {
-        amount: 0n,
-        category: categoryId,
-        nft: { capability: 'none', commitment: constructedCommit ?? derived?.commitment ?? '' },
-      },
-    }, {
-      clearClonedStub: persistEmit,
-      refuseEmpty: persistEmit && !constructedCommit,
-      consumedMutableOk: persistEmit,
-      destInput: this.allInputs[dest],
-    });
-    if (persistEmit && dest >= 0) {
-      this.forcedJobEventsBandStart = dest + 1;
-      this._placeJobEventsPredecessorInputs(this.pendingJobEventsPredecessors);
-      this._materializeJobEventsBand(builder);
-      this._reassertPersistedJobEventsOneToOnes(builder, dest);
-    }
-    const executingDest = dest >= 0
-      ? dest
-      : publishJobEventOutputIndex(this._publishJobEventInputIndex(), eventOffset);
-    if (executingDest >= 0) {
-      relocateJobEventEmitToDest(builder.outputs, executingDest, {
-        consumedMutableOk: persistEmit,
-        preferCreated: this._rootIsPublishJobPost(),
-      });
-    }
-  }
-
-  /**
-   * Implementation emit verification is `OP_INPUTINDEX + event.offset`. Move a
-   * parked VersionChanged / Paused NFT from the proxy event band onto that dest.
-   */
+  /** Reassert VM-authenticated delegate events at implementation-relative compiler slots. */
   private _reassertDelegateImplEvents(builder: TransactionBuilder): void {
     const claims: DelegateEventClaim[] = [];
     const commitmentHex = (value: unknown): string => (
@@ -6709,23 +6021,27 @@ export class StatefulTransactionBuilder {
         candidate.delegateCallGroupIndex === groupIndex
       ));
       const eventSlots = fn?.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
+      const eventSignatures = groupEventSignatures(group, fn);
       for (const [eventOrdinal, eventSlot] of eventSlots.entries()) {
-        const emitInfo = fn?.emits?.[eventOrdinal];
-        if (!emitInfo) continue;
+        const eventSignature = eventSignatures[eventOrdinal];
+        if (!eventSignature) continue;
         const dest = implIndex + eventSlot.offset;
         const existing = builder.outputs[dest];
         // Delegate bytecode executes against its associated proxy's storage/category. Output contents are not
         // ownership evidence: a none-cap OP_TRUE return witness can legitimately occupy another delegate's same
         // relative slot. Inferring the category from that occupant promotes the witness into a duplicate event,
         // which the implementation's event-uniqueness epilogue correctly rejects.
-        const executionCategory = proxyGroup?.categoryId;
+        const executionCategory = lowLevelCallStateOwnerCategory(
+          groupIndex, group, this.externalCallUtxoGroups, this.categoryId,
+          this.compilerRouteDelegateBlock ? 0 : undefined,
+        );
         // Top-level proxy calls already project their event frame through the builder's own block layout. This
         // repair is only for a nested execution category; otherwise reserved union slots could activate
         // inactive initialization ordinals.
         if (!executionCategory || executionCategory === this.categoryId) continue;
         const locking = scriptToLockingBytecode(
           buildEventNftCovenantScript(
-            hexToBin(executionCategory), computeEventNameHash(emitInfo.eventSignature),
+            hexToBin(executionCategory), computeEventNameHash(eventSignature),
           ),
           group.externalContract.inner.addressType,
         );
@@ -6766,202 +6082,6 @@ export class StatefulTransactionBuilder {
   }
 
   /** Persist UPDATE predecessors are mutable value-chunks, not data-NFT twins. */
-  private _reassertPersistedJobEventsOneToOnes(builder: TransactionBuilder, emitDest: number): void {
-    // A compiler-owned delegate route assigns every physical output in its balanced block. Legacy
-    // persistence recovery infers ownership from input shape and cached collection state, so it must
-    // never rewrite those declared outputs. Any required predecessor or value-chunk recreation is
-    // represented by the route's entry/chunk slots and handled by their ordinary materializers.
-    if (this.compilerRouteDelegateBlock || this.preserveBlockLayoutWidth) return;
-    const eventDestinations = new Set(this._emitDestinationIndices());
-    if (emitDest >= 0) eventDestinations.add(emitDest);
-    const destCategory = emitDest >= 0 && builder.outputs[emitDest]?.token?.category
-      ? String(builder.outputs[emitDest]!.token!.category)
-      : this._jobEventsPublishCategory();
-    const categoryId = destCategory ?? this._jobEventsPublishCategory();
-    const persistLockCategory = this._persistJobEventsTokenCategory() ?? categoryId;
-    const persistLock = (persistLockCategory ? persistedJobEventsLock(persistLockCategory) : undefined)
-      ?? this.jobEventsRedeemLock;
-    const replayCategories = new Set([categoryId, persistLockCategory].filter(
-      (candidate): candidate is string => candidate !== undefined,
-    ));
-    const persistDests = new Set(persistUpdatePredecessorDests({
-      implIndex: this._publishJobEventInputIndex(),
-      persistUpdate: isPersistedJobEventsReady() && !this._rootIsPublishJobPost(),
-      keepAtLayout: shouldKeepPersistAtLayoutBase({
-        persistReady: isPersistedJobEventsReady(),
-        firstPublish: this._rootIsPublishJobPost(),
-        layoutDestOccupiedByMintingWriter: this.hasMintingBandTokenWriter(),
-      }),
-      bandStart: this.getPublishJobEventsBand()?.start ?? -1,
-      nNew: this.getPublishJobEventsBand()?.nNew ?? 0,
-    }));
-    const persistRecipeLock = persistUpdateDigestLock(
-      this._persistJobEventsTokenCategory() ?? categoryId,
-      this._persistDigestCategories(),
-    );
-    for (const [index, input] of this.allInputs.entries()) {
-      const commit = String(input?.token?.nft?.commitment ?? '');
-      const persistShaped = commit.length >= 64 && !isDataNftIndexCommitment(commit);
-      // Compiler event slots and mutable-input conservation are independent layout owners. Once an event slot is
-      // materially populated, a late conservation pass cannot infer ownership from the same-index input and replace
-      // it. Empty/zero/SCID placeholders remain available so persistence can still fill genuinely vacant slots.
-      if (eventDestinations.has(index)
-        && isMaterializedImmutableNftOutput(builder.outputs[index])) continue;
-      if (index === emitDest && !persistShaped) continue;
-      if (input?.token?.nft?.capability !== 'mutable') continue;
-      const declaredOwner = this._declaredExternalOutputSlotOwner(index);
-      // Physical input padding is not output ownership. A balanced participant can use a foreign mutable UTXO
-      // as the funding/input occupant of a compiler-declared slot; the participant's layout and category still
-      // own the corresponding output. Conservation passes must not replay that occupant across the boundary.
-      if (declaredOwner) {
-        if (!replayCategories.has(declaredOwner.categoryId)) continue;
-        const declaredLock = declaredOwner.slot.kind === 'entry'
-          ? this._externalEntryLockingBytecode(declaredOwner.group, declaredOwner.slot)
-          : undefined;
-        const inputLock = input.unlocker?.generateLockingBytecode();
-        const inputOwnsSlot = declaredOwner.categoryId === input.token.category
-          && (declaredLock === undefined || (inputLock !== undefined
-            && declaredLock.length === inputLock.length
-            && declaredLock.every((byte, offset) => byte === inputLock[offset])));
-        if (!inputOwnsSlot) continue;
-      }
-      const liveBand = this.getPublishJobEventsBand();
-      // An UPDATE can deliberately place an old predecessor input at the same
-      // coordinate as the new value's chunk 0. The predecessor still
-      // authorizes the spend, but its one-to-one recreation must not replace
-      // the newly authenticated chunk (whose root-addressed lock changed). The
-      // live band is the layout authority; derivation caches can be cleared or
-      // re-keyed by a later participant repair without vacating that band.
-      if (liveBand && index >= liveBand.start && index <= liveBand.end) continue;
-      const chunk0Dest = persistValueChunkBase(this._publishJobEventInputIndex(), 5);
-      const forceChunk0 = index === chunk0Dest
-        && !this._rootIsPublishJobPost()
-        && isPersistValueChunkCommitment(commit);
-      if ((persistRecipeLock && persistDests.has(index) && !this._rootIsPublishJobPost())
-        || forceChunk0) {
-        const existing = builder.outputs[index];
-        if ((existing?.token?.nft?.capability === 'mutable'
-          && (existing.token.category === input.token?.category
-            || isPersistValueChunkCommitment(commit)))
-          || forceChunk0) {
-          const persistCat = this._persistJobEventsTokenCategory() ?? input.token?.category ?? categoryId;
-          const persistValue = latestPersisted(stagedJobEventsValues)
-            ?? latestPersisted(persistedJobEventsValues)
-            ?? (persistCat ? persistedJobEventsValue(persistCat) : undefined);
-          const destOffset = [...persistDests].sort((left, right) => left - right).indexOf(index);
-          const inputLock = input.unlocker?.generateLockingBytecode();
-          const persistVLock = persistValueChunkLock(this._jobEventsPublishCategory(), persistValue)
-            ?? persistValueChunkLock(persistLockCategory, persistValue)
-            ?? persistValueChunkLock(input.token?.category ?? persistCat, persistValue)
-            ?? persistLock;
-          const destLock = index === chunk0Dest
-            ? (persistVLock ?? persistLock)
-            : persistUpdateDestLock({
-              destOffset,
-              entryLock: persistRecipeLock,
-              persistLock: persistVLock,
-              inputLock: inputLock && inputLock.length === 35 && inputLock[0] === 0xaa
-                ? inputLock : undefined,
-            });
-          const persistChunks = persistValue
-            ? chunksFromJobEventsValue(persistValue, destLock ?? persistRecipeLock, persistCat) : [];
-          // The entry carries the same authenticated chunkable-value header as every sorted mapping:
-          // len4 || root32 || head28 for a long value. Continuations stay uint16-le value chunks.
-          const persistChunk = destOffset === 0 && persistValue
-            ? {
-              commitment: binToHex(encodeEntryCommitment(
-                keyToSlot(new Uint8Array()),
-                new Uint8Array(32),
-                encodeChunkableValueTail(persistValue),
-              )),
-            }
-            : (destOffset > 0 ? persistChunks[destOffset - 1] : undefined);
-          const existingLock = existing?.to instanceof Uint8Array ? existing.to : undefined;
-          const nextCommit = persistChunk?.commitment ?? existing?.token?.nft?.commitment
-            ?? input.token?.nft?.commitment;
-          const nextLock = destLock ?? persistRecipeLock;
-          if (nextLock && (!existingLock || binToHex(existingLock) !== binToHex(nextLock)
-            || String(existing?.token?.nft?.commitment ?? '') !== String(nextCommit ?? ''))) {
-            const baseToken = existing?.token ?? input.token;
-            builder.outputs[index] = {
-              to: nextLock,
-              amount: existing?.amount ?? input.satoshis,
-              token: persistChunk && baseToken
-                ? {
-                  ...cloneToken(baseToken),
-                  nft: { capability: 'mutable', commitment: persistChunk.commitment },
-                }
-                : baseToken,
-            };
-          }
-
-          continue;
-        }
-      }
-      const sameCategory = !!categoryId && input.token?.category === categoryId;
-      if (!sameCategory && !persistShaped) continue;
-      const predecessor = this.pendingJobEventsPredecessors.find((candidate) =>
-        candidate.txid === input.txid && candidate.vout === input.vout);
-      const digestLock = persistUpdateRedeemLock(input.token?.category ?? categoryId, this.jobEventsRedeemLock);
-      const chunkIndex = valueChunkIndexFromCommitment(commit);
-      // Only long persist jobEvents chunks (Created `00004cb4…` / continuations).
-      // Short `0000…` data-NFT heads (jobs, users) must keep their own lock.
-      const isPersistValueChunk = chunkIndex !== undefined
-        && commit.length >= 24
-        && (sameCategory || persistShaped);
-      const rematerialize = this._shouldRematerializePersistUpdate();
-      const stampDigest = this._shouldStampPersistUpdateDigestLock();
-      const band = this.getPublishJobEventsBand();
-      const inWriteBand = !!band && index >= band.start && index <= band.end;
-      // INSERT / whitelist must not restamp persist `v` onto dest. UPDATE
-      // dest-18 persist EQUALVERIFYs the Created-digest lock even when the
-      // live band starts at dest 20.
-      if (isPersistValueChunk && inWriteBand && !rematerialize && !stampDigest) continue;
-      const recipeLock = stampDigest
-        ? persistUpdateDigestLock(
-          this._persistJobEventsTokenCategory() ?? input.token?.category ?? categoryId,
-          this._persistDigestCategories(),
-        )
-        : persistRecipeLock;
-      const lock = ((persistDests.has(index) && persistRecipeLock)
-        || (isPersistValueChunk && ((rematerialize && digestLock) || recipeLock)))
-        ? (persistRecipeLock ?? recipeLock ?? digestLock)
-        : ((('unlocker' in input && input.unlocker)
-          ? input.unlocker.generateLockingBytecode()
-          : undefined)
-          ?? predecessor?.unlocker?.generateLockingBytecode()
-          ?? persistLock);
-      if (!lock || lock.length !== 35 || lock[0] !== 0xaa) continue;
-      const persistValue = isPersistValueChunk && rematerialize
-        ? persistedJobEventsValue(input.token?.category ?? categoryId ?? '')
-        : undefined;
-      const persistChunk = persistValue && chunkIndex !== undefined
-        ? chunksFromJobEventsValue(persistValue, lock, input.token?.category)[chunkIndex]
-        : undefined;
-      const token = persistChunk
-        ? {
-          ...cloneToken(input.token),
-          nft: { capability: 'mutable' as const, commitment: persistChunk.commitment },
-        }
-        : cloneToken(input.token);
-      const existing = builder.outputs[index];
-      const existingLock = existing?.to instanceof Uint8Array ? existing.to : undefined;
-      const missingTwin = !existing?.token
-        || existing.token.category !== input.token?.category
-        || existing.token.nft?.capability !== 'mutable';
-      const lockChanged = existingLock !== undefined && binToHex(existingLock) !== binToHex(lock);
-      const commitChanged = persistChunk !== undefined
-        && String(existing?.token?.nft?.commitment ?? '') !== persistChunk.commitment;
-      if (!missingTwin && !lockChanged && !commitChanged) continue;
-      builder.outputs[index] = {
-        to: lock,
-        amount: input.satoshis,
-        token,
-      };
-    }
-  }
-
-  /** Restore planned delegate loop commitments at their compiler-owned coordinates without shifting later rows. */
   private _reassertDelegateLoopEntries(builder: TransactionBuilder): void {
     const delegateLoopVars = this._delegateLoopEntryVars();
     if (delegateLoopVars.length === 0) return;
@@ -7022,7 +6142,7 @@ export class StatefulTransactionBuilder {
 
   /**
    * View tails are OP_TRUE + none-cap return NFTs. Token-swap placement already
-   * parks them after FakeToken; without a swap, jobEvents mutables still occupy
+   * parks them after a colliding participant; without a swap, collection mutables still occupy
    * the first planned tail slots. Write the pending views after that writer band
    * and leave collection/jobs coordinates unmoved.
    */
@@ -7034,12 +6154,11 @@ export class StatefulTransactionBuilder {
     if (tailReturns.length === 0) return;
     const jobsCountForPack = this.delegateDynamicChunksAtSuffix ? this._dynamicChunkOutputCount() : 0;
     const packOptions: ViewTailPackOptions = {
-      band: this.getPublishJobEventsBand(),
+      band: this.getCollectionValueOutputBand(),
       suffixStart: jobsCountForPack > 0
         ? builder.outputs.length - jobsCountForPack - 1
         : Math.max(0, this.allInputs.length - 1),
-      tokenWriterPresent: this.externalCallUtxoGroups.some((group) =>
-        isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name)),
+      tokenWriterPresent: this.hasCollectionValueBandCollision(),
     };
     const planned = packTailReturnPlacements(
       this.externalCallUtxoGroups,
@@ -7147,15 +6266,15 @@ export class StatefulTransactionBuilder {
         }
       }
     }
-    this._vacateViewTailsFromJobEventsBand(builder);
+    this._vacateViewTailsFromCollectionValueBands(builder);
     this._restoreDeclaredMutableEntrySlots(builder);
     this._reassertInBlockWriterReturns(builder);
   }
 
   /**
    * The in-block FakeToken return is OP_TRUE + none-cap at master+returnSlot.
-   * JobEvents change-relocation used to splice a leftover p2sh32 onto that
-   * index (3-wide band → output 31). Restore the witnessed return without
+   * Collection-value relocation can leave a P2SH32 occupant on that index.
+   * Restore the witnessed return without
    * shifting later view tails: swap with a disposable pad after occupancy.
    */
   private _reassertInBlockWriterReturns(builder: TransactionBuilder): void {
@@ -7169,7 +6288,7 @@ export class StatefulTransactionBuilder {
       const master = this.findMintingInputIndex(physical.categoryId);
       const returnSlot = physical.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent');
       if (master < 0 || returnSlot === undefined) continue;
-      const band = this.getPublishJobEventsBand();
+      const band = this.getCollectionValueOutputBand();
       const outputIndex = tokenWriterReturnIndex(
         master, physical.blockLayout, band,
         this.tokenWriterOccupancy(master, builder.outputs),
@@ -7439,8 +6558,8 @@ export class StatefulTransactionBuilder {
     }
   }
 
-  private _vacateViewTailsFromJobEventsBand(builder: TransactionBuilder): void {
-    const band = this.getPublishJobEventsBand();
+  private _vacateViewTailsFromCollectionValueBands(builder: TransactionBuilder): void {
+    const band = this.getCollectionValueOutputBand();
     if (!band) return;
     let vacated = false;
     for (let index = band.start; index <= band.end; index++) {
@@ -7468,10 +6587,9 @@ export class StatefulTransactionBuilder {
     builder: TransactionBuilder,
     returnOutputRefs?: Map<string, Output>,
   ): void {
+    const collisionIndex = this._collectionValueBandCollisionIndex();
     const swapCategoryId = this.mintingOutputSwap?.categoryId
-      ?? this.externalCallUtxoGroups.find((group) =>
-        group.sharedGroupIndex === undefined
-        && isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name))?.categoryId;
+      ?? (collisionIndex < 0 ? undefined : this.externalCallUtxoGroups[collisionIndex]?.categoryId);
     if (!swapCategoryId) {
       this._writeViewTailsAfterWriterOccupancy(builder, returnOutputRefs);
       this._reassertInBlockWriterReturns(builder);
@@ -7500,7 +6618,7 @@ export class StatefulTransactionBuilder {
       (categoryId) => this.findMintingInputIndex(categoryId),
       tailReturns,
       swapCategoryId,
-      this.getPublishJobEventsBand()?.end ?? -1,
+      this.getCollectionValueOutputBand()?.end ?? -1,
       this.viewTailPackOptions(jobsCount > 0
         ? builder.outputs.length - jobsCount - 1
         : builder.outputs.length),
@@ -7622,34 +6740,9 @@ export class StatefulTransactionBuilder {
       this._reassertInBlockWriterReturns(builder);
       return;
     }
-    const hole = builder.outputs[after];
-    if (hole?.token?.nft?.capability === 'none' && (hole.token.nft.commitment?.length ?? 0) > 2) {
-      this._restoreDeclaredMutableEntrySlots(builder);
-      this._reassertInBlockWriterReturns(builder);
-      return;
-    }
-    const suffixLen = (this.delegateDynamicChunksAtSuffix ? this._dynamicChunkOutputCount() : 0) + 1;
-    const last = builder.outputs.length - suffixLen;
-    const category = this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent')
-      ?.categoryId
-      ?? builder.outputs.slice(after + 1, last).find((output) =>
-        output.token?.nft?.capability === 'none'
-        && output.token.category !== swapCategoryId)?.token?.category;
-    if (!category) {
-      this._restoreDeclaredMutableEntrySlots(builder);
-      this._reassertInBlockWriterReturns(builder);
-      return;
-    }
-    builder.outputs[after] = {
-      to: Uint8Array.of(0x51),
-      amount: 800n,
-      token: {
-        amount: 0n,
-        category,
-        nft: { capability: 'none', commitment: '0101' },
-      },
-    };
-    this._vacateViewTailsFromJobEventsBand(builder);
+    // With no pending compiler-owned return identity, do not synthesize a token by guessing a category from
+    // neighboring outputs. Only the collection band and declared 1:1 resources are authoritative here.
+    this._vacateViewTailsFromCollectionValueBands(builder);
     this._restoreDeclaredMutableEntrySlots(builder);
     this._reassertInBlockWriterReturns(builder);
   }
@@ -7927,8 +7020,6 @@ export class StatefulTransactionBuilder {
     debugInputAssembly('refreshed');
     this._swapMintingOffValueChunkBand();
     debugInputAssembly('refresh-minting-band-relocated');
-    this._placeJobEventsPredecessorInputs(this.pendingJobEventsPredecessors);
-    debugInputAssembly('refresh-predecessors-placed');
     // Callee anchors precede the caller's own: emitLogicalMsgSenderAnchorResolution resolves the caller's
     // identity from the LAST input, so that tail position must stay the caller's.
     this.allInputs.push(...this.externalIdentityAnchorUtxos);
@@ -7939,6 +7030,165 @@ export class StatefulTransactionBuilder {
   /** Keep async-planned disposable inputs out of layout until a dynamic band actually needs them. */
   setRelocationFunderUtxos(funders: UnlockableUtxo[]): void {
     this.relocationFunderUtxos = [...funders];
+  }
+
+  /**
+   * Guess scalar NFT output state before the first VM probe. Every guess remains provisional until a faithful
+   * covenant evaluation accepts it; failed candidates fall back to trace-driven derivation.
+   */
+  getOptimisticPermutationCount(): number {
+    return this.lastOptimisticPermutationCount;
+  }
+
+  clearOptimisticScalarWrites(): void {
+    this.stateUpdates.clear();
+  }
+
+  seedOptimisticScalarWrites(permutationIndex: number = 0): boolean {
+    this.lastOptimisticPermutationCount = 1;
+    if (this.stateUpdates.size > 0 || this.stateRawCommitments.size > 0) return false;
+    if (!isContractUnlocker(this.masterUtxo.unlocker)) return false;
+    const { abiFunction, params } = this.masterUtxo.unlocker;
+    if (abiFunction.writesState === false) return false;
+    if (abiFunction.entryAccesses && abiFunction.entryAccesses.length > 0) return false;
+    const modifiers = abiFunction.modifiers ?? [];
+    if (modifiers.includes('view') || modifiers.includes('pure')) return false;
+
+    const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
+    const fields = this.stateLayout.variables.filter((variable) => !variable.dynamic
+      && !variable.name.includes('$')
+      && scalarTypeKey(variable.type) !== undefined);
+    if (fields.length === 0) return false;
+
+    const currentState: Record<string, StateValue> = {};
+    for (let i = 0; i < this.requiredNftIndices.length; i += 1) {
+      const nftUtxo = this.dataNftUtxos[i];
+      if (!nftUtxo?.token?.nft?.commitment) continue;
+      Object.assign(
+        currentState,
+        parsePushdataCommitment(nftUtxo.token.nft.commitment, this.stateLayout, this.requiredNftIndices[i]),
+      );
+    }
+
+    const assigned = new Set<string>();
+    const usedArgs = new Set<number>();
+    const tryAssign = (fieldName: string, argIndex: number): void => {
+      if (assigned.has(fieldName) || usedArgs.has(argIndex)) return;
+      if (argIndex < 0 || argIndex >= params.length || argIndex >= visibleInputs.length) return;
+      const field = fields.find((candidate) => candidate.name === fieldName);
+      if (!field) return;
+      const value = paramToStateValue(params[argIndex], visibleInputs[argIndex].type);
+      if (value === undefined || !canEncodeScalarStateValue(value, field.type)) return;
+      this.setState(fieldName, value);
+      assigned.add(fieldName);
+      usedArgs.add(argIndex);
+    };
+
+    const fieldKeys = fields.map((field) => scalarTypeKey(field.type)!);
+    const argKeys = visibleInputs.map((input) => scalarTypeKey(input.type));
+    visibleInputs.forEach((input, argIndex) => {
+      const field = fields.find((candidate) => fieldNameMatchesArg(candidate.name, input.name));
+      if (!field || scalarTypeKey(field.type) !== argKeys[argIndex]) return;
+      tryAssign(field.name, argIndex);
+    });
+    const permGroups: Array<{ fields: typeof fields; argIndexes: number[] }> = [];
+    for (const key of new Set(fieldKeys)) {
+      const matchingFields = fields.filter((field, index) => fieldKeys[index] === key && !assigned.has(field.name));
+      const matchingArgs = visibleInputs
+        .map((input, index) => ({ input, index }))
+        .filter(({ index }) => argKeys[index] === key && !usedArgs.has(index));
+      if (matchingFields.length === 1 && matchingArgs.length === 1) {
+        tryAssign(matchingFields[0].name, matchingArgs[0].index);
+      } else if (matchingFields.length === matchingArgs.length && matchingFields.length > 3) {
+        matchingFields.forEach((field, offset) => tryAssign(field.name, matchingArgs[offset].index));
+      } else if (matchingFields.length === matchingArgs.length && matchingFields.length >= 2) {
+        permGroups.push({ fields: matchingFields, argIndexes: matchingArgs.map((entry) => entry.index) });
+      }
+    }
+    const groupPerms = permGroups.map((group) => permutations(group.argIndexes));
+    let permutationCount = groupPerms.reduce((acc, perms) => acc * perms.length, 1);
+    if (permutationCount > 8) permutationCount = 1;
+    this.lastOptimisticPermutationCount = permutationCount;
+    let remaining = ((permutationIndex % permutationCount) + permutationCount) % permutationCount;
+    permGroups.forEach((group, groupIndex) => {
+      const perms = groupPerms[groupIndex];
+      const pick = permutationCount === 1 ? perms[0] : perms[remaining % perms.length];
+      remaining = Math.floor(remaining / perms.length);
+      group.fields.forEach((field, offset) => tryAssign(field.name, pick[offset]));
+    });
+
+    const decrement = /(?:dec|sub|minus|reduce|spend)/i.test(abiFunction.name);
+    const zero = /(?:reset|clear|zero)/i.test(abiFunction.name);
+    const enable = /(?:enable|arm|activate|start)/i.test(abiFunction.name);
+    const disable = /(?:disable|disarm|deactivate|stop)/i.test(abiFunction.name);
+    const twice = /(?:double|twice)/i.test(abiFunction.name);
+    const leftoverInts = fields.filter((field) => !assigned.has(field.name) && isIntegerType(field.type));
+    const leftoverBools = fields.filter((field) => !assigned.has(field.name) && field.type === 'bool');
+    const unusedIntArgs = visibleInputs
+      .map((input, index) => ({ input, index }))
+      .filter(({ input, index }) => !usedArgs.has(index) && isIntegerType(input.type));
+    const applyLeftoverInts = zero || decrement || twice
+      || (leftoverInts.length === 1 && unusedIntArgs.length === 0);
+    const applyLeftoverBools = enable || disable || zero || leftoverBools.length === 1;
+    if (applyLeftoverInts) {
+      for (const field of leftoverInts) {
+        const current = currentState[field.name];
+        if (typeof current !== 'bigint') continue;
+        const nextInt = zero ? 0n : twice ? current * 2n : current + (decrement ? -1n : 1n);
+        if (!canEncodeScalarStateValue(nextInt, field.type)) continue;
+        this.setState(field.name, nextInt);
+        assigned.add(field.name);
+      }
+    }
+    if (applyLeftoverBools) {
+      for (const field of leftoverBools) {
+        const current = currentState[field.name];
+        if (typeof current !== 'boolean') continue;
+        this.setState(field.name, enable ? true : (disable || zero) ? false : !current);
+        assigned.add(field.name);
+      }
+    }
+
+    return assigned.size > 0;
+  }
+
+  /** Seed fixed-size array element writes whose ABI value source is a compile-time integer. */
+  seedOptimisticArrayElementWrites(): boolean {
+    if (this.entryUpdates.size > 0 || !isContractUnlocker(this.masterUtxo.unlocker)) return false;
+    const { abiFunction } = this.masterUtxo.unlocker;
+    const accesses = abiFunction.entryAccesses ?? [];
+    if (accesses.length === 0) return false;
+    let seeded = false;
+    for (let slotIndex = 0; slotIndex < accesses.length; slotIndex += 1) {
+      const access = accesses[slotIndex];
+      if (!access.operations.includes('write') || access.operations.includes('delete')) continue;
+      const collection = this.stateLayout.collections?.find((candidate) => candidate.name === access.collection);
+      if (collection === undefined || collection.kind !== 'array') continue;
+      const valueType = collection.valueType ?? collection.elementType ?? 'int';
+      const entryDelta = access.valueSource?.match(/^binop:([+-])\(entry,lit:(-?[0-9]+)\)$/);
+      let value: bigint | undefined;
+      if (entryDelta) {
+        let current = 0n;
+        const nft = this.entryNfts.find((entry) => entry.slotIndex === slotIndex);
+        const commitment = nft?.exists ? nft.utxo?.token?.nft?.commitment : undefined;
+        if (commitment) {
+          try {
+            const parsed = parseEntryCommitment(commitment, collection.keyType ?? 'bigint', valueType);
+            if (typeof parsed.value === 'bigint') current = parsed.value;
+          } catch {
+            current = 0n;
+          }
+        }
+        const delta = BigInt(entryDelta[2]);
+        value = entryDelta[1] === '-' ? current - delta : current + delta;
+      } else if (!access.operations.includes('read')) {
+        value = evalSimpleIntegerSource(access.valueSource);
+      }
+      if (value === undefined || !canEncodeScalarStateValue(value, valueType)) continue;
+      this.setEntry(slotIndex, value);
+      seeded = true;
+    }
+    return seeded;
   }
 
   /**
@@ -8058,7 +7308,13 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
-  setExternalCallEntryOutputAt(outputIndex: number, categoryId: string, commitmentHex: string): boolean {
+  setExternalCallEntryOutputAt(
+    outputIndex: number,
+    categoryId: string,
+    commitmentHex: string,
+    lockingBytecode?: Uint8Array,
+  ): boolean {
+    if (!lockingBytecode) return false;
     if (commitmentHex.length < 128 || /^0+$/.test(commitmentHex)) return false;
     if (this._isFixedExternalDataNftOutput(outputIndex, categoryId)) return false;
     let declaredSlot = false;
@@ -8077,12 +7333,17 @@ export class StatefulTransactionBuilder {
     // otherwise a later rebuild can replay an entry-shaped value over fixed participant state. Coordinates after
     // every fixed block remain valid: dynamic loop entries and INSERT nodes are intentionally trailing outputs.
     if (declaredSlot && !entryOwned) return false;
+    const lockingBytecodeHex = binToHex(lockingBytecode);
     const previous = this.externalCallEntryOutputsByIndex.get(outputIndex);
-    if (previous?.commitment === commitmentHex && previous.categoryId === categoryId) return false;
+    if (previous?.commitment === commitmentHex && previous.categoryId === categoryId
+      && previous.lockingBytecodeHex === lockingBytecodeHex) return false;
     // A later all-zero / short extract must not replace a real predecessor (H('') UPDATE).
-    if (previous && previous.commitment.length >= 128 && !/^0+$/.test(previous.commitment)
+    if (previous && previous.categoryId === categoryId && previous.lockingBytecodeHex === lockingBytecodeHex
+      && previous.commitment.length >= 128 && !/^0+$/.test(previous.commitment)
       && commitmentHex.length < previous.commitment.length) return false;
-    this.externalCallEntryOutputsByIndex.set(outputIndex, { categoryId, commitment: commitmentHex });
+    this.externalCallEntryOutputsByIndex.set(outputIndex, {
+      categoryId, commitment: commitmentHex, lockingBytecodeHex,
+    });
     return true;
   }
 
@@ -8090,6 +7351,11 @@ export class StatefulTransactionBuilder {
     for (const [outputIndex, placed] of this.externalCallEntryOutputsByIndex) {
       const existing = builder.outputs[outputIndex];
       if (!existing?.token?.nft || existing.token.nft.capability !== 'mutable') continue;
+      const existingLockingBytecode = existing.to instanceof Uint8Array
+        ? existing.to : addressToLockScript(existing.to);
+      // An absolute coordinate can be reused by different trailing resource classes while the routed topology
+      // converges. Replay only onto the exact compiler-authenticated collection lock observed with this entry.
+      if (!cachedEntryOutputOwnsLock(placed.lockingBytecodeHex, existingLockingBytecode)) continue;
       // Output geometry can change after a trace was cached. Re-check ownership
       // at replay time so an old dynamic coordinate cannot overwrite fixed state.
       if (this._isFixedExternalDataNftOutput(
@@ -8116,7 +7382,7 @@ export class StatefulTransactionBuilder {
 
   /**
    * Rebind write-path entry NFT unlockers of `categoryId` to `masterInputIndex`.
-   * Nested publishJobEvent keeps jobEvents outside the proxy block (impl+3), so
+   * A nested collection writer keeps continuations outside the proxy block, so
    * a blockInputs-only patch leaves that co-spend authorized against input 0.
    */
   rebindCategoryEntryUnlockers(
@@ -8383,19 +7649,12 @@ export class StatefulTransactionBuilder {
     const valueChunkPin = chunk.lockingBytecode.length === 35
       && chunk.lockingBytecode[0] === 0xaa && chunk.lockingBytecode[1] === 0x20
       && chunk.lockingBytecode[34] === 0x87
-      && chunk.commitment.length >= 3 && chunk.commitment.length <= 256;
+      && isDerivedValueChunkCommitment(chunk.commitment);
+    if (!valueChunkPin) return false;
     // A chunk-shaped delegate body also contains INPUTINDEX OUTPUTBYTECODE self-preservation.
     // Never let a false pin replace an implementation minting NFT or a data-NFT occupant.
-    // A real value-chunk pin (P2SH32 + uint16||data) must still win: publishJobEvent
-    // UPDATE reuses the previous digest's input indexes (20-22) with a new address.
-    if (!valueChunkPin) {
-      const occupant = this.allInputs[outputIndex];
-      if (occupant?.token?.nft?.capability === 'minting') return false;
-      for (const [llcIndex, llc] of this.lowLevelCallUtxoGroups.entries()) {
-        if (llc.callMode !== 'delegatecall') continue;
-        if (this.getLowLevelCallMasterInputIndex(llcIndex) === outputIndex) return false;
-      }
-    }
+    // A real value-chunk pin (P2SH32 + uint16||data) must still win when an update
+    // reuses the previous digest's input coordinates with a new address.
     const existing = this.derivedChunkOutputs.get(outputIndex);
     if (existing?.commitment === chunk.commitment
       && binToHex(existing.lockingBytecode) === binToHex(chunk.lockingBytecode)
@@ -8406,16 +7665,6 @@ export class StatefulTransactionBuilder {
     this.derivedChunkOutputs.set(outputIndex, !existing || kept === chunk.commitment
       ? { ...chunk, commitment: kept }
       : existing);
-    if (!chunk.fixedIndex && valueChunkPin && chunk.commitment.length >= 3 && chunk.commitment !== '00'
-      && !isEmptyValueChunkCommitment(chunk.commitment)) {
-      const categoryId = chunk.categoryId ?? this.categoryId;
-      this.rememberJobEventsChunks(categoryId, [
-        ...this.derivedChunkOutputs.values(),
-      ].filter((entry) => (entry.categoryId ?? this.categoryId) === categoryId
-        && entry.commitment.length >= 3
-        && entry.commitment !== '00'
-        && !isEmptyValueChunkCommitment(entry.commitment)));
-    }
     return true;
   }
 
@@ -8425,34 +7674,39 @@ export class StatefulTransactionBuilder {
     return this.derivedChunkOutputs;
   }
 
-  /**
-   * Place persist/compose jobEvents chunks before the first VM probe so
-   * updateJobPost does not spend the 64-iteration budget rediscovering v.
-   */
-  seedPersistedJobEventsBand(): number {
-    if (!this._shouldRematerializePersistUpdate()) return 0;
-    const band = this.getPublishJobEventsBand();
-    if (!band) return 0;
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
-    const categoryId = publish?.categoryId;
-    const value = categoryId ? persistedJobEventsValue(categoryId) : undefined;
-    const lock = persistUpdateRedeemLock(categoryId, this.jobEventsRedeemLock)
-      ?? this.jobEventsRedeemLock
-      ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined);
-    if (!value || !lock) return 0;
-    if (this.bumpPublishJobEventsWidth(valueChunkCountFor(value))) this._refreshInputs();
-    const live = this.getPublishJobEventsBand() ?? band;
-    return seedChunksFromPersistedValue(
-      (outputIndex, chunk) => this.setDerivedChunkOutput(outputIndex, chunk),
-      live.start,
-      value,
-      lock,
-      categoryId,
-    );
+  /** Seed compiler-owned continuation bands from previously committed storage identities. */
+  seedCommittedCollectionValueBands(): number {
+    let placed = 0;
+    for (const band of this.getCollectionValueOutputBands()) {
+      const writesByIdentity = new Map<string, CollectionValueWrite>();
+      for (const write of band.writes) {
+        const key = `${write.identity.categoryId.toLowerCase()}`
+          + `:${write.identity.collectionSignature}:${binToHex(write.identity.slot)}`;
+        writesByIdentity.set(key, write);
+      }
+      // A physical band cannot safely inherit a prior value unless its compiler metadata names exactly one
+      // category, collection signature, and resolved slot.
+      if (writesByIdentity.size !== 1) continue;
+      const write = [...writesByIdentity.values()][0];
+      if (write.value !== undefined) continue;
+      const record = getCollectionValueRecord(write.identity);
+      if (record?.phase !== 'committed') continue;
+      const run = coherentAuthenticatedValueChunkRun(record.chunks);
+      for (const [offset, chunk] of run.entries()) {
+        if (this.setDerivedChunkOutput(band.start + offset, {
+          commitment: chunk.commitment,
+          lockingBytecode: chunk.lockingBytecode,
+          categoryId: write.identity.categoryId,
+        })) placed += 1;
+      }
+    }
+    return placed;
   }
 
+  /**
+   * Place committed collection chunks before the first VM probe so dependency
+   * convergence does not spend its iteration budget rediscovering the value.
+   */
   addValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
     this.valueChunkOutputs.push(output);
     return this;
@@ -8474,9 +7728,8 @@ export class StatefulTransactionBuilder {
    * survive. Returns whether any output changed.
    */
   private _applyDerivedValueChunks(builder: TransactionBuilder): boolean {
-    const band = this.getPublishJobEventsBand();
-    const tokenWriterPresent = this.externalCallUtxoGroups.some((group) =>
-      isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name));
+    const band = this.getCollectionValueOutputBand();
+    const tokenWriterPresent = this.hasCollectionValueBandCollision();
     if (band && !tokenWriterPresent && this.derivedChunkOutputs.size > 0) {
       const keys = [...this.derivedChunkOutputs.entries()]
         .filter(([, chunk]) => !chunk.fixedIndex)
@@ -8503,11 +7756,9 @@ export class StatefulTransactionBuilder {
       const masterIndex = this.getExternalCallMasterInputIndex(groupIndex);
       if (masterIndex >= 0) protectedMasters.add(masterIndex);
     }
+    const collisionIndex = this._collectionValueBandCollisionIndex(band);
     const tokenWriterCategory = this.mintingOutputSwap?.categoryId
-      ?? this.externalCallUtxoGroups.find((group) =>
-        group.sharedGroupIndex === undefined
-        && isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name))
-        ?.categoryId;
+      ?? (collisionIndex < 0 ? undefined : this.externalCallUtxoGroups[collisionIndex]?.categoryId);
     for (const [index, input] of this.allInputs.entries()) {
       if (input?.token?.nft?.capability === 'minting') protectedMasters.add(index);
       if (tokenWriterCategory && input?.token?.category === tokenWriterCategory) {
@@ -8518,16 +7769,15 @@ export class StatefulTransactionBuilder {
     for (const outputIndex of [...this.derivedChunkOutputs.keys()].sort((left, right) => left - right)) {
       const chunk = this.derivedChunkOutputs.get(outputIndex);
       if (!chunk) continue;
-      // Only the caller's own suffix chunks are skipped here. Nested
-      // publishJobEvent pins often omit categoryId; treating them as
-      // `this.categoryId` dropped the 20-25 jobEvents run on the view-only path.
+      // Only the caller's own suffix chunks are skipped here. Nested pins can omit categoryId;
+      // treating them as `this.categoryId` would drop a participant-owned continuation run.
       if (this.delegateDynamicChunksAtSuffix && chunk.categoryId === this.categoryId) continue;
       if (protectedMasters.has(outputIndex)) continue;
       const existing = builder.outputs[outputIndex];
       if (existing) {
         // A minting 1:1 recreation is not an old value-chunk digest. Every
         // P2SH32 used to match `existingIsChunkAddress`, so FakeToken's minting
-        // lock was replaced by jobEvents (timeout refund output 24).
+        // lock could otherwise be replaced by an unrelated collection continuation.
         if (existing.token?.nft?.capability === 'minting') continue;
         const commitHex = String(existing.token?.nft?.commitment ?? '');
         const commitBytes = commitHex.length / 2;
@@ -8598,33 +7848,92 @@ export class StatefulTransactionBuilder {
         && output.token?.nft?.capability === 'mutable'
         && output.token.nft.commitment === chunk.commitment;
     };
-    const groups = new Map<string, Array<{ index: number; chunkIndex: number; chunk: DerivedChunk }>>();
-    for (const [index, chunk] of this.derivedChunkOutputs) {
-      const chunkIndex = valueChunkIndexFromCommitment(chunk.commitment);
-      if (chunk.fixedIndex || chunkIndex === undefined || !isP2sh32LockScript(chunk.lockingBytecode)) continue;
-      const key = `${chunk.categoryId ?? this.categoryId}:${binToHex(chunk.lockingBytecode)}`;
-      const group = groups.get(key) ?? [];
-      group.push({ index, chunkIndex, chunk });
-      groups.set(key, group);
-    }
     let changed = false;
     const changedCarriers = new Set<ExternalCallUtxoGroup>();
     const reserved = new Set<number>([...this.derivedChunkOutputs.entries()].flatMap(([index, chunk]) => (
       chunk.fixedIndex ? [index] : []
     )));
-    for (const group of groups.values()) {
-      group.sort((left, right) => left.chunkIndex - right.chunkIndex);
-      if (group.length === 0 || group.some((entry, offset) => entry.chunkIndex !== offset)) continue;
-      const materialized = group.every((entry) => outputMatches(entry.index, entry.chunk));
+    const carriers = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups];
+    const processedLocalBases = new Set<number>();
+    for (const owner of carriers) {
+      const absoluteBase = owner.valueChunkOutputBase;
+      const localBase = this.getLocalValueChunkOutputBase(owner)
+        ?? (absoluteBase === undefined ? undefined : absoluteBase - this.compositionOutputBase);
+      if (absoluteBase === undefined || localBase === undefined || localBase < 0
+        || processedLocalBases.has(localBase)) continue;
+      processedLocalBases.add(localBase);
+
+      const first = this.derivedChunkOutputs.get(localBase);
+      if (!first || first.fixedIndex || !isP2sh32LockScript(first.lockingBytecode)
+        || valueChunkIndexFromCommitment(first.commitment) !== 0) continue;
+      const runCategory = first.categoryId ?? this.categoryId;
+      const runLock = binToHex(first.lockingBytecode);
+      const run: Array<{ index: number; chunk: DerivedChunk }> = [];
+      for (let offset = 0; offset < 32; offset += 1) {
+        const index = localBase + offset;
+        const chunk = this.derivedChunkOutputs.get(index);
+        if (!chunk || chunk.fixedIndex
+          || (chunk.categoryId ?? this.categoryId) !== runCategory
+          || binToHex(chunk.lockingBytecode) !== runLock
+          || valueChunkIndexFromCommitment(chunk.commitment) !== offset) break;
+        run.push({ index, chunk });
+      }
+      if (run.length === 0) continue;
+
+      const materialized = run.every((entry) => outputMatches(entry.index, entry.chunk))
+        && run.every((entry) => allowsAlignedValueChunkReplacement(
+          this.allInputs[this.compositionOutputBase + entry.index],
+        ));
       if (materialized) {
-        for (const entry of group) reserved.add(entry.index);
+        for (const entry of run) reserved.add(entry.index);
         continue;
       }
-      const base = findDisposableValueChunkOutputBase(builder.outputs, this.allInputs, group.length, reserved);
+      const base = findRelocatedValueChunkOutputBase(builder.outputs, this.allInputs, {
+        currentBase: localBase,
+        width: run.length,
+        compositionBase: this.compositionOutputBase,
+        currentRun: new Set(run.map((entry) => entry.index)),
+        reserved,
+      });
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_VALUE_CHUNK_OWNERSHIP === '1') {
+        console.error('value-chunk-relocation-decision', {
+          compositionBase: this.compositionOutputBase,
+          localBase,
+          absoluteBase,
+          width: run.length,
+          relocatedLocalBase: base,
+          relocatedAbsoluteBase: base === undefined ? undefined : this.compositionOutputBase + base,
+          protectedOffsets: run.flatMap((entry, offset) => (
+            allowsAlignedValueChunkReplacement(this.allInputs[this.compositionOutputBase + entry.index])
+              ? [] : [offset]
+          )),
+          outputCount: builder.outputs.length,
+          inputCount: this.allInputs.length,
+        });
+      }
       if (base === undefined) continue;
-      const oldBase = group[0].index;
-      for (const entry of group) this.derivedChunkOutputs.delete(entry.index);
-      for (const [offset, entry] of group.entries()) {
+      // The provisional run may already have overwritten an aligned preservation output. Restore each protected
+      // input exactly; clear only still-matching provisional chunks at otherwise reusable coordinates. This keeps
+      // relocation value-neutral and never replaces an unrelated tokenized resource based on byte shape alone.
+      for (const entry of run) {
+        if (!outputMatches(entry.index, entry.chunk)) continue;
+        const input = this.allInputs[this.compositionOutputBase + entry.index];
+        if (!allowsAlignedValueChunkReplacement(input) && input) {
+          builder.outputs[entry.index] = {
+            to: input.unlocker.generateLockingBytecode(),
+            amount: input.satoshis,
+            ...(input.token === undefined ? {} : { token: cloneToken(input.token) }),
+          };
+        } else {
+          builder.outputs[entry.index] = {
+            to: Uint8Array.of(0x51),
+            amount: builder.outputs[entry.index]?.amount ?? BALANCED_SLOT_SATOSHIS,
+          };
+        }
+      }
+      for (const entry of run) this.derivedChunkOutputs.delete(entry.index);
+      for (const [offset, entry] of run.entries()) {
         const index = base + offset;
         const next = {
           to: entry.chunk.lockingBytecode,
@@ -8640,15 +7949,17 @@ export class StatefulTransactionBuilder {
         this.derivedChunkOutputs.set(index, { ...entry.chunk, fixedIndex: true });
         reserved.add(index);
       }
-      for (const carrier of [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]) {
-        if (carrier.valueChunkOutputBase !== oldBase) continue;
-        carrier.valueChunkOutputBase = base;
+      const relocatedAbsoluteBase = this.compositionOutputBase + base;
+      for (const carrier of carriers) {
+        if (carrier.valueChunkOutputBase !== absoluteBase) continue;
+        this.setLocalValueChunkOutputBase(carrier, base);
+        carrier.valueChunkOutputBase = relocatedAbsoluteBase;
         carrier.internalArgs = {
           ...carrier.internalArgs,
-          __internal__valueChunkOutputBase: BigInt(base),
+          __internal__valueChunkOutputBase: BigInt(relocatedAbsoluteBase),
         };
         carrier.refreshInternalArgs?.(
-          { __internal__valueChunkOutputBase: BigInt(base) },
+          { __internal__valueChunkOutputBase: BigInt(relocatedAbsoluteBase) },
           { shiftPredOut: false },
         );
         changedCarriers.add(carrier);
@@ -8691,378 +8002,82 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Last writer on the view-only path: put publishJobEvent value chunks at
+   * Last writer on the view-only path: put collection-value chunks at
    * impl+trailingBase. Leaves view tails (16/17) and minting masters alone.
    */
-  private _materializeJobEventsBand(builder: TransactionBuilder): void {
-    const tokenWriterPresent = this.externalCallUtxoGroups.some((group) =>
-      isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
-        ?? group.logicalFunctionName));
-    // transferFrom/transfer already own the minting-band occupancy path.
-    // Materializing jobEvents over those 1:1s hangs derivation.
-    if (tokenWriterPresent) return;
-    const band = this.getPublishJobEventsBand();
-    if (!band) return;
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
-    const categoryId = publish?.categoryId;
-    const fromDerived = [...this.derivedChunkOutputs.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([, chunk]) => chunk)
-      .filter((chunk) => !chunk.fixedIndex && chunk.lockingBytecode.length === 35
-        && chunk.commitment.length >= 3 && chunk.commitment !== '00');
-    const derivedOwnerCategory = coherentAuthenticatedValueChunkRun(fromDerived)[0]?.categoryId;
-    const stateOwnerCategory = derivedOwnerCategory
-      ?? this._persistJobEventsTokenCategory()
-      ?? categoryId;
-    if (fromDerived.length > 0 && stateOwnerCategory) {
-      this.rememberJobEventsChunks(stateOwnerCategory, fromDerived);
-    }
-    const rematerialize = this._shouldRematerializePersistUpdate();
-    const stagedValue = (stateOwnerCategory ? stagedJobEventsValues.get(stateOwnerCategory) : undefined)
-      ?? (categoryId ? stagedJobEventsValues.get(categoryId) : undefined);
-    const fromStaged = stagedValue
-      ? chunksFromJobEventsValue(stagedValue, undefined, stateOwnerCategory)
-      : [];
-    const persistedValue = rematerialize
-      ? ((stateOwnerCategory ? persistedJobEventsValue(stateOwnerCategory) : undefined)
-        ?? (categoryId ? persistedJobEventsValue(categoryId) : undefined))
-      : undefined;
-    const fromValue = persistedValue
-      ? chunksFromJobEventsValue(persistedValue, undefined, stateOwnerCategory)
-      : [];
-    const persistChunks = rematerialize
-      ? (this.persistedJobEventsChunks.length > 0
-        ? this.persistedJobEventsChunks
-        : (stateOwnerCategory
-          ? persistedJobEventsByCategory.get(stateOwnerCategory) ?? [] : []))
-      : [];
-    // VM-observed chunks carry the exact root-addressed locking bytecode. A staged value can reconstruct
-    // commitments, but without its collection/slot recipe it cannot authoritatively reconstruct the lock.
-    // Keep the observed run atomic rather than allowing a guessed staged lock to replace its identity.
-    const observed = selectObservedValueChunkRun(fromStaged, fromDerived);
-    const source = rematerialize
-      ? firstUsableValueChunkRun(observed, fromValue, persistChunks)
-      : observed;
-    const seen = new Set<string>();
-    const chunks: Array<{ commitment: string; lockingBytecode: Uint8Array; categoryId?: string }> = [];
-    for (const chunk of [...source].reverse()) {
-      if (seen.has(chunk.commitment)) continue;
-      seen.add(chunk.commitment);
-      chunks.unshift(chunk);
-    }
-    chunks.sort((left, right) => {
-      const leftIndex = Number.parseInt(left.commitment.slice(0, 2), 16)
-        + 256 * Number.parseInt(left.commitment.slice(2, 4) || '00', 16);
-      const rightIndex = Number.parseInt(right.commitment.slice(0, 2), 16)
-        + 256 * Number.parseInt(right.commitment.slice(2, 4) || '00', 16);
-      return leftIndex - rightIndex;
-    });
-    if (chunks.length === 0) {
-      for (const { id, lockingBytecode } of this.getValueChunkVars()) {
-        if (lockingBytecode.length !== 35 || lockingBytecode[0] !== 0xaa || lockingBytecode[1] !== 0x20) {
-          continue;
-        }
-        for (const commitment of this.getValueChunkRawCommitments(id)) {
-          if (!commitment || commitment === '00') continue;
-          chunks.push({ commitment, lockingBytecode, categoryId: stateOwnerCategory ?? this.categoryId });
-        }
+  private _commitPlacedCollectionValueBands(builder: TransactionBuilder, txid: string): void {
+    for (const band of this.getCollectionValueOutputBands()) {
+      const writesByIdentity = new Map<string, CollectionValueWrite>();
+      for (const write of band.writes) {
+        const key = `${write.identity.categoryId.toLowerCase()}`
+          + `:${write.identity.collectionSignature}:${binToHex(write.identity.slot)}`;
+        writesByIdentity.set(key, write);
       }
-    }
-    if (chunks.length === 0) return;
-    // Never grow past the planned write: a longer Created extract (4) on a
-    // first post (nNew=2) hung derivation. Fill only up to planned nNew so
-    // history (5 of 6) still gets a continuation at slot 25.
-    const liveBand = { start: band.start, nNew: band.nNew };
-    const previousDerived = new Map(this.derivedChunkOutputs);
-    for (const [index, chunk] of previousDerived) {
-      if (!chunk.fixedIndex) this.derivedChunkOutputs.delete(index);
-    }
-    for (const [offset, chunk] of chunks.entries()) {
-      const index = liveBand.start + offset;
-      const prior = previousDerived.get(index);
-      const commitment = preferChunkCommitment(prior?.commitment, chunk.commitment);
-      this.derivedChunkOutputs.set(index, {
-        ...chunk,
-        commitment,
-        categoryId: stateOwnerCategory ?? chunk.categoryId ?? prior?.categoryId,
-      });
-    }
-    const liveEnd = liveBand.start + liveBand.nNew - 1;
-    for (const [index, prior] of previousDerived) {
-      if (prior.fixedIndex) continue;
-      if (index < liveBand.start || index > liveEnd) continue;
-      if (this.derivedChunkOutputs.has(index)) continue;
-      if (isEmptyValueChunkCommitment(prior.commitment) || prior.commitment === '00') continue;
-      if (binToHex(prior.lockingBytecode) !== binToHex(chunks[0].lockingBytecode)) continue;
-      this.derivedChunkOutputs.set(index, prior);
-    }
-    const reserved = new Set<number>();
-    for (const [index, input] of this.allInputs.entries()) {
-      if (input.token?.nft?.capability === 'minting') reserved.add(index);
-    }
-    for (const [index, group] of this.externalCallUtxoGroups.entries()) {
-      if (groupOwnsInBlockReturnEvent(this.externalCallUtxoGroups, index)) continue;
-      const tail = group.returnOutputIndex ?? group.plannedReturnOutputIndex;
-      if (tail !== undefined && tail < liveBand.start) reserved.add(tail);
-    }
-    const stampDigest = this._shouldStampPersistUpdateDigestLock();
-    const persistTokenCategory = stateOwnerCategory;
-    const recipeLock = stampDigest
-      ? persistUpdateDigestLock(persistTokenCategory, this._persistDigestCategories())
-      : undefined;
-    const redeemLock = chunks[0]?.lockingBytecode
-      ?? recipeLock
-      ?? this.jobEventsRedeemLock
-      ?? (stateOwnerCategory ? persistedJobEventsLock(stateOwnerCategory) : undefined);
-    const placed = applyRedeemLockToChunks(
-      [...this.derivedChunkOutputs.entries()]
-        .filter(([index]) => index >= liveBand.start && index <= liveEnd)
-        .sort(([left], [right]) => left - right)
-        .map(([, chunk]) => ({
-          ...chunk,
-          categoryId: stateOwnerCategory ?? chunk.categoryId,
-        })),
-      redeemLock ?? new Uint8Array(),
-    );
-    const occupancyEnd = writerBlockOccupancyEnd(
-      this.externalCallUtxoGroups,
-      (categoryId) => this.findMintingInputIndex(categoryId),
-    );
-    const opReturnAt = builder.outputs.findIndex((output, index) => (
-      index >= liveBand.start
-      && output.to instanceof Uint8Array
-      && output.to.length === 1
-      && output.to[0] === 0x6a
-    ));
-    const jobsCount = this.delegateDynamicChunksAtSuffix ? this._dynamicChunkOutputCount() : 0;
-    const suffixStart = opReturnAt >= 0
-      ? Math.min(opReturnAt, builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0))
-      : builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0);
-    placeValueChunksOnBand(builder.outputs, liveBand, placed, reserved, occupancyEnd, suffixStart);
-    fillJobEventsBandHoles(builder.outputs, liveBand, {
-      lockingBytecode: placed[0].lockingBytecode,
-      categoryId: placed[0].categoryId ?? stateOwnerCategory,
-    }, reserved, suffixStart, occupancyEnd);
-    this._applyDerivedValueChunks(builder);
-    const liveLock = placed[0].lockingBytecode;
-    stripSurplusValueChunkLocks(builder.outputs, liveBand, liveLock, this.allInputs);
-  }
-
-  /**
-   * Send-time: size the jobEvents band to the live extracted/persisted nNew and
-   * place every continuation, including when transferFrom skipped materialize.
-   * Minting 1:1s stay reserved.
-   */
-  private _ensureLiveJobEventsBand(builder: TransactionBuilder): void {
-    const band = this.getPublishJobEventsBand();
-    if (!band) return;
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
-    const categoryId = publish?.categoryId;
-    const fromDerived = [...this.derivedChunkOutputs.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([, chunk]) => chunk)
-      .filter((chunk) => !chunk.fixedIndex && chunk.lockingBytecode.length === 35
-        && chunk.commitment.length >= 3 && chunk.commitment !== '00');
-    const derivedOwnerCategory = coherentAuthenticatedValueChunkRun(fromDerived)[0]?.categoryId;
-    const persistTokenCategory = derivedOwnerCategory
-      ?? this._persistJobEventsTokenCategory()
-      ?? categoryId;
-    const persistDigestLock = this._shouldStampPersistUpdateDigestLock()
-      ? persistUpdateDigestLock(persistTokenCategory, this._persistDigestCategories())
-      : (this._shouldRematerializePersistUpdate()
-        ? persistUpdateRedeemLock(persistTokenCategory, this.jobEventsRedeemLock)
-        : undefined);
-    const stagedValue = (categoryId ? stagedJobEventsValues.get(categoryId) : undefined)
-      ?? (persistTokenCategory ? stagedJobEventsValues.get(persistTokenCategory) : undefined);
-    const persistValue = stagedValue
-      ?? (persistTokenCategory ? persistedJobEventsValue(persistTokenCategory) : undefined)
-      ?? latestPersisted(persistedJobEventsValues);
-    const persistVLock = persistValueChunkLock(persistTokenCategory, persistValue)
-      ?? persistValueChunkLock(this._jobEventsPublishCategory(), persistValue);
-
-    const redeemLock = persistVLock
-      ?? persistDigestLock
-      ?? this.jobEventsRedeemLock
-      ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined);
-    const persistedValue = this._shouldRematerializePersistUpdate()
-      ? ((persistTokenCategory ? persistedJobEventsValue(persistTokenCategory) : undefined)
-        ?? (categoryId ? persistedJobEventsValue(categoryId) : undefined))
-      : undefined;
-    const fromValue = persistedValue
-      ? chunksFromJobEventsValue(persistedValue, redeemLock, persistTokenCategory)
-      : [];
-    const fromStaged = stagedValue
-      ? chunksFromJobEventsValue(stagedValue, redeemLock, persistTokenCategory)
-      : [];
-    const observed = selectObservedValueChunkRun(fromStaged, fromDerived);
-    const source = this._shouldRematerializePersistUpdate()
-      ? firstUsableValueChunkRun(observed, fromValue)
-      : observed;
-    const lockCounts = new Map<string, { lock: Uint8Array; n: number }>();
-    for (let index = band.start; index < band.start + Math.max(band.nNew, 8); index++) {
-      const lock = builder.outputs[index]?.to;
-      if (!(lock instanceof Uint8Array) || lock.length !== 35 || lock[0] !== 0xaa) continue;
-      const key = binToHex(lock);
-      lockCounts.set(key, { lock, n: (lockCounts.get(key)?.n ?? 0) + 1 });
-    }
-    let dominant: Uint8Array | undefined;
-    let dominantCount = 0;
-    for (const value of lockCounts.values()) {
-      if (value.n > dominantCount) {
-        dominant = value.lock;
-        dominantCount = value.n;
-      }
-    }
-    const siblingLock = source[0]?.lockingBytecode
-      ?? persistDigestLock
-      ?? dominant
-      ?? redeemLock
-      ?? fromDerived[0]?.lockingBytecode;
-    if (!siblingLock || siblingLock.length !== 35) return;
-    const persistWidth = categoryId ? persistedJobEventsWidth(categoryId) : 0;
-    const liveN = liveJobEventsBandWidth({
-      plannedWidth: band.nNew,
-      persistWidth,
-      derivedWidth: source.length,
-    });
-    // Dominant lock count can include a leftover probe slot (output 25). The
-    // covenant EQUALVERIFYs nNew from v; extra same-lock outputs fail. Grow
-    // only from extracted/persisted width, then strip the rest.
-    const liveBand = { start: band.start, nNew: Math.max(band.nNew, liveN, 1) };
-    const reserved = new Set<number>();
-    for (const [index, input] of this.allInputs.entries()) {
-      if (input.token?.nft?.capability === 'minting') reserved.add(index);
-    }
-    const occupancyEnd = writerBlockOccupancyEnd(
-      this.externalCallUtxoGroups,
-      (categoryId) => this.findMintingInputIndex(categoryId),
-    );
-    const jobsCount = this.delegateDynamicChunksAtSuffix ? this._dynamicChunkOutputCount() : 0;
-    const suffixStart = builder.outputs.length - jobsCount - (jobsCount > 0 ? 1 : 0);
-    placeValueChunksOnBand(builder.outputs, liveBand, applyRedeemLockToChunks(
-      source.map((chunk) => ({
-        ...chunk,
-        lockingBytecode: siblingLock,
-        categoryId: persistTokenCategory ?? chunk.categoryId,
-      })),
-      siblingLock,
-    ), reserved, occupancyEnd, suffixStart);
-    fillJobEventsBandHoles(builder.outputs, liveBand, {
-      lockingBytecode: siblingLock,
-      categoryId: persistTokenCategory ?? source[0]?.categoryId,
-    }, reserved, suffixStart, occupancyEnd);
-    stripSurplusValueChunkLocks(builder.outputs, liveBand, siblingLock, this.allInputs);
-    this._packJobsSuffix(builder);
-    this._applyDerivedEntryOutputs(builder);
-    this._reassertInBlockWriterReturns(builder);
-  }
-
-  private _packJobsSuffix(builder: TransactionBuilder): void {
-    const band = this.getPublishJobEventsBand();
-    const tailStart = band ? band.end + 1 : 0;
-    const chunkHex = this.jobEventsRedeemLock ? binToHex(this.jobEventsRedeemLock) : '';
-    let jobsLock: Uint8Array | undefined;
-    for (let index = builder.outputs.length - 1; index >= tailStart; index--) {
-      const lock = builder.outputs[index]?.to instanceof Uint8Array
-        ? builder.outputs[index]!.to as Uint8Array : undefined;
-      if (!lock || lock.length !== 35 || lock[0] !== 0xaa) continue;
-      if (chunkHex && binToHex(lock) === chunkHex) continue;
-      if (builder.outputs[index]?.token?.nft?.capability !== 'mutable') continue;
-      jobsLock = lock;
-      break;
-    }
-    if (jobsLock) packJobsAgainstOpReturn(builder.outputs, jobsLock, tailStart);
-  }
-
-  /**
-   * Successful publishJobEvent writes must seed persist even when derivation
-   * never failed (the extract-on-fail path never ran). The next UPDATE uses
-   * persistWidth to drop insertShift so chunks stay at impl+blockSize.
-   */
-  private _persistPlacedJobEventsBand(builder: TransactionBuilder, txid?: string): void {
-    const band = this.getPublishJobEventsBand();
-    if (!band) return;
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
-    const categoryId = publish?.categoryId;
-    if (!categoryId) return;
-    const liveLocks = new Map<string, { lock: Uint8Array; n: number }>();
-    for (let index = band.start; index <= band.end; index++) {
-      const output = builder.outputs[index];
-      const lock = output?.to instanceof Uint8Array ? output.to : undefined;
-      if (!lock || lock.length !== 35 || lock[0] !== 0xaa) continue;
-      if (output?.token?.nft?.capability !== 'mutable') continue;
-      const key = binToHex(lock);
-      liveLocks.set(key, { lock, n: (liveLocks.get(key)?.n ?? 0) + 1 });
-    }
-    let liveLock: Uint8Array | undefined;
-    let liveCount = 0;
-    for (const value of liveLocks.values()) {
-      if (value.n > liveCount) {
-        liveLock = value.lock;
-        liveCount = value.n;
-      }
-    }
-    const redeemLock = liveLock ?? this.jobEventsRedeemLock ?? persistedJobEventsLock(categoryId);
-    const chunks: AuthenticatedValueChunk[] = [];
-    const spends: Array<{
-      txid: string;
-      vout: number;
-      satoshis: bigint;
-      token: NonNullable<Utxo['token']>;
-      lockingBytecode: Uint8Array;
-    }> = [];
-    for (let index = band.start; index <= band.end; index++) {
-      const output = builder.outputs[index];
-      const lock = output?.to instanceof Uint8Array ? output.to : undefined;
-      const commitment = String(output?.token?.nft?.commitment ?? '');
-      if (!lock || lock.length !== 35 || lock[0] !== 0xaa) continue;
-      if (output?.token?.nft?.capability !== 'mutable') continue;
-      if (commitment.length < 3 || commitment === '00' || isEmptyValueChunkCommitment(commitment)) continue;
-      if (redeemLock && binToHex(lock) !== binToHex(redeemLock)) continue;
-      chunks.push({
-        commitment,
-        lockingBytecode: lock,
-        categoryId: output.token?.category ?? categoryId,
-      });
-      if ((commitment.startsWith('00004cb4') || commitment.includes('4372656174'))
-        && !createdDigestLocks.has(output.token?.category ?? categoryId)) {
-        const persistCat = output.token?.category ?? categoryId;
-        persistedJobEventsLocks.set(persistCat, lock);
-        createdDigestLocks.add(persistCat);
-      }
-      if (txid && output.token) {
+      // One physical continuation run cannot be assigned to several storage identities without an explicit
+      // per-write output range. Refuse to persist ambiguous metadata rather than leaking a value across slots.
+      if (writesByIdentity.size !== 1) continue;
+      const write = [...writesByIdentity.values()][0];
+      const chunksByLock = new Map<string, AuthenticatedValueChunk[]>();
+      const spendsByLock = new Map<string, CollectionValueSpend[]>();
+      for (let outputIndex = band.start; outputIndex <= band.end; outputIndex += 1) {
+        const output = builder.outputs[outputIndex];
+        const lock = output?.to instanceof Uint8Array ? output.to : undefined;
+        const commitment = output?.token?.nft?.commitment;
+        if (!lock || !isP2sh32LockScript(lock)
+          || output.token?.category.toLowerCase() !== write.identity.categoryId.toLowerCase()
+          || output.token.nft?.capability !== 'mutable'
+          || typeof commitment !== 'string'
+          || valueChunkIndexFromCommitment(commitment) === undefined) continue;
+        const lockHex = binToHex(lock);
+        const chunks = chunksByLock.get(lockHex) ?? [];
+        chunks.push({ commitment, lockingBytecode: lock, categoryId: output.token.category });
+        chunksByLock.set(lockHex, chunks);
+        const spends = spendsByLock.get(lockHex) ?? [];
         spends.push({
           txid,
-          vout: index,
+          vout: outputIndex,
           satoshis: output.amount,
-          token: output.token,
+          token: {
+            category: output.token.category,
+            amount: output.token.amount,
+            nft: output.token.nft && {
+              capability: output.token.nft.capability,
+              commitment,
+            },
+          },
           lockingBytecode: lock,
         });
+        spendsByLock.set(lockHex, spends);
       }
+      const runs = [...chunksByLock.entries()].flatMap(([lockHex, chunks]) => {
+        const run = coherentAuthenticatedValueChunkRun(chunks);
+        return run.length === band.nNew ? [{ lockHex, run }] : [];
+      });
+      if (runs.length !== 1) continue;
+      const selected = runs[0];
+      const spends = spendsByLock.get(selected.lockHex) ?? [];
+      observeCollectionValueChunks(write.identity, selected.run, {
+        value: write.value,
+        lockingBytecode: selected.run[0]?.lockingBytecode,
+        spends,
+      });
+      commitCollectionValue(write.identity, spends);
     }
-    if (chunks.length === 0) return;
-    this.rememberJobEventsChunks(categoryId, chunks);
-    if (redeemLock) rememberJobEventsLock(categoryId, redeemLock);
-    else if (chunks[0]) rememberJobEventsLock(categoryId, chunks[0].lockingBytecode);
-    if (spends.length > 0) persistedJobEventsSpends.set(categoryId, spends);
-    const staged = stagedJobEventsValues.get(categoryId)
-      ?? latestPersisted(stagedJobEventsValues, categoryId);
-    if (staged) {
-      rememberJobEventsValue(categoryId, staged);
-      for (const otherId of stagedJobEventsValues.keys()) rememberJobEventsValue(otherId, staged);
+  }
+
+  /** Commit exact inline collection writes after the finalized transaction has been accepted. */
+  private _commitInlineCollectionValues(): void {
+    const writes = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+      .flatMap((group) => group.collectionValueWrites ?? []);
+    const committed = new Set<string>();
+    for (const write of writes) {
+      if (write.value === undefined || write.value.length > VALUE_HEAD_SIZE) continue;
+      const key = `${write.identity.categoryId.toLowerCase()}`
+        + `:${write.identity.collectionSignature}:${binToHex(write.identity.slot)}`;
+      if (committed.has(key)) continue;
+      committed.add(key);
+      commitInlineCollectionValue(write.identity, write.value);
     }
-    rememberJobEventsUnlockRecipe(categoryId);
-    if (persistedJobEventsValues.size > 0) {
-      for (const otherId of persistedJobEventsValues.keys()) rememberJobEventsUnlockRecipe(otherId);
-    }
-    stagedJobEventsValues.delete(categoryId);
-    persistedJobEventsSendReady = true;
   }
 
   /**
@@ -9105,9 +8120,13 @@ export class StatefulTransactionBuilder {
 
     const changedCarriers = new Set<ExternalCallUtxoGroup>();
     for (const carrier of [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]) {
-      const currentBase = carrier.valueChunkOutputBase;
-      if (currentBase === undefined || currentBase < insertAt) continue;
-      const nextBase = currentBase + 1;
+      const currentLocalBase = this.getLocalValueChunkOutputBase(carrier)
+        ?? (carrier.valueChunkOutputBase === undefined
+          ? undefined : carrier.valueChunkOutputBase - this.compositionOutputBase);
+      if (currentLocalBase === undefined || currentLocalBase < insertAt) continue;
+      const nextLocalBase = currentLocalBase + 1;
+      const nextBase = this.compositionOutputBase + nextLocalBase;
+      this.setLocalValueChunkOutputBase(carrier, nextLocalBase);
       carrier.valueChunkOutputBase = nextBase;
       carrier.internalArgs = {
         ...carrier.internalArgs,
@@ -9142,28 +8161,31 @@ export class StatefulTransactionBuilder {
   private _reconcileMaterializedValueChunkWitnesses(builder: TransactionBuilder): boolean {
     const carriers = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups];
     const occupiedBases = new Set(carriers.flatMap((carrier) => (
-      carrier.valueChunkOutputBase === undefined ? [] : [carrier.valueChunkOutputBase]
+      this.getLocalValueChunkOutputBase(carrier) !== undefined
+        ? [this.getLocalValueChunkOutputBase(carrier)!]
+        : carrier.valueChunkOutputBase === undefined
+          ? [] : [carrier.valueChunkOutputBase - this.compositionOutputBase]
     )));
     const changedCarriers = new Set<ExternalCallUtxoGroup>();
-    const expectedRuns = new Map<ExternalCallUtxoGroup, AuthenticatedValueChunk[] | undefined>();
+    const expectedRuns = new Map<ExternalCallUtxoGroup, readonly AuthenticatedValueChunk[] | undefined>();
     const outputCategoryIds = new Map<ExternalCallUtxoGroup, string>();
     for (const [carrierIndex, carrier] of carriers.entries()) {
       const lowLevelIndex = carrierIndex - this.externalCallUtxoGroups.length;
       const delegatedProxy = lowLevelIndex < 0 ? undefined : this.externalCallUtxoGroups.find(
         (group) => group.delegateCallGroupIndex === lowLevelIndex,
       );
-      const outputCategoryId = carrier.callMode === 'delegatecall'
-        ? delegatedProxy?.categoryId ?? this.categoryId
-        : carrier.categoryId;
+      const outputCategoryId = this.getStateOwnerCategory(carrier);
       outputCategoryIds.set(carrier, outputCategoryId);
 
       // The derived pin at the provisional coordinate remains authoritative even if a later state materializer
       // legitimately replaced that output. Its root-addressed lock distinguishes this computed-value run from a
       // dynamic-state run, whose commitments also begin with little-endian indices 0, 1, ... .
-      const provisional = carrier.valueChunkOutputBase;
+      const provisional = this.getLocalValueChunkOutputBase(carrier)
+        ?? (carrier.valueChunkOutputBase === undefined
+          ? undefined : carrier.valueChunkOutputBase - this.compositionOutputBase);
       const provisionalChunk = provisional === undefined
         ? undefined : this.derivedChunkOutputs.get(provisional);
-      let expected = provisionalChunk
+      let expected: readonly AuthenticatedValueChunk[] = provisionalChunk
         && (provisionalChunk.categoryId ?? this.categoryId) === outputCategoryId
         ? coherentAuthenticatedValueChunkRun([...this.derivedChunkOutputs.entries()]
           .filter(([, chunk]) => (chunk.categoryId ?? this.categoryId) === outputCategoryId
@@ -9173,18 +8195,9 @@ export class StatefulTransactionBuilder {
         : [];
 
       if (expected.length === 0) {
-        const abiFunction = carrier.compilerRoute?.abiFunction
-          ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
-            ?.find((candidate) => candidate.name === carrier.functionName);
-        const observedRuns = (abiFunction?.entryAccesses ?? []).flatMap((access) => {
-          if (!access.operations.includes('write')) return [];
-          const collection = carrier.stateLayout.collections?.find((candidate) => (
-            candidate.name === access.collection || candidate.signature === access.collection
-          ));
-          if (collection?.chunkableValue !== true || !collection.valueType.endsWith('[]')) return [];
-          const run = coherentAuthenticatedValueChunkRun(observedValueChunksByCollection.get(
-            `${outputCategoryId.toLowerCase()}:${access.collection}`,
-          ) ?? []);
+        const observedRuns = (carrier.collectionValueWrites
+          ?? delegatedProxy?.collectionValueWrites ?? []).flatMap((write) => {
+          const run = getCollectionValueRecord(write.identity)?.chunks ?? [];
           return run.length > 0 ? [run] : [];
         });
         const uniqueRuns = new Map(observedRuns.map((run) => [
@@ -9226,7 +8239,9 @@ export class StatefulTransactionBuilder {
     };
 
     for (const carrier of carriers) {
-      const currentBase = carrier.valueChunkOutputBase;
+      const currentBase = this.getLocalValueChunkOutputBase(carrier)
+        ?? (carrier.valueChunkOutputBase === undefined
+          ? undefined : carrier.valueChunkOutputBase - this.compositionOutputBase);
       if (currentBase === undefined || isRun(carrier, currentBase)) continue;
       let materializedBase = -1;
       for (let candidate = currentBase + 1; candidate < builder.outputs.length; candidate += 1) {
@@ -9242,19 +8257,39 @@ export class StatefulTransactionBuilder {
       // this exact authenticated run; unrelated writers that happened to share a provisional coordinate remain
       // independent and will resolve against their own root lock.
       const aliases = identity === undefined ? [carrier] : carriers.filter((candidate) => (
-        candidate.valueChunkOutputBase === currentBase && runIdentity(candidate) === identity
+        (this.getLocalValueChunkOutputBase(candidate)
+          ?? (candidate.valueChunkOutputBase === undefined
+            ? undefined : candidate.valueChunkOutputBase - this.compositionOutputBase)) === currentBase
+        && runIdentity(candidate) === identity
       ));
       for (const alias of aliases) {
-        alias.valueChunkOutputBase = materializedBase;
+        const absoluteBase = this.compositionOutputBase + materializedBase;
+        this.setLocalValueChunkOutputBase(alias, materializedBase);
+        alias.valueChunkOutputBase = absoluteBase;
         alias.internalArgs = {
           ...alias.internalArgs,
-          __internal__valueChunkOutputBase: BigInt(materializedBase),
+          __internal__valueChunkOutputBase: BigInt(absoluteBase),
         };
         alias.refreshInternalArgs?.(
-          { __internal__valueChunkOutputBase: BigInt(materializedBase) },
+          { __internal__valueChunkOutputBase: BigInt(absoluteBase) },
           { shiftPredOut: false },
         );
         changedCarriers.add(alias);
+      }
+      // Rebinding transfers physical ownership of this root-addressed value version to the authenticated,
+      // self-describing run at `materializedBase`. A provisional output can retain the same digest-derived lock
+      // at the abandoned coordinate even when its placeholder commitment is not a valid chunk index. The
+      // compiler deliberately counts every output at that lock, so leaving the provisional occupant alive makes
+      // an otherwise exact N-chunk run appear to contain N+1 outputs. Retire every same category+lock occupant
+      // outside the authoritative run; the lock commits to collection, resolved slot, and value root, so this
+      // cannot claim another collection value merely because its commitment bytes look chunk-like.
+      const authoritativeWidth = expectedRuns.get(carrier)?.length
+        ?? carrier.valueChunkOutputCount ?? 1;
+      if (authoritativeWidth > 0) {
+        clearMutableCollectionOutputsOutsideAuthoritativeRun(
+          builder.outputs,
+          new Set(Array.from({ length: authoritativeWidth }, (_, offset) => materializedBase + offset)),
+        );
       }
     }
     if (changedCarriers.size === 0) return false;
@@ -9269,6 +8304,7 @@ export class StatefulTransactionBuilder {
    * @internal
    */
   bindMaterializedValueChunkWitnesses(builder: TransactionBuilder, coordinateBase = 0): boolean {
+    this.compositionOutputBase = coordinateBase;
     const carriers = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups];
     const changedCarriers = new Set<ExternalCallUtxoGroup>();
     const occupiedBases = new Set<number>();
@@ -9278,49 +8314,29 @@ export class StatefulTransactionBuilder {
         ?? (carrier.externalContract?.inner.artifact.abi as readonly AbiFunction[] | undefined)
           ?.find((candidate) => candidate.name === carrier.functionName);
       if (!abiFunction?.inputs.some((input) => input.name === '__internal__valueChunkOutputBase')) continue;
-      const activeFunctions = carrier.compilerRoute?.abiFunction === abiFunction
-        && (carrier.compilerRoute.rowArguments?.length ?? 0) > 0
-        ? carrier.compilerRoute.rowArguments!.map((row) => row.handler)
-        : [abiFunction];
-      const activeWriteCollections = (abiFunction as AbiFunction & {
-        messageBusActiveWriteCollections?: readonly string[];
-      }).messageBusActiveWriteCollections;
-      const chunkableCollections = [...new Set(activeFunctions.flatMap((activeFunction) => (
-        activeFunction.entryAccesses ?? []
-      ).flatMap((access) => {
-        if (!access.operations.includes('write')
-          || (activeWriteCollections !== undefined
-            && !activeWriteCollections.includes(access.collection))) return [];
-        const collection = carrier.stateLayout.collections?.find((candidate) => (
-          candidate.name === access.collection || candidate.signature === access.collection
-        ));
-        return collection?.chunkableValue === true && collection.valueType.endsWith('[]')
-          ? [access.collection] : [];
-      })))];
-      if (chunkableCollections.length === 0) continue;
 
       const lowLevelIndex = carrierIndex - this.externalCallUtxoGroups.length;
       const delegatedProxy = lowLevelIndex < 0 ? undefined : this.externalCallUtxoGroups.find(
         (group) => group.delegateCallGroupIndex === lowLevelIndex,
       );
-      const outputCategoryId = carrier.callMode === 'delegatecall'
-        ? delegatedProxy?.categoryId ?? this.categoryId
-        : carrier.categoryId;
+      const collectionValueWrites = carrier.collectionValueWrites
+        ?? delegatedProxy?.collectionValueWrites ?? [];
+      if (collectionValueWrites.length === 0) continue;
+      const outputCategoryId = this.getStateOwnerCategory(carrier);
       let selectedStart = -1;
       const provisionalBase = carrier.valueChunkOutputBase;
-      let preferredLocalBase = provisionalBase === undefined || provisionalBase < 0
-        ? undefined
-        : provisionalBase >= coordinateBase ? provisionalBase - coordinateBase : provisionalBase;
+      let preferredLocalBase = this.getLocalValueChunkOutputBase(carrier)
+        ?? (provisionalBase === undefined || provisionalBase < 0
+          ? undefined
+          : provisionalBase >= coordinateBase ? provisionalBase - coordinateBase : provisionalBase);
       let candidateStarts = [...this.derivedChunkOutputs.entries()]
         .filter(([, chunk]) => (chunk.categoryId ?? this.categoryId) === outputCategoryId
           && valueChunkIndexFromCommitment(chunk.commitment) === 0)
         .map(([start]) => start)
         .sort((left, right) => left - right);
       if (candidateStarts.length === 0) {
-        const observedRuns = chunkableCollections.flatMap((collection) => {
-          const run = coherentAuthenticatedValueChunkRun(observedValueChunksByCollection.get(
-            `${outputCategoryId.toLowerCase()}:${collection}`,
-          ) ?? []);
+        const observedRuns = collectionValueWrites.flatMap((write) => {
+          const run = getCollectionValueRecord(write.identity)?.chunks ?? [];
           return run.length > 0 ? [run] : [];
         });
         const uniqueRuns = new Map(observedRuns.map((run) => [
@@ -9374,7 +8390,7 @@ export class StatefulTransactionBuilder {
                 ...chunk, categoryId: outputCategoryId, fixedIndex: true,
               });
             }
-            carrier.valueChunkOutputBase = base;
+            this.setLocalValueChunkOutputBase(carrier, base);
             preferredLocalBase = base;
             candidateStarts = [base];
           }
@@ -9415,6 +8431,7 @@ export class StatefulTransactionBuilder {
       if (selectedStart < 0) continue;
       const absoluteStart = coordinateBase + selectedStart;
       occupiedBases.add(absoluteStart);
+      this.setLocalValueChunkOutputBase(carrier, selectedStart);
       if (carrier.valueChunkOutputBase === absoluteStart) continue;
       carrier.valueChunkOutputBase = absoluteStart;
       carrier.internalArgs = {
@@ -9500,14 +8517,24 @@ export class StatefulTransactionBuilder {
     return this.valueChunkRawCommitments.get(id) ?? [];
   }
 
+  /** Whether the compiler, rather than a legacy SDK placement policy, owns the trailing resource frame. */
+  private hasCompilerTrailingResourceFrame(): boolean {
+    return this.blockLayout?.trailingBase !== undefined
+      && this.blockLayout.trailingCapacity !== undefined;
+  }
+
+  private trailingLoopEntriesPrecedeDynamicChunks(): boolean {
+    return this.loopEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel;
+  }
+
   /** Output index where value chunks begin: after the block, dynamic chunks, and loop-entry (NEW) outputs. */
   getValueChunkOutputBase(): number {
-    if (this.delegateEntriesAfterLowLevel) {
+    if (this.delegateEntriesAfterLowLevel && !this.hasCompilerTrailingResourceFrame()) {
       return this.getLoopEntryOutputBase() + this._loopEntryOutputCount();
     }
     let base = this.getChunkOutputBase();
     for (const dv of this.dynamicChunkVars) base += (this.chunkRawCommitments.get(dv.name) ?? []).length;
-    if (!this.loopEntriesBeforeDynamicChunks) {
+    if (!this.trailingLoopEntriesPrecedeDynamicChunks()) {
       base += this._trailingLoopEntryOutputCount();
     }
     return base;
@@ -9636,7 +8663,7 @@ export class StatefulTransactionBuilder {
     const group = this.externalCallUtxoGroups[groupIdx];
     if (group && this.isInBlockReturnEventGroup(groupIdx)) {
       const physical = this.externalCallUtxoGroups[group.sharedGroupIndex ?? groupIdx];
-      const offset = physical?.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent')?.offset;
+      const offset = physicalLogicalReturnEventSlot(this.externalCallUtxoGroups, groupIdx)?.offset;
       const master = this.findMintingInputIndex(physical.categoryId);
       if (master >= 0 && offset !== undefined) return master + offset;
     }
@@ -9728,21 +8755,28 @@ export class StatefulTransactionBuilder {
     // External call blocks and their tail return events are emitted before local dynamic chunks, but they are
     // outside this function's blockLayout. Include their physical span so trace extraction observes the same
     // output indices that the compiler's dynamic-write covenant verifies.
-    const externalCallOutputCount = this.externalCallUtxoGroups.reduce((sum, group) => {
-      if (group.sharedGroupIndex !== undefined) return sum;
-      return sum + (group.blockInputs?.length ?? 1 + group.dataNftUtxos.length);
-    }, 0);
-    const externalReturnOutputCount = this.tailReturnEventOutputs()
-      .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length;
+    // A compiler-routed participant publishes an absolute owner-relative trailing base. Its external participant
+    // blocks and their return channels are composed outside that frame, so they cannot move a resource coordinate
+    // which the compiler has already authenticated. Legacy dense layouts have no published trailing base and must
+    // continue accounting for the physical outputs emitted before their dynamic resources.
+    const externalCallOutputCount = this.compilerRouteDelegateBlock ? 0
+      : this.externalCallUtxoGroups.reduce((sum, group) => {
+        if (group.sharedGroupIndex !== undefined) return sum;
+        return sum + (group.blockInputs?.length ?? 1 + group.dataNftUtxos.length);
+      }, 0);
+    const externalReturnOutputCount = this.compilerRouteDelegateBlock ? 0
+      : this.tailReturnEventOutputs()
+        .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length;
     const trailingBase = base + externalCallOutputCount + externalReturnOutputCount
       + lowLevelCallOutputCount + this.iterationEntryInputs.length;
-    if (this.delegateEntriesAfterLowLevel) {
+    if (this.delegateEntriesAfterLowLevel && !this.hasCompilerTrailingResourceFrame()) {
       // Delegate-only loop entries are appended after the caller's reserved trailing block. They must not move
       // the caller's dynamic-chunk base into that delegate suffix; only local loop entries precede local chunks.
       return trailingBase + this._trailingLoopEntryOutputCount() + this._valueChunkOutputCount()
         + this.pendingOutputs.length;
     }
-    return trailingBase + (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0);
+    return trailingBase + (this.trailingLoopEntriesPrecedeDynamicChunks()
+      ? this._trailingLoopEntryOutputCount() : 0);
   }
 
   private _dynamicChunkOutputCount(): number {
@@ -9811,7 +8845,10 @@ export class StatefulTransactionBuilder {
       (variable.categoryId === undefined || variable.categoryId === this.categoryId)
       // Legacy delegates own a transaction suffix outside the caller's block. A compiler-routed delegate instead
       // executes against the authenticated participant owner, so its resources belong to that participant's frame.
-      && (variable.delegate !== true || this.compilerRouteDelegateBlock)
+      // An explicit trailing base is itself the compiler-published ownership boundary; it must not require a
+      // second SDK-only flag to retain delegate-owned resources in the same frame.
+      && (variable.delegate !== true || this.compilerRouteDelegateBlock
+        || this.blockLayout?.trailingBase !== undefined)
     ));
   }
 
@@ -9835,6 +8872,9 @@ export class StatefulTransactionBuilder {
    */
   getLoopEntryOutputBase(): number {
     if (this.loopEntriesBeforeDynamicChunks) {
+      return this.getChunkOutputBase() - this._trailingLoopEntryOutputCount();
+    }
+    if (this.delegateEntriesAfterLowLevel && this.hasCompilerTrailingResourceFrame()) {
       return this.getChunkOutputBase() - this._trailingLoopEntryOutputCount();
     }
     if (this.delegateEntriesAfterLowLevel) {
@@ -10000,6 +9040,26 @@ export class StatefulTransactionBuilder {
     return this.externalCallUtxoGroups;
   }
 
+  /** Category whose state is mutated by this logical or physical execution group. */
+  getStateOwnerCategory(group: ExternalCallUtxoGroup): string {
+    const externalIndex = this.externalCallUtxoGroups.indexOf(group);
+    if (externalIndex >= 0) {
+      const ownerIndex = group.sharedGroupIndex ?? externalIndex;
+      return (this.externalCallUtxoGroups[ownerIndex] ?? group).categoryId;
+    }
+    const lowLevelIndex = this.lowLevelCallUtxoGroups.indexOf(group);
+    if (lowLevelIndex >= 0) {
+      return lowLevelCallStateOwnerCategory(
+        lowLevelIndex,
+        group,
+        this.externalCallUtxoGroups,
+        this.categoryId,
+        this.compilerRouteDelegateBlock ? 0 : undefined,
+      );
+    }
+    return group.categoryId;
+  }
+
   getLowLevelCallMasterInputIndex(groupIdx: number): number {
     const target = this.lowLevelCallUtxoGroups[groupIdx]?.masterUtxo;
     if (target) {
@@ -10080,21 +9140,22 @@ export class StatefulTransactionBuilder {
     const buildTiming = (stage: string, builder?: TransactionBuilder): void => {
       if (!buildTimingEnabled) return;
       const now = Date.now();
+      const memory = (globalThis as {
+        process?: { memoryUsage?: () => { heapUsed: number; external: number; arrayBuffers: number } };
+      }).process?.memoryUsage?.();
       console.error('stb-build-timing', {
         stage,
         deltaMs: now - buildLastTimingAt,
         totalMs: now - buildStartedAt,
         inputs: builder?.inputs.length ?? this.allInputs.length,
         outputs: builder?.outputs.length,
-        heapMb: Math.round(((globalThis as { process?: { memoryUsage?: () => { heapUsed: number } } })
-          .process?.memoryUsage?.().heapUsed ?? 0) / 1_048_576),
+        heapMb: Math.round((memory?.heapUsed ?? 0) / 1_048_576),
+        externalMb: Math.round((memory?.external ?? 0) / 1_048_576),
+        arrayBuffersMb: Math.round((memory?.arrayBuffers ?? 0) / 1_048_576),
       });
       buildLastTimingAt = now;
     };
     buildTiming('start');
-    if (this.emitReassertAllowed === undefined) {
-      this.emitReassertAllowed = isPersistedJobEventsReady() && !this._rootIsPublishJobPost();
-    }
     this.builtReturnEventOutputIndices.clear();
     const returnOutputRefs = new Map<string, Output>();
     const addReturnOutput = (builder: TransactionBuilder, identity: string, output: Output): void => {
@@ -10295,6 +9356,34 @@ export class StatefulTransactionBuilder {
       const id = `${input.txid.toLowerCase()}:${input.vout}`;
       const first = seenInputs.get(id);
       if (first !== undefined) {
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_DUPLICATE_INPUT === '1') {
+          const outpoint = (utxo: Utxo | undefined): string | undefined => utxo
+            ? `${utxo.txid.toLowerCase()}:${utxo.vout}` : undefined;
+          const summarize = (group: ExternalCallUtxoGroup, groupIndex: number) => ({
+            groupIndex,
+            functionName: group.functionName,
+            logicalFunctionName: group.logicalFunctionName,
+            callMode: group.callMode,
+            categoryId: group.categoryId,
+            sharedGroupIndex: group.sharedGroupIndex,
+            delegateCallGroupIndex: group.delegateCallGroupIndex,
+            delegateEmbeddedInBlock: group.delegateEmbeddedInBlock,
+            master: outpoint(group.masterUtxo),
+            data: group.dataNftUtxos.map(outpoint),
+            block: group.blockInputs?.map(outpoint),
+          });
+          console.error('duplicate-stateful-input-graph', JSON.stringify({
+            id,
+            positions: [first, index],
+            neighborhood: this.allInputs.map((candidate, inputIndex) => ({
+              inputIndex,
+              outpoint: outpoint(candidate),
+            })).slice(Math.max(0, first - 2), index + 3),
+            external: this.externalCallUtxoGroups.map(summarize),
+            lowLevel: this.lowLevelCallUtxoGroups.map(summarize),
+          }));
+        }
         const roles = (candidate: UnlockableUtxo): string[] => {
           const out: string[] = [];
           const matches = (utxo: Utxo | undefined): boolean => !!utxo
@@ -10767,7 +9856,7 @@ export class StatefulTransactionBuilder {
         }
         this.iterationEntriesPlacedAtDelegateBase = true;
       }
-      // RMW write chunks (publishJobPost jobs.push) occupy this input band but
+      // Read-modify-write collection chunks occupy this input band but
       // recreate at the suffix. Reserve the same output indexes so P'/NEW sit
       // on the predecessor, not on the burned chunk slots.
       if (this.dynamicChunkInputs.length > 0 || this.trailingDisposalInputs.length > 0) {
@@ -10842,7 +9931,7 @@ export class StatefulTransactionBuilder {
       const groupOutputStart = builder.outputs.length;
       // B's master output: preserved unchanged
       const bMaster = group.masterUtxo as UnlockableUtxo;
-      if (group.compilerRoute && group.delegateCallGroupIndex !== undefined) {
+      if (group.compilerRoute && group.delegateCallGroupIndex !== undefined && !group.delegateEmbeddedInBlock) {
         // A routed delegate's proxy master is displaced from its packed physical block. Slot zero is only a
         // balanced spacer; the master covenant requires the real minting NFT to be recreated at INPUTINDEX.
         builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
@@ -10983,7 +10072,7 @@ export class StatefulTransactionBuilder {
             },
           },
         };
-        if (group.compilerRoute && group.delegateCallGroupIndex !== undefined) {
+        if (group.compilerRoute && group.delegateCallGroupIndex !== undefined && !group.delegateEmbeddedInBlock) {
           displacedRouteStateOutputs.push(stateOutput);
           builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
         } else {
@@ -11005,6 +10094,42 @@ export class StatefulTransactionBuilder {
         let eventIdx = 0;
         let keccakIdx = 0;
         let externalDynamicChunkIdx = 0;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_OUTPUT_PLAN === '1'
+          && ((group.plannedEntryInserts?.length ?? 0) > 0
+            || (group.batchPredecessorOutputs?.length ?? 0) > 0
+            || (group.dynamicChunkResources?.length ?? 0) > 0)) {
+          console.error('compiler-route-output-plan', JSON.stringify({
+            groupIndex,
+            categoryId: group.categoryId,
+            route: group.compilerRoute?.abiFunction.name,
+            masterInputIndex: this.getExternalCallMasterInputIndex(groupIndex),
+            groupOutputStart,
+            outputCursor: builder.outputs.length,
+            blockSize: group.blockLayout.blockSize,
+            blockInputCount: group.blockInputs.length,
+            trailingBase: group.blockLayout.trailingBase,
+            externalDynamicChunkCount: externalDynamicChunks.length,
+            plannedEntryInserts: group.plannedEntryInserts,
+            batchPredecessorOutputs: group.batchPredecessorOutputs?.map((output) => ({
+              outputBlockSlot: output.outputBlockSlot,
+              lockingBytecode: binToHex(output.lockingBytecode),
+              commitment: output.commitment,
+            })),
+            dynamicChunkResources: group.dynamicChunkResources,
+            trailingInputs: group.blockInputs
+              .slice(Math.max(0, (group.blockLayout.trailingBase ?? 0) - 2),
+                (group.blockLayout.trailingBase ?? 0) + 8)
+              .map((input, ordinal) => ({
+                blockSlot: Math.max(0, (group.blockLayout?.trailingBase ?? 0) - 2) + ordinal,
+                outpoint: `${input.txid}:${input.vout}`,
+                lockingBytecode: binToHex(input.unlocker.generateLockingBytecode()),
+                category: input.token?.category,
+                capability: input.token?.nft?.capability,
+                commitment: input.token?.nft?.commitment,
+              })),
+          }));
+        }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_INPUTS === '1') {
           // eslint-disable-next-line no-console
@@ -11249,6 +10374,36 @@ export class StatefulTransactionBuilder {
               })),
             });
           }
+          if (slot?.kind === 'returnEvent' && slot.slotIndex !== undefined) {
+            const logicalResults = this.externalCallUtxoGroups
+              .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+              .filter(({ candidate, candidateIndex }) => (
+                (candidate.sharedGroupIndex ?? candidateIndex) === groupIndex
+              ))
+              .flatMap(({ candidate }) => candidate.loopReturnCommitments?.length
+                ? candidate.loopReturnCommitments
+                : candidate.precomputedReturnCommitment === undefined
+                  ? [] : [candidate.precomputedReturnCommitment]);
+            const commitment = logicalResults[slot.slotIndex];
+            if (group.returnEventInBlock && commitment !== undefined) {
+              addReturnOutput(builder, `external-call:${groupIndex}:${slot.slotIndex}`, {
+                to: new Uint8Array([0x51]),
+                amount: BALANCED_SLOT_SATOSHIS,
+                token: {
+                  amount: 0n,
+                  category: group.categoryId,
+                  nft: { capability: 'none', commitment: binToHex(commitment) },
+                },
+              });
+            } else {
+              builder.addOutput({
+                to: input.unlocker.generateLockingBytecode(),
+                amount: input.satoshis,
+                token: cloneToken(input.token),
+              });
+            }
+            continue;
+          }
           if (slot?.kind === 'returnEvent' && group.returnEventInBlock) {
             const returnIdentity = `external-call:${group.fusedReturnGroupIndex ?? groupIndex}`;
             const exact = this.pendingReturnEventOutputs.find((r) => r.identity === returnIdentity);
@@ -11321,27 +10476,23 @@ export class StatefulTransactionBuilder {
                   nft: { capability: 'none', commitment: eo.commitment },
                 },
               });
-            } else if (group.compilerRoute
-              && !['transferFrom', 'transfer'].includes(group.functionName)
-              && !['transferFrom', 'transfer'].includes(group.compilerRoute.abiFunction.name)) {
+            } else {
+              const bArt = group.externalContract?.inner?.artifact ?? group.externalContract?.artifact;
+              const bAbiFunc = group.compilerRoute?.abiFunction
+                ?? bArt?.abi?.find((candidate: AbiFunction) => candidate.name === group.functionName);
+              const eventSignature = groupEventSignatures(group, bAbiFunc)[eventIdx];
+              if (group.compilerRoute && eventSignature === undefined) {
               // A message-bus route reserves the union of every handler's event slots. Slots not reached by
               // this dispatch are ordinary balanced funding slots and the route covenant binds them by
-              // preservation. Mirroring the input also works as the active-slot probe: its empty commitment
-              // lets the trace expose the expected event blob, after which `eventOutputs` replaces this slot.
-              builder.addOutput({
-                to: input.unlocker.generateLockingBytecode(),
-                amount: input.satoshis,
-                token: cloneToken(input.token),
-              });
-            } else {
-              // Placeholder: create event NFT with empty commitment so B's VM can
-              // find the output structure. The iterative derivation will fill it in.
-              const bArt = group.externalContract?.inner?.artifact ?? group.externalContract?.artifact;
-              const bAbiFunc = bArt?.abi?.find((f: any) => f.name === group.functionName);
-              const bEmits: Array<{ eventSignature: string }> = bAbiFunc?.emits ?? [];
-              if (eventIdx < bEmits.length) {
-                const emitInfo = bEmits[eventIdx];
-                const eventNameHash = computeEventNameHash(emitInfo.eventSignature);
+                // preservation. The compiler-published physical signature list is the active-slot authority.
+                builder.addOutput({
+                  to: input.unlocker.generateLockingBytecode(),
+                  amount: input.satoshis,
+                  token: cloneToken(input.token),
+                });
+              } else if (eventSignature !== undefined) {
+                // Seed an active compiler-owned event coordinate; iterative derivation fills its typed value.
+                const eventNameHash = computeEventNameHash(eventSignature);
                 const covenantScript = buildEventNftCovenantScript(
                   hexToBin(group.categoryId), eventNameHash,
                 );
@@ -11358,7 +10509,7 @@ export class StatefulTransactionBuilder {
                   },
                 });
               } else {
-                // Fallback pass-through
+                // An ordinary ABI with no event at this physical slot preserves its balanced input.
                 builder.addOutput({
                   to: input.unlocker.generateLockingBytecode(),
                   amount: input.satoshis,
@@ -11395,7 +10546,7 @@ export class StatefulTransactionBuilder {
       }
       if (group.delegateCallGroupIndex !== undefined) {
         if (!group.delegateEmbeddedInBlock) appendDelegateGroupOutputs(group.delegateCallGroupIndex);
-        if (group.compilerRoute) {
+        if (group.compilerRoute && !group.delegateEmbeddedInBlock) {
           // Preserve the displaced proxy master immediately after its associated implementation band, which
           // is the same absolute coordinate as the proxy-master input in the routed input layout.
           builder.addOutput({
@@ -11417,6 +10568,7 @@ export class StatefulTransactionBuilder {
       }
     }
     debugOwnMutableOutputs('after-external-groups');
+    debugAtomicOutputStage('external-groups');
 
     // A delegate facet is preserved at its absolute input index, and the block layout now reserves that index
     // immediately after the proxy's master/data-NFT region - the position the delegate covenant derives with
@@ -11949,7 +11101,8 @@ export class StatefulTransactionBuilder {
         }
       }
     };
-    if (this.delegateEntriesAfterLowLevel) appendValueChunks();
+    const compilerOwnsTrailingResourceOrder = this.hasCompilerTrailingResourceFrame();
+    if (this.delegateEntriesAfterLowLevel && !compilerOwnsTrailingResourceOrder) appendValueChunks();
 
     const appendDynamicChunks = (): void => {
       if (this.delegateDynamicChunksAtSuffix) {
@@ -11973,15 +11126,37 @@ export class StatefulTransactionBuilder {
           return;
         }
       }
+      let routedOutputIndex = this.getChunkOutputBase();
       for (const dv of this.dynamicChunkVars) {
         const commitments = this.chunkRawCommitments.get(dv.name) ?? [];
         const debugChunkLayout = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_CHUNK_LAYOUT === '1';
         const computedBase = this.getChunkOutputBase();
         if (debugChunkLayout && commitments.length > 0 && builder.outputs.length !== computedBase) {
-          console.error('dynamic-chunk-layout-mismatch', {
+          console.error('dynamic-chunk-layout-mismatch', JSON.stringify({
             name: dv.name, outputBase: builder.outputs.length, computedBase, count: commitments.length,
-          });
+            rootCategory: this.categoryId.slice(0, 16),
+            compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
+            trailingBase: this.blockLayout?.trailingBase,
+            trailingCapacity: this.blockLayout?.trailingCapacity,
+            delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
+            delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
+            externalCallOutputCount: this.externalCallUtxoGroups.reduce((sum, group) => (
+              group.sharedGroupIndex !== undefined
+                ? sum : sum + (group.blockInputs?.length ?? 1 + group.dataNftUtxos.length)
+            ), 0),
+            externalReturnOutputCount: this.tailReturnEventOutputs()
+              .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length,
+            iterationEntryInputCount: this.iterationEntryInputs.length,
+            valueChunkOutputCount: this._valueChunkOutputCount(),
+            pendingOutputCount: this.pendingOutputs.length,
+            trailingLoopEntryOutputCount: this._trailingLoopEntryOutputCount(),
+            trailingLoopEntries: this._trailingLoopEntryVars().map((variable) => ({
+              collection: variable.collection,
+              delegate: variable.delegate,
+              commitments: this.loopEntryCommitments.get(variable.collection)?.length ?? 0,
+            })),
+          }));
         }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' && commitments.length > 0) {
@@ -12022,11 +11197,45 @@ export class StatefulTransactionBuilder {
             },
           };
           chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-          builder.addOutput(chunkOutput);
+          if (!this.compilerRouteDelegateBlock) {
+            builder.addOutput(chunkOutput);
+            continue;
+          }
+
+          const trailingBase = this.blockLayout?.trailingBase;
+          const trailingCapacity = this.blockLayout?.trailingCapacity;
+          const blockSize = this.blockLayout?.blockSize;
+          if (trailingBase === undefined || trailingCapacity === undefined || blockSize === undefined
+            || routedOutputIndex < trailingBase
+            || routedOutputIndex >= trailingBase + trailingCapacity
+            || routedOutputIndex >= blockSize) {
+            throw new Error(
+              `Compiler-routed dynamic output ${routedOutputIndex} is outside the declared trailing frame`,
+            );
+          }
+
+          while (builder.outputs.length < routedOutputIndex) {
+            builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+          }
+          const existing = builder.outputs[routedOutputIndex];
+          const absoluteInputIndex = this.compositionOutputBase + routedOutputIndex;
+          const input = this.allInputs[absoluteInputIndex];
+          const consumesOwnedDynamicInput = input !== undefined && this.dynamicChunkInputs.some((candidate) => (
+            candidate.txid.toLowerCase() === input.txid.toLowerCase() && candidate.vout === input.vout
+          ));
+          if (existing !== undefined && !isDisposableAlignmentPad(existing) && !consumesOwnedDynamicInput) {
+            throw new Error(
+              `Compiler-routed dynamic output ${routedOutputIndex} collides with another declared output owner`,
+            );
+          }
+          if (builder.outputs.length === routedOutputIndex) builder.addOutput(chunkOutput);
+          else builder.outputs[routedOutputIndex] = chunkOutput;
+          routedOutputIndex += 1;
         }
       }
     };
-    if (!this.delegateEntriesAfterLowLevel && !this.delegateDynamicChunksAtSuffix) appendDynamicChunks();
+    if ((!this.delegateEntriesAfterLowLevel || compilerOwnsTrailingResourceOrder)
+      && !this.delegateDynamicChunksAtSuffix) appendDynamicChunks();
 
     // Loop mapping-write entry outputs (trailing, after any chunks). One new mutable entry NFT per loop iteration;
     // commitments (key_enc||value_enc) come from auto-derivation (the covenant builds them on-chain per iteration).
@@ -12061,7 +11270,7 @@ export class StatefulTransactionBuilder {
     // P5b value chunks (Design D), placed AFTER every covenant-managed output (entries, dynamic chunks, loop-entry
     // NEW nodes). DIRECT values are injected exactly
     // (valueChunkOutputs); COMPUTED values are trace-derived (valueChunkVars, commitments filled by auto-derivation).
-    if (!this.delegateEntriesAfterLowLevel) appendValueChunks();
+    if (!this.delegateEntriesAfterLowLevel || compilerOwnsTrailingResourceOrder) appendValueChunks();
 
     const trailingCapacity = this.blockLayout?.trailingCapacity ?? 0;
     if (trailingCapacity > 0) {
@@ -12102,8 +11311,24 @@ export class StatefulTransactionBuilder {
           + `(${trailingOutputCount} > ${trailingCapacity})`,
         );
       }
-      for (let i = trailingOutputCount; i < trailingCapacity; i++) {
-        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      if (this.compilerRouteDelegateBlock && this.blockLayout?.trailingBase !== undefined) {
+        const trailingEnd = this.blockLayout.trailingBase + trailingCapacity;
+        for (let outputIndex = this.blockLayout.trailingBase + trailingOutputCount;
+          outputIndex < trailingEnd; outputIndex += 1) {
+          while (builder.outputs.length <= outputIndex) {
+            builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+          }
+          const output = builder.outputs[outputIndex];
+          if (!isDisposableAlignmentPad(output)) {
+            throw new Error(
+              `Compiler-routed trailing output ${outputIndex} collides with another declared output owner`,
+            );
+          }
+        }
+      } else {
+        for (let i = trailingOutputCount; i < trailingCapacity; i++) {
+          builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+        }
       }
     }
     debugAtomicOutputStage('balanced-trailing-frame');
@@ -12131,7 +11356,7 @@ export class StatefulTransactionBuilder {
         token: anchor.token,
       });
     }
-    // Nested callee mapping INSERTs (MarketplaceData publishJobEvent) are not the
+    // Nested callee mapping INSERTs are not the
     // implementation's own delegated loop and must not sit in the impl trailing
     // band. Emit them after callee identity so the callee proxy's mutable-NFT
     // conservation sees P'/NEW (input EntryNft otherwise has no matching output).
@@ -12179,7 +11404,7 @@ export class StatefulTransactionBuilder {
     debugAtomicOutputStage('identity-anchors');
 
     // Nested callee entry NFTs can sit outside that callee's published block (MarketplaceData
-    // publishJobEvent predecessor at input 20 while the MD group occupies 14-17). Recreate any
+    // predecessor at its input while another participant occupies an earlier block. Recreate any
     // still-unmatched nested-category mutable input at its input index so the callee proxy's
     // mutable-NFT conservation and the entry covenant both see a same-index twin.
     const nestedCategories = new Set(
@@ -12203,23 +11428,31 @@ export class StatefulTransactionBuilder {
         };
         continue;
       }
-      const existingLock = existing
-        ? (existing.to instanceof Uint8Array ? existing.to : addressToLockScript(existing.to))
-        : undefined;
-      // A return-event witness is OP_TRUE + none-cap. Splicing a mutable twin here
-      // leaves the covenant's witnessed index on the clone (amount/capability fail).
-      if (existingLock?.length === 1 && existingLock[0] === 0x51) continue;
-      builder.outputs.splice(index, 0, {
-        to: input.unlocker.generateLockingBytecode(),
+      const inputLock = input.unlocker.generateLockingBytecode();
+      const declaredOwner = this._declaredExternalOutputSlotOwner(index);
+      if (declaredOwner) {
+        // Physical input padding does not inherit the compiler's output slot. A same-category entry input may
+        // reclaim its declared entry coordinate, but no shape-based conservation pass may overwrite another
+        // slot kind or move the fixed block which follows it.
+        if (declaredOwner.categoryId !== category || declaredOwner.slot.kind !== 'entry') continue;
+        const declaredLock = this._externalEntryLockingBytecode(declaredOwner.group, declaredOwner.slot);
+        if (declaredLock && (declaredLock.length !== inputLock.length
+          || !declaredLock.every((byte, offset) => byte === inputLock[offset]))) continue;
+      } else if (existing && !isDisposableAlignmentPad(existing)) {
+        // Outside a declared block, an already-materialized non-pad has its own owner. This legacy recovery pass
+        // has no authority to relocate it or to shift absolute coordinates in search of room.
+        continue;
+      }
+      placeOutputAtExactIndex(builder.outputs, index, {
+        to: inputLock,
         amount: input.satoshis,
         token: cloneToken(input.token),
-      });
+      }, () => ({ to: Uint8Array.of(0x51), amount: 1000n }));
     }
     debugAtomicOutputStage('nested-mutable-recreation');
 
-    // Nested publishJobEvent emits at implInput+event.offset (delegate output-only
-    // slots are implementation-relative). Identity anchors that landed on that
-    // coordinate are re-appended after the event so the event pin keeps its index.
+    // Delegate output-only event slots are implementation-relative. Identity anchors which landed on a declared
+    // event coordinate are re-appended so the compiler-owned event pin keeps its exact physical index.
     const displacedDelegateIdentities: Array<{
       to: Uint8Array; amount: bigint; token: NonNullable<Output['token']>;
     }> = [];
@@ -12239,110 +11472,60 @@ export class StatefulTransactionBuilder {
         ?? proxyGroup?.externalContract?.inner.artifact.abi.find(
           (candidate: AbiFunction) => candidate.name === (llc.functionName ?? proxyGroup.functionName),
         );
-      const eventSlots = (fn?.blockLayout?.slots ?? []).filter((slot: { kind: string; offset: number }) => slot.kind === 'event');
-      if (eventSlots.length === 0 || (fn?.emits?.length ?? 0) === 0) continue;
-      // initialize (and other full-block delegates) already emit events inside the
-      // proxy group's block walk. Only fill slots the walk never visits — e.g.
-      // publishJobEvent's event at impl+4 while the MD proxy occupies 3 slots.
+      const eventSlots = (fn?.blockLayout?.slots ?? []).filter(
+        (slot: { kind: string; offset: number }) => slot.kind === 'event',
+      );
+      const eventSignatures = groupEventSignatures(llc, fn);
+      if (eventSlots.length === 0 || eventSignatures.every((signature) => signature === undefined)) continue;
+      // Full-block delegates already emit events inside the proxy group walk. Fill only declared slots outside
+      // that walk, plus still-provisional compiler-owned coordinates inside it.
       const walkedWidth = proxyGroup?.blockInputs?.length
         ?? (1 + (proxyGroup?.requiredDataNftIndices.length ?? 0));
-      const emits = fn?.emits ?? [];
-      // Emits are authenticated by the proxy/CREATE category, not the
-      // implementation minting UTXO (dest 16 lock pin: aa20ef32 vs impl aa20599f).
-      const proxyMinting = this.allInputs.find((input) =>
-        input.token?.nft?.capability === 'minting'
-        && !!input.token.category
-        && input.token.category !== llc.categoryId);
-      const categoryId = proxyGroup?.categoryId
-        ?? this.externalCallUtxoGroups.find((group) =>
-          (group.functionName === llc.functionName || group.logicalFunctionName === llc.functionName)
-          && !!group.categoryId)?.categoryId
-        ?? proxyMinting?.token?.category
-        ?? llc.categoryId;
+      // Delegate execution authenticates its proxy's state category; ordinary output contents are never used as
+      // evidence of ownership because an unrelated return/identity witness can temporarily occupy this index.
+      const categoryId = lowLevelCallStateOwnerCategory(
+        llcIndex, llc, this.externalCallUtxoGroups, this.categoryId,
+        this.compilerRouteDelegateBlock ? 0 : undefined,
+      );
       if (!categoryId) continue;
       const addressType = proxyGroup?.externalContract?.inner?.addressType
         ?? llc.externalContract?.inner?.addressType ?? 'p2sh32';
       for (let eventIndex = 0; eventIndex < eventSlots.length; eventIndex++) {
-        const namedImpl = this._publishJobEventInputIndex();
-        const outputIndex = namedImpl >= 0
-          ? publishJobEventOutputIndex(namedImpl, eventSlots[eventIndex].offset)
-          : implIndex + eventSlots[eventIndex].offset;
+        const eventSignature = eventSignatures[eventIndex];
+        if (!eventSignature) continue;
+        const outputIndex = implIndex + eventSlots[eventIndex].offset;
         const occupant = builder.outputs[outputIndex];
         const occupantNeedsEvent = isOverwritableEmitOccupant(occupant)
           || String(occupant?.token?.nft?.commitment ?? '').startsWith('53434944');
-        // Full-block walks already own in-range slots that hold a real emit.
-        // SCID / pad occupants still need dest fill (Initialized dest 16).
-        if (namedImpl < 0 && eventSlots[eventIndex].offset < walkedWidth && !occupantNeedsEvent) {
+        if (eventSlots[eventIndex].offset < walkedWidth && !occupantNeedsEvent) {
           continue;
         }
-        const derived = proxyGroup?.eventOutputs?.[eventIndex];
-        const emitInfo = emits[eventIndex];
+        const derived = llc.eventOutputs?.[eventIndex] ?? proxyGroup?.eventOutputs?.[eventIndex];
         const lockingBytecode = derived?.lockingBytecode
-          ?? (emitInfo
-            ? scriptToLockingBytecode(
-              buildEventNftCovenantScript(
-                hexToBin(categoryId), computeEventNameHash(emitInfo.eventSignature),
-              ),
-              addressType,
-            )
-            : undefined);
-        if (!lockingBytecode) continue;
+          ?? scriptToLockingBytecode(
+            buildEventNftCovenantScript(
+              hexToBin(categoryId), computeEventNameHash(eventSignature),
+            ),
+            addressType,
+          );
         const existing = builder.outputs[outputIndex];
-        if (existing?.token?.nft?.capability === 'minting') continue;
-        const persistEmit = this._shouldRematerializePersistUpdate();
-        if (existing?.token?.nft?.capability === 'mutable'
-          && (existing.token.nft.commitment?.length ?? 0) > 2
-          && !isOverwritableEmitOccupant(existing, { consumedMutableOk: persistEmit })) {
+        // Output-only event slots must be funded by a plain physical input. A token input at the same coordinate
+        // is a participant-layout collision and remains authoritative until the allocator relocates it.
+        if (emitDestCollidesPreservedInput(this.allInputs[outputIndex])
+          || existing?.token?.nft?.capability === 'minting'
+          || existing?.token?.nft?.capability === 'mutable') {
           continue;
         }
-        const visibleArgs = proxyGroup?.logicalFunctionArgs ?? proxyGroup?.functionArgs
-          ?? llc.logicalFunctionArgs ?? llc.functionArgs;
-        const now = BigInt((this.builderOptions.provider as { getBlockTime?: () => number })
-          .getBlockTime?.() ?? 0);
-        const eventType = visibleArgs && visibleArgs.length >= 2
-          ? jobEventTypeOf(visibleArgs[1]) : undefined;
-        const emptyAddressEvent = eventType !== undefined
-          && (Array.isArray(visibleArgs![1])
-            ? jobEventFieldEmpty(visibleArgs![1][1])
-            : jobEventFieldEmpty((visibleArgs![1] as { address_?: unknown }).address_));
-        const stampWithdraw = emptyAddressEvent && eventType === 16 && now > 0n;
-        const emitEvent = stampWithdraw
-          ? stampEmptyJobEventTimestamp(visibleArgs![1], now)
-          : visibleArgs?.[1];
-        const constructedCommit = emptyAddressEvent && emitEvent !== undefined
-          ? encodeJobEventEmitCommitment(
-            visibleArgs![0],
-            emitEvent,
-            (proxyGroup ?? llc).externalContract?.inner?.artifact?.structs,
-          )
-          : undefined;
-        const learnedCommit = String(derived?.commitment ?? '');
-        // Initialized(uint64) is OP_1 (`51`); JobEvent classifiers reject it.
-        const typedCommit = emitInfo?.eventName === 'Initialized'
-          || emitInfo?.eventSignature?.startsWith('Initialized(')
-          ? '51'
-          : '';
-        const derivedCommit = constructedCommit
-          ?? (isLearnedEventEmitCommitment(learnedCommit) ? learnedCommit : typedCommit);
-        if (!isJobEventEmitCommitment(derivedCommit)) {
-          placePublishJobEventOutput(builder.outputs, outputIndex, {
-            to: lockingBytecode,
-            amount: 1200n,
-            token: {
-              amount: 0n,
-              category: categoryId,
-              nft: { capability: 'none', commitment: derivedCommit },
-            },
-          }, {
-            refuseEmpty: persistEmit && !constructedCommit,
-            consumedMutableOk: persistEmit,
-            destInput: this.allInputs[outputIndex],
-          });
-          continue;
-        }
+        const existingCommitment = commitmentHexOf(existing?.token?.nft?.commitment);
+        const materializedAtPhysicalSlot = existing?.token?.category === categoryId
+          && existing.token.nft?.capability === 'none'
+          && existingCommitment !== '' && !/^(00)+$/.test(existingCommitment)
+          && !isScidIdentityCommitment(existingCommitment);
+        const derivedCommit = materializedAtPhysicalSlot
+          ? existingCommitment : String(derived?.commitment ?? '');
         if (shouldDisplaceForNestedEvent(existing, categoryId) && existing?.token) {
-          // Nested events share the callee category with view-return tails and SCID-v1
-          // identity anchors. Overwriting either destroys the witness the caller PICKs.
+          // Compiler event frames can share a provisional coordinate with an immutable return/identity witness.
+          // Preserve that witness outside the fixed frame before installing the event candidate.
           displacedDelegateIdentities.push({
             to: existing.to instanceof Uint8Array ? existing.to : addressToLockScript(existing.to),
             amount: existing.amount,
@@ -12362,10 +11545,7 @@ export class StatefulTransactionBuilder {
           },
         };
         placed.amount = BigInt(Math.max(1200, calculateDust(placed)));
-        placePublishJobEventOutput(builder.outputs, outputIndex, placed, {
-          consumedMutableOk: persistEmit,
-          destInput: this.allInputs[outputIndex],
-        });
+        builder.outputs[outputIndex] = placed;
       }
 
       const entrySlots = (fn?.blockLayout?.slots ?? []).filter(
@@ -12404,7 +11584,7 @@ export class StatefulTransactionBuilder {
     }
     debugAtomicOutputStage('delegate-events-and-entries');
 
-    // Nested publishJobEvent pins value chunks at the covenant's trailing base
+    // Nested collection writes pin value chunks at the covenant's trailing base
     // (proxy/master + blockSize), which is below impl+blockSize when the
     // implementation sits after the proxy block. Materialize every recovered
     // pin; extractRouteChunkPin already rejected non-chunk OUTPUTBYTECODE checks.
@@ -12426,7 +11606,7 @@ export class StatefulTransactionBuilder {
       const blockSize = fn?.blockLayout?.blockSize ?? 1;
       // Executing impl verifies chunks at INPUTINDEX+trailingBase (15+5=20).
       // min(impl, proxy)+blockSize is 17 and overwrites meceTags.
-      const chunkBase = this.getPublishJobEventsBand()?.start
+      const chunkBase = this.getCollectionValueOutputBand()?.start
         ?? Math.max(implIndex + blockSize, masterIndex + blockSize);
       const derivedIndexes = [...this.derivedChunkOutputs.keys()]
         .filter((outputIndex) => {
@@ -12546,7 +11726,8 @@ export class StatefulTransactionBuilder {
     }
     debugAtomicOutputStage('nested-state-restoration');
 
-    if (this.delegateEntriesAfterLowLevel || this.delegateDynamicChunksAtSuffix) appendDynamicChunks();
+    if ((this.delegateEntriesAfterLowLevel && !compilerOwnsTrailingResourceOrder)
+      || this.delegateDynamicChunksAtSuffix) appendDynamicChunks();
     debugAtomicOutputStage('deferred-dynamic-chunks');
 
     for (const vco of this.lateValueChunkOutputs) {
@@ -12671,28 +11852,16 @@ export class StatefulTransactionBuilder {
     this._stripSurplusEmptyCollectionEntries(builder);
     this._reassertNestedSameIndexMutables(builder);
     this._reassertFixedStateOutputs(builder);
-    this._reassertNestedEmitEvents(builder);
     this._reassertDelegateImplEvents(builder);
     this._reassertMintingOneToOne(builder);
-    this._reassertTokenInsertNewLocks(builder);
+    this._reassertSortedEntrySuccessorLocks(builder);
     reassertScidIdentityOutputs(
       builder.outputs, this.allInputs, this._scidReservedIndices(builder.outputs.length),
     );
-    this._reassertNestedEmitEvents(builder);
     this._reassertDelegateImplEvents(builder);
-    if (isPersistedJobEventsReady()) this._packJobsSuffix(builder);
     debugAtomicOutputStage('conservation-repairs');
-    const chunkBand = this.getPublishJobEventsBand();
-    const chunkLock = this.jobEventsRedeemLock
-      ?? (this.externalCallUtxoGroups.find((group) =>
-        (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')?.categoryId
-        ? persistedJobEventsLock(this.externalCallUtxoGroups.find((group) =>
-          (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')!.categoryId!)
-        : undefined);
-    if (chunkBand && chunkLock) {
-      stripSurplusValueChunkLocks(builder.outputs, chunkBand, chunkLock, this.allInputs);
-    }
-    // Rebind before placing tails so planned 20-21 still names the jobEvents pins.
+    this._stripSurplusDerivedValueChunkLocks(builder);
+    // Rebind before placing tails so planned coordinates still name collection-value pins.
     if (!this.viewTailRepackAttempted && this._repackViewTailsAfterMaterialization(builder)) {
       this.viewTailRepackAttempted = true;
       this._refreshInputs();
@@ -12701,15 +11870,8 @@ export class StatefulTransactionBuilder {
     // After compact/SCID/derived writers: re-assert view tails at assigned indices so
     // a dropped pad cannot slide meceTags onto arbitratorRegistered (ip 565637).
     this._placeTailReturnAfterSwappedTokenBlock(builder, returnOutputRefs);
-    this._materializeJobEventsBand(builder);
-    this._reassertScaledPreserveOneToOnes(builder);
-    this._reassertNestedEmitEvents(builder);
+    this._applyDerivedValueChunks(builder);
     this._reassertDelegateImplEvents(builder);
-    if (isPersistedJobEventsReady()) {
-      this._reassertPersistedJobEventsOneToOnes(
-        builder, this._scaledEmitOutputIndex(builder.outputs.length) ?? -1,
-      );
-    }
     this._reassertMintingOneToOne(builder);
     this._reassertFixedStateOutputs(builder);
     this._relocateCollidingDerivedValueChunkRuns(builder);
@@ -12753,7 +11915,7 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * JobEvents occupancy is only final after the first materialization. If planned
+   * Collection-value occupancy is only final after the first materialization. If planned
    * view-tail witnesses still name a mutable collection slot, pack them after that
    * band and refresh unlockers for one rematerialize. Does not move jobs suffix.
    */
@@ -12765,13 +11927,8 @@ export class StatefulTransactionBuilder {
           ? group.returnOutputIndex : -1
       ))
       .filter((index) => index >= 0);
-    const tokenWriterPresent = this.externalCallUtxoGroups.some((group) => {
-      const name = group.functionName ?? group.compilerRoute?.abiFunction.name;
-      if (!isMintingBandTokenWriter(name)) return false;
-      return this.findMintingInputIndex(group.categoryId) >= 0;
-    });
-    // FakeToken already parks view tails after its swapped block. Do not steal
-    // early pads or rewrite those witnesses.
+    const tokenWriterPresent = this.hasCollectionValueBandCollision();
+    // Participant relocation already parks view tails after the moved block. Do not rewrite those witnesses.
     if (tokenWriterPresent) return false;
     const derivedHit = planned.some((index) => this.derivedChunkOutputs.has(index));
     const derivedEnd = derivedHit
@@ -12779,7 +11936,7 @@ export class StatefulTransactionBuilder {
       : -1;
     const writerEnd = Math.max(
       lastCollidingMutableWriterIndex(builder.outputs, planned),
-      viewTailOccupancyCap(planned, this.getPublishJobEventsBand()),
+      viewTailOccupancyCap(planned, this.getCollectionValueOutputBand()),
       derivedEnd,
     );
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -12994,10 +12151,12 @@ export class StatefulTransactionBuilder {
   /** Reconcile materialized predecessor outputs with the same final physical masters as their witnesses. */
   private _reassertMaterializedBatchPredecessorOutputs(builder: TransactionBuilder): boolean {
     let changed = 0;
-    const carriers = [
-      ...this.externalCallUtxoGroups.map((carrier) => ({ carrier, directParticipant: true })),
-      ...this.lowLevelCallUtxoGroups.map((carrier) => ({ carrier, directParticipant: false })),
-    ];
+    const physicalExternal = new Set(
+      this.externalCallUtxoGroups.filter((carrier) => carrier.sharedGroupIndex === undefined),
+    );
+    const carriers = physicalBatchOutputOwners(
+      this.externalCallUtxoGroups, this.lowLevelCallUtxoGroups,
+    ).map((carrier) => ({ carrier, directParticipant: physicalExternal.has(carrier as ExternalCallUtxoGroup) }));
     for (const { carrier, directParticipant } of carriers) {
       if (!carrier.categoryId) continue;
       const master = carrier.masterUtxo as UnlockableUtxo | undefined;
@@ -13117,19 +12276,16 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
-  /**
-   * transferFrom INSERT is P' at master+2 and NEW at master+4. Occupancy can leave
-   * the allowance collection on +4; put P''s lock back without shifting tails.
-   */
-  private _reassertTokenInsertNewLocks(builder: TransactionBuilder): void {
+  /** Restore collection locks from compiler-planned sorted mutations and their exact predecessor links. */
+  private _reassertSortedEntrySuccessorLocks(builder: TransactionBuilder): void {
+    const repairedCategories = new Set<string>();
     for (const group of this.externalCallUtxoGroups) {
       if (group.sharedGroupIndex !== undefined) continue;
-      if (!group.categoryId || (group.functionName !== 'transferFrom' && group.logicalFunctionName !== 'transferFrom')) {
-        continue;
-      }
-      const master = this.findMintingInputIndex(group.categoryId);
-      if (master < 0) continue;
-      reassertTokenInsertNewLock(builder.outputs, master, group.categoryId);
+      if (!group.categoryId || repairedCategories.has(group.categoryId)) continue;
+      if ((group.plannedEntryInserts?.length ?? 0) === 0
+        && (group.batchPredecessorOutputs?.length ?? 0) === 0) continue;
+      repairedCategories.add(group.categoryId);
+      reassertSortedEntrySuccessorLocks(builder.outputs, group.categoryId);
     }
   }
 
@@ -13438,7 +12594,7 @@ export class StatefulTransactionBuilder {
   getExternalCallReturnEventOutputIndex(groupIdx: number): number {
     const group = this.externalCallUtxoGroups[groupIdx];
     if (!group) return -1;
-    const offset = group.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent')?.offset;
+    const offset = physicalLogicalReturnEventSlot(this.externalCallUtxoGroups, groupIdx)?.offset;
     if (this.isInBlockReturnEventGroup(groupIdx) && offset !== undefined) {
       const physical = this.externalCallUtxoGroups[group.sharedGroupIndex ?? groupIdx];
       const master = this.findMintingInputIndex(physical.categoryId);
@@ -14155,6 +13311,7 @@ export class StatefulTransactionBuilder {
         if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTBYTECODE || state.stack.length < 2) return;
         const outputIndex = Number(decodeVmScriptNumber(state.stack[state.stack.length - 1]));
         pendingOutputBytecodeIndices.set(state.instructions, { outputIndex, ip: state.ip });
+        const computedChunkPin = computedValueChunkOutputPin(state as never);
         const expectedLockingBytecode = state.stack[state.stack.length - 2];
         const nextOpcode = state.instructions[state.ip + 1]?.opcode;
         const forwardOutputOnlySlot = isForwardOutputOnlyRepairSlot({
@@ -14182,27 +13339,15 @@ export class StatefulTransactionBuilder {
             }
           }
         }
-        if (state.stack.length < 4) return;
-        const chunkShaped = state.instructions.some((instruction, at) => instruction.data?.length === 1
-          && instruction.data[0] === 126 && state.instructions[at + 1]?.opcode === 0x95
-          && state.instructions[at + 2]?.data?.length === 1
-          && state.instructions[at + 2]?.data?.[0] === 28
-          && state.instructions[at + 3]?.opcode === 0x93);
-        // Outlined continuation pins use SWAP OUTPUTBYTECODE with uint16||data
-        // under the address; their index-arithmetic sequence lives in the caller.
-        const outlinedChunkPin = state.instructions[state.ip - 1]?.opcode === 0x7c
-          && state.stack[state.stack.length - 2]?.length === 35
-          && state.stack[state.stack.length - 2][0] === 0xaa
-          && state.stack[state.stack.length - 2][1] === 0x20
-          && state.stack[state.stack.length - 2][34] === 0x87
-          && state.stack[state.stack.length - 4]?.length >= 3
-          && state.stack[state.stack.length - 4]?.length <= 128;
         // Event/return destinations are compiler-owned output claims. Their P2SH32
         // locks and variable-length commitments can resemble an outlined chunk pin,
         // but a computed chunk repair must never change their capability or owner.
-        if ((!chunkShaped && !outlinedChunkPin) || layoutOwnedLock) return;
-        const lockingBytecode = state.stack[state.stack.length - 2];
-        const commitment = state.stack[state.stack.length - 4];
+        if (!computedChunkPin || layoutOwnedLock) return;
+        const {
+          outputIndex: computedOutputIndex,
+          lockingBytecode,
+          commitment,
+        } = computedChunkPin;
         const output = outputIndex >= 0 && outputIndex < builder.outputs.length
           ? builder.outputs[outputIndex] : undefined;
         const repairCoordinate = isOwnedStateRepairCoordinate({
@@ -14212,9 +13357,7 @@ export class StatefulTransactionBuilder {
             && delegateRepairOwnerCategory !== undefined
             && output?.token?.category === delegateRepairOwnerCategory,
         });
-        if (lockingBytecode.length !== 35 || lockingBytecode[0] !== 0xaa || lockingBytecode[1] !== 0x20
-          || lockingBytecode[34] !== 0x87 || commitment.length < 3 || commitment.length > 128
-          || !repairCoordinate
+        if (computedOutputIndex !== outputIndex || !repairCoordinate
           || outputIndex >= builder.outputs.length) return;
         repairs.set(outputIndex, {
           outputIndex, lockingBytecode, commitment,
@@ -14422,8 +13565,10 @@ export class StatefulTransactionBuilder {
                 categoryId: output.token.category,
               });
             } else {
+              const entryLockingBytecode = lockingBytecodeRepairs.get(found.outputIndex)
+                ?? outputLockingBytecode;
               this.setExternalCallEntryOutputAt(
-                found.outputIndex, output.token.category ?? '', proposedHex,
+                found.outputIndex, output.token.category ?? '', proposedHex, entryLockingBytecode,
               );
             }
           }
@@ -14856,26 +14001,13 @@ export class StatefulTransactionBuilder {
     reassertScidIdentityOutputs(
       finalBuilder.outputs, this.allInputs, this._scidReservedIndices(finalBuilder.outputs.length),
     );
-    this._reassertNestedEmitEvents(finalBuilder);
     this._reassertDelegateImplEvents(finalBuilder);
     this._placeTailReturnAfterSwappedTokenBlock(finalBuilder);
-    this._materializeJobEventsBand(finalBuilder);
-    this._reassertScaledPreserveOneToOnes(finalBuilder);
-    this._reassertNestedEmitEvents(finalBuilder);
+    this._applyDerivedValueChunks(finalBuilder);
     this._reassertDelegateImplEvents(finalBuilder);
-    if (isPersistedJobEventsReady()) {
-      this._reassertPersistedJobEventsOneToOnes(
-        finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
-      );
-    }
     this._reassertDelegateImplEvents(finalBuilder);
     this._reassertMintingOneToOne(finalBuilder);
     this._reassertFixedStateOutputs(finalBuilder);
-    if (isPersistedJobEventsReady()) {
-      this._reassertPersistedJobEventsOneToOnes(
-        finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
-      );
-    }
     this._reassertDelegateImplEvents(finalBuilder);
     this._restoreSwappedTokenFunderSlots(finalBuilder);
 
@@ -14926,7 +14058,7 @@ export class StatefulTransactionBuilder {
       }
     }
 
-    // Rebind witnesses while planned tails still name the jobEvents band, then
+    // Rebind witnesses while planned tails still name the collection-value band, then
     // write the OP_TRUE none-cap tails onto disposable pads.
     const reboundViews = this._repackViewTailsAfterMaterialization(finalBuilder);
     if (reboundViews) {
@@ -14935,25 +14067,11 @@ export class StatefulTransactionBuilder {
     }
     this._placeTailReturnAfterSwappedTokenBlock(finalBuilder);
     if (reboundViews) this._applyDerivedValueChunks(finalBuilder);
-    this._materializeJobEventsBand(finalBuilder);
-    this._ensureLiveJobEventsBand(finalBuilder);
-    if (isPersistedJobEventsReady()) {
-      this._reassertPersistedJobEventsOneToOnes(
-        finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
-      );
-    }
+    this._applyDerivedValueChunks(finalBuilder);
     this._reassertDelegateImplEvents(finalBuilder);
-    this._reassertNestedEmitEvents(finalBuilder);
     this._reassertDelegateImplEvents(finalBuilder);
-    this._reassertScaledPreserveOneToOnes(finalBuilder);
-    this._reassertNestedEmitEvents(finalBuilder);
     this._reassertDelegateImplEvents(finalBuilder);
     this._reassertFixedStateOutputs(finalBuilder);
-    if (isPersistedJobEventsReady()) {
-      this._reassertPersistedJobEventsOneToOnes(
-        finalBuilder, this._scaledEmitOutputIndex(finalBuilder.outputs.length) ?? -1,
-      );
-    }
     this._reassertDelegateImplEvents(finalBuilder);
     this._restoreDeclaredMutableEntrySlots(finalBuilder);
     // A complete dynamic write supersedes any old collection chunk that also
@@ -15004,6 +14122,35 @@ export class StatefulTransactionBuilder {
         );
       }
     };
+    let previousRepeatedReturnBands = '';
+    const debugRepeatedReturnBands = (stage: string): void => {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_RETURN_COORDINATES !== '1') return;
+      const bands = this.externalCallUtxoGroups.flatMap((group, groupIndex) => {
+        const width = group.loopReturnCommitments?.length ?? 0;
+        if (width < 2 || group.returnOutputIndex === undefined) return [];
+        return [{
+          groupIndex,
+          functionName: group.logicalFunctionName ?? group.functionName,
+          returnOutputIndex: group.returnOutputIndex,
+          outputs: Array.from({ length: width }, (_unused, offset) => {
+            const index = group.returnOutputIndex! + offset;
+            const output = finalBuilder.outputs[index];
+            return {
+              index,
+              lockingBytecode: output?.to instanceof Uint8Array ? binToHex(output.to) : output?.to,
+              category: output?.token?.category,
+              capability: output?.token?.nft?.capability,
+              commitment: output?.token?.nft?.commitment,
+            };
+          }),
+        }];
+      });
+      const fingerprint = JSON.stringify(bands);
+      if (fingerprint === previousRepeatedReturnBands) return;
+      previousRepeatedReturnBands = fingerprint;
+      console.error('repeated-return-band-change', { stage, bands });
+    };
     // Output ownership is finalized only after the event, dynamic-state, and
     // fixed-state materializers above. Some of those repairs legitimately
     // replace provisional pads which may have carried a consumed logical
@@ -15017,42 +14164,114 @@ export class StatefulTransactionBuilder {
       // value. Input-bearing owners at overlapping coordinates are restored by
       // the conservation passes below.
       this._applyLearnedWriterEvents(finalBuilder);
+      debugRepeatedReturnBands('apply-learned-writer-events');
       this._reassertAuthenticatedEventOutputs(finalBuilder);
+      debugRepeatedReturnBands('reassert-authenticated-event-outputs');
       this._clearUnclaimedConditionalEventSlots(finalBuilder);
+      debugRepeatedReturnBands('clear-unclaimed-conditional-event-slots');
       this._stripSurplusDerivedValueChunkLocks(finalBuilder);
-      // Read-only iteration chunks authenticate output[INPUTINDEX] exactly. Output-only event/dynamic-band
-      // materializers may relocate those twins, but they cannot consume or rewrite them.
+      debugRepeatedReturnBands('strip-surplus-derived-value-chunk-locks');
+      // Read-only iteration entries and compiler-declared sorted-batch proofs authenticate
+      // output[their exact input index]. Output-only materializers may relocate these twins, but they cannot
+      // consume or rewrite them.
       reassertReadOnlyMutableOneToOnes(
-        finalBuilder.outputs, finalBuilder.inputs, this.iterationEntryInputs,
+        finalBuilder.outputs,
+        finalBuilder.inputs,
+        this.iterationEntryInputs,
       );
+      reassertCompilerReadOnlyBatchProofOutputs(finalBuilder.outputs, finalBuilder.inputs);
+      debugRepeatedReturnBands('reassert-read-only-mutable-one-to-ones');
       // Delegate-event deduplication can demote a provisional clone at the
       // same physical coordinate as a later participant's master. A consumed
       // minting NFT is an input-bearing owner of that coordinate, so it wins
       // over any output-only placeholder regardless of call topology.
       this._reassertMintingOneToOne(finalBuilder);
+      debugRepeatedReturnBands('reassert-minting-one-to-one');
       reassertScidIdentityOutputs(
         finalBuilder.outputs,
         finalBuilder.inputs,
         this._scidReservedIndices(finalBuilder.outputs.length),
       );
+      debugRepeatedReturnBands('reassert-scid-identity-outputs');
       // In-block return slots are output-only covenant resources, so they must
       // be restored after every input-bearing owner has claimed its coordinate.
       // Doing this before balancing also lets any displaced output participate
       // in the final satoshi-conservation pass.
       this._reassertInBlockWriterReturns(finalBuilder);
+      debugRepeatedReturnBands('reassert-in-block-writer-returns');
       rebalanceFunderSurplus();
+      debugRepeatedReturnBands('rebalance-funder-surplus');
     };
     const reassertFinalLayout = (): void => {
+      debugRepeatedReturnBands('before-final-layout');
       this._reconcileMaterializedValueChunkWitnesses(finalBuilder);
+      debugRepeatedReturnBands('reconcile-materialized-value-chunk-witnesses');
       this._reconcileMaterializedInputWitnesses(finalBuilder);
+      debugRepeatedReturnBands('reconcile-materialized-input-witnesses');
       this._reconcileMaterializedPredOutWitnesses(finalBuilder);
+      debugRepeatedReturnBands('reconcile-materialized-pred-out-witnesses');
       this._reassertMaterializedBatchPredecessorOutputs(finalBuilder);
+      debugRepeatedReturnBands('reassert-materialized-batch-predecessor-outputs');
       reassertFinalConservation();
       this._reconcileMaterializedReturnWitnesses(finalBuilder);
+      debugRepeatedReturnBands('reconcile-materialized-return-witnesses');
       this._constrainParticipantImmutableOutputs(finalBuilder);
+      debugRepeatedReturnBands('constrain-participant-immutable-outputs');
     };
     reassertFinalLayout();
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_OUTPUT_PLAN === '1') {
+      for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
+        if (!group.blockLayout || ((group.plannedEntryInserts?.length ?? 0) === 0
+          && (group.batchPredecessorOutputs?.length ?? 0) === 0
+          && (group.dynamicChunkResources?.length ?? 0) === 0)) continue;
+        const master = group.masterUtxo as UnlockableUtxo | undefined;
+        if (!master) continue;
+        const masterIndex = this.allInputs.findIndex((input) => input.txid.toLowerCase() === master.txid.toLowerCase()
+          && input.vout === master.vout);
+        if (masterIndex < 0) continue;
+        const start = masterIndex + (group.blockLayout.trailingBase ?? group.blockLayout.blockSize);
+        const end = Math.min(finalBuilder.outputs.length, start + 12);
+        console.error('compiler-route-final-trailing', JSON.stringify({
+          groupIndex,
+          categoryId: group.categoryId,
+          route: group.compilerRoute?.abiFunction.name,
+          masterIndex,
+          start,
+          outputs: finalBuilder.outputs.slice(start, end).map((output, offset) => ({
+            index: start + offset,
+            lockingBytecode: output.to instanceof Uint8Array ? binToHex(output.to) : output.to,
+            category: output.token?.category,
+            capability: output.token?.nft?.capability,
+            commitment: output.token?.nft?.commitment,
+          })),
+        }));
+      }
+    }
     sendTiming('final-materialization');
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RETURN_COORDINATES === '1') {
+      for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
+        const width = group.loopReturnCommitments?.length ?? 0;
+        if (width < 2 || group.returnOutputIndex === undefined) continue;
+        console.error('repeated-return-final-outputs', {
+          groupIndex,
+          functionName: group.logicalFunctionName ?? group.functionName,
+          returnOutputIndex: group.returnOutputIndex,
+          outputs: Array.from({ length: width }, (_unused, offset) => {
+            const index = group.returnOutputIndex! + offset;
+            const output = finalBuilder.outputs[index];
+            return {
+              index,
+              lockingBytecode: output?.to instanceof Uint8Array ? binToHex(output.to) : output?.to,
+              category: output?.token?.category,
+              capability: output?.token?.nft?.capability,
+              commitment: output?.token?.nft?.commitment,
+            };
+          }),
+        });
+      }
+    }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1') {
       console.error('preflight-return-outputs', finalBuilder.outputs.flatMap((output, index) => (
@@ -15304,7 +14523,7 @@ export class StatefulTransactionBuilder {
           console.error('submit-fail-layout', {
             reason,
             outputCount: finalBuilder.outputs.length,
-            jobEventsBand: this.getPublishJobEventsBand(),
+            collectionValueBand: this.getCollectionValueOutputBand(),
             derivedEntries: [...this.externalCallEntryOutputsByIndex.entries()].map(([index, placed]) => ({
               index, cat: placed.categoryId.slice(0, 8), commit: placed.commitment.slice(0, 24),
               len: placed.commitment.length,
@@ -15354,7 +14573,7 @@ export class StatefulTransactionBuilder {
               };
             }),
             bandSlots: (() => {
-              const band = this.getPublishJobEventsBand();
+              const band = this.getCollectionValueOutputBand();
               if (!band) return [];
               return Array.from({ length: band.nNew }, (_u, offset) => {
                 const index = band.start + offset;
@@ -15404,7 +14623,8 @@ export class StatefulTransactionBuilder {
         + 'The network provider may be compromised.',
       );
     }
-    this._persistPlacedJobEventsBand(finalBuilder, txid);
+    this._commitPlacedCollectionValueBands(finalBuilder, txid);
+    this._commitInlineCollectionValues();
 
     const decoded = decodeTransactionUnsafe(rawTxBin);
     const details = attachWait({ ...decoded, txid, hex: rawTx } as TransactionDetails, this.builderOptions.provider);
@@ -15465,7 +14685,7 @@ export class StatefulTransactionBuilder {
 }
 
 onMockNetworkProviderReset(() => {
-  StatefulTransactionBuilder.clearPersistedJobEvents();
+  clearCollectionValueRecords();
 });
 
 /**

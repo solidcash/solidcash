@@ -35,6 +35,39 @@ describe('message-bus compilation selection', () => {
       .some((input) => input.name === 'suppliedCallers')).toBe(true);
   });
 
+  it('publishes a distinct caller-visible return coordinate for every routed result row', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IToken { function balanceOf(address holder) external returns (uint); }
+      contract Escrow(address token) {
+        mapping(uint => uint) escrows;
+        uint next;
+        function readBalance(address currency) internal returns (uint) {
+          return IToken(currency).balanceOf(address(this));
+        }
+        function pay(bool useToken) external returns (uint) {
+          uint id = next;
+          uint amount = 1;
+          if (useToken) { amount = readBalance(token); }
+          escrows[id] = amount;
+          next = next + 1;
+          return id;
+        }
+      }`, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay'))
+      .toEqual(expect.objectContaining({ eligible: true }));
+    const returnSlots = artifact.messageBus?.route.blockLayout?.slots
+      .filter((slot) => slot.kind === 'returnEvent') ?? [];
+    expect(returnSlots.find((slot) => slot.slotIndex === undefined)).toBeDefined();
+    expect(returnSlots.filter((slot) => slot.slotIndex !== undefined).map((slot) => slot.slotIndex))
+      .toEqual(Array.from({ length: artifact.messageBus?.maximumRows ?? 0 }, (_unused, row) => row));
+  });
+
   it('binds a lazy delegate participant route to its own verifier', () => {
     const artifact = compileString(`contract DelegateLeaf {
       bigint counter;
@@ -45,6 +78,15 @@ describe('message-bus compilation selection', () => {
     expect(delegate?.messageBus?.verifierProgram).toBeDefined();
     expect(delegate?.messageBus?.route.inputs.map((input) => input.name))
       .toContain('__internal__activeVerifierIndex');
+    const routeBody = delegate?.functionBodies?.[delegate.messageBus!.route.selector];
+    expect(routeBody).toBeDefined();
+    const routeAsm = bytecodeToAsm(Uint8Array.from(Buffer.from(routeBody!, 'hex')));
+    // The standalone SDK supplies -1 while atomic composition supplies the verifier input. Handler invocations
+    // may leave runtime-only operands above this long-lived route parameter, so the optional-verifier gate must
+    // recover it by its stable bottom ordinal rather than a literal top-relative depth.
+    expect(routeAsm).toMatch(
+      /OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_PICK OP_0 OP_GREATERTHANOREQUAL OP_IF/,
+    );
   });
 
   // Explicit true is a request, not an assertion: it opts out of graph-edge narrowing but keeps the direct-only
@@ -110,6 +152,59 @@ describe('message-bus compilation selection', () => {
     ]);
     expect(artifact.messageBus?.route.entryAccesses?.flatMap((access) => access.keyParams)
       .some((key) => key.includes('AbiDecodeAtNode'))).toBe(false);
+  });
+
+  it('publishes physical entry ownership for synthesized indexed collection getters', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract IndexedGetterRoute {
+        struct Event { uint8 kind; bytes actor; bytes data; uint32 timestamp; }
+        mapping(uint => Event[]) public events;
+        function append(uint key, Event memory value) public {
+          events[key].push(value);
+          require(events[key].length > 0);
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    const getter = artifact.messageBus?.handlers.find((handler) => handler.name === 'events');
+    const append = artifact.messageBus?.handlers.find((handler) => handler.name === 'append');
+    expect(getter).toEqual(expect.objectContaining({ eligible: true, physicalEntrySlots: [0] }));
+    expect(append).toEqual(expect.objectContaining({ eligible: true, physicalEntrySlots: [0] }));
+    expect(artifact.messageBus?.route.entryAccesses).toEqual([
+      expect.objectContaining({ collection: 'events', keyParams: ['__message_bus_key_events_0'] }),
+    ]);
+    expect(artifact.messageBus?.route.entryAccesses?.flatMap((access) => access.keyParams)
+      .some((key) => key.includes('AbiDecodeAtNode'))).toBe(false);
+  });
+
+  it('gates route-union sorted settlement on mutation ownership rather than one inactive sentinel', () => {
+    const artifact = compileString(`contract RoutedMap {
+      mapping(uint => uint) values;
+      function read(uint key) public view returns (uint) { return values[key]; }
+      function write(uint key, uint value) public { values[key] = value; require(values[key] == value); }
+    }`, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'read'))
+      .toEqual(expect.objectContaining({ eligible: true }));
+    expect(artifact.messageBus?.route.sortedBatchInfo?.length).toBeGreaterThan(0);
+    const routeBody = artifact.functionBodies?.['53434231'];
+    expect(routeBody).toBeDefined();
+    const routeAsm = bytecodeToAsm(Uint8Array.from(Buffer.from(routeBody!, 'hex')));
+    // -1 and nonnegative witnesses own mutations. Of the lower sentinels, -2 owns no physical collection output;
+    // -3 is an authenticated read lane which preserves its uniquely-owned proof at the fixed output slot.
+    expect(routeAsm).toMatch(/OP_1NEGATE OP_GREATERTHANOREQUAL OP_IF/);
+    expect(routeAsm).toMatch(/82 OP_NUMEQUAL OP_SUB/);
   });
 
   it('copies route-owned sorted mapping keys by stable bottom ordinal', () => {
@@ -380,6 +475,61 @@ describe('message-bus compilation selection', () => {
       }),
     ]);
     expect(artifact.messageBus?.route.blockLayout).toMatchObject({ trailingCapacity: 64 });
+  });
+
+  it('keeps route-safe siblings when a computed collection key has no unique physical row', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ISink { function ping(uint value) external; }
+      contract ComputedRowSelection {
+        struct Record { address owner; }
+        ISink sink;
+        Record[] records;
+        mapping(uint => mapping(address => bool)) public permissions;
+
+        function edge() internal { sink.ping(1); }
+        function update(uint id, address[] memory denied) internal {
+          for (uint i = 0; i < denied.length; i++) {
+            permissions[id][denied[i]] = false;
+            edge();
+          }
+        }
+        function computedImpl(uint id, bool enabled) internal {
+          edge();
+          records[id].owner = records[id].owner;
+          if (enabled) {
+            address[] memory denied = new address[](1);
+            denied[0] = records[id].owner;
+            update(id, denied);
+          }
+          edge();
+          records[id].owner = address(0);
+        }
+        function computed(uint id) public {
+          computedImpl(id, true);
+          require(true);
+        }
+        function parameterized(uint id, address account) public {
+          edge();
+          permissions[id][account] = true;
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 10_000_000,
+      optimizeForCompilationSpeed: true,
+      suppressWarnings: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'parameterized'))
+      .toEqual(expect.objectContaining({ eligible: true }));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'computed'))
+      .toEqual(expect.objectContaining({
+        eligible: false,
+        rejectionReason: 'handler-route-generation-unsupported',
+      }));
   });
 
   it('keeps valid external siblings when the fast route attributes one generated clone failure', () => {

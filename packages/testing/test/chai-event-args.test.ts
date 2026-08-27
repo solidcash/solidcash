@@ -1,4 +1,5 @@
 import { cashAddressToLockingBytecode } from '@bitauth/libauth';
+import { hash160 } from '@solidcash/utils';
 import { describe, expect as vitestExpect, it } from 'vitest';
 import { expect } from '../src/chai.js';
 
@@ -25,6 +26,16 @@ describe('chai empty-address and event predicates', () => {
       .map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
     expect(lockingBytecodeHex).to.equal(address);
     expect(address).to.equal(lockingBytecodeHex);
+  });
+
+  it('compares Solidity-narrowed identities with native BCH locking bytecodes', () => {
+    const p2pkh = Uint8Array.from([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x42), 0x88, 0xac]);
+    const p2sh32 = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x24), 0x87]);
+
+    expect(p2pkh.slice(3, 23)).to.equal(p2pkh);
+    expect(p2pkh).to.deep.equal(p2pkh.slice(3, 23));
+    expect(`0x${Array.from(hash160(p2sh32), (byte) => byte.toString(16).padStart(2, '0')).join('')}`)
+      .to.equal(p2sh32);
   });
 
   it('invokes withArgs predicates against receipt event args', async () => {
@@ -123,5 +134,29 @@ describe('chai empty-address and event predicates', () => {
     await vitestExpect(
       expect({ txid: 'ab' }).to.emit({}, 'JobEvent').withArgs(1n),
     ).rejects.toThrow(/has no decoded events/);
+  });
+});
+
+describe('chai revert assertions', () => {
+  it('matches the reason produced by execution', async () => {
+    const transaction = { debug: () => { throw new Error('expected reason'); } };
+    await expect(transaction).to.be.revertedWith('expected reason');
+  });
+
+  it('does not accept a reason merely because transaction metadata declares it', async () => {
+    const transaction = {
+      debug: () => { throw new Error('different runtime failure'); },
+      declaresRevertReason: () => true,
+    };
+    await vitestExpect(expect(transaction).to.be.revertedWith('expected reason'))
+      .rejects.toThrow(/different runtime failure/);
+  });
+
+  it('matches a custom-error name but rejects unverifiable custom-error arguments', async () => {
+    const transaction = { debug: () => { throw new Error('revert ExampleError(...)'); } };
+    await expect(transaction).to.be.revertedWithCustomError({}, 'ExampleError');
+    await vitestExpect(
+      expect(transaction).to.be.revertedWithCustomError({}, 'ExampleError').withArgs(1n),
+    ).rejects.toThrow(/cannot yet verify its arguments/);
   });
 });

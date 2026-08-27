@@ -1,3 +1,7 @@
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 export interface CompatibilityTarget { hardhat: 2 | 3; ethers: 5 | 6 }
 export interface AliasRule { find: string | RegExp; replacement: string }
 export interface ViteLikeConfig {
@@ -7,22 +11,17 @@ export interface ViteLikeConfig {
   [key: string]: unknown;
 }
 
-const testingEntry = (name: string): string => fileURLToPath(
-  new URL(`../../testing/dist/${name}.js`, import.meta.url),
-);
+const require = createRequire(import.meta.url);
+const packageRoot = (name: string): string => path.dirname(require.resolve(`${name}/package.json`));
+const testingRoot = packageRoot('@solidcash/testing');
+const solidcashRoot = packageRoot('solidcash');
+const solidhatRoot = fileURLToPath(new URL('..', import.meta.url));
+const testingEntry = (name: string): string => path.join(testingRoot, 'dist', `${name}.js`);
 const testingStub = (name: string): string => testingEntry(`stubs/${name}`);
-const solidhatEntry = (name: string): string => fileURLToPath(
-  new URL(`../dist/${name}.js`, import.meta.url),
-);
-const solidcashEntry = (name: string): string => fileURLToPath(
-  new URL(`../../solidcash/dist/${name}.js`, import.meta.url),
-);
-const solidcashVitest = fileURLToPath(
-  new URL('../../solidcash/dist/test/TestExtensions.js', import.meta.url),
-);
-const testingSetup = fileURLToPath(
-  new URL('../../testing/dist/vitest-setup.js', import.meta.url),
-);
+const solidhatEntry = (name: string): string => path.join(solidhatRoot, 'dist', `${name}.js`);
+const solidcashEntry = (name: string): string => path.join(solidcashRoot, 'dist', `${name}.js`);
+const solidcashVitest = path.join(solidcashRoot, 'dist/test/TestExtensions.js');
+const testingSetup = path.join(testingRoot, 'dist/vitest-setup.js');
 
 export function compatibilityAliases(target: CompatibilityTarget): Record<string, string> {
   return {
@@ -82,4 +81,3 @@ export function solidhatPreset(target: CompatibilityTarget, user: ViteLikeConfig
     },
   };
 }
-import { fileURLToPath } from 'url';

@@ -1,21 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { hash160 } from '@solidcash/utils';
 import type {
-  ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression, FunctionArgument,
+  AbiFunction, ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression, FunctionArgument,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/index.js';
 import {
   anchorRoutedDynamicResourcesAtOwner,
   canRefreshReachedCallFromPostState,
+  externalCallRuntimeOccurrences,
+  externalCallGraphOccurrences,
+  externalCallSourcesAtOccurrence,
   externalCallTargetSourceLockingBytecodeHex,
   externalReturnParamSlot,
   groupIndexForExternalCallSlot,
+  hasStatefulDerivationWork,
   inactiveMessageBusRouteWitness,
   isSdkResolvedExternalCallTopologyWitness,
+  mergeCallerStateForArgumentRefresh,
   physicalExternalCallSelectorHex,
   rebaseRoutedBatchProofOffsets,
   selectedMessageBusResourceMetadata,
+  planMessageBusDynamicResourceActivity,
 } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
@@ -126,11 +132,148 @@ describe('compiler-published external-call predicate evaluation', () => {
     });
   });
 
+  it('excludes zero-cardinality runtime loops from the concrete resource frame', () => {
+    const selected = selectedMessageBusResourceMetadata([{
+      handler: {
+        name: 'writeMany',
+        inputs: [{ name: 'keys', type: 'bytes32[]' }],
+        entryLoopWrites: ['balances'],
+        entryLoopWriteSignatures: { balances: 'balances:mapping(bytes32 => int)' },
+        sortedUpsertLoopInfo: [{
+          collection: 'balances', fixedKeyParams: [], varyingArrayParam: 'keys',
+          valueConst: '1', op: 'set',
+        }],
+        dynamicWrites: ['records'],
+      },
+      args: [[]],
+    }]);
+
+    expect(selected).toEqual({
+      entryLoopWrites: [],
+      entryLoopWriteSignatures: {},
+      loopCollections: [],
+      dynamicReads: [],
+      dynamicWrites: ['records'],
+    });
+  });
+
+  it('retains a loop when any concrete occurrence is non-empty', () => {
+    const handler: AbiFunction = {
+      name: 'writeMany',
+      inputs: [{ name: 'keys', type: 'bytes32[]' }],
+      entryLoopWrites: ['balances'],
+      entryLoopWriteSignatures: { balances: 'balances:mapping(bytes32 => int)' },
+      sortedUpsertLoopInfo: [{
+        collection: 'balances', fixedKeyParams: [], varyingArrayParam: 'keys',
+        valueConst: '1', op: 'set',
+      }],
+    };
+
+    const selected = selectedMessageBusResourceMetadata([
+      { handler, args: [[]] },
+      { handler, args: [[new Uint8Array(32)]] },
+    ]);
+
+    expect(selected).toEqual({
+      entryLoopWrites: ['balances'],
+      entryLoopWriteSignatures: { balances: 'balances:mapping(bytes32 => int)' },
+      loopCollections: ['balances'],
+      dynamicReads: [],
+      dynamicWrites: [],
+    });
+  });
+
+  it('retains the compiler-published dynamic union for every concrete envelope', () => {
+    const published = {
+      dynamicReads: ['records'],
+      dynamicWrites: ['records', 'audit'],
+    };
+    expect(planMessageBusDynamicResourceActivity(published, ['audit', 'records'])).toEqual({
+      readOnly: [],
+      writes: ['audit', 'records'],
+    });
+  });
+
+  it('keeps genuinely read-only dynamic runs separate from published writes', () => {
+    expect(planMessageBusDynamicResourceActivity({
+      dynamicReads: ['lookup', 'records'], dynamicWrites: ['records'],
+    }, ['records', 'lookup'])).toEqual({ readOnly: ['lookup'], writes: ['records'] });
+  });
+
+  it('does not skip derivation for a dynamic-only routed state write', () => {
+    const noWork = {
+      requiredStateNfts: 0,
+      entryAccesses: 0,
+      entryLoopWrites: 0,
+      sortedLoops: 0,
+      dynamicWrites: 0,
+      emits: 0,
+      transfers: 0,
+      tokenEffects: 0,
+      externalCalls: 0,
+      externalReads: 0,
+      returns: 0,
+    };
+
+    expect(hasStatefulDerivationWork(noWork)).toBe(false);
+    expect(hasStatefulDerivationWork({ ...noWork, dynamicWrites: 1 })).toBe(true);
+  });
+
   it('resolves loop-index sources relative to the reached occurrence', () => {
     expect(evaluator._resolveExternalArgs(
       [{ kind: 'loopIndex', initialValue: '2', stepValue: '3' }],
       [], artifact, undefined, undefined, undefined, 4,
     )).toEqual([14n]);
+  });
+
+  it('materializes every array-backed external-call loop occurrence with its own arguments', () => {
+    const call = {
+      callsiteId: 4,
+      occurrence: 'loop',
+      interfaceName: 'IReader',
+      functionName: 'read',
+      requiredDataNftIndices: [],
+      argSources: [{ kind: 'arrayElement', paramIndex: 0, indexValue: 0 }],
+    } satisfies ExternalCallAbi;
+    const args: FunctionArgument[] = [[11n, 22n, 33n]];
+    const occurrences = externalCallRuntimeOccurrences(call, args);
+
+    expect(occurrences).toEqual([0, 1, 2]);
+    expect(occurrences?.map((occurrence) => evaluator._resolveExternalArgs(
+      externalCallSourcesAtOccurrence(call.argSources, occurrence),
+      args, artifact, undefined, undefined, undefined, occurrence,
+    ))).toEqual([[11n], [22n], [33n]]);
+  });
+
+  it('refuses an external-call loop when array-backed occurrence proofs disagree', () => {
+    const call = {
+      occurrence: 'loop',
+      interfaceName: 'IReader',
+      functionName: 'readPair',
+      requiredDataNftIndices: [],
+      argSources: [
+        { kind: 'arrayElement', paramIndex: 0, indexValue: 0 },
+        { kind: 'arrayElement', paramIndex: 1, indexValue: 0 },
+      ],
+    } satisfies ExternalCallAbi;
+
+    expect(externalCallRuntimeOccurrences(call, [[1n, 2n], [3n]])).toBeUndefined();
+  });
+
+  it('defers a read-only returned-array loop to authenticated return-width expansion', () => {
+    const call = {
+      occurrence: 'loop',
+      resultArrayOutput: 0,
+      maximumOccurrences: 64,
+      interfaceName: 'IReader',
+      functionName: 'read',
+      requiredDataNftIndices: [],
+      argSources: [{ kind: 'loopIndex', initialValue: '0', stepValue: '1' }],
+    } satisfies ExternalCallAbi;
+
+    expect(externalCallRuntimeOccurrences(call, [])).toBeUndefined();
+    expect(externalCallGraphOccurrences(call, [], false)).toEqual([0]);
+    expect(externalCallGraphOccurrences(call, [], true)).toBeUndefined();
   });
 
   it('resolves address(this) from the authenticated execution context', () => {
@@ -272,14 +415,62 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(Uint8Array.of(1, 2, 0x44, 0x56));
   });
 
-  it('packs a zero address cast to uint160 as the compiler zero value', () => {
+  it('packs address-to-uint160 casts as 20-byte Solidity identities', () => {
     const expression: ExternalCallExpression = {
       kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
     };
+    const p2pkhHash = new Uint8Array(20).fill(0x47);
+    const p2pkh = Uint8Array.of(0x76, 0xa9, 0x14, ...p2pkhHash, 0x88, 0xac);
+    const p2sh32 = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x23), 0x87);
+    const evaluate = (value: FunctionArgument): FunctionArgument | undefined => (
+      evaluator._evaluateExternalExpression(
+        expression, [value], artifact, undefined, [{ type: 'address' }],
+      )
+    );
 
-    expect(evaluator._evaluateExternalExpression(
-      expression, [`0x${'00'.repeat(20)}`], artifact, undefined, [{ type: 'address' }],
-    )).toEqual(new Uint8Array());
+    expect(evaluate(`0x${'00'.repeat(20)}`)).toEqual(new Uint8Array(20));
+    expect(evaluate(p2pkh)).toEqual(p2pkhHash);
+    expect(evaluate(p2sh32)).toEqual(hash160(p2sh32));
+  });
+
+  it('defers argument refresh while a dynamic write has only revealed its new byte length', () => {
+    const lastItem: ExternalCallExpression = {
+      kind: 'binary',
+      operator: '-',
+      left: {
+        kind: 'unary',
+        operator: '.length',
+        expression: { kind: 'state', name: 'items' },
+        value: '1',
+      },
+      right: { kind: 'literal', type: 'bigint', value: '1' },
+    };
+    const sourceExpression: ArgSource = { kind: 'expression', expression: lastItem };
+    const currentState = { items: [] };
+
+    // Before execution, the compiler-published +1 write delta makes the first appended index resolvable.
+    expect(evaluator._resolveExternalArgs(
+      [sourceExpression], [], artifact, currentState, [], undefined, 0, false,
+    )).toEqual([0n]);
+
+    const incompleteState = mergeCallerStateForArgumentRefresh(
+      currentState, { 'items$len': 64n }, [{ name: 'items', type: 'Item[]' }],
+    );
+    expect(incompleteState).not.toHaveProperty('items');
+    expect(evaluator._resolveExternalArgs(
+      [sourceExpression], [], artifact, incompleteState, [], undefined, 0, true,
+    )).toBeUndefined();
+
+    const completeState = mergeCallerStateForArgumentRefresh(
+      currentState, { 'items$len': 64n, items: [1n] }, [{ name: 'items', type: 'Item[]' }],
+    );
+    expect(evaluator._resolveExternalArgs(
+      [sourceExpression], [], artifact, completeState, [], undefined, 0, true,
+    )).toEqual([0n]);
+
+    expect(mergeCallerStateForArgumentRefresh(
+      { items: [1n] }, { 'items$len': 0n }, [{ name: 'items', type: 'Item[]' }],
+    ).items).toEqual([]);
   });
 });
 

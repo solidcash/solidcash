@@ -363,20 +363,27 @@ export function createMessageBusVerifierUnlocker(
     contract, `MessageBusVerifier_${categoryId.slice(0, 8)}`, covenantScript, abiInputs,
     [densityReserve, ...verifierArgs, messageEnvelope], 'p2sh32',
   );
-  const empty = create(new Uint8Array());
-  const emptyLength = empty.generateUnlockingBytecode({} as never).length;
-  let reserveLength = Math.max(0, MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES - emptyLength);
-  let unlocker = create(new Uint8Array(reserveLength));
-  let encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
-  if (encodedLength < MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES) {
-    reserveLength += MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES - encodedLength;
-    unlocker = create(new Uint8Array(reserveLength));
-    encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
-  }
-  if (encodedLength < MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES) {
-    throw new Error('message bus verifier density reserve calculation did not reach its encoded-byte floor');
-  }
-  return unlocker;
+  const createSized = (minimumBytes: number): ContractUnlocker => {
+    if (!Number.isSafeInteger(minimumBytes) || minimumBytes < 0) {
+      throw new Error('message bus verifier density reserve byte floor must be a non-negative safe integer');
+    }
+    const empty = create(new Uint8Array());
+    const emptyLength = empty.generateUnlockingBytecode({} as never).length;
+    let reserveLength = Math.max(0, minimumBytes - emptyLength);
+    let unlocker = create(new Uint8Array(reserveLength));
+    let encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
+    if (encodedLength < minimumBytes) {
+      reserveLength += minimumBytes - encodedLength;
+      unlocker = create(new Uint8Array(reserveLength));
+      encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
+    }
+    if (encodedLength < minimumBytes) {
+      throw new Error('message bus verifier density reserve calculation did not reach its encoded-byte floor');
+    }
+    unlocker.withMinimumUnlockingBytecodeBytes = createSized;
+    return unlocker;
+  };
+  return createSized(MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES);
 }
 
 export function createDataNftUnlocker(
@@ -489,13 +496,17 @@ export function createValueChunkUnlocker(
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(valueChunkSignature(collection));
   const covenantScript = buildValueChunkCovenantScript(hexToBin(categoryId), collectionHash, slot, root);
-  return createCovenantContractUnlocker(
+  const unlocker = createCovenantContractUnlocker(
     contract,
     `ValueChunkNft_${categoryId.slice(0, 8)}`,
     covenantScript,
     [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
     [1n, BigInt(masterInputIndex)],
   );
+  // This spend destroys an old root-addressed value version. Unlike preservation covenants, its aligned output
+  // may therefore carry the replacement version (whose value root and P2SH32 locking bytecode are different).
+  unlocker.allowsAlignedOutputReplacement = true;
+  return unlocker;
 }
 
 // Read-only unlocker for a dynamic-storage chunk NFT: flag=0 (preserve, output==input) so an on-chain

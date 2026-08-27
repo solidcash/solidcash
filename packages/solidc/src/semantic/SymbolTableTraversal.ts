@@ -1542,6 +1542,22 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.refuseUnframedGraphEffects(node);
     this.planGraphEffectFrames(node);
 
+    // A generated handler can execute with caller operands below its ABI frame and graph operands above it, so
+    // neither end of the live stack is a stable basis for recovering the participant owner. Publish the route's
+    // authenticated transaction-layout relation here as part of semantic analysis, including for referenced
+    // contracts that take the abbreviated compilation path. The top-level compiler refreshes this value after
+    // adding any late compute sidecars that enlarge the final route block.
+    const messageBusRoute = node.functions.find((fn) => fn.messageBusRoute);
+    if (messageBusRoute?.blockLayout) {
+      const ownerInputOffset = messageBusRoute.modifiers.includes(FunctionModifier.DELEGATE)
+        ? messageBusRoute.blockLayout.blockSize : 0;
+      for (const fn of node.functions) {
+        if (fn.parameters.some((parameter) => parameter.name === '__internal__messageBusOwnerInput')) {
+          fn.messageBusOwnerInputOffset = ownerInputOffset;
+        }
+      }
+    }
+
     if (node.fallbackDef) {
       const loc = node.fallbackDef.location ? ` at line ${node.fallbackDef.location.start.line}` : '';
       console.log(`Warning: fallback() is a Solidity compatibility feature${loc}. Its usage on BCH is discouraged as BCH does not use the same contract call model.`);
@@ -4550,16 +4566,38 @@ export default class SymbolTableTraversal extends AstTraversal {
         && expressionType?.toString() === vt.toString();
       const valueParam = wholeValueWrite && chunkableValue && directValueParam
         ? valueIdentifier.name : undefined;
+      const arrayElementSource = node.arrayIndex !== undefined && !node.arrayPush && !node.arrayPop
+        && this.isOffChainEvaluableMappingValue(node.arrayIndex)
+        && this.isOffChainEvaluableMappingValue(node.expression)
+        ? `arrset(${this.canonicalizeExpression(node.arrayIndex)},${this.canonicalizeExpression(node.expression)})`
+        : undefined;
+      const valueSource: string | undefined = arrayElementSource
+        ?? (!wholeValueWrite || rmw ? undefined
+          : this.mappingLoopLastCounter(node)
+            ?? this.mappingRmwLiteralDelta(node)
+            ?? (node.expression instanceof IdentifierNode ? this.mappingLocalNetSource(node.expression.name) : undefined)
+            ?? (node.expression instanceof IntLiteralNode || node.expression instanceof BoolLiteralNode
+              ? this.canonicalizeExpression(node.expression)
+              : directValueParam ? `id:${valueIdentifier!.name}`
+                : node.expression instanceof TernaryOpNode || node.expression instanceof InstantiationNode
+                  || node.expression instanceof FunctionCallNode
+                  ? this.canonicalizeExpression(node.expression)
+                  : this.isOffChainEvaluableMappingValue(node.expression)
+                    ? this.canonicalizeExpression(node.expression) : undefined));
       if (existing) {
+        const alreadyWrote = existing.operations.includes('write');
         if (!existing.operations.includes('write')) existing.operations.push('write');
         if (rmw && !existing.operations.includes('read')) existing.operations.push('read');
         if (valueParam && existing.valueParam === undefined) existing.valueParam = valueParam;
+        if (alreadyWrote) existing.valueSource = valueSource;
+        else if (valueSource && existing.valueSource === undefined) existing.valueSource = valueSource;
       } else {
         const collSig = computeCollectionSignature(node.collection.name, node.collection.type.toString());
         map.set(slotKey, {
           collection: node.collection.name, collectionSignature: collSig,
           keyParams, keySources, operations: rmw ? ['read', 'write'] : ['write'], slotIndex: -1,
           ...(valueParam !== undefined && { valueParam }),
+          ...(valueSource !== undefined && { valueSource }),
         });
       }
       // Recurse into the value expression (may contain nested mapping accesses)
@@ -5700,6 +5738,204 @@ export default class SymbolTableTraversal extends AstTraversal {
     return undefined;
   }
 
+  /** Structural membership without following semantic back-references. */
+  private subtreeContains(root: Node, target: Node, seen = new Set<Node>()): boolean {
+    if (root === target) return true;
+    if (seen.has(root)) return false;
+    seen.add(root);
+    for (const [key, child] of Object.entries(root)) {
+      if (RESOLVED_BACKREF_KEYS.has(key) || key === 'sourceCallNode') continue;
+      if (child instanceof Node && this.subtreeContains(child, target, seen)) return true;
+      if (Array.isArray(child)) {
+        for (const item of child) {
+          if (item instanceof Node && this.subtreeContains(item, target, seen)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Statements which unconditionally execute before `target` on its lexical path. Nested plain/unchecked blocks
+   * are transparent. A call inside a loop has no single prior-state version, so that shape deliberately
+   * publishes no read-after-write provenance. Prior branches remain in the list as ambiguity barriers: their
+   * writes do not dominate the call, but may have changed the value it reads.
+   */
+  private dominatingStatementsBefore(
+    block: BlockNode | undefined, target: Node, prefix: StatementNode[] = [],
+  ): StatementNode[] | undefined {
+    if (!block) return undefined;
+    const appendCompleted = (statement: StatementNode): void => {
+      if (statement instanceof BlockNode) {
+        for (const nested of statement.statements ?? []) appendCompleted(nested);
+      } else if (statement instanceof UncheckedNode) {
+        for (const nested of statement.block.statements ?? []) appendCompleted(nested);
+      } else {
+        prefix.push(statement);
+      }
+    };
+    for (const statement of block.statements ?? []) {
+      if (!this.subtreeContains(statement, target)) {
+        appendCompleted(statement);
+        continue;
+      }
+      if (statement instanceof BlockNode) {
+        return this.dominatingStatementsBefore(statement, target, prefix);
+      }
+      if (statement instanceof UncheckedNode) {
+        return this.dominatingStatementsBefore(statement.block, target, prefix);
+      }
+      if (statement instanceof BranchNode) {
+        if (this.subtreeContains(statement.condition, target)) return prefix;
+        if (this.subtreeContains(statement.ifBlock, target)) {
+          return this.dominatingStatementsBefore(statement.ifBlock, target, prefix);
+        }
+        if (statement.elseBlock && this.subtreeContains(statement.elseBlock, target)) {
+          return this.dominatingStatementsBefore(statement.elseBlock, target, prefix);
+        }
+        return undefined;
+      }
+      if (statement instanceof WhileNode || statement instanceof DoWhileNode
+        || statement instanceof CollectionIterationNode) return undefined;
+      return prefix;
+    }
+    return undefined;
+  }
+
+  /**
+   * Resolve an exact state-field read to the expression written by the latest unconditional, dominating write.
+   * This is intentionally a small SSA-style fold over compiler-lowered state writes, not an SDK-side model of a
+   * source contract. Matching is by state root + canonical key expressions + struct field path. Whole-struct
+   * rebuilds are projected through their declared constructor fields; conditional/loop writes, deletes, resizes,
+   * and any expression the compiler cannot prove are left unresolved.
+   */
+  private dominatingStateFieldValue(
+    read: FieldAccessNode, use: ExternalFunctionCallNode,
+  ): ExpressionNode | undefined {
+    type StatePath = { root: string; keys: readonly string[]; fields: readonly string[] };
+    type StateWrite = StatePath & { value: ExpressionNode };
+    const statePath = (expression: ExpressionNode): StatePath | undefined => {
+      if (expression instanceof CastNode) return statePath(expression.expression);
+      if (expression instanceof FieldAccessNode) {
+        const base = statePath(expression.expression);
+        return base && { ...base, fields: [...base.fields, expression.name] };
+      }
+      if (expression instanceof MappingAccessNode) {
+        return {
+          root: expression.name,
+          keys: expression.keys.map((key) => this.canonicalizeExpression(key)),
+          fields: [],
+        };
+      }
+      if (expression instanceof ArrayAccessNode) {
+        const base = statePath(expression.array);
+        return base && {
+          ...base,
+          keys: [...base.keys, this.canonicalizeExpression(expression.index)],
+        };
+      }
+      if (expression instanceof StateAccessNode) return { root: expression.name, keys: [], fields: [] };
+      if (expression instanceof IdentifierNode && this.stateVariableMap.has(expression.name)) {
+        return { root: expression.name, keys: [], fields: [] };
+      }
+      return undefined;
+    };
+    const target = statePath(read);
+    if (!target) return undefined;
+    const statements = this.dominatingStatementsBefore(this.currentFunction?.body, use);
+    if (!statements) return undefined;
+    const sameKeys = (left: StatePath, right: StatePath): boolean =>
+      left.root === right.root && left.keys.join('\0') === right.keys.join('\0');
+    const isPrefix = (prefixFields: readonly string[], fields: readonly string[]): boolean =>
+      prefixFields.length <= fields.length
+      && prefixFields.every((field, index) => fields[index] === field);
+    const writeOf = (statement: StatementNode): StateWrite | undefined => {
+      if (statement instanceof StateAssignNode) {
+        return { root: statement.name, keys: [], fields: [], value: statement.expression };
+      }
+      if (statement instanceof StateArrayAssignNode) {
+        return {
+          root: statement.name,
+          keys: [this.canonicalizeExpression(statement.index)],
+          fields: [],
+          value: statement.value,
+        };
+      }
+      if (statement instanceof MappingAssignNode) {
+        return {
+          root: statement.name,
+          keys: statement.keys.map((key) => this.canonicalizeExpression(key)),
+          fields: [],
+          value: statement.expression,
+        };
+      }
+      if (statement instanceof MappingFieldAssignNode) {
+        return {
+          root: statement.name,
+          keys: statement.keys.map((key) => this.canonicalizeExpression(key)),
+          fields: [statement.fieldName, ...(statement.trailingMembers ?? [])],
+          value: statement.expression,
+        };
+      }
+      return undefined;
+    };
+    const writesRoot = (node: Node, root: string, seen = new Set<Node>()): boolean => {
+      if (seen.has(node)) return false;
+      seen.add(node);
+      if ((node instanceof StateAssignNode || node instanceof StateArrayAssignNode
+          || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+          || node instanceof StateArrayDeleteNode || node instanceof MappingAssignNode
+          || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode
+          || node instanceof DeleteStateNode)
+        && node.name === root) return true;
+      for (const [key, child] of Object.entries(node)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || key === 'sourceCallNode') continue;
+        if (child instanceof Node && writesRoot(child, root, seen)) return true;
+        if (Array.isArray(child)) {
+          for (const item of child) if (item instanceof Node && writesRoot(item, root, seen)) return true;
+        }
+      }
+      return false;
+    };
+    const projectFields = (
+      value: ExpressionNode, fields: readonly string[],
+    ): ExpressionNode | undefined => {
+      let current = value;
+      for (const field of fields) {
+        while (current instanceof CastNode) current = current.expression;
+        if (!(current instanceof FunctionCallNode)) return undefined;
+        const struct = current.type instanceof StructType
+          ? current.type : this.structMap.get(current.identifier.name);
+        const index = struct?.fields.findIndex((candidate) => candidate.name === field) ?? -1;
+        if (index < 0 || index >= current.parameters.length) return undefined;
+        current = current.parameters[index];
+      }
+      return current;
+    };
+
+    for (let index = statements.length - 1; index >= 0; index -= 1) {
+      const statement = statements[index];
+      const write = writeOf(statement);
+      if (!write) {
+        if (writesRoot(statement, target.root)) return undefined;
+        continue;
+      }
+      if (!sameKeys(write, target)) continue;
+      if (isPrefix(write.fields, target.fields)) {
+        const value = projectFields(write.value, target.fields.slice(write.fields.length));
+        if (!value) return undefined;
+        const carried = statePath(value);
+        if (carried && carried.root === target.root
+          && carried.keys.join('\0') === target.keys.join('\0')
+          && carried.fields.join('\0') === target.fields.join('\0')) continue;
+        return value;
+      }
+      // A write below the value being read changes that composite value, but cannot be substituted as the whole.
+      if (isPrefix(target.fields, write.fields)) return undefined;
+    }
+    return undefined;
+  }
+
   private collectExternalCalls(
     node: Node,
     slots: ExternalCallSlot[],
@@ -6288,6 +6524,8 @@ export default class SymbolTableTraversal extends AstTraversal {
               return { kind: 'literal', type: 'bigint', value: member.value.toString() };
             }
           }
+          const writtenValue = this.dominatingStateFieldValue(expression, node);
+          if (writtenValue) return serializeExpression(writtenValue, seen);
           const inner = serializeExpression(expression.expression, seen);
           const fieldType = expression.type
             ?? expression.structType?.fields.find((field) => field.name === expression.name)?.type
@@ -7342,6 +7580,324 @@ export default class SymbolTableTraversal extends AstTraversal {
       return false;
     };
     return scan(fn.body);
+  }
+
+  private splitTopLevelCanonical(value: string): [string, string] | undefined {
+    let depth = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      const character = value[index];
+      if (character === '(' || character === '[' || character === '{') depth += 1;
+      else if (character === ')' || character === ']' || character === '}') depth -= 1;
+      else if (character === ',' && depth === 0) return [value.slice(0, index), value.slice(index + 1)];
+    }
+    return undefined;
+  }
+
+  private splitCanonicalArgs(inner: string): string[] {
+    const parts: string[] = [];
+    let rest = inner;
+    while (rest.length > 0) {
+      const pair = this.splitTopLevelCanonical(rest);
+      if (!pair) {
+        parts.push(rest);
+        break;
+      }
+      parts.push(pair[0]);
+      rest = pair[1];
+    }
+    return parts;
+  }
+
+  private foldCanonicalBinop(operator: string, left: string, right: string): string {
+    const literal = (source: string): bigint | undefined => {
+      const match = source.match(/^lit:(-?[0-9]+)$/);
+      return match ? BigInt(match[1]) : undefined;
+    };
+    const leftValue = literal(left);
+    const rightValue = literal(right);
+    if (leftValue !== undefined && rightValue !== undefined) {
+      if (operator === '+') return `lit:${(leftValue + rightValue).toString()}`;
+      if (operator === '-') return `lit:${(leftValue - rightValue).toString()}`;
+      if (operator === '*') return `lit:${(leftValue * rightValue).toString()}`;
+    }
+    if ((operator === '+' || operator === '-') && rightValue !== undefined) {
+      const nested = left.match(/^binop:([+-])\((.*)\)$/);
+      const pair = nested ? this.splitTopLevelCanonical(nested[2]) : undefined;
+      const innerRight = pair ? literal(pair[1]) : undefined;
+      if (nested && pair && innerRight !== undefined) {
+        const magnitude = nested[1] === '+'
+          ? (operator === '+' ? innerRight + rightValue : innerRight - rightValue)
+          : (operator === '+' ? -innerRight + rightValue : -innerRight - rightValue);
+        if (magnitude === 0n) return pair[0];
+        return magnitude > 0n
+          ? `binop:+(${pair[0]},lit:${magnitude.toString()})`
+          : `binop:-(${pair[0]},lit:${(-magnitude).toString()})`;
+      }
+    }
+    return `binop:${operator}(${left},${right})`;
+  }
+
+  private rewriteCtorExpr(
+    expression: ExpressionNode,
+    local: string,
+    previousByField: Map<string, string> | undefined,
+  ): string | undefined {
+    if (expression instanceof IntLiteralNode || expression instanceof BoolLiteralNode) {
+      return this.canonicalizeExpression(expression);
+    }
+    if (expression instanceof IdentifierNode) {
+      return this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name)
+        ? `id:${expression.name}` : undefined;
+    }
+    if (expression instanceof FieldAccessNode && expression.expression instanceof IdentifierNode
+      && expression.expression.name === local) {
+      return previousByField?.get(expression.name) ?? this.canonicalizeExpression(expression);
+    }
+    if (expression instanceof BinaryOpNode
+      && (expression.operator === '+' || expression.operator === '-' || expression.operator === '*')) {
+      const left = this.rewriteCtorExpr(expression.left, local, previousByField);
+      const right = this.rewriteCtorExpr(expression.right, local, previousByField);
+      return left === undefined || right === undefined
+        ? undefined : this.foldCanonicalBinop(expression.operator, left, right);
+    }
+    return this.canonicalizeExpression(expression);
+  }
+
+  private composeStructCtorNet(
+    local: string,
+    expression: FunctionCallNode | InstantiationNode,
+    previous: string | undefined,
+  ): string | undefined {
+    const constructorName = expression.identifier.name;
+    const struct = this.structMap.get(constructorName);
+    if (!struct) return undefined;
+    const prefix = expression instanceof InstantiationNode ? 'new' : 'call';
+    let previousByField: Map<string, string> | undefined;
+    if (previous) {
+      const match = previous.match(new RegExp(`^(?:call|new):${constructorName}\\((.*)\\)$`));
+      if (match) {
+        const args = this.splitCanonicalArgs(match[1]);
+        if (args.length === struct.fields.length) {
+          previousByField = new Map(struct.fields.map((field, index) => [field.name, args[index]]));
+        }
+      }
+    }
+    const parts = expression.parameters.map((parameter) => (
+      this.rewriteCtorExpr(parameter, local, previousByField)
+    ));
+    if (parts.some((part) => part === undefined) || parts.length !== struct.fields.length) return undefined;
+    return `${prefix}:${constructorName}(${parts.join(',')})`;
+  }
+
+  private mappingLocalNetSource(name: string): string | undefined {
+    if (!this.currentFunction) return undefined;
+    const steps: ExpressionNode[] = [];
+    const walk = (node: Node | undefined): void => {
+      if (!node) return;
+      if (node instanceof VariableDefinitionNode && node.name === name && node.expression) steps.push(node.expression);
+      if (node instanceof AssignNode && node.identifier.name === name) steps.push(node.expression);
+      for (const key of Object.keys(node)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const child = (node as unknown as Record<string, unknown>)[key];
+        if (child instanceof Node) walk(child);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(this.currentFunction);
+    if (steps.length === 0) return undefined;
+    let source: string | undefined;
+    const atom = (expression: ExpressionNode): string | undefined => {
+      if (expression instanceof IntLiteralNode || expression instanceof BoolLiteralNode) {
+        return this.canonicalizeExpression(expression);
+      }
+      if (expression instanceof IdentifierNode
+        && this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name)) {
+        return `id:${expression.name}`;
+      }
+      return undefined;
+    };
+    for (const expression of steps) {
+      if (expression instanceof MappingAccessNode) {
+        if (source !== undefined) return undefined;
+        continue;
+      }
+      if (expression instanceof InstantiationNode || expression instanceof FunctionCallNode) {
+        source = this.composeStructCtorNet(name, expression, source) ?? this.canonicalizeExpression(expression);
+        continue;
+      }
+      const direct = atom(expression);
+      if (direct) {
+        source = direct;
+        continue;
+      }
+      if (expression instanceof BinaryOpNode
+        && (expression.operator === '+' || expression.operator === '-' || expression.operator === '*')
+        && expression.left instanceof IdentifierNode && expression.left.name === name) {
+        const right = atom(expression.right);
+        if (source === undefined || right === undefined) return undefined;
+        source = `binop:${expression.operator}(${source},${right})`;
+        continue;
+      }
+      if (expression instanceof BinaryOpNode && expression.operator === '+'
+        && expression.right instanceof IdentifierNode && expression.right.name === name) {
+        const left = atom(expression.left);
+        if (source === undefined || left === undefined) return undefined;
+        source = `binop:+(${left},${source})`;
+        continue;
+      }
+      return undefined;
+    }
+    return source;
+  }
+
+  private mappingLoopLastCounter(node: MappingAssignNode): string | undefined {
+    if (!(node.expression instanceof IdentifierNode) || !this.currentFunction) return undefined;
+    const written = node.expression.name;
+    let bound: string | undefined;
+    const walk = (candidate: Node | undefined): void => {
+      if (!candidate || bound) return;
+      if (candidate instanceof WhileNode && candidate.condition instanceof BinaryOpNode
+        && candidate.condition.operator === '<') {
+        const { left, right } = candidate.condition;
+        if (left instanceof IdentifierNode && right instanceof IdentifierNode
+          && this.currentFunction?.parameters.some((parameter) => parameter.name === right.name)) {
+          const counter = left.name;
+          if (written === counter) bound = right.name;
+          else {
+            let assignsCounter = false;
+            const scanBody = (body: Node | undefined): void => {
+              if (!body || assignsCounter) return;
+              if (body instanceof AssignNode && body.identifier.name === written
+                && body.expression instanceof IdentifierNode && body.expression.name === counter) {
+                assignsCounter = true;
+                return;
+              }
+              for (const key of Object.keys(body)) {
+                if (RESOLVED_BACKREF_KEYS.has(key)
+                  || key === 'type' || key === 'symbolTable' || key === 'location') continue;
+                const child = (body as unknown as Record<string, unknown>)[key];
+                if (child instanceof Node) scanBody(child);
+                else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) scanBody(item);
+              }
+            };
+            scanBody(candidate.block);
+            if (assignsCounter) bound = right.name;
+          }
+        }
+      }
+      for (const key of Object.keys(candidate)) {
+        if (RESOLVED_BACKREF_KEYS.has(key)
+          || key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const child = (candidate as unknown as Record<string, unknown>)[key];
+        if (child instanceof Node) walk(child);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(this.currentFunction);
+    return bound === undefined ? undefined : `loopLast:id:${bound}`;
+  }
+
+  private mappingRmwLiteralDelta(node: MappingAssignNode): string | undefined {
+    const sameKey = (access: ExpressionNode): boolean => {
+      if (!(access instanceof MappingAccessNode)) return false;
+      if ((access.collection?.name ?? access.name) !== (node.collection?.name ?? node.name)) return false;
+      if (access.keys.length !== node.keys.length) return false;
+      return access.keys.every((key, index) => (
+        this.canonicalizeExpression(key) === this.canonicalizeExpression(node.keys[index])
+      ));
+    };
+    const directDelta = (expression: ExpressionNode): { op: '+' | '-'; magnitude: bigint } | undefined => {
+      if (!(expression instanceof BinaryOpNode)
+        || (expression.operator !== '+' && expression.operator !== '-')) return undefined;
+      let literal: IntLiteralNode | undefined;
+      if (sameKey(expression.left) && expression.right instanceof IntLiteralNode) literal = expression.right;
+      else if (expression.operator === '+' && sameKey(expression.right)
+        && expression.left instanceof IntLiteralNode) literal = expression.left;
+      return literal ? { op: expression.operator, magnitude: literal.value } : undefined;
+    };
+    const direct = directDelta(node.expression);
+    if (direct) return `binop:${direct.op}(entry,lit:${direct.magnitude.toString()})`;
+    if (!(node.expression instanceof IdentifierNode) || !this.currentFunction) return undefined;
+    const local = node.expression.name;
+    const deltas: Array<{ op: '+' | '-'; magnitude?: bigint; parameter?: string }> = [];
+    let foreign = false;
+    const isParameter = (expression: ExpressionNode): expression is IdentifierNode => (
+      expression instanceof IdentifierNode
+      && this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name) === true
+    );
+    const localDelta = (
+      expression: ExpressionNode,
+    ): { op: '+' | '-'; magnitude?: bigint; parameter?: string } | undefined => {
+      if (!(expression instanceof BinaryOpNode)
+        || (expression.operator !== '+' && expression.operator !== '-')) return undefined;
+      const leftLocal = expression.left instanceof IdentifierNode && expression.left.name === local;
+      const rightLocal = expression.right instanceof IdentifierNode && expression.right.name === local;
+      if (leftLocal && expression.right instanceof IntLiteralNode) {
+        return { op: expression.operator, magnitude: expression.right.value };
+      }
+      if (leftLocal && isParameter(expression.right)) return { op: expression.operator, parameter: expression.right.name };
+      if (expression.operator === '+' && rightLocal && expression.left instanceof IntLiteralNode) {
+        return { op: '+', magnitude: expression.left.value };
+      }
+      if (expression.operator === '+' && rightLocal && isParameter(expression.left)) {
+        return { op: '+', parameter: expression.left.name };
+      }
+      return undefined;
+    };
+    const consider = (target: string, expression: ExpressionNode): void => {
+      if (target !== local || foreign) return;
+      const delta = localDelta(expression);
+      if (delta) deltas.push(delta);
+      else if (!sameKey(expression)) foreign = true;
+    };
+    const walk = (candidate: Node | undefined): void => {
+      if (!candidate || foreign) return;
+      if (candidate instanceof VariableDefinitionNode && candidate.expression) {
+        consider(candidate.name, candidate.expression);
+      }
+      if (candidate instanceof AssignNode) consider(candidate.identifier.name, candidate.expression);
+      for (const key of Object.keys(candidate)) {
+        if (RESOLVED_BACKREF_KEYS.has(key)
+          || key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const child = (candidate as unknown as Record<string, unknown>)[key];
+        if (child instanceof Node) walk(child);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(this.currentFunction);
+    if (foreign || deltas.length === 0) return undefined;
+    const parameterDeltas = deltas.filter((delta) => delta.parameter !== undefined);
+    const literalDeltas = deltas.filter((delta) => delta.magnitude !== undefined);
+    if (parameterDeltas.length === 1 && literalDeltas.length === 0) {
+      const delta = parameterDeltas[0];
+      return `binop:${delta.op}(entry,id:${delta.parameter})`;
+    }
+    if (parameterDeltas.length > 0) return undefined;
+    let net = 0n;
+    for (const delta of literalDeltas) {
+      net = delta.op === '+' ? net + delta.magnitude! : net - delta.magnitude!;
+    }
+    if (net === 0n) return undefined;
+    return net > 0n
+      ? `binop:+(entry,lit:${net.toString()})`
+      : `binop:-(entry,lit:${(-net).toString()})`;
+  }
+
+  private isOffChainEvaluableMappingValue(node: ExpressionNode): boolean {
+    const isParameter = (expression: ExpressionNode): boolean => (
+      expression instanceof IdentifierNode
+      && this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name) === true
+    );
+    if (isParameter(node) || node instanceof IntLiteralNode || node instanceof BoolLiteralNode) return true;
+    if (node instanceof ArrayAccessNode) {
+      return isParameter(node.array) && (isParameter(node.index) || node.index instanceof IntLiteralNode);
+    }
+    if (node instanceof BinaryOpNode
+      && (node.operator === '+' || node.operator === '-' || node.operator === '*')) {
+      return this.isOffChainEvaluableMappingValue(node.left)
+        && this.isOffChainEvaluableMappingValue(node.right);
+    }
+    return false;
   }
 
   private canonicalizeExpression(node: ExpressionNode): string {
@@ -12713,6 +13269,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Return event (output-only)
     if (node.returnTypes.length > 0) {
       slots.push({ kind: 'returnEvent', offset: offset++ });
+      // A message-bus route's ordinary return event commits the aggregate result vector. External callers,
+      // however, consume one ABI result per logical invocation (and loop callers address those results as
+      // base+i). Reserve a separate, compiler-authored result band so the route can authenticate each manifest
+      // row without asking callers to reinterpret or recover the aggregate commitment. The unindexed slot above
+      // remains the aggregate coordinate; indexed slots are the caller-visible row coordinates.
+      if (node.messageBusRoute) {
+        for (let row = 0; row < (node.messageBusMaximumRows ?? 1); row += 1) {
+          slots.push({ kind: 'returnEvent', offset: offset++, slotIndex: row, conditional: true });
+        }
+      }
     }
 
     // Low-level call slots. Ordinary address.call / staticcall use a runtime __internal__callInputIndex

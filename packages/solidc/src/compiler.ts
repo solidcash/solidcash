@@ -127,7 +127,7 @@ import { ImportResolver } from './ImportResolver.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
-  CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
+  CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError, GraphHandlerShapeError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -1628,7 +1628,7 @@ function synthesizeMessageBusRoute(
    * flatten consumed, so a nested `m[a][b]` is reported ONCE with both keys instead of once per level.
    */
   const bareEntryAccessOf = (node: Node, bound: Set<string>): {
-    name: string; keys: ExpressionNode[]; chain: readonly Node[];
+    name: string; keys: ExpressionNode[]; chain: readonly Node[]; arrayIndex?: ExpressionNode;
   } | undefined => {
     const named = (name: string): boolean =>
       collectionByName.has(name) && !bound.has(name) && !packedOrDynamicArrayState.has(name);
@@ -1645,6 +1645,21 @@ function synthesizeMessageBusRoute(
         base = base.array;
       }
       if (!(base instanceof IdentifierNode) || !named(base.name)) return undefined;
+      const collection = collectionByName.get(base.name)!;
+      // SymbolTableTraversal represents `mapping(K => T[]) m; m[k][i]` as one physical MappingAccess keyed by
+      // `k`, with `i` retained separately as MappingAccessNode.arrayIndex. Route admission runs before that
+      // traversal, so mirror the same split here. Treating both expressions as mapping keys prevents the handler
+      // from receiving a canonical route witness and later creates a second expression-keyed entry lane for the
+      // synthesized Solidity getter.
+      if (keys.length === collection.allKeyTypes.length + 1
+        && collection.innermostValueType instanceof ArrayType) {
+        return {
+          name: base.name,
+          keys: keys.slice(0, collection.allKeyTypes.length),
+          arrayIndex: keys[keys.length - 1],
+          chain,
+        };
+      }
       return { name: base.name, keys, chain };
     }
     return undefined;
@@ -2996,6 +3011,12 @@ function synthesizeMessageBusRoute(
       && compilerOptions.maximumInputBytes > MAX_INPUT_BYTESIZE
       ? MAX_MESSAGE_BUS_ROWS : RESOURCE_SHAPED_BATCH_ROWS)
     : MAX_MESSAGE_BUS_ROWS;
+  // The emitted covenant and the published SDK capability must describe the same cardinality interval. The compact
+  // production resource route has exactly two rows; a permissive profile reserves a wider physical witness band but
+  // does not thereby require every reserved row to be logically active. In that wider profile the inactive slots are
+  // authenticated by the ordinary per-slot batch proof, so the logical route remains 1..maximumRows.
+  const routeMinimumRows = resourceShapedHandler && routeMaximumRows === RESOURCE_SHAPED_BATCH_ROWS
+    ? RESOURCE_SHAPED_BATCH_ROWS : 1;
   // message-bus batch graph handlers share one physical route. Plan blockhash reads before SynthesizeBlockOracle runs:
   // every row gets a fixed band whose width is the widest selectable handler, so a different selector cannot
   // shift any later owner's inputs. Computed reads retain the same stable per-call-site keys as the oracle pass.
@@ -3091,10 +3112,12 @@ function synthesizeMessageBusRoute(
     const rewrite = (node: Node): Node => {
       const bare = bareEntryAccessOf(node, bound);
       if (bare && node instanceof ArrayAccessNode) {
-        return Object.assign(
+        const access = Object.assign(
           new MappingAccessNode(bare.name, bare.keys.map((key) => rewrite(key) as ExpressionNode)),
           { location: node.location },
         );
+        if (bare.arrayIndex) access.arrayIndex = rewrite(bare.arrayIndex) as ExpressionNode;
+        return access;
       }
       if (bare && node instanceof ArrayAssignNode) {
         return Object.assign(
@@ -3968,9 +3991,16 @@ function synthesizeMessageBusRoute(
           const indices = Array.from({ length: width }, (_unused, offset) => start + offset)
             .filter((index) => index < entryShape.length
               && entryShape[index].collection === first.collection);
-          if (indices.length === width && indices.every((index) => entryShape[index].perRow
-            && crossHandlerPerRowWitnesses.has(entryShape[index].base))) {
-            crossRowGroups.push(indices);
+          const varyingIndices = indices.filter((index) => entryShape[index].perRow);
+          if (indices.length === width && varyingIndices.length > 0
+            && varyingIndices.every((index) =>
+              crossHandlerPerRowWitnesses.has(entryShape[index].base))) {
+            // Compare/substitute only the row-varying components. The remaining components are route-wide
+            // witnesses and therefore already identify the same prefix in every row. Requiring every component
+            // to be per-row excluded ordinary composite keys such as allowances[owner][spender] when `owner`
+            // was invariant but `spender` varied, so a later multi-collection writer loaded a fresh default
+            // instead of selecting the earlier authenticated cache for the complete key tuple.
+            crossRowGroups.push(varyingIndices);
           }
           start += Math.max(1, indices.length);
         }
@@ -4101,13 +4131,12 @@ function synthesizeMessageBusRoute(
           ${buildDecodeAndCall(captureResults, rowIndex, rowExpression)}
           else { revert("unknown batch selector"); }
   `;
-  // A standalone resource batch historically materializes every compiled row because each row owns part of its
-  // fixed witness frame. An atomic graph already authenticates the active row count, caller stream, completion
-  // positions, and the participant's complete reserved block. Its unused resource slots are explicit balanced
-  // funders, so forcing logical calls to fill `maximumRows` rejects valid smaller graph participants without
-  // proving anything additional. Dispatch only the graph's active rows while retaining the same maximum bound.
-  const fixedStandaloneResourceBatch = resourceShapedHandler && !graphExecutionContext;
-  const parser = fixedStandaloneResourceBatch
+  // Unconditional unrolling is sound only when the compiler-published cardinality interval is a singleton. A wider
+  // resource route still needs static per-row dispatch (each row owns a distinct witness frame), but rows above the
+  // authenticated logical count are inactive rather than calls. This remains true for a graph-free leaf contract:
+  // whether that leaf is composed into a graph is a runtime use of the artifact, not a source property.
+  const fixedRouteCardinality = routeMinimumRows === routeMaximumRows;
+  const parser = resourceShapedHandler && fixedRouteCardinality
     ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
       // A resource-shaped route is unrolled unconditionally because its fixed batch owns one physical resource
       // frame per row, but it can still contain returning handlers. Dropping `resultMode` here made every clone
@@ -4115,7 +4144,8 @@ function synthesizeMessageBusRoute(
       // ERC20 balanceOf/approve/transfer and failed while decoding it. Capture results exactly as the other
       // unrolled route modes do; fixed row count and result collection are independent concerns.
       `{ ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
-    : eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode || signatureMode
+    : resourceShapedHandler || eventMode || resultMode || valueEffectMode || nestedCollectionMode
+      || fixedArrayMode || signatureMode
       || tokenContainerMode
       ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
         `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
@@ -4317,6 +4347,7 @@ function synthesizeMessageBusRoute(
         bigint activeTokenRows = 0;
         bigint activeSidecarRows = 0;
         bigint activeStaticInvocationRows = 0;
+        bigint activeLogicalResultRows = 0;
         bigint previousResourceTarget = -1;
         bigint previousEventTarget = -1;
         bigint previousValueTarget = -1;
@@ -4615,6 +4646,22 @@ function synthesizeMessageBusRoute(
             }
             require(rowArguments == localBatch.slice(batchArgsStart, batchArgsStart + batchArgsLength));
             localResultVector = bytes.concat(localResultVector, rowResult);
+            if (rowResult.length > 0) {
+              // The aggregate return event proves the complete result vector computed by this route. Publish
+              // each invocation result again in the consecutive caller-visible band and bind it to this exact
+              // manifest row. A source loop can then read base+i without trusting an SDK-created tail or
+              // mistaking another fixed participant slot for the next result.
+              require(activeReturnOutput != 65535
+                && activeLogicalResultRows < ${routeMaximumRows});
+              bigint logicalResultOutput = activeReturnOutput + 1 + activeLogicalResultRows;
+              require(logicalResultOutput < tx.outputs.length
+                && tx.outputs[logicalResultOutput].lockingBytecode == hex"51"
+                && tx.outputs[logicalResultOutput].tokenCategory == activeCategory
+                && tx.outputs[logicalResultOutput].nftCommitment == rowResult
+                && tx.outputs[logicalResultOutput].tokenAmount == 0
+                && tx.outputs[logicalResultOutput].value <= 1200);
+              activeLogicalResultRows = activeLogicalResultRows + 1;
+            }
             if (row == 0) {
               ${graphExecutionContext
     ? 'require(rowSubject == tx.origin);'
@@ -4651,6 +4698,12 @@ function synthesizeMessageBusRoute(
         for (bigint slot = activeBase;
           slot < activeBase + activeBlockSize; slot = slot + 1) {
           bigint outputSlot = activeOutputBase + slot - activeBase;
+          bigint isLogicalResultOutput = 0;
+          if (activeReturnOutput != 65535
+            && outputSlot > activeReturnOutput
+            && outputSlot <= activeReturnOutput + activeLogicalResultRows) {
+            isLogicalResultOutput = 1;
+          }
           bigint isSidecarSlot = 0;
           ${sidecarVerificationMode ? `for (bigint sidecar = 0;
             sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
@@ -4668,7 +4721,7 @@ function synthesizeMessageBusRoute(
           // participant remain byte-for-byte and value-for-value preserved.
           if (activeStaticInvocationRows > 0 && activeStaticInvocationRows == consumedLocalRows) {
             require(tx.outputs[outputSlot].value == tx.inputs[slot].value);
-            if (outputSlot != activeReturnOutput) {
+            if (outputSlot != activeReturnOutput && isLogicalResultOutput == 0) {
               require(tx.outputs[outputSlot].lockingBytecode == tx.inputs[slot].lockingBytecode);
               require(tx.outputs[outputSlot].tokenCategory == tx.inputs[slot].tokenCategory);
               require(tx.outputs[outputSlot].nftCommitment == tx.inputs[slot].nftCommitment);
@@ -4678,12 +4731,14 @@ function synthesizeMessageBusRoute(
           // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
           // the result-vector commitment below. It is not a state-resource endpoint and must not inflate the
           // resource cardinality merely because the route returns a value.
-          if (outputSlot != activeReturnOutput && tx.inputs[slot].tokenCategory.length == 33
+          if (outputSlot != activeReturnOutput && isLogicalResultOutput == 0
+            && tx.inputs[slot].tokenCategory.length == 33
             && tx.inputs[slot].tokenCategory.slice(0, 32) == activeCategory
             && tx.inputs[slot].tokenCategory.slice(32, 33) == hex"01") {
             physicalResourceEndpoints = physicalResourceEndpoints + 1;
           }
-          if (outputSlot != activeReturnOutput && tx.outputs[outputSlot].tokenCategory.length == 33
+          if (outputSlot != activeReturnOutput && isLogicalResultOutput == 0
+            && tx.outputs[outputSlot].tokenCategory.length == 33
             && tx.outputs[outputSlot].tokenCategory.slice(0, 32) == activeCategory
             && tx.outputs[outputSlot].tokenCategory.slice(32, 33) == hex"01") {
             physicalResourceEndpoints = physicalResourceEndpoints + 1;
@@ -4716,7 +4771,8 @@ function synthesizeMessageBusRoute(
             && tx.outputs[outputSlot].tokenCategory.slice(0, 32) != activeCategory) {
             physicalTokenOutputs = physicalTokenOutputs + 1;
           }
-          if (outputSlot != activeReturnOutput && tx.outputs[outputSlot].tokenCategory == activeCategory
+          if (outputSlot != activeReturnOutput && isLogicalResultOutput == 0
+            && tx.outputs[outputSlot].tokenCategory == activeCategory
             && tx.inputs[slot].tokenCategory != activeCategory
             // Event rows always carry their encoded effect. Empty immutable NFTs are reserved frame/resource
             // endpoints, not emitted events, even when they use the participant's category.
@@ -4993,9 +5049,9 @@ function synthesizeMessageBusRoute(
         require(batchBlob.slice(5, 6) == hex"${logicalValueMode ? '01' : '00'}");
         ${graphPrologue}
         bigint rowCount = int(bytes.concat(batchBlob.slice(6, 7), hex"00"));
-        require(${fixedStandaloneResourceBatch
+        require(${fixedRouteCardinality
     ? `rowCount == ${routeMaximumRows}`
-    : `rowCount >= 1 && rowCount <= ${routeMaximumRows}`});
+    : `rowCount >= ${routeMinimumRows} && rowCount <= ${routeMaximumRows}`});
         ${atomicPrologue}
         bigint cursor = 7;
         ${!graphExecutionContext ? '' : 'bigint __message_bus_graph_caller_cursor = 0;'}
@@ -5905,10 +5961,87 @@ function compileResolvedAst(
     };
   }
   if (messageBusRoute?.blockLayout) {
+    // Route entry authenticates the proxy witness as INPUTINDEX - blockSize for delegated execution; a direct
+    // route's owner is INPUTINDEX itself. Publish that consensus-derived basis on every generated handler after
+    // the route layout is final (including any late compute side-cars). Handler code must not recover the owner
+    // from a top-relative ABI argument: runtime graph operands can outlive the compiler's local stack model.
+    const ownerInputOffset = messageBusRoute.modifiers.includes(FunctionModifier.DELEGATE)
+      ? messageBusRoute.blockLayout.blockSize : 0;
+    for (const fn of ast.contract.functions) {
+      if (fn.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)) {
+        fn.messageBusOwnerInputOffset = ownerInputOffset;
+      }
+    }
     const handlerManagedEntrySlots = new Set<number>();
     const graphCloneBySource = new Map(ast.contract.functions
       .filter((fn) => fn.graphEmissionHandler && fn.name.startsWith('__message_bus_graph_'))
       .map((fn) => [fn.name.slice('__message_bus_graph_'.length), fn] as const));
+    const physicalEntrySlotsFor = (
+      fn: FunctionDefinitionNode,
+      fixedHandlerEntries: NonNullable<FunctionDefinitionNode['entryAccesses']>,
+    ): number[] => fixedHandlerEntries.map((entry) => {
+      const byShape = messageBusRoute.entryAccesses!.filter((routeEntry) =>
+        routeEntry.collection === entry.collection
+          && routeEntry.keyParams.length === entry.keyParams.length);
+      const keyBase = (key: string): string => {
+        const bare = key.startsWith('id:') ? key.slice(3) : key;
+        const unwrapped = bare.startsWith('__message_bus_ek_')
+          ? bare.slice('__message_bus_ek_'.length) : bare;
+        return unwrapped.replace(/_r\d+$/, '');
+      };
+      const byKeyName = byShape.filter((routeEntry) => routeEntry.keyParams
+        .every((key, index) => keyBase(key) === keyBase(entry.keyParams[index])));
+      const witnessKeys = entry.keySources?.map((source, keyIndex) => {
+        const witnessPrefix = `__message_bus_key_${entry.collection.replace(/[^A-Za-z0-9_]/g, '_')}_`;
+        if (source.kind === 'msgSender'
+          || (source.kind === 'expression' && source.canonical === 'nullop:msg.sender')) {
+          return fn.messageBusKeyWitnesses
+            ?.find((binding) => binding.source === 'msgSender'
+              && binding.routeInput.startsWith(witnessPrefix))?.routeInput;
+        }
+        if (source.kind === 'expression') {
+          return fn.messageBusKeyWitnesses
+            ?.find((binding) => binding.source === 'expression'
+              && binding.routeInput === `${witnessPrefix}${keyIndex}`)?.routeInput;
+        }
+        if (source.kind !== 'param') return undefined;
+        const inputIndex = fn.parameters
+          .filter((parameter) => !parameter.name.startsWith('__internal__'))
+          .findIndex((parameter) => parameter.name === source.paramName);
+        return fn.messageBusKeyWitnesses
+          ?.find((binding) => binding.inputIndex === inputIndex
+            && binding.routeInput.startsWith(witnessPrefix))?.routeInput;
+      });
+      const byWitness = witnessKeys?.every((key) => key !== undefined)
+        ? byShape.filter((routeEntry) => routeEntry.keyParams
+          .every((key, index) => keyBase(key) === keyBase(witnessKeys[index]!)))
+        : [];
+      const named = byWitness.length > 0 ? byWitness : byKeyName;
+      const canonical = named.length > 1
+        ? [named.reduce((lowest, candidate) =>
+          (candidate.slotIndex < lowest.slotIndex ? candidate : lowest))]
+        : named;
+      const candidates = canonical.length === 1 ? canonical : byShape;
+      if (candidates.length !== 1) {
+        // This is a limitation of this generated handler's route projection, not of the source entry point or
+        // any route-safe sibling. Retain the source definition node so the admission fallback can refuse this
+        // one handler and recompile the same route shape. A bare Error loses that ownership and demotes the
+        // complete contract to direct-only compilation.
+        throw new GraphHandlerShapeError(
+          fn,
+          `Message-bus handler '${fn.name}' cannot uniquely map collection '${entry.collection}' `
+            + `to its physical route entry slot (${JSON.stringify({
+              entry, candidates, parameters: fn.parameters.map((parameter) => parameter.name),
+              witnesses: fn.messageBusKeyWitnesses, witnessKeys,
+              routeEntries: messageBusRoute.entryAccesses,
+            }, (_key, value) => typeof value === 'bigint' ? value.toString() : value)})`,
+        );
+      }
+      const physical = candidates[0];
+      physical.operations = [...new Set([...physical.operations, ...entry.operations])];
+      handlerManagedEntrySlots.add(physical.slotIndex);
+      return physical.slotIndex;
+    });
     for (const fn of ast.contract.functions) {
       const routeClone = fn.graphEmissionHandler || fn.name.startsWith('__message_bus_array_')
         || fn.name.startsWith('__message_bus_entry_');
@@ -5919,64 +6052,7 @@ function compileResolvedAst(
       const directlyDispatchedSource = fn.messageBusEligible && !graphCloneBySource.has(fn.name);
       if ((routeClone || directlyDispatchedSource)
         && fixedHandlerEntries.length > 0 && messageBusRoute.entryAccesses?.length) {
-        fn.messageBusPhysicalEntrySlots = fixedHandlerEntries.map((entry) => {
-          const byShape = messageBusRoute.entryAccesses!.filter((routeEntry) =>
-            routeEntry.collection === entry.collection
-              && routeEntry.keyParams.length === entry.keyParams.length);
-          const keyBase = (key: string): string => {
-            const bare = key.startsWith('id:') ? key.slice(3) : key;
-            const unwrapped = bare.startsWith('__message_bus_ek_')
-              ? bare.slice('__message_bus_ek_'.length) : bare;
-            return unwrapped.replace(/_r\d+$/, '');
-          };
-          const byKeyName = byShape.filter((routeEntry) => routeEntry.keyParams
-            .every((key, index) => keyBase(key) === keyBase(entry.keyParams[index])));
-          const witnessKeys = entry.keySources?.map((source, keyIndex) => {
-            const witnessPrefix = `__message_bus_key_${entry.collection.replace(/[^A-Za-z0-9_]/g, '_')}_`;
-            if (source.kind === 'msgSender'
-              || (source.kind === 'expression' && source.canonical === 'nullop:msg.sender')) {
-              return fn.messageBusKeyWitnesses
-                ?.find((binding) => binding.source === 'msgSender'
-                  && binding.routeInput.startsWith(witnessPrefix))?.routeInput;
-            }
-            if (source.kind === 'expression') {
-              return fn.messageBusKeyWitnesses
-                ?.find((binding) => binding.source === 'expression'
-                  && binding.routeInput === `${witnessPrefix}${keyIndex}`)?.routeInput;
-            }
-            if (source.kind !== 'param') return undefined;
-            const inputIndex = fn.parameters
-              .filter((parameter) => !parameter.name.startsWith('__internal__'))
-              .findIndex((parameter) => parameter.name === source.paramName);
-            return fn.messageBusKeyWitnesses
-              ?.find((binding) => binding.inputIndex === inputIndex
-                && binding.routeInput.startsWith(witnessPrefix))?.routeInput;
-          });
-          const byWitness = witnessKeys?.every((key) => key !== undefined)
-            ? byShape.filter((routeEntry) => routeEntry.keyParams
-              .every((key, index) => keyBase(key) === keyBase(witnessKeys[index]!)))
-            : [];
-          const named = byWitness.length > 0 ? byWitness : byKeyName;
-          const canonical = named.length > 1
-            ? [named.reduce((lowest, candidate) =>
-              (candidate.slotIndex < lowest.slotIndex ? candidate : lowest))]
-            : named;
-          const candidates = canonical.length === 1 ? canonical : byShape;
-          if (candidates.length !== 1) {
-            throw new Error(
-              `Message-bus handler '${fn.name}' cannot uniquely map collection '${entry.collection}' `
-                + `to its physical route entry slot (${JSON.stringify({
-                  entry, candidates, parameters: fn.parameters.map((parameter) => parameter.name),
-                  witnesses: fn.messageBusKeyWitnesses, witnessKeys,
-                  routeEntries: messageBusRoute.entryAccesses,
-                }, (_key, value) => typeof value === 'bigint' ? value.toString() : value)})`,
-            );
-          }
-          const physical = candidates[0];
-          physical.operations = [...new Set([...physical.operations, ...entry.operations])];
-          handlerManagedEntrySlots.add(physical.slotIndex);
-          return physical.slotIndex;
-        });
+        fn.messageBusPhysicalEntrySlots = physicalEntrySlotsFor(fn, fixedHandlerEntries);
       }
     }
     // Handler ABI metadata is published from the source entry point, but a graph handler is physically invoked
@@ -5986,6 +6062,17 @@ function compileResolvedAst(
     for (const [sourceName, clone] of graphCloneBySource) {
       const source = ast.contract.functions.find((fn) => fn.name === sourceName && fn.isEntryPoint);
       if (!source) continue;
+      // Collection-journal lowering can hoist every fixed entry access out of a returning/event-producing graph
+      // clone and into the route before this projection pass. The clone then has no local entryAccesses from
+      // which to recover its physical ownership, even though the source ABI and route witnesses still describe
+      // the exact fixed lanes. Project that source description onto the clone so handler metadata remains
+      // complete; generated execution continues to use the clone's already-hoisted journal.
+      if ((clone.messageBusPhysicalEntrySlots?.length ?? 0) === 0) {
+        const sourceEntries = source.entryAccesses?.filter((entry) => !entry.inLoop) ?? [];
+        if (sourceEntries.length > 0 && messageBusRoute.entryAccesses?.length) {
+          clone.messageBusPhysicalEntrySlots = physicalEntrySlotsFor(source, sourceEntries);
+        }
+      }
       source.messageBusPhysicalEntrySlots = clone.messageBusPhysicalEntrySlots;
     }
     messageBusRoute.messageBusHandlerManagedEntrySlots = [...handlerManagedEntrySlots];

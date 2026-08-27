@@ -200,11 +200,14 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     return narrowAddressTo20;
   }
   if (from instanceof AddressType && to instanceof IntType) {
-    // OP_BIN2NUM reads a sign-magnitude little-endian number; for unsigned targets append a 0x00 sign byte so
-    // the hash is a non-negative value (otherwise ~half of hashes fail the uint's >= 0 bounds check).
+    // Solidity treats the narrowed address as a big-endian uint160. Script numbers are little-endian, so reverse
+    // in compatibility mode; abi.encodePacked(uint160(address)) reverses it back while emitting the declared
+    // integer width and therefore produces the same 20 bytes as abi.encodePacked(address). For unsigned targets,
+    // append a 0x00 sign byte so hashes with their numeric high bit set remain non-negative.
+    const endian = solidityCompat ? [Op.OP_REVERSEBYTES] : [];
     return to.signed
-      ? [...narrowAddressTo20, Op.OP_BIN2NUM]
-      : [...narrowAddressTo20, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
+      ? [...narrowAddressTo20, ...endian, Op.OP_BIN2NUM]
+      : [...narrowAddressTo20, ...endian, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
   }
 
   // address casts are no-ops (stack value unchanged)

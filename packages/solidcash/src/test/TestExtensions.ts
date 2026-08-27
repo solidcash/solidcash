@@ -85,16 +85,48 @@ interface Buildable {
   build(): string | Promise<any>;
 }
 
+interface Sendable {
+  send(): Promise<unknown>;
+}
+
+const isCustomUnlockerDebugError = (error: unknown): boolean => (
+  error instanceof Error && /custom unlocker/i.test(error.message)
+);
+
+async function sendAfterUnsupportedDebug(
+  transaction: unknown,
+  built: unknown,
+  debugError: unknown,
+): Promise<void> {
+  const sendable = typeof (transaction as Partial<Sendable> | undefined)?.send === 'function'
+    ? transaction as Sendable
+    : typeof (built as Partial<Sendable> | undefined)?.send === 'function'
+      ? built as Sendable : undefined;
+  if (!sendable || !isCustomUnlockerDebugError(debugError)) throw debugError;
+  await sendable.send();
+}
+
 async function debugTransaction(
   transaction: Debuggable | (Buildable & Partial<Debuggable>) | Promise<unknown>,
 ): Promise<void> {
   if (transaction && typeof (transaction as Debuggable).debug === 'function') {
-    (transaction as Debuggable).debug();
+    try {
+      (transaction as Debuggable).debug();
+    } catch (error) {
+      await sendAfterUnsupportedDebug(transaction, transaction, error);
+    }
     return;
   }
   if (transaction && typeof (transaction as Buildable).build === 'function') {
     const built = await (transaction as Buildable).build();
-    if (built && typeof built.debug === 'function') { built.debug(); return; }
+    if (built && typeof built.debug === 'function') {
+      try {
+        built.debug();
+      } catch (error) {
+        await sendAfterUnsupportedDebug(transaction, built, error);
+      }
+      return;
+    }
   }
   await transaction;
 }

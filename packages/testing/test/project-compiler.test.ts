@@ -10,6 +10,7 @@ function project(files: Record<string, string>): string[] {
   dirs.push(dir);
   return Object.entries(files).map(([name, source]) => {
     const file = path.join(dir, name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, source);
     return file;
   });
@@ -65,6 +66,39 @@ describe('compileSolidityProject', () => {
     const result = compileSolidityProject([root], {}, compile);
 
     expect(result.artifacts).toEqual({ Root: { abi: [], from: 'root' } });
+  });
+
+  it('publishes ABI declarations canonically owned by an external dependency', () => {
+    const [root] = project({
+      'Root.sol': 'import "@vendor/contracts/Errors.sol"; contract Root {}',
+      'node_modules/@vendor/contracts/Errors.sol': 'interface IERC20Errors {}',
+    });
+    const calls: string[] = [];
+    const compile = (file: string): any => {
+      const name = path.basename(file);
+      calls.push(name);
+      return name === 'Root.sol' ? {
+        Root: { abi: [], source: 'contract Root {}', from: 'root' },
+        // Imported artifacts inherit the primary root's compilation context and must not be published.
+        IERC20Errors: { abi: [], source: 'contract Root {}', from: 'root-import' },
+      } : {
+        IERC20Errors: {
+          abi: [], source: 'interface IERC20Errors {}',
+          errors: [{ name: 'ERC20InsufficientBalance' }], from: 'dependency',
+        },
+      };
+    };
+
+    const result = compileSolidityProject([root], {}, compile);
+
+    expect(result.artifacts).toEqual({
+      Root: { abi: [], source: 'contract Root {}', from: 'root' },
+      IERC20Errors: {
+        abi: [], source: 'interface IERC20Errors {}',
+        errors: [{ name: 'ERC20InsufficientBalance' }], from: 'dependency',
+      },
+    });
+    expect(calls).toEqual(['Root.sol', 'Errors.sol']);
   });
 
   it('compiles a dependency when selective imports leave one of its declarations unresolved', () => {

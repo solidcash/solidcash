@@ -201,6 +201,25 @@ describe('sorted mapping array push leading-value param', () => {
     expect(fn?.inputs.some((input) => input.name === '__internal__valueWitness_0')).toBe(true);
   });
 
+  it('publishes unconditional block-timestamp updates by parameter and struct field', () => {
+    const artifact = compileString(`pragma solidity ^0.8.20;
+      contract C {
+        struct Notice { uint8 kind; bytes payload; uint32 recordedAt; }
+        mapping(uint256 => Notice[]) notices;
+        function record(uint256 key, Notice memory notice) public {
+          notice.recordedAt = uint32(block.timestamp);
+          notices[key].push(notice);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'record')?.argumentFieldUpdates)
+      .toEqual([{
+        parameter: 'notice',
+        fieldPath: ['recordedAt'],
+        source: 'blockTimestamp',
+      }]);
+  });
+
   it('does not inject leadingPushValue on a read-only vmap getter', () => {
     const artifact = compileString(`
       contract C() {

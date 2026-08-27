@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
-import { decodePushdataValue, encodePushdataValue, type StructDefinitionInfo } from '@solidcash/utils';
+import {
+  decodePushdataValue, encodePushdataValue, type Artifact, type StructDefinitionInfo,
+} from '@solidcash/utils';
 import {
   decodeEvmReturnValue, encodeExternalReturnValue, encodeLeadingRouteArrayPushes,
+  isCanonicalExternalReturnVector,
   isCanonicalEvmReturnBlob, isCanonicalEvmReturnSequence, isCanonicalEvmReturnVector,
   isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector,
+  preStateReturningRouteRowIndices,
   selectEvmReturnCommitment, selectEvmScalarReturnCommitment,
 } from '../../src/stateful/StatefulContract.js';
 import {
@@ -32,6 +36,42 @@ describe('encodeExternalReturnValue', () => {
     const encoded = encodeExternalReturnValue(2n, 'uint256', structs, true);
     expect(encoded).toHaveLength(32);
     expect(encoded[31]).toBe(2);
+  });
+
+  it('admits only seeds matching the execution artifact return framing', () => {
+    const evmArtifact = {
+      compiler: { name: 'solidc', version: 'test', options: { solidityImportCompat: true } },
+      abi: [],
+    } as unknown as Artifact;
+    const nativeArtifact = {
+      compiler: { name: 'solidc', version: 'test', options: {} },
+      abi: [],
+    } as unknown as Artifact;
+    const balance = encodeExternalReturnValue(1000n, 'uint256', structs, true);
+    const nativeText = encodeExternalReturnValue('DIGITAL_VIDEO', 'string', structs, false);
+
+    expect(isCanonicalExternalReturnVector(evmArtifact, balance, ['uint256'])).toBe(true);
+    expect(isCanonicalExternalReturnVector(evmArtifact, nativeText, ['string'])).toBe(false);
+    expect(isCanonicalExternalReturnVector(nativeArtifact, nativeText, ['string'])).toBe(true);
+  });
+
+  it('keeps pre-state view results independent of a later aborting writer', () => {
+    const row = (writesState: boolean, outputs: string[]) => ({
+      handler: {
+        writesState,
+        outputs: outputs.map((type) => ({ type })),
+      },
+    });
+    expect(preStateReturningRouteRowIndices([
+      row(false, ['uint256']),
+      row(false, []),
+      row(true, ['bool']),
+      row(false, ['uint256']),
+    ] as never)).toEqual([0]);
+    expect(preStateReturningRouteRowIndices([
+      row(false, ['uint256']),
+      row(false, ['bool']),
+    ] as never)).toEqual([0, 1]);
   });
 
   it('rejects an unrelated multi-word stack item with a non-canonical boolean', () => {

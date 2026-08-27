@@ -9,14 +9,15 @@ import { version } from '../index.js';
 import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
-  ExpressionNode, TransferStatementNode, BlockNode, WhileNode, VariableDefinitionNode,
+  ExpressionNode, TransferStatementNode, BlockNode, WhileNode, BranchNode, VariableDefinitionNode,
   BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
+  NullaryOpNode, UnaryOpNode, TernaryOpNode, BoolLiteralNode, IntLiteralNode, StringLiteralNode, HexLiteralNode,
 } from '../ast/AST.js';
-import { BinaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
@@ -42,6 +43,70 @@ function abiTypeString(type: Type | undefined): string {
 const STATE_WRITING_MODIFIERS = [
   FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.UNSAFE,
 ];
+
+/**
+ * Publish unconditional struct-argument field updates which the SDK must replay when composing multiple logical
+ * rows onto one physical collection writer. This recognizes the compiler-lowered whole-struct rebuild, not a
+ * source field name, and fails closed for conditional/nested updates or computed timestamp expressions.
+ */
+type ArgumentFieldUpdateMetadata = {
+  parameter: string;
+  fieldPath: readonly string[];
+  source: 'blockTimestamp';
+};
+
+function argumentFieldUpdatesOf(func: FunctionDefinitionNode): readonly ArgumentFieldUpdateMetadata[] {
+  const structsByParameter = new Map(func.parameters.flatMap((parameter) => (
+    parameter.type instanceof StructType ? [[parameter.name, parameter.type] as const] : []
+  )));
+  if (structsByParameter.size === 0) return [];
+  const isBlockTimestamp = (expression: ExpressionNode): boolean => {
+    if (expression instanceof NullaryOpNode) return expression.operator === NullaryOperator.BLOCK_TIMESTAMP;
+    if (expression instanceof StateAccessNode) return expression.name === '__block_timestamp';
+    if (expression instanceof CastNode) return isBlockTimestamp(expression.expression);
+    return false;
+  };
+  const directStatements = (block: BlockNode | undefined): Node[] => (block?.statements ?? []).flatMap(
+    (statement) => statement instanceof BlockNode ? directStatements(statement) : [statement],
+  );
+  const updates = new Map<string, ArgumentFieldUpdateMetadata>();
+  for (const statement of directStatements(func.body)) {
+    if (!(statement instanceof AssignNode)) continue;
+    const struct = structsByParameter.get(statement.identifier.name);
+    if (!struct || !(statement.expression instanceof FunctionCallNode)
+      || statement.expression.identifier.name !== struct.name
+      || statement.expression.parameters.length !== struct.fields.length) continue;
+    for (const [index, expression] of statement.expression.parameters.entries()) {
+      if (!isBlockTimestamp(expression)) continue;
+      const update = {
+        parameter: statement.identifier.name,
+        fieldPath: [struct.fields[index].name],
+        source: 'blockTimestamp' as const,
+      };
+      updates.set(`${update.parameter}:${update.fieldPath.join('.')}:${update.source}`, update);
+    }
+  }
+  return [...updates.values()];
+}
+
+/** A direct `return collection[p0][p1]` is an authenticated collection getter, independent of its source name. */
+function returnStateAccessOf(
+  func: FunctionDefinitionNode,
+): { collection: string; keyParams: readonly string[] } | undefined {
+  const visible = new Set(func.parameters
+    .filter((parameter) => !parameter.name.startsWith('__internal__'))
+    .map((parameter) => parameter.name));
+  const statements = (block: BlockNode | undefined): Node[] => (block?.statements ?? []).flatMap(
+    (statement) => statement instanceof BlockNode ? statements(statement) : [statement],
+  );
+  const returns = statements(func.body).filter((statement): statement is ReturnNode => statement instanceof ReturnNode);
+  if (returns.length !== 1 || returns[0].expressions.length !== 1) return undefined;
+  const expression = returns[0].expressions[0];
+  if (!(expression instanceof MappingAccessNode)) return undefined;
+  const keyParams = expression.keys.map((key) => key instanceof IdentifierNode ? key.name : undefined);
+  if (!keyParams.every((name): name is string => name !== undefined && visible.has(name))) return undefined;
+  return { collection: expression.name, keyParams };
+}
 
 /** Multiply two reached-count factors, where undefined means "not proven" and poisons the product. */
 const composeCount = (outer: number | undefined, inner: number | undefined): number | undefined =>
@@ -421,29 +486,42 @@ const SIGNATURE_CHECK_KEY_ARGUMENT: Record<string, number> = {
  */
 interface ProvenanceIndex {
   bindings: Map<string, ExpressionNode[]>;
+  conditionalBindings: Map<string, {
+    expression: ExpressionNode;
+    conditions: readonly { expression: ExpressionNode; negated: boolean }[];
+  }[]>;
   bound: Set<string>;
   calls: (LowLevelCallNode | LowLevelCallStatementNode)[];
   signatureChecks: FunctionCallNode[];
 }
 
-const bindName = (index: ProvenanceIndex, name: string, expression?: ExpressionNode): void => {
+const bindName = (
+  index: ProvenanceIndex, name: string, expression?: ExpressionNode,
+  conditions: readonly { expression: ExpressionNode; negated: boolean }[] = [],
+): void => {
   index.bound.add(name);
   if (!expression) return;
   const existing = index.bindings.get(name);
   if (existing) existing.push(expression);
   else index.bindings.set(name, [expression]);
+  const conditional = index.conditionalBindings.get(name);
+  const binding = { expression, conditions: [...conditions] };
+  if (conditional) conditional.push(binding);
+  else index.conditionalBindings.set(name, [binding]);
 };
 
 const indexBody = (fn: FunctionDefinitionNode): ProvenanceIndex => {
   const index: ProvenanceIndex = {
-    bindings: new Map(), bound: new Set(), calls: [], signatureChecks: [],
+    bindings: new Map(), conditionalBindings: new Map(), bound: new Set(), calls: [], signatureChecks: [],
   };
   const seen = new Set<object>();
-  const walk = (value: unknown): void => {
+  const walk = (
+    value: unknown, conditions: readonly { expression: ExpressionNode; negated: boolean }[] = [],
+  ): void => {
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
-    if (value instanceof VariableDefinitionNode) bindName(index, value.name, value.expression);
-    else if (value instanceof AssignNode) bindName(index, value.identifier.name, value.expression);
+    if (value instanceof VariableDefinitionNode) bindName(index, value.name, value.expression, conditions);
+    else if (value instanceof AssignNode) bindName(index, value.identifier.name, value.expression, conditions);
     else if (value instanceof TupleAssignmentNode) {
       for (const element of value.elements) if (!element.skip && element.name) bindName(index, element.name);
     } else if (value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode) {
@@ -452,12 +530,20 @@ const indexBody = (fn: FunctionDefinitionNode): ProvenanceIndex => {
       && SIGNATURE_CHECK_KEY_ARGUMENT[value.identifier.name] !== undefined) {
       index.signatureChecks.push(value);
     }
+    if (value instanceof BranchNode) {
+      walk(value.condition, conditions);
+      walk(value.ifBlock, [...conditions, { expression: value.condition, negated: false }]);
+      if (value.elseBlock) {
+        walk(value.elseBlock, [...conditions, { expression: value.condition, negated: true }]);
+      }
+      return;
+    }
     // eslint-disable-next-line no-restricted-syntax, guard-for-in
     for (const key in value) {
       if (PROVENANCE_WALK_SKIP.has(key)) continue;
       const child = (value as unknown as Record<string, unknown>)[key];
-      if (child instanceof Node) walk(child);
-      else if (Array.isArray(child)) for (const item of child) walk(item);
+      if (child instanceof Node) walk(child, conditions);
+      else if (Array.isArray(child)) for (const item of child) walk(item, conditions);
     }
   };
   walk(fn.body);
@@ -530,6 +616,128 @@ const lowLevelCallTargets = (
     targets[call.callIndex] = existing ? weakerProvenance(existing, resolved) : resolved;
   }
   return targets;
+};
+
+/**
+ * Exact runtime source for each low-level-call target. Provenance answers who controls a target; this answers
+ * which address the SDK must co-spend. Keeping both avoids the old method-name inference for computed aliases.
+ * Ambiguous assignments and unsupported expressions publish nothing, so consumers cannot guess a participant.
+ */
+const lowLevelCallTargetSources = (
+  fn: FunctionDefinitionNode, contract: ContractNode | undefined, index: ProvenanceIndex,
+): (ExternalCallArgSource | undefined)[] => {
+  const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const sourceOf = (
+    expression: ExpressionNode, resolving = new Set<string>(), allowExpression = true,
+  ): ExternalCallArgSource | undefined => {
+    if (expression instanceof CastNode && !allowExpression) {
+      return sourceOf(expression.expression, resolving, false);
+    }
+    if (expression instanceof IdentifierNode) {
+      const parameterIndex = visible.findIndex((parameter) => parameter.name === expression.name);
+      if (parameterIndex >= 0) return { kind: 'forward', paramIndex: parameterIndex };
+      if (contract?.parameters.some((parameter) => parameter.name === expression.name)) {
+        return { kind: 'constructorArg', paramName: expression.name };
+      }
+      if (resolving.has(expression.name)) return undefined;
+      const bindings = index.bindings.get(expression.name);
+      if (bindings?.length === 1) {
+        resolving.add(expression.name);
+        // A local identifier is only a wrapper: even a leaf-only serialization request may expand its unique
+        // initializer into an expression tree (for example `address t = choose ? a : b`).
+        const source = sourceOf(bindings[0], resolving, true);
+        resolving.delete(expression.name);
+        return source;
+      }
+      const conditional = index.conditionalBindings.get(expression.name);
+      if (conditional?.length === 2
+        && conditional[0].conditions.length === 1 && conditional[1].conditions.length === 1) {
+        const firstCondition = conditional[0].conditions[0];
+        const secondCondition = conditional[1].conditions[0];
+        if (firstCondition.expression === secondCondition.expression
+          && firstCondition.negated !== secondCondition.negated) {
+          resolving.add(expression.name);
+          const condition = serialized(firstCondition.expression);
+          const ifTrue = serialized((firstCondition.negated ? conditional[1] : conditional[0]).expression);
+          const ifFalse = serialized((firstCondition.negated ? conditional[0] : conditional[1]).expression);
+          resolving.delete(expression.name);
+          if (condition && ifTrue && ifFalse) {
+            return {
+              kind: 'expression',
+              expression: { kind: 'ternary', condition, ifTrue, ifFalse },
+            };
+          }
+        }
+      }
+      if (contract?.stateVariables.some((variable) => variable.name === expression.name)) {
+        return { kind: 'expression', expression: { kind: 'state', name: expression.name } };
+      }
+      return undefined;
+    }
+    if (expression instanceof NullaryOpNode
+      && (expression.operator === NullaryOperator.MSG_SENDER
+        || expression.operator === NullaryOperator.TX_ORIGIN)) return { kind: 'msgSender' };
+    if (expression instanceof BoolLiteralNode) {
+      return { kind: 'literal', value: String(expression.value), type: 'bool' };
+    }
+    if (expression instanceof IntLiteralNode) {
+      return { kind: 'literal', value: expression.value.toString(), type: 'bigint' };
+    }
+    if (expression instanceof StringLiteralNode) {
+      return { kind: 'literal', value: expression.value, type: 'string' };
+    }
+    if (expression instanceof HexLiteralNode) {
+      return { kind: 'literal', value: binToHex(expression.value), type: `bytes${expression.value.length}` };
+    }
+
+    function serialized(candidate: ExpressionNode): ExternalCallExpression | undefined {
+      const leaf = sourceOf(candidate, new Set(resolving), false);
+      if (leaf && leaf.kind !== 'expression') return { kind: 'source', source: leaf };
+      if (leaf?.expression) return leaf.expression;
+      if (candidate instanceof StateAccessNode) return { kind: 'state', name: candidate.name };
+      if (candidate instanceof CastNode) {
+        const inner = serialized(candidate.expression);
+        return inner && { kind: 'cast', type: candidate.type.toString(), expression: inner };
+      }
+      if (candidate instanceof UnaryOpNode) {
+        const inner = serialized(candidate.expression);
+        return inner && { kind: 'unary', operator: candidate.operator, expression: inner };
+      }
+      if (candidate instanceof BinaryOpNode) {
+        const left = serialized(candidate.left);
+        const right = serialized(candidate.right);
+        return left && right && { kind: 'binary', operator: candidate.operator, left, right };
+      }
+      if (candidate instanceof TernaryOpNode) {
+        const condition = serialized(candidate.condition);
+        const ifTrue = serialized(candidate.ifTrue);
+        const ifFalse = serialized(candidate.ifFalse);
+        return condition && ifTrue && ifFalse && { kind: 'ternary', condition, ifTrue, ifFalse };
+      }
+      if (candidate instanceof FieldAccessNode) {
+        const inner = serialized(candidate.expression);
+        return inner && { kind: 'field', name: candidate.name, expression: inner };
+      }
+      if (candidate instanceof ArrayAccessNode) {
+        const array = serialized(candidate.array);
+        const arrayIndex = serialized(candidate.index);
+        return array && arrayIndex && { kind: 'arrayAccess', left: array, right: arrayIndex };
+      }
+      return undefined;
+    }
+    if (!allowExpression) return undefined;
+    const expressionSource = serialized(expression);
+    return expressionSource ? { kind: 'expression', expression: expressionSource } : undefined;
+  };
+
+  const sources: (ExternalCallArgSource | undefined)[] = [];
+  for (const call of index.calls) {
+    const source = sourceOf(call.targetExpression);
+    const existing = sources[call.callIndex];
+    if (existing === undefined) sources[call.callIndex] = source;
+    else if (JSON.stringify(existing) !== JSON.stringify(source)) sources[call.callIndex] = undefined;
+  }
+  return sources;
 };
 
 /**
@@ -976,7 +1184,10 @@ function buildFunctionAbiMetadata(
   // low-level call and no signature check resolves nothing and publishes nothing.
   const provenance = indexBody(func);
   const callTargets = lowLevelCallTargets(func, contract, provenance);
+  const lowLevelTargetSources = lowLevelCallTargetSources(func, contract, provenance);
   const signatureGuard = signatureGuardOf(func, contract, provenance);
+  const argumentFieldUpdates = argumentFieldUpdatesOf(func);
+  const returnStateAccess = returnStateAccessOf(func);
   // Graph handlers execute behind the synthetic route, while their loop-write metadata is discovered during
   // code generation on the cloned handler itself. The SDK plans the physical trailing outputs from the route
   // ABI, so publish the union there; otherwise a reached `mapping(K => V[]).push(...)` receives only a generic
@@ -999,6 +1210,8 @@ function buildFunctionAbiMetadata(
     .map((access) => [access.collection, access.collectionSignature]));
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
+    ...(argumentFieldUpdates.length > 0 && { argumentFieldUpdates }),
+    ...(returnStateAccess && { returnStateAccess }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
     ...(func.graphEffectFrame && { graphEffectFrame: { ...func.graphEffectFrame } }),
     ...(func.requiredNftIndices !== undefined
@@ -1174,6 +1387,7 @@ function buildFunctionAbiMetadata(
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
       lowLevelCalls: func.lowLevelCalls.map((lc, index) => ({
         callMode: lc.callMode,
+        ...(lowLevelTargetSources[index] && { targetSource: lowLevelTargetSources[index] }),
         // Always published, `computed` included, so a row that carries NO `target` identifies an artifact
         // compiled before the field existed. Absent is read as unknown, never as an unconstrained target.
         target: callTargets[index] ?? COMPUTED_PROVENANCE,
@@ -1306,7 +1520,11 @@ export function generateDeclarationArtifact(
     }))
     : undefined;
 
-  const allEventDefs = [...(ast.eventDefinitions || []), ...(abstractContract?.eventDefinitions || [])];
+  const allEventDefs = [
+    ...(ast.eventDefinitions || []),
+    ...(primary?.eventDefinitions || []),
+    ...(abstractContract?.eventDefinitions || []),
+  ].filter((event, index, events) => events.findIndex((candidate) => candidate.signature === event.signature) === index);
   const events = allEventDefs.length > 0
     ? allEventDefs.map((ev) => ({
       name: ev.name,
@@ -1320,7 +1538,11 @@ export function generateDeclarationArtifact(
     }))
     : undefined;
 
-  const allErrors = [...(ast.errorDefinitions || []), ...(abstractContract?.errorDefinitions || [])];
+  const allErrors = [
+    ...(ast.errorDefinitions || []),
+    ...(primary?.errorDefinitions || []),
+    ...(abstractContract?.errorDefinitions || []),
+  ].filter((error, index, errors) => errors.findIndex((candidate) => candidate.signature === error.signature) === index);
   const errors = allErrors.length > 0
     ? allErrors.map((err) => ({
       name: err.name,

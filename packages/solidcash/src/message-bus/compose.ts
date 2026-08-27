@@ -15,7 +15,9 @@ import {
   decodeEvmReturnValue, evalComputedKey, isCanonicalEvmScalarReturnVector,
   StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
-import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
+import {
+  reassertCompilerReadOnlyBatchProofOutputs, valueChunkIndexFromCommitment,
+} from '../stateful/StatefulTransactionBuilder.js';
 import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
 import {
   resolveLogicalIdentity, type ResolvedLogicalIdentity,
@@ -34,10 +36,14 @@ import {
 } from './graph.js';
 import { encodeMessageBatch } from './message-bus.js';
 import {
-  convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
+  convergeMessageBusComputedResourceOutputs, convergeMessageBusVerifierDensityReserves,
+  finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
 import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
+import {
+  MESSAGE_BUS_DELEGATE_EXECUTOR_SLOT, messageBusParticipantLayout,
+} from './participant-layout.js';
 
 export interface AtomicMessageBusFunder {
   utxo: Utxo;
@@ -84,6 +90,20 @@ export interface PreparedAtomicMessageBusCall {
 
 interface CallDescriptor extends PreparedAtomicMessageBusCall {
   artifact: Artifact;
+}
+
+/**
+ * Maximum number of consecutive prepared descriptors which may prove one runtime callsite occurrence class.
+ * An unbounded source loop has no compiler maximum; in that case the prepared call sequence itself is the
+ * runtime proof, bounded globally by the call-manifest capacity. Treating an absent maximum as zero silently
+ * omitted every invocation from such loops.
+ */
+export function preparedExternalCallOccurrenceScanLimit(
+  call: Pick<NonNullable<Artifact['abi'][number]['externalCalls']>[number], 'maximumOccurrences'>,
+  kind: 'conditional' | 'loop',
+  remainingPreparedCalls: number,
+): number {
+  return call.maximumOccurrences ?? (kind === 'conditional' ? 1 : remainingPreparedCalls);
 }
 
 const EVM_DYNAMIC_RESULT_TYPES = new Set(['bytes', 'string']);
@@ -213,22 +233,16 @@ const ownerParticipantArtifact = (artifact: Artifact, identityAnchorCount: numbe
   const capability = artifact.messageBus;
   const layout = capability?.route.blockLayout;
   if (!capability || !layout) throw new Error('messageBus: owner route publishes no block layout');
-  const identitySlots = Array.from({ length: identityAnchorCount }, (_unused, index) => ({
-    kind: 'identityAnchor' as const,
-    offset: layout.blockSize + index,
-  }));
+  const { blockLayout } = messageBusParticipantLayout(layout, {
+    delegated: false, identityAnchorCount,
+  });
   const effective = {
     ...artifact,
     messageBus: {
       ...capability,
       route: {
         ...capability.route,
-        blockLayout: {
-          ...layout,
-          blockSize: layout.blockSize + identityAnchorCount,
-          slots: [...layout.slots, ...identitySlots],
-          fixedSuffix: (layout.fixedSuffix ?? 0) + identityAnchorCount,
-        },
+        blockLayout,
       },
     },
   } as Artifact;
@@ -245,36 +259,16 @@ const delegateParticipantArtifact = (artifact: Artifact, identityAnchorCount: nu
   const capability = artifact.messageBus;
   const layout = capability?.route.blockLayout;
   if (!capability || !layout) throw new Error('messageBus: delegate route publishes no block layout');
-  // The implementation executor and optional identity anchors follow the compiler-owned route block. Preserve
-  // that block's bounded runtime-resource region: moving trailingBase to the executor loses every route chunk.
-  const existingExecutor = layout.slots.find((slot) => slot.kind === 'lowLevelCall');
-  const executorOffset = existingExecutor?.offset ?? layout.blockSize;
-  const executorSlots = existingExecutor ? [] : [
-    { kind: 'lowLevelCall' as const, offset: executorOffset, slotIndex: 0 },
-  ];
-  const baseBlockSize = layout.blockSize + executorSlots.length;
-  const identitySlots = Array.from({ length: identityAnchorCount }, (_unused, index) => ({
-    kind: 'identityAnchor' as const,
-    offset: baseBlockSize + index,
-  }));
-  const slots = [
-    ...layout.slots,
-    ...executorSlots,
-    ...identitySlots,
-  ];
-  const blockSize = baseBlockSize + identityAnchorCount;
+  const { blockLayout } = messageBusParticipantLayout(layout, {
+    delegated: true, identityAnchorCount,
+  });
   const effective = {
     ...artifact,
     messageBus: {
       ...capability,
       route: {
         ...capability.route,
-        blockLayout: {
-          ...layout,
-          blockSize,
-          slots,
-          fixedSuffix: (layout.fixedSuffix ?? 0) + executorSlots.length + identityAnchorCount,
-        },
+        blockLayout,
       },
     },
   } as Artifact;
@@ -302,7 +296,8 @@ const participantOf = (
     : ownerParticipantArtifact(descriptor.artifact, identityAnchorCount);
   const effectiveLayout = effectiveArtifact.messageBus!.route.blockLayout!;
   const executorOffset = descriptor.executor
-    ? effectiveLayout.slots.find((slot) => slot.kind === 'lowLevelCall')?.offset
+    ? effectiveLayout.slots.find((slot) => slot.kind === 'lowLevelCall'
+      && slot.slotIndex === MESSAGE_BUS_DELEGATE_EXECUTOR_SLOT)?.offset
     : undefined;
   const logicalIdentityOffset = logicalLockingBytecode === descriptor.contract.inner.lockingBytecode
     ? 0
@@ -635,7 +630,9 @@ export class AtomicMessageBusComposition {
         if (!callsite) {
           throw new Error(`messageBus: compiler omitted occurrence metadata for callsite ${callsiteId}`);
         }
-        const maximum = callsite.maximumOccurrences ?? (kind === 'conditional' ? 1 : 0);
+        const maximum = preparedExternalCallOccurrenceScanLimit(
+          callsite, kind, descriptors.length - next,
+        );
         // Compiler-authored raw edges retain `functionName: __raw__` and publish the decoded concrete selector
         // separately. Prepared calls use that concrete function name, so occurrence matching must do the same.
         let count = 0;
@@ -793,11 +790,23 @@ export class AtomicMessageBusComposition {
     const returning = plan.invocations.filter((invocation) => invocation.resultTypes.length > 0);
     const preparedResults = Object.fromEntries(returning.flatMap((invocation) => {
       const artifact = plan.participants[invocation.callee].artifact;
-      const prepared = preparedInvocationResult(
-        descriptors[invocation.index]?.provisionalResultCommitment,
-        artifact,
-        invocation.resultTypes,
-      );
+      let prepared: string | undefined;
+      try {
+        prepared = preparedInvocationResult(
+          descriptors[invocation.index]?.provisionalResultCommitment,
+          artifact,
+          invocation.resultTypes,
+        );
+      } catch (error) {
+        throw new Error(
+          `messageBus: prepared return for invocation ${invocation.index} '${invocation.function}' `
+          + `does not match [${invocation.resultTypes.join(', ')}]: `
+          + `participant framing=${artifactUsesSolidityAbi(artifact) ? 'evm' : 'native'}, `
+          + `descriptor framing=${artifactUsesSolidityAbi(descriptors[invocation.index].artifact) ? 'evm' : 'native'}; `
+          + `${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
       return prepared === undefined ? [] : [[invocation.index, prepared] as const];
     }));
     const provisionalResults = Object.fromEntries(returning.map((invocation) => {
@@ -959,7 +968,6 @@ export class AtomicMessageBusComposition {
       graphKey: string;
       resources: ReadonlyMap<number, { input: UnlockableUtxo; output: Output }>;
     }>();
-
     const rebalanceFeeTail = (builder: TransactionBuilder, subject: string): void => {
       const tail = builder.outputs.length - 1;
       const totalInput = builder.inputs.reduce((sum, input) => sum + input.satoshis, 0n);
@@ -1048,10 +1056,11 @@ export class AtomicMessageBusComposition {
         const blockSize = participant.blockLayout!.blockSize;
         const returnBlob = participantReturnBlob(participant.participant, results);
         const returnCommitment = participantReturnCommitment(returnBlob);
+        const routeContext = graphRouteContext(graph, participant.participant);
         const localCall = contract._batchRaw(
           participant.batch.blob,
           participant.batch.routeWitnesses as FunctionArgument[],
-          graphRouteContext(graph, participant.participant),
+          routeContext,
           graph.layout.participantInputs[participant.participant],
           returnBlob !== undefined,
           returnCommitment,
@@ -1107,6 +1116,85 @@ export class AtomicMessageBusComposition {
             + `failed to build its balanced block: ${error instanceof Error ? error.message : String(error)}`,
             { cause: error },
           );
+        }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_DYNAMIC_ACTIVITY === '1' && (participant.blockLayout?.trailingCapacity ?? 0) > 0) {
+          const trailingBase = participant.blockLayout?.trailingBase ?? participant.blockLayout!.blockSize;
+          console.error('atomic-local-trailing-resource-ownership', JSON.stringify({
+            participant: participant.participant,
+            contract: participant.artifact.contractName,
+            trailingBase,
+            resources: local.inputs.slice(trailingBase).flatMap((input, offset) => {
+              if (input.token?.nft?.capability !== 'mutable') return [];
+              const index = trailingBase + offset;
+              const output = local.outputs[index];
+              return [{
+                index,
+                inputLock: binToHex(input.unlocker.generateLockingBytecode()),
+                outputLock: output && binToHex(typeof output.to === 'string'
+                  ? addressToLockScript(output.to) : output.to),
+                inputCommitment: input.token.nft.commitment,
+                outputCommitment: output?.token?.nft?.commitment,
+              }];
+            }),
+          }));
+        }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_OUTPUT_PLAN === '1') {
+          const byMutableLock = new Map<string, number[]>();
+          local.outputs.forEach((output, index) => {
+            const lockingBytecode = typeof output.to === 'string'
+              ? addressToLockScript(output.to) : output.to;
+            if (output.token?.nft?.capability !== 'mutable' || lockingBytecode.length !== 35) return;
+            const key = binToHex(lockingBytecode);
+            const indices = byMutableLock.get(key) ?? [];
+            indices.push(index);
+            byMutableLock.set(key, indices);
+          });
+          const duplicateLocks = [...byMutableLock.entries()]
+            .filter(([, indices]) => indices.length > 1)
+            .map(([lockingBytecode, indices]) => ({ lockingBytecode, indices }));
+          if (duplicateLocks.length > 0) {
+            const neighborhoodIndices = new Set(duplicateLocks.flatMap(({ indices }) => indices.flatMap(
+              (index) => [index - 1, index, index + 1],
+            )).filter((index) => index >= 0 && index < local.outputs.length));
+            console.error('atomic-local-duplicate-mutable-locks', JSON.stringify({
+              participant: participant.participant,
+              duplicateLocks,
+              neighborhood: [...neighborhoodIndices].sort((left, right) => left - right).map((index) => {
+                const input = local.inputs[index];
+                const output = local.outputs[index];
+                const outputLock = typeof output.to === 'string'
+                  ? addressToLockScript(output.to) : output.to;
+                return {
+                  index,
+                  inputLock: input && binToHex(input.unlocker.generateLockingBytecode()),
+                  inputCommitment: input?.token?.nft?.commitment,
+                  outputLock: binToHex(outputLock),
+                  outputCommitment: output.token?.nft?.commitment,
+                };
+              }),
+            }));
+          }
+        }
+        const logicalReturnSlots = participant.blockLayout!.slots
+          .filter((slot) => slot.kind === 'returnEvent' && slot.slotIndex !== undefined)
+          .sort((left, right) => left.slotIndex! - right.slotIndex!);
+        const logicalResults = participant.invocations
+          .filter((invocation) => plan.invocations[invocation].resultTypes.length > 0)
+          .map((invocation) => results[invocation])
+          .filter((result): result is string => result !== undefined);
+        for (const slot of logicalReturnSlots) {
+          const result = logicalResults[slot.slotIndex!];
+          if (result === undefined) continue;
+          local.outputs[slot.offset] = {
+            to: Uint8Array.of(0x51),
+            amount: 1200n,
+            token: {
+              category: categories[participant.participant], amount: 0n,
+              nft: { capability: 'none', commitment: result },
+            },
+          };
         }
         // Event effects are fixed-point claims just like return values and mutable resources. Once a prior pass
         // has authenticated an event commitment, feed it back into the exact compiler-published participant slot;
@@ -1618,6 +1706,12 @@ export class AtomicMessageBusComposition {
           'messageBus: mutable resources changed after semantic-manifest convergence; refusing a stale manifest',
         );
       }
+      if (reassertCompilerReadOnlyBatchProofOutputs(builder.outputs, builder.inputs) > 0) {
+        rebalanceFeeTail(builder, 'compiler-owned read-only batch proofs');
+      }
+      if (convergeMessageBusVerifierDensityReserves(builder) > 0) {
+        rebalanceFeeTail(builder, 'message-bus verifier density reserves');
+      }
       preflightMessageBusTransaction(builder, finalizedByteGateOptionsForProvider(builder.provider));
       return builder;
     };
@@ -1916,6 +2010,8 @@ export class AtomicMessageBusComposition {
           });
         }
         if (semanticJson(derivedComputedValueChunks) !== semanticJson(claimedComputedValueChunks)) {
+          // Chunk outputs can be inputs to later resource/event observations. Authenticate their exact graph
+          // coordinates in the next manifest before accepting claims derived from those dependent slots.
           claimedComputedValueChunks = derivedComputedValueChunks;
           continue;
         }
@@ -2034,6 +2130,8 @@ export class AtomicMessageBusComposition {
           });
         }
         if (semanticJson(derivedResourceEffects) !== semanticJson(claimedResourceEffects)) {
+          // Resource transitions are authenticated manifest inputs to later event/effect discovery. Rebuild with
+          // them committed before accepting observations which may have executed under the provisional manifest.
           claimedResourceEffects = derivedResourceEffects;
           continue;
         }

@@ -7,6 +7,7 @@
  */
 import 'solidcash/vitest';
 import { cashAddressToLockingBytecode, binToHex } from '@bitauth/libauth';
+import { hash160 } from '@solidcash/utils';
 import { getActiveProvider } from './network-helpers.js';
 
 // A BCH `address` value is a full locking bytecode (Uint8Array), returned verbatim (never a pubkey-hash or a
@@ -51,6 +52,11 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
       && lockingBytecode[0] === 0xa9 && lockingBytecode[1] === 0x14 && lockingBytecode[22] === 0x87) {
       return lockingBytecode.slice(2, 22);
     }
+    if (packedLength === 20 && lockingBytecode.length === 35
+      && lockingBytecode[0] === 0xaa && lockingBytecode[1] === 0x20 && lockingBytecode[34] === 0x87) {
+      // Mirrors the compiler's lossy Solidity address -> uint160 conversion for native P2SH32 addresses.
+      return hash160(lockingBytecode);
+    }
     if (packedLength === 32 && lockingBytecode.length === 35
       && lockingBytecode[0] === 0xaa && lockingBytecode[1] === 0x20 && lockingBytecode[34] === 0x87) {
       return lockingBytecode.slice(2, 34);
@@ -70,6 +76,15 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
     if (lockingBytecode) {
       return [binToHex(payload(lockingBytecode, expectedBytes.length) ?? lockingBytecode), binToHex(expectedBytes)];
     }
+  }
+  // Event reconstruction commonly compares `getAddress(abi.encodePacked(uint160(address)))` (a 20-byte EVM
+  // identity) with the same address returned from native state (the full BCH locking bytecode). Keep both public
+  // values honest and normalize only for the assertion, using the compiler's exact narrowing rule.
+  if (actualBytes && expectedBytes) {
+    const expectedPayload = payload(expectedBytes, actualBytes.length);
+    if (expectedPayload) return [binToHex(actualBytes), binToHex(expectedPayload)];
+    const actualPayload = payload(actualBytes, expectedBytes.length);
+    if (actualPayload) return [binToHex(actualPayload), binToHex(expectedBytes)];
   }
   return [actual, expected];
 }
@@ -174,40 +189,6 @@ function big(v: Numeric | { toBigInt(): bigint } | object): bigint {
 }
 
 function bigintReplacer(_k: string, v: unknown): unknown { return typeof v === 'bigint' ? `${v}n` : v; }
-
-function artifactDeclaresReason(artifact: any, functionName: string | undefined, match: RegExp | string): boolean {
-  if (!artifact) return false;
-  const debug = artifact.debug?.functionDebug ?? {};
-  const fn = typeof functionName === 'string'
-    ? artifact.abi?.find((candidate: { name?: string }) => candidate.name === functionName)
-    : undefined;
-  const selectors = fn?.selector
-    ? [fn.selector]
-    : (artifact.abi ?? []).map((candidate: { selector?: string }) => candidate.selector).filter(Boolean);
-  const messages = selectors.flatMap((selector: string) => (
-    (debug[selector]?.requires ?? []).map((requirement: { message?: string }) => requirement.message)
-  )).filter((message: unknown): message is string => typeof message === 'string');
-  if (typeof match === 'string') {
-    if (messages.includes(match)) return true;
-    const source = `${artifact.source ?? ''} ${artifact.delegateArtifact?.source ?? ''}`;
-    if (source.includes(`"${match}"`) || source.includes(`'${match}'`)) return true;
-  } else if (messages.some((message: string) => match.test(message))) {
-    return true;
-  }
-  return artifact.delegateArtifact
-    ? artifactDeclaresReason(artifact.delegateArtifact, functionName, match)
-    : false;
-}
-
-function delegatedSourceDeclaresReason(transaction: any, match: RegExp | string): boolean {
-  if (typeof transaction?.declaresRevertReason === 'function' && transaction.declaresRevertReason(match)) return true;
-  const parentArtifact = transaction?.parentContract?.inner?.artifact;
-  if (artifactDeclaresReason(parentArtifact, transaction?.functionName, match)) return true;
-  const calls = transaction?.callInfos ?? [];
-  return calls.some((call: any) => artifactDeclaresReason(
-    call.contract?.inner?.artifact, call.functionName, match,
-  ));
-}
 
 /** Recursive subset match (chai-subset semantics): primitives equal; objects match per-key; arrays: every
  *  subset element must be a subset of SOME target element. bigint/number are compared loosely. */
@@ -656,40 +637,20 @@ class Assertion {
   }
 
   revertedWith(reason: RegExp | string): Promise<void> {
-    const maximumInputBytes = (this.actual as any)?.parentContract?.inner?.provider
-      ?.consensusLimits?.maximumInputBytes ?? 10_000;
-    const relaxed = maximumInputBytes > 10_000;
-    const isConstructionFailure = (error: unknown): boolean => {
-      const message = String((error as { message?: unknown })?.message ?? error);
-      return /Cannot send stateful transaction|could not be auto-derived|state commitments could not/i
-        .test(message);
-    };
-    const viewRead = this.actual?.parentContract?.inner?.artifact?.abi
-      ?.find((fn: { name?: string; writesState?: boolean }) => fn.name === this.actual?.functionName)
-      ?.writesState === false;
-    if (!this.negate && !viewRead && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))) {
-      const result = typeof this.actual?.send === 'function' ? this.actual.send() : this.actual;
-      return Promise.resolve(result).then(
-        () => { throw new Error(`expected transaction to revert with ${String(reason)}, but it succeeded`); },
-        (error) => {
-          // A failed layout/derivation is not the Solidity require named in the assertion.
-          if (isConstructionFailure(error)) throw error;
-        },
-      );
-    }
     const e = ensureVitest();
-    const assertion = Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
-    if (this.negate) return assertion;
-    return assertion.catch((error) => {
-      if (delegatedSourceDeclaresReason(this.actual, reason)) return;
-      throw error;
-    });
+    return Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
   }
 
-  /** Best-effort custom-error match: asserts a revert whose message mentions the error name. `.withArgs` accepted. */
+  /** BCH exposes the custom-error name through debug metadata, but does not yet preserve its argument values. */
   revertedWithCustomError(_contract: any, name: string): Promise<void> & { withArgs: (...a: any[]) => Promise<void> } {
     const p = this.revertedWith(new RegExp(name)) as Promise<void> & { withArgs: (...a: any[]) => Promise<void> };
-    p.withArgs = (): Promise<void> => this.revertedWith(new RegExp(name));
+    p.withArgs = async (...expected: any[]): Promise<void> => {
+      await p;
+      throw new Error(
+        `Custom error ${name} reverted, but SolidCash cannot yet verify its arguments: `
+        + JSON.stringify(expected, bigintReplacer),
+      );
+    };
     return p;
   }
 
@@ -708,7 +669,7 @@ class Assertion {
         const msg = String(err?.message ?? err);
         const re = matcher instanceof RegExp ? matcher : new RegExp(matcher.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
         const boundsAlias = matcher === 'value out-of-bounds' && /(?:out of range|out-of-bounds)/i.test(msg);
-        if (!re.test(msg) && !boundsAlias && !delegatedSourceDeclaresReason(this.actual, matcher)) {
+        if (!re.test(msg) && !boundsAlias) {
           throw new Error(`expected rejection matching ${matcher}, got: ${msg}`);
         }
       },

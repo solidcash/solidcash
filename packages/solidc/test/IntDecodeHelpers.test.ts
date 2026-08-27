@@ -141,6 +141,157 @@ describe('shared integer helpers', () => {
     expect(artifact.functionBodies![selector!]!.length).toBeGreaterThan(0);
   });
 
+  it('keeps speed-hint first-pass outlining when the pass is capped at four rounds', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still leftover-outlines after dropping full-body diagonal memo tables', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when leftover rounds reuse interned fingerprints', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines with packed Int32Array body ids', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when leftover clones only rewritten bodies', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines after sliding window hashes', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('keeps leftover window-4 follow-up outlining when the pass is capped at one round', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        uint256 c;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; this.c = v;
+          require(this.a == this.b);
+          require(this.b == this.c);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('speed-hint leftover outlining does not require a pre-cloned script corpus', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('keeps leftover outlining when the follow-up pass is capped at two rounds', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        uint256 c;
+        uint256 d;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; this.c = v; this.d = v;
+          require(this.a == this.b);
+          require(this.c == this.d);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
   it('keeps function bodies after the speed-hint outline window of 8', () => {
     const artifact = compileString(`
       contract Store() {

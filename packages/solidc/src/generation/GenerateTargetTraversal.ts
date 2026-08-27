@@ -4252,14 +4252,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.restoreCompactHelperIds(entryPool);
         const timingStart = Date.now();
         const orderedAttempt = outlineSharedSpans(
-          orderedBodies.map((body) => ({
-            ...body, script: [...body.script], locationData: [...body.locationData],
-          })),
+          orderedBodies,
           () => encodeInt(this.allocateCompactHelperId()),
           () => width,
           'savings',
           minimumWindowElements,
           candidateGroupsPerRound,
+          undefined,
+          speedHintOutline ? 4 : 6,
         );
         if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
           console.error('[outline-timing]', JSON.stringify({
@@ -4307,15 +4307,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const leftover = outlineSharedSpans(
         [
           ...result.bodies.map((body, index) => ({
-            script: [...body.script],
-            locationData: [...body.locationData],
+            script: body.script,
+            locationData: body.locationData,
             anchors: bodies[index].anchors?.map((anchor) => body.indexMap[anchor] ?? anchor),
           })),
           // First-pass helpers re-enter the leftover corpus so a 5-7 opcode tail that now lives only
           // inside an outlined body can still share with the remaining user-body copies.
           ...result.functions.map((fn) => ({
-            script: [...fn.script],
-            locationData: [...fn.locationData],
+            script: fn.script,
+            locationData: fn.locationData,
           })),
         ],
         () => encodeInt(this.allocateCompactHelperId()),
@@ -4323,6 +4323,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         'savings',
         5,
         4096,
+        undefined,
+        2,
       );
       if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
         console.error('[outline-timing]', JSON.stringify({
@@ -4367,13 +4369,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const leftover4 = outlineSharedSpans(
         [
           ...result.bodies.map((body, index) => ({
-            script: [...body.script],
-            locationData: [...body.locationData],
+            script: body.script,
+            locationData: body.locationData,
             anchors: bodies[index].anchors?.map((anchor) => body.indexMap[anchor] ?? anchor),
           })),
           ...result.functions.map((fn) => ({
-            script: [...fn.script],
-            locationData: [...fn.locationData],
+            script: fn.script,
+            locationData: fn.locationData,
           })),
         ],
         () => encodeInt(this.allocateCompactHelperId()),
@@ -4381,6 +4383,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         'savings',
         4,
         8192,
+        undefined,
+        1,
       );
       if (leftover4.savedBytes > 0 && leftover4.functions.length > 0) {
         result = {

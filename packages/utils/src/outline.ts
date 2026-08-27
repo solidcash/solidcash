@@ -275,39 +275,55 @@ function savingsOf(bytes: number, count: number, idPushBytes: number): number {
 const scriptBytes = (script: Script): number =>
   script.reduce<number>((sum, element) => sum + elementByteSize(element), 0);
 
+interface CachedBodyFingerprint {
+  ids: Int32Array;
+  prefix: Uint32Array;
+  hashes: Map<number, Int32Array>;
+}
+
+interface OutlineIntern {
+  keyIds: Map<string, number>;
+  bodyByScript: WeakMap<Script, CachedBodyFingerprint>;
+}
+
 interface CandidateCorpus {
-  bodyIds: number[][];
+  bodyIds: Int32Array[];
   bodyBytePrefixes: Uint32Array[];
+  scripts: Script[];
+  intern?: OutlineIntern;
   bodyAnchorBounds: ({ minimum: number; maximum: number } | undefined)[];
   maximumBodyLength: number;
-  commonPrefixByDiagonal: Map<number, Int32Array>;
   windowHashes: Map<number, Int32Array[]>;
   constantGroups?: number[][];
 }
 
 /** Immutable element identities and encoded-byte offsets shared by first-round strategy probes. */
-function prepareCandidateCorpus(bodies: OutlineBody[]): CandidateCorpus {
-  const keyIds = new Map<string, number>();
-  const opcodeIds = new Array<number>(256).fill(0);
+function prepareCandidateCorpus(bodies: OutlineBody[], intern?: OutlineIntern): CandidateCorpus {
+  const keyIds = intern?.keyIds ?? new Map<string, number>();
   const idOf = (element: Script[number]): number => {
-    if (typeof element === 'number') {
-      const cached = opcodeIds[element];
-      if (cached !== 0) return cached;
-    }
+    if (typeof element === 'number') return element + 1;
     const key = elementKey(element);
     const existing = keyIds.get(key);
     if (existing !== undefined) return existing;
-    const assigned = keyIds.size + 1;
+    const assigned = 257 + keyIds.size;
     keyIds.set(key, assigned);
-    if (typeof element === 'number') opcodeIds[element] = assigned;
     return assigned;
   };
-  const bodyIds = new Array<number[]>(bodies.length);
+  const bodyIds = new Array<Int32Array>(bodies.length);
   const bodyBytePrefixes = new Array<Uint32Array>(bodies.length);
+  const scripts = new Array<Script>(bodies.length);
   let maximumBodyLength = 0;
   for (let bodyIndex = 0; bodyIndex < bodies.length; bodyIndex += 1) {
     const script = bodies[bodyIndex].script;
-    const ids = new Array<number>(script.length);
+    scripts[bodyIndex] = script;
+    const cachedBody = intern?.bodyByScript.get(script);
+    if (cachedBody !== undefined) {
+      bodyIds[bodyIndex] = cachedBody.ids;
+      bodyBytePrefixes[bodyIndex] = cachedBody.prefix;
+      if (script.length > maximumBodyLength) maximumBodyLength = script.length;
+      continue;
+    }
+    const ids = new Int32Array(script.length);
     const prefix = new Uint32Array(script.length + 1);
     if (script.length > maximumBodyLength) maximumBodyLength = script.length;
     for (let i = 0; i < script.length; i += 1) {
@@ -316,10 +332,13 @@ function prepareCandidateCorpus(bodies: OutlineBody[]): CandidateCorpus {
     }
     bodyIds[bodyIndex] = ids;
     bodyBytePrefixes[bodyIndex] = prefix;
+    intern?.bodyByScript.set(script, { ids, prefix, hashes: new Map() });
   }
   return {
     bodyIds,
     bodyBytePrefixes,
+    scripts,
+    intern,
     bodyAnchorBounds: bodies.map((body) => {
       const anchors = body.anchors;
       if (anchors === undefined || anchors.length === 0) return undefined;
@@ -332,7 +351,6 @@ function prepareCandidateCorpus(bodies: OutlineBody[]): CandidateCorpus {
       return { minimum, maximum };
     }),
     maximumBodyLength,
-    commonPrefixByDiagonal: new Map(),
     windowHashes: new Map(),
   };
 }
@@ -375,7 +393,10 @@ function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[]
     return wider;
   }
 
-  const hashes = prepared.bodyIds.map((ids) => {
+  const hashes = prepared.bodyIds.map((ids, bodyIndex) => {
+    const fingerprint = prepared.intern?.bodyByScript.get(prepared.scripts[bodyIndex]);
+    const cachedHashes = fingerprint?.hashes.get(width);
+    if (cachedHashes !== undefined) return cachedHashes;
     const result = new Int32Array(Math.max(0, ids.length - width + 1));
     if (width === 12) {
       for (let start = 0; start < result.length; start += 1) {
@@ -392,15 +413,20 @@ function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[]
         hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
         result[start] = (Math.imul(hash, 31) + ids[start + 11]) | 0;
       }
-      return result;
-    }
-    for (let start = 0; start < result.length; start += 1) {
-      let hash = ids[start];
+    } else if (result.length > 0) {
+      let hash = ids[0];
       for (let offset = 1; offset < width; offset += 1) {
-        hash = (Math.imul(hash, 31) + ids[start + offset]) | 0;
+        hash = (Math.imul(hash, 31) + ids[offset]) | 0;
       }
-      result[start] = hash;
+      result[0] = hash;
+      let pow = 1;
+      for (let i = 0; i < width - 1; i += 1) pow = Math.imul(pow, 31);
+      for (let start = 1; start < result.length; start += 1) {
+        hash = (Math.imul((hash - Math.imul(ids[start - 1], pow)) | 0, 31) + ids[start + width - 1]) | 0;
+        result[start] = hash;
+      }
     }
+    fingerprint?.hashes.set(width, result);
     return result;
   });
   prepared.windowHashes.set(width, hashes);
@@ -417,35 +443,19 @@ function findCandidates(
   bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
   candidateGroupsPerRound: number, prepared: CandidateCorpus = prepareCandidateCorpus(bodies),
 ): Candidate[] {
-  const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, maximumBodyLength, commonPrefixByDiagonal } = prepared;
-  // Pack (left body, right body, signed diagonal) into one collision-free numeric key. Body indices and offsets
-  // are bounded by these in-memory arrays, so this stays far below Number.MAX_SAFE_INTEGER for compilable input.
-  const diagonalSpan = maximumBodyLength * 2 + 1;
-  // Candidate seeds at adjacent offsets often compare the same long equal runs again (particularly generated
-  // function bodies with a shared prologue/epilogue). Memoize exact suffix-prefix lengths by body pair and
-  // diagonal. Filling the run backwards makes every element on a diagonal participate in at most one scan.
+  const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, maximumBodyLength } = prepared;
   const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
     const left = bodyIds[leftBody];
     const right = bodyIds[rightBody];
     if (leftStart >= left.length || rightStart >= right.length) return 0;
-    const key = (leftBody * bodies.length + rightBody) * diagonalSpan
-      + rightStart - leftStart + maximumBodyLength;
-    let lengths = commonPrefixByDiagonal.get(key);
-    if (lengths === undefined) {
-      lengths = new Int32Array(left.length);
-      commonPrefixByDiagonal.set(key, lengths);
-    }
-    const rightOffset = rightStart - leftStart;
-    let cursor = leftStart;
-    while (cursor < left.length && cursor + rightOffset < right.length
-      && lengths[cursor] === 0 && left[cursor] === right[cursor + rightOffset]) cursor += 1;
-    let suffix = cursor < left.length && lengths[cursor] !== 0 ? lengths[cursor] - 1 : 0;
-    for (let i = cursor - 1; i >= leftStart; i -= 1) {
-      suffix += 1;
-      lengths[i] = suffix + 1;
-    }
-    if (lengths[leftStart] === 0) lengths[leftStart] = 1;
-    return lengths[leftStart] - 1;
+    // Marketplace leftover corpora have hundreds of bodies. Memoizing every diagonal as an Int32Array of
+    // the full body length spent more time allocating than it saved on repeated scans.
+    let n = 0;
+    const leftLimit = left.length - leftStart;
+    const rightLimit = right.length - rightStart;
+    const limit = leftLimit < rightLimit ? leftLimit : rightLimit;
+    while (n < limit && left[leftStart + n] === right[rightStart + n]) n += 1;
+    return n;
   };
   const balanceScratch: BalanceScratch = {
     firstIndexAtDepth: new Int32Array(maximumBodyLength + 1),
@@ -502,7 +512,11 @@ function findCandidates(
       const body = bucket[occurrenceIndex];
       const start = bucket[occurrenceIndex + 1];
       const ids = bodyIds[body];
-      const key = ids.slice(start, start + minimumWindowElements).join(',');
+      let key = '';
+      for (let offset = 0; offset < minimumWindowElements; offset += 1) {
+        key += ids[start + offset];
+        key += ',';
+      }
       let group = exact.get(key);
       if (group === undefined) {
         group = [];
@@ -683,20 +697,34 @@ export function outlineSharedSpans(
   candidateGroupsPerRound: number = CANDIDATE_GROUPS_PER_ROUND,
   /** Call-scoped cache shared only by attempts that start from the same bodies and anchors. */
   initialCandidateCache?: Map<string, unknown>,
+  /**
+   * Outlining rounds to run. Each round applies every disjoint profitable candidate, so a handful reach the
+   * fixed point; leftover follow-up passes can use fewer than MAXIMUM_ROUNDS without changing the first-pass
+   * budget.
+   */
+  maximumRounds: number = MAXIMUM_ROUNDS,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
+  // Most leftover bodies are never rewritten. Alias the caller's arrays until the first splice so idle
+  // Marketplace helper tails are not copied on every follow-up pass.
   const working = bodies.map((body) => ({
-    script: [...body.script],
-    locationData: [...body.locationData],
+    script: body.script,
+    locationData: body.locationData,
     anchors: [...(body.anchors ?? [])],
     origins: undefined as number[] | undefined,
+    owned: false,
   }));
   const functions: OutlinedFunction[] = [];
   const claimed: Uint8Array[] = [];
+  const intern: OutlineIntern = {
+    keyIds: new Map(),
+    bodyByScript: new WeakMap(),
+  };
   let savedBytes = 0;
 
-  for (let round = 0; round < MAXIMUM_ROUNDS; round += 1) {
+  const rounds = maximumRounds < 1 ? 1 : maximumRounds;
+  for (let round = 0; round < rounds; round += 1) {
     // Outlined bodies join the corpus so a repeat that only becomes visible after sharing is still found.
     const corpus = [
       ...working,
@@ -725,7 +753,7 @@ export function outlineSharedSpans(
       ? initialCandidateCache?.get('prepared-corpus') as CandidateCorpus | undefined
       : undefined;
     if (cached === undefined && prepared === undefined) {
-      prepared = prepareCandidateCorpus(corpus);
+      prepared = prepareCandidateCorpus(corpus, intern);
       if (round === 0) initialCandidateCache?.set('prepared-corpus', prepared);
     }
     const candidates = cached === undefined
@@ -819,6 +847,12 @@ export function outlineSharedSpans(
       right.body - left.body || right.start - left.start);
     for (const { body, start, entry } of edits) {
       const target = corpus[body];
+      if (body < working.length && !working[body].owned) {
+        target.script = [...target.script];
+        target.locationData = [...target.locationData];
+        working[body].owned = true;
+      }
+      intern.bodyByScript.delete(target.script);
       const spanLength = entry.definition.script.length;
       const location = target.locationData[start];
       target.script.splice(start, spanLength, entry.definition.id, Op.OP_INVOKE);

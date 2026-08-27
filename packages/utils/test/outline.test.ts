@@ -79,6 +79,78 @@ describe('cross-function bytecode outlining', () => {
     expect(leftover.functions.some((fn) => fn.script.length <= 8)).toBe(true);
   });
 
+  it('still shares leftover short spans without full-body diagonal memo tables', () => {
+    const short: Script = [...FILLER, ...FILLER, Op.OP_DUP];
+    const outlined: Script = [Uint8Array.of(0x8c), Op.OP_INVOKE];
+    const leftover = outlineSharedSpans(
+      [
+        body([...outlined, Op.OP_DROP, ...short]),
+        body([...outlined, Op.OP_2DROP, ...short]),
+        body([...outlined, Op.OP_1ADD, ...short]),
+        body([...outlined, Op.OP_NEGATE, ...short]),
+      ],
+      allocateId,
+      () => 1,
+      'savings',
+      5,
+    );
+    expect(leftover.savedBytes).toBeGreaterThan(0);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+  });
+
+  it('still shares leftover short spans when the follow-up pass is capped at two rounds', () => {
+    const short: Script = [...FILLER, ...FILLER, Op.OP_DUP];
+    const outlined: Script = [Uint8Array.of(0x8c), Op.OP_INVOKE];
+    const leftover = outlineSharedSpans(
+      [
+        body([...outlined, Op.OP_DROP, ...short]),
+        body([...outlined, Op.OP_2DROP, ...short]),
+        body([...outlined, Op.OP_1ADD, ...short]),
+        body([...outlined, Op.OP_NEGATE, ...short]),
+      ],
+      allocateId,
+      () => 1,
+      'savings',
+      5,
+      4096,
+      undefined,
+      2,
+    );
+    expect(leftover.savedBytes).toBeGreaterThan(0);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+    expect(leftover.functions.some((fn) => fn.script.length <= 8)).toBe(true);
+  });
+
+  it('still outlines at leftover window 5 and speed-hint window 8 with sliding hashes', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    expect(outlineSharedSpans(source, allocateId, () => 1, 'savings', 8).functions.length).toBeGreaterThan(0);
+    expect(outlineSharedSpans(source, allocateId, () => 1, 'savings', 5).functions.length).toBeGreaterThan(0);
+  });
+
+  it('still leftover-outlines when later rounds reuse interned fingerprints', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    const leftover = outlineSharedSpans(source, allocateId, () => 1, 'savings', 5, 4096, undefined, 2);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+    expect(leftover.savedBytes).toBeGreaterThan(0);
+  });
+
+  it('still leftover-outlines when body ids are packed in Int32Array', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    const leftover = outlineSharedSpans(source, allocateId, () => 1, 'savings', 5, 4096, undefined, 2);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+  });
+
+  it('does not mutate caller scripts when leftover outlining copies only rewritten bodies', () => {
+    const left = [...REPEATED, ...FILLER];
+    const right = [...FILLER, ...REPEATED];
+    const lonely = [...FILLER, Op.OP_NOP];
+    const source = [body(left), body(right), body(lonely)];
+    const leftover = outlineSharedSpans(source, allocateId, () => 1, 'savings', 5, 4096, undefined, 2);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+    expect(lonely).toEqual([...FILLER, Op.OP_NOP]);
+    expect(source[2].script).toBe(lonely);
+  });
+
   it('allows the compiler to probe a narrower minimum without changing the conservative default', () => {
     const eleven = REPEATED.slice(0, 11);
     const source = [body([...eleven, ...FILLER]), body([...FILLER, ...eleven])];

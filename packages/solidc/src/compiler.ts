@@ -37,7 +37,8 @@ import {
   SourceFileNode, StatementNode, TransferStatementNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
-  WhileNode, DoWhileNode,
+  WhileNode, DoWhileNode, UnaryOpNode, BreakNode, ContinueNode,
+  BranchNode, UncheckedNode, SwitchNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { GlobalFunction } from './ast/Globals.js';
@@ -136,7 +137,7 @@ import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, directCallNames,
   walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
-import { BinaryOperator, NullaryOperator } from './ast/Operator.js';
+import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
 
@@ -202,10 +203,27 @@ interface OptionalLoweringFeatures {
   needsCollectionJournal: boolean;
   needsExternalCallLowering: boolean;
   needsInlineAssembly: boolean;
+  needsTailRecursion: boolean;
+  needsReturnInLoop: boolean;
+  needsNamedReturns: boolean;
+  needsNestedBranchReturn: boolean;
+  needsPostfixIncDec: boolean;
+  needsMappingFieldCoalesce: boolean;
+  needsLoop: boolean;
+  needsBreakContinue: boolean;
+  needsEarlyReturn: boolean;
+  needsVMapCounter: boolean;
+  needsAlphaRename: boolean;
   statefulnessSurveyComplete: boolean;
   hasContractInstantiation: boolean;
   deploysWithValue: boolean;
   emitsEvent: boolean;
+}
+
+/** True when `code` is the complete program (no external import files to search). Sibling contracts in the
+ * same string are already in `code`. */
+function rootSourceCoversProgram(ast: Ast): boolean {
+  return ast.imports.length === 0;
 }
 
 function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
@@ -246,6 +264,18 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let deploysWithValue = false;
   let emitsEvent = false;
   let hasFunctionPointers = false;
+  let needsTailRecursion = false;
+  let needsReturnInLoop = false;
+  let needsNamedReturns = false;
+  let needsNestedBranchReturn = false;
+  let needsPostfixIncDec = false;
+  let needsMappingFieldCoalesce = false;
+  let needsLoop = false;
+  let needsBreakContinue = false;
+  let needsEarlyReturn = false;
+  let needsVMapCounter = false;
+  let needsAlphaRename = false;
+  const definedFunctionNames = new Set<string>();
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
@@ -278,6 +308,34 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     } else if (node instanceof EmitStatementNode) {
       emitsEvent = true;
     }
+    if (node instanceof FunctionDefinitionNode) {
+      definedFunctionNames.add(node.name);
+      if (node.returnNames.length > 0) needsNamedReturns = true;
+    }
+    if (node instanceof WhileNode || node instanceof DoWhileNode) needsLoop = true;
+    if (node instanceof BreakNode || node instanceof ContinueNode) needsBreakContinue = true;
+    if (node instanceof BranchNode || node instanceof UncheckedNode || node instanceof SwitchNode
+      || node instanceof TryCatchNode
+      || (node instanceof BlockNode && (node.statements ?? []).some((statement) => statement instanceof BlockNode))) {
+      needsAlphaRename = true;
+    }
+    if (node instanceof ReturnNode) {
+      needsEarlyReturn = true;
+      if (needsLoop) needsReturnInLoop = true;
+      needsNestedBranchReturn = true;
+    }
+    if (node instanceof MappingFieldAssignNode) needsMappingFieldCoalesce = true;
+    if (node instanceof UnaryOpNode && (
+      node.operator === UnaryOperator.POSTFIX_INCREMENT
+      || node.operator === UnaryOperator.POSTFIX_DECREMENT
+      || node.operator === UnaryOperator.PREFIX_INCREMENT
+      || node.operator === UnaryOperator.PREFIX_DECREMENT
+    )) {
+      needsPostfixIncDec = true;
+    }
+    if (node instanceof FunctionCallNode && definedFunctionNames.has(node.identifier.name)) {
+      needsTailRecursion = true;
+    }
     if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
       || node instanceof LowLevelCallStatementNode || node instanceof MethodCallNode
       || node instanceof MethodCallStatementNode || node.constructor.name.startsWith('External')
@@ -286,6 +344,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     }
     if (node instanceof ContractNode) {
       if (node.collections.length > 0) needsCollectionJournal = true;
+      if (node.collections.some((collection) => collection.sorted)) needsVMapCounter = true;
       if (node.stateVariables.some((state) => state.isDynamic || state.type === PrimitiveType.STRING
         || (state.type instanceof BytesType && state.type.bound === undefined))) {
         needsDynamicStateJournal = true;
@@ -323,6 +382,17 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsCollectionJournal,
     needsExternalCallLowering,
     needsInlineAssembly,
+    needsTailRecursion,
+    needsReturnInLoop,
+    needsNamedReturns,
+    needsNestedBranchReturn,
+    needsPostfixIncDec,
+    needsMappingFieldCoalesce,
+    needsLoop,
+    needsBreakContinue,
+    needsEarlyReturn,
+    needsVMapCounter,
+    needsAlphaRename,
     statefulnessSurveyComplete: true,
     hasContractInstantiation,
     deploysWithValue,
@@ -5401,7 +5471,9 @@ function compileResolvedAst(
   // inline+substitute parent constructors/modifiers. A parent ctor's `name.toShortStringWithFallback(fb)` becomes
   // `ShortStrings.toShortStringWithFallback(name, fb)` (a real arg node) while `name` is still the parent's param, so
   // the constructor-arg substitution can then rewrite it - it cannot reach a receiver embedded in a call identifier.
-  ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('using '))) {
+    ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
+  }
 
   // Inheritance expansion (after import resolution, before modifier expansion)
   // Split facets arrive here after the logical contract has already been flattened. Keep this idempotent even
@@ -5415,7 +5487,9 @@ function compileResolvedAst(
       fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
     }
   }
-  ast = expandInheritance(ast, mergedCompilerOptions.solidityImportCompat ?? false);
+  if (ast.contract.parentInvocations.length > 0 || ast.contract.implements.length > 0) {
+    ast = expandInheritance(ast, mergedCompilerOptions.solidityImportCompat ?? false);
+  }
 
   // OpenZeppelin upgradeable bases reserve future EVM storage slots with private fixed arrays named `__gap`.
   // They carry no runtime value and are never read; materializing them in CashToken commitments can consume
@@ -5495,17 +5569,22 @@ function compileResolvedAst(
   // X169: the split path already ran this on the COMPLETE function set (`prepareSplitAst`). Re-running it on a
   // shard's filtered set would re-decide a table this pass declined there, and the decision appends state
   // variables - see `assertSplitLayoutsAgree`.
-  if (!fnPtrArraysPreLowered) {
+  if (!fnPtrArraysPreLowered
+    && !(rootSourceCoversProgram(ast) && !code.includes('function(') && !code.includes('function ('))) {
     ast = ast.accept(new LowerForeignFunctionPointerArrayElements(messageBusGraphMode)) as Ast;
   }
 
   // Fold keccak256/sha256 of a string/hex literal to a compile-time bytes32 constant (role ids, EIP-712
   // domains, EVM storage slots). Both fold to their REAL hash (keccak256 -> real keccak, Ethereum-identical).
-  ast = ast.accept(new FoldHashLiterals()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('keccak256') && !code.includes('sha256'))) {
+    ast = ast.accept(new FoldHashLiterals()) as Ast;
+  }
 
   // Solidity public state-var/mapping auto-getters -> real entry-point functions, so a ported callee invoked
   // via a getter (`timeLock.lockTime(addr)`) actually dispatches it. Gated on solidityImportCompat.
-  ast = ast.accept(new SynthesizePublicGetters(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
+  if (mergedCompilerOptions.solidityImportCompat) {
+    ast = ast.accept(new SynthesizePublicGetters(true)) as Ast;
+  }
 
   // Solidity has no `delegate` lifecycle keyword. An OZ-style upgradeable implementation identifies itself via
   // an `initializer`/`reinitializer` modifier; every externally callable implementation function (including the
@@ -5534,13 +5613,24 @@ function compileResolvedAst(
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
 
   // Modifier expansion (before semantic analysis)
-  ast = expandModifiers(ast);
-  validateExpandedSelfdestructs(ast.contract);
+  const hasCustomModifiers = ast.contract.modifierDefinitions.length > 0
+    || ast.libraryModifierDefinitions.length > 0
+    || ast.contract.functions.some((fn) => fn.customModifiers.length > 0)
+    || (ast.contract.constructorDef?.customModifiers.length ?? 0) > 0
+    || (ast.contract.fallbackDef?.customModifiers.length ?? 0) > 0
+    || (ast.contract.receiveDef?.customModifiers.length ?? 0) > 0
+    || ast.freeFunctions.some((fn) => fn.customModifiers.length > 0);
+  if (hasCustomModifiers) ast = expandModifiers(ast);
+  if (!(rootSourceCoversProgram(ast) && !code.includes('selfdestruct'))) {
+    validateExpandedSelfdestructs(ast.contract);
+  }
 
   // Lower `transient` state vars to per-function locals after modifier expansion. A transient reference in a
   // modifier argument/body is now visible in the concrete function body, and public getters synthesized above
   // receive the same zero-initialized transaction-local binding as ordinary functions.
-  ast = lowerTransientStateVars(ast);
+  if (!(rootSourceCoversProgram(ast) && !code.includes('transient'))) {
+    ast = lowerTransientStateVars(ast);
+  }
 
   // A low-level call written in a MODIFIER body is invisible to the source-shape pass above, and reaches the
   // user as `Block slot not found: lowLevelCall[0]` once inlined. Re-run the same check on the expanded bodies.
@@ -5582,7 +5672,9 @@ function compileResolvedAst(
   // published route could not settle a single row (owner-local: OP_EQUALVERIFY on the entry output commitment).
   // Lowering first makes the footprint honest: the same handlers are now refused BY NAME when their key is a
   // constant, and reserve a real entry slot when it is a parameter.
-  ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
+    ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
+  }
 
   // A fixed-array collection iteration must expose its compiler-owned indexed accesses before deciding whether
   // the hidden route is synthesized at the early collection boundary. Otherwise an unrelated collection
@@ -5683,18 +5775,24 @@ function compileResolvedAst(
   // the AstBuilder left `x.method()` raw): `x.method(args)` -> `L.method(x, args)`. After modifier expansion (so
   // inlined modifier bodies are covered) and reresolveImportedStructTypes (types resolved), before the inline
   // passes (a `T storage`-taking library method is inlined-and-dropped there).
-  ast = ast.accept(new RedesugarImportedUsingForCalls()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('using '))) {
+    ast = ast.accept(new RedesugarImportedUsingForCalls()) as Ast;
+  }
 
   // A field write on a LOCAL/PARAM struct var whose struct type was IMPORTED (`escrow.split[j]=v`, `escrow.claimed=v`
   // on `Escrow memory escrow`) was mis-built at parse - the type was unknown, so the AstBuilder emitted a mapping-field
   // assign (array field) or a field-dropping StateAssign (scalar field). Rewrite both into the read-modify-rebuild
   // block the AstBuilder emits for a same-file struct local. Before LowerMemoryModel (which lowers the rebuild).
-  ast = ast.accept(new RedesugarImportedStructFieldWrites()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('struct '))) {
+    ast = ast.accept(new RedesugarImportedStructFieldWrites()) as Ast;
+  }
 
   // `T.wrap(x)` / `T.unwrap(x)` on an IMPORTED user-defined value type (unknown at parse, so the AstBuilder left it
   // a dangling `T.wrap` FunctionCall) -> the identity cast the AstBuilder emits for a same-file UDVT. PRB-math's
   // UD2x18/UD60x18 converters + constants reach this transitively via Sablier.
-  ast = ast.accept(new RedesugarImportedUdvtWrap()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('.wrap') && !code.includes('.unwrap'))) {
+    ast = ast.accept(new RedesugarImportedUdvtWrap()) as Ast;
+  }
 
   // Preserve straight-line foreign function-pointer ternaries before control-flow normalization splits
   // their initialized declaration into a declaration plus branch assignments. The later invocation remains
@@ -5703,6 +5801,9 @@ function compileResolvedAst(
     hasFunctionPointers, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
     needsSpecialMethodPruning, needsDynamicStateJournal, needsCollectionJournal,
     needsExternalCallLowering, needsInlineAssembly,
+    needsTailRecursion, needsReturnInLoop, needsNamedReturns, needsNestedBranchReturn,
+    needsPostfixIncDec, needsMappingFieldCoalesce, needsLoop, needsBreakContinue,
+    needsEarlyReturn, needsVMapCounter, needsAlphaRename,
     statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
   } = surveyOptionalLowerings(ast);
   const contractStatefulnessHint = statefulnessSurveyComplete && ast.freeFunctions.length === 0
@@ -5712,56 +5813,64 @@ function compileResolvedAst(
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
-  ast = ast.accept(new LowerTailRecursion()) as Ast;
-  ast = ast.accept(new DesugarReturnInLoop()) as Ast;
+  if (needsTailRecursion) ast = ast.accept(new LowerTailRecursion()) as Ast;
+  if (needsReturnInLoop) ast = ast.accept(new DesugarReturnInLoop()) as Ast;
 
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already
   // handles - a mapping write in a RUNTIME loop is rejected by EntryWriteInLoopError). Before break/continue
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
-  ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
 
   // Canonical dynamic vmap `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
-  ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
+  if (needsVMapCounter && needsLoop) ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
 
   // Break/continue expansion (before semantic analysis)
-  ast = expandBreakContinue(ast);
+  if (needsBreakContinue) ast = expandBreakContinue(ast);
 
   // Prove legacy checked-math wrapper shapes before named-return desugaring changes their minimal source form.
   if (mergedCompilerOptions.solidityImportCompat) ast = ast.accept(new MarkLegacyCheckedMath()) as Ast;
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
-  ast = ast.accept(new NamedReturnTransformation()) as Ast;
+  if (needsNamedReturns) ast = ast.accept(new NamedReturnTransformation()) as Ast;
 
   // A return nested under further conditions with fall-through (internal fns) -> flag + gated tail +
   // terminal return (after NamedReturn so implicit tails are explicit; before semantic so locals resolve).
-  ast = ast.accept(new DesugarNestedBranchReturn()) as Ast;
+  if (needsNestedBranchReturn) ast = ast.accept(new DesugarNestedBranchReturn()) as Ast;
 
   // Solidity permits a nested block local to shadow an outer local/parameter. Target stack slots are named, so
   // alpha-rename the inner binding (and its lexical uses) before later lowerings and symbol analysis.
-  ast = ast.accept(new AlphaRenameLocalShadows()) as Ast;
+  if (needsAlphaRename) ast = ast.accept(new AlphaRenameLocalShadows()) as Ast;
 
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
-  ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
+  if (needsPostfixIncDec) ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
 
   // Coalesce consecutive whole-field writes to the same vmap mapping entry (`m[k].a=x; m[k].b=y`) into one entry
   // read + one whole-struct write, replacing N sorted-mapping upserts with one.
-  ast = ast.accept(new CoalesceMappingEntryFieldWrites()) as Ast;
+  if (needsMappingFieldCoalesce) ast = ast.accept(new CoalesceMappingEntryFieldWrites()) as Ast;
 
   // Coalesce a run of consecutive element writes to the same fixed-array field of a memory struct local (each
   // desugared to a whole-struct rebuild) into one read + one rebuild. After RedesugarImportedStructFieldWrites (so
   // imported-struct triples exist), before LowerMemoryModel (which lowers the rebuild).
-  ast = ast.accept(new CoalesceStructFieldArrayWrites()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('struct '))) {
+    ast = ast.accept(new CoalesceStructFieldArrayWrites()) as Ast;
+  }
 
   // Memory model: lower local `memory` reference types to linear-buffer pointer ops before the value-copy
   // desugars, so nested writes compose in place. The safety gate falls unsupported locals back to value-copy.
-  ast = ast.accept(new LowerMemoryModel()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('memory') && !code.includes('calldata'))) {
+    ast = ast.accept(new LowerMemoryModel()) as Ast;
+  }
 
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
-  ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('[]'))) {
+    ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
+  }
 
   // Value-copy the local `bytes` element writes (`b[i] = v`) LowerMemoryModel did not convert to a pointer byte-
   // splice, including bytes-field temps introduced by DesugarNestedArrayWrite.
-  ast = ast.accept(new DesugarLocalBytesElementWrite()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('bytes['))) {
+    ast = ast.accept(new DesugarLocalBytesElementWrite()) as Ast;
+  }
 
   // A gratuitous internal fn-ptr state-var alias (`ev = eval; ev(x)`) -> the direct call (`eval(x)`), removing the
   // alias var. Sidesteps a higher-order internal-fn-ptr type mismatch; before any fn-ptr lowering.
@@ -5844,9 +5953,14 @@ function compileResolvedAst(
   // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
   // body, capture the return in a temp). Same block-layout reason as the void case below; run first so a void
   // helper containing such a call is resolved before it is itself inlined.
-  ast = ast.accept(new InlineReturningStateHelpers(
-    mergedCompilerOptions.solidityImportCompat ?? false,
-  )) as Ast;
+  const hasInternalHelpers = ast.freeFunctions.length > 0
+    || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.INTERNAL)
+      || fn.modifiers.includes(FunctionModifier.PRIVATE));
+  if (hasInternalHelpers) {
+    ast = ast.accept(new InlineReturningStateHelpers(
+      mergedCompilerOptions.solidityImportCompat ?? false,
+    )) as Ast;
+  }
 
   // Inline void calls to functions taking `storage` reference params; a storage pointer has no value
   // representation, so the callee is substituted into the caller as direct state access.
@@ -5854,7 +5968,8 @@ function compileResolvedAst(
   // expose scalar state inside a previously context-only void wrapper (`_checkInitializing` after
   // `_isInitializing()` is reduced). Without a follow-up inline, that wrapper stays an OP_INVOKE
   // body and a delegate `initialize` re-reads the pre-tx NFT (or INPUTINDEX+1 on the impl).
-  if (!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) {
+  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers)
+    && !(rootSourceCoversProgram(ast) && !code.includes('storage'))) {
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
@@ -5863,10 +5978,10 @@ function compileResolvedAst(
   // A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r=b; }`) is
   // resolved by straight-line dataflow into its side effects + the mapping it finally aliases, and inlined at call
   // sites - producing bare `mapping storage m = <mapping>` aliases the next pass handles.
-  ast = ast.accept(new InlineMappingReturnFunctions()) as Ast;
+  if (needsCollectionJournal) ast = ast.accept(new InlineMappingReturnFunctions()) as Ast;
   // A `mapping(..) storage m = get()` local (get() inlined above to a bare mapping or `c ? a : b`) has no runtime
   // value; rewrite each `m[k]` use to the underlying mapping (or a branch/ternary) and drop the declaration.
-  ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
+  if (needsCollectionJournal) ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
 
   // Re-run the fixed-bound unroll AFTER inlining: a `new T[](N)` literal substituted for an array param at an
   // inline site (`_updateJobWhitelist(id, allowed, new address[](0))`) now makes the loop bound compile-time
@@ -5874,21 +5989,23 @@ function compileResolvedAst(
   // sorted-mapping write over the empty array) reaches the entry-slot pre-scan / codegen. The first pass (before
   // inlining) can't see the literal, and everything it could unroll it already did, so this pass only fires on
   // these post-inline new-array-bound loops.
-  ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
 
   // A whole dynamic-array copy with a differing element type (`bytes10[] = bytes8[]`) desugars to a delete +
   // per-element casting push loop; must precede CacheDynamicArrayInLoop so the emitted push-in-loop is cached.
-  ast = ast.accept(new DesugarDynamicArrayCopyCast()) as Ast;
+  if (needsLoop || !(rootSourceCoversProgram(ast) && !code.includes('[]'))) {
+    ast = ast.accept(new DesugarDynamicArrayCopyCast()) as Ast;
+  }
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
   // model; cache it in a local, mutate the local in the loop, flush back once.
-  ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
+  if (needsLoop) ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
   // A vmap (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
-  ast = ast.accept(new CacheMappingEntryInLoop()) as Ast;
+  if (needsLoop || needsCollectionJournal) ast = ast.accept(new CacheMappingEntryInLoop()) as Ast;
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
-  ast = ast.accept(new IfConvertConditionalEntryOp()) as Ast;
+  if (needsCollectionJournal) ast = ast.accept(new IfConvertConditionalEntryOp()) as Ast;
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
   // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
@@ -5914,14 +6031,14 @@ function compileResolvedAst(
   if (needsExternalCallLowering) ast = ast.accept(new SynthesizeExternalAddressLocals()) as Ast;
   // `L.f()` calls to a state-touching (delegate) library -> a delegatecall against the caller's state (with a
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
-  ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
+  if (ast.freeFunctions.length > 0) ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
   const blockOracle = new SynthesizeBlockOracle(mergedCompilerOptions.solidityImportCompat ?? false);
   if (needsBlockOracle) ast = ast.accept(blockOracle) as Ast;
 
   // Drop free/library functions the contract never reaches (OZ libraries ship many unused helpers). Runs last,
   // after every synthesis pass, so no reachable call is missed; conservative by name so nothing live is dropped.
-  ast = ast.accept(new PruneUnreachableFreeFunctions()) as Ast;
+  if (ast.freeFunctions.length > 0) ast = ast.accept(new PruneUnreachableFreeFunctions()) as Ast;
 
   // Drop dead internal/private methods that read msg.data (e.g. inherited OZ `Context._msgData`, never called):
   // msg.data is only reconstructible at an entry point, so a dead one would fail the whole compile. Conservative
@@ -5959,7 +6076,7 @@ function compileResolvedAst(
   // surveying only the entry body cannot see the NullaryOp and a delegate build then reaches code generation
   // without either a category witness or an authenticated hidden caller. Name-level closure resolution matches
   // the compiler's existing conservative internal-call analysis and deliberately errs toward carrying context.
-  {
+  if (!(rootSourceCoversProgram(ast) && !code.includes('msg.sender'))) {
     const byName = new Map<string, FunctionDefinitionNode[]>();
     const directSenderNames = new Set<string>();
     for (const fn of ast.contract.functions) {
@@ -5985,7 +6102,7 @@ function compileResolvedAst(
   // helpers (e.g. ECDSA.recover -> two tryRecover overloads -> ecrecover). Symbol resolution happens in the next
   // pass, so establish this name-level closure now, while imported free/library functions are still available.
   // SymbolTableTraversal's direct-body survey remains authoritative for direct calls and argument metadata.
-  {
+  if (!(rootSourceCoversProgram(ast) && !code.includes('ecrecover'))) {
     const functions = [...ast.contract.functions, ...ast.freeFunctions];
     const byName = new Map<string, FunctionDefinitionNode[]>();
     for (const fn of functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
@@ -6255,17 +6372,20 @@ function compileResolvedAst(
   )) as Ast;
 
   // Inject synthetic tx.locktime guard where tx.locktime is used without a protocol-enforcing time check
-  if (mergedCompilerOptions.enforceLocktimeGuard) {
+  if (mergedCompilerOptions.enforceLocktimeGuard
+    && !(rootSourceCoversProgram(ast) && !code.includes('tx.locktime') && !code.includes('tx.time'))) {
     ast = ast.accept(new InjectLocktimeGuardTraversal()) as Ast;
   }
 
   // Early return transformation (rewrites return statements into nested if-else)
-  ast = ast.accept(new EarlyReturnTransformation()) as Ast;
+  if (needsEarlyReturn) ast = ast.accept(new EarlyReturnTransformation()) as Ast;
 
   // Compile referenced contracts in dependency order
-  const compiledBytecodes = compileReferencedContracts(ast, mergedCompilerOptions);
+  const compiledBytecodes = ast.importedContracts.length === 0
+    ? new Map<string, Uint8Array>()
+    : compileReferencedContracts(ast, mergedCompilerOptions);
 
-  refuseEmittingReturningStateHelpers(ast.contract);
+  if (emitsEvent) refuseEmittingReturningStateHelpers(ast.contract);
 
   mark('semantic');
   // Code generation
@@ -7521,8 +7641,12 @@ function prepareSplitAst(
   code: string, options: CompilerOptions, listener: SolidCashErrorListener | undefined,
 ): Ast {
   let ast = parseAndResolve(code, options, listener);
-  ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
-  ast = expandInheritance(ast);
+  if (!(rootSourceCoversProgram(ast) && !code.includes('using '))) {
+    ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
+  }
+  if (ast.contract.parentInvocations.length > 0 || ast.contract.implements.length > 0) {
+    ast = expandInheritance(ast);
+  }
   // X169. The THIRD shard-dependent state-appending pass, and the one X162 recorded rather than built. Its
   // classification is usage-driven - a table whose writes name two methods is VARYING and gets a parallel
   // `bytes[] __fnsel_<name>` state variable, one whose surviving writes name one method is FIXED and gets none -
@@ -7535,7 +7659,12 @@ function prepareSplitAst(
   if (splitPreLowersFnPtrArrays(options)) {
     ast = ast.accept(new LowerForeignFunctionPointerArrayElements(false)) as Ast;
   }
-  ast = expandModifiers(ast);
+  if (ast.contract.modifierDefinitions.length > 0
+    || ast.libraryModifierDefinitions.length > 0
+    || ast.contract.functions.some((fn) => fn.customModifiers.length > 0)
+    || (ast.contract.constructorDef?.customModifiers.length ?? 0) > 0) {
+    ast = expandModifiers(ast);
+  }
   // X162. Both remaining state-appending passes are SHARD-DEPENDENT and must therefore run here, on the
   // complete function set, before `compileFacet` filters it. `LowerStorageSlotPointers` appends one hidden
   // state variable per ERC-7201 namespace in the order the SURVIVING functions first reach it, so running it
@@ -7543,13 +7672,17 @@ function prepareSplitAst(
   // The relative order with the block oracle matches the ordinary pipeline (slot pointers first), so the root
   // also agrees with the unsplit baseline. Both passes are idempotent once their source metadata is consumed,
   // so the ordinary pipeline's later invocations are no-ops on this AST.
-  ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
+    ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
+  }
   // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
   // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
   // Match the ordinary pipeline's Solidity-compat mode. In that mode block.timestamp is lowered directly to
   // tx.locktime rather than allocated as an oracle register; using the native default here made split roots
   // append __block_timestamp ahead of __block_number while their unsplit baseline did not.
-  ast = ast.accept(new SynthesizeBlockOracle(options.solidityImportCompat ?? false)) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
+    ast = ast.accept(new SynthesizeBlockOracle(options.solidityImportCompat ?? false)) as Ast;
+  }
   return ast;
 }
 

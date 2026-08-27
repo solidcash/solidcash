@@ -351,6 +351,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       }
     }
     for (const key in node) {
+      if (key === 'location' || key === 'type' || key === 'name' || key === 'functionId' || key === 'resolvedFunction' || key === 'functionReference' || key === 'definition' || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable' || key === 'collection') continue;
       const value = node[key as keyof Node] as unknown;
       if (value instanceof FunctionType
         || ((value instanceof ArrayType || value instanceof MappingType

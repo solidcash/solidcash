@@ -43,7 +43,7 @@ export function walkInvocationAst(
   for (const key in value) {
     if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
       || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
-      || key === 'collection') continue;
+      || key === 'collection' || key === 'type' || key === 'location' || key === 'name' || key === 'functionId' || key === 'error' || key === 'opRolls' || key === 'selectorHex' || key === 'abiType') continue;
     const child = value[key as keyof Node];
     if (child instanceof Node) walkInvocationAst(child, visit, seen);
     else if (Array.isArray(child)) {

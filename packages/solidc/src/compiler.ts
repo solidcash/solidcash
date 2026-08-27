@@ -38,7 +38,7 @@ import {
   SourceFileNode, StatementNode, TransferStatementNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
-  WhileNode, DoWhileNode, UnaryOpNode, BreakNode, ContinueNode,
+  WhileNode, DoWhileNode, UnaryOpNode, TernaryOpNode, BreakNode, ContinueNode,
   BranchNode, UncheckedNode, SwitchNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
@@ -139,7 +139,7 @@ import {
   walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
-import { cloneNode } from './ast/clone.js';
+import { cloneNode, cloneNodeGraph } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
@@ -220,6 +220,7 @@ interface OptionalLoweringFeatures {
   needsNestedBranchReturn: boolean;
   needsPostfixIncDec: boolean;
   needsMappingFieldCoalesce: boolean;
+  needsNestedArrayDesugaring: boolean;
   needsLoop: boolean;
   needsBreakContinue: boolean;
   needsEarlyReturn: boolean;
@@ -285,9 +286,11 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let needsNestedBranchReturn = false;
   let needsPostfixIncDec = false;
   let needsMappingFieldCoalesce = false;
+  let needsNestedArrayDesugaring = false;
   let needsLoop = false;
   let needsBreakContinue = false;
   let needsEarlyReturn = false;
+  let hasReturn = false;
   let needsVMapCounter = false;
   let needsAlphaRename = false;
   const definedFunctionNames = new Set<string>();
@@ -312,6 +315,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       needsNestedBranchReturn = true;
       needsPostfixIncDec = true;
       needsMappingFieldCoalesce = true;
+      needsNestedArrayDesugaring = true;
       needsLoop = true;
       needsBreakContinue = true;
       needsEarlyReturn = true;
@@ -359,12 +363,22 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       needsAlphaRename = true;
     }
     if (node instanceof ReturnNode) {
+      hasReturn = true;
       needsEarlyReturn = true;
-      if (needsLoop) needsReturnInLoop = true;
       needsNestedBranchReturn = true;
     }
     if (node instanceof MappingFieldAssignNode) needsMappingFieldCoalesce = true;
-    if (node instanceof AssignmentExpressionNode) needsPostfixIncDec = true;
+    // DesugarPostfixExpressions also owns ternary initializers/assignments. Those must be admitted even when
+    // the source contains no increment operator (the canonical pagination `length = cond ? limit : length`).
+    if (node instanceof AssignmentExpressionNode || node instanceof TernaryOpNode) needsPostfixIncDec = true;
+    // DesugarNestedArrayWrite handles more than `T[][]`: nested mapping-struct fields and parser-ambiguous
+    // local/state indexed writes are represented by the same Mapping* nodes. Source-string `[]` detection misses
+    // fixed dimensions (`T[N]`) and all ordinary indexed expressions (`a[i]`). Admit exactly the node families
+    // the pass can rewrite or hoist.
+    if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+      || node instanceof MappingDeleteNode || node instanceof ArrayAccessNode) {
+      needsNestedArrayDesugaring = true;
+    }
     if (node instanceof UnaryOpNode && (
       node.operator === UnaryOperator.POSTFIX_INCREMENT
       || node.operator === UnaryOperator.POSTFIX_DECREMENT
@@ -420,6 +434,14 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       }
     }
   }
+  // The survey is a LIFO graph walk, so a ReturnNode can be visited before the loop containing it. Admission
+  // must not depend on that incidental order. The transformation itself performs the precise per-function
+  // containment check, making this program-level intersection both bounded and conservative.
+  needsReturnInLoop ||= hasReturn && needsLoop;
+  // DesugarReturnInLoop introduces a real BreakNode to leave the active loop after stashing the result. The
+  // source may contain no break/continue of its own, so close this lowering dependency explicitly rather than
+  // expecting the pre-transformation survey to discover a node which does not exist yet.
+  needsBreakContinue ||= needsReturnInLoop;
   return {
     hasFunctionPointers,
     needsBlockOracle,
@@ -436,6 +458,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsNestedBranchReturn,
     needsPostfixIncDec,
     needsMappingFieldCoalesce,
+    needsNestedArrayDesugaring,
     needsLoop,
     needsBreakContinue,
     needsEarlyReturn,
@@ -807,7 +830,7 @@ function compileWithExternalAdmissionFallback(
   // listener notifications and can replace the user's first diagnostic with retry noise.
   const incomingPristine = (mergedCompilerOptions as InternalCompilerOptions).__pristineAstBox?.ast;
   let initialAst: Ast | undefined = (mergedCompilerOptions as InternalCompilerOptions).__parsedAst
-    ?? (incomingPristine !== undefined ? cloneNode(incomingPristine) : undefined)
+    ?? (incomingPristine !== undefined ? cloneNodeGraph(incomingPristine) : undefined)
     ?? parseAndResolve(
       code, mergedCompilerOptions, errorListener, primaryContractName,
     );
@@ -824,7 +847,7 @@ function compileWithExternalAdmissionFallback(
   // 650ms+ re-parse on the verifier-binder pass).
   const pristineBox = (mergedCompilerOptions as InternalCompilerOptions).__pristineAstBox;
   if (pristineBox !== undefined && mergedCompilerOptions.messageBus && pristineBox.ast === undefined) {
-    pristineBox.ast = cloneNode(initialAst);
+    pristineBox.ast = cloneNodeGraph(initialAst);
   }
   const takeAst = (): Ast => {
     if (initialAst !== undefined) {
@@ -832,7 +855,7 @@ function compileWithExternalAdmissionFallback(
       initialAst = undefined;
       return ast;
     }
-    if (pristineBox?.ast !== undefined) return cloneNode(pristineBox.ast);
+    if (pristineBox?.ast !== undefined) return cloneNodeGraph(pristineBox.ast);
     return parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
   };
   const compileOnce = (
@@ -4651,11 +4674,6 @@ function synthesizeMessageBusRoute(
         }
         // Participant prefix || one artifact-specialized verifier per participant || one fee input.
         require(activeMembership == 1 && expectedBase + participantCount + 1 == tx.inputs.length);
-        bytes bindingDigest = sha256(bytes.concat(
-          sha256(callManifest), toPaddedBytes(activeBase, 2),
-          toPaddedBytes(expectedLocalRows, 2), sha256(localBatch)
-          ${bindingDigestGraphValues}
-        ));
         bigint activeVerifier = expectedBase + activeParticipant;
         require(tx.inputs[activeVerifier].tokenCategory.length == 33
           && tx.inputs[activeVerifier].tokenCategory.slice(0, 32) == activeCategory
@@ -5620,7 +5638,24 @@ function compileResolvedAst(
       fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
     }
   }
-  ast = expandInheritance(ast, mergedCompilerOptions.solidityImportCompat ?? false);
+  // Besides flattening the selected contract, this pass flattens concrete sibling/imported contracts used by
+  // `new Child()` and validates source-level `override` markers. A root with no bases can therefore still need
+  // the pass. Keep the common no-inheritance fast path, but decide it from the complete declaration set rather
+  // than only the selected root's parent list.
+  const needsInheritanceExpansion = [ast.contract, ...ast.importedContracts].some((contract) =>
+    contract.parentInvocations.length > 0
+    || contract.implements.length > 0
+    || contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.OVERRIDE)
+      || fn.overrideBases.length > 0)
+    || contract.modifierDefinitions.some((modifier) => modifier.isOverride
+      || modifier.overrideBases.length > 0)
+    || [contract.fallbackDef, contract.receiveDef].some((fn) => fn !== undefined
+      && (fn.modifiers.includes(FunctionModifier.OVERRIDE) || fn.overrideBases.length > 0))
+    || [...contract.stateVariables, ...contract.collections].some((declaration) =>
+      declaration.isOverride || declaration.overrideBases.length > 0));
+  if (needsInheritanceExpansion) {
+    ast = expandInheritance(ast, mergedCompilerOptions.solidityImportCompat ?? false);
+  }
 
   // OpenZeppelin upgradeable bases reserve future EVM storage slots with private fixed arrays named `__gap`.
   // They carry no runtime value and are never read; materializing them in CashToken commitments can consume
@@ -5933,7 +5968,7 @@ function compileResolvedAst(
     needsSpecialMethodPruning, needsDynamicStateJournal, needsCollectionJournal,
     needsExternalCallLowering, needsInlineAssembly,
     needsTailRecursion, needsReturnInLoop, needsReturnNormalization, needsNestedBranchReturn,
-    needsPostfixIncDec, needsMappingFieldCoalesce, needsLoop, needsBreakContinue,
+    needsPostfixIncDec, needsMappingFieldCoalesce, needsNestedArrayDesugaring, needsLoop, needsBreakContinue,
     needsEarlyReturn, needsVMapCounter, needsAlphaRename,
     statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
   } = surveyOptionalLowerings(ast);
@@ -5993,7 +6028,7 @@ function compileResolvedAst(
   }
 
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
-  if (!(rootSourceCoversProgram(ast) && !code.includes('[]'))) {
+  if (needsNestedArrayDesugaring) {
     ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
   }
 
@@ -6055,7 +6090,12 @@ function compileResolvedAst(
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
-  if (needsExternalCallLowering) ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
+  // The visitor also inlines helpers whose collection access is conditional, preserving branch-local entry
+  // ownership before journal lowering. A collection-only contract therefore needs it even without an external
+  // call (the route-key journal is the canonical case).
+  if (needsExternalCallLowering || needsCollectionJournal) {
+    ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
+  }
 
   // `address(this).call(payload)` -> a plain internal call (+ constant true success). Before the inline
   // passes so a state-touching callee (incl. the fallback) is inlined into the entry point like any other.
@@ -6123,7 +6163,9 @@ function compileResolvedAst(
   }
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
   // model; cache it in a local, mutate the local in the loop, flush back once.
-  if (needsLoop) ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
+  // This cache also owns writes in conditionally executed branches. Dynamic state lowerings can therefore need
+  // it without any source loop (and DesugarDynamicArrayCopyCast may synthesize a loop after the survey).
+  if (needsLoop || needsDynamicStateJournal) ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
   // A vmap (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
   // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache.
@@ -6546,7 +6588,11 @@ function compileResolvedAst(
   }
 
   // Early return transformation (rewrites return statements into nested if-else)
-  if (needsEarlyReturn) ast = ast.accept(new EarlyReturnTransformation()) as Ast;
+  // Journal lowerings synthesize returning helpers after the source survey. Normalize those generated returns
+  // through the same control-flow pass as source returns.
+  if (needsEarlyReturn || needsDynamicStateJournal || needsCollectionJournal) {
+    ast = ast.accept(new EarlyReturnTransformation()) as Ast;
+  }
 
   // Compile referenced contracts in dependency order
   const compiledBytecodes = ast.importedContracts.length === 0
@@ -7046,6 +7092,23 @@ function compileResolvedAst(
   return artifact;
 }
 
+const validationNonChildKeys = new Set([
+  'location', 'type', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+  'referencedContract', 'stateVariable', 'collection',
+]);
+
+/** Visit only owned syntax children. Semantic definition/provenance links point back into the declaration graph
+ * and can turn a validation of one small root into a walk of its complete imported corpus. */
+function visitValidationChildren(node: Node, visit: (child: Node) => void): void {
+  for (const [key, value] of Object.entries(node)) {
+    if (validationNonChildKeys.has(key)) continue;
+    if (value instanceof Node) visit(value);
+    else if (Array.isArray(value)) {
+      for (const item of value) if (item instanceof Node) visit(item);
+    }
+  }
+}
+
 function validateAbstractContractInstantiations(ast: Ast): void {
   const contracts = [ast.contract, ...ast.importedContracts];
   const abstractNames = new Set(contracts.filter((contract) => contract.isAbstract).map((contract) => contract.name));
@@ -7058,12 +7121,7 @@ function validateAbstractContractInstantiations(ast: Ast): void {
     if (node instanceof InstantiationNode && abstractNames.has(node.identifier.name)) {
       throw new AbstractContractInstantiationError(node, node.identifier.name);
     }
-    for (const value of Object.values(node)) {
-      if (value instanceof Node) walk(value);
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) walk(item);
-      }
-    }
+    visitValidationChildren(node, walk);
   };
   for (const contract of contracts) walk(contract);
 }
@@ -7090,12 +7148,7 @@ function validateFunctionNamespaceShadows(ast: Ast): void {
           throw new UndefinedReferenceError(node.identifier);
         }
       }
-      for (const value of Object.values(node)) {
-        if (value instanceof Node) walk(value);
-        else if (Array.isArray(value)) {
-          for (const item of value) if (item instanceof Node) walk(item);
-        }
-      }
+      visitValidationChildren(node, walk);
     };
     walk(contract);
   }
@@ -7129,12 +7182,7 @@ function validateLibrarySelfExternalCalls(ast: Ast): void {
           throw new LibrarySelfExternalCallError(node, targetName);
         }
       }
-      for (const value of Object.values(node)) {
-        if (value instanceof Node) walk(value);
-        else if (Array.isArray(value)) {
-          for (const item of value) if (item instanceof Node) walk(item);
-        }
-      }
+      visitValidationChildren(node, walk);
     };
     walk(fn);
   }
@@ -7190,13 +7238,15 @@ function validateKnownUserTypes(ast: Ast): void {
   const walk = (node: Node): void => {
     if (visited.has(node)) return;
     visited.add(node);
-    for (const value of Object.values(node)) {
-      if (value instanceof Node) walk(value);
-      else if (value instanceof ArrayType || value instanceof AddressType || value instanceof MappingType
+    for (const [key, value] of Object.entries(node)) {
+      if (value instanceof ArrayType || value instanceof AddressType || value instanceof MappingType
         || value instanceof StructType || value instanceof FunctionType || value instanceof TupleType
         || value instanceof ValueType) {
         validateType(value, node);
-      } else if (Array.isArray(value)) {
+      }
+      if (validationNonChildKeys.has(key)) continue;
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) {
         for (const item of value) {
           if (item instanceof Node) walk(item);
           else if (item instanceof ArrayType || item instanceof AddressType || item instanceof MappingType
@@ -7267,12 +7317,7 @@ function validateInheritedPrivateFunctionAccess(ast: Ast): void {
           const invalidQualified = qualifier !== undefined && !!privateOrigins?.has(qualifier);
           if (invalidBare || invalidQualified) throw new UndefinedReferenceError(node.identifier);
         }
-        for (const value of Object.values(node)) {
-          if (value instanceof Node) walk(value);
-          else if (Array.isArray(value)) {
-            for (const item of value) if (item instanceof Node) walk(item);
-          }
-        }
+        visitValidationChildren(node, walk);
       };
       walk(fn);
     }

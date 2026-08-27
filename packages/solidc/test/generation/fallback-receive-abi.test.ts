@@ -32,7 +32,21 @@ describe('Fallback/Receive ABI metadata', () => {
       expect(fallback).toBeDefined();
       expect(fallback!.isFallback).toBe(true);
       expect(fallback!.lowLevelCalls).toBeDefined();
-      expect(fallback!.lowLevelCalls).toEqual([{ callMode: 'delegatecall', target: { kind: 'literal' } }]);
+      expect(fallback!.lowLevelCalls).toEqual([{
+        callMode: 'delegatecall',
+        targetSource: {
+          kind: 'expression',
+          expression: {
+            kind: 'source',
+            source: {
+              kind: 'literal',
+              value: '76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac',
+              type: 'bytes25',
+            },
+          },
+        },
+        target: { kind: 'literal' },
+      }]);
     });
 
     it('should include ALL data NFT indices for delegatecall fallback', () => {
@@ -150,7 +164,21 @@ describe('Fallback/Receive ABI metadata', () => {
     it('should include call mode in lowLevelCalls', () => {
       const artifact = compileString(source);
       const fallback = artifact.abi.find((f) => f.name === '__fallback');
-      expect(fallback!.lowLevelCalls).toEqual([{ callMode: 'call', target: { kind: 'literal' } }]);
+      expect(fallback!.lowLevelCalls).toEqual([{
+        callMode: 'call',
+        targetSource: {
+          kind: 'expression',
+          expression: {
+            kind: 'source',
+            source: {
+              kind: 'literal',
+              value: '76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac',
+              type: 'bytes25',
+            },
+          },
+        },
+        target: { kind: 'literal' },
+      }]);
     });
   });
 });

@@ -21,8 +21,10 @@ describe('bounded collection iteration route', () => {
     const artifact = compileString(fixed(3), options);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
       .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.route.blockLayout?.slots.map((slot) => slot.kind))
+    const slots = artifact.messageBus?.route.blockLayout?.slots ?? [];
+    expect(slots.slice(0, 5).map((slot) => slot.kind))
       .toEqual(['master', 'dataNft', 'entry', 'entry', 'entry']);
+    expect(slots.slice(5).every((slot) => slot.kind === 'trailing' && slot.conditional)).toBe(true);
     expect(artifact.messageBus?.route.entryAccesses?.map((access) =>
       access.keySources[0].kind === 'constant' ? access.keySources[0].constantValue : undefined))
       .toEqual(['0', '1', '2']);

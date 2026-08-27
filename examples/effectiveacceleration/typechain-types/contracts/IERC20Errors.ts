@@ -5,8 +5,6 @@ import type { ContractRunner, DeployContractOptions, DeployedContract, Signature
 
 import IERC20ErrorsArtifact from '../../artifacts/solidcash/IERC20Errors.artifact.js';
 
-export type RecoverError = 0n | 1n | 2n | 3n;
-export type Rounding = 0n | 1n | 2n | 3n;
 
 export type IERC20Errors = StatefulContract<typeof IERC20ErrorsArtifact>;
 export type IERC20ErrorsConstructorArgs = [];

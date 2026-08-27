@@ -86,9 +86,14 @@ describe('inferred message-bus batching for repeated external callees', () => {
   it('replaces rather than retains the previous runtime batch count', () => {
     const compact = compileString(SOURCE).bytecode.replace(/\s+/g, '');
     // Rewriting SCB1's count splits after the six immutable header bytes, removes the old one-byte count, then
-    // concatenates the replacement count with only the actual row payload. The optimizer outlines the shared
-    // tail beginning at OP_NIP, so each of the two append sites ends this prefix with the same OP_INVOKE.
-    expect(compact.match(/OP_SPLITOP_1OP_SPLITOP_5OP_INVOKE/g)).toHaveLength(2);
+    // concatenates the replacement count with only the actual row payload. The optimizer outlines the split
+    // prefix and shared tail under dynamically allocated helper ids. Both append sites must use the same pair;
+    // no numeric helper id is part of the invariant.
+    const sites = compact.match(
+      /(?:OP_(?:1NEGATE|[1-9]|1[0-6])|[0-9a-f]+)OP_INVOKEOP_SPLITOP_1OP_SPLIT(?:OP_(?:1NEGATE|[1-9]|1[0-6])|[0-9a-f]+)OP_INVOKE/g,
+    ) ?? [];
+    expect(sites).toHaveLength(2);
+    expect(new Set(sites).size).toBe(1);
   });
 
   it('publishes bounded pure-helper programs for external argument derivation', () => {

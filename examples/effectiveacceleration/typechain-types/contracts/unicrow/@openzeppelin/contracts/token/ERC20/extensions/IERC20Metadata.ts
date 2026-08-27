@@ -5,8 +5,6 @@ import type { ContractRunner, DeployContractOptions, DeployedContract, Signature
 
 import IERC20MetadataArtifact from '../../../../../../../../artifacts/solidcash/IERC20Metadata.artifact.js';
 
-export type RecoverError = 0n | 1n | 2n | 3n;
-export type Rounding = 0n | 1n | 2n | 3n;
 
 export type IERC20Metadata = StatefulContract<typeof IERC20MetadataArtifact>;
 export type IERC20MetadataConstructorArgs = [];

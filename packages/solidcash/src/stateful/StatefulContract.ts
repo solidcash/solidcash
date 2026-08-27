@@ -1078,6 +1078,12 @@ function encodeStructArgument(
       parameterName,
       { blockTimestamp },
     );
+    // Older artifacts predate compiler-published field updates but still use the canonical timestamp_ route
+    // field. Preserve that compatibility after normalizing encoded/tuple struct values.
+    if (blockTimestamp !== undefined
+      && (record.timestamp_ === 0 || record.timestamp_ === 0n || record.timestamp_ === undefined)) {
+      record.timestamp_ = blockTimestamp;
+    }
     return encodePushdataValue(record as never, typeName, structs);
   }
   return encodePushdataValue(canonicalValue as never, typeName, structs);
@@ -18631,11 +18637,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         finalArgs = [...finalArgs, hexToBin(targetSelector)];
       }
 
-      // Per-slot callee master input index (so the covenant reads the RIGHT co-spent callee without a fixed
-      // block offset). Matches the compiler: fn-ptr calls always get one; a loop-free MULTI-call function fills
-      // every slot's index too (robust when a prior callee's data-NFT count - from an under-declared interface -
-      // shifts the fixed offset). A function with any array-element (loop) call keeps the fixed offset (the loop
-      // expands into N groups, so a 1:1 runtime fill cannot be aligned).
+      // A function with an array-element call expands one logical slot into N physical groups, so publish its
+      // framed index-list witness here. Scalar master witnesses are appended below by their compiler-owned ABI
+      // names (`__internal__extcallMasterIdx*`); appending scalar fn-ptr indices from call metadata here as well
+      // duplicated one argument per call and shifted the complete physical frame.
       const hasLoopSlotAbi = (abiFunction?.externalCalls ?? []).some((ec) => ec.loopArrayVar);
       // A received-value pointer array (fnPtrCall loop slot) gets ONE witness arg: the framed list of its
       // expanded groups' master input indices (`__internal__extcallIdxList<slot>`), in group order - the
@@ -18663,7 +18668,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           continue; // loop-expanded groups never get per-group index args
         }
         const ecSlot = groupMetas[i].ecSlot as { fnPtrCall?: boolean };
-        if (ecSlot.fnPtrCall || (!hasLoopSlotAbi && directGroupCount > 1)) {
+        if (!ecSlot.fnPtrCall && !hasLoopSlotAbi && directGroupCount > 1) {
           finalArgs = [...finalArgs, BigInt(groupMasterIndices[i])];
         }
       }

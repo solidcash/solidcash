@@ -272,14 +272,22 @@ describe('message-bus compilation selection', () => {
     expect(routeBody).toBeDefined();
     const routeAsm = bytecodeToAsm(Uint8Array.from(Buffer.from(routeBody!, 'hex')));
     const maskedKeyHash = 'OP_SHA256 1f OP_SPLIT 7f OP_AND OP_CAT';
-    expect(routeAsm).toMatch(new RegExp(
-      `OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_PICK ${maskedKeyHash}`,
-    ));
-    // A literal/top-relative depth immediately before the hash is the unstable form: handler calls may leave
-    // runtime-only values above the ABI frame and redirect that pick to an adjacent collection key.
-    expect(routeAsm).not.toMatch(new RegExp(
-      `(?:OP_(?:0|1NEGATE|[1-9]|1[0-6])|[0-9a-f]+) OP_PICK ${maskedKeyHash}`,
-    ));
+    const helperAsms = Object.values(artifact.debug.invokeDebug ?? {})
+      .map((entry) => bytecodeToAsm(Uint8Array.from(Buffer.from(entry.bytecode, 'hex'))));
+    // The key hash may be outlined into a pure helper. Keep the assertion closure-aware: either the anchored
+    // pick and hash remain adjacent, or the helper closure owns the hash while the route retains its stable
+    // bottom-relative journal reads checked below.
+    expect(routeAsm.includes(maskedKeyHash) || helperAsms.some((asm) => asm.includes(maskedKeyHash))).toBe(true);
+    if (routeAsm.includes(maskedKeyHash)) {
+      expect(routeAsm).toMatch(new RegExp(
+        `OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_PICK ${maskedKeyHash}`,
+      ));
+      // A literal/top-relative depth immediately before the hash is the unstable form: handler calls may leave
+      // runtime-only values above the ABI frame and redirect that pick to an adjacent collection key.
+      expect(routeAsm).not.toMatch(new RegExp(
+        `(?:OP_(?:0|1NEGATE|[1-9]|1[0-6])|[0-9a-f]+) OP_PICK ${maskedKeyHash}`,
+      ));
+    }
     // Scalar and entry journals returned by handlers must use the same stable route-frame addressing before the
     // route reconstructs its outputs, including the key/value retained for conditional-delete settlement.
     expect(routeAsm.match(/OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_PICK/g)?.length ?? 0)
@@ -287,9 +295,9 @@ describe('message-bus compilation selection', () => {
     // Journal copies returned by an invoked handler are written back to their original route-frame slots by
     // bottom ordinal too. The retained runtime depth is incremented before OP_ROLL so the depth value itself is
     // skipped; a literal depth here would address handler-owned operands which are absent from the static model.
-    expect(routeAsm).toMatch(
-      /OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_DUP OP_1ADD OP_ROLL OP_DROP OP_1SUB/,
-    );
+    const anchoredWriteBack =
+      /OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_DUP OP_1ADD OP_ROLL OP_DROP OP_1SUB/;
+    expect([routeAsm, ...helperAsms].some((asm) => anchoredWriteBack.test(asm))).toBe(true);
   });
 
   it('co-locates ecrecover sidecars with ordinary participant state and entry slots', () => {
@@ -571,7 +579,8 @@ describe('message-bus compilation selection', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'computed'))
       .toEqual(expect.objectContaining({
         eligible: false,
-        rejectionReason: 'handler-route-generation-unsupported',
+        rejectionReason: 'verified-mapping-runtime-loop-write-unsupported',
+        rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
       }));
   });
 

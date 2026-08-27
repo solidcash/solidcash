@@ -335,11 +335,15 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         node.identifier = new IdentifierNode(`${localName}.${method}`);
         node.identifier.location = loc;
       } else if (!ADDRESS_METHODS.has(varName) && !ADDRESS_METHODS.has(method)
-        && this.singleAssignLocals.has(varName) && this.localInits.has(varName)) {
+        && this.singleAssignLocals.has(varName) && this.localInits.has(varName)
+        && !this.preexistingSynthLocals.has(varName)) {
         // A SINGLE-ASSIGNMENT local aliasing an interface-cast target (`IUnicrow unicrow = IUnicrow(unicrowAddress);
         // unicrow.pay(..)`, EACC Marketplace). The interface local is not materialized (the cast is a no-op), so
         // sourcing it in codegen fails "variable 'unicrow' does not exist on the stack". Resolve the init to the
         // underlying state-var / self-pinned chain and hoist THAT, rewriting the call to the __extaddr_ local.
+        // A compiler-generated capture already present when this pass starts is intentionally call-site-local
+        // (notably a constructor target after assignment); rewriting our own capture on an idempotence rerun would
+        // move its read back to function entry and change both value provenance and initialization order.
         const local = this.hoistTargetLocalFor(this.localInits.get(varName)!);
         if (local) {
           const loc = node.identifier.location;
@@ -376,6 +380,24 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // `token.method{value:}(..)` (interface-typed state var) or `IFoo(a).method(..)` (plain-`address` state var
   // behind an interface cast): rewrite the object to the synthesized __extaddr_ local.
   visitMethodCall(node: MethodCallNode): Node {
+    // Function-pointer-array lowering marks a broadcast and leaves its receiver as `IFace(table[index])`. That
+    // receiver is deliberately per-element: SymbolTableTraversal must
+    // see the collection access to attach loopArrayVar and emit one authenticated co-spend per table entry. A
+    // literal index in the non-graph build is only a code-generation placeholder for the whole-table broadcast;
+    // treating it as an ordinary fixed state read would collapse the route to one __extaddr_ slot. Single-element
+    // calls are unaffected because their lowering first materialises `table[index]` in an __fnelem_ local.
+    if (node.pointerTableBroadcast && node.object instanceof FunctionCallNode
+      && node.object.parameters.length === 1) {
+      let receiver = node.object.parameters[0] as ExpressionNode;
+      while (receiver instanceof CastNode) receiver = receiver.expression;
+      if (receiver instanceof ArrayAccessNode || receiver instanceof MappingAccessNode) {
+        node.object = this.visit(node.object) as ExpressionNode;
+        node.parameters = this.visitList(node.parameters) as ExpressionNode[];
+        if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
+        if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
+        return node;
+      }
+    }
     const directStateTarget = node.object instanceof IdentifierNode && this.stateVarIface.has(node.object.name)
       ? {
         name: node.object.name,

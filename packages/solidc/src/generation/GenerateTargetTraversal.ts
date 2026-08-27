@@ -1937,6 +1937,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    // Reachability is computed before visitContract so free/library OP_DEFINEs can be emitted first. Seed the
+    // constructor frame here as well: constant-call folding depends on recognizing immutable constructor
+    // parameters, and caching that pre-contract reachability without this context retains a dead definition.
+    this.contractParameters = node.contract.parameters;
     // Register file-level constants for inline substitution
     for (const cd of node.constantDefinitions) {
       this.constantExpressions.set(cd.name, cd.expression);
@@ -2603,6 +2607,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         found = true;
         return;
       }
+      // Solidity-compatible bare state references remain IdentifierNodes until the later state-array lowering
+      // that actually emits the chunk read. Their resolved definition is the reliable distinction from a local
+      // with the same spelling. Partial array-element writes also read the existing encoded array before
+      // replacing one field, so every explicit StateArray operation materializes the dynamic value here.
+      if ((node instanceof IdentifierNode && node.definition instanceof StateVariableNode
+          && node.definition.isDynamic)
+        || (node instanceof MappingAccessNode && this.stateVariables.some((sv) =>
+          sv.isDynamic && sv.name === node.name))
+        || ((node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+            || node instanceof StateArrayAssignNode || node instanceof StateArrayDeleteNode)
+          && this.stateVariables.some((sv) => sv.isDynamic && sv.name === node.name))) {
+        found = true;
+        return;
+      }
       for (const key in node) {
         if (['resolvedFunction', 'functionReference', 'definition', 'collection',
           'stateVariable', 'symbolTable'].includes(key)) continue;
@@ -2737,8 +2755,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           || returned instanceof StringLiteralNode
           || (returned instanceof IdentifierNode
             && this.contractParameters.some((parameter) => parameter.name === returned.name));
-        if (!((emptyBody || noOpBody || foldableReturn) && current.parameters.every(inertArgument))) {
+        const folded = (emptyBody || noOpBody || foldableReturn) && current.parameters.every(inertArgument);
+        if (!folded) {
           ids.add(current.resolvedFunction.functionId);
+        } else {
+          // The identifier below this FunctionCallNode is also annotated as a function reference. It denotes the
+          // direct callee here, not a first-class function-pointer value; descending into it would re-add the
+          // edge that this exact code-generation fold removes and retain a dead OP_DEFINE.
+          continue;
         }
       }
       // A function used as a value (function pointer / `this.f` self-ref) is invoked indirectly via OP_INVOKE,
@@ -12999,8 +13023,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(0n), loc);
       this.emit(Op.OP_ENDIF, loc);
       this.emitEvmWordFromUint(loc);
-    } else if (type instanceof IntType || type === PrimitiveType.BIGINT) {
-      if (type instanceof IntType && type.signed) {
+    } else if (type instanceof IntType || type === PrimitiveType.INT || type === PrimitiveType.BIGINT) {
+      if ((type instanceof IntType && type.signed) || type === PrimitiveType.INT) {
         // add 2^256 if negative -> the 256-bit two's-complement pattern
         this.emit(Op.OP_DUP, loc);
         this.emit(encodeInt(0n), loc);
@@ -13021,6 +13045,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(new Uint8Array(pad), loc); // right-pad the N data bytes to a full 32-byte word
         this.emit(Op.OP_CAT, loc);
       }
+    } else if (type instanceof FunctionType && type.isExternal) {
+      // Native external-function values are `selector4 ++ lockingBytecode`; Solidity ABI uses the bytes24
+      // `address20 ++ selector4`, right-padded to one word. Normalize only at this ABI boundary.
+      this.emit(encodeInt(4n), loc);
+      this.emit(Op.OP_SPLIT, loc); // [selector, lockingBytecode]
+      this.emit(compileCast(new AddressType(false), new BytesType(20), false, true), loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_CAT, loc); // address20 ++ selector4
+      this.emit(new Uint8Array(8), loc);
+      this.emit(Op.OP_CAT, loc);
     } else {
       throw new Error(`evmCompat abi.encode: unsupported type '${type.toString()}' (Phase 1 = value types)`);
     }
@@ -13162,24 +13196,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // (offset word ++ length word ++ element words). Rebuild the SolidCash array blob = pushdata(len) ++ packed
   // fixed-width LE elements. Inverse of emitEvmArrayTail: a runtime loop converts each 32-byte big-endian element
   // word back via emitEvmWordToValue + emitEncodeElementPacked (both loop-safe). Pure-emit + one tracker reconcile.
-  // [element words blob on top] -> SolidCash array blob = pushdata(len) ++ packed fixed-width LE elements. The
-  // element count is recovered from the blob size (/32). A runtime loop converts each 32-byte big-endian word back
-  // via emitEvmWordToValue + emitEncodeElementPacked (loop-safe). Pure-emit + one tracker reconcile (words -> blob).
+  // [static element encodings on top] -> SolidCash array blob = pushdata(len) ++ native elements. The element
+  // count is recovered from the blob size / its ABI stride. Scalar elements take one word; fixed arrays and static
+  // structs occupy several and are decoded recursively. The runtime loop is tracker-neutral between iterations.
   private emitEvmWordsToArray(elemType: Type, loc: SingleLocationData): void {
+    const stride = this.abiStaticSize(elemType);
     this.emit(Op.OP_SIZE, loc); // [words, size]  (OP_SIZE keeps its input)
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_DIV, loc); // [words, length]  (each element is one 32-byte word)
+    this.emit(encodeInt(BigInt(stride)), loc);
+    this.emit(Op.OP_DIV, loc); // [words, length]
     this.emitPushdataEncode(PrimitiveType.BIGINT, loc); // length -> pushdata prefix bytes (accumulator start)
     this.emit(Op.OP_SWAP, loc); // [acc, words]
     this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_SIZE, loc);
     this.emit(Op.OP_0NOTEQUAL, loc); // [acc, words, moreLeft]
     this.emit(Op.OP_IF, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc); // [acc, word, rest]
-    this.emit(Op.OP_SWAP, loc); // [acc, rest, word]
-    this.emitEvmWordToValue(elemType, loc); // big-endian word -> VM value
-    this.emitEncodeElementPacked(elemType, loc); // value -> fixed-width LE element bytes
+    this.emit(encodeInt(BigInt(stride)), loc);
+    this.emit(Op.OP_SPLIT, loc); // [acc, elementAbi, rest]
+    this.emit(Op.OP_SWAP, loc); // [acc, rest, elementAbi]
+    this.emitEvmStaticDecodeValue(elemType, loc);
+    if (isFixedWidthType(elemType)) this.emitEncodeElementPacked(elemType, loc);
+    else this.emitPushdataEncode(elemType, loc);
     this.emit(encodeInt(2n), loc);
     this.emit(Op.OP_ROLL, loc); // [rest, elemBytes, acc]
     this.emit(Op.OP_SWAP, loc);
@@ -13193,6 +13229,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc); // drop the emptied element words -> [acc = SolidCash array blob]
     this.popFromStack();
     this.pushToStack('(value)');
+  }
+
+  // Decode one exact STATIC ABI value on top into its canonical SolidCash value. Composite encodings are inline
+  // concatenations in the ABI, while SolidCash arrays carry a count prefix and structs frame their fields, so both
+  // are rebuilt recursively rather than being mistaken for one 32-byte word.
+  private emitEvmStaticDecodeValue(type: Type, loc: SingleLocationData): void {
+    if (type instanceof ArrayType && type.bound !== undefined && !this.isDynamicAbiType(type)) {
+      this.emitEvmWordsToArray(type.elementType, loc);
+      return;
+    }
+    if (type instanceof StructType && !this.isDynamicAbiType(type)) {
+      this.emitEvmStructDecode(type, loc);
+      return;
+    }
+    this.emitEvmWordToValue(type, loc);
   }
 
   // Decode one ABI element from the top of a blob, consuming its bytes: [.., tail] -> [.., next, element] where
@@ -13285,6 +13336,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  // A fixed-size array is still ABI-dynamic when its element is dynamic (`uint[][3]`, `bytes[2]`). Its top-level
+  // word is an offset, followed by an N-word element-offset head and the element tails. Decode the canonical tails
+  // sequentially and rebuild the fixed SolidCash array value with its count prefix.
+  private emitEvmFixedDynamicArrayDecode(type: ArrayType, loc: SingleLocationData): void {
+    const count = type.bound!;
+    this.emitDropFirst32(loc); // top-level offset -> [element head ++ tails]
+    this.emit(encodeInt(BigInt(count)), loc);
+    this.emitPushdataEncode(PrimitiveType.BIGINT, loc);
+    this.emit(Op.OP_SWAP, loc); // [acc=countPrefix, head ++ tails]
+    this.emit(encodeInt(BigInt(count * 32)), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc); // drop the element-offset head -> [acc, tails]
+    for (let i = 0; i < count; i += 1) {
+      this.emitEvmDecodeElement(type.elementType, loc); // [acc, next, element]
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // [next, element, acc]
+      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // [next, acc']
+      this.emit(Op.OP_SWAP, loc); // [acc', next]
+    }
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
   // Single top-level dynamic array (offset always 32): strip the offset word and the length word, then rebuild.
   private emitEvmArrayDecode(elemType: Type, loc: SingleLocationData): void {
     this.emit(encodeInt(32n), loc);
@@ -13308,8 +13382,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Types represented by one EVM ABI word and supported by both word conversion helpers. */
   private isEvmAbiWordType(t: Type): boolean {
-    return t === PrimitiveType.BOOL || t === PrimitiveType.BIGINT
+    return t === PrimitiveType.BOOL || t === PrimitiveType.INT || t === PrimitiveType.BIGINT
       || t instanceof IntType || t instanceof AddressType
+      || (t instanceof FunctionType && t.isExternal)
       || (t instanceof BytesType && t.bound !== undefined && t.bound <= 32);
   }
 
@@ -13398,14 +13473,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
-  // evmCompat inverse of emitEvmStructInline: a fixed-width struct's ABI tuple blob (word(f0) ++ word(f1) ++ ...)
-  // -> the SolidCash struct blob (pushdata(f0) ++ pushdata(f1) ++ ...). Split each 32-byte word, decode to a value,
-  // re-encode as pushdata, concatenate. Unrolled over the fields; relative ops + getStackIndex-free helpers only.
+  // evmCompat inverse of emitEvmStructInline: a fixed-width struct's ABI tuple blob
+  // -> the SolidCash struct blob (pushdata(f0) ++ pushdata(f1) ++ ...). A field may itself occupy several words,
+  // so split by its recursive ABI size, decode the exact field value, frame it, and concatenate.
   private emitEvmStructDecode(type: StructType, loc: SingleLocationData): void {
     this.emit(new Uint8Array(0), loc); this.emit(Op.OP_SWAP, loc); // [acc="", blob]
     type.fields.forEach((f) => {
-      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [acc, word, rest]
-      this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(f.type, loc); // [acc, rest, value]
+      this.emit(encodeInt(BigInt(this.abiStaticSize(f.type))), loc);
+      this.emit(Op.OP_SPLIT, loc); // [acc, fieldAbi, rest]
+      this.emit(Op.OP_SWAP, loc); this.emitEvmStaticDecodeValue(f.type, loc); // [acc, rest, value]
       this.emitPushdataEncode(f.type, loc); // [acc, rest, pushdata]
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // acc to top: [rest, pushdata, acc]
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // acc ++ pushdata: [rest, acc']
@@ -13446,10 +13522,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       return;
     }
+    const visitParameter = (param: ExpressionNode): ExpressionNode => {
+      if (param.type instanceof FunctionType && param.type.isExternal
+        && param instanceof IdentifierNode && param.isExternalSelfRef
+        && param.functionReference?.functionSelector) {
+        // `this.f` normally evaluates to its internal OP_INVOKE functionId on BCH. ABI encoding observes the
+        // nominal Solidity external value instead, without changing the representation used by an actual call.
+        this.emit(param.functionReference.functionSelector, loc);
+        this.emit(Op.OP_INPUTINDEX, loc);
+        this.emit(Op.OP_UTXOBYTECODE, loc);
+        this.emit(Op.OP_CAT, loc); // selector4 ++ own locking bytecode
+        this.pushToStack('(value)');
+        return param;
+      }
+      return this.visit(param);
+    };
     if (dynIdx.length === 0) {
       // All static: the head is the whole encoding (each arg inline - value word or fixed-width struct's field words).
       params.forEach((param, i) => {
-        params[i] = this.visit(param);
+        params[i] = visitParameter(param);
         this.emitEvmEncodeValue(params[i].type!, loc);
         if (i > 0) {
           this.emit(Op.OP_CAT, loc);
@@ -13465,7 +13556,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // at runtime via tracker-tracked PICK/SIZE so it stays correct for any number of dynamics at any positions.
     // Phase A: encode each arg to a blob (static word or dynamic tail) kept as tracked slot __abiblob_i.
     for (let i = 0; i < n; i += 1) {
-      params[i] = this.visit(params[i]);
+      params[i] = visitParameter(params[i]);
       this.emitEvmEncodeValue(params[i].type!, loc);
       this.popFromStack();
       this.pushToStack(`__abiblob${i}`);
@@ -13568,13 +13659,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       return;
     }
-    if (type instanceof IntType || type === PrimitiveType.BIGINT) {
+    if (type instanceof FunctionType && type.isExternal) {
+      this.emit(encodeInt(24n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc); // address20 ++ selector4
+      this.emit(encodeInt(20n), loc);
+      this.emit(Op.OP_SPLIT, loc); // [address20, selector4]
+      this.emit(Op.OP_SWAP, loc); // [selector4, address20]
+      this.emit(compileCast(new BytesType(20), new AddressType(false), false, true), loc);
+      this.emit(Op.OP_CAT, loc); // native selector4 ++ lockingBytecode
+      return;
+    }
+    if (type instanceof IntType || type === PrimitiveType.INT || type === PrimitiveType.BIGINT) {
       // reverse to little-endian, force positive with a 0x00 sign byte, minimise -> unsigned value U
       this.emit(Op.OP_REVERSEBYTES, loc);
       this.emit(new Uint8Array([0]), loc);
       this.emit(Op.OP_CAT, loc);
       this.emit(Op.OP_BIN2NUM, loc);
-      if (type instanceof IntType && type.signed) {
+      if ((type instanceof IntType && type.signed) || type === PrimitiveType.INT) {
         // two's-complement: a high-bit-set U is the negative value U - 2^256
         this.emit(Op.OP_DUP, loc);
         this.emit(encodeInt(1n << 255n), loc);
@@ -13708,13 +13810,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
       this.emit(encodeInt(1n), loc);
       this.emit(Op.OP_NUM2BIN, loc);
-    } else if (type instanceof IntType) {
-      const byteLen = BigInt(type.bits / 8);
-      if (type.signed) {
+    } else if (type instanceof IntType || type === PrimitiveType.INT) {
+      // PrimitiveType.INT is the generic integer type retained by Yul/file-level helper lowering. At an EVM ABI
+      // boundary it has Solidity's full-width signed integer representation, just like int256.
+      const bits = type instanceof IntType ? type.bits : 256;
+      const byteLen = BigInt(bits / 8);
+      if (!(type instanceof IntType) || type.signed) {
         this.emit(Op.OP_DUP, loc);
         this.emit(encodeInt(0n), loc);
         this.emit(Op.OP_LESSTHAN, loc);
-        this.emit(encodeInt(1n << BigInt(type.bits)), loc);
+        this.emit(encodeInt(1n << BigInt(bits)), loc);
         this.emit(Op.OP_MUL, loc);
         this.emit(Op.OP_ADD, loc);
       }
@@ -13936,16 +14041,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitEvmWordsToArray(single.elementType, locationData);
         return node;
       }
+      if (node.schema.length === 1 && single instanceof ArrayType && single.bound !== undefined
+        && this.isDynamicAbiType(single)) {
+        this.emitEvmFixedDynamicArrayDecode(single, locationData);
+        return node;
+      }
       if (node.schema.length === 1 && single instanceof ArrayType && single.bound === undefined) {
         // a single top-level array (offset is always 32); rebuild the SolidCash array blob
         if (this.isDynamicAbiType(single.elementType)) this.emitEvmDynamicArrayDecode(single.elementType, locationData);
         else this.emitEvmArrayDecode(single.elementType, locationData);
         return node;
       }
-      const hasDynamic = node.schema.some(
-        (t) => t === PrimitiveType.STRING || (t instanceof BytesType && t.bound === undefined)
-          || (t instanceof ArrayType && t.bound === undefined),
-      );
+      const hasDynamic = node.schema.some((t) => this.isDynamicAbiType(t));
       if (hasDynamic) {
         // random-access decode that follows head offsets (bytes/string/array); manages its own tracking.
         this.emitEvmAbiDecodeDynamic(node.schema, locationData);

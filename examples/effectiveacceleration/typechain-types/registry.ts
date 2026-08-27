@@ -3,7 +3,6 @@ import '@solidcash/testing/hre';
 
 declare module '@solidcash/testing/hre' {
   interface SolidcashArtifactMap {
-    'definitions': typeof import('../artifacts/solidcash/definitions.artifact.js').default;
     'EACCToken': typeof import('../artifacts/solidcash/EACCToken.artifact.js').default;
     'IERC1155Errors': typeof import('../artifacts/solidcash/IERC1155Errors.artifact.js').default;
     'IERC20Errors': typeof import('../artifacts/solidcash/IERC20Errors.artifact.js').default;
@@ -16,7 +15,6 @@ declare module '@solidcash/testing/hre' {
     'MockSablierLockup': typeof import('../artifacts/solidcash/MockSablierLockup.artifact.js').default;
     'TreasurySplit': typeof import('../artifacts/solidcash/TreasurySplit.artifact.js').default;
     'IERC5267': typeof import('../artifacts/solidcash/IERC5267.artifact.js').default;
-    'ERC20': typeof import('../artifacts/solidcash/ERC20.artifact.js').default;
     'IERC20Metadata': typeof import('../artifacts/solidcash/IERC20Metadata.artifact.js').default;
     'IERC20Permit': typeof import('../artifacts/solidcash/IERC20Permit.artifact.js').default;
     'IERC20': typeof import('../artifacts/solidcash/IERC20.artifact.js').default;

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  decodeAuthenticationInstructions, hexToBin, OpcodesBCH, vmNumberToBigInt,
+} from '@bitauth/libauth';
 import { compileFile, compileFileMulti } from '../src/compileFile.js';
 import { applyUpsertFixedKeyRecovery } from '../src/generation/upsertKeySources.js';
 import type { FunctionDefinitionNode } from '../src/ast/AST.js';
@@ -83,16 +86,31 @@ describe('MarketplaceV1 publishJobPost upsert keys', () => {
 
   it('adds ceil(jobsLen/120) before the whitelist upsert predecessor check', () => {
     const art = compileFile(marketplaceV1, eaOpts);
-    const hex = art.delegateArtifact?.functionBodies?.['4b7f34e3'] ?? art.functionBodies?.['4b7f34e3'];
+    const target = art.delegateArtifact ?? art;
+    const hex = target.functionBodies?.['4b7f34e3'];
     expect(typeof hex).toBe('string');
     const body = hex as string;
     const whitelistHash = '09e7d00ab6cd5795b2a4fa3db718efbdb374cbaf';
-    const at = body.indexOf(whitelistHash);
-    expect(at).toBeGreaterThan(0);
-    // After the whitelist entry address is built, each predecessor index is
-    // INPUTINDEX+5 + ceil(jobsLen/120) + counter. encodeInt(119) ADD encodeInt(120) DIV.
-    const after = body.slice(at);
-    expect(after).toContain('017793017896');
+    const hashHelpers = Object.entries(target.debug.invokeDebug ?? {})
+      .filter(([, debug]) => debug.bytecode.includes(whitelistHash))
+      .map(([id]) => BigInt(id));
+    expect(hashHelpers.length).toBeGreaterThan(0);
+    const instructions = decodeAuthenticationInstructions(hexToBin(body));
+    const readNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
+      if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
+      if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
+        return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
+      }
+      if (!instruction.data) return undefined;
+      const value = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
+      return typeof value === 'bigint' ? value : undefined;
+    };
+    // Address construction can be outlined independently of its caller. Prove the publishJobPost body invokes
+    // the helper which owns the whitelist collection hash, and retains the predecessor displacement
+    // ceil(jobsLen/120): encodeInt(119) ADD encodeInt(120) DIV.
+    expect(instructions.some((instruction, index) => instruction.opcode === OpcodesBCH.OP_INVOKE
+      && hashHelpers.includes(readNumber(instructions[index - 1]) ?? 0xffff_ffffn))).toBe(true);
+    expect(body).toContain('017793017896');
   });
 
   it('recovers jobs.length-1 from dynamicWrites when the body no longer has the assign', () => {

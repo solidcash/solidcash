@@ -2422,6 +2422,10 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
+  // Set by function-pointer-array lowering for a loop spelling that means "call every table element". This is
+  // independent of selectorArrayVar: a fixed-method table has no selector sidecar but still needs its collection
+  // receiver preserved until semantic analysis derives loopArrayVar.
+  pointerTableBroadcast: boolean = false;
   // Set when InlineReturningStateHelpers copies a supported global operator implementation into an entry point.
   // SynthesizeExternalAddressLocals uses it to materialize the operator's pure helper-return receiver without
   // broadening computed-receiver acceptance for unrelated Solidity-negative fixtures.

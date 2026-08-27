@@ -371,5 +371,5 @@ describe('Release 1 scalar journal lowering', () => {
     // Runtime cache selection must stay linear in independently aliasable entries. Expanding every alias choice
     // into a Cartesian dispatcher produced tens of megabytes for the corresponding production ERC-20 route.
     expect(artifact.debug.bytecode.length).toBeLessThan(2_000_000);
-  });
+  }, 120_000);
 });

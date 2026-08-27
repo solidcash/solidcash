@@ -574,9 +574,9 @@ describe('delegate inference', () => {
     ].filter((body): body is string => body !== undefined)
       .map((body) => decodeAuthenticationInstructions(hexToBin(body)));
     const proxyStorageRead = bodies.some((instructions) => instructions.some((instruction, index) => (
-      instruction.opcode === OpcodesBCH.OP_INPUTINDEX
-      && instructions[index + 1]?.opcode === OpcodesBCH.OP_2
-      && instructions[index + 2]?.opcode === OpcodesBCH.OP_SUB
+      instruction.opcode === OpcodesBCH.OP_DEPTH
+      && instructions[index + 1]?.opcode === OpcodesBCH.OP_1SUB
+      && instructions[index + 2]?.opcode === OpcodesBCH.OP_PICK
       && instructions[index + 3]?.opcode === OpcodesBCH.OP_1ADD
       && instructions[index + 4]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
     )));

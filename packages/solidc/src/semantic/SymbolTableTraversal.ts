@@ -9741,6 +9741,20 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
+  visitIndirectCall(node: IndirectCallNode): Node {
+    // Parentheses do not turn a named callable into a function-pointer value. The parser deliberately uses an
+    // IndirectCallNode for the general `<expression>(args)` grammar, so recover the direct-call spelling before
+    // resolving the callee as a variable. Besides ordinary functions this matters for compiler builtins such as
+    // `(blockhash)(n)`, which have no variable symbol to resolve and must enter the normal builtin call path.
+    if (node.callee instanceof IdentifierNode) {
+      const direct = new FunctionCallNode(node.callee, node.parameters);
+      direct.location = node.location;
+      direct.callOptions = node.callOptions;
+      return this.visitFunctionCall(direct);
+    }
+    return super.visitIndirectCall(node);
+  }
+
   visitInstantiation(node: InstantiationNode): Node {
     const contractName = node.identifier.name;
     const contract = this.contractMap.get(contractName);
@@ -12306,6 +12320,19 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitMethodCall(node: MethodCallNode): Node {
+    // Parenthesizing a library member (`(L.f)(args)`) makes the parser preserve it as a MethodCallNode, while the
+    // ordinary `L.f(args)` spelling is a qualified FunctionCallNode. A library name is a namespace, not a runtime
+    // identifier, so normalize the former before visiting its receiver.
+    if (node.object instanceof IdentifierNode && this.knownLibraryNames.has(node.object.name)
+      && this.functionDefinitions.has(`${node.object.name}.${node.methodName}`)) {
+      const identifier = new IdentifierNode(`${node.object.name}.${node.methodName}`);
+      identifier.location = node.location;
+      const call = new FunctionCallNode(identifier, node.parameters);
+      call.location = node.location;
+      call.fieldNames = node.fieldNames;
+      call.callOptions = node.callOptions;
+      return this.visitFunctionCall(call);
+    }
     // A named-field constructor for a contract/interface-scoped struct (`Lib.S({a: 1})`) parses as a method call,
     // unlike its positional counterpart, which already arrives as FunctionCall("Lib.S"). Route the known type
     // namespace through the ordinary qualified struct-constructor path before visiting `Lib` as a runtime value.

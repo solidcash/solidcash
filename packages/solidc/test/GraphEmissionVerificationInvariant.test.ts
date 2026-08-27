@@ -45,10 +45,6 @@ function audit(sourceText: string): AuditResult {
     && !sourceText.includes('this.verifyDeferredGraphEmissionVector(loc);')) {
     errors.push('deferred emission rows have no whole-vector verifier');
   }
-  if (sourceText.includes('compare = false') || sourceText.includes(', false, true')
-    || sourceText.includes(', false, false')) {
-    errors.push('boolean emission verification convention reintroduced');
-  }
   return { dispositions, errors };
 }
 

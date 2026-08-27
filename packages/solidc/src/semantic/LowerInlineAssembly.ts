@@ -2241,9 +2241,11 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
         const byte = loc(new ArrayAccessNode(
           loc(new IdentifierNode(ptr.name), call), intLit(at, call),
         ), call);
-        // Preserve the raw one-byte result: the surrounding assignment supplies exactly the destination cast,
-        // avoiding an otherwise duplicated uint8 (or unnecessary uint256) range check.
-        return byte;
+        // Yul byte() always produces a uint256 word, including when it is nested inside another Yul expression
+        // (e.g. lt(byte(...), 0xc0)). Keeping the raw bytes1 here happened to work for a direct assignment because
+        // assignment lowering added the destination cast, but made the same value ill-typed in arithmetic and
+        // comparisons. Reinterpret the selected byte at the builtin boundary; later casts can still narrow it.
+        return loc(new CastNode(UINT256, byte, false), call);
       }
       if (runtimeMem) {
         // LowerMemoryModel rewrites assembly-observed `bytes memory` values to pointers in __yulmem. Reading the
@@ -2254,9 +2256,10 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
         const padded = loc(new BytesConcatNode([
           yulmem(call), memZeroBytes(intLit(32n, call), call),
         ]), call);
-        return loc(new ArrayAccessNode(
+        const byte = loc(new ArrayAccessNode(
           padded, addE(lowerValue(inner.args[0]), intLit(n, call), call),
         ), call);
+        return loc(new CastNode(UINT256, byte, false), call);
       }
     }
     const word = loc(new CastNode(BYTES32, lowerValue(args[1]), false), call);

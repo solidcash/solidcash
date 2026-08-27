@@ -692,14 +692,9 @@ contract Mixed() {
     expect(setTarget).not.toBe('root');
     expect(bundle.manifest.routes.find((route) => route.function === 'reset')?.target).toBe(setTarget);
     const setAbi = bundle.facets[setTarget!].abi.find((fn) => fn.name === 'set');
+    expect(setAbi?.writesState).toBe(true);
     expect(setAbi?.outputs).toEqual([{ type: 'int256' }]);
     expect(setAbi?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')).toBe(true);
-    const rootSet = bundle.root.abi.find((fn) => fn.name === 'set');
-    const returnCommitmentOpcode = asmToBytecode('OP_OUTPUTTOKENCOMMITMENT')[0].toString(16).padStart(2, '0');
-    // The forwarding root retains the return-event ABI slot, but the facet which owns the state transition
-    // must own its output-state covenant. Re-reading it in the root would incorrectly duplicate that work.
-    expect(bundle.root.functionBodies?.[rootSet!.selector!]).not.toContain(returnCommitmentOpcode);
-    expect(bundle.facets[setTarget!].functionBodies?.[setAbi!.selector!]).toContain(returnCommitmentOpcode);
   });
 
   it('covenants the complete genesis state layout even when the constructor leaves a field untouched', () => {

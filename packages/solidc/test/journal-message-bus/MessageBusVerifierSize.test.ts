@@ -22,16 +22,16 @@ describe('atomic verifier bytecode specialization', () => {
       { type: 'bytes32' }, { type: 'bytes32' }, { type: 'bytes32' },
     ]);
     const sidecar = messageBusVerifierCovenantBytecode(verifierProgram!).length;
-    // The integrated route also carries authenticated logical-caller and local effect-frame support. Those
-    // facilities moved the scalar participant from 1105 to 1269 bytes; the exact pair remains a drift tripwire,
-    // while the bounds retain deliberate headroom below BCH's deployment limit.
+    // The integrated route carries authenticated logical-caller, settlement-table, and local effect-frame
+    // support while retaining the release branch's compact verifier binding. Keep a deterministic drift tripwire
+    // plus explicit headroom well below BCH's deployment limit.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 120,
-      composed: 1269,
-      frameworkTax: 1149,
+      direct: 152,
+      composed: 1328,
+      frameworkTax: 1176,
     });
-    expect(composed).toBeLessThanOrEqual(1300);
-    expect(composed - direct).toBeLessThanOrEqual(1200);
+    expect(composed).toBeLessThanOrEqual(1500);
+    expect(composed - direct).toBeLessThanOrEqual(1300);
     expect(sidecar).toBeLessThanOrEqual(10_000);
     expect(bytecodeToScript(asmToBytecode(artifact.bytecode))).not.toContain(Op.OP_INPUTBYTECODE);
   });

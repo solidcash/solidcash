@@ -1045,6 +1045,42 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[8].token?.nft?.commitment).toBe('abcd');
   });
 
+  it('does not overwrite another participant immutable with a trailing predecessor', () => {
+    const lock = new Uint8Array([0xaa, 0x20, 0x87]);
+    const predecessor = {
+      to: lock,
+      amount: 1000n,
+      token: {
+        amount: 0n,
+        category: 'token',
+        nft: { capability: 'mutable' as const, commitment: 'abcd' },
+      },
+    };
+    const foreignReturn = {
+      to: Uint8Array.of(0x51),
+      amount: 800n,
+      token: {
+        amount: 0n,
+        category: 'marketplace-data',
+        nft: { capability: 'none' as const, commitment: '0101' },
+      },
+    };
+    const outputs = Array.from({ length: 12 }, () => ({
+      to: Uint8Array.of(0x51),
+      amount: 1000n,
+    }));
+    outputs[8] = foreignReturn;
+    outputs[9] = predecessor;
+
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 0, 'token', [{
+      outputBlockSlot: 8,
+      lockingBytecode: lock,
+      commitment: 'abcd',
+    }])).toBe(0);
+    expect(outputs[8]).toBe(foreignReturn);
+    expect(outputs[9]).toBe(predecessor);
+  });
+
   it('does not pack a view tail onto the writer slot after a 22→26 rotate', () => {
     const groups: PhysicalReturnGroup[] = [
       group({

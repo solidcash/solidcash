@@ -155,7 +155,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       dirtyInit.location = fn.body.location;
       const dirtyLocal = new VariableDefinitionNode(PrimitiveType.BOOL, [], dirty, dirtyInit);
       dirtyLocal.location = fn.body.location;
-      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], e.mapping, e.key, local, dirty);
+      let stmts = this.insertFlushesBeforeReturns(
+        fn.body.statements ?? [], e.mapping, e.key, local, dirty, e.fromModifier,
+      );
       if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
         stmts = [...stmts, this.makeFlush(e.mapping, e.key, local, dirty, fn.body.location, e.fromModifier)];
       }
@@ -347,13 +349,14 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // returns were already rewritten to flag+break by DesugarReturnInLoop). Mirrors CacheDynamicArrayInLoop.
   private insertFlushesBeforeReturns(
     stmts: StatementNode[], mapping: string, key: KeyKind, local: string, dirty: string,
+    fromModifier?: string,
   ): StatementNode[] {
     const rec = (s: StatementNode[]): StatementNode[] =>
-      this.insertFlushesBeforeReturns(s ?? [], mapping, key, local, dirty);
+      this.insertFlushesBeforeReturns(s ?? [], mapping, key, local, dirty, fromModifier);
     const out: StatementNode[] = [];
     for (const stmt of stmts) {
       if (stmt instanceof ReturnNode) {
-        out.push(this.makeFlush(mapping, key, local, dirty, stmt.location));
+        out.push(this.makeFlush(mapping, key, local, dirty, stmt.location, fromModifier));
         out.push(stmt);
         continue;
       }

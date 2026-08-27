@@ -185,6 +185,16 @@ type MessageBusMode = 'disabled' | 'auto' | 'enabled' | 'required';
 type InternalCompilerOptions = CompilerOptions & {
   __messageBusExplicitlyDisabled?: boolean;
   __messageBusMode?: MessageBusMode;
+  /** Original user selection, kept distinct from the binder's compiler-generated admitted-handler list. */
+  __messageBusUserHandlers?: readonly string[];
+};
+
+const messageBusMaximumBlobBytes = (options: CompilerOptions): number => {
+  const maximum = options.maximumStackItemBytes ?? MAX_MESSAGE_BUS_BLOB_BYTES;
+  if (!Number.isSafeInteger(maximum) || maximum < 7 || maximum > 0xffff_ffff) {
+    throw new Error('maximumStackItemBytes must be an integer between 7 and 4294967295');
+  }
+  return maximum;
 };
 
 interface OptionalLoweringFeatures {
@@ -957,6 +967,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
+  mergedCompilerOptions.__messageBusUserHandlers = artifactCompilerOptions.messageBusHandlers;
   let artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
@@ -984,6 +995,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       messageBusHandlers: admittedMessageBusHandlers,
       __messageBusVerifierProgram: verifierProgram,
     });
+    bindingOptions.__messageBusUserHandlers = mergedCompilerOptions.__messageBusUserHandlers;
     artifact = compileResolvedAst(
       parseAndResolve(code, bindingOptions, errorListener, primaryContractName),
       code, bindingOptions,
@@ -1118,6 +1130,9 @@ function attachDelegateVariant(
           messageBusHandlers: admittedMessageBusHandlers,
           __messageBusVerifierProgram: verifierProgram,
         });
+        bindingOptions.__messageBusUserHandlers = (
+          variantOptions as InternalCompilerOptions
+        ).__messageBusUserHandlers;
         const boundOut = { delegateFunctionsMarked: 0 };
         variant = compileResolvedAst(
           parseAndResolve(code, bindingOptions, errorListener, primaryName),
@@ -1524,6 +1539,7 @@ function synthesizeMessageBusRoute(
   attribution?: ExternalAdmissionAttribution,
 ): void {
   if (!compilerOptions.messageBus) return;
+  const maximumBlobBytes = messageBusMaximumBlobBytes(compilerOptions);
   const contract = ast.contract;
   assertNoReservedMessageBusSelector(contract.functions);
   const requestedHandlerNames = compilerOptions.messageBusHandlers === undefined
@@ -1877,23 +1893,32 @@ function synthesizeMessageBusRoute(
       && ((bodyStatements[bodyStatements.length - 1] as RequireNode)
         .expression as BoolLiteralNode).value === true;
     let graphResultStatement = false;
-    walkInvocationAst(fn.body, (statement) => {
-      if (graphResultStatement
-        || !(statement instanceof VariableDefinitionNode || statement instanceof TupleAssignmentNode
-          || statement instanceof AssignNode)) return;
-      let containsCall = false;
-      walkInvocationAst(statement, (candidate) => {
-        if ((candidate instanceof MethodCallNode && !intrinsicNamespaceMethodCall(candidate))
-          || (candidate instanceof ExternalFunctionCallNode
-            && (candidate.callInfo?.hasReturnValues || candidate.opaqueReturn))
-          || candidate instanceof LowLevelCallNode
-          || (candidate instanceof FunctionCallNode
-            && /\.(call|staticcall|delegatecall)$/.test(candidate.identifier.name))) {
-          containsCall = true;
-        }
-      });
-      if (containsCall) graphResultStatement = true;
-    });
+    let graphResultInInternalClosure = false;
+    for (const name of collectNamedFunctionClosure(fn, byName)) {
+      for (const candidateFunction of byName.get(name) ?? []) {
+        walkInvocationAst(candidateFunction.body, (statement) => {
+          if (graphResultStatement
+            || !(statement instanceof VariableDefinitionNode || statement instanceof TupleAssignmentNode
+              || statement instanceof AssignNode || statement instanceof RequireNode)) return;
+          let containsCall = false;
+          walkInvocationAst(statement, (candidate) => {
+            if ((candidate instanceof MethodCallNode && !intrinsicNamespaceMethodCall(candidate))
+              || contractTypedReceiverCall(candidate, interfaceTypedReceivers(candidateFunction))
+              || (candidate instanceof ExternalFunctionCallNode
+                && (candidate.callInfo?.hasReturnValues || candidate.opaqueReturn))
+              || candidate instanceof LowLevelCallNode
+              || (candidate instanceof FunctionCallNode
+                && /\.(call|staticcall|delegatecall)$/.test(candidate.identifier.name))) {
+              containsCall = true;
+            }
+          });
+          if (containsCall) {
+            graphResultStatement = true;
+            if (candidateFunction !== fn) graphResultInInternalClosure = true;
+          }
+        });
+      }
+    }
     // X201. THE BARE FORWARDING BODY - one statement-level call, no trailing require.
     //
     // `graphTailStatement` needs two statements AND a trailing `require(true)`, so a body ending in the call
@@ -1968,11 +1993,12 @@ function synthesizeMessageBusRoute(
     // a row there, so branches, computed/local arguments, and an independent source return value remain exact.
     // Auto mode retains its narrower compatibility heuristic.
     const graphBoundedRuntimeEligible = explicitlyEnabledMessageBus
-      && methodCallCount > 0
+      && (methodCallCount > 0
+        || (!!compilerOptions.solidityImportCompat && graphResultInInternalClosure))
       && boundedNamedClosure
       && !graphHasDelegatecall
       && !graphHasCallValue
-      && footprint.effects.every((effect) => effect === 'external-call')
+      && footprint.effects.every((effect) => effect === 'external-call' || effect === 'events')
       && [...directExternalCallsites].every((callsite) => {
         const occurrence = occurrenceInfoOf(fn, callsite);
         return occurrence.occurrence !== 'loop' || occurrence.maximumOccurrences !== undefined;
@@ -1988,7 +2014,7 @@ function synthesizeMessageBusRoute(
       && !graphHasLowLevelCall
       && !graphHasDelegatecall
       && !graphHasCallValue
-      && footprint.effects.every((effect) => effect === 'external-call');
+      && footprint.effects.every((effect) => effect === 'external-call' || effect === 'events');
     const graphRuntimeEligible = graphBoundedRuntimeEligible || graphProtocolBoundedRuntimeEligible;
     // Outgoing-call handlers participate in the atomic messageEnvelope protocol by construction. Admission is
     // inferred from the handler closure; there is no compiler option that can opt a handler into the protocol.
@@ -2661,6 +2687,15 @@ function synthesizeMessageBusRoute(
     const state = contract.stateVariables.find((candidate) => candidate.name === fn.name);
     const collection = collectionByName.get(fn.name);
     const keyedMappingGetter = collection?.type instanceof MappingType && fn.parameters.length > 0;
+    if (keyedMappingGetter
+      && (compilerOptions as InternalCompilerOptions).__messageBusUserHandlers?.includes(fn.name)
+      && compilerOptions.messageBusGraphContext
+      && compilerOptions.maximumInputBytes !== undefined
+      && compilerOptions.maximumInputBytes > MAX_INPUT_BYTESIZE) {
+      // A permissive graph profile can unroll the same public getter for distinct keys. Publish one authenticated
+      // key witness per row; the production-sized profile retains its compact single-key route.
+      for (const binding of fn.messageBusKeyWitnesses ?? []) binding.perRow = true;
+    }
     if ((collection || state?.type instanceof ArrayType) && !keyedMappingGetter) {
       // Public collection getters are synthesized into the function list for direct ABI dispatch, but are not
       // published as message-bus handlers. Excluding them here avoids repeatedly compiling an unobservable route
@@ -2984,15 +3019,20 @@ function synthesizeMessageBusRoute(
   // Such a value is row-local even when each handler individually has only one key spelling. Promoting the
   // shared name preserves one physical identity per row and prevents the SDK from being asked to choose one
   // contradictory global value for the whole batch.
-  const bindingsByRouteInput = new Map<string, Array<{ inputIndex: number; source?: string }>>();
+  const bindingsByRouteInput = new Map<string, Array<{
+    inputIndex: number; source?: string; perRow?: boolean;
+  }>>();
   for (const fn of eligible) for (const binding of fn.messageBusKeyWitnesses ?? []) {
     const bindings = bindingsByRouteInput.get(binding.routeInput) ?? [];
-    bindings.push({ inputIndex: binding.inputIndex, source: binding.source });
+    bindings.push({ inputIndex: binding.inputIndex, source: binding.source, perRow: binding.perRow });
     bindingsByRouteInput.set(binding.routeInput, bindings);
   }
   for (const [routeInput, bindings] of bindingsByRouteInput) {
     const identities = new Set(bindings.map((binding) => `${binding.source ?? 'argument'}:${binding.inputIndex}`));
-    if (identities.size <= 1) continue;
+    // Cardinality belongs to the physical route witness, not to one handler. Once any consumer requires a
+    // row-local witness, every sibling reference to the same collection/key position must use that row's value;
+    // otherwise the route declares only `_rN` parameters while sibling dispatch arms name a nonexistent global.
+    if (identities.size <= 1 && !bindings.some((binding) => binding.perRow)) continue;
     crossHandlerPerRowWitnesses.add(routeInput);
     for (const fn of eligible) for (const binding of fn.messageBusKeyWitnesses ?? []) {
       if (binding.routeInput === routeInput) binding.perRow = true;
@@ -3183,12 +3223,13 @@ function synthesizeMessageBusRoute(
       const alternativeRowLocal = (alternatives.get(statement.name) ?? []).indexOf(keySignature(statement)) > 0;
       const checks: StatementNode[] = [];
       statement.keys.forEach((key, keyIndex) => {
-        const keyRowLocal = alternativeRowLocal || crossHandlerPerRowWitnesses.has(
-          `__message_bus_key_${safeName}_${keyIndex}`,
-        );
         const base = alternativeRowLocal
           ? `__message_bus_key_${safeName}_${keyIndex}_row`
           : `__message_bus_key_${safeName}_${keyIndex}`;
+        const keyRowLocal = alternativeRowLocal || crossHandlerPerRowWitnesses.has(
+          `__message_bus_key_${safeName}_${keyIndex}`,
+        ) || source.messageBusKeyWitnesses?.some((binding) =>
+          binding.routeInput === base && binding.perRow) === true;
         const binding = source.messageBusKeyWitnesses?.find((candidate) =>
           candidate.routeInput === base && candidate.source === 'expression');
         if (!binding) return;
@@ -3213,9 +3254,6 @@ function synthesizeMessageBusRoute(
       const safeName = node.name.replace(/[^A-Za-z0-9_]/g, '_');
       const alternativeRowLocal = (alternatives.get(node.name) ?? []).indexOf(keySignature(node)) > 0;
       node.keys = node.keys.map((key, keyIndex) => {
-        const keyRowLocal = alternativeRowLocal || crossHandlerPerRowWitnesses.has(
-          `__message_bus_key_${safeName}_${keyIndex}`,
-        );
         // `_row` distinguishes the second physical key alternative in one collection (ERC-20's
         // balances[from] vs balances[to]). Whether the FIRST alternative varies between route rows is a
         // separate property carried by `perRow`; using that property in the name collapses both alternatives
@@ -3225,6 +3263,10 @@ function synthesizeMessageBusRoute(
         const base = alternativeRowLocal
           ? `__message_bus_key_${safeName}_${keyIndex}_row`
           : `__message_bus_key_${safeName}_${keyIndex}`;
+        const keyRowLocal = alternativeRowLocal || crossHandlerPerRowWitnesses.has(
+          `__message_bus_key_${safeName}_${keyIndex}`,
+        ) || source.messageBusKeyWitnesses?.some((binding) =>
+          binding.routeInput === base && binding.perRow) === true;
         const parameterName = `${ENTRY_KEY_PREFIX}${base}`;
         if (!declared.has(base)) {
           declared.add(base);
@@ -5003,7 +5045,7 @@ function synthesizeMessageBusRoute(
       function __message_bus1(${routeParameters}) external${returnDeclaration} {
         ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
-        require(batchBlob.length <= ${MAX_MESSAGE_BUS_BLOB_BYTES});
+        require(batchBlob.length <= ${maximumBlobBytes});
         bytes __message_bus_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
         require(__message_bus_unlock.length >= 7);
         require(__message_bus_unlock.slice(0, 5) == hex"0453434231");
@@ -5979,6 +6021,7 @@ function compileResolvedAst(
     const physicalEntrySlotsFor = (
       fn: FunctionDefinitionNode,
       fixedHandlerEntries: NonNullable<FunctionDefinitionNode['entryAccesses']>,
+      handlerSettlesEntries = fn.collectionJournal !== true,
     ): number[] => fixedHandlerEntries.map((entry) => {
       const byShape = messageBusRoute.entryAccesses!.filter((routeEntry) =>
         routeEntry.collection === entry.collection
@@ -6017,6 +6060,14 @@ function compileResolvedAst(
           .every((key, index) => keyBase(key) === keyBase(witnessKeys[index]!)))
         : [];
       const named = byWitness.length > 0 ? byWitness : byKeyName;
+      const rowLocalWitness = witnessKeys?.some((key) => key !== undefined
+        && fn.messageBusKeyWitnesses?.some((binding) =>
+          binding.routeInput === key && binding.perRow) === true) ?? false;
+      if (rowLocalWitness && handlerSettlesEntries) {
+        // One generated clone can execute once per route row. Its ordinary codegen projection uses the first
+        // matching slot, while settlement owns the complete authenticated row-local band.
+        for (const candidate of named) handlerManagedEntrySlots.add(candidate.slotIndex);
+      }
       const canonical = named.length > 1
         ? [named.reduce((lowest, candidate) =>
           (candidate.slotIndex < lowest.slotIndex ? candidate : lowest))]
@@ -6039,7 +6090,7 @@ function compileResolvedAst(
       }
       const physical = candidates[0];
       physical.operations = [...new Set([...physical.operations, ...entry.operations])];
-      handlerManagedEntrySlots.add(physical.slotIndex);
+      if (handlerSettlesEntries) handlerManagedEntrySlots.add(physical.slotIndex);
       return physical.slotIndex;
     });
     for (const fn of ast.contract.functions) {
@@ -6070,7 +6121,9 @@ function compileResolvedAst(
       if ((clone.messageBusPhysicalEntrySlots?.length ?? 0) === 0) {
         const sourceEntries = source.entryAccesses?.filter((entry) => !entry.inLoop) ?? [];
         if (sourceEntries.length > 0 && messageBusRoute.entryAccesses?.length) {
-          clone.messageBusPhysicalEntrySlots = physicalEntrySlotsFor(source, sourceEntries);
+          clone.messageBusPhysicalEntrySlots = physicalEntrySlotsFor(
+            source, sourceEntries, clone.collectionJournal !== true,
+          );
         }
       }
       source.messageBusPhysicalEntrySlots = clone.messageBusPhysicalEntrySlots;
@@ -6411,13 +6464,14 @@ function compileResolvedAst(
       name: functionNameById.get(id) ?? `__internal_${id}`,
       bytecode: binToHex(verifierBytecodes.get(id)!),
     }));
+    const maximumBlobBytes = messageBusMaximumBlobBytes(mergedCompilerOptions);
     artifact.messageBus = {
       version: 1,
       selector: MESSAGE_BUS_SELECTOR_HEX,
       ...(messageBusMaximumRows === RESOURCE_SHAPED_BATCH_ROWS
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
       maximumRows: messageBusMaximumRows,
-      maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+      maximumBlobBytes,
       atomicMessageBus: {
         domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
         messageEnvelope: {

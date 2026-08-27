@@ -160,17 +160,17 @@ export function canApplyRepairedNftCommitment(args: {
   if (isScidIdentityCommitment(currentCommitmentHex) || isScidIdentityCommitment(proposed)) {
     return 'skip';
   }
+  const currentLen = currentCommitmentHex.length === 0 ? 0 : hexToBin(currentCommitmentHex).length;
   // Entry/chunk discovery needs a structured (at least 3-byte) commitment before it may rewrite an inferred
   // coordinate. A compiler-owned mutable data NFT is different: its exact physical lineage and
   // OUTPUTTOKENCOMMITMENT equality authenticate the coordinate, and scalar state legitimately encodes to one or
   // two bytes (for example 0 -> 00 and 100 -> 0164). Do not impose the entry/chunk shape floor on that state.
   const authenticatedScalarState = capability === 'mutable'
-    && (fixedStateSlot || authenticatedMutableSlot) && proposed.length > 0;
+    && (fixedStateSlot || authenticatedMutableSlot) && proposed.length > 0 && currentLen < 3;
   if ((!authenticatedScalarState && proposed.length < 3)
     || proposed.length > maximumCommitmentBytes) return 'skip';
   const proposedHex = binToHex(proposed);
   if (capability === 'mutable') {
-    const currentLen = currentCommitmentHex.length === 0 ? 0 : hexToBin(currentCommitmentHex).length;
     if (isEmptyValueEntryCommitment(proposed) && currentLen > 128) return 'skip';
     if (hasLockingBytecode) return 'apply-lock-and-commit';
     if ((fixedStateSlot || authenticatedMutableSlot || proposed.length >= 32)

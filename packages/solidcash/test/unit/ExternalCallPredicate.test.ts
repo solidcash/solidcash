@@ -24,6 +24,7 @@ import {
   planMessageBusDynamicResourceActivity,
 } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
+import { addressToLockScript } from '../../src/utils.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 
 type PredicateEvaluator = {
@@ -297,6 +298,13 @@ describe('compiler-published external-call predicate evaluation', () => {
     }
   });
 
+  it('resolves compiler-marked address(this) through the logical identity', () => {
+    const contract = evaluator as unknown as StatefulContract;
+    expect(evaluator._resolveExternalArgs(
+      [{ kind: 'selfAddress', logicalIdentity: true }], [], artifact,
+    )).toEqual([addressToLockScript(contract.target)]);
+  });
+
   it('compares address(0) against ethers-style zero addresses by value', () => {
     const expression: ExternalCallExpression = {
       kind: 'binary',
@@ -325,6 +333,20 @@ describe('compiler-published external-call predicate evaluation', () => {
       expression, [value, value.slice()], artifact, undefined,
       [{ type: 'bytes32' }, { type: 'bytes32' }],
     )).toBe(true);
+  });
+
+  it('short-circuits predicates before evaluating an unresolved right operand', () => {
+    const unresolved: ExternalCallExpression = { kind: 'state', name: 'runtimeOnly' };
+    const evaluate = (operator: '&&' | '||', left: boolean): FunctionArgument | undefined => (
+      evaluator._evaluateExternalExpression({
+        kind: 'binary', operator, left: { kind: 'literal', type: 'bool', value: left }, right: unresolved,
+      }, [], artifact)
+    );
+
+    expect(evaluate('&&', false)).toBe(false);
+    expect(evaluate('||', true)).toBe(true);
+    expect(evaluate('&&', true)).toBeUndefined();
+    expect(evaluate('||', false)).toBeUndefined();
   });
 
   it('packs Solidity addresses and arbitrarily long hex bytes like the compiler', () => {

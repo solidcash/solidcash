@@ -204,6 +204,9 @@ export function compileSolidityProject(
       artifactCacheVersion: 2,
       compilerVersion: cache?.compilerVersion ?? '',
       options: artifactCompilerOptions(options),
+      // Primary-contract semantics depend on the selected root even when two circular roots have the same
+      // transitive dependency set; never reuse a dependency-context artifact map for the declaring root.
+      root: source.path,
       sources: dependencyHashes(source, allSources),
     }));
     const jobFile = cache && path.join(cache.directory, 'jobs', `${jobId}.bin`);

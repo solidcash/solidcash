@@ -277,4 +277,14 @@ describe('canApplyRepairedNftCommitment', () => {
       maximumCommitmentBytes: 10_000,
     })).toBe('apply-commit');
   });
+
+  it('does not collapse structured physical state to a speculative scalar witness', () => {
+    expect(canApplyRepairedNftCommitment({
+      capability: 'mutable',
+      currentCommitmentHex: '00001976a914' + 'ab'.repeat(20) + '88ac',
+      proposed: hexToBin('01'),
+      hasLockingBytecode: false,
+      fixedStateSlot: true,
+    })).toBe('skip');
+  });
 });

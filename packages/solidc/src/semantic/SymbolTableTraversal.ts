@@ -6277,13 +6277,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         seen.add(expression);
         if (expression instanceof CastNode) return classifyArg(expression.expression, seen);
         if (expression instanceof IdentifierNode && expression.name === 'this') {
-          return { kind: 'selfAddress' };
+          return { kind: 'selfAddress', logicalIdentity: true };
         }
         if (expression instanceof UnaryOpNode
           && expression.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
           && expression.expression instanceof NullaryOpNode
           && expression.expression.operator === NullaryOperator.INPUT_INDEX) {
-          return { kind: 'selfAddress' };
+          return { kind: 'selfAddress', ...(expression.isThisExpression && { logicalIdentity: true }) };
         }
         if (expression instanceof TypeIntrospectionNode
           && (expression.property === 'min' || expression.property === 'max')

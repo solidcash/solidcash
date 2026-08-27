@@ -431,17 +431,30 @@ class EmitAssertion implements PromiseLike<void> {
    */
   get to(): { emit: (contract: any, event: string) => EmitAssertion } {
     return {
-      emit: (contract: any, event: string) => new EmitAssertion(
-        this.actual, contract, event, this.negate,
-        [...this.prior, () => this.assertOnce()],
-        undefined,
-        this.shared,
-      ),
+      emit: (contract: any, event: string) => this.nextEmit(contract, event, this.negate),
     };
   }
 
   /** Chai/Waffle chain alias: `.to.emit(...).withArgs(...).and.to.emit(...)`. */
   get and(): this { return this; }
+
+  /** Preserve the completed assertion while negating only the next chained emit. */
+  get not(): { to: { emit: (contract: any, event: string) => EmitAssertion } } {
+    return {
+      to: {
+        emit: (contract: any, event: string) => this.nextEmit(contract, event, !this.negate),
+      },
+    };
+  }
+
+  private nextEmit(contract: any, event: string, negate: boolean): EmitAssertion {
+    return new EmitAssertion(
+      this.actual, contract, event, negate,
+      [...this.prior, () => this.assertOnce()],
+      undefined,
+      this.shared,
+    );
+  }
 
   then<R1 = void, R2 = never>(onOk?: ((v: void) => R1 | PromiseLike<R1>) | null,
     onErr?: ((r: any) => R2 | PromiseLike<R2>) | null): PromiseLike<R1 | R2> {
@@ -637,6 +650,21 @@ class Assertion {
   }
 
   revertedWith(reason: RegExp | string): Promise<void> {
+    const viewRead = this.actual?.parentContract?.inner?.artifact?.abi
+      ?.find((fn: { name?: string; writesState?: boolean }) => fn.name === this.actual?.functionName)
+      ?.writesState === false;
+    if (!this.negate && viewRead) {
+      return Promise.resolve(this.actual).then(
+        () => { throw new Error(`expected view call to revert with ${String(reason)}, but it succeeded`); },
+        (error) => {
+          const message = String((error as { message?: unknown })?.message ?? error);
+          const matches = reason instanceof RegExp ? reason.test(message) : message.includes(reason);
+          if (!matches) {
+            throw new Error(`expected view call to revert with ${String(reason)}, but received: ${message}`);
+          }
+        },
+      );
+    }
     const e = ensureVitest();
     return Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
   }

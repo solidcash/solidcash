@@ -1801,7 +1801,10 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
       index !== destination && samePredecessor(output, predecessor)
     ));
     const occupant = outputs[destination];
-    if (source < 0 && occupant?.token && !isPredOutReusableHole(occupant)
+    // An OP_TRUE immutable is reusable only within this participant. A foreign token at the same coordinate is
+    // a real return/event belonging to the following block, even when an exact predecessor clone exists later.
+    if (occupant?.token?.category !== undefined && occupant.token.category !== categoryId) continue;
+    if (occupant?.token && !isPredOutReusableHole(occupant)
       && !sameDeclaredOwner(occupant, predecessor)) continue;
 
     const replacement = source >= 0 ? outputs[source] : {
@@ -4369,7 +4372,10 @@ export class StatefulTransactionBuilder {
     // Callee anchors precede the caller's own: emitLogicalMsgSenderAnchorResolution resolves the caller's
     // identity from the LAST input, so that tail position must stay the caller's.
     this.allInputs.push(...this.externalIdentityAnchorUtxos);
-    if (this.logicalIdentityUtxo) this.allInputs.push(this.logicalIdentityUtxo);
+    const logicalIdentityIsInBlock = this.blockLayout?.slots.some(
+      (slot) => slot.kind === 'identityAnchor',
+    ) === true;
+    if (this.logicalIdentityUtxo && !logicalIdentityIsInBlock) this.allInputs.push(this.logicalIdentityUtxo);
     debugInputAssembly('identity-anchors-appended');
   }
 
@@ -4436,18 +4442,8 @@ export class StatefulTransactionBuilder {
       const loopAlignmentCount = this.loopEntriesBeforeDynamicChunks
         ? Math.max(0, this._trailingLoopEntryOutputCount() - this.insertLoopPredecessorInputs.length)
         : 0;
-      const loopAlignmentFunders = funderPool.splice(0, loopAlignmentCount);
-      // Input and output resource order intentionally differ when a sorted batch creates more entry outputs than
-      // it consumes predecessor inputs. Dynamic read/write covenants address old chunks from trailingBase (after
-      // collection-iteration inputs only), while the batch's additional entry nodes exist only on the output side.
-      // Balance that output-only expansion after every authenticated input resource; placing these neutral funders
-      // before dynamic chunks shifts a valid chunk run away from the compiler-published input coordinate.
-      const trailingInputs = [
-        ...this.iterationEntryInputs,
-        ...this.dynamicChunkInputs,
-        ...this.insertLoopPredecessorInputs,
-        ...(this.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
-      ];
+      let loopAlignmentFunders: UnlockableUtxo[] = [];
+      let trailingInputs: UnlockableUtxo[] = [];
       let trailingIdx = 0;
       let trailingDisposalIdx = 0;
       const trailingDisposalOffsets = new Set(
@@ -4547,18 +4543,39 @@ export class StatefulTransactionBuilder {
             if (f) positioned[slot.offset] = f;
             break;
           }
-          case 'trailing': {
-            if (trailingDisposalOffsets.has(slot.offset)) {
-              positioned[slot.offset] = this.trailingDisposalInputs[trailingDisposalIdx++];
-            } else if (trailingIdx < trailingInputs.length) {
-              positioned[slot.offset] = trailingInputs[trailingIdx++];
-            } else {
-              const f = funderPool.shift();
-              if (f) positioned[slot.offset] = f;
-            }
+          // Trailing slots are populated in a second pass. Fixed slots have priority over optional alignment
+          // funders because their offsets are part of the compiler-published input frame.
+          case 'trailing': break;
+          case 'identityAnchor':
+            if (this.logicalIdentityUtxo) positioned[slot.offset] = this.logicalIdentityUtxo;
+            else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
-          }
           default: break;
+        }
+      }
+
+      // Input and output resource order intentionally differ when a sorted batch creates more entry outputs than
+      // it consumes predecessor inputs. Dynamic read/write covenants address old chunks from trailingBase (after
+      // collection-iteration inputs only), while the batch's additional entry nodes exist only on the output side.
+      // Resolve the complete fixed frame first, then use only remaining neutral inputs for output-only alignment.
+      // This keeps authenticated runtime resources at the compiler-published trailing coordinate even when the
+      // fixed frame contains event, transfer, absent-entry, or side-car holes.
+      loopAlignmentFunders = funderPool.splice(0, loopAlignmentCount);
+      trailingInputs = [
+        ...this.iterationEntryInputs,
+        ...this.dynamicChunkInputs,
+        ...this.insertLoopPredecessorInputs,
+        ...(this.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
+      ];
+      for (const slot of this.blockLayout.slots) {
+        if (slot.kind !== 'trailing') continue;
+        if (trailingDisposalOffsets.has(slot.offset)) {
+          positioned[slot.offset] = this.trailingDisposalInputs[trailingDisposalIdx++];
+        } else if (trailingIdx < trailingInputs.length) {
+          positioned[slot.offset] = trailingInputs[trailingIdx++];
+        } else {
+          const f = funderPool.shift();
+          if (f) positioned[slot.offset] = f;
         }
       }
       if (this.blockLayout.trailingCapacity !== undefined
@@ -7023,7 +7040,10 @@ export class StatefulTransactionBuilder {
     // Callee anchors precede the caller's own: emitLogicalMsgSenderAnchorResolution resolves the caller's
     // identity from the LAST input, so that tail position must stay the caller's.
     this.allInputs.push(...this.externalIdentityAnchorUtxos);
-    if (this.logicalIdentityUtxo) this.allInputs.push(this.logicalIdentityUtxo);
+    const logicalIdentityIsInBlock = this.blockLayout?.slots.some(
+      (slot) => slot.kind === 'identityAnchor',
+    ) === true;
+    if (this.logicalIdentityUtxo && !logicalIdentityIsInBlock) this.allInputs.push(this.logicalIdentityUtxo);
     debugInputAssembly('refresh-identity-anchors-appended');
   }
 
@@ -14090,18 +14110,22 @@ export class StatefulTransactionBuilder {
 
     // Materialization and computed-output repair can replace provisional
     // funder pass-through outputs with lower-valued covenant outputs. Fold the
-    // exposed surplus into one existing output owned by the configured funder,
-    // preserving every physical index. If none survives, create suffix-safe
-    // change. Running this after every repair makes fee balance part of the same
-    // fixed-point loop as authenticated output convergence.
+    // exposed surplus into one existing output owned by the configured or embedded
+    // P2PKH funder, preserving every physical index. External participant blocks
+    // can own structural funders which are already serialized but are not members
+    // of the root funder pool; their surplus requires the same change treatment.
+    // Running this after every repair makes fee balance part of the same fixed-point
+    // loop as authenticated output convergence.
     const rebalanceFunderSurplus = (): void => {
-      if (this.funderUtxos.length === 0) return;
+      const changeFunder = this.funderUtxos[0]
+        ?? finalBuilder.inputs.find((input) => !input.token && isP2PKHUnlocker(input.unlocker));
+      if (!changeFunder) return;
       const inputSats = finalBuilder.inputs.reduce((sum, input) => sum + input.satoshis, 0n);
       const outputSats = finalBuilder.outputs.reduce((sum, output) => sum + output.amount, 0n);
       const surplus = inputSats - outputSats - neededFee;
       if (surplus < DUST_MINIMUM) return;
       const changeTo = this.funderChangeAddress
-        ?? this.funderUtxos[0].unlocker.generateLockingBytecode();
+        ?? changeFunder.unlocker.generateLockingBytecode();
       const changeLock = binToHex(changeTo);
       const changeIndex = finalBuilder.outputs.findLastIndex((output) => (
         !output.token

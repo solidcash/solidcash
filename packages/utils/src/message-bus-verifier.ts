@@ -59,13 +59,30 @@ export function buildMessageBusVerifierCovenantScript(
     // verifier to a common byte floor. Dropping an unlocking push is substantially cheaper than embedding
     // unreachable bytes in every redeemed covenant script.
     Op.OP_DROP,
-    // Unlocking stack: <messageEnvelope> <verify arguments...>. The verifier consumes only its arguments, leaving the
-    // messageEnvelope. Never park it on the altstack: compiled verifier frames use that stack internally.
+    // Unlocking stack: <messageEnvelope> <verify arguments...>. Preserve an authenticated copy across OP_INVOKE.
+    // Most generated verifier bodies leave the caller-owned envelope below their arguments, but a control-flow
+    // join can conservatively retain one additional tracked temporary and its return cleanup then consumes that
+    // item too. Keeping a copy below the verifier's balanced altstack usage makes the covenant independent of
+    // that cleanup detail. Normalize both valid return shapes: either only the 64-byte result remains, or the
+    // original envelope remains below it.
     ...program.functions.flatMap((fn): Script => [
       hexToBin(fn.bytecode), encodeInt(BigInt(fn.id)), Op.OP_DEFINE,
     ]),
+    encodeInt(BigInt(program.inputCount)),
+    Op.OP_PICK,
+    Op.OP_TOALTSTACK,
     encodeInt(BigInt(verify.id)),
     Op.OP_INVOKE,
+    Op.OP_DEPTH,
+    Op.OP_1,
+    Op.OP_NUMEQUAL,
+    Op.OP_IF,
+    Op.OP_FROMALTSTACK,
+    Op.OP_SWAP,
+    Op.OP_ELSE,
+    Op.OP_FROMALTSTACK,
+    Op.OP_DROP,
+    Op.OP_ENDIF,
 
     // The specialized verifier returns bindingDigest || expectedMessageEnvelopeHash. Authenticate the
     // message envelope without parsing it, then retain only bindingDigest for the recreated NFT commitment.

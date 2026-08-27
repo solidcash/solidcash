@@ -1438,6 +1438,11 @@ export class BinaryOpNode extends ExpressionNode {
 }
 
 export class UnaryOpNode extends ExpressionNode {
+  // Marks Solidity's `this` expression after lowering to active-input locking-bytecode introspection. Logical
+  // stateful identity may then use the participant's authenticated identity anchor without changing an explicit
+  // tx.inputs[i].lockingBytecode expression, which remains physical introspection.
+  isThisExpression = false;
+
   // Solidity before 0.8 permits unsigned negation and evaluates it modulo the
   // destination width (e.g. `d & -d` in FullMath).
   legacyWrappingNegation = false;
@@ -2223,6 +2228,8 @@ export interface ExternalCallArgSource {
   value?: string;
   type?: string;
   expression?: ExternalCallExpression;
+  /** Source-level `address(this)`, distinct from explicit physical active-input bytecode introspection. */
+  logicalIdentity?: boolean;
 }
 
 export interface ExternalCallExpression {

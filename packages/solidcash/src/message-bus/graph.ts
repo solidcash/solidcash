@@ -79,6 +79,8 @@ export interface PlannedGraphInvocation {
   localRow: number;
   depth: number;
   function: string;
+  /** Canonical arguments resolved from compiler-authored callsite metadata during optimistic graph planning. */
+  args?: readonly FunctionArgument[];
   selectorHex: string;
   callMode: 'call' | 'staticcall';
   /**
@@ -837,12 +839,17 @@ export const GRAPH_MAX_BATCH_BLOB_BYTES = MAX_MESSAGE_BUS_BLOB_BYTES;
  * LARGER one is the drift that costs: the SDK encodes a blob its own encoder accepts, and the co-spent
  * participant verifier then refuses the whole transaction, naming nothing about blob width.
  */
-export function assertGraphBatchBlobEnvelope(artifact: Artifact, participant: number): void {
+export function assertGraphBatchBlobEnvelope(
+  artifact: Artifact, participant: number, maximumBlobBytes = GRAPH_MAX_BATCH_BLOB_BYTES,
+): void {
+  if (!Number.isSafeInteger(maximumBlobBytes) || maximumBlobBytes < 1) {
+    throw new Error('messageBus: graph maximum blob bytes must be a positive integer');
+  }
   const published = artifact.messageBus?.maximumBlobBytes;
-  if (published === undefined || published <= GRAPH_MAX_BATCH_BLOB_BYTES) return;
+  if (published === undefined || published <= maximumBlobBytes) return;
   throw new Error(
     `messageBus: participant ${participant} publishes an message-bus batch blob envelope of ${published} bytes, wider than the `
-    + `${GRAPH_MAX_BATCH_BLOB_BYTES} the atomic bus admits`,
+    + `${maximumBlobBytes} the atomic bus admits`,
   );
 }
 /** Bit 0 of the call-options byte: the compiler-proven read-only (`staticcall`) mode. */
@@ -934,9 +941,12 @@ function bindConsumerCallsites(
  * the global depth-first tree and each owner's exact message-bus batch execution blob, preventing a graph/local-policy
  * desynchronization.
  */
-export function assertPlannedOccurrenceCount(call: ExternalCallAbi, count: number): void {
+export function assertPlannedOccurrenceCount(
+  call: ExternalCallAbi, count: number, allowRuntimeBoundedLoop = false,
+): void {
   const bound = occurrenceBoundOf(call);
   if (bound.kind === 'loop' && bound.maximum === undefined) {
+    if (allowRuntimeBoundedLoop) return;
     throw new MessageBusDiagnosticError(
       'L3_UNBOUNDED_EXTERNAL_CALL_LOOP',
       `unbounded-external-call-loop-callManifest-ineligible: callsite ${call.callsiteId ?? '?'}`,
@@ -996,12 +1006,14 @@ const callsiteRowCapacity = (call: ExternalCallAbi): number => {
  * callsite legitimately answers `batchInvocations.length` of them. Both stay many-to-one; the bound, not the
  * arity, is what separates them from rows a `once` callsite cannot have emitted.
  */
-function assertHandlerRowCapacity(callsites: readonly ExternalCallAbi[], rows: number): void {
+function assertHandlerRowCapacity(
+  callsites: readonly ExternalCallAbi[], rows: number, allowRuntimeBoundedLoops = false,
+): void {
   const unbounded = callsites.find((callsite) => {
     const bound = occurrenceBoundOf(callsite);
     return bound.kind === 'loop' && bound.maximum === undefined;
   });
-  if (unbounded) assertPlannedOccurrenceCount(unbounded, rows);
+  if (unbounded) assertPlannedOccurrenceCount(unbounded, rows, allowRuntimeBoundedLoops);
   if (callsites.length === 0 || rows === 0) return;
   const capacities = callsites.map(callsiteRowCapacity);
   const total = capacities.reduce((sum, capacity) => sum + capacity, 0);
@@ -1392,6 +1404,7 @@ export function assertNoUnboundCallOptions(
 export function planCompiledGraph(
   participants: readonly CompiledGraphParticipant[],
   invocations: readonly CompiledGraphInvocation[],
+  options: { allowRuntimeBoundedLoops?: boolean; maximumBlobBytes?: number } = {},
 ): CompiledGraphPlan {
   if (participants.length < 1 || participants.length > MAX_GRAPH_PARTICIPANTS) {
     throw new MessageBusDiagnosticError(
@@ -1428,7 +1441,7 @@ export function planCompiledGraph(
     identities.add(lbc);
     // X106: the artifact's published blob envelope has to fit the participant verifier's compiled-in bound.
     // Skipped for an artifact publishing no envelope at all, which fails later by name at `messageBus!`.
-    assertGraphBatchBlobEnvelope(participant.artifact, index);
+    assertGraphBatchBlobEnvelope(participant.artifact, index, options.maximumBlobBytes);
   });
   if (invocations.length === 0 || invocations[0].parent !== null
     || invocations.slice(1).some((invocation) => invocation.parent === null)) {
@@ -1723,6 +1736,7 @@ export function planCompiledGraph(
       localRow,
       depth: depths[index],
       function: row.function,
+      args: invocation.args,
       selectorHex: row.selectorHex,
       callMode,
       callOptions: (callMode === 'staticcall' ? CALL_OPTION_READ_ONLY : 0) | optionBits[index],
@@ -1775,7 +1789,9 @@ export function planCompiledGraph(
     // X36: the occurrence bound `deriveCompiledGraphPlan` applies during expansion, applied here to the rows
     // this entry point is handed instead. Ordered before the binding so a row count the handler cannot have
     // emitted is named as such rather than surfacing as a result-schema or covenant partition mismatch.
-    assertHandlerRowCapacity(parentFunction?.externalCalls ?? [], children.length);
+    assertHandlerRowCapacity(
+      parentFunction?.externalCalls ?? [], children.length, options.allowRuntimeBoundedLoops === true,
+    );
     const publishedCallsites = parentFunction?.externalCalls ?? [];
     const identified = children.map((child) => invocations[child].consumerCallsiteId);
     const hasIdentified = identified.some((callsiteId) => callsiteId !== undefined);
@@ -1810,7 +1826,7 @@ export function planCompiledGraph(
           assertBatchedCallsiteRowCount(callsite, count);
           continue;
         }
-        assertPlannedOccurrenceCount(callsite, count);
+        assertPlannedOccurrenceCount(callsite, count, options.allowRuntimeBoundedLoops === true);
       }
     }
     children.forEach((child, position) => {

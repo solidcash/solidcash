@@ -222,7 +222,7 @@ function invalidateSignerUtxos(signer: Signer): void {
 }
 import {
   findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
-  registeredExecutionLockingBytecode,
+  findDeploymentImplementing, registeredExecutionLockingBytecode,
 } from './deployment-registry.js';
 import {
   logicalIdentityAddressVariants, logicalIdentityBandKey, resolveLogicalIdentity,
@@ -2432,6 +2432,26 @@ export function encodeExternalReturnValue(
     ?? encodePushdataValue(value, type, structs);
 }
 
+/** Encode the dynamic Solidity return forms used to seed an atomic graph's first authenticated pass. */
+function encodePreparedSolidityReturn(value: StateValue, type: string): Uint8Array | undefined {
+  const scalar = encodeEvmScalarReturn(value, type);
+  if (scalar) return scalar;
+  const payload = type === 'string' && typeof value === 'string'
+    ? utf8ToBin(value)
+    : type === 'bytes' && value instanceof Uint8Array
+      ? value : undefined;
+  if (!payload) return undefined;
+  const offset = encodeEvmScalarReturn(32n, 'uint256')!;
+  const length = encodeEvmScalarReturn(BigInt(payload.length), 'uint256')!;
+  const padded = new Uint8Array(Math.ceil(payload.length / 32) * 32);
+  padded.set(payload);
+  const result = new Uint8Array(offset.length + length.length + padded.length);
+  result.set(offset, 0);
+  result.set(length, offset.length);
+  result.set(padded, offset.length + length.length);
+  return result;
+}
+
 /** True when one invocation result is complete under the exact artifact framing which will execute it. */
 export function isCanonicalExternalReturnVector(
   artifact: Artifact,
@@ -4453,6 +4473,452 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   /** @internal Bind a deployment already resolved by the compatibility layer to an interface callsite. */
   _registerResolvedExternal(name: string, contract: unknown): void {
     this._externalRegistry.set(name, contract as ConnectedStatefulContract);
+  }
+
+  /** @internal Resolve an ordinary Solidity-style external-call closure for atomic message-bus execution. */
+  async _prepareAtomicExternalClosure(
+    functionName: string,
+    functionArgs: readonly FunctionArgument[],
+  ): Promise<readonly PreparedAtomicMessageBusCall[] | undefined> {
+    const closureDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ATOMIC_CLOSURE === '1';
+    const debugFailure = (reason: string, details: Record<string, unknown> = {}): false => {
+      if (closureDebug) console.error('atomic-closure-refusal', { functionName, reason, ...details });
+      return false;
+    };
+    const rootFunction = (this.inner.artifact.abi as readonly AbiFunction[])
+      .find((candidate) => candidate.name === functionName);
+    if (!rootFunction?.externalCalls?.length || !this._signer) {
+      if (closureDebug) console.error('atomic-closure-unavailable', {
+        functionName,
+        hasFunction: rootFunction !== undefined,
+        externalCalls: rootFunction?.externalCalls?.length ?? 0,
+        hasSigner: this._signer !== undefined,
+      });
+      return undefined;
+    }
+    const prepared: PreparedAtomicMessageBusCall[] = [];
+    const active = new Set<string>();
+    const literalMsgSender = (value: Uint8Array): ((source: ArgSource) => ArgSource) => {
+      const replace = (candidate: unknown, seen = new Map<object, unknown>()): unknown => {
+        if (!candidate || typeof candidate !== 'object') return candidate;
+        if (seen.has(candidate as object)) return seen.get(candidate as object);
+        if (Array.isArray(candidate)) {
+          const result: unknown[] = [];
+          seen.set(candidate, result);
+          result.push(...candidate.map((item) => replace(item, seen)));
+          return result;
+        }
+        const source = candidate as Partial<ArgSource>;
+        if (source.kind === 'msgSender') {
+          return { kind: 'literal', type: 'bytes', value: binToHex(value) } satisfies ArgSource;
+        }
+        const result: Record<string, unknown> = {};
+        seen.set(candidate as object, result);
+        for (const [name, child] of Object.entries(candidate)) result[name] = replace(child, seen);
+        return result;
+      };
+      return (source) => replace(source) as ArgSource;
+    };
+    const withOccurrence = (value: unknown, occurrence: number, seen = new Map<object, unknown>()): unknown => {
+      if (!value || typeof value !== 'object') return value;
+      if (seen.has(value as object)) return seen.get(value as object);
+      if (Array.isArray(value)) {
+        const result: unknown[] = [];
+        seen.set(value, result);
+        result.push(...value.map((item) => withOccurrence(item, occurrence, seen)));
+        return result;
+      }
+      const source = value as Partial<ArgSource>;
+      if (source.kind === 'arrayElement' && source.indexParamIndex === undefined) {
+        return { ...source, indexValue: occurrence } as ArgSource;
+      }
+      const result: Record<string, unknown> = {};
+      seen.set(value as object, result);
+      for (const [name, child] of Object.entries(value)) {
+        result[name] = withOccurrence(child, occurrence, seen);
+      }
+      return result;
+    };
+    const arraySourceLength = (
+      value: unknown, args: readonly FunctionArgument[], seen = new Set<object>(),
+    ): number => {
+      if (!value || typeof value !== 'object' || seen.has(value as object)) return -1;
+      seen.add(value as object);
+      const source = value as Partial<ArgSource>;
+      if (source.kind === 'arrayElement' && source.paramIndex !== undefined) {
+        const array = args[source.paramIndex];
+        if (Array.isArray(array)) return array.length;
+      }
+      for (const child of Object.values(value)) {
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            const length = arraySourceLength(item, args, seen);
+            if (length >= 0) return length;
+          }
+        } else {
+          const length = arraySourceLength(child, args, seen);
+          if (length >= 0) return length;
+        }
+      }
+      return -1;
+    };
+    const deploymentFor = (
+      owner: StatefulContract,
+      call: ExternalCallAbi,
+      addressValue: FunctionArgument | undefined,
+      selectedName: string,
+    ): ConnectedStatefulContract | undefined => {
+      const addressHex = addressValue instanceof Uint8Array ? binToHex(addressValue) : undefined;
+      const atAddress = addressHex
+        ? findDeploymentByLockingBytecode(owner.inner.provider, addressHex)
+        : typeof addressValue === 'string'
+          ? findDeploymentByAddress(owner.inner.provider, addressValue)
+            ?? findDeploymentByLockingBytecode(owner.inner.provider, addressValue)
+          : undefined;
+      const registered = owner._externalRegistry.get(call.interfaceName);
+      if (atAddress?.contract) return atAddress.contract as ConnectedStatefulContract;
+      if (addressValue !== undefined) return undefined;
+      return registered
+        ?? findDeploymentByName(owner.inner.provider, call.interfaceName)?.contract as ConnectedStatefulContract
+        ?? (/^I[A-Z]/.test(call.interfaceName)
+          ? findDeploymentByName(owner.inner.provider, call.interfaceName.slice(1))
+            ?.contract as ConnectedStatefulContract
+          : undefined)
+        ?? findDeploymentImplementing(owner.inner.provider, selectedName)?.contract as ConnectedStatefulContract;
+    };
+    const expand = async (
+      owner: StatefulContract,
+      selectedFunction: string,
+      visibleArgs: readonly FunctionArgument[],
+      currentMsgSender: Uint8Array,
+      callsiteId?: number,
+      targetLockingBytecode?: string,
+      batchLogicalIndex?: number,
+      batchOccurrenceIndex?: number,
+    ): Promise<boolean> => {
+      const artifact = owner.inner.artifact;
+      const abiFunction = (artifact.abi as readonly AbiFunction[])
+        .find((candidate) => candidate.name === selectedFunction);
+      const handler = artifact.messageBus?.handlers.find((candidate) =>
+        candidate.name === selectedFunction && candidate.eligible);
+      if (!abiFunction || !handler) return debugFailure('handler-ineligible', {
+        contract: artifact.contractName, selectedFunction,
+        hasAbiFunction: abiFunction !== undefined,
+        publishedHandler: artifact.messageBus?.handlers.find((candidate) =>
+          candidate.name === selectedFunction),
+      });
+      const recursionKey = `${owner.categoryId}:${selectedFunction}`;
+      if (active.has(recursionKey)) return debugFailure('recursive-owner-function', {
+        contract: artifact.contractName, selectedFunction, recursionKey,
+      });
+      active.add(recursionKey);
+      prepared.push({
+        contract: owner,
+        functionName: selectedFunction,
+        args: Object.freeze([...visibleArgs]),
+        ...(callsiteId !== undefined && { callsiteId }),
+        ...(targetLockingBytecode !== undefined && { targetLockingBytecode }),
+        ...(batchLogicalIndex !== undefined && { batchLogicalIndex }),
+        ...(batchOccurrenceIndex !== undefined && { batchOccurrenceIndex }),
+      });
+      const fullState = await owner.getFullState();
+      const state = fullState.state;
+      // Ordinary `address(this)` is the active covenant input. Sources explicitly marked as logical identity are
+      // still resolved by _resolveExternalArgs against owner.target; keep the default execution context physical.
+      const executionAddress = hexToBin(owner.inner.lockingBytecode);
+      const senderReplacement = literalMsgSender(currentMsgSender);
+      const successfulRawFunctions = new Set<string>();
+      const skippedRawLocations = new Set<string>();
+      for (const call of abiFunction.externalCalls ?? []) {
+        let concreteName = call.interfaceName === '__raw__'
+          ? call.rawFunctionName ?? call.functionName : call.functionName;
+        const location = call.sourceLocation
+          ? `${call.sourceLocation.line}:${call.sourceLocation.column}` : '';
+        const rawSources = call.interfaceName === '__raw__' ? call.rawArgSources : call.argSources;
+        const sources = (rawSources ?? []).map(senderReplacement);
+        const publishedAddressSource = call.addressSource
+          ?? (call.interfaceName === '__raw__' && call.addressParam !== undefined
+            ? (abiFunction.externalCalls ?? []).find((candidate) => (
+              candidate.addressParam === call.addressParam && candidate.addressSource !== undefined
+            ))?.addressSource
+            : undefined);
+        const addressSource = publishedAddressSource ? senderReplacement(publishedAddressSource) : undefined;
+        const addressValue = addressSource
+          ? owner._resolveExternalArgs(
+            [addressSource], [...visibleArgs], artifact, state, abiFunction.inputs,
+            undefined, 0, false, executionAddress,
+          )?.[0]
+          : call.addressParam
+            ? (() => {
+              const index = abiFunction.inputs.findIndex((input) => input.name === call.addressParam);
+              return index >= 0 ? visibleArgs[index] : undefined;
+            })()
+            : undefined;
+        const target = deploymentFor(owner, call, addressValue, concreteName);
+        if (!target) {
+          active.delete(recursionKey);
+          return debugFailure('target-unresolved', {
+            contract: artifact.contractName, selectedFunction,
+            interfaceName: call.interfaceName, concreteName, callsiteId: call.callsiteId,
+            addressValue: addressValue instanceof Uint8Array ? binToHex(addressValue) : addressValue,
+          });
+        }
+        if (call.interfaceName === '__raw__' && !call.rawFunctionName) {
+          const selected = (target.inner.artifact.abi as readonly AbiFunction[])
+            .find((candidate) => candidate.selector === call.rawSelector)?.name;
+          if (!selected) {
+            active.delete(recursionKey);
+            return debugFailure('raw-selector-unresolved', {
+              contract: artifact.contractName, selectedFunction,
+              callsiteId: call.callsiteId, rawSelector: call.rawSelector,
+              target: target.inner.artifact.contractName,
+            });
+          }
+          concreteName = selected;
+        }
+        const rawLocation = location ? `${concreteName}@${location}` : '';
+        if (rawLocation && skippedRawLocations.has(rawLocation)) continue;
+        owner._externalRegistry.set(call.interfaceName, target);
+        if (call.batchInvocations) {
+          const rows = [...call.batchInvocations].sort((left, right) =>
+            left.logicalIndex - right.logicalIndex);
+          for (let rowPosition = 0; rowPosition < rows.length; rowPosition++) {
+            const row = rows[rowPosition];
+            if (row.logicalIndex !== rowPosition) {
+              active.delete(recursionKey);
+              return debugFailure('batch-logical-index-gap', {
+                contract: artifact.contractName, selectedFunction,
+                callsiteId: call.callsiteId, logicalIndex: row.logicalIndex, rowPosition,
+              });
+            }
+            const rowFunction = (target.inner.artifact.abi as readonly AbiFunction[])
+              .find((candidate) => candidate.selector?.toLowerCase() === row.selector.toLowerCase());
+            if (!rowFunction) {
+              active.delete(recursionKey);
+              return debugFailure('batch-selector-unresolved', {
+                contract: artifact.contractName, selectedFunction,
+                callsiteId: call.callsiteId, logicalIndex: row.logicalIndex, selector: row.selector,
+              });
+            }
+            const rowSources = (row.argSources ?? []).map(senderReplacement);
+            let rowOccurrences = 1;
+            if (row.condition) {
+              const condition = owner._evaluateExternalExpression(
+                senderReplacement({ kind: 'expression', expression: row.condition }).expression!,
+                [...visibleArgs], artifact, state, abiFunction.inputs,
+                undefined, 0, false, executionAddress,
+              );
+              if (condition === false) rowOccurrences = 0;
+              else if (condition === undefined) {
+                active.delete(recursionKey);
+                return debugFailure('batch-condition-unresolved', {
+                  contract: artifact.contractName, selectedFunction,
+                  callsiteId: call.callsiteId, logicalIndex: row.logicalIndex,
+                });
+              }
+            } else if (row.occurrence === 'conditional') {
+              active.delete(recursionKey);
+              return debugFailure('batch-condition-missing', {
+                contract: artifact.contractName, selectedFunction,
+                callsiteId: call.callsiteId, logicalIndex: row.logicalIndex,
+              });
+            }
+            if (row.occurrence === 'loop' && rowOccurrences > 0) {
+              const length = arraySourceLength(rowSources, visibleArgs);
+              if (length < 0) {
+                active.delete(recursionKey);
+                return debugFailure('batch-loop-length-unresolved', {
+                  contract: artifact.contractName, selectedFunction,
+                  callsiteId: call.callsiteId, logicalIndex: row.logicalIndex,
+                });
+              }
+              rowOccurrences = length;
+            }
+            for (let occurrence = 0; occurrence < rowOccurrences; occurrence++) {
+              const occurrenceSources = rowSources.map((source) =>
+                withOccurrence(source, occurrence) as ArgSource);
+              const expressionReturns = occurrenceSources.some((source) => source.kind === 'expression')
+                ? await owner._resolveExternalExpressionReturns(
+                  occurrenceSources,
+                  [...visibleArgs],
+                  owner,
+                  state,
+                  abiFunction.inputs,
+                  executionAddress,
+                )
+                : undefined;
+              const childArgs = owner._resolveExternalArgs(
+                occurrenceSources, [...visibleArgs], artifact, state, abiFunction.inputs,
+                expressionReturns, occurrence, false, executionAddress,
+              );
+              if (!childArgs) {
+                active.delete(recursionKey);
+                return debugFailure('batch-arguments-unresolved', {
+                  contract: artifact.contractName, selectedFunction,
+                  callsiteId: call.callsiteId, logicalIndex: row.logicalIndex, occurrence,
+                });
+              }
+              const childNodeIndex = prepared.length;
+              if (!await expand(
+                target as StatefulContract,
+                rowFunction.name,
+                childArgs,
+                executionAddress,
+                call.callsiteId,
+                addressArgumentLockingBytecodeHex(addressValue),
+                row.logicalIndex,
+                occurrence,
+              )) {
+                active.delete(recursionKey);
+                return false;
+              }
+              if (rowFunction.outputs?.length) {
+                try {
+                  const returned = await (target as StatefulContract)
+                    ._deriveReturnValue(rowFunction.name, childArgs);
+                  const output = rowFunction.outputs.length === 1 ? rowFunction.outputs[0] : undefined;
+                  const encoded = output && artifactUsesSolidityAbi(target.inner.artifact)
+                    ? encodePreparedSolidityReturn(returned as StateValue, output.type)
+                    : output
+                      ? encodePushdataValue(returned as StateValue, output.type, target.inner.artifact.structs)
+                      : undefined;
+                  if (encoded) {
+                    prepared[childNodeIndex] = {
+                      ...prepared[childNodeIndex],
+                      provisionalResultCommitment: encoded,
+                    };
+                  }
+                } catch {
+                  // The composed transaction can discover results unavailable to a standalone read.
+                }
+              }
+            }
+          }
+          continue;
+        }
+        let occurrences = 1;
+        if (call.condition) {
+          const condition = owner._evaluateExternalExpression(
+            senderReplacement({ kind: 'expression', expression: call.condition }).expression!,
+            [...visibleArgs], artifact, state, abiFunction.inputs,
+            undefined, 0, false, executionAddress,
+          );
+          if (condition === false) occurrences = 0;
+          else if (condition === undefined) {
+            active.delete(recursionKey);
+            return debugFailure('condition-unresolved', {
+              contract: artifact.contractName, selectedFunction,
+              interfaceName: call.interfaceName, concreteName, callsiteId: call.callsiteId,
+              condition: call.condition,
+            });
+          }
+        }
+        if (call.occurrence === 'loop') {
+          const length = arraySourceLength(sources, visibleArgs);
+          if (length < 0) {
+            active.delete(recursionKey);
+            return debugFailure('loop-length-unresolved', {
+              contract: artifact.contractName, selectedFunction,
+              interfaceName: call.interfaceName, concreteName, callsiteId: call.callsiteId,
+            });
+          }
+          occurrences = Math.min(length, call.maximumOccurrences ?? length);
+        }
+        if (call.interfaceName === '__raw__' && call.occurrence === 'conditional'
+          && location && successfulRawFunctions.has(concreteName)) {
+          const siblings = (abiFunction.externalCalls ?? []).filter((candidate) =>
+            candidate.interfaceName === '__raw__'
+            && candidate.rawFunctionName === concreteName
+            && candidate.sourceLocation?.line === call.sourceLocation?.line
+            && candidate.sourceLocation?.column === call.sourceLocation?.column).length;
+          if (siblings > 1) {
+            skippedRawLocations.add(rawLocation);
+            occurrences = 0;
+          }
+        }
+        for (let occurrence = 0; occurrence < occurrences; occurrence++) {
+          const occurrenceSources = sources.map((source) =>
+            withOccurrence(source, occurrence) as ArgSource);
+          const expressionReturns = occurrenceSources.some((source) => source.kind === 'expression')
+            ? await owner._resolveExternalExpressionReturns(
+              occurrenceSources,
+              [...visibleArgs],
+              owner,
+              state,
+              abiFunction.inputs,
+              executionAddress,
+            )
+            : undefined;
+          const childArgs = owner._resolveExternalArgs(
+            occurrenceSources, [...visibleArgs], artifact, state, abiFunction.inputs,
+            expressionReturns, occurrence, false, executionAddress,
+          );
+          if (!childArgs) {
+            active.delete(recursionKey);
+            return debugFailure('arguments-unresolved', {
+              contract: artifact.contractName, selectedFunction,
+              interfaceName: call.interfaceName, concreteName, callsiteId: call.callsiteId,
+              occurrence,
+            });
+          }
+          const childNodeIndex = prepared.length;
+          if (!await expand(
+            target as StatefulContract,
+            concreteName,
+            childArgs,
+            executionAddress,
+            call.callsiteId,
+            addressArgumentLockingBytecodeHex(addressValue),
+          )) {
+            active.delete(recursionKey);
+            return false;
+          }
+          if (call.hasReturnValues) {
+            try {
+              const returned = await (target as StatefulContract)._deriveReturnValue(concreteName, childArgs);
+              const targetFunction = (target.inner.artifact.abi as readonly AbiFunction[])
+                .find((candidate) => candidate.name === concreteName);
+              const output = targetFunction?.outputs?.length === 1 ? targetFunction.outputs[0] : undefined;
+              const encoded = output && artifactUsesSolidityAbi(target.inner.artifact)
+                ? encodePreparedSolidityReturn(returned as StateValue, output.type)
+                : output
+                  ? encodePushdataValue(returned as StateValue, output.type, target.inner.artifact.structs)
+                  : undefined;
+              if (encoded) {
+                prepared[childNodeIndex] = {
+                  ...prepared[childNodeIndex],
+                  provisionalResultCommitment: encoded,
+                };
+              }
+            } catch {
+              // The composed transaction can discover results which are unavailable to a standalone read.
+            }
+          }
+          if (call.interfaceName === '__raw__' && call.hasReturnValues) {
+            try {
+              const returned = await (target as StatefulContract)._deriveReturnValue(concreteName, childArgs);
+              if (returned === true) successfulRawFunctions.add(concreteName);
+            } catch {
+              // Keep all compiler-published conditional alternatives when precomputation is unavailable.
+            }
+          }
+        }
+      }
+      active.delete(recursionKey);
+      return true;
+    };
+    const rootSender = addressToLockScript(this._signer.getAddress());
+    if (!await expand(this as unknown as StatefulContract, functionName, functionArgs, rootSender)) return undefined;
+    if (closureDebug) console.error('atomic-closure-prepared', {
+      functionName,
+      calls: prepared.map((call) => ({
+        contract: call.contract.inner.artifact.contractName,
+        functionName: call.functionName,
+        callsiteId: call.callsiteId,
+      })),
+    });
+    return prepared.length > 1 ? Object.freeze(prepared) : undefined;
   }
 
   /**
@@ -7864,6 +8330,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const internalInitArgs: FunctionArgument[] = [];
     for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
       if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
+      else if (input.name === '__internal__valueChunkOutputBase') internalInitArgs.push(-1n);
+      else if (input.name.startsWith('__internal__valueWitness_')
+        || input.name.startsWith('__internal__leadingPushValue_')) {
+        // Genesis has no prior chunked mapping value or earlier same-transaction array push. Continuation
+        // outputs, when needed, are learned by the constructor probe from the relocation sentinel above.
+        internalInitArgs.push(new Uint8Array());
+      }
       else {
         const match = input.name.match(/^__internal__vmapBatch(Slot|Proof|Next|PredOut|Rank)_(\d+)$/);
         if (match) {
@@ -7934,9 +8407,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const useSparseProbe = !(globalThis as any).process?.env?.SOLIDCASH_FAITHFUL_DEPLOY_PROBE
       && (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
     const allEventDefs = artifact.events ?? [];
-    // A failing commitment equality stops VM execution, so one probe may reveal only the prefix through the
-    // first mismatched data NFT. Allow every state NFT to be learned progressively plus a final convergence run.
-    const maxDeployIterations = Math.max(5, requiredIndices.length + 2);
+    // A failing commitment equality stops VM execution, so one probe can reveal only the next unknown output.
+    // Budget for every independently learned constructor placeholder, not merely state NFTs: keccak batches,
+    // mapping entries and predecessors, events, dynamic chunks, and state can all be encountered sequentially.
+    const maxDeployIterations = Math.max(
+      5,
+      constructorKeccakPreimages.filter((preimage) => preimage === null).length
+        + entryOutputCount
+        + sortedCollections.length
+        + emitCount
+        + (constructorAbi?.dynamicWrites?.length ?? 0)
+        + requiredIndices.length
+        + 2,
+    );
     const seenDeployKeys = new Set<string>();
 
     let deployConverged = false;
@@ -14266,9 +14749,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       registeredSelf ? registeredExecutionLockingBytecode(registeredSelf) ?? this.inner.lockingBytecode
         : this.inner.lockingBytecode,
     );
-    // A delegate's address(this) is the active implementation input above. A downstream callee's msg.sender is
-    // the authenticated calling master (the proxy/state holder). Logical CREATE/SCID addresses remain SDK lookup
-    // handles and must not leak into covenant arguments or sorted-map keys.
     const publicSelfAddress = registeredSelf?.lockingBytecode
       ? hexToBin(registeredSelf.lockingBytecode) : executionSelfAddress;
     const requiredNftIndices = abiFunction?.requiredNftIndices
@@ -16564,6 +17044,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       positions: { name: string; categoryId: string }[];
     }[] = [];
     const topLevelAnchorFillPositions: { argIndex: number; band: number; proxyRoute: boolean }[] = [];
+    const topLevelExternalCallInputFillPositions: { argIndex: number; categoryId: string }[] = [];
+    const topLevelExternalReturnFillPositions: { argIndex: number; groupIndex: number }[] = [];
+    let topLevelExternalCallBaseArgIndex: number | undefined;
     const pendingComputedCallInputFills: {
       group: { refreshInternalArgs?: (updates: Record<string, FunctionArgument>) => void };
       encodedArgs: FunctionArgument[];
@@ -16608,6 +17091,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(externalCalls ?? []),
     ];
     let allGroupParentIndices: number[] = (externalCalls ?? []).map(() => -1);
+    // An inactive conditional or empty rolled loop retains its compiler-published source slot, but owns no
+    // physical participant block. Hidden selector/input/return witnesses continue to use source-slot numbering.
+    const inactiveExternalCallSlots = new Set<number>();
 
     // Auto-resolve external calls from the registry when not explicitly provided.
     // The registry provides the contract object for UTXO/state lookup.
@@ -16621,7 +17107,41 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const ec = externalCalls[eci];
         // Array-element call: the callee instance was already resolved during expansion.
         if (presetResolved?.[eci]) { autoResolved.push(presetResolved[eci]!); continue; }
-        const registered = this._externalRegistry.get(ec.interfaceName);
+        // Resolve the concrete deployment from the authenticated address expression first. Interface names are
+        // not unique deployment identities and ordinary Solidity-style callers do not populate an SDK registry.
+        callerStateSnapshot ??= (await this.getFullState()).state;
+        const addressValue = ec.addressSource
+          ? this._resolveExternalArgs(
+            [ec.addressSource], args, this.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
+            undefined, 0, false, executionSelfAddress,
+          )?.[0]
+          : ec.addressParam
+            ? (() => {
+              const addressParamIndex = abiFunction?.inputs.findIndex(
+                (input) => input.name === ec.addressParam,
+              ) ?? -1;
+              return addressParamIndex >= 0 ? args[addressParamIndex] : undefined;
+            })()
+            : undefined;
+        const addressHex = addressValue instanceof Uint8Array ? binToHex(addressValue) : undefined;
+        const deploymentAtAddress = addressHex
+          ? findDeploymentByLockingBytecode(this.inner.provider, addressHex)
+          : typeof addressValue === 'string'
+            ? findDeploymentByAddress(this.inner.provider, addressValue)
+              ?? findDeploymentByLockingBytecode(this.inner.provider, addressValue)
+            : undefined;
+        const externalFunctionName = ec.interfaceName === '__raw__'
+          ? ec.rawFunctionName ?? ec.functionName : ec.functionName;
+        const registered = this._externalRegistry.get(ec.interfaceName)
+          ?? deploymentAtAddress?.contract as ConnectedStatefulContract | undefined
+          ?? findDeploymentByName(this.inner.provider, ec.interfaceName)?.contract as
+            ConnectedStatefulContract | undefined
+          ?? (/^I[A-Z]/.test(ec.interfaceName)
+            ? findDeploymentByName(this.inner.provider, ec.interfaceName.slice(1))?.contract as
+              ConnectedStatefulContract | undefined
+            : undefined)
+          ?? findDeploymentImplementing(this.inner.provider, externalFunctionName)?.contract as
+            ConnectedStatefulContract | undefined;
         if (!registered) {
           canAutoResolve = false;
           break;
@@ -16630,12 +17150,64 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // `_evaluateExternalExpression` already covers every shape these reach - state/array length/arithmetic,
         // struct constructors, the Encoding helpers - but silently yields undefined without a state snapshot,
         // which then surfaces as "cannot be auto-resolved". Read it once and thread it through.
-        callerStateSnapshot ??= (await this.getFullState()).state;
-        const resolvedArgs = this._resolveExternalArgs(
-          ec.argSources, args, this.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
-          undefined, 0, false, executionSelfAddress,
+        if (ec.condition) {
+          const active = this._evaluateExternalExpression(
+            ec.condition, args, this.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
+            undefined, 0, false, executionSelfAddress,
+          );
+          // Only a predicate proven false suppresses a physical call. Runtime-only predicates remain covenant-owned.
+          if (active === false) inactiveExternalCallSlots.add(eci);
+        }
+        const externalArgSources = ec.interfaceName === '__raw__' ? ec.rawArgSources : ec.argSources;
+        const expressionReturns = externalArgSources?.some((source) => source.kind === 'expression')
+          ? await this._resolveExternalExpressionReturns(
+            externalArgSources, args, this as unknown as StatefulContract,
+            callerStateSnapshot, abiFunction?.inputs, executionSelfAddress,
+          )
+          : undefined;
+        let resolvedArgs = this._resolveExternalArgs(
+          externalArgSources, args, this.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
+          expressionReturns, 0, false, executionSelfAddress,
         );
-        if (resolvedArgs === undefined && ec.argSources?.some((s) => s.kind === 'expression')) {
+        if (resolvedArgs === undefined && ec.occurrence === 'loop') {
+          const usesEmptyArrayElement = (value: unknown, seen = new Set<object>()): boolean => {
+            if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
+            seen.add(value as object);
+            const source = value as Partial<ArgSource>;
+            if (source.kind === 'arrayElement' && source.paramIndex !== undefined
+              && Array.isArray(args[source.paramIndex])
+              && (args[source.paramIndex] as unknown[]).length === 0) return true;
+            return Object.values(value).some((child) => (
+              Array.isArray(child)
+                ? child.some((item) => usesEmptyArrayElement(item, seen))
+                : usesEmptyArrayElement(child, seen)
+            ));
+          };
+          if (externalArgSources?.some((source) => usesEmptyArrayElement(source))) {
+            inactiveExternalCallSlots.add(eci);
+            const externalArtifact = (registered as StatefulContract).inner.artifact;
+            const externalInputs = externalArtifact.abi.find(
+              (candidate) => candidate.name === externalFunctionName,
+            )?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+            const inactiveValue = (type: string): FunctionArgument => {
+              const dynamicArray = type.match(/^(.*)\[\]$/);
+              if (dynamicArray) return [] as FunctionArgument;
+              const fixedArray = type.match(/^(.*)\[(\d+)\]$/);
+              if (fixedArray) {
+                return Array.from(
+                  { length: Number(fixedArray[2]) }, () => inactiveValue(fixedArray[1]),
+                ) as FunctionArgument;
+              }
+              const struct = (externalArtifact.structs ?? externalArtifact.stateLayout?.structs)
+                ?.find((candidate) => candidate.name === type);
+              if (struct) return struct.fields.map((field) => inactiveValue(field.type)) as FunctionArgument;
+              if (type === 'bool') return false;
+              return inactiveMessageBusRouteWitness(type);
+            };
+            resolvedArgs = externalInputs.map((input) => inactiveValue(input.type));
+          }
+        }
+        if (resolvedArgs === undefined && externalArgSources?.some((s) => s.kind === 'expression')) {
           throw new Error(
             `External call to ${ec.interfaceName}.${ec.functionName} has expression-based argSources `
             + 'that cannot be auto-resolved. Use withExternalCall() to provide args explicitly.',
@@ -16643,7 +17215,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         autoResolved.push({
           externalContract: registered as StatefulContract,
-          functionName: ec.functionName,
+          functionName: externalFunctionName,
           args: resolvedArgs ?? [],
         });
       }
@@ -16666,6 +17238,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (this._signer) {
         let totalBFunders = 0;
         for (let si = 0; si < externalCalls.length; si++) {
+          if (inactiveExternalCallSlots.has(si)) continue;
           const ecSlot = externalCalls[si];
           const ci = resolvedExternalCalls[si];
           if (!ci?.externalContract) continue;
@@ -16699,7 +17272,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
+      const directGroupEcSlots: ExternalCallAbi[] = [];
       for (let slotIndex = 0; slotIndex < externalCalls.length; slotIndex++) {
+        if (inactiveExternalCallSlots.has(slotIndex)) continue;
         const ec = externalCalls[slotIndex];
         const callInfo = resolvedExternalCalls[slotIndex];
 
@@ -16718,6 +17293,36 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           this.inner.artifact, callerStateSnapshot, undefined, abiFunction?.inputs,
           false, executionSelfAddress, undefined, publicSelfAddress,
         );
+        const sharedCompilerRouteGroupIndex = compilerRoute === undefined ? -1
+          : externalCallUtxoGroups.findIndex((group) => (
+            group.categoryId === externalCategoryId
+            && group.compilerRoute !== undefined
+            && binToHex(group.compilerRoute.selector) === binToHex(compilerRoute.selector)
+            && binToHex(group.compilerRoute.blob) === binToHex(compilerRoute.blob)
+          ));
+        if (sharedCompilerRouteGroupIndex >= 0) {
+          const physical = externalCallUtxoGroups[sharedCompilerRouteGroupIndex];
+          // Repeated-route metadata is published on every reached logical callsite, but the route envelope already
+          // executes the complete row set. Retain a logical group for source-slot witnesses while serializing the
+          // authenticated master/data block exactly once.
+          externalCallUtxoGroups.push({
+            categoryId: externalCategoryId,
+            stateLayout: physical.stateLayout,
+            masterUtxo: physical.masterUtxo,
+            dataNftUtxos: [],
+            requiredDataNftIndices: [],
+            functionName: callInfo.functionName,
+            functionArgs: callInfo.args,
+            externalContract: callInfo.externalContract,
+            logicalFunctionName: callInfo.functionName,
+            compilerRoute,
+            sharedGroupIndex: sharedCompilerRouteGroupIndex,
+            blockInputs: [],
+            ...(ec.callMode && { callMode: ec.callMode }),
+          });
+          directGroupEcSlots.push(ec);
+          continue;
+        }
         const bGraphBlockhashSelections = compilerRoute
           ? selectGraphBlockhashReads(callInfo.externalContract.inner.artifact, compilerRoute.blob)
           : [];
@@ -16732,15 +17337,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         const bStatelayout = callInfo.externalContract.inner.stateLayout!;
 
-        // This list is emitted for every callsite. An explicit empty list is authoritative: mapping-only calls
-        // do not co-spend fixed-state NFTs, and expanding empty to "all" shifts every later block slot.
+        // The caller-side footprint can be conservatively wider than the selected concrete handler. Once the
+        // deployment is resolved, its published block layout is the physical transaction contract: co-spending
+        // any additional data NFT shifts every later slot, including an in-block return event. Retain caller
+        // metadata only as a compatibility fallback for older concrete artifacts without block layouts.
         const concreteAbi = callInfo.externalContract.inner.artifact.abi as readonly AbiFunction[];
+        const concreteFunction = concreteAbi.find((candidate) => candidate.name === callInfo.functionName);
         const bRequiredNftIndices = compilerRoute
           ? [...new Set(compilerRoute.rowArguments.flatMap((row) => (
             concreteAbi.find((candidate) => candidate.selector === row.selector)?.requiredNftIndices
               ?? row.handler.requiredNftIndices ?? []
           )))]
-          : [...ec.requiredDataNftIndices];
+          : concreteFunction?.blockLayout
+            ? [...new Set(concreteFunction.blockLayout.slots
+              .filter((slot) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)
+              .map((slot) => slot.nftIndex!))]
+            : [...ec.requiredDataNftIndices];
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RETURN_SNAPSHOT === '1' && callInfo.functionName === 'approve') {
           console.error('approve-required-nfts', {
@@ -16771,12 +17383,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         // Build B's full block inputs when B's function has entries/events/transfers
         const bSc = callInfo.externalContract as StatefulContract | null;
-        const bAbiFunc = compilerRoute?.abiFunction ?? (bSc
-          ? (bSc.inner.artifact.abi as readonly AbiFunction[])
-            .find((f) => f.name === callInfo.functionName)
-          : undefined);
+        const bAbiFunc = compilerRoute?.abiFunction ?? concreteFunction;
         const bBlockLayout = bAbiFunc?.blockLayout;
         let bBlockInputs: UnlockableUtxo[] | undefined;
+        const bDynamicChunkResources: Array<{
+          blockSlot: number; name: string; type: string; write: boolean;
+        }> = [];
         // X13: set once B's block is confirmed to carry a funding input at its published returnEvent offset.
         let bReturnEventInBlock = false;
         const bCompilerInternalArgs: Record<string, FunctionArgument> = {};
@@ -17141,6 +17753,42 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 if (!hadFullBlockKinds && !bHasLoop) bBlockInputs = undefined;
               }
             }
+            if (bBlockInputs && bSc) {
+              const dynamicActivity = planMessageBusDynamicResourceActivity(
+                bAbiFunc,
+                bStatelayout.variables.filter((variable) => variable.dynamic).map((variable) => variable.name),
+              );
+              for (const varName of dynamicActivity.readOnly) {
+                const variable = bStatelayout.variables.find((candidate) => (
+                  candidate.name === varName && candidate.dynamic
+                ));
+                if (!variable) continue;
+                const chunkAddress = getDynamicChunkAddress(
+                  bSc.inner, externalCategoryId, variable.name, variable.type,
+                );
+                const chunks = (await this.inner.provider.getUtxos(chunkAddress))
+                  .filter((utxo) => utxo.token?.category === externalCategoryId
+                    && utxo.token?.nft?.capability === 'mutable'
+                    && !!utxo.token.nft.commitment)
+                  .map((utxo) => ({
+                    utxo,
+                    chunkIndex: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex,
+                  }))
+                  .sort((left, right) => left.chunkIndex - right.chunkIndex);
+                for (const { utxo } of chunks) {
+                  const blockSlot = bBlockInputs.length;
+                  bBlockInputs.push({
+                    ...utxo,
+                    unlocker: createReadOnlyDynamicChunkUnlocker(
+                      bSc.inner, 0, externalCategoryId, variable.name, variable.type,
+                    ),
+                  });
+                  bDynamicChunkResources.push({
+                    blockSlot, name: variable.name, type: variable.type, write: false,
+                  });
+                }
+              }
+            }
             if (bBlockInputs) {
               for (const planned of bPlannedEntryInserts) {
                 planned.outputBlockSlot = Math.max(bBlockInputs.length, bBlockLayout?.blockSize ?? 0);
@@ -17269,6 +17917,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           bCompilerInternalArgs.__internal__vmapBatchTrailingCount = BigInt(bPlannedEntryInserts.length);
         }
 
+        // A direct read-only call has a deterministic result in the callee's authenticated pre-state. Seed that
+        // result before trace convergence, as we already do for nested read-only calls, so generic stack scans
+        // cannot mistake an unrelated 32-byte value (for example a token category) for the ABI return value.
+        let bPrecomputedReturnCommitment: Uint8Array | undefined;
+        if (!compilerRoute && ec.hasReturnValues && bSc && bAbiFunc?.writesState !== true
+          && bAbiFunc?.outputs?.length === 1) {
+          const value = await bSc._deriveReturnValue(callInfo.functionName, callInfo.args);
+          bPrecomputedReturnCommitment = encodeExternalReturnValue(
+            value,
+            bAbiFunc.outputs[0].type,
+            bSc.inner.artifact.structs ?? bSc.inner.artifact.stateLayout?.structs,
+            artifactUsesSolidityAbi(bSc.inner.artifact),
+          );
+        }
+
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
           console.error('external-route-vmap-args', callInfo.functionName, bAbiFunc?.name,
             bAbiFunc?.sortedBatchInfo, bCompilerInternalArgs);
@@ -17304,7 +17967,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ...(ec.callMode && { callMode: ec.callMode }),
           ...(bPlannedEntryInserts.length > 0 && { plannedEntryInserts: bPlannedEntryInserts }),
           ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
+          ...(bDynamicChunkResources.length > 0 && {
+            dynamicChunkResources: bDynamicChunkResources,
+          }),
           ...(bReturnEventInBlock && { returnEventInBlock: true }),
+          ...(bPrecomputedReturnCommitment && {
+            precomputedReturnCommitment: bPrecomputedReturnCommitment,
+          }),
           ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
           ...(bEntryLoopCommitments && {
             entryLoopCommitments: bEntryLoopCommitments,
@@ -17327,6 +17996,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             return Object.keys(values).length > 0 ? { dynamicStateValues: values } : {};
           })(),
         });
+        directGroupEcSlots.push(ec);
       }
 
       // Track per-group metadata (direct + transitive)
@@ -17336,7 +18006,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Build metadata for direct groups
       for (let i = 0; i < directGroupCount; i++) {
         groupMetas.push({
-          ecSlot: externalCalls[i],
+          ecSlot: directGroupEcSlots[i],
           callerCategoryId: this.categoryId,
           parentGroupIndex: -1,
         });
@@ -17452,6 +18122,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const externalCallInputBasePosition = abiFunction?.inputs.findIndex((input) =>
         input.name === '__internal__externalCallInputBase') ?? -1;
       if (externalCallInputBasePosition >= 0) {
+        topLevelExternalCallBaseArgIndex = externalCallInputBasePosition;
         // Compiler-owned witnesses are not always adjacent: a chunkable vmap write can inject a leading-value
         // witness between its batch/value proofs and the external-call region. Fill any intervening ABI slots by
         // declared type before placing the base, otherwise every later witness silently shifts left.
@@ -17606,6 +18277,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (slot.kind !== 'dataNft') continue;
             const recreated = group.dataNftUtxos[dataIdx++];
             if (recreated && group.blockInputs[slot.offset]) group.blockInputs[slot.offset] = recreated;
+          }
+        }
+        if (group.blockInputs && group.dynamicChunkResources) {
+          for (const resource of group.dynamicChunkResources) {
+            const input = group.blockInputs[resource.blockSlot];
+            if (!input) continue;
+            group.blockInputs[resource.blockSlot] = {
+              ...input,
+              unlocker: resource.write
+                ? createDynamicChunkUnlocker(
+                  group.externalContract.inner,
+                  masterInputIndex,
+                  group.categoryId,
+                  resource.name,
+                  resource.type,
+                )
+                : createReadOnlyDynamicChunkUnlocker(
+                  group.externalContract.inner,
+                  masterInputIndex,
+                  group.categoryId,
+                  resource.name,
+                  resource.type,
+                ),
+            };
           }
         }
 
@@ -17903,34 +18598,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Resolve 4-byte hash selector from B's ABI - only for A's DIRECT external calls.
       // Transitive call selectors are handled above as part of B's hidden params.
-      const selectorParamCount = abiFunction!.inputs.filter(
-        (inp: { name: string }) => inp.name.startsWith('__internal__externalCallSelector'),
-      ).length;
-      if (selectorParamCount > 0) {
-        for (let i = 0; i < directGroupCount; i++) {
-          const group = externalCallUtxoGroups[i];
-          // A loop-expanded slot (computed-target / array-element loop) owns ONE shared selector param (the covenant
-          // checks each co-spent element against it), not one per element - fill it once at the range start, skip
-          // the rest, mirroring the per-group master-index fill above.
-          const selRange = loopIdxRanges.find((r) => i >= r.start && i < r.start + r.count);
-          if (selRange && i !== selRange.start) continue;
-          // call/staticcall/delegatecall modes don't inject selector params - skip them
-          if (group.callMode === 'call' || group.callMode === 'staticcall' || group.callMode === 'delegatecall') continue;
-          // A single-method callee has no witness selector param (its unlocking carries no selector); only groups
-          // the compiler marked needsSelectorVerification get a filled selector. Absent (older artifacts) = fill.
-          if ((groupMetas[i].ecSlot as { needsSelectorVerification?: boolean })
-            .needsSelectorVerification === false) continue;
-          const targetSelector = group.compilerRoute
-            ? binToHex(group.compilerRoute.selector)
-            : (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
-              .find((f) => f.name === group.functionName)?.selector;
-          if (!targetSelector) {
-            throw new Error(
-              `Function '${group.functionName}' not found in external contract ABI`,
-            );
-          }
-          finalArgs = [...finalArgs, hexToBin(targetSelector)];
+      const selectorInputs = abiFunction!.inputs.filter(
+        (input) => /^__internal__externalCallSelector\d*$/.test(input.name),
+      );
+      for (const input of selectorInputs) {
+        const slot = selectorParamSlot(input.name, abiFunction?.externalCalls);
+        const ec = slot === undefined ? undefined : externalCalls[slot];
+        const groupIndex = directGroupEcSlots.findIndex((candidate) => candidate === ec);
+        const group = groupIndex < 0 ? undefined : externalCallUtxoGroups[groupIndex];
+        // Inactive calls still own their selector's typed ABI position. Resolve it from interface metadata so
+        // later bigint witnesses cannot slide into a bytes4 argument.
+        const targetSelector = group?.compilerRoute
+          ? binToHex(group.compilerRoute.selector)
+          : group
+            ? (group.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[])
+              .find((candidate) => candidate.name === group.functionName)?.selector
+            : (this.inner.artifact.externalInterfaces ?? [])
+              .find((candidate) => candidate.name === ec?.interfaceName)
+              ?.abi?.find((candidate) => candidate.name === ec?.functionName)?.selector;
+        if (!targetSelector) {
+          throw new Error(`Function '${ec?.functionName ?? input.name}' not found in external contract ABI`);
         }
+        finalArgs = [...finalArgs, hexToBin(targetSelector)];
       }
 
       // Per-slot callee master input index (so the covenant reads the RIGHT co-spent callee without a fixed
@@ -17969,20 +18658,58 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           finalArgs = [...finalArgs, BigInt(groupMasterIndices[i])];
         }
       }
+      // Scalar master witnesses are keyed by compiler callsite suffix, not compact physical-group order.
+      const masterInputs = abiFunction!.inputs.filter(
+        (input) => /^__internal__extcallMasterIdx\d*$/.test(input.name),
+      );
+      if (masterInputs.length > 0) {
+        const scalarValues = masterInputs.map((input) => {
+          const suffix = input.name.match(/\d+$/)?.[0];
+          const slot = suffix === undefined ? 0 : Number(suffix);
+          const ec = externalCalls[slot];
+          const groupIndex = directGroupEcSlots.findIndex((candidate) => candidate === ec);
+          return groupIndex < 0 ? -1n : BigInt(groupMasterIndices[groupIndex]);
+        });
+        const scalarCountAlreadyAppended = (!hasLoopSlotAbi && directGroupCount > 1)
+          ? directGroupEcSlots.filter((ec) => !(ec as { fnPtrCall?: boolean }).fnPtrCall).length
+          : 0;
+        if (scalarCountAlreadyAppended > 0) {
+          finalArgs.splice(finalArgs.length - scalarCountAlreadyAppended, scalarCountAlreadyAppended);
+        }
+        const scalarBase = finalArgs.length;
+        finalArgs = [...finalArgs, ...scalarValues];
+        for (const [index, input] of masterInputs.entries()) {
+          const suffix = input.name.match(/\d+$/)?.[0];
+          const slot = suffix === undefined ? 0 : Number(suffix);
+          const ec = externalCalls[slot];
+          const groupIndex = directGroupEcSlots.findIndex((candidate) => candidate === ec);
+          const group = groupIndex < 0 ? undefined : externalCallUtxoGroups[groupIndex];
+          if (group) topLevelExternalCallInputFillPositions.push({
+            argIndex: scalarBase + index,
+            categoryId: group.categoryId,
+          });
+        }
+      }
 
       // Per-slot logical-identity anchor input index. -1 selects the direct identity proof (the visible address
       // IS the co-spent master's locking bytecode); a real index selects the proxy anchor proof. Mirrors the
       // compiler's synthesis condition: fixed-slot calls whose target is a value rather than a baked literal or
       // tx-derived msg.sender. Loop-expanded groups own no anchor param, exactly as for the master index above.
-      for (let i = 0; i < directGroupCount; i++) {
-        if (loopIdxRanges.some((r) => i >= r.start && i < r.start + r.count)) continue;
-        if (!abiFunction?.inputs.some((input) => input.name === `__internal__extcallAnchorIdx${i}`)) continue;
-        const anchorSlot = groupMetas[i].ecSlot as {
+      const anchorInputs = abiFunction!.inputs.filter(
+        (input) => /^__internal__extcallAnchorIdx\d+$/.test(input.name),
+      );
+      for (const input of anchorInputs) {
+        const slot = Number(input.name.match(/\d+$/)![0]);
+        const anchorSlot = externalCalls[slot] as {
           addressParam?: string; addressLiteral?: string; addressIsMsgSender?: boolean;
-        };
-        if (!anchorSlot.addressParam || anchorSlot.addressLiteral !== undefined
-          || anchorSlot.addressIsMsgSender) continue;
-        const group = externalCallUtxoGroups[i];
+        } | undefined;
+        const groupIndex = directGroupEcSlots.findIndex((candidate) => candidate === anchorSlot);
+        const group = groupIndex < 0 ? undefined : externalCallUtxoGroups[groupIndex];
+        if (!group || !anchorSlot?.addressParam || anchorSlot.addressLiteral !== undefined
+          || anchorSlot.addressIsMsgSender) {
+          finalArgs = [...finalArgs, -1n];
+          continue;
+        }
         const callee = group?.externalContract as StatefulContract | undefined;
         const logicalAddress = callee?._logicalAddress ?? callee?.target ?? callee?.address;
         let band: number | undefined;
@@ -17993,18 +18720,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const spentLock = spentUnlocker
             ? binToHex(spentUnlocker.generateLockingBytecode())
             : callee!.inner.lockingBytecode;
-          const call = abiFunction.externalCalls?.[i];
+          const call = abiFunction!.externalCalls?.[slot];
           const resolvedAddressSource = call?.addressSource
             ? this._resolveExternalArgs(
               [call.addressSource], args, this.inner.artifact,
-              callerStateSnapshot ?? onChainState.state, abiFunction.inputs,
+              callerStateSnapshot ?? onChainState.state, abiFunction!.inputs,
               undefined, 0, false, executionSelfAddress,
             )?.[0]
             : call?.addressStateVar
               ? (callerStateSnapshot ?? onChainState.state)[call.addressStateVar] as FunctionArgument | undefined
               : undefined;
           const directArgument = externalCallTargetSourceLockingBytecodeHex(
-            abiFunction, i, args, resolvedAddressSource,
+            abiFunction!, slot, args, resolvedAddressSource,
           ) === spentLock;
           if (!directArgument && logicalLbc !== spentLock) {
             const bandKey = logicalIdentityBandKey(logicalAddress);
@@ -18026,8 +18753,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // retaining ordinary direct locking-bytecode identity. -1 is the
           // ordinary source-selector/direct-identity path.
           const physicalGroup = group === undefined ? undefined
-            : externalCallUtxoGroups[group.sharedGroupIndex ?? i];
-          finalArgs = [...finalArgs, externalCallAnchorIndices.get(i)
+            : externalCallUtxoGroups[group.sharedGroupIndex ?? groupIndex];
+          finalArgs = [...finalArgs, externalCallAnchorIndices.get(groupIndex)
             ?? (physicalGroup?.compilerRoute ? -2n : -1n)];
         } else {
           topLevelAnchorFillPositions.push({
@@ -18043,18 +18770,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Append per-slot _externalReturnOutputIdx params for A's args (direct returning calls only)
       const directReturningSlots = externalCalls.filter((ec) => ec.hasReturnValues);
       if (directReturningSlots.length > 0 && returnEventOutputBase >= 0) {
-        for (let i = 0; i < directGroupCount; i++) {
-          // A loop-expanded returning slot owns ONE shared externalReturnOutputIdx param (the covenant reads the
-          // per-iteration event at base + i); fill it once at the range start, skip the rest - same as the selector
-          // and master-index fills above (else N return-idx args vs 1 param -> arg-count mismatch).
-          const retRange = loopIdxRanges.find((r) => i >= r.start && i < r.start + r.count);
-          if (retRange && i !== retRange.start) continue;
-          if (groupMetas[i].ecSlot.hasReturnValues) {
-            const retOutputIdx = returnEventIndexMap.get(i);
-            if (retOutputIdx !== undefined) {
-              finalArgs = [...finalArgs, BigInt(retOutputIdx)];
-            }
+        const returnInputs = abiFunction!.inputs.filter(
+          (input) => /^__internal__externalReturnOutputIdx\d*$/.test(input.name),
+        );
+        const firstReturnInputIndex = abiFunction!.inputs.findIndex(
+          (input) => /^__internal__externalReturnOutputIdx\d*$/.test(input.name),
+        );
+        while (firstReturnInputIndex >= 0 && finalArgs.length < firstReturnInputIndex) {
+          const pending = abiFunction!.inputs[finalArgs.length];
+          if (!pending?.name.startsWith('__internal__')) {
+            throw new Error(`Missing visible ABI argument '${pending?.name ?? finalArgs.length}'`);
           }
+          finalArgs.push(defaultInternalFunctionArg(pending));
+        }
+        for (const input of returnInputs) {
+          const slot = externalReturnParamSlot(input.name, abiFunction?.externalCalls);
+          const ec = slot === undefined ? undefined : externalCalls[slot];
+          const groupIndex = directGroupEcSlots.findIndex((candidate) => candidate === ec);
+          const retOutputIdx = groupIndex < 0 ? undefined : returnEventIndexMap.get(groupIndex);
+          if (groupIndex >= 0) topLevelExternalReturnFillPositions.push({
+            argIndex: finalArgs.length,
+            groupIndex,
+          });
+          finalArgs = [...finalArgs, retOutputIdx === undefined ? -1n : BigInt(retOutputIdx)];
         }
       }
     }
@@ -25379,8 +26117,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ?.messageBusGraphExecution === true;
       const valueChunkWitnessGroups = graphOwnsValueChunkWitness
         ? [...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups()] : [];
-      const setGraphValueChunkOutputBase = (outputBase: number, coordinateBase = 0): boolean => {
+      const setValueChunkOutputBase = (outputBase: number, coordinateBase = 0): boolean => {
         let refreshed = false;
+        const rootWitnessPosition = abiFunction?.inputs.findIndex(
+          (input) => input.name === '__internal__valueChunkOutputBase',
+        ) ?? -1;
+        if (rootWitnessPosition >= 0 && finalArgs[rootWitnessPosition] !== BigInt(outputBase)) {
+          // A function which writes both dynamic state and a chunkable mapping cannot derive the mapping
+          // continuation coordinate from blockSize alone: the dynamic run immediately preceding it has runtime
+          // width. The compiler publishes this hidden absolute coordinate for precisely that purpose. Keep the
+          // physical master unlocker aligned whenever derivation grows or shrinks the dynamic run.
+          finalArgs[rootWitnessPosition] = BigInt(outputBase);
+          builder._setMasterUnlocker(unlockFn(...finalArgs));
+          refreshed = true;
+        }
         for (const group of valueChunkWitnessGroups) {
           const witness = valueChunkOutputWitnessCarrier(builder, group);
           if (!witness || !writesChunkableArrayValue(witness.carrier, witness.abiFunction)) continue;
@@ -25402,7 +26152,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       };
       const graphValueChunkOutputBase = builder.getValueChunkOutputBase();
       timing('graph-value-chunk-base-ready');
-      setGraphValueChunkOutputBase(graphValueChunkOutputBase);
+      setValueChunkOutputBase(graphValueChunkOutputBase);
       timing('graph-value-chunk-witnesses-ready');
       const mintingMasterFillsChanged = applyMintingMasterFills();
       timing('minting-master-fills-ready');
@@ -25429,7 +26179,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // needs one: caller indices and output witnesses from the narrower geometry are no longer authoritative.
         if (dynamicLayoutChanged || deriveResult.vmErrored) {
           if (dynamicLayoutChanged) {
-            setGraphValueChunkOutputBase(builder.getValueChunkOutputBase());
+            setValueChunkOutputBase(builder.getValueChunkOutputBase());
             refreshNestedIdentityAnchorWitnesses();
             refreshTopLevelIdentityAnchorWitnesses();
             if (applyMintingMasterFills()) builder._refreshInputs();
@@ -25448,7 +26198,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           });
         }
       }
-      setGraphValueChunkOutputBase(
+      setValueChunkOutputBase(
         (overrides?.blockBase ?? 0) + builder.getValueChunkOutputBase(),
         overrides?.blockBase ?? 0,
       );
@@ -26176,6 +26926,42 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     functionName: string, args: FunctionArgument[], calls?: CallInfo[],
   ): Promise<StateValue> {
     const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
+    const visibleInputs = abiFunction?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+    const scalarGetter = this.inner.stateLayout?.variables.find((variable) => (
+      !variable.dynamic
+      && (variable.name === functionName || variable.name.replace(/^_+/, '') === functionName)
+      && variable.type === abiFunction?.outputs?.[0]?.type
+    ));
+    if (scalarGetter && args.length === 0 && visibleInputs.length === 0
+      && abiFunction?.writesState === false && abiFunction.outputs?.length === 1
+      && (abiFunction.externalCalls?.length ?? 0) === 0
+      && (abiFunction.lowLevelCalls?.length ?? 0) === 0
+      && (abiFunction.entryAccesses?.length ?? 0) === 0) {
+      // Public state getters and conventional inherited accessors such as OZ owner()/paused() are authenticated
+      // directly by the current data-NFT commitment. This also avoids synthesizing a return transaction for a
+      // value the state reader has already decoded from covenant-controlled UTXOs.
+      return (await this.getState())[scalarGetter.name] as StateValue;
+    }
+    if ((functionName === 'balanceOf' || functionName === 'allowance')
+      && (this.inner.stateLayout?.collections ?? []).some((collection) =>
+        collection.name === (functionName === 'balanceOf' ? '_balances' : '_allowances'))) {
+      const collection = functionName === 'balanceOf' ? '_balances' : '_allowances';
+      const keyCandidates = functionName === 'balanceOf'
+        ? this._addressKeyVariants(args[0]).map((owner) => [owner])
+        : this._addressKeyVariants(args[0]).flatMap((owner) =>
+          this._addressKeyVariants(args[1]).map((spender) => [owner, spender]));
+      for (const candidate of keyCandidates) {
+        const overlay = this._getSoftMapping(collection, candidate);
+        if (overlay !== undefined) return overlay as StateValue;
+      }
+      const entries = await this.getEntries(collection);
+      const keyTypes = functionName === 'balanceOf' ? ['address'] : ['address', 'address'];
+      for (const candidate of keyCandidates) {
+        const match = entries.find((entry) => StatefulContract._entryMatchesKeys(entry, candidate, keyTypes));
+        if (match) return match.value as StateValue;
+      }
+      return 0n;
+    }
     const returnedEntry = abiFunction?.returnStateAccess;
     const returnedCollection = returnedEntry && this.inner.stateLayout?.collections
       ?.find((collection) => collection.name === returnedEntry.collection);
@@ -26184,7 +26970,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const isEntryKey = (value: FunctionArgument | undefined): value is EntryKey =>
         typeof value === 'bigint' || typeof value === 'boolean' || typeof value === 'string'
         || value instanceof Uint8Array;
-      const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
       const keyValues = returnedEntry.keyParams.map((name): FunctionArgument | undefined => {
         const inputIndex = visibleInputs.findIndex((input) => input.name === name);
         return inputIndex >= 0 ? args[inputIndex] : undefined;
@@ -26211,6 +26996,140 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const defaultValue = getDefaultStateValue(abiFunction.outputs![0].type, this.inner.artifact.structs);
       attachDecodedAccessors(defaultValue);
       return defaultValue;
+    }
+    // A compiler-proven dense slice of one mapping(K => V[]) entry can be read directly from the authenticated
+    // entry/value-chunk UTXOs. Metadata is emitted only for the canonical bounds-and-copy loop; every other view
+    // continues through ordinary VM return derivation.
+    const mappingPagination = abiFunction?.mappingArrayPagination;
+    if (mappingPagination && abiFunction?.writesState === false && abiFunction.outputs?.length === 1) {
+      const collection = this.inner.stateLayout?.collections?.find(
+        (candidate) => candidate.name === mappingPagination.collection,
+      );
+      const visibleIndex = new Map(visibleInputs.map((input, index) => [input.name, index]));
+      const keyArgs = mappingPagination.keyParams.map((name) => {
+        const index = visibleIndex.get(name);
+        return index === undefined ? undefined : args[index];
+      });
+      const indexArg = visibleIndex.get(mappingPagination.indexParam);
+      const limitArg = visibleIndex.get(mappingPagination.limitParam);
+      if (collection?.valueType === abiFunction.outputs[0].type
+        && keyArgs.every((value) => value !== undefined)
+        && indexArg !== undefined && limitArg !== undefined) {
+        const keys = keyArgs as Array<bigint | boolean | Uint8Array | string>;
+        const index = Number(StatefulContract._toSoftBigint(args[indexArg]));
+        const requested = Number(StatefulContract._toSoftBigint(args[limitArg]));
+        if (Number.isSafeInteger(index) && index >= 0
+          && Number.isSafeInteger(requested) && requested >= 0) {
+          const overlay = this._getSoftMapping(mappingPagination.collection, keys);
+          const entries = overlay === undefined ? await this.getEntries(mappingPagination.collection) : [];
+          const entry = entries.find((candidate) => StatefulContract._entryMatchesKeys(
+            candidate,
+            keys,
+            collection.keyTypes ?? (collection.keyType ? [collection.keyType] : undefined),
+          ));
+          const values = Array.isArray(overlay) ? overlay : Array.isArray(entry?.value) ? entry.value : [];
+          if (index >= values.length) throw new Error('index out of bounds');
+          const count = requested === 0 ? values.length - index : Math.min(requested, values.length - index);
+          return attachDecodedAccessors(values.slice(index, index + count));
+        }
+      }
+    }
+    // Solidity pagination helpers commonly iterate a dynamic address array and return the mapping value at each
+    // address (`result[i] = users[userAddresses[i + index]]`). The compiler proves this shape in metadata: one
+    // read-only entry access keyed by the one dynamic read. Both sources are independently authenticated UTXOs,
+    // so compose the view result directly instead of constructing a provisional transaction with only one loop
+    // witness. This also preserves the source's `limit == 0` meaning (all remaining rows).
+    const pagedOutput = abiFunction?.writesState === false && abiFunction.outputs?.length === 1
+      && abiFunction.outputs[0].type.endsWith('[]')
+      && abiFunction.entryAccesses?.length === 1
+      && abiFunction.entryAccesses[0].operations.every((operation) => operation === 'read')
+      && abiFunction.dynamicReads?.length === 1
+      ? {
+        access: abiFunction.entryAccesses[0],
+        addresses: abiFunction.dynamicReads[0],
+      } : undefined;
+    const pagedKeyLabel = pagedOutput?.access.keySources?.[0]?.expressionLabel
+      ?? pagedOutput?.access.keyParams?.[0];
+    if (pagedOutput && pagedKeyLabel?.startsWith(`map:${pagedOutput.addresses}(`)) {
+      const state = await this.getState();
+      const keys = state[pagedOutput.addresses];
+      if (Array.isArray(keys)) {
+        const index = Number(StatefulContract._toSoftBigint(args[0]));
+        const requested = Number(StatefulContract._toSoftBigint(args[1]));
+        if (Number.isSafeInteger(index) && index >= 0
+          && Number.isSafeInteger(requested) && requested >= 0) {
+          // This compiler-recognized pagination form guards `index < array.length`; fail at the authenticated
+          // read boundary rather than falling back to a costly placeholder-witness transaction.
+          if (index >= keys.length) throw new Error('index out of bounds');
+          const count = requested === 0 ? keys.length - index : Math.min(requested, keys.length - index);
+          const collection = this.inner.stateLayout?.collections?.find(
+            (candidate) => candidate.name === pagedOutput.access.collection,
+          );
+          const entries = await this.getEntries(pagedOutput.access.collection);
+          const values = keys.slice(index, index + count).map((key) => entries.find((entry) => (
+            StatefulContract._entryMatchesKeys(
+              entry,
+              [key as bigint | boolean | Uint8Array],
+              collection?.keyTypes ?? (collection?.keyType ? [collection.keyType] : undefined),
+            )
+          ))?.value);
+          if (values.every((value) => value !== undefined)) {
+            return attachDecodedAccessors(values as StateValue[]);
+          }
+        }
+      }
+    }
+    // A read-only facade can paginate another contract by first reading its length and then calling one getter per
+    // selected row. Those calls authenticate the same child master independently; placing them all in one synthetic
+    // probe would duplicate that UTXO. Recognize the compiler-published once+loop shape and compose the returned
+    // array from the individually authenticated child reads.
+    const externalPagedOutput = abiFunction?.writesState === false
+      && abiFunction.outputs?.length === 1
+      && abiFunction.outputs[0].type.endsWith('[]')
+      && abiFunction.externalCalls?.length === 2
+      ? {
+        length: abiFunction.externalCalls.find((call) => call.occurrence === 'once'
+          && call.hasReturnValues && call.returnTypes?.length === 1),
+        rows: abiFunction.externalCalls.find((call) => call.occurrence === 'loop'
+          && call.hasReturnValues && call.resultArrayOutput === 0),
+      } : undefined;
+    if (externalPagedOutput?.length && externalPagedOutput.rows
+      && externalPagedOutput.length.interfaceName === externalPagedOutput.rows.interfaceName) {
+      const interfaceName = externalPagedOutput.length.interfaceName;
+      const target = (this._externalRegistry.get(interfaceName)
+        ?? findDeploymentByName(this.inner.provider, interfaceName)?.contract
+        ?? (/^I[A-Z]/.test(interfaceName)
+          ? findDeploymentByName(this.inner.provider, interfaceName.slice(1))?.contract
+          : undefined)) as StatefulContract | undefined;
+      if (target) {
+        const callerState = await this.getState();
+        const lengthArgs = this._resolveExternalArgs(
+          externalPagedOutput.length.argSources, args, this.inner.artifact, callerState,
+          abiFunction!.inputs,
+        );
+        const rawLength = lengthArgs && await target._deriveReturnValue(
+          externalPagedOutput.length.functionName, lengthArgs,
+        );
+        const index = Number(StatefulContract._toSoftBigint(args[0]));
+        const requested = Number(StatefulContract._toSoftBigint(args[1]));
+        const length = rawLength === undefined ? -1 : Number(StatefulContract._toSoftBigint(rawLength));
+        if (Number.isSafeInteger(index) && index >= 0
+          && Number.isSafeInteger(requested) && requested >= 0
+          && Number.isSafeInteger(length) && length >= 0) {
+          if (index >= length) throw new Error('index out of bounds');
+          const count = requested === 0 ? length - index : Math.min(requested, length - index);
+          const values: StateValue[] = [];
+          for (let occurrence = 0; occurrence < count; occurrence++) {
+            const rowArgs = this._resolveExternalArgs(
+              externalPagedOutput.rows.argSources, args, this.inner.artifact, callerState,
+              abiFunction!.inputs, undefined, occurrence,
+            );
+            if (!rowArgs) break;
+            values.push(await target._deriveReturnValue(externalPagedOutput.rows.functionName, rowArgs));
+          }
+          if (values.length === count) return attachDecodedAccessors(values);
+        }
+      }
     }
     const delegatedReturn = calls
       ?.filter((call): call is Extract<CallInfo, { type: 'stateful' }> => call.type === 'stateful')
@@ -26252,13 +27171,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         rootRegistry: [...this._externalRegistry.keys()],
       });
     }
-    if (delegatedCall && passthrough && passthroughOnly) {
-      const registered = (delegatedCall.contract._externalRegistry.get(passthrough.interfaceName)
+    if (passthrough && passthroughOnly) {
+      const passthroughCaller = delegatedCall?.contract ?? this;
+      const registered = (passthroughCaller._externalRegistry.get(passthrough.interfaceName)
         ?? this._externalRegistry.get(passthrough.interfaceName)
         ?? findDeploymentByName(this.inner.provider, passthrough.interfaceName)?.contract) as unknown;
-      const resolvedArgs = delegatedCall.contract._resolveExternalArgs(
-        passthrough.argSources, delegatedCall.args, delegatedCall.contract.inner.artifact,
-        undefined, delegatedReturn?.fn?.inputs,
+      const resolvedArgs = passthroughCaller._resolveExternalArgs(
+        passthrough.argSources, delegatedCall?.args ?? args, passthroughCaller.inner.artifact,
+        undefined, delegatedReturn?.fn?.inputs ?? resultFunction?.inputs,
       );
       if (registered && resolvedArgs) {
         if (typeof registered === 'object' && 'forward' in registered
@@ -26620,9 +27540,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           break;
         }
         case 'selfAddress': {
-          // The compiler lowers `address(this)` to OP_INPUTINDEX OP_UTXOBYTECODE: the exact P2SH32 locking
-          // bytecode of the active executing input. Logical CREATE identities are routing metadata, not `this`.
-          resolved.push(executionSelfAddress ?? hexToBin(this.inner.lockingBytecode));
+          resolved.push(source.logicalIdentity
+            ? addressToLockScript(this.target)
+            : executionSelfAddress ?? hexToBin(this.inner.lockingBytecode));
           break;
         }
         case 'arrayElement': {
@@ -26936,10 +27856,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     if (expression.kind === 'binary' && expression.left && expression.right) {
       const left = evaluate(expression.left);
+      if (left === undefined) return undefined;
+      // Preserve source short-circuiting: an unreachable operand can legitimately depend on runtime-only state.
+      if (expression.operator === '&&' && !Boolean(left)) return false;
+      if (expression.operator === '||' && Boolean(left)) return true;
       const right = evaluate(expression.right);
-      if (left === undefined || right === undefined) return undefined;
-      if (expression.operator === '&&') return Boolean(left) && Boolean(right);
-      if (expression.operator === '||') return Boolean(left) || Boolean(right);
+      if (right === undefined) return undefined;
+      if (expression.operator === '&&') return Boolean(right);
+      if (expression.operator === '||') return Boolean(right);
       if (expression.operator === '==') return valuesEqual(left, right, expression.left, expression.right);
       if (expression.operator === '!=') return !valuesEqual(left, right, expression.left, expression.right);
       if ((typeof left === 'bigint' || typeof left === 'number')
@@ -28672,7 +29596,7 @@ export class StatefulFunctionCall {
   /**
    * True when awaiting this call should READ the return value (ethers `view`/`pure` semantics) instead of SENDing
    * a transaction: a single-output function that provably writes no state (`writesState === false`, which fails
-   * closed to `true`), is not a deploy/external-call view, and has no send-intent config attached (transfers,
+   * closed to `true`), is not a deploy function, and has no send-intent config attached (transfers,
    * emitReturn, state/entry overrides, split/merge, container ops). Multi-value returns still SEND (their packed
    * encoding is not decodable yet). `.staticCall()` / `.send()` remain the explicit, typed escapes.
    */
@@ -28682,7 +29606,6 @@ export class StatefulFunctionCall {
     if (!abiFn || abiFn.writesState !== false) return false;
     if ((abiFn.outputs?.length ?? 0) !== 1) return false;
     if (abiFn.modifiers?.includes('deploy')) return false;
-    if ((abiFn.externalCalls?.length ?? 0) > 0) return false;
     return this.transfers.length === 0 && !this.emitReturnFlag
       && this.stateOverrides.length === 0 && this.entryOverrides.length === 0
       && this.entryKeyOverrides.size === 0 && this.externalEntryKeyOverrides.size === 0
@@ -28920,6 +29843,43 @@ export class StatefulFunctionCall {
       // Split/merge bypass the debug step (covenant scripts don't fully validate
       // in the debug VM due to mock source output limitations).
       return this._sendRawBuilder(splitMergeBuilder);
+    }
+
+    // A source invocation may call one state owner several times, while a BCH transaction can consume that
+    // owner's minting master only once. Discover the compiler-authored closure before constructing the legacy
+    // one-group-per-call builder and execute it through owner-interning atomic composition. Explicit imperative
+    // call overrides retain the legacy path.
+    if (this.parentContract && this.functionName !== undefined && this.functionArgs) {
+      let composable = true;
+      try {
+        this._messageBusCompositionDescriptor();
+      } catch {
+        composable = false;
+      }
+      if (composable) {
+        const prepared = await this.parentContract._prepareAtomicExternalClosure(
+          this.functionName, this.functionArgs as FunctionArgument[],
+        );
+        if (prepared) {
+          const signer = this.parentContract._signer;
+          if (!signer) throw new Error('messageBus: direct atomic composition requires a connected signer');
+          invalidateSignerUtxos(signer);
+          const available = (await signerUtxoSnapshot(signer))
+            .filter((utxo) => utxo.token === undefined)
+            .sort((left, right) => Number(right.satoshis - left.satoshis));
+          const feeUtxo = available[0];
+          if (!feeUtxo) throw new Error('messageBus: direct atomic composition requires one token-free fee UTXO');
+          retireSignerUtxos(signer, [feeUtxo]);
+          const { compose } = await import('../message-bus/compose.js');
+          const receipt = await compose({
+            preparedCalls: prepared,
+            funder: { ...feeUtxo, unlocker: signer.unlockP2PKH() },
+            changeAddress: signer.getAddress(),
+          }).send();
+          invalidateSignerUtxos(signer);
+          return receipt;
+        }
+      }
     }
 
     // Retry loop for UTXO staleness: if a concurrent transaction spends our UTXOs

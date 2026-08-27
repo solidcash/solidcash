@@ -8,6 +8,8 @@ export type ImportResolverFn = (importPath: string, currentFile: string) => Reso
 export interface CompilerOptions {
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
+  /** Maximum message-bus blob/VM stack-item size; defaults to BCH's 520-byte consensus limit. */
+  maximumStackItemBytes?: number;
   /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
   optimizeForCompilationSpeed?: boolean;
   /** Suppress non-fatal compiler warnings while preserving errors and ordinary command output. */
@@ -228,6 +230,13 @@ export interface AbiFunction {
     reads: readonly {
       row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
     }[];
+  };
+  /** Compiler-proven dense pagination of one authenticated mapping(K => V[]) entry. */
+  mappingArrayPagination?: {
+    collection: string;
+    keyParams: readonly string[];
+    indexParam: string;
+    limitParam: string;
   };
   /** Compiler-owned owner-local effect frame for an unrolled message-bus route.
    * Dispatch site `s` owns `[base + s * width, base + (s + 1) * width)` for each effect kind. */
@@ -567,6 +576,8 @@ export interface ArgSource {
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string
   expression?: ExternalCallExpression;
+  /** Source-level `address(this)`: resolve through the authenticated stable identity anchor when available. */
+  logicalIdentity?: boolean;
 }
 
 export interface ExternalCallExpression {

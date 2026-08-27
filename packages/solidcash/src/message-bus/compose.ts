@@ -596,6 +596,8 @@ export class AtomicMessageBusComposition {
       args: descriptors[0].args,
       rootCaller,
       targets: {},
+      allowRuntimeBoundedLoops: this.options.preparedCalls !== undefined,
+      maximumBlobBytes: descriptors[0].contract.inner.provider.consensusLimits?.maximumStackItemBytes,
       target: ({ callsiteId, batchLogicalIndex, occurrence }) => {
         const descriptor = descriptors[next];
         if (!descriptor) return undefined;

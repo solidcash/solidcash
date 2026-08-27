@@ -94,6 +94,36 @@ describe('TypeChain-compatible generation', () => {
     expect(generated).toContain('export type Counter =');
     expect(generated).toContain('export type Helper =');
   });
+  it('aliases inherited non-upgradeable Ownable factories for matcher imports', () => {
+    const root = project();
+    writeFixture(root, {
+      ...artifact(),
+      errors: [{ name: 'OwnableUnauthorizedAccount', inputs: [{ name: 'account', type: 'address' }] }],
+    });
+    const outDir = path.join(root, 'typechain-types');
+    generateTypechainTargets({
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache', 'solidcash'),
+      targets: [{ target: 'ethers6', outDir }],
+    });
+    const barrel = fs.readFileSync(path.join(outDir, 'index.ts'), 'utf8');
+    expect(barrel).toContain('Counter__factory as Ownable__factory');
+    expect(barrel).toContain('Counter__factory as OwnableUpgradeable__factory');
+  });
+  it('aliases a concrete ERC20 factory for IERC20Errors matcher imports', () => {
+    const root = project();
+    writeFixture(root, { ...artifact(), contractName: 'FakeToken' });
+    const outDir = path.join(root, 'typechain-types');
+    generateTypechainTargets({
+      artifactsDir: path.join(root, 'artifacts', 'solidcash'),
+      contractsDir: path.join(root, 'contracts'),
+      cacheDir: path.join(root, 'cache', 'solidcash'),
+      targets: [{ target: 'ethers6', outDir }],
+    });
+    const barrel = fs.readFileSync(path.join(outDir, 'index.ts'), 'utf8');
+    expect(barrel).toContain('FakeToken__factory as IERC20Errors__factory');
+  });
   it('reuses timestamp-only changes and atomically regenerates semantic changes', () => {
     const root = project();
     writeFixture(root, artifact());

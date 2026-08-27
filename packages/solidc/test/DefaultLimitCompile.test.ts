@@ -89,4 +89,54 @@ describe('default 10,000-byte compile path', () => {
     expect(map.Token.abi.some((fn) => fn.name === 'transferFrom')).toBe(true);
     expect(map.Vault.abi.some((fn) => fn.name === 'bump')).toBe(true);
   });
+
+  it('caches two loop-free writes to the same sorted mapping key as one upsert', () => {
+    const sameKey = compileString(`
+pragma solidcash ^0.13.0;
+contract SameKey() {
+  mapping(bytes20 => int) public balances;
+  function creditTwice(bytes20 to, int a, int b) {
+    this.balances[to] = this.balances[to] + a;
+    this.balances[to] = this.balances[to] + b;
+    require(a >= 0);
+  }
+}
+`);
+    const once = compileString(`
+pragma solidcash ^0.13.0;
+contract SameKey() {
+  mapping(bytes20 => int) public balances;
+  function creditOnce(bytes20 to, int a) {
+    this.balances[to] = this.balances[to] + a;
+    require(a >= 0);
+  }
+}
+`);
+    const twoKeys = compileString(`
+pragma solidcash ^0.13.0;
+contract SameKey() {
+  mapping(bytes20 => int) public balances;
+  function creditTwo(bytes20 a, bytes20 b, int x) {
+    this.balances[a] = this.balances[a] + x;
+    this.balances[b] = this.balances[b] + x;
+    require(x >= 0);
+  }
+}
+`);
+    const sameFn = sameKey.abi.find((fn) => fn.name === 'creditTwice');
+    const twoFn = twoKeys.abi.find((fn) => fn.name === 'creditTwo');
+    expect(sameFn?.entryAccesses).toHaveLength(1);
+    expect(sameFn?.entryAccesses?.[0].operations).toEqual(expect.arrayContaining(['read', 'write']));
+    expect(sameFn?.blockLayout?.slots.filter((slot) => slot.kind === 'entry')).toHaveLength(1);
+    expect(twoFn?.entryAccesses).toHaveLength(2);
+    const sameBytes = bytecodeBytes(sameKey.debug?.bytecode);
+    const onceBytes = bytecodeBytes(once.debug?.bytecode);
+    const twoKeyBytes = bytecodeBytes(twoKeys.debug?.bytecode);
+    expect(sameBytes).toBeGreaterThan(0);
+    expect(sameBytes).toBeLessThanOrEqual(10_000);
+    expect(onceBytes).toBeGreaterThan(0);
+    expect(twoKeyBytes).toBeGreaterThan(sameBytes);
+    // One extra same-key write is a local add + one upsert, not a second entry slot.
+    expect(sameBytes - onceBytes).toBeLessThan(Math.floor((twoKeyBytes - onceBytes) / 8));
+  });
 });

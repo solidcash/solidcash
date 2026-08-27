@@ -6002,6 +6002,7 @@ function compileResolvedAst(
   if (needsLoop) ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
   // A vmap (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
+  // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache.
   if (needsLoop || needsCollectionJournal) ast = ast.accept(new CacheMappingEntryInLoop()) as Ast;
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically

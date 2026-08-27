@@ -22,6 +22,10 @@ splitOpBoundary(): boolean {
 // keeping canonical forms (`uint8`, `bytes1`, `fixed8x0`) reserved. Our lexer deliberately captures the whole
 // family for useful type diagnostics, so identifier positions use this predicate to recover Solidity's split.
 isMalformedBoundedTypeName(text: string): boolean {
+  if (!text) return false;
+  const c = text.charCodeAt(0);
+  // u/i/b/f — every malformed bounded-type spelling starts with one of these.
+  if (c !== 117 && c !== 105 && c !== 98 && c !== 102) return false;
   const integer = /^(u?int)([0-9]+)$/.exec(text);
   if (integer) {
     const width = Number(integer[2]);
@@ -45,18 +49,19 @@ isMalformedBoundedTypeName(text: string): boolean {
 // Tokens reserved by the Solidity grammar remain ordinary identifiers inside Yul. Consume them through a
 // predicate + wildcard rather than spelling them as literals in yulIdentifier: new literal alternatives would
 // make previously non-reserved words into lexer tokens throughout the whole Solidity grammar.
+static YUL_SOLIDITY_KEYWORDS = new Set([
+  'abstract', 'anonymous', 'as', 'assembly', 'catch', 'constant', 'constructor', 'contract', 'delete', 'do',
+  'else', 'enum', 'emit', 'event', 'external', 'fallback', 'indexed', 'interface', 'internal', 'immutable',
+  'import', 'is', 'library', 'mapping', 'memory', 'modifier', 'new', 'override', 'payable', 'public', 'pragma',
+  'private', 'pure', 'receive', 'returns', 'storage', 'calldata', 'struct', 'throw', 'try', 'unicode', 'using',
+  'view', 'virtual', 'while', 'wei', 'gwei', 'ether', 'seconds', 'minutes', 'hours', 'days', 'weeks', 'years',
+  'int', 'uint', 'bytes', 'string', 'address', 'bool', 'fixed', 'ufixed', 'after', 'alias', 'apply', 'auto', 'copyof',
+  'define', 'final', 'implements', 'in', 'inline', 'macro', 'match', 'mutable', 'null', 'of', 'partial',
+  'promise', 'reference', 'relocatable', 'sealed', 'sizeof', 'static', 'supports', 'typedef', 'typeof',
+  'unchecked', 'var',
+]);
 isYulSolidityKeyword(text: string): boolean {
-  return new Set([
-    'abstract', 'anonymous', 'as', 'assembly', 'catch', 'constant', 'constructor', 'contract', 'delete', 'do',
-    'else', 'enum', 'emit', 'event', 'external', 'fallback', 'indexed', 'interface', 'internal', 'immutable',
-    'import', 'is', 'library', 'mapping', 'memory', 'modifier', 'new', 'override', 'payable', 'public', 'pragma',
-    'private', 'pure', 'receive', 'returns', 'storage', 'calldata', 'struct', 'throw', 'try', 'unicode', 'using',
-    'view', 'virtual', 'while', 'wei', 'gwei', 'ether', 'seconds', 'minutes', 'hours', 'days', 'weeks', 'years',
-    'int', 'uint', 'bytes', 'string', 'address', 'bool', 'fixed', 'ufixed', 'after', 'alias', 'apply', 'auto', 'copyof',
-    'define', 'final', 'implements', 'in', 'inline', 'macro', 'match', 'mutable', 'null', 'of', 'partial',
-    'promise', 'reference', 'relocatable', 'sealed', 'sizeof', 'static', 'supports', 'typedef', 'typeof',
-    'unchecked', 'var',
-  ]).has(text);
+  return SolidCashParser.YUL_SOLIDITY_KEYWORDS.has(text);
 }
 
 // True when the tuple-assignment LHS contains a nested tuple item, including forms whose first item is plain:
@@ -64,23 +69,28 @@ isYulSolidityKeyword(text: string): boolean {
 // parenthesis immediately after the outer `(` or a depth-one comma, so parentheses inside an index/call do not
 // redirect an ordinary complex-lvalue tuple assignment to the nested-pattern rule.
 hasNestedTuplePatternAhead(): boolean {
+  const input = this._input;
+  const lparen = SolidCashParser.T__56;
+  const rparen = SolidCashParser.T__57;
+  const comma = SolidCashParser.T__4;
+  const assign = SolidCashParser.T__47;
   let depth = 0;
   let itemStart = false;
   for (let i = 1; i < 4096; i++) {
-    const text = this._input.LT(i).text;
-    if (text === '<EOF>' || text === '=') return false;
-    if (text === '(') {
+    const token = input.LA(i);
+    if (token === -1 || token === assign) return false;
+    if (token === lparen) {
       if (depth === 1 && itemStart) return true;
       depth++;
       itemStart = depth === 1;
       continue;
     }
-    if (text === ')') {
+    if (token === rparen) {
       depth--;
       itemStart = false;
       continue;
     }
-    if (text === ',' && depth === 1) {
+    if (token === comma && depth === 1) {
       itemStart = true;
       continue;
     }
@@ -94,15 +104,19 @@ hasNestedTuplePatternAhead(): boolean {
 // call and only discovers the missing `(` later. The complete call prefix is bounded to four tokens, so expose
 // that distinction directly and keep the fast prediction path equivalent to LL.
 hasFunctionCallAhead(): boolean {
-  const first = this._input.LT(1).text;
-  const second = this._input.LT(2).text;
-  if (first === '(') {
-    if (this._input.LT(3).text === ')') return this._input.LT(4).text === '(';
-    return this._input.LT(3).text === '.' && this._input.LT(5).text === ')'
-      && this._input.LT(6).text === '(';
+  const input = this._input;
+  const lparen = SolidCashParser.T__56;
+  const rparen = SolidCashParser.T__57;
+  const dot = SolidCashParser.T__6;
+  const lbrace = SolidCashParser.T__3;
+  const first = input.LA(1);
+  const second = input.LA(2);
+  if (first === lparen) {
+    if (input.LA(3) === rparen) return input.LA(4) === lparen;
+    return input.LA(3) === dot && input.LA(5) === rparen && input.LA(6) === lparen;
   }
-  return second === '(' || second === '{'
-    || (second === '.' && this._input.LT(4).text === '(');
+  return second === lparen || second === lbrace
+    || (second === dot && input.LA(4) === lparen);
 }
 }
 
@@ -916,40 +930,65 @@ typeListItem
     | '(' typeListItem ')' ('[' expression? ']')*
     ;
 
-expression
+// Left-factored `(` prefixes of `expression`. They previously competed as six prefix alternatives of the
+// left-recursive expression rule (decision 340), so every identifier/literal paid for distinguishing
+// `(x = y)` / `(new C){..}` / `(e)` / `()` / `(e, e)` / `(e)(args)`. One `'('` decision here, one prefix
+// alt on `expression`. Labels stay on these alternatives so AstBuilder visitors keep their names.
+parenExpression
     : '(' Identifier op=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') expression ')' # AssignmentExpression
     | '(' 'new' Identifier ')' callOptions expressionList # InstantiationWithOptions
-    | '(' expression ')' # Parenthesised
     | '(' ')' # TupleExpression
     | '(' expression (',' expression)+ ')' # TupleExpression
-    | arrayCastType '(' castable=expression ','? ')' # Cast
-    | functionCall expressionList+ # ChainedFunctionCall
-    | functionCall # FunctionCallExpression
     // Call the value of a parenthesised non-simple callee: `(cond ? f : g)(args)`, `((super).f)()`. A simple
     // parenthesised callee `(foo)(args)` is handled by functionCall above; this catches the rest (ternary etc.).
     | '(' expression ')' expressionList # ParenthesizedFunctionCall
-    | 'new' Identifier callOptions? expressionList #Instantiation
+    | '(' expression ')' # Parenthesised
+    ;
+
+// Left-factored `new` prefixes of `expression`. Instantiation, `new T[](n)`, `new bytes(n)`, and
+// `new string(n)` previously competed as four prefix alternatives, so every other prefix paid for
+// distinguishing them. One `'new'` decision here, one prefix alt on `expression`.
+newExpression
+    : 'new' Identifier callOptions? expressionList #Instantiation
     | 'new' typeName ('[' NumberLiteral? ']')+ '(' expression ')' # NewArray
     | 'new' UnboundedBytes '(' expression ')' # NewDynamicBytes
     | 'new' PrimitiveType '(' expression ')' # NewDynamicString
+    ;
+
+expression
+    : parenExpression # GroupedExpression
+    | arrayCastType '(' castable=expression ','? ')' # Cast
+    // Left-factored call prefixes. `f()` and `f()(args)` previously competed as two prefix alternatives.
+    // Optional extra argument lists live on the same alternative; AstBuilder still builds chained indirect calls.
+    | functionCall expressionList* # FunctionCallExpression
+    | newExpression # ConstructedExpression
     | typeIntrospectionBase '.' Identifier # TypeIntrospection
-    | 'abi.encode' expressionList # AbiEncode
-    | 'abi.encodePacked' expressionList # AbiEncodePacked
-    | 'abi.encodeWithSelector' expressionList # AbiEncodeWithSelector
-    | 'abi.encodeWithSignature' expressionList # AbiEncodeWithSignature
+    // Left-factored abi.encode* prefixes that all take an argument list. AstBuilder still builds the four
+    // encode node types from the leading token.
+    | ('abi.encode' | 'abi.encodePacked' | 'abi.encodeWithSelector' | 'abi.encodeWithSignature') expressionList # AbiEncode
     | 'abi.encodeCall' '(' (('this' | Identifier) '.' Identifier | Identifier '[' NumberLiteral ']'
       | Identifier | Identifier '(' ')') ',' abiEncodeCallArguments ')' # AbiEncodeCall
-    | 'bytes.concat' expressionList # BytesConcat
-    | 'string.concat' expressionList # StringConcat
+    // Left-factored concat prefixes. `bytes.concat` and `string.concat` previously competed as two prefix
+    // alternatives. AstBuilder still builds the two concat node types from the leading token.
+    | ('bytes.concat' | 'string.concat') expressionList # BytesConcat
     | 'abi.decode' '(' expression ',' typeList ')' # AbiDecode
     | 'abi.decodeAt' '(' expression ',' typeList ',' NumberLiteral ')' # AbiDecodeAt
     | ('abi.encode' | 'abi.encodePacked' | 'abi.encodeWithSelector' | 'abi.encodeWithSignature'
       | 'abi.decode' | 'assert') # BareAbiReferenceExpression
-    | element=expression '[' start=expression? ':' end=expression? ']' # IndexRangeSlice
-    | expression '[' index=NumberLiteral ']' # TupleIndexOp
-    | expression '[' expression ']' # ArrayAccess
-    | scope='tx.outputs' '[' expression ']' op=('.value' | '.lockingBytecode' | '.tokenCategory' | '.nftCommitment' | '.tokenAmount') # UnaryIntrospectionOp
-    | scope='tx.inputs' '[' expression ']' op=('.value' | '.lockingBytecode' | '.outpointTransactionHash' | '.outpointIndex' | '.unlockingBytecode' | '.sequenceNumber' | '.tokenCategory' | '.nftCommitment' | '.tokenAmount') # UnaryIntrospectionOp
+    // Left-factored postfix `[` of `expression`. Slice, tuple-index, and array-access previously competed as
+    // three postfix alternatives on every operator decision. One `'['` ... `']'` alternative here; AstBuilder
+    // still distinguishes the three shapes from the inner tokens (`:`, a NumberLiteral index, or an expression).
+    | element=expression '[' (
+        start=expression? ':' end=expression?
+      | index=NumberLiteral
+      | expression
+      ) ']' # ArrayAccess
+    // Left-factored tx.inputs/tx.outputs introspection. Previously two prefix alternatives with overlapping
+    // member sets. One alternative here; invalid scope/member pairs still fail when the operator is resolved.
+    | scope=('tx.outputs' | 'tx.inputs') '[' expression ']' op=(
+        '.value' | '.lockingBytecode' | '.tokenCategory' | '.nftCommitment' | '.tokenAmount'
+      | '.outpointTransactionHash' | '.outpointIndex' | '.unlockingBytecode' | '.sequenceNumber'
+      ) # UnaryIntrospectionOp
     | expression op=('.reverse()' | '.length') # UnaryOp
     | left=expression op='.split' '(' right=expression ')' # BinaryOp
     | element=expression '.slice' '(' start=expression ',' end=expression ')' # Slice
@@ -958,15 +997,11 @@ expression
     // Identifier must be call/staticcall/delegatecall and the second value/gas (validated there).
     | expression '.' Identifier ('.' Identifier | '.value') '(' expression ')' expressionList # LegacyCallOptionCall
     | expression '.' Identifier callOptions? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' # MethodCallNamed
-    // Invoke a function pointer returned by a method call: `obj.factory()(args)` (and deeper chains). Restricted
-    // to a method-call prefix so ordinary postfix expressions and casts retain their existing parse paths.
-    | expression '.' Identifier callOptions? expressionList expressionList+ # ChainedMethodCall
     // `.length` is one lexer token because it is normally an array/string property, but Solidity also permits
     // a using-for library method with that name (`using L for string; s.length()`). The following `(` makes the
-    // callable form unambiguous with the UnaryOp alternative above.
-    | expression '.length' callOptions? expressionList # MethodCall
-    | expression '.value' callOptions? expressionList # MethodCall
-    | expression '.' anyIdentifier callOptions? expressionList # MethodCall
+    // callable form unambiguous with the UnaryOp alternative above. `.value` is the same for token/value members.
+    // Extra argument lists (`obj.factory()(args)`) previously competed as ChainedMethodCall.
+    | expression ('.length' | '.value' | '.' anyIdentifier) callOptions? expressionList expressionList* # MethodCall
     // Applying options to a function value without calling it still yields a function value; Solidity permits
     // reading its address/selector component in a larger expression (`this.f{gas: 1}.selector == this.f.selector`).
     | expression '.' Identifier callOptions memberName # CallOptionsMember
@@ -993,10 +1028,15 @@ expression
     // assignment-value scope only; anywhere else is rejected with a clear ParseError.
     | <assoc=right> condition=expression '?' ifTrue=expression (tOp=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') tVal=assignChain)? ':' ifFalse=expression (fOp=('=' | '+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=') fVal=assignChain)? # TernaryOp
     | '[' (expression (',' expression)* ','?)? ']' # Array
-    | 'this' '.' Identifier '.' Identifier '[' expression ']' memberName # OutStateMappingFieldAccess
-    | 'this' '.' Identifier ('[' expression ']')+ # MappingAccess
-    | 'this' '.' Identifier # StateAccess
-    | 'this' # ThisExpr
+    // Left-factored `this` prefixes. Bare `this`, `this.x`, mapping access, and outState field access
+    // previously competed as four prefix alternatives. One `'this'` alternative here; AstBuilder still
+    // distinguishes the four shapes from the inner tokens.
+    | 'this' (
+        '.' Identifier '.' Identifier '[' expression ']' memberName
+      | '.' Identifier ('[' expression ']')+
+      | '.' Identifier
+      |
+      ) # ThisExpr
     | NullaryOp # NullaryOp
     | anyIdentifier # Identifier
     | literal # LiteralExpression

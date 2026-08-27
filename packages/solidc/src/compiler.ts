@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import {
-  BailErrorStrategy, CharStream, CommonTokenStream, ParserATNSimulator, PredictionContextCache, PredictionMode,
+  BailErrorStrategy, CharStream, CommonTokenStream, DefaultErrorStrategy, LexerATNSimulator,
+  ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
 import {
@@ -187,6 +188,8 @@ type InternalCompilerOptions = CompilerOptions & {
   __messageBusMode?: MessageBusMode;
   __cheapAdmissionCodegen?: boolean;
   __parsedAst?: Ast;
+  /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
+  __pristineAstBox?: { ast?: Ast };
 };
 
 interface OptionalLoweringFeatures {
@@ -702,7 +705,9 @@ function compileWithExternalAdmissionFallback(
   // Parse exactly once before entering the route-admission retry ladder. Syntax errors and custom listener
   // failures are properties of the source, not of a route candidate; replaying them at every rung duplicates
   // listener notifications and can replace the user's first diagnostic with retry noise.
+  const incomingPristine = (mergedCompilerOptions as InternalCompilerOptions).__pristineAstBox?.ast;
   let initialAst: Ast | undefined = (mergedCompilerOptions as InternalCompilerOptions).__parsedAst
+    ?? (incomingPristine !== undefined ? cloneNode(incomingPristine) : undefined)
     ?? parseAndResolve(
       code, mergedCompilerOptions, errorListener, primaryContractName,
     );
@@ -714,12 +719,27 @@ function compileWithExternalAdmissionFallback(
   if (messageBusMode === 'required' && !supportsAtomicMessageBus(initialAst, mergedCompilerOptions)) {
     throw new Error('messageBus: required route generation did not produce a composable artifact');
   }
+  // compileResolvedAst mutates the tree. Snapshot the resolved import graph before the first lowering pass so
+  // binder / admission retries clone instead of re-lexing Marketplace-scale Solidity (measured: 25ms clone vs
+  // 650ms+ re-parse on the verifier-binder pass).
+  const pristineBox = (mergedCompilerOptions as InternalCompilerOptions).__pristineAstBox;
+  if (pristineBox !== undefined && mergedCompilerOptions.messageBus && pristineBox.ast === undefined) {
+    pristineBox.ast = cloneNode(initialAst);
+  }
+  const takeAst = (): Ast => {
+    if (initialAst !== undefined) {
+      const ast = initialAst;
+      initialAst = undefined;
+      return ast;
+    }
+    if (pristineBox?.ast !== undefined) return cloneNode(pristineBox.ast);
+    return parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
+  };
   const compileOnce = (
     admitExternalHandlers: boolean, normalizeBareEntries = true, relaxResultRouteEffects = true,
     admitMixedScalarHandlers = true, admitBareForwardingHandlers = true,
   ): Artifact => {
-    const ast = initialAst ?? parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
-    initialAst = undefined;
+    const ast = takeAst();
     const onceStarted = Date.now();
     let artifact: Artifact;
     try {
@@ -823,7 +843,7 @@ function compileWithExternalAdmissionFallback(
     }
     const directOptions = { ...mergedCompilerOptions, messageBus: false };
     return compileResolvedAst(
-      parseAndResolve(code, directOptions, errorListener, primaryContractName),
+      takeAst(),
       code, directOptions, false, true,
     );
   }
@@ -947,7 +967,7 @@ function compileWithExternalAdmissionFallback(
   const directOptions = { ...mergedCompilerOptions, messageBus: false };
   try {
     return compileResolvedAst(
-      parseAndResolve(code, directOptions, errorListener, primaryContractName),
+      takeAst(),
       code, directOptions, false, true,
     );
   } catch (directError) {
@@ -997,6 +1017,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
   if (parsedAst !== undefined) mergedCompilerOptions.__parsedAst = parsedAst;
+  const pristineAstBox = { ast: undefined as Ast | undefined };
+  mergedCompilerOptions.__pristineAstBox = pristineAstBox;
   // The admission compile is discarded once the verifier-binder pass runs. Skip ordinary entry-point bodies
   // there: eligibility is decided in synthesis, and the verifier program only needs the route/verifier closure.
   if (mergedCompilerOptions.optimizeForCompilationSpeed
@@ -1042,8 +1064,12 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       __messageBusVerifierProgram: verifierProgram,
     });
     const binderStarted = Date.now();
+    const binderAst = pristineAstBox.ast ?? parseAndResolve(
+      code, bindingOptions, errorListener, primaryContractName,
+    );
+    pristineAstBox.ast = undefined;
     artifact = compileResolvedAst(
-      parseAndResolve(code, bindingOptions, errorListener, primaryContractName),
+      binderAst,
       code, bindingOptions,
     );
     profileLog('binder', binderStarted, {
@@ -1239,12 +1265,18 @@ function parseAndResolve(
   code: string, mergedCompilerOptions: CompilerOptions, errorListener?: SolidCashErrorListener,
   primaryName?: string,
 ): Ast {
+  const parseResolveStarted = Date.now();
+  const filesBefore = parseProfileTotals.files;
+  const msBefore = parseProfileTotals.ms;
+  const sllBefore = parseProfileTotals.sllFails;
   // `console` is tokenized as part of the built-in `console.log` statement, so it is not a general Identifier in
   // the Solidity selective-import grammar. Normalize Hardhat's equivalent named import before parsing.
-  const parseSource = code.replace(
-    /import\s*\{\s*console\s*\}\s*from\s*(["'])hardhat\/console\.sol\1\s*;/g,
-    (statement) => 'import "hardhat/console.sol";'.padEnd(statement.length, ' '),
-  );
+  const parseSource = code.includes('hardhat/console.sol')
+    ? code.replace(
+      /import\s*\{\s*console\s*\}\s*from\s*(["'])hardhat\/console\.sol\1\s*;/g,
+      (statement) => 'import "hardhat/console.sol";'.padEnd(statement.length, ' '),
+    )
+    : code;
   // Lexing + parsing
   let ast = parseCode(parseSource, errorListener, mergedCompilerOptions.solidityImportCompat,
     mergedCompilerOptions.chunkedArrays);
@@ -1275,6 +1307,11 @@ function parseAndResolve(
   // (`Todo[]` where `Todo` is imported) parses to a named AddressType placeholder. Now that imported struct
   // definitions are merged (and the primary is chosen), re-resolve those placeholders to the real StructType.
   if (hadImports) reresolveImportedStructTypes(ast);
+  profileLog('parseAndResolve', parseResolveStarted, {
+    files: parseProfileTotals.files - filesBefore,
+    sllFails: parseProfileTotals.sllFails - sllBefore,
+    parseCodeMs: parseProfileTotals.ms - msBefore,
+  });
   return ast;
 }
 
@@ -8187,7 +8224,234 @@ function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   }
 }
 
+/** ANTLR's CharStream copies the source into `new Array(n)` of boxed numbers. Lexer `LA` is the hot path. */
+class PackedCharStream {
+  name = '<empty>';
+  private readonly strdata: string;
+  private readonly data: Uint16Array;
+  private _index = 0;
+  private readonly _size: number;
+
+  constructor(str: string) {
+    this.strdata = str;
+    const data = new Uint16Array(str.length);
+    for (let i = 0; i < str.length; i += 1) data[i] = str.charCodeAt(i);
+    this.data = data;
+    this._size = str.length;
+  }
+
+  get index(): number { return this._index; }
+  get size(): number { return this._size; }
+  reset(): void { this._index = 0; }
+  consume(): void {
+    if (this._index >= this._size) throw new Error('cannot consume EOF');
+    this._index += 1;
+  }
+  LA(offset: number): number {
+    if (offset === 0) return 0;
+    if (offset < 0) offset += 1;
+    const i = this._index + offset - 1;
+    if (i < 0 || i >= this._size) return -1;
+    return this.data[i];
+  }
+  LT(offset: number): number { return this.LA(offset); }
+  mark(): number { return -1; }
+  release(_marker: number): void { /* ANTLR CharStream marks are unused. */ }
+  seek(index: number): void {
+    this._index = index <= this._index ? index : Math.min(index, this._size);
+  }
+  getText(start: number | { start: number; stop: number }, stop?: number): string {
+    if (typeof start === 'object') {
+      stop = start.stop;
+      start = start.start;
+    }
+    if (stop === undefined) stop = this._size - 1;
+    if (stop >= this._size) stop = this._size - 1;
+    if (start >= this._size) return '';
+    return this.strdata.slice(start, stop + 1);
+  }
+  toString(): string { return this.strdata; }
+}
+
 const SHARED_PREDICTION_CONTEXT_CACHE = new PredictionContextCache();
+const SHARED_LEXER_PREDICTION_CONTEXT_CACHE = new PredictionContextCache();
+const parseProfileTotals = { files: 0, sllFails: 0, bytes: 0, ms: 0 };
+
+// SolidCashParser.expression() prefix switch (`adaptivePredict(..., 343, ...)`). Guarded at install time by
+// rule name so a grammar regen that shifts decision numbers silently falls back to ATN prediction.
+const STATEMENT_DECISION = 167;
+const STATEMENT_ALT_BLOCK = 2;
+const STATEMENT_ALT_REQUIRE = 11;
+const STATEMENT_ALT_IF = 12;
+const STATEMENT_ALT_EMIT = 15;
+const STATEMENT_ALT_RETURN = 16;
+const EXPRESSION_PREFIX_DECISION = 343;
+const EXPRESSION_POSTFIX_LOOP_DECISION = 359;
+const EXPRESSION_POSTFIX_INNER_DECISION = 358;
+const EXPRESSION_POSTFIX_STOP = 2;
+const EXPRESSION_POSTFIX_INDEXED = 12;
+const EXPRESSION_POSTFIX_INDEXED_CALL = 20;
+const EXPRESSION_ALT_GROUPED = 1;
+const EXPRESSION_ALT_CAST = 2;
+const EXPRESSION_ALT_CALL = 3;
+const EXPRESSION_ALT_CONSTRUCTED = 4;
+const EXPRESSION_ALT_TYPE_INTROSPECTION = 5;
+const EXPRESSION_ALT_ABI_ENCODE = 6;
+const EXPRESSION_ALT_ABI_ENCODE_CALL = 7;
+const EXPRESSION_ALT_BYTES_CONCAT = 8;
+const EXPRESSION_ALT_ABI_DECODE = 9;
+const EXPRESSION_ALT_ABI_DECODE_AT = 10;
+const EXPRESSION_ALT_BARE_ABI = 11;
+const EXPRESSION_ALT_INTROSPECTION = 12;
+const EXPRESSION_ALT_UNARY = 14;
+const EXPRESSION_ALT_ARRAY_LITERAL = 15;
+const EXPRESSION_ALT_THIS = 16;
+const EXPRESSION_ALT_NULLARY = 17;
+const EXPRESSION_ALT_IDENTIFIER = 18;
+const EXPRESSION_ALT_LITERAL = 19;
+
+function skipBalanced(
+  input: { LA(i: number): number }, start: number, open: number, close: number,
+): number {
+  let depth = 0;
+  for (let i = start; i < start + 4096; i += 1) {
+    const token = input.LA(i);
+    if (token === -1) return i;
+    if (token === open) depth += 1;
+    else if (token === close) {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return start + 4096;
+}
+
+function predictExpressionPrefix(input: { LA(i: number): number; LT(i: number): { text?: string | undefined } }): number | undefined {
+  const first = input.LA(1);
+  const lparen = SolidCashParser.T__56;
+  const lbrack = SolidCashParser.T__81;
+  if (first === lparen) return EXPRESSION_ALT_GROUPED;
+  if (first === SolidCashParser.Identifier) {
+    // `uint(x)` is a typeCast alternative, not a call; let ATN keep that split.
+    if (input.LT(1).text === 'uint') return undefined;
+    const lbrace = SolidCashParser.T__3;
+    const dot = SolidCashParser.T__6;
+    const second = input.LA(2);
+    if (second === lparen || second === lbrace || (second === dot && input.LA(4) === lparen)) {
+      return EXPRESSION_ALT_CALL;
+    }
+    return EXPRESSION_ALT_IDENTIFIER;
+  }
+  if (first === SolidCashParser.NullaryOp) return EXPRESSION_ALT_NULLARY;
+  if (first === SolidCashParser.NumberLiteral || first === SolidCashParser.DecimalLiteral
+    || first === SolidCashParser.BooleanLiteral || first === SolidCashParser.StringLiteral
+    || first === SolidCashParser.UnicodeLiteral || first === SolidCashParser.HexStringLiteral
+    || first === SolidCashParser.DateLiteral || first === SolidCashParser.HexLiteral) {
+    return EXPRESSION_ALT_LITERAL;
+  }
+  if (first === SolidCashParser.BoundedUnsignedInt || first === SolidCashParser.BoundedSignedInt
+    || first === SolidCashParser.PrimitiveType || first === SolidCashParser.UnboundedBytes
+    || first === SolidCashParser.BoundedBytes || first === SolidCashParser.CryptoType
+    || first === SolidCashParser.UnsafeCast || first === SolidCashParser.BoundedSignedFixed
+    || first === SolidCashParser.BoundedUnsignedFixed
+    || first === SolidCashParser.T__90 || first === SolidCashParser.T__66
+    || first === SolidCashParser.T__88 || first === SolidCashParser.T__89) {
+    const second = input.LA(2);
+    if (second === lparen || second === lbrack) return EXPRESSION_ALT_CAST;
+  }
+  if (first === SolidCashParser.T__41) return EXPRESSION_ALT_THIS;
+  if (first === SolidCashParser.T__91) return EXPRESSION_ALT_CONSTRUCTED;
+  if (first === SolidCashParser.T__127 || first === SolidCashParser.T__128) {
+    return EXPRESSION_ALT_INTROSPECTION;
+  }
+  if (first === SolidCashParser.T__62) return EXPRESSION_ALT_TYPE_INTROSPECTION;
+  if (first === SolidCashParser.T__13 || first === SolidCashParser.T__26 || first === SolidCashParser.T__130) {
+    return EXPRESSION_ALT_UNARY;
+  }
+  if (first === lbrack) return EXPRESSION_ALT_ARRAY_LITERAL;
+  if (first === SolidCashParser.T__118 || first === SolidCashParser.T__119
+    || first === SolidCashParser.T__120 || first === SolidCashParser.T__121) {
+    return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_ENCODE : EXPRESSION_ALT_BARE_ABI;
+  }
+  if (first === SolidCashParser.T__122) {
+    return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_ENCODE_CALL : EXPRESSION_ALT_BARE_ABI;
+  }
+  if (first === SolidCashParser.T__123 || first === SolidCashParser.T__124) {
+    return EXPRESSION_ALT_BYTES_CONCAT;
+  }
+  if (first === SolidCashParser.T__125) {
+    return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_DECODE : EXPRESSION_ALT_BARE_ABI;
+  }
+  if (first === SolidCashParser.T__126) {
+    return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_DECODE_AT : EXPRESSION_ALT_BARE_ABI;
+  }
+  return undefined;
+}
+
+function tokenTypeByLiteral(literal: string): number | undefined {
+  const names = SolidCashParser.literalNames;
+  for (let i = 0; i < names.length; i += 1) {
+    if (names[i] === literal) return i;
+  }
+  return undefined;
+}
+
+function installExpressionPrefixFastPath(parser: SolidCashParser): void {
+  const interp = parser._interp;
+  const prefixState = interp.atn.decisionToState[EXPRESSION_PREFIX_DECISION] as { ruleIndex?: number } | undefined;
+  const postfixState = interp.atn.decisionToState[EXPRESSION_POSTFIX_LOOP_DECISION] as { ruleIndex?: number } | undefined;
+  const postfixInnerState = interp.atn.decisionToState[EXPRESSION_POSTFIX_INNER_DECISION] as { ruleIndex?: number } | undefined;
+  const statementState = interp.atn.decisionToState[STATEMENT_DECISION] as { ruleIndex?: number } | undefined;
+  const prefixOk = prefixState !== undefined && parser.ruleNames[prefixState.ruleIndex ?? -1] === 'expression';
+  const postfixOk = postfixState !== undefined && parser.ruleNames[postfixState.ruleIndex ?? -1] === 'expression';
+  const postfixInnerOk = postfixInnerState !== undefined && parser.ruleNames[postfixInnerState.ruleIndex ?? -1] === 'expression';
+  const statementOk = statementState !== undefined && parser.ruleNames[statementState.ruleIndex ?? -1] === 'statement';
+  if (!prefixOk && !postfixOk && !postfixInnerOk && !statementOk) return;
+  const orig = interp.adaptivePredict.bind(interp);
+  const rparen = SolidCashParser.T__57;
+  const comma = SolidCashParser.T__4;
+  const semi = SolidCashParser.T__1;
+  const rbrack = SolidCashParser.T__82;
+  const rbrace = SolidCashParser.T__5;
+  const assign = SolidCashParser.T__47;
+  const lbrace = SolidCashParser.T__3;
+  const lbrack = SolidCashParser.T__81;
+  const lparen = SolidCashParser.T__56;
+  const requireTok = tokenTypeByLiteral("'require'");
+  const ifTok = tokenTypeByLiteral("'if'");
+  const emitTok = tokenTypeByLiteral("'emit'");
+  const returnTok = tokenTypeByLiteral("'return'");
+  interp.adaptivePredict = ((input, decision, ctx) => {
+    if (prefixOk && decision === EXPRESSION_PREFIX_DECISION) {
+      const alt = predictExpressionPrefix(input);
+      if (alt !== undefined) return alt;
+    }
+    if (postfixOk && decision === EXPRESSION_POSTFIX_LOOP_DECISION) {
+      const token = input.LA(1);
+      if (token === rparen || token === comma || token === semi || token === rbrack
+        || token === rbrace || token === assign || token === -1) {
+        return EXPRESSION_POSTFIX_STOP;
+      }
+    }
+    if (postfixInnerOk && decision === EXPRESSION_POSTFIX_INNER_DECISION) {
+      if (input.LA(1) === lbrack) {
+        const after = skipBalanced(input, 1, lbrack, rbrack);
+        const next = input.LA(after);
+        if (next === lparen || next === lbrace) return EXPRESSION_POSTFIX_INDEXED_CALL;
+        return EXPRESSION_POSTFIX_INDEXED;
+      }
+    }
+    if (statementOk && decision === STATEMENT_DECISION) {
+      const token = input.LA(1);
+      if (token === lbrace) return STATEMENT_ALT_BLOCK;
+      if (token === requireTok) return STATEMENT_ALT_REQUIRE;
+      if (token === ifTok) return STATEMENT_ALT_IF;
+      if (token === emitTok) return STATEMENT_ALT_EMIT;
+      if (token === returnTok) return STATEMENT_ALT_RETURN;
+    }
+    return orig(input, decision, ctx);
+  }) as typeof interp.adaptivePredict;
+}
 
 export function parseCode(
   code: string,
@@ -8199,26 +8463,33 @@ export function parseCode(
   // Solidity corpus files append diagnostic expectations after `// ----`; that trailer is test metadata, not
   // source text, and often repeats the SPDX spelling inside warning prose.
   if (solidityImportCompat) {
-    const diagnosticTrailer = code.search(/\n\/\/ ----/);
+    const diagnosticTrailer = code.includes('// ----') ? code.search(/\n\/\/ ----/) : -1;
     const spdxSource = diagnosticTrailer >= 0 ? code.slice(0, diagnosticTrailer) : code;
-    validateUnicodeDirectionMarkers(spdxSource);
+    // Marketplace/OZ sources have no bidi overrides. The token walk is linear in file size; skip it unless a
+    // direction marker is actually present.
+    if (/[\u202a\u202b\u202c\u202d\u202e]/.test(spdxSource)) {
+      validateUnicodeDirectionMarkers(spdxSource);
+    }
     // Common Solidity flattener output retains one SPDX header per concatenated source and marks every boundary
     // with `// File <path>`. MistSwap ships these generated `*Flat.sol` units directly. Keep the ordinary Solidity
     // source-unit diagnostic, but admit this explicit flattened format without rewriting the user's checkout.
-    const flattenedSource = /^\s*\/\/\s*File\s+\S+/m.test(spdxSource);
-    const spdxIdentifiers = spdxIdentifiersInComments(spdxSource);
-    if (!flattenedSource && new Set(spdxIdentifiers).size > 1) {
-      throw new Error(
-        'Multiple SPDX license identifiers found in source file. '
-        + 'Use "AND" or "OR" to combine multiple licenses.',
-      );
+    const firstSpdx = spdxSource.indexOf('SPDX-License-Identifier');
+    if (firstSpdx >= 0 && spdxSource.indexOf('SPDX-License-Identifier', firstSpdx + 1) >= 0) {
+      const flattenedSource = spdxSource.includes('// File ') && /^\s*\/\/\s*File\s+\S+/m.test(spdxSource);
+      const spdxIdentifiers = spdxIdentifiersInComments(spdxSource);
+      if (!flattenedSource && new Set(spdxIdentifiers).size > 1) {
+        throw new Error(
+          'Multiple SPDX license identifiers found in source file. '
+          + 'Use "AND" or "OR" to combine multiple licenses.',
+        );
+      }
     }
   }
   // Version-gated EVM instructions are ordinary Yul identifiers before their fork activates. Corpus fixtures
   // carry the requested EVM version in their harness trailer. Rename inactive spellings consistently so their
   // declarations remain legal, while an undeclared reference/call still produces the expected undefined-name
   // diagnostic. Equal-length replacements preserve all source offsets.
-  if (solidityImportCompat) {
+  if (solidityImportCompat && code.includes('EVMVersion:')) {
     const inactiveYulNames: string[] = [];
     if (/\/\/\s*EVMVersion:\s*(?:<=\s*berlin|<\s*london)\b/i.test(code)) inactiveYulNames.push('basefee');
     if (/\/\/\s*EVMVersion:\s*<\s*paris\b/i.test(code)) inactiveYulNames.push('prevrandao');
@@ -8237,7 +8508,7 @@ export function parseCode(
   // specifiers only belong to contracts), and has no BCH meaning. In import-compat mode, blank this exact
   // no-expression shape while retaining line/column positions; do not consume a real modifier invocation or
   // any expression between `at` and the body.
-  if (solidityImportCompat) {
+  if (solidityImportCompat && code.includes('layout at')) {
     code = code.replace(
       /(\bfunction\b[^{};]*?)(\s+layout\s+at\s*)(?=\{)/g,
       (_m, header, clause) => header + clause.replace(/[^\r\n]/g, ' '),
@@ -8248,33 +8519,35 @@ export function parseCode(
   // it has no meaning on the UTXO model, so drop the clause so the contract parses. Anchored to a
   // contract header (so a `layout at .. {` inside a string / body is not touched) and stopping at
   // the body `{`. The clause may span lines and contain NatSpec comments; blank its non-newline characters so
-  // downstream source locations keep their original line numbers. (Native code has no such clause, so the strip
-  // is a no-op there.)
+  // downstream source locations keep their original line numbers. Native generated helpers have no such
+  // clause; skip the two regex walks unless the source actually contains one.
   // Current Solidity grammar places the clause BEFORE inheritance (`contract C layout at 42 is A`); preserve the
   // `is A` tail rather than consuming it as part of the layout expression. Retain the older post-inheritance
   // spelling below for compatibility with sources SolidCash already accepted.
-  code = code.replace(
-    // eslint-disable-next-line max-len
-    /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
-    (_m, header, layoutPrefix, expr, inheritance) => {
-      if (/\berc7201\b/.test(expr)) {
-        console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
-          + 'base slot on the UTXO model, so the layout specifier is ignored.');
-      }
-      return header + (layoutPrefix + expr).replace(/[^\r\n]/g, ' ') + inheritance;
-    },
-  );
-  code = code.replace(
-    // eslint-disable-next-line max-len
-    /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
-    (_m, header, clause, expr) => {
-      if (/\berc7201\b/.test(expr)) {
-        console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
-          + 'base slot on the UTXO model, so the layout specifier is ignored.');
-      }
-      return header + clause.replace(/[^\r\n]/g, ' ');
-    },
-  );
+  if (code.includes('layout at')) {
+    code = code.replace(
+      // eslint-disable-next-line max-len
+      /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
+      (_m, header, layoutPrefix, expr, inheritance) => {
+        if (/\berc7201\b/.test(expr)) {
+          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
+            + 'base slot on the UTXO model, so the layout specifier is ignored.');
+        }
+        return header + (layoutPrefix + expr).replace(/[^\r\n]/g, ' ') + inheritance;
+      },
+    );
+    code = code.replace(
+      // eslint-disable-next-line max-len
+      /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
+      (_m, header, clause, expr) => {
+        if (/\berc7201\b/.test(expr)) {
+          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
+            + 'base slot on the UTXO model, so the layout specifier is ignored.');
+        }
+        return header + clause.replace(/[^\r\n]/g, ' ');
+      },
+    );
+  }
 
   // X120. The file stamp has to cover LEXING AND PARSING, not only the AST build. An ANTLR error listener builds
   // its own `Location` from the offending token while the parse is still running, i.e. before
@@ -8285,47 +8558,77 @@ export function parseCode(
   // `withSourceFile(undefined, ..)` for a root parse CLEARS an ambient stamp rather than inheriting one, so a
   // nested parse of compiler-generated route source cannot pick up an importing file's id; the generated mark
   // wins over any file label anyway (`importedFileCaveat`).
-  return withSourceFile(importedFileId, () => {
-    const parse = (fast: boolean): ReturnType<SolidCashParser['sourceFile']> => {
-      const syntaxErrorListener = fast
-        ? ThrowingErrorListener.INSTANCE : new ForwardingErrorListener(errorListener);
-      const lexer = new SolidCashLexer(new CharStream(code));
-      lexer.removeErrorListeners();
-      lexer.addErrorListener(syntaxErrorListener);
-      const parser = new SolidCashParser(new CommonTokenStream(lexer));
-      // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
-      // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
-      // across instances; do the same, so a process that parses many sources - a compile also parses the generated
-      // message-bus route - reuses that work instead of repaying it.
-      parser._interp = new ParserATNSimulator(
-        parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
-      );
-      if (fast) {
-        parser._interp.predictionMode = PredictionMode.SLL;
-        parser._errHandler = new BailErrorStrategy();
-      }
-      parser.removeErrorListeners();
-      parser.addErrorListener(syntaxErrorListener);
-      const tree = parser.sourceFile();
-      if (!fast) (syntaxErrorListener as ForwardingErrorListener).throwFirstError();
-      return tree;
-    };
+  const parseStarted = compilerProfileEnabled() ? Date.now() : 0;
+  let sllFailed = false;
+  const ast = withSourceFile(importedFileId, () => {
+    const lexer = new SolidCashLexer(new PackedCharStream(code) as unknown as CharStream);
+    lexer.removeErrorListeners();
+    lexer.addErrorListener(ThrowingErrorListener.INSTANCE);
+    // Same sharing as the parser interpreter below: the generated lexer constructs a fresh
+    // PredictionContextCache per instance, which rebuilds lexer prediction contexts on every imported file.
+    lexer._interp = new LexerATNSimulator(
+      lexer, SolidCashLexer._ATN, SolidCashLexer.DecisionsToDFA, SHARED_LEXER_PREDICTION_CONTEXT_CACHE,
+    );
+    const tokens = new CommonTokenStream(lexer);
+    const parser = new SolidCashParser(tokens);
+    // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
+    // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
+    // across instances; do the same, so a process that parses many sources - a compile also parses the generated
+    // message-bus route - reuses that work instead of repaying it.
+    parser._interp = new ParserATNSimulator(
+      parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
+    );
+    installExpressionPrefixFastPath(parser);
+    parser.removeErrorListeners();
+    parser.addErrorListener(ThrowingErrorListener.INSTANCE);
+    // Solidity's semantic predicates (e.g. `hasFunctionCallAhead`) routinely defeat SLL. Trying SLL first on
+    // `.sol` import graphs pays a full failed parse of MarketplaceV1 plus several OZ units before LL retries.
+    // Native SolidCash and compiler-generated helpers still take the SLL fast path.
+    const trySll = !solidityImportCompat;
     let parseTree: ReturnType<SolidCashParser['sourceFile']>;
-    try {
-      parseTree = parse(true);
-    } catch {
-      // SLL cannot resolve every context-sensitive Solidity/SolidCash construct. Re-run those uncommon sources
-      // with the canonical full-context parser, which also owns user-facing syntax diagnostics.
-      parseTree = parse(false);
+    if (trySll) {
+      parser._interp.predictionMode = PredictionMode.SLL;
+      parser._errHandler = new BailErrorStrategy();
+      try {
+        parseTree = parser.sourceFile();
+      } catch {
+        sllFailed = true;
+        parser.reset();
+        const llListener = new ForwardingErrorListener(errorListener);
+        lexer.removeErrorListeners();
+        lexer.addErrorListener(llListener);
+        parser.removeErrorListeners();
+        parser.addErrorListener(llListener);
+        parser._interp.predictionMode = PredictionMode.LL;
+        parser._errHandler = new DefaultErrorStrategy();
+        parseTree = parser.sourceFile();
+        llListener.throwFirstError();
+      }
+    } else {
+      const llListener = new ForwardingErrorListener(errorListener);
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(llListener);
+      parser.removeErrorListeners();
+      parser.addErrorListener(llListener);
+      parser._interp.predictionMode = PredictionMode.LL;
+      parser._errHandler = new DefaultErrorStrategy();
+      parseTree = parser.sourceFile();
+      llListener.throwFirstError();
     }
 
     // AST building
-    const ast = new AstBuilder(
+    return new AstBuilder(
       parseTree, solidityImportCompat, chunkedArrays, code, importedFileId,
     ).build() as Ast;
-
-    return ast;
   });
+  if (compilerProfileEnabled()) {
+    const ms = Date.now() - parseStarted;
+    parseProfileTotals.files += 1;
+    parseProfileTotals.bytes += code.length;
+    parseProfileTotals.ms += ms;
+    if (sllFailed) parseProfileTotals.sllFails += 1;
+  }
+  return ast;
 }
 
 // Re-resolve array element types that parsed to a named AddressType placeholder (an imported struct not yet

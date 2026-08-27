@@ -150,22 +150,16 @@ import type {
   StatementContext,
   RequireMessageContext,
   SliceContext,
-  IndexRangeSliceContext,
   DoWhileStatementContext,
   LoopStatementContext,
   StateVariableDeclarationContext,
-  ThisExprContext,
   DeleteLocalContext,
   DeleteStateContext,
   DeleteMappingEntryContext,
   DeleteIndexedContext,
   AbiEncodeContext,
-  AbiEncodePackedContext,
-  AbiEncodeWithSelectorContext,
-  AbiEncodeWithSignatureContext,
   AbiEncodeCallContext,
   BytesConcatContext,
-  StringConcatContext,
   AbiDecodeContext,
   AbiDecodeAtContext,
   MappingTypeContext,
@@ -208,7 +202,6 @@ import type {
   AssertStatementContext,
   SelfdestructStatementContext,
   CallOptionsContext,
-  OutStateMappingFieldAccessContext,
   ReturnTypeContext,
   ReturnParamContext,
   FallbackDefinitionContext,
@@ -231,11 +224,12 @@ import type {
 import { TernaryOpContext, TupleExpressionContext } from '../grammar/SolidCashParser.js';
 // Imported as values (not `import type`) for runtime `instanceof` in extractLvalue / visitExpressionStatement.
 import {
-  ParenthesisedContext, ArrayAccessContext, FieldAccessContext, MappingAccessContext,
+  ParenthesisedContext, ArrayAccessContext, FieldAccessContext,
   AnyIdentifierContext, ExpressionContext, CastContext, AssignmentExpressionContext,
-  StateAccessContext, IdentifierContext, PostfixOpContext, PrefixOpContext, TupleIndexOpContext,
+  IdentifierContext, PostfixOpContext, PrefixOpContext, ThisExprContext,
   FunctionCallExpressionContext, MethodCallContext, MethodCallNamedContext, LegacyCallOptionCallContext,
-  FunctionTypeContext, StructDefinitionContext,
+  FunctionTypeContext, StructDefinitionContext, GroupedExpressionContext,
+  ConstructedExpressionContext,
 } from '../grammar/SolidCashParser.js';
 import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location, withSourceFile } from './Location.js';
@@ -283,6 +277,60 @@ function warnFixedPointOnce(): void {
   console.log('Warning: fixed-point (fixed/ufixed types, decimal literals) is not implemented in Solidity '
     + '(solc: "Fixed point types not implemented"); solidcash compiles it with its own decimal-scaled-integer '
     + 'implementation, which differs - do not assume cross-compiler parity.');
+}
+
+// Left-factored prefix subrules wrap labeled alternatives (`parenExpression` → GroupedExpression,
+// `newExpression` → ConstructedExpression). Peel those wrappers so `instanceof` checks and visitor
+// dispatch still see the labeled node.
+function isExpressionWrapper(ctx: ParseTree): boolean {
+  return ctx.constructor === ExpressionContext
+    || ctx instanceof GroupedExpressionContext
+    || ctx instanceof ConstructedExpressionContext;
+}
+
+function peelExpr<T extends ParseTree | undefined>(ctx: T): T {
+  let current: ParseTree | undefined = ctx;
+  while (current instanceof ExpressionContext && isExpressionWrapper(current)) {
+    const sub = (current.children ?? []).find((child) => child instanceof ParserRuleContext);
+    if (!(sub instanceof ParserRuleContext)) break;
+    current = sub;
+  }
+  return current as T;
+}
+
+function unwrapParens(ctx: ParseTree | undefined): ParseTree | undefined {
+  let current: any = peelExpr(ctx);
+  while (current instanceof ParenthesisedContext) current = peelExpr(current.expression());
+  return current;
+}
+
+function isIndexRangeSlice(ctx: ArrayAccessContext): boolean {
+  return ctx._start !== undefined || ctx._end !== undefined
+    || (ctx.children ?? []).some((child) => (child as { getText?: () => string }).getText?.() === ':');
+}
+
+function isTupleIndex(ctx: ArrayAccessContext): boolean {
+  return ctx._index !== undefined;
+}
+
+function arrayAccessBase(ctx: ArrayAccessContext): ExpressionContext {
+  return ctx._element ?? ctx.expression(0);
+}
+
+function arrayAccessIndex(ctx: ArrayAccessContext): ExpressionContext {
+  return ctx.expression_list().find((expression) => expression !== ctx._element) ?? ctx.expression(1);
+}
+
+function isThisMapping(ctx: ThisExprContext): boolean {
+  return ctx.expression_list().length > 0 && !ctx.memberName();
+}
+
+function isThisOutState(ctx: ThisExprContext): boolean {
+  return Boolean(ctx.memberName());
+}
+
+function isThisState(ctx: ThisExprContext): boolean {
+  return ctx.Identifier_list().length === 1 && ctx.expression_list().length === 0 && !ctx.memberName();
 }
 
 export default class AstBuilder
@@ -458,6 +506,18 @@ export default class AstBuilder
 
   defaultResult(): Node {
     return new BoolLiteralNode(false);
+  }
+
+  visit(tree: ParseTree): Node {
+    return super.visit(peelExpr(tree));
+  }
+
+  visitGroupedExpression(ctx: GroupedExpressionContext): Node {
+    return this.visit(ctx.parenExpression());
+  }
+
+  visitConstructedExpression(ctx: ConstructedExpressionContext): Node {
+    return this.visit(ctx.newExpression());
   }
 
   build(): Node {
@@ -2801,11 +2861,12 @@ export default class AstBuilder
   // `((effect() ? (a, b) : (c, d)));`; treating only a directly exposed TernaryOpContext made its tuple
   // branches fall through to the generic "tuple expression is invalid here" diagnostic.
   private tupleTernary(ctx: ExpressionContext | undefined): TernaryOpContext | undefined {
-    let current = ctx;
-    while (current instanceof ParenthesisedContext) current = current.expression();
+    let current = unwrapParens(ctx);
+    const ifTrue = unwrapParens((current as TernaryOpContext | undefined)?._ifTrue);
+    const ifFalse = unwrapParens((current as TernaryOpContext | undefined)?._ifFalse);
     return current instanceof TernaryOpContext
-      && current._ifTrue instanceof TupleExpressionContext
-      && current._ifFalse instanceof TupleExpressionContext
+      && ifTrue instanceof TupleExpressionContext
+      && ifFalse instanceof TupleExpressionContext
       ? current
       : undefined;
   }
@@ -2814,8 +2875,8 @@ export default class AstBuilder
   // Solidity ternary semantics) and produce a per-element ternary `__t ? Ai : Bi`. The existing scalar-ternary
   // type-check then validates each component's common type, matching Solidity's conditional rule.
   private desugarTupleTernary(ctx: TernaryOpContext): { tempDecl: VariableDefinitionNode; values: ExpressionNode[] } {
-    const trueElems = (ctx._ifTrue as TupleExpressionContext).expression_list();
-    const falseElems = (ctx._ifFalse as TupleExpressionContext).expression_list();
+    const trueElems = (unwrapParens(ctx._ifTrue) as TupleExpressionContext).expression_list();
+    const falseElems = (unwrapParens(ctx._ifFalse) as TupleExpressionContext).expression_list();
     if (trueElems.length !== falseElems.length) {
       throw new ParseError(
         `Tuple ternary branches have different arities (${trueElems.length} vs ${falseElems.length})`,
@@ -3153,8 +3214,7 @@ export default class AstBuilder
     let effectiveExprs = tupleExprs;
     if (slots.length > 0 && tupleExprs.length === elements.length) {
       const flattenDiscarded = (e: ExpressionContext): ExpressionContext[] => {
-        let current = e;
-        while (current instanceof ParenthesisedContext) current = current.expression();
+        const current = unwrapParens(e);
         if (!(current instanceof TupleExpressionContext)) return [e];
         return current.expression_list().flatMap((part) => flattenDiscarded(part));
       };
@@ -3177,8 +3237,7 @@ export default class AstBuilder
     // `(,, a) = (((1, 3, ((2)))))`. Peel only parentheses, then expose the tuple's own components so the
     // ordinary parallel tuple-assignment path applies. Calls returning tuples remain a single expression.
     if (exprs.length === 1) {
-      let explicitTuple = exprs[0];
-      while (explicitTuple instanceof ParenthesisedContext) explicitTuple = explicitTuple.expression();
+      const explicitTuple = unwrapParens(exprs[0]);
       if (explicitTuple instanceof TupleExpressionContext) exprs = explicitTuple.expression_list();
     }
     // Tuple ternary RHS `(a, b) = cond ? (..) : (..)`: hoist cond, then an N-value assignment of per-element
@@ -3265,8 +3324,7 @@ export default class AstBuilder
       return slots;
     };
     const rhsParts = (expr: ExpressionContext): ExpressionContext[] | undefined => {
-      let current = expr;
-      while (current instanceof ParenthesisedContext) current = current.expression();
+      const current = unwrapParens(expr);
       return current instanceof TupleExpressionContext ? current.expression_list() : undefined;
     };
     const elements: { name?: string; existing?: boolean; skip?: boolean }[] = [];
@@ -4039,7 +4097,13 @@ export default class AstBuilder
   }
 
   visitFunctionCallExpression(ctx: FunctionCallExpressionContext): ExpressionNode {
-    return this.visit(ctx.functionCall()) as ExpressionNode;
+    let callee = this.visit(ctx.functionCall()) as ExpressionNode;
+    for (const argsCtx of ctx.expressionList_list()) {
+      const node = new IndirectCallNode(callee, this.buildCallArguments(argsCtx));
+      node.location = Location.fromCtx(ctx);
+      callee = node;
+    }
+    return callee;
   }
 
   // `<base>[i](args)`: call a function pointer stored in an array element (`arr[i]()`, `s[0](x)`). The callee is
@@ -4092,33 +4156,7 @@ export default class AstBuilder
     return node;
   }
 
-  visitChainedFunctionCall(ctx: any): ExpressionNode {
-    let callee = this.visit(ctx.functionCall()) as ExpressionNode;
-    for (const argsCtx of ctx.expressionList_list()) {
-      const node = new IndirectCallNode(callee, this.buildCallArguments(argsCtx));
-      node.location = Location.fromCtx(ctx);
-      callee = node;
-    }
-    return callee;
-  }
 
-  visitChainedMethodCall(ctx: any): ExpressionNode {
-    const lists = ctx.expressionList_list();
-    let callee = this.buildMethodCall(
-      ctx,
-      this.visit(ctx.expression()) as ExpressionNode,
-      ctx.Identifier().getText(),
-      this.buildCallArguments(lists[0]),
-      this.parseCallOptions(ctx.callOptions()),
-      ctx.expression().getText() === 'this',
-    );
-    for (const argsCtx of lists.slice(1)) {
-      const node = new IndirectCallNode(callee, this.buildCallArguments(argsCtx));
-      node.location = Location.fromCtx(ctx);
-      callee = node;
-    }
-    return callee;
-  }
 
   visitFunctionCall(ctx: FunctionCallContext): ExpressionNode {
     const identifiers = ctx.Identifier_list();
@@ -4448,8 +4486,8 @@ export default class AstBuilder
     return placeholder;
   }
 
-  visitTupleIndexOp(ctx: TupleIndexOpContext): TupleIndexOpNode {
-    const tuple = this.visit(ctx.expression());
+  visitTupleIndexOp(ctx: ArrayAccessContext): TupleIndexOpNode {
+    const tuple = this.visit(arrayAccessBase(ctx));
     if (this.solidityImportCompat && tuple instanceof IdentifierNode && this.libraryNames.has(tuple.name)) {
       throw new ParseError(
         `Index access is not available for library type '${tuple.name}'`,
@@ -4476,7 +4514,7 @@ export default class AstBuilder
   }
 
   // `x[a:b]` index-range syntax desugars to the same SliceNode as `x.slice(a, b)`.
-  visitIndexRangeSlice(ctx: IndexRangeSliceContext): SliceNode {
+  visitIndexRangeSlice(ctx: ArrayAccessContext): SliceNode {
     const loc = Location.fromCtx(ctx);
     const element = this.visit(ctx._element) as ExpressionNode;
     // Omitted bounds default to 0 (start) and the element's length (end): `a[:2]`, `a[2:]`, `a[:]`.
@@ -5292,8 +5330,8 @@ export default class AstBuilder
     return markOverride(node);
   }
 
-  visitStateAccess(ctx: StateAccessContext): StateAccessNode {
-    const name = ctx.Identifier().getText();
+  visitStateAccess(ctx: ThisExprContext): StateAccessNode {
+    const name = ctx.Identifier(0).getText();
     const node = new StateAccessNode(name);
     node.location = Location.fromCtx(ctx);
     return node;
@@ -5301,7 +5339,10 @@ export default class AstBuilder
 
   // Solidity `this` (e.g. address(this)): the contract's address is the locking script of the UTXO being
   // spent, i.e. tx.inputs[this.activeInputIndex].lockingBytecode (OP_INPUTINDEX OP_UTXOBYTECODE).
-  visitThisExpr(ctx: ThisExprContext): UnaryOpNode {
+  visitThisExpr(ctx: ThisExprContext): Node {
+    if (isThisOutState(ctx)) return this.visitOutStateMappingFieldAccess(ctx);
+    if (isThisMapping(ctx)) return this.visitMappingAccess(ctx);
+    if (isThisState(ctx)) return this.visitStateAccess(ctx);
     if (this.solidityImportCompat && this.parsingFreeFunctionBody) {
       throw new ParseError(
         "'this' is not available in a file-level free function",
@@ -6015,15 +6056,15 @@ export default class AstBuilder
   // `RetStruct __t = Lib.f(args); __t.field op= v;` (a block spliced by flattenStatements), which
   // LowerStorageSlotPointers then lowers to the __evm_storage register. Needs Lib.f's return struct type.
 
-  visitMappingAccess(ctx: MappingAccessContext): MappingAccessNode {
-    const name = ctx.Identifier().getText();
+  visitMappingAccess(ctx: ThisExprContext): MappingAccessNode {
+    const name = ctx.Identifier(0).getText();
     const keys = ctx.expression_list().map((e) => this.visit(e));
     const node = new MappingAccessNode(name, keys);
     node.location = Location.fromCtx(ctx);
     return node;
   }
 
-  visitOutStateMappingFieldAccess(ctx: OutStateMappingFieldAccessContext): FieldAccessNode {
+  visitOutStateMappingFieldAccess(ctx: ThisExprContext): FieldAccessNode {
     const outStateName = ctx.Identifier(0).getText();
     if (outStateName !== 'outState') {
       throw new ParseError(
@@ -6040,7 +6081,7 @@ export default class AstBuilder
       );
     }
 
-    const keyExpression = this.visit(ctx.expression()) as ExpressionNode;
+    const keyExpression = this.visit(ctx.expression(0)) as ExpressionNode;
     const mappingNode = new MappingAccessNode(containerName, [keyExpression]);
     mappingNode.isTokenContainerAccess = true;
     mappingNode.isOutStateTokenContainerAccess = true;
@@ -6152,8 +6193,7 @@ export default class AstBuilder
 
   visitDeleteParenthesized(ctx: any): StatementNode {
     const loc = Location.fromCtx(ctx);
-    let target = ctx.expression() as ExpressionContext;
-    while (target instanceof ParenthesisedContext) target = target.expression();
+    const target = unwrapParens(ctx.expression()) as ExpressionContext;
     if (target instanceof IdentifierContext) {
       const identifier = new IdentifierNode(target.anyIdentifier().getText());
       identifier.location = Location.fromCtx(target);
@@ -6161,8 +6201,8 @@ export default class AstBuilder
       node.location = loc;
       return node;
     }
-    if (target instanceof StateAccessContext) {
-      const node = new DeleteStateNode(target.Identifier().getText());
+    if (target instanceof ThisExprContext && isThisState(target)) {
+      const node = new DeleteStateNode(target.Identifier(0).getText());
       node.location = loc;
       return node;
     }
@@ -7101,11 +7141,17 @@ export default class AstBuilder
     const object = this.visit(ctx.expression());
     const methodName = ctx.anyIdentifier()?.getText()
       ?? (ctx.getText().includes('.value') ? 'value' : 'length');
-    const parameters = this.buildCallArguments(ctx.expressionList()!);
+    const lists = ctx.expressionList_list();
     const callOpts = this.parseCallOptions(ctx.callOptions());
-    return this.buildMethodCall(
-      ctx, object, methodName, parameters, callOpts, ctx.expression().getText() === 'this',
+    let callee = this.buildMethodCall(
+      ctx, object, methodName, this.buildCallArguments(lists[0]), callOpts, ctx.expression().getText() === 'this',
     );
+    for (const argsCtx of lists.slice(1)) {
+      const node = new IndirectCallNode(callee, this.buildCallArguments(argsCtx));
+      node.location = Location.fromCtx(ctx);
+      callee = node;
+    }
+    return callee;
   }
 
   private buildMethodCall(
@@ -7408,30 +7454,25 @@ export default class AstBuilder
     return node;
   }
 
-  visitAbiEncode(ctx: AbiEncodeContext): AbiEncodeNode {
+  visitAbiEncode(ctx: AbiEncodeContext): ExpressionNode {
+    const kind = ctx.children?.[0]?.getText?.() ?? 'abi.encode';
     const parameters = this.buildCallArguments(ctx.expressionList()!);
+    if (kind === 'abi.encodePacked') {
+      const node = new AbiEncodePackedNode(parameters);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    if (kind === 'abi.encodeWithSelector') {
+      const node = new AbiEncodeWithSelectorNode(parameters[0], parameters.slice(1));
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    if (kind === 'abi.encodeWithSignature') {
+      const node = new AbiEncodeWithSignatureNode(parameters[0], parameters.slice(1));
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
     const node = new AbiEncodeNode(parameters);
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  visitAbiEncodePacked(ctx: AbiEncodePackedContext): AbiEncodePackedNode {
-    const parameters = this.buildCallArguments(ctx.expressionList()!);
-    const node = new AbiEncodePackedNode(parameters);
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  visitAbiEncodeWithSelector(ctx: AbiEncodeWithSelectorContext): AbiEncodeWithSelectorNode {
-    const exprs = this.buildCallArguments(ctx.expressionList()!);
-    const node = new AbiEncodeWithSelectorNode(exprs[0], exprs.slice(1));
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  visitAbiEncodeWithSignature(ctx: AbiEncodeWithSignatureContext): AbiEncodeWithSignatureNode {
-    const exprs = this.buildCallArguments(ctx.expressionList()!);
-    const node = new AbiEncodeWithSignatureNode(exprs[0], exprs.slice(1));
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -7476,10 +7517,11 @@ export default class AstBuilder
       assignment.location = Location.fromCtx(argsCtx);
       params = [assignment];
     } else {
+      const peeledArgs = peelExpr(argExpression);
       params = !argExpression
         ? []
-        : argExpression instanceof TupleExpressionContext
-          ? argExpression.expression_list().map((e) => this.visit(e) as ExpressionNode)
+        : peeledArgs instanceof TupleExpressionContext
+          ? peeledArgs.expression_list().map((e) => this.visit(e) as ExpressionNode)
           : [this.visit(argExpression) as ExpressionNode];
     }
     const node = new AbiEncodeCallNode(interfaceName, functionName, params);
@@ -7487,16 +7529,11 @@ export default class AstBuilder
     return node;
   }
 
-  visitBytesConcat(ctx: BytesConcatContext): BytesConcatNode {
+  visitBytesConcat(ctx: BytesConcatContext): ExpressionNode {
     const parameters = this.buildCallArguments(ctx.expressionList()!);
-    const node = new BytesConcatNode(parameters);
-    node.location = Location.fromCtx(ctx);
-    return node;
-  }
-
-  visitStringConcat(ctx: StringConcatContext): StringConcatNode {
-    const parameters = this.buildCallArguments(ctx.expressionList()!);
-    const node = new StringConcatNode(parameters);
+    const node = (ctx.children?.[0]?.getText?.() === 'string.concat')
+      ? new StringConcatNode(parameters)
+      : new BytesConcatNode(parameters);
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -7778,8 +7815,9 @@ export default class AstBuilder
     }
     // `return (a, b)` parses the tuple as one TupleExpression (the `return expression` alt outranks the
     // dedicated return-tuple form); unpack it back into a tuple return.
-    if (exprCtxs.length === 1 && exprCtxs[0] instanceof TupleExpressionContext) {
-      const returnNode = new ReturnNode(exprCtxs[0].expression_list().map((e) => this.visit(e) as ExpressionNode));
+    const peeledReturn = exprCtxs.length === 1 ? peelExpr(exprCtxs[0]) : undefined;
+    if (peeledReturn instanceof TupleExpressionContext) {
+      const returnNode = new ReturnNode(peeledReturn.expression_list().map((e) => this.visit(e) as ExpressionNode));
       returnNode.location = Location.fromCtx(ctx);
       return returnNode;
     }
@@ -7929,12 +7967,16 @@ export default class AstBuilder
     const keys: Array<() => ExpressionNode> = [];
     let cur: ExpressionContext = lhsCtx;
     for (;;) {
+      cur = peelExpr(cur);
       if (cur instanceof ParenthesisedContext) { cur = cur.expression(); } else if (cur instanceof ArrayAccessContext) {
-        const k = cur.expression(1); keys.unshift(() => this.visit(k) as ExpressionNode); cur = cur.expression(0);
-      } else if (cur instanceof TupleIndexOpContext) {
-        const numTok = cur.NumberLiteral(); const kl = Location.fromToken(numTok.symbol);
-        keys.unshift(() => { const n = new IntLiteralNode(BigInt(numTok.getText())); n.location = kl; return n; });
-        cur = cur.expression();
+        if (isIndexRangeSlice(cur)) break;
+        if (isTupleIndex(cur)) {
+          const numTok = cur.NumberLiteral(); const kl = Location.fromToken(numTok.symbol);
+          keys.unshift(() => { const n = new IntLiteralNode(BigInt(numTok.getText())); n.location = kl; return n; });
+          cur = arrayAccessBase(cur);
+        } else {
+          const k = arrayAccessIndex(cur); keys.unshift(() => this.visit(k) as ExpressionNode); cur = arrayAccessBase(cur);
+        }
       } else break;
     }
     if (keys.length !== 1 || !(cur instanceof FunctionCallExpressionContext)) return undefined;
@@ -8080,6 +8122,7 @@ export default class AstBuilder
     let cur: ExpressionContext = ctx;
     let bytesCast = false;
     for (;;) {
+      cur = peelExpr(cur);
       if (cur instanceof ParenthesisedContext) {
         cur = cur.expression();
       } else if (cur instanceof CastContext
@@ -8090,22 +8133,25 @@ export default class AstBuilder
         bytesCast = true;
         cur = cur._castable;
       } else if (cur instanceof ArrayAccessContext) {
-        const keyCtx = cur.expression(1);
-        segs.unshift({ key: () => this.visit(keyCtx) as ExpressionNode });
-        cur = cur.expression(0);
-      } else if (cur instanceof TupleIndexOpContext) {
-        // `arr[0]` with a NumberLiteral index parses as TupleIndexOp (not a wrapped expression); the index is a
-        // literal token, so build a fresh IntLiteralNode for the key rather than re-visiting a context.
-        const numTok = cur.NumberLiteral();
-        const keyLoc = Location.fromToken(numTok.symbol);
-        segs.unshift({
-          key: () => {
-            const n = new IntLiteralNode(BigInt(numTok.getText()));
-            n.location = keyLoc;
-            return n;
-          },
-        });
-        cur = cur.expression();
+        if (isIndexRangeSlice(cur)) return null;
+        if (isTupleIndex(cur)) {
+          // `arr[0]` with a NumberLiteral index parses as TupleIndexOp (not a wrapped expression); the index is a
+          // literal token, so build a fresh IntLiteralNode for the key rather than re-visiting a context.
+          const numTok = cur.NumberLiteral();
+          const keyLoc = Location.fromToken(numTok.symbol);
+          segs.unshift({
+            key: () => {
+              const n = new IntLiteralNode(BigInt(numTok.getText()));
+              n.location = keyLoc;
+              return n;
+            },
+          });
+          cur = arrayAccessBase(cur);
+        } else {
+          const keyCtx = arrayAccessIndex(cur);
+          segs.unshift({ key: () => this.visit(keyCtx) as ExpressionNode });
+          cur = arrayAccessBase(cur);
+        }
       } else if (cur instanceof FieldAccessContext) {
         const mn = cur.memberName();
         const member = mn.Identifier() ? mn.Identifier().getText()
@@ -8113,17 +8159,17 @@ export default class AstBuilder
         if (member === null) return null; // a non-field member (.length, .lockingBytecode, ...) is not an lvalue
         segs.unshift({ member });
         cur = cur.expression();
-      } else if (cur instanceof MappingAccessContext) {
+      } else if (cur instanceof ThisExprContext && isThisMapping(cur)) {
         cur.expression_list().slice().reverse()
           .forEach((e) => segs.unshift({ key: () => this.visit(e) as ExpressionNode }));
         return {
-          rawName: cur.Identifier().getText(), isThis: true,
-          nameLoc: Location.fromToken(cur.Identifier().symbol), segs,
+          rawName: cur.Identifier(0).getText(), isThis: true,
+          nameLoc: Location.fromToken(cur.Identifier(0).symbol), segs,
         };
-      } else if (cur instanceof StateAccessContext) {
+      } else if (cur instanceof ThisExprContext && isThisState(cur)) {
         return {
-          rawName: cur.Identifier().getText(), isThis: true,
-          nameLoc: Location.fromToken(cur.Identifier().symbol), segs, bytesCast,
+          rawName: cur.Identifier(0).getText(), isThis: true,
+          nameLoc: Location.fromToken(cur.Identifier(0).symbol), segs, bytesCast,
         };
       } else if (cur instanceof IdentifierContext) {
         return { rawName: cur.anyIdentifier().getText(), isThis: false, nameLoc: Location.fromCtx(cur), segs, bytesCast };
@@ -8141,22 +8187,21 @@ export default class AstBuilder
     // `(p = other)[k] = value` where p is a mapping-storage local: the parenthesized assignment expression
     // rebinds the storage pointer and yields that same pointer for the indexed write. Perform the compile-time
     // rebind first, then route the element write through the newly recorded alias.
-    if (lhsCtx instanceof ArrayAccessContext || lhsCtx instanceof TupleIndexOpContext) {
-      let base = lhsCtx instanceof ArrayAccessContext ? lhsCtx.expression(0) : lhsCtx.expression();
-      while (base instanceof ParenthesisedContext) base = base.expression();
+    if (lhsCtx instanceof ArrayAccessContext && !isIndexRangeSlice(lhsCtx)) {
+      let base = unwrapParens(arrayAccessBase(lhsCtx)) as ExpressionContext;
       if (base instanceof AssignmentExpressionContext && base._op.text === '='
         && this.storageAliases.has(base.Identifier().getText())) {
         const name = base.Identifier().getText();
         const nameLoc = Location.fromToken(base.Identifier().symbol);
         const rebind = this.buildLvalueAssign(name, false, nameLoc, [], '=', base.expression(), loc);
-        const key = lhsCtx instanceof ArrayAccessContext
-          ? (): ExpressionNode => this.visit(lhsCtx.expression(1)) as ExpressionNode
-          : (): ExpressionNode => {
+        const key = isTupleIndex(lhsCtx)
+          ? (): ExpressionNode => {
             const token = lhsCtx.NumberLiteral().symbol;
             const literal = new IntLiteralNode(BigInt(token.text ?? '0'));
             literal.location = Location.fromToken(token);
             return literal;
-          };
+          }
+          : (): ExpressionNode => this.visit(arrayAccessIndex(lhsCtx)) as ExpressionNode;
         const write = this.buildLvalueAssign(
           name, false, nameLoc, [{ key }],
           op, valueCtx, loc,
@@ -8703,10 +8748,7 @@ export default class AstBuilder
     const lhsCtx = ctx.expression(0);
     // A discarded tuple expression evaluates each ordinary component. Builtin function references inside it
     // (`(abi.encode, "")`) are values with no runtime representation and contribute no evaluation.
-    let discardedTupleCtx: ExpressionContext = lhsCtx;
-    while (discardedTupleCtx instanceof ParenthesisedContext) {
-      discardedTupleCtx = discardedTupleCtx.expression();
-    }
+    const discardedTupleCtx = unwrapParens(lhsCtx) as ExpressionContext;
     if (discardedTupleCtx instanceof TupleExpressionContext) {
       const loc = Location.fromCtx(ctx);
       const statements = discardedTupleCtx.expression_list()
@@ -8738,14 +8780,15 @@ export default class AstBuilder
     }
     // A known struct type used as a discarded expression (`S;` / `S[7];`) is a Solidity no-op. Resolve it here
     // against the actual struct registry rather than accepting every identifier syntactically as a possible type.
-    const tupleBase = lhsCtx instanceof TupleIndexOpContext ? lhsCtx.expression() : undefined;
+    const tupleBase = lhsCtx instanceof ArrayAccessContext && isTupleIndex(lhsCtx)
+      ? arrayAccessBase(lhsCtx) : undefined;
     const discardedStructType = lhsCtx instanceof IdentifierContext
       ? lhsCtx.anyIdentifier().getText()
       : tupleBase instanceof IdentifierContext
         ? tupleBase.anyIdentifier().getText()
         : undefined;
     if (discardedStructType && (this.structMap.has(discardedStructType) || discardedStructType === 'uint')) {
-      if (lhsCtx instanceof TupleIndexOpContext
+      if (lhsCtx instanceof ArrayAccessContext && isTupleIndex(lhsCtx)
         && BigInt(lhsCtx.NumberLiteral().getText().replaceAll('_', '')) >= 1n << 256n) {
         throw new ParseError('Type-expression array bound does not fit uint256', Location.fromCtx(lhsCtx));
       }
@@ -9066,7 +9109,7 @@ export default class AstBuilder
       ?? (ctx.getText().includes('.value') ? 'value' : 'length');
     const recvCtx = ctx.expression();
     const loc = Location.fromCtx(ctx);
-    const callArgs = this.buildCallArguments(ctx.expressionList());
+    const callArgs = this.buildCallArguments(ctx.expressionList(0));
     // Low-level `.call`/`.staticcall`/`.delegatecall(payload)` takes exactly one arg. A same-named method with a
     // different arity (e.g. `IFoo(c).increment.call()` - an interface method reached via a field access) is not a
     // low-level call and falls through to the generic method-call wrap below.
@@ -9079,11 +9122,13 @@ export default class AstBuilder
       node.location = loc;
       return node;
     }
-    if (recvCtx instanceof MappingAccessContext && recvCtx.Identifier().getText() === 'tokens') {
+    const recvPeeled = peelExpr(recvCtx);
+    if (recvPeeled instanceof ThisExprContext && isThisMapping(recvPeeled)
+      && recvPeeled.Identifier(0).getText() === 'tokens') {
       if (method !== 'transfer' && method !== 'transferNft') {
         throw new ParseError(`Unknown token container method '${method}', expected 'transfer' or 'transferNft'`, loc);
       }
-      const keyExpr = this.visit(recvCtx.expression_list()[0]) as ExpressionNode;
+      const keyExpr = this.visit(recvPeeled.expression_list()[0]) as ExpressionNode;
       const args = callArgs;
       if (method === 'transfer' && args.length !== 2) throw new ParseError('this.tokens[...].transfer() expects 2 arguments (to, amount)', loc);
       if (method === 'transferNft' && args.length !== 3) throw new ParseError('this.tokens[...].transferNft() expects 3 arguments (to, commitment, capability)', loc);
@@ -9116,15 +9161,17 @@ export default class AstBuilder
 
 
 
-  visitArrayAccess(ctx: ArrayAccessContext): ArrayAccessNode {
-    let array = this.visit(ctx.expression(0));
+  visitArrayAccess(ctx: ArrayAccessContext): ArrayAccessNode | TupleIndexOpNode | SliceNode {
+    if (isIndexRangeSlice(ctx)) return this.visitIndexRangeSlice(ctx);
+    if (isTupleIndex(ctx)) return this.visitTupleIndexOp(ctx);
+    let array = this.visit(arrayAccessBase(ctx));
     // Element storage pointer: `T[] storage p = outer[i]; p[j]` reads through the recorded access path.
     // Whole-container aliases are already substituted by visitIdentifier; element aliases deliberately are
     // not, because their replacement is an ArrayAccess rather than an Identifier.
     if (array instanceof IdentifierNode && this.storageAliases.has(array.name)) {
       array = cloneNode(this.storageAliases.get(array.name)!.access) as ExpressionNode;
     }
-    const index = this.visit(ctx.expression(1));
+    const index = this.visit(arrayAccessIndex(ctx));
     const node = new ArrayAccessNode(array, index);
     node.location = Location.fromCtx(ctx);
     return node;

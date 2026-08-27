@@ -173,6 +173,1090 @@ describe('shared integer helpers', () => {
       .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
   });
 
+  it('still speed-hint outlines when chained method calls share a left-factored postfix', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function ping() internal returns (uint256) { return this.a; }
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.ping();
+          require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact chained method calls share a left-factored postfix', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function ping() internal returns (uint256) { return this.a; }
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.ping();
+          require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when concat forms share a left-factored prefix', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes memory x = bytes.concat(hex"00");
+          string memory y = string.concat("a");
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact concat forms share a left-factored prefix', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes memory x = bytes.concat(hex"00");
+          string memory y = string.concat("a");
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when tx input and output introspection share a prefix', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = tx.inputs[0].value;
+          this.b = tx.outputs[0].value;
+          require(this.a == this.b || v == v);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact tx introspection shares a prefix', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = tx.inputs[0].value;
+          this.b = tx.outputs[0].value;
+          require(this.a == this.b || v == v);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when abi.encode forms share a left-factored prefix', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes memory x = abi.encode(v);
+          bytes memory y = abi.encodePacked(v);
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact abi.encode forms share a left-factored prefix', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          bytes memory x = abi.encode(v);
+          bytes memory y = abi.encodePacked(v);
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when method calls share a left-factored postfix', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function ping() internal returns (uint256) { return this.a; }
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.ping();
+          require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact method calls share a left-factored postfix', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function ping() internal returns (uint256) { return this.a; }
+        function set(uint256 v) public {
+          this.a = v;
+          this.b = this.ping();
+          require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when function calls share a left-factored prefix', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function id(uint256 x) internal returns (uint256) { return x; }
+        function set(uint256 v) public {
+          this.a = this.id(v);
+          this.b = this.id(v);
+          require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact function calls share a left-factored prefix', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function id(uint256 x) internal returns (uint256) { return x; }
+        function set(uint256 v) public {
+          this.a = this.id(v);
+          this.b = this.id(v);
+          require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when this-expressions share a left-factored prefix', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        mapping (uint256 => uint256) m;
+        function set(uint256 v) public {
+          this.a = v;
+          this.m[v] = v;
+          this.b = this.a;
+          require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact this-expressions share a left-factored prefix', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        mapping (uint256 => uint256) m;
+        function set(uint256 v) public {
+          this.a = v;
+          this.m[v] = v;
+          this.b = this.a;
+          require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when indexed expressions share a left-factored postfix', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        uint256[] items;
+        function set(uint256 v) public {
+          this.items.push(v);
+          this.a = this.items[0];
+          this.b = this.items[0];
+          require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact indexed expressions share a left-factored postfix', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        uint256[] items;
+        function set(uint256 v) public {
+          this.items.push(v);
+          this.a = this.items[0];
+          this.b = this.items[0];
+          require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when new-expressions share a left-factored prefix', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          int[] d = new int[](2);
+          d[0] = int(v); d[1] = int(v);
+          this.a = uint256(d[0]); this.b = uint256(d[1]); require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact new-expressions share a left-factored prefix', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          int[] d = new int[](2);
+          d[0] = int(v); d[1] = int(v);
+          this.a = uint256(d[0]); this.b = uint256(d[1]); require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when parenthesized expressions share a left-factored prefix', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          (uint256 x, uint256 y) = (v, v);
+          this.a = (x);
+          this.b = (y);
+          require((this.a) == (this.b));
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact parenthesized expressions share a left-factored prefix', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          (uint256 x, uint256 y) = (v, v);
+          this.a = (x);
+          this.b = (y);
+          require((this.a) == (this.b));
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when statement prediction skips ATN for require if and blocks', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          if (v == 0) { this.a = 0; }
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact statement prediction skips ATN for require', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          if (v == 0) { this.a = 0; }
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when Solidity diagnostic trailers are skipped if absent', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact Solidity diagnostic trailers are skipped if absent', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when EVMVersion and function layout-at rewrites are skipped if absent', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact EVMVersion rewrites are skipped if absent', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when parse preprocessing skips absent SPDX and bidi scans', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact parse preprocessing skips absent SPDX scans', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when Hardhat console import rewrite is skipped if absent', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact Hardhat console rewrite is skipped if absent', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when malformed type-name predicates reject by first character', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact malformed type-name predicates reject by first character', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when Yul keyword lookup uses a hoisted set', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          assembly { let x := 1 }
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact Yul keyword lookup uses a hoisted set', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          assembly { let x := 1 }
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when nested-tuple lookahead inspects token types', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact nested-tuple lookahead inspects token types', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when call-ahead predicates inspect token types', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact call-ahead predicates inspect token types', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when expression postfix loops stop without ATN on closers', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact expression postfix loops stop without ATN', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when the lexer reads a packed UTF-16 char stream', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact lexing uses a packed char stream', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when expression prefix prediction skips ATN for address this and new', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        address owner;
+        function set(uint256 v) public {
+          this.owner = address(0);
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when expression prefix prediction skips ATN for casts and abi builtins', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = uint256(v);
+          this.b = uint256(v);
+          require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when expression prefix prediction skips ATN for identifiers', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact expression prefix prediction skips ATN for address casts', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        address owner;
+        function set(uint256 v) public {
+          this.owner = address(0);
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when multi-artifact expression prefix prediction skips ATN for casts', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = uint256(v);
+          this.b = uint256(v);
+          require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when multi-artifact expression prefix prediction skips ATN', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines when the binder clones the parse snapshot instead of re-lexing', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
+  it('still speed-hint outlines when multi-artifact binding clones the parse snapshot', () => {
+    const map = compileStringMulti(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, {
+      messageBus: true,
+      optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000,
+      compileDeclarations: ['Store'],
+    });
+    const artifact = map.Store;
+    expect(artifact).toBeDefined();
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+    expect(artifact.compiler.options?.__cheapAdmissionCodegen).toBeUndefined();
+  });
+
+  it('still speed-hint outlines after sharing lexer prediction caches', () => {
+    const artifact = compileString(`
+      contract Store() {
+        uint256 a;
+        uint256 b;
+        function set(uint256 v) public {
+          this.a = v; this.b = v; require(this.a == this.b);
+        }
+      }
+    `, { messageBus: false, optimizeForCompilationSpeed: true, maximumInputBytes: 1_000_000 });
+    const whole = artifact.debug?.bytecode ?? '';
+    expect(whole.length).toBeGreaterThan(0);
+    expect(decodeAuthenticationInstructions(hexToBin(whole))
+      .some((instruction) => instruction.opcode === OpcodesBCH.OP_INVOKE)).toBe(true);
+  });
+
   it('still speed-hint outlines when leftover rounds reuse interned fingerprints', () => {
     const artifact = compileString(`
       contract Store() {

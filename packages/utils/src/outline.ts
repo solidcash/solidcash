@@ -779,17 +779,16 @@ function packedWindowKey(ids: Int32Array, start: number, width: number): string 
     );
     return key;
   }
-  let key = '';
+  const chars = new Array<number>(width * 4);
   for (let offset = 0; offset < width; offset += 1) {
     const value = ids[start + offset] | 0;
-    key += String.fromCharCode(
-      value & 0xff,
-      (value >>> 8) & 0xff,
-      (value >>> 16) & 0xff,
-      (value >>> 24) & 0xff,
-    );
+    const at = offset * 4;
+    chars[at] = value & 0xff;
+    chars[at + 1] = (value >>> 8) & 0xff;
+    chars[at + 2] = (value >>> 16) & 0xff;
+    chars[at + 3] = (value >>> 24) & 0xff;
   }
-  return key;
+  return String.fromCharCode(...chars);
 }
 
 function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[] {

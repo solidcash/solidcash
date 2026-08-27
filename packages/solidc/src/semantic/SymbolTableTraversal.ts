@@ -326,11 +326,11 @@ function getMaxPushdataEncodedSizeForType(
  * The subset of RESOLVED_BACKREF_KEYS that leaves the current CONTRACT. A walk collecting work that this
  * contract's own block must fund follows the intra-contract edges and stops at these.
  */
-const CROSS_CONTRACT_BACKREF_KEYS = new Set(['referencedContract']);
+const CROSS_CONTRACT_BACKREF_KEYS = new Set(['referencedContract', 'type', 'location']);
 
 const RESOLVED_BACKREF_KEYS = new Set([
   'location', 'definition', 'resolvedFunction', 'collection', 'stateVariable', 'errorDefinition',
-  'referencedContract', 'symbolTable', 'type',
+  'referencedContract', 'symbolTable', 'type', 'name', 'functionId', 'functionReference', 'selectorHex', 'opRolls', 'abiType', 'error',
 ]);
 
 interface FunctionBodySurvey {

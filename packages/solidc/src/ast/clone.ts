@@ -50,7 +50,7 @@ function cloneNodeWithMemo<T extends Node>(node: T, memo: WeakMap<object, unknow
   const clone = Object.create(Object.getPrototypeOf(node));
   memo.set(node, clone);
   for (const [key, value] of Object.entries(node)) {
-    if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition' || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable' || key === 'collection') { clone[key] = value; continue; }
+    if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition' || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable' || key === 'collection' || key === 'type' || key === 'location') { clone[key] = value; continue; }
     clone[key] = cloneValue(value, memo);
   }
   // Preserve INTRA-node aliasing of a MethodCallStatementNode's `.call` and `.expression`: post-first-traversal they

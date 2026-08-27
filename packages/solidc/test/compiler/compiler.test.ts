@@ -122,6 +122,21 @@ describe('Compiler', () => {
       expect(errors).toHaveLength(1);
     });
 
+    it('reports Solidity syntax errors after cloning a parse snapshot for later passes', () => {
+      const errors: string[] = [];
+      const errorListener: SolidCashErrorListener = {
+        syntaxError(_recognizer, _offendingSymbol, line, charPositionInLine, message): void {
+          errors.push(`${line}:${charPositionInLine}:${message}`);
+        },
+      };
+
+      expect(() => compileString(
+        'contract Store { function set(uint256 v) public { a =  } }',
+        { errorListener, solidityImportCompat: true },
+      )).toThrow(Errors.ParseError);
+      expect(errors).toHaveLength(1);
+    });
+
     it('does not include custom error listeners in compiler artifact options', () => {
       const errorListener: SolidCashErrorListener = {
         syntaxError(): void {

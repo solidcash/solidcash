@@ -165,7 +165,6 @@ const controlDelta = (element: Script[number]): number => {
 
 const isBarrier = (element: Script[number]): boolean =>
   typeof element === 'number' && BARRIER_FLAGS[element] !== 0;
-const neverAnchored = (): boolean => false;
 
 interface BalanceScratch {
   // Candidate regions are scanned sequentially. Reusing these dense tables avoids constructing a Map (or fresh
@@ -173,6 +172,9 @@ interface BalanceScratch {
   firstIndexAtDepth: Int32Array;
   depthGeneration: Uint32Array;
   generation: number;
+  bestStart: number;
+  bestEnd: number;
+  bestBytes: number;
 }
 
 /**
@@ -189,32 +191,34 @@ interface BalanceScratch {
  * shallower than it - those have the matching OP_IF inside the span.
  */
 function longestBalancedSpan(
-  elements: Script, anchored: (index: number) => boolean,
+  elements: Script, anchoredIndices: Uint8Array | undefined,
   regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
-): { start: number; end: number; bytes: number } {
-  let best = { start: 0, end: 0, bytes: 0 };
+): BalanceScratch {
+  let bestStart = 0;
+  let bestEnd = 0;
+  let bestBytes = 0;
   let depth = 0;
   const { firstIndexAtDepth, depthGeneration } = scratch;
   let generation = ++scratch.generation;
   depthGeneration[0] = generation;
   firstIndexAtDepth[0] = 0;
-  const reset = (start: number): void => {
-    depth = 0;
-    generation = ++scratch.generation;
-    depthGeneration[0] = generation;
-    firstIndexAtDepth[0] = start;
-  };
   for (let i = 0; i < regionLength; i += 1) {
     const element = elements[regionStart + i];
-    if (isBarrier(element) || anchored(i)) {
-      reset(i + 1);
+    if (isBarrier(element) || (anchoredIndices !== undefined && anchoredIndices[i] !== 0)) {
+      depth = 0;
+      generation = ++scratch.generation;
+      depthGeneration[0] = generation;
+      firstIndexAtDepth[0] = i + 1;
       continue;
     }
     if (element === Op.OP_ELSE) depthGeneration[depth] = 0;
     const previousDepth = depth;
     depth += controlDelta(element);
     if (depth < 0) {
-      reset(i + 1);
+      depth = 0;
+      generation = ++scratch.generation;
+      depthGeneration[0] = generation;
+      firstIndexAtDepth[0] = i + 1;
       continue;
     }
     if (depth < previousDepth) {
@@ -227,17 +231,23 @@ function longestBalancedSpan(
     }
     const start = firstIndexAtDepth[depth];
     const bytes = bytePrefix[regionStart + i + 1] - bytePrefix[regionStart + start];
-    if (bytes > best.bytes) best = { start, end: i + 1, bytes };
+    if (bytes > bestBytes) {
+      bestStart = start;
+      bestEnd = i + 1;
+      bestBytes = bytes;
+    }
   }
-  return best;
+  scratch.bestStart = bestStart;
+  scratch.bestEnd = bestEnd;
+  scratch.bestBytes = bestBytes;
+  return scratch;
 }
-
-interface Occurrence { body: number; start: number }
 
 interface Candidate {
   span: Script;
   bytes: number;
-  occurrences: Occurrence[];
+  /** Flat body/start pairs, kept packed to avoid one object allocation per candidate occurrence. */
+  occurrences: number[];
   saved: number;
 }
 
@@ -246,6 +256,13 @@ function sortCandidates(candidates: Candidate[], ranking: 'savings' | 'density')
     ? (right.saved / right.bytes) - (left.saved / left.bytes) : right.saved - left.saved)
     || right.saved - left.saved || right.bytes - left.bytes);
 }
+
+const costCandidates = (
+  candidates: readonly Candidate[], idPushBytes: number, ranking: 'savings' | 'density',
+): Candidate[] => sortCandidates(candidates.flatMap((candidate) => {
+  const saved = savingsOf(candidate.bytes, candidate.occurrences.length / 2, idPushBytes);
+  return saved > 0 ? [{ ...candidate, saved }] : [];
+}), ranking);
 
 /** Net bytes saved by sharing `count` copies of a `bytes`-sized span behind `idPushBytes`-sized invocations. */
 function savingsOf(bytes: number, count: number, idPushBytes: number): number {
@@ -258,22 +275,754 @@ function savingsOf(bytes: number, count: number, idPushBytes: number): number {
 const scriptBytes = (script: Script): number =>
   script.reduce<number>((sum, element) => sum + elementByteSize(element), 0);
 
-/**
- * Total bytes the caller will emit for this corpus: every body verbatim, plus one
- * `<body-push> <id-push> OP_DEFINE` per outlined function.
- *
- * Per-candidate savings are estimated against the corpus as it stood at the start of a round, so a round that
- * applies several overlapping-in-effect candidates can cost more than the sum of its parts promised. Measuring
- * the whole corpus is what lets a round be judged on its actual result rather than on that estimate.
- */
-function emittedBytes(bodies: { script: Script }[], functions: OutlinedFunction[]): number {
-  let total = bodies.reduce((sum, body) => sum + scriptBytes(body.script), 0);
-  for (const fn of functions) {
-    const bytes = scriptBytes(fn.script);
-    const definitionOverhead = bytes < 76 ? 1 : bytes < 256 ? 2 : 3;
-    total += definitionOverhead + bytes + elementByteSize(fn.id) + 1;
+interface CachedBodyFingerprint {
+  ids: Int32Array;
+  prefix: Uint32Array;
+  hashes: Map<number, Int32Array>;
+}
+
+interface OutlineIntern {
+  keyIds: Map<string, number>;
+  bodyByScript: WeakMap<Script, CachedBodyFingerprint>;
+}
+
+interface CandidateCorpus {
+  bodyIds: Int32Array[];
+  bodyBytePrefixes: Uint32Array[];
+  scripts: Script[];
+  intern?: OutlineIntern;
+  bodyAnchorBounds: ({ minimum: number; maximum: number } | undefined)[];
+  maximumBodyLength: number;
+  windowHashes: Map<number, Int32Array[]>;
+  constantGroups?: number[][];
+}
+
+/** Immutable element identities and encoded-byte offsets shared by first-round strategy probes. */
+function prepareCandidateCorpus(bodies: OutlineBody[], intern?: OutlineIntern): CandidateCorpus {
+  const keyIds = intern?.keyIds ?? new Map<string, number>();
+  const idOf = (element: Script[number]): number => {
+    if (typeof element === 'number') return element + 1;
+    const key = elementKey(element);
+    const existing = keyIds.get(key);
+    if (existing !== undefined) return existing;
+    const assigned = 257 + keyIds.size;
+    keyIds.set(key, assigned);
+    return assigned;
+  };
+  const bodyIds = new Array<Int32Array>(bodies.length);
+  const bodyBytePrefixes = new Array<Uint32Array>(bodies.length);
+  const scripts = new Array<Script>(bodies.length);
+  let maximumBodyLength = 0;
+  for (let bodyIndex = 0; bodyIndex < bodies.length; bodyIndex += 1) {
+    const script = bodies[bodyIndex].script;
+    scripts[bodyIndex] = script;
+    const cachedBody = intern?.bodyByScript.get(script);
+    if (cachedBody !== undefined) {
+      bodyIds[bodyIndex] = cachedBody.ids;
+      bodyBytePrefixes[bodyIndex] = cachedBody.prefix;
+      if (script.length > maximumBodyLength) maximumBodyLength = script.length;
+      continue;
+    }
+    const ids = new Int32Array(script.length);
+    const prefix = new Uint32Array(script.length + 1);
+    if (script.length > maximumBodyLength) maximumBodyLength = script.length;
+    for (let i = 0; i < script.length; i += 1) {
+      ids[i] = idOf(script[i]);
+      prefix[i + 1] = prefix[i] + elementByteSize(script[i]);
+    }
+    bodyIds[bodyIndex] = ids;
+    bodyBytePrefixes[bodyIndex] = prefix;
+    intern?.bodyByScript.set(script, { ids, prefix, hashes: new Map() });
   }
-  return total;
+  return {
+    bodyIds,
+    bodyBytePrefixes,
+    scripts,
+    intern,
+    bodyAnchorBounds: bodies.map((body) => {
+      const anchors = body.anchors;
+      if (anchors === undefined || anchors.length === 0) return undefined;
+      let minimum = anchors[0];
+      let maximum = minimum;
+      for (let index = 1; index < anchors.length; index += 1) {
+        if (anchors[index] < minimum) minimum = anchors[index];
+        if (anchors[index] > maximum) maximum = anchors[index];
+      }
+      return { minimum, maximum };
+    }),
+    maximumBodyLength,
+    windowHashes: new Map(),
+  };
+}
+
+// Multiplicative inverse of 31 modulo 2^32. The outlining hash wraps at 32 bits, so this reverses one appended
+// polynomial term exactly rather than merely producing an equivalent bucket distribution.
+const HASH_BASE_INVERSE = 3_186_588_639;
+
+// Hash-bucket collisions are split on the exact window. Decimal `id,id,` strings allocate and convert
+// every int32; four UTF-16 units per id pack the same identity without conversion.
+function packedWindowKey(ids: Int32Array, start: number, width: number): string {
+  if (width === 10) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    const v5 = ids[start + 5] | 0;
+    key += String.fromCharCode(
+      v5 & 0xff,
+      (v5 >>> 8) & 0xff,
+      (v5 >>> 16) & 0xff,
+      (v5 >>> 24) & 0xff,
+    );
+    const v6 = ids[start + 6] | 0;
+    key += String.fromCharCode(
+      v6 & 0xff,
+      (v6 >>> 8) & 0xff,
+      (v6 >>> 16) & 0xff,
+      (v6 >>> 24) & 0xff,
+    );
+    const v7 = ids[start + 7] | 0;
+    key += String.fromCharCode(
+      v7 & 0xff,
+      (v7 >>> 8) & 0xff,
+      (v7 >>> 16) & 0xff,
+      (v7 >>> 24) & 0xff,
+    );
+    const v8 = ids[start + 8] | 0;
+    key += String.fromCharCode(
+      v8 & 0xff,
+      (v8 >>> 8) & 0xff,
+      (v8 >>> 16) & 0xff,
+      (v8 >>> 24) & 0xff,
+    );
+    const v9 = ids[start + 9] | 0;
+    key += String.fromCharCode(
+      v9 & 0xff,
+      (v9 >>> 8) & 0xff,
+      (v9 >>> 16) & 0xff,
+      (v9 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 7) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    const v5 = ids[start + 5] | 0;
+    key += String.fromCharCode(
+      v5 & 0xff,
+      (v5 >>> 8) & 0xff,
+      (v5 >>> 16) & 0xff,
+      (v5 >>> 24) & 0xff,
+    );
+    const v6 = ids[start + 6] | 0;
+    key += String.fromCharCode(
+      v6 & 0xff,
+      (v6 >>> 8) & 0xff,
+      (v6 >>> 16) & 0xff,
+      (v6 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 6) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    const v5 = ids[start + 5] | 0;
+    key += String.fromCharCode(
+      v5 & 0xff,
+      (v5 >>> 8) & 0xff,
+      (v5 >>> 16) & 0xff,
+      (v5 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 3) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 12) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    const v5 = ids[start + 5] | 0;
+    key += String.fromCharCode(
+      v5 & 0xff,
+      (v5 >>> 8) & 0xff,
+      (v5 >>> 16) & 0xff,
+      (v5 >>> 24) & 0xff,
+    );
+    const v6 = ids[start + 6] | 0;
+    key += String.fromCharCode(
+      v6 & 0xff,
+      (v6 >>> 8) & 0xff,
+      (v6 >>> 16) & 0xff,
+      (v6 >>> 24) & 0xff,
+    );
+    const v7 = ids[start + 7] | 0;
+    key += String.fromCharCode(
+      v7 & 0xff,
+      (v7 >>> 8) & 0xff,
+      (v7 >>> 16) & 0xff,
+      (v7 >>> 24) & 0xff,
+    );
+    const v8 = ids[start + 8] | 0;
+    key += String.fromCharCode(
+      v8 & 0xff,
+      (v8 >>> 8) & 0xff,
+      (v8 >>> 16) & 0xff,
+      (v8 >>> 24) & 0xff,
+    );
+    const v9 = ids[start + 9] | 0;
+    key += String.fromCharCode(
+      v9 & 0xff,
+      (v9 >>> 8) & 0xff,
+      (v9 >>> 16) & 0xff,
+      (v9 >>> 24) & 0xff,
+    );
+    const v10 = ids[start + 10] | 0;
+    key += String.fromCharCode(
+      v10 & 0xff,
+      (v10 >>> 8) & 0xff,
+      (v10 >>> 16) & 0xff,
+      (v10 >>> 24) & 0xff,
+    );
+    const v11 = ids[start + 11] | 0;
+    key += String.fromCharCode(
+      v11 & 0xff,
+      (v11 >>> 8) & 0xff,
+      (v11 >>> 16) & 0xff,
+      (v11 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 8) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    const v5 = ids[start + 5] | 0;
+    key += String.fromCharCode(
+      v5 & 0xff,
+      (v5 >>> 8) & 0xff,
+      (v5 >>> 16) & 0xff,
+      (v5 >>> 24) & 0xff,
+    );
+    const v6 = ids[start + 6] | 0;
+    key += String.fromCharCode(
+      v6 & 0xff,
+      (v6 >>> 8) & 0xff,
+      (v6 >>> 16) & 0xff,
+      (v6 >>> 24) & 0xff,
+    );
+    const v7 = ids[start + 7] | 0;
+    key += String.fromCharCode(
+      v7 & 0xff,
+      (v7 >>> 8) & 0xff,
+      (v7 >>> 16) & 0xff,
+      (v7 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 5) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    const v4 = ids[start + 4] | 0;
+    key += String.fromCharCode(
+      v4 & 0xff,
+      (v4 >>> 8) & 0xff,
+      (v4 >>> 16) & 0xff,
+      (v4 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  if (width === 4) {
+    let key = '';
+    const v0 = ids[start + 0] | 0;
+    key += String.fromCharCode(
+      v0 & 0xff,
+      (v0 >>> 8) & 0xff,
+      (v0 >>> 16) & 0xff,
+      (v0 >>> 24) & 0xff,
+    );
+    const v1 = ids[start + 1] | 0;
+    key += String.fromCharCode(
+      v1 & 0xff,
+      (v1 >>> 8) & 0xff,
+      (v1 >>> 16) & 0xff,
+      (v1 >>> 24) & 0xff,
+    );
+    const v2 = ids[start + 2] | 0;
+    key += String.fromCharCode(
+      v2 & 0xff,
+      (v2 >>> 8) & 0xff,
+      (v2 >>> 16) & 0xff,
+      (v2 >>> 24) & 0xff,
+    );
+    const v3 = ids[start + 3] | 0;
+    key += String.fromCharCode(
+      v3 & 0xff,
+      (v3 >>> 8) & 0xff,
+      (v3 >>> 16) & 0xff,
+      (v3 >>> 24) & 0xff,
+    );
+    return key;
+  }
+  const chars = new Array<number>(width * 4);
+  for (let offset = 0; offset < width; offset += 1) {
+    const value = ids[start + offset] | 0;
+    const at = offset * 4;
+    chars[at] = value & 0xff;
+    chars[at + 1] = (value >>> 8) & 0xff;
+    chars[at + 2] = (value >>> 16) & 0xff;
+    chars[at + 3] = (value >>> 24) & 0xff;
+  }
+  return String.fromCharCode(...chars);
+}
+
+function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[] {
+  const cached = prepared.windowHashes.get(width);
+  if (cached !== undefined) return cached;
+
+  let widerWidth = Number.POSITIVE_INFINITY;
+  for (const candidate of prepared.windowHashes.keys()) {
+    if (candidate > width && candidate < widerWidth) widerWidth = candidate;
+  }
+  if (widerWidth !== Number.POSITIVE_INFINITY) {
+    let wider = prepared.windowHashes.get(widerWidth)!;
+    for (let nextWidth = widerWidth - 1; nextWidth >= width; nextWidth -= 1) {
+      const widerAtPreviousWidth = wider;
+      const narrower = prepared.bodyIds.map((ids, bodyIndex) => {
+        const hashes = new Int32Array(Math.max(0, ids.length - nextWidth + 1));
+        const widerHashes = widerAtPreviousWidth[bodyIndex];
+        for (let i = 0; i < widerHashes.length; i += 1) {
+          hashes[i] = Math.imul(widerHashes[i] - ids[i + nextWidth], HASH_BASE_INVERSE);
+        }
+        if (hashes.length > widerHashes.length) {
+          const start = hashes.length - 1;
+          let hash = ids[start];
+          for (let offset = 1; offset < nextWidth; offset += 1) {
+            hash = (Math.imul(hash, 31) + ids[start + offset]) | 0;
+          }
+          hashes[start] = hash;
+        }
+        return hashes;
+      });
+      prepared.windowHashes.set(nextWidth, narrower);
+      wider = narrower;
+    }
+    return wider;
+  }
+
+  const hashes = prepared.bodyIds.map((ids, bodyIndex) => {
+    const fingerprint = prepared.intern?.bodyByScript.get(prepared.scripts[bodyIndex]);
+    const cachedHashes = fingerprint?.hashes.get(width);
+    if (cachedHashes !== undefined) return cachedHashes;
+    const result = new Int32Array(Math.max(0, ids.length - width + 1));
+    if (width === 8) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+      }
+    } else if (width === 5) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+      }
+    } else if (width === 3) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+      }
+    } else if (width === 6) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+      }
+    } else if (width === 7) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+      }
+    } else if (width === 9) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+      }
+    } else if (width === 10) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+      }
+    } else if (width === 11) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+      }
+    } else if (width === 13) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 11]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 12]) | 0;
+      }
+    } else if (width === 14) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 11]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 12]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 13]) | 0;
+      }
+    } else if (width === 15) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 11]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 12]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 13]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 14]) | 0;
+      }
+    } else if (width === 16) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 11]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 12]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 13]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 14]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 15]) | 0;
+      }
+    } else if (width === 4) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+      }
+    } else if (width === 12) {
+      for (let start = 0; start < result.length; start += 1) {
+        let hash = ids[start];
+        hash = (Math.imul(hash, 31) + ids[start + 1]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 2]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 3]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 4]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 5]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 6]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 7]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 8]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 9]) | 0;
+        hash = (Math.imul(hash, 31) + ids[start + 10]) | 0;
+        result[start] = (Math.imul(hash, 31) + ids[start + 11]) | 0;
+      }
+    } else if (result.length > 0) {
+      let hash = ids[0];
+      for (let offset = 1; offset < width; offset += 1) {
+        hash = (Math.imul(hash, 31) + ids[offset]) | 0;
+      }
+      result[0] = hash;
+      let pow = 1;
+      for (let i = 0; i < width - 1; i += 1) pow = Math.imul(pow, 31);
+      for (let start = 1; start < result.length; start += 1) {
+        hash = (Math.imul((hash - Math.imul(ids[start - 1], pow)) | 0, 31) + ids[start + width - 1]) | 0;
+        result[start] = hash;
+      }
+    }
+    fingerprint?.hashes.set(width, result);
+    return result;
+  });
+  prepared.windowHashes.set(width, hashes);
+  return hashes;
 }
 
 /**
@@ -284,90 +1033,117 @@ function emittedBytes(bodies: { script: Script }[], functions: OutlinedFunction[
  */
 function findCandidates(
   bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
-  candidateGroupsPerRound: number,
+  candidateGroupsPerRound: number, prepared: CandidateCorpus = prepareCandidateCorpus(bodies),
 ): Candidate[] {
-  const keyIds = new Map<string, number>();
-  const idOf = (element: Script[number]): number => {
-    const key = elementKey(element);
-    const existing = keyIds.get(key);
-    if (existing !== undefined) return existing;
-    const assigned = keyIds.size + 1;
-    keyIds.set(key, assigned);
-    return assigned;
-  };
-  const bodyIds = bodies.map((body) => body.script.map(idOf));
-  const maximumBodyLength = bodies.reduce((maximum, body) => Math.max(maximum, body.script.length), 0);
-  // Pack (left body, right body, signed diagonal) into one collision-free numeric key. Body indices and offsets
-  // are bounded by these in-memory arrays, so this stays far below Number.MAX_SAFE_INTEGER for compilable input.
-  const diagonalSpan = maximumBodyLength * 2 + 1;
-  // Candidate seeds at adjacent offsets often compare the same long equal runs again (particularly generated
-  // function bodies with a shared prologue/epilogue). Memoize exact suffix-prefix lengths by body pair and
-  // diagonal. Filling the run backwards makes every element on a diagonal participate in at most one scan.
-  const commonPrefixByDiagonal = new Map<number, Int32Array>();
+  const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, maximumBodyLength } = prepared;
   const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
     const left = bodyIds[leftBody];
     const right = bodyIds[rightBody];
     if (leftStart >= left.length || rightStart >= right.length) return 0;
-    const key = (leftBody * bodies.length + rightBody) * diagonalSpan
-      + rightStart - leftStart + maximumBodyLength;
-    let lengths = commonPrefixByDiagonal.get(key);
-    if (lengths === undefined) {
-      lengths = new Int32Array(left.length);
-      commonPrefixByDiagonal.set(key, lengths);
+    // Marketplace leftover corpora have hundreds of bodies. Memoizing every diagonal as an Int32Array of
+    // the full body length spent more time allocating than it saved on repeated scans.
+    let n = 0;
+    const leftLimit = left.length - leftStart;
+    const rightLimit = right.length - rightStart;
+    const limit = leftLimit < rightLimit ? leftLimit : rightLimit;
+    while (n + 8 <= limit
+      && left[leftStart + n] === right[rightStart + n]
+      && left[leftStart + n + 1] === right[rightStart + n + 1]
+      && left[leftStart + n + 2] === right[rightStart + n + 2]
+      && left[leftStart + n + 3] === right[rightStart + n + 3]
+      && left[leftStart + n + 4] === right[rightStart + n + 4]
+      && left[leftStart + n + 5] === right[rightStart + n + 5]
+      && left[leftStart + n + 6] === right[rightStart + n + 6]
+      && left[leftStart + n + 7] === right[rightStart + n + 7]) {
+      n += 8;
     }
-    const rightOffset = rightStart - leftStart;
-    let cursor = leftStart;
-    while (cursor < left.length && cursor + rightOffset < right.length
-      && lengths[cursor] === 0 && left[cursor] === right[cursor + rightOffset]) cursor += 1;
-    let suffix = cursor < left.length && lengths[cursor] !== 0 ? lengths[cursor] - 1 : 0;
-    for (let i = cursor - 1; i >= leftStart; i -= 1) {
-      suffix += 1;
-      lengths[i] = suffix + 1;
+    while (n + 4 <= limit
+      && left[leftStart + n] === right[rightStart + n]
+      && left[leftStart + n + 1] === right[rightStart + n + 1]
+      && left[leftStart + n + 2] === right[rightStart + n + 2]
+      && left[leftStart + n + 3] === right[rightStart + n + 3]) {
+      n += 4;
     }
-    if (lengths[leftStart] === 0) lengths[leftStart] = 1;
-    return lengths[leftStart] - 1;
+    while (n < limit && left[leftStart + n] === right[rightStart + n]) n += 1;
+    return n;
   };
-  const bodyBytePrefixes = bodies.map((body) => {
-    const prefix = new Uint32Array(body.script.length + 1);
-    for (let i = 0; i < body.script.length; i += 1) {
-      prefix[i + 1] = prefix[i] + elementByteSize(body.script[i]);
-    }
-    return prefix;
-  });
   const balanceScratch: BalanceScratch = {
     firstIndexAtDepth: new Int32Array(maximumBodyLength + 1),
     depthGeneration: new Uint32Array(maximumBodyLength + 1),
     generation: 0,
+    bestStart: 0,
+    bestEnd: 0,
+    bestBytes: 0,
   };
 
-  const windows = new Map<number, Occurrence[]>();
-  bodyIds.forEach((ids, bodyIndex) => {
+  // Seed groups are flat body/start pairs. Most leftover 4-grams are unique; delay allocating a group array
+  // until a hash is seen twice so singletons never become empty buckets.
+  const windows = new Map<number, number[]>();
+  const firstBodyByHash = new Map<number, number>();
+  const firstStartByHash = new Map<number, number>();
+  const windowHashes = hashesForWindow(prepared, minimumWindowElements);
+  for (let bodyIndex = 0; bodyIndex < bodyIds.length; bodyIndex += 1) {
+    const ids = bodyIds[bodyIndex];
+    if (ids.length < minimumWindowElements) continue;
+    const hashes = windowHashes[bodyIndex];
     for (let i = 0; i + minimumWindowElements <= ids.length; i += 1) {
-      // The first polynomial term is the id itself (`imul(0, 31) + id`); seed it directly and save one multiply
-      // in this loop, which runs for every candidate window in every outlining round and strategy.
-      let hash = ids[i];
-      for (let j = 1; j < minimumWindowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
-      let group = windows.get(hash);
-      if (group === undefined) {
-        group = [];
-        windows.set(hash, group);
+      const hash = hashes[i];
+      const group = windows.get(hash);
+      if (group !== undefined) {
+        group.push(bodyIndex, i);
+        continue;
       }
-      group.push({ body: bodyIndex, start: i });
+      const firstBody = firstBodyByHash.get(hash);
+      if (firstBody === undefined) {
+        firstBodyByHash.set(hash, bodyIndex);
+        firstStartByHash.set(hash, i);
+        continue;
+      }
+      windows.set(hash, [firstBody, firstStartByHash.get(hash)!, bodyIndex, i]);
+      firstBodyByHash.delete(hash);
+      firstStartByHash.delete(hash);
     }
-  });
+  }
 
   // A hash bucket can mix distinct windows; split each bucket on the actual element ids before extending.
-  const groups: { occurrences: Occurrence[]; seed: number }[] = [];
+  const groups: { occurrences: number[]; seed: number; rank?: number }[] = [];
   for (const bucket of windows.values()) {
-    if (bucket.length < 2) continue;
-    const first = bucket[0];
-    const firstIds = bodyIds[first.body];
+    if (bucket.length < 4) continue;
+    const firstBody = bucket[0];
+    const firstStart = bucket[1];
+    const firstIds = bodyIds[firstBody];
     let collision = false;
-    for (let occurrenceIndex = 1; occurrenceIndex < bucket.length && !collision; occurrenceIndex += 1) {
-      const occurrence = bucket[occurrenceIndex];
-      const ids = bodyIds[occurrence.body];
-      for (let offset = 0; offset < minimumWindowElements; offset += 1) {
-        if (ids[occurrence.start + offset] !== firstIds[first.start + offset]) {
+    for (let occurrenceIndex = 2; occurrenceIndex < bucket.length && !collision; occurrenceIndex += 2) {
+      const body = bucket[occurrenceIndex];
+      const start = bucket[occurrenceIndex + 1];
+      const ids = bodyIds[body];
+      let offset = 0;
+      while (offset + 8 <= minimumWindowElements) {
+        if (ids[start + offset] !== firstIds[firstStart + offset]
+          || ids[start + offset + 1] !== firstIds[firstStart + offset + 1]
+          || ids[start + offset + 2] !== firstIds[firstStart + offset + 2]
+          || ids[start + offset + 3] !== firstIds[firstStart + offset + 3]
+          || ids[start + offset + 4] !== firstIds[firstStart + offset + 4]
+          || ids[start + offset + 5] !== firstIds[firstStart + offset + 5]
+          || ids[start + offset + 6] !== firstIds[firstStart + offset + 6]
+          || ids[start + offset + 7] !== firstIds[firstStart + offset + 7]) {
+          collision = true;
+          break;
+        }
+        offset += 8;
+      }
+      while (offset + 4 <= minimumWindowElements) {
+        if (ids[start + offset] !== firstIds[firstStart + offset]
+          || ids[start + offset + 1] !== firstIds[firstStart + offset + 1]
+          || ids[start + offset + 2] !== firstIds[firstStart + offset + 2]
+          || ids[start + offset + 3] !== firstIds[firstStart + offset + 3]) {
+          collision = true;
+          break;
+        }
+        offset += 4;
+      }
+      for (; !collision && offset < minimumWindowElements; offset += 1) {
+        if (ids[start + offset] !== firstIds[firstStart + offset]) {
           collision = true;
           break;
         }
@@ -377,126 +1153,168 @@ function findCandidates(
       groups.push({ occurrences: bucket, seed: minimumWindowElements });
       continue;
     }
-    const exact = new Map<string, Occurrence[]>();
-    for (const occurrence of bucket) {
-      const ids = bodyIds[occurrence.body];
-      const key = ids.slice(occurrence.start, occurrence.start + minimumWindowElements).join(',');
+    const exact = new Map<string, number[]>();
+    for (let occurrenceIndex = 0; occurrenceIndex < bucket.length; occurrenceIndex += 2) {
+      const body = bucket[occurrenceIndex];
+      const start = bucket[occurrenceIndex + 1];
+      const ids = bodyIds[body];
+      const key = packedWindowKey(ids, start, minimumWindowElements);
       let group = exact.get(key);
       if (group === undefined) {
         group = [];
         exact.set(key, group);
       }
-      group.push(occurrence);
+      group.push(body, start);
     }
     for (const group of exact.values()) {
-      if (group.length >= 2) groups.push({ occurrences: group, seed: minimumWindowElements });
+      if (group.length >= 4) groups.push({ occurrences: group, seed: minimumWindowElements });
     }
   }
   // Ranked by the gross bytes a group could share - occurrences times the encoded size of its seed - not by
   // occurrence count. Count alone treats a seed of eight one-byte opcodes as equal to one carrying a 32-byte
   // constant, so the truncation below could drop the more valuable group.
-  const seedBytes = (group: { occurrences: Occurrence[]; seed: number }): number => {
-    const { body, start } = group.occurrences[0];
-    return bodyBytePrefixes[body][start + group.seed] - bodyBytePrefixes[body][start];
-  };
-  const rank = new Map(groups.map((group) => [group, group.occurrences.length * seedBytes(group)]));
-  groups.sort((left, right) => rank.get(right)! - rank.get(left)!);
-  groups.splice(candidateGroupsPerRound);
+  for (const group of groups) {
+    const body = group.occurrences[0];
+    const start = group.occurrences[1];
+    const seedBytes = bodyBytePrefixes[body][start + group.seed] - bodyBytePrefixes[body][start];
+    group.rank = (group.occurrences.length / 2) * seedBytes;
+  }
+  if (groups.length > 1) groups.sort((left, right) => right.rank! - left.rank!);
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process
+    ?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
+    console.error('[outline-groups]', JSON.stringify({
+      minimumWindowElements,
+      candidateGroupsPerRound,
+      hashBuckets: windows.size,
+      rankedGroups: groups.length,
+    }));
+  }
+  if (groups.length > candidateGroupsPerRound) groups.splice(candidateGroupsPerRound);
 
   // A large repeated constant never reaches the window length, however many times it appears and however big
   // it is: 256-bit arithmetic bounds are emitted inline at every overflow check, 32 bytes a time. Seed those
   // one element wide so the same pipeline can share them. An identifier operand is excluded - rewriting the
   // element in front of an OP_DEFINE or OP_INVOKE would redirect dispatch rather than share a constant.
-  const constants = new Map<number, Occurrence[]>();
-  bodies.forEach((body, bodyIndex) => {
-    for (let i = 0; i < body.script.length; i += 1) {
-      const element = body.script[i];
-      if (typeof element === 'number') continue;
-      if (elementByteSize(element) < MINIMUM_POOLED_CONSTANT_BYTES) continue;
-      const next = body.script[i + 1];
-      if (next === Op.OP_DEFINE || next === Op.OP_INVOKE) continue;
-      // `<body> <id> OP_DEFINE`: the first element is a function being defined, not a constant being used.
-      if (body.script[i + 2] === Op.OP_DEFINE) continue;
-      // `bodyIds` already interns byte-identical elements for this discovery pass. Reuse that exact identity rather
-      // than rebuilding the (potentially large) constant's string key a second time.
-      const key = bodyIds[bodyIndex][i];
-      let group = constants.get(key);
-      if (group === undefined) {
-        group = [];
-        constants.set(key, group);
+  let constantGroups = prepared.constantGroups;
+  if (constantGroups === undefined) {
+    const constants = new Map<number, number[]>();
+    for (let bodyIndex = 0; bodyIndex < bodies.length; bodyIndex += 1) {
+      const body = bodies[bodyIndex];
+      const ids = bodyIds[bodyIndex];
+      for (let i = 0; i < body.script.length; i += 1) {
+        const element = body.script[i];
+        if (typeof element === 'number') continue;
+        if (elementByteSize(element) < MINIMUM_POOLED_CONSTANT_BYTES) continue;
+        const next = body.script[i + 1];
+        if (next === Op.OP_DEFINE || next === Op.OP_INVOKE) continue;
+        // `<body> <id> OP_DEFINE`: the first element is a function being defined, not a constant being used.
+        if (body.script[i + 2] === Op.OP_DEFINE) continue;
+        // `bodyIds` already interns byte-identical elements for this discovery pass. Reuse that exact identity rather
+        // than rebuilding the (potentially large) constant's string key a second time.
+        const key = ids[i];
+        let group = constants.get(key);
+        if (group === undefined) {
+          group = [];
+          constants.set(key, group);
+        }
+        group.push(bodyIndex, i);
       }
-      group.push({ body: bodyIndex, start: i });
     }
-  });
-  for (const group of constants.values()) if (group.length >= 2) groups.push({ occurrences: group, seed: 1 });
+    constantGroups = [];
+    for (const group of constants.values()) {
+      if (group.length >= 4) constantGroups.push(group);
+    }
+    prepared.constantGroups = constantGroups;
+  }
+  for (const group of constantGroups) groups.push({ occurrences: group, seed: 1 });
 
   const candidates: Candidate[] = [];
   for (const { occurrences: group, seed } of groups) {
     // Grow the match while every occurrence still agrees, so the balance scan sees the full common region.
-    const first = group[0];
-    const firstIds = bodyIds[first.body];
-    let length = firstIds.length - first.start;
-    for (let occurrenceIndex = 1; occurrenceIndex < group.length && length > seed; occurrenceIndex += 1) {
-      const occurrence = group[occurrenceIndex];
-      const ids = bodyIds[occurrence.body];
-      const limit = Math.min(length, ids.length - occurrence.start);
+    const firstBody = group[0];
+    const firstStart = group[1];
+    const firstIds = bodyIds[firstBody];
+    let length = firstIds.length - firstStart;
+    for (let occurrenceIndex = 2; occurrenceIndex < group.length; occurrenceIndex += 2) {
+      const remaining = bodyIds[group[occurrenceIndex]].length - group[occurrenceIndex + 1];
+      if (remaining < length) length = remaining;
+    }
+    for (let occurrenceIndex = 2; occurrenceIndex < group.length && length > seed; occurrenceIndex += 2) {
+      const body = group[occurrenceIndex];
+      const start = group[occurrenceIndex + 1];
       const matching = seed + Math.min(
-        limit - seed,
-        commonPrefixLength(first.body, first.start + seed, occurrence.body, occurrence.start + seed),
+        length - seed,
+        commonPrefixLength(firstBody, firstStart + seed, body, start + seed),
       );
       length = matching;
     }
 
-    const head = group[0];
-    const headScript = bodies[head.body].script;
+    // The balanced span can only be shorter than this full common region, and overlap removal can only reduce
+    // its usable occurrence count. If this optimistic upper bound cannot pay for outlining, no descendant span
+    // can become profitable; avoid anchor collection and the control-flow scan entirely.
+    const maximumBytes = bodyBytePrefixes[firstBody][firstStart + length]
+      - bodyBytePrefixes[firstBody][firstStart];
+    if (savingsOf(maximumBytes, group.length / 2, idPushBytes) <= 0) continue;
+
+    const headScript = bodies[firstBody].script;
     // A span is only relocatable if it is anchor-free at *every* occurrence, so test them all against one
     // region-relative index space.
     let anchoredIndices: Uint8Array | undefined;
-    for (const occurrence of group) {
-      const anchors = bodies[occurrence.body].anchors;
+    for (let occurrenceIndex = 0; occurrenceIndex < group.length; occurrenceIndex += 2) {
+      const body = group[occurrenceIndex];
+      const start = group[occurrenceIndex + 1];
+      const bounds = bodyAnchorBounds[body];
+      if (bounds === undefined || bounds.maximum < start || bounds.minimum >= start + length) continue;
+      const anchors = bodies[body].anchors;
       if (anchors === undefined) continue;
       for (const anchor of anchors) {
-        const relative = anchor - occurrence.start;
+        const relative = anchor - start;
         if (relative >= 0 && relative < length) {
           anchoredIndices ??= new Uint8Array(length);
           anchoredIndices[relative] = 1;
         }
       }
     }
-    const anchored = anchoredIndices === undefined
-      ? neverAnchored
-      : (index: number): boolean => anchoredIndices[index] !== 0;
     const balanced = longestBalancedSpan(
-      headScript, anchored, head.start, length, bodyBytePrefixes[head.body], balanceScratch,
+      headScript, anchoredIndices, firstStart, length, bodyBytePrefixes[firstBody], balanceScratch,
     );
-    if (balanced.bytes === 0) continue;
+    if (balanced.bestBytes === 0) continue;
 
     // Overlapping copies cannot both be replaced; keep a maximal non-overlapping subset. `group` already follows
     // body/start order: windows and constants are scanned in that order, and collision partitioning only filters
     // those streams. Avoid sorting the same sequence again for every candidate.
-    const spanLength = balanced.end - balanced.start;
-    const occurrences: Occurrence[] = [];
-    for (const source of group) {
-      const occurrence = { body: source.body, start: source.start + balanced.start };
-      const previous = occurrences[occurrences.length - 1];
-      if (previous && previous.body === occurrence.body && occurrence.start < previous.start + spanLength) continue;
-      occurrences.push(occurrence);
+    const spanLength = balanced.bestEnd - balanced.bestStart;
+    const occurrences: number[] = [];
+    let previousBody = -1;
+    let nextAvailableStart = 0;
+    for (let occurrenceIndex = 0; occurrenceIndex < group.length; occurrenceIndex += 2) {
+      const body = group[occurrenceIndex];
+      const start = group[occurrenceIndex + 1] + balanced.bestStart;
+      if (previousBody === body && start < nextAvailableStart) continue;
+      occurrences.push(body, start);
+      previousBody = body;
+      nextAvailableStart = start + spanLength;
     }
-    if (occurrences.length < 2) continue;
+    if (occurrences.length < 4) continue;
     // Never place a span boundary between an OP_INVOKE and the operand push that feeds it. Splitting the pair
     // leaves a bare OP_INVOKE taking its identifier off the stack, and the surrounding rewrites can then reach
     // it with a different value than the one that was pushed - the script invokes an identifier nothing defined.
-    if (occurrences.some((occurrence) => {
-      const { script } = bodies[occurrence.body];
-      return script[occurrence.start] === Op.OP_INVOKE
-        || script[occurrence.start + spanLength] === Op.OP_INVOKE;
-    })) continue;
+    let splitsInvoke = false;
+    for (let occurrenceIndex = 0; occurrenceIndex < occurrences.length; occurrenceIndex += 2) {
+      const script = bodies[occurrences[occurrenceIndex]].script;
+      const start = occurrences[occurrenceIndex + 1];
+      if (script[start] === Op.OP_INVOKE || script[start + spanLength] === Op.OP_INVOKE) {
+        splitsInvoke = true;
+        break;
+      }
+    }
+    if (splitsInvoke) continue;
 
-    const saved = savingsOf(balanced.bytes, occurrences.length, idPushBytes);
+    const saved = savingsOf(balanced.bestBytes, occurrences.length / 2, idPushBytes);
     if (saved <= 0) continue;
     candidates.push({
-      span: headScript.slice(head.start + balanced.start, head.start + balanced.end),
-      bytes: balanced.bytes,
+      span: headScript.slice(firstStart + balanced.bestStart, firstStart + balanced.bestEnd),
+      bytes: balanced.bestBytes,
       occurrences,
       saved,
     });
@@ -530,19 +1348,38 @@ export function outlineSharedSpans(
   candidateGroupsPerRound: number = CANDIDATE_GROUPS_PER_ROUND,
   /** Call-scoped cache shared only by attempts that start from the same bodies and anchors. */
   initialCandidateCache?: Map<string, unknown>,
+  /**
+   * Outlining rounds to run. Each round applies every disjoint profitable candidate, so a handful reach the
+   * fixed point; leftover follow-up passes can use fewer than MAXIMUM_ROUNDS without changing the first-pass
+   * budget.
+   */
+  maximumRounds: number = MAXIMUM_ROUNDS,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
+  // Most leftover bodies are never rewritten. Alias the caller's arrays until the first splice so idle
+  // Marketplace helper tails are not copied on every follow-up pass.
   const working = bodies.map((body) => ({
-    script: [...body.script],
-    locationData: [...body.locationData],
+    script: body.script,
+    locationData: body.locationData,
     anchors: [...(body.anchors ?? [])],
-    origins: body.script.map((_element, index) => index),
+    origins: undefined as number[] | undefined,
+    owned: false,
   }));
   const functions: OutlinedFunction[] = [];
+  const claimed: Uint8Array[] = [];
+  const intern: OutlineIntern = (initialCandidateCache?.get('intern') as OutlineIntern | undefined) ?? {
+    keyIds: new Map(),
+    bodyByScript: new WeakMap(),
+  };
+  initialCandidateCache?.set('intern', intern);
   let savedBytes = 0;
 
-  for (let round = 0; round < MAXIMUM_ROUNDS; round += 1) {
+  const rounds = maximumRounds < 1 ? 1 : maximumRounds;
+  const debugRounds = (globalThis as { process?: { env?: Record<string, string> } }).process
+    ?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1';
+  for (let round = 0; round < rounds; round += 1) {
+    const roundStarted = debugRounds ? Date.now() : 0;
     // Outlined bodies join the corpus so a repeat that only becomes visible after sharing is still found.
     const corpus = [
       ...working,
@@ -555,97 +1392,152 @@ export function outlineSharedSpans(
     // marginal candidates back.
     const idPushBytes = peekIdPushBytes?.() ?? PROBE_IDENTIFIER_PUSH_BYTES;
     const initialCacheKey = `${idPushBytes}:${minimumWindowElements}:${candidateGroupsPerRound}`;
-    const cached = round === 0
+    let cached = round === 0
       ? initialCandidateCache?.get(initialCacheKey) as Candidate[] | undefined
       : undefined;
+    // Candidate discovery is independent of identifier width. A narrower identifier admits a strict superset
+    // of the profitable candidates for a wider one, so reuse its immutable discovery snapshot and recost it.
+    if (round === 0 && cached === undefined && initialCandidateCache !== undefined) {
+      for (let width = 1; width < idPushBytes && cached === undefined; width += 1) {
+        cached = initialCandidateCache.get(
+          `superset:${width}:${minimumWindowElements}:${candidateGroupsPerRound}`,
+        ) as Candidate[] | undefined;
+      }
+    }
+    let prepared = round === 0
+      ? initialCandidateCache?.get('prepared-corpus') as CandidateCorpus | undefined
+      : undefined;
+    if (cached === undefined && prepared === undefined) {
+      prepared = prepareCandidateCorpus(corpus, intern);
+      if (round === 0) initialCandidateCache?.set('prepared-corpus', prepared);
+    }
     const candidates = cached === undefined
-      ? findCandidates(corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound)
-      : sortCandidates([...cached], ranking);
-    if (round === 0 && cached === undefined) initialCandidateCache?.set(initialCacheKey, [...candidates]);
+      ? findCandidates(corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound, prepared)
+      : costCandidates(cached, idPushBytes, ranking);
+    if (round === 0 && cached === undefined) {
+      initialCandidateCache?.set(initialCacheKey, [...candidates]);
+      // Applied spans can be rewritten in later rounds; keep a separate immutable array for other width probes.
+      initialCandidateCache?.set(
+        `superset:${initialCacheKey}`,
+        candidates.map((candidate) => ({ ...candidate, span: [...candidate.span] })),
+      );
+    }
     if (candidates.length === 0) break;
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
     // a claimed range makes every overlapping candidate stale until the next round re-measures.
-    const claimed = corpus.map((body) => new Uint8Array(body.script.length));
-    const applied: { definition: OutlinedFunction; occurrences: Occurrence[]; saved: number }[] = [];
+    while (claimed.length < corpus.length) {
+      claimed.push(new Uint8Array(corpus[claimed.length].script.length));
+    }
+    const claimGeneration = round + 1;
+    const applied: { definition: OutlinedFunction; occurrences: number[] }[] = [];
+    const free: number[] = [];
     for (const candidate of candidates) {
       if (functions.length + applied.length >= MAXIMUM_OUTLINED_FUNCTIONS) break;
       const spanLength = candidate.span.length;
-      const free = candidate.occurrences.filter((occurrence) => {
+      free.length = 0;
+      for (let occurrenceIndex = 0; occurrenceIndex < candidate.occurrences.length; occurrenceIndex += 2) {
+        const body = candidate.occurrences[occurrenceIndex];
+        const start = candidate.occurrences[occurrenceIndex + 1];
+        let unclaimed = true;
         for (let i = 0; i < spanLength; i += 1) {
-          if (claimed[occurrence.body][occurrence.start + i] !== 0) return false;
+          if (claimed[body][start + i] === claimGeneration) {
+            unclaimed = false;
+            break;
+          }
         }
-        return true;
-      });
-      if (free.length < 2) continue;
-      if (savingsOf(candidate.bytes, free.length, idPushBytes) <= 0) continue;
-      for (const occurrence of free) {
-        claimed[occurrence.body].fill(1, occurrence.start, occurrence.start + spanLength);
+        if (unclaimed) free.push(body, start);
+      }
+      if (free.length < 4) continue;
+      if (savingsOf(candidate.bytes, free.length / 2, idPushBytes) <= 0) continue;
+      for (let occurrenceIndex = 0; occurrenceIndex < free.length; occurrenceIndex += 2) {
+        const body = free[occurrenceIndex];
+        const start = free[occurrenceIndex + 1];
+        claimed[body].fill(claimGeneration, start, start + spanLength);
       }
       applied.push({
         definition: {
           id: allocateId(),
           script: candidate.span,
           // The shared body inherits its first site's locations; every site maps to the same source construct.
-          locationData: corpus[free[0].body].locationData.slice(free[0].start, free[0].start + spanLength),
+          locationData: corpus[free[0]].locationData.slice(free[1], free[1] + spanLength),
         },
-        occurrences: free,
-        saved: savingsOf(candidate.bytes, free.length, idPushBytes),
+        occurrences: [...free],
       });
     }
     if (applied.length === 0) break;
 
-    // Snapshot every array the rewrite mutates, so a round that turns out not to pay can be undone. The corpus
-    // entries for existing functions alias those functions' own arrays, so restoring the corpus restores both.
-    const before = emittedBytes(working, functions);
-    const snapshot = corpus.map((entry) => ({
-      entry,
-      script: [...entry.script],
-      locationData: [...entry.locationData],
-      anchors: entry.anchors ? [...entry.anchors] : undefined,
-      origins: entry.origins ? [...entry.origins] : undefined,
-    }));
+    // Sites are disjoint, so once the real helper ids have been allocated their byte deltas add exactly. Cost
+    // with each id's actual push width rather than the round's quoted width: a round can cross an encoding-width
+    // boundary after several allocations. Reject a losing round before mutating anything, avoiding rollback
+    // snapshots and whole-corpus before/after measurements.
+    let roundSaved = 0;
+    for (const entry of applied) {
+      roundSaved += savingsOf(
+        scriptBytes(entry.definition.script),
+        entry.occurrences.length / 2,
+        elementByteSize(entry.definition.id),
+      );
+    }
+    if (roundSaved <= 0) break;
+
+    // Most strategy probes discover nothing worth applying. Allocate origin maps only once a rewrite will
+    // actually need them; a no-op result can return the identity map directly below.
+    for (const body of working) {
+      body.origins ??= body.script.map((_element, index) => index);
+    }
 
     // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
-    const edits = applied.flatMap((entry) =>
-      entry.occurrences.map((occurrence) => ({ occurrence, entry })));
+    const edits: { body: number; start: number; entry: typeof applied[number] }[] = [];
+    for (const entry of applied) {
+      for (let occurrenceIndex = 0; occurrenceIndex < entry.occurrences.length; occurrenceIndex += 2) {
+        edits.push({
+          body: entry.occurrences[occurrenceIndex],
+          start: entry.occurrences[occurrenceIndex + 1],
+          entry,
+        });
+      }
+    }
     edits.sort((left, right) =>
-      right.occurrence.body - left.occurrence.body || right.occurrence.start - left.occurrence.start);
-    for (const { occurrence, entry } of edits) {
-      const target = corpus[occurrence.body];
+      right.body - left.body || right.start - left.start);
+    for (const { body, start, entry } of edits) {
+      const target = corpus[body];
+      if (body < working.length && !working[body].owned) {
+        target.script = [...target.script];
+        target.locationData = [...target.locationData];
+        working[body].owned = true;
+      }
+      intern.bodyByScript.delete(target.script);
       const spanLength = entry.definition.script.length;
-      const location = target.locationData[occurrence.start];
-      target.script.splice(occurrence.start, spanLength, entry.definition.id, Op.OP_INVOKE);
-      target.locationData.splice(occurrence.start, spanLength, location, location);
+      const location = target.locationData[start];
+      target.script.splice(start, spanLength, entry.definition.id, Op.OP_INVOKE);
+      target.locationData.splice(start, spanLength, location, location);
       if (target.origins) {
-        const origin = target.origins[occurrence.start];
-        target.origins.splice(occurrence.start, spanLength, origin, origin);
+        const origin = target.origins[start];
+        target.origins.splice(start, spanLength, origin, origin);
       }
       if (target.anchors) {
         // Anchors never sit inside a relocated span, so they only need shifting by what the body lost.
         const shrink = spanLength - 2;
         target.anchors = target.anchors.map((index) =>
-          (index >= occurrence.start + spanLength ? index - shrink : index));
+          (index >= start + spanLength ? index - shrink : index));
       }
     }
 
     for (const entry of applied) functions.push(entry.definition);
-
-    const after = emittedBytes(working, functions);
-    if (after >= before) {
-      // The round did not pay for itself. Put every mutated array back and stop: the next round would re-measure
-      // the same corpus against the same identifier width and reach the same decision.
-      functions.length -= applied.length;
-      for (const saved of snapshot) {
-        saved.entry.script.splice(0, saved.entry.script.length, ...saved.script);
-        saved.entry.locationData.splice(0, saved.entry.locationData.length, ...saved.locationData);
-        if (saved.anchors) saved.entry.anchors = saved.anchors;
-        const { origins } = saved.entry;
-        if (saved.origins && origins) origins.splice(0, origins.length, ...saved.origins);
-      }
-      break;
+    savedBytes += roundSaved;
+    if (debugRounds) {
+      console.error('[outline-round]', JSON.stringify({
+        round,
+        minimumWindowElements,
+        candidateGroupsPerRound,
+        corpus: corpus.length,
+        candidates: candidates.length,
+        applied: applied.length,
+        roundSaved,
+        elapsedMs: Date.now() - roundStarted,
+      }));
     }
-    savedBytes += before - after;
   }
 
   const rewritten: OutlinedBody[] = working.map((body, index) => {
@@ -654,6 +1546,15 @@ export function outlineSharedSpans(
     // which is one past the last instruction, and that pointer has to move with the body too.
     const indexMap = new Array<number>(originalLength + 1).fill(body.script.length);
     let cursor = 0;
+    if (body.origins === undefined) {
+      const identityMap = new Array<number>(originalLength + 1);
+      for (let position = 0; position <= originalLength; position += 1) identityMap[position] = position;
+      return {
+        script: body.script,
+        locationData: body.locationData,
+        indexMap: identityMap,
+      };
+    }
     body.origins.forEach((origin, position) => {
       while (cursor <= origin && cursor < originalLength) {
         indexMap[cursor] = position;

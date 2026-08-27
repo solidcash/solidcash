@@ -164,52 +164,43 @@ import { CallOptionsContext } from "./SolidCashParser.js";
 import { CallOptionContext } from "./SolidCashParser.js";
 import { TypeListContext } from "./SolidCashParser.js";
 import { TypeListItemContext } from "./SolidCashParser.js";
+import { AssignmentExpressionContext } from "./SolidCashParser.js";
+import { InstantiationWithOptionsContext } from "./SolidCashParser.js";
+import { TupleExpressionContext } from "./SolidCashParser.js";
+import { ParenthesizedFunctionCallContext } from "./SolidCashParser.js";
+import { ParenthesisedContext } from "./SolidCashParser.js";
+import { InstantiationContext } from "./SolidCashParser.js";
+import { NewArrayContext } from "./SolidCashParser.js";
+import { NewDynamicBytesContext } from "./SolidCashParser.js";
+import { NewDynamicStringContext } from "./SolidCashParser.js";
 import { CastContext } from "./SolidCashParser.js";
 import { AbiEncodeContext } from "./SolidCashParser.js";
 import { LegacyCallOptionCallContext } from "./SolidCashParser.js";
-import { ChainedMethodCallContext } from "./SolidCashParser.js";
 import { TypeIntrospectionContext } from "./SolidCashParser.js";
-import { OutStateMappingFieldAccessContext } from "./SolidCashParser.js";
-import { ChainedFunctionCallContext } from "./SolidCashParser.js";
-import { TupleExpressionContext } from "./SolidCashParser.js";
 import { AbiDecodeAtContext } from "./SolidCashParser.js";
+import { ConstructedExpressionContext } from "./SolidCashParser.js";
 import { MethodCallContext } from "./SolidCashParser.js";
 import { FunctionCallExpressionContext } from "./SolidCashParser.js";
 import { ArrayAccessContext } from "./SolidCashParser.js";
 import { IdentifierContext } from "./SolidCashParser.js";
-import { AssignmentExpressionContext } from "./SolidCashParser.js";
-import { InstantiationWithOptionsContext } from "./SolidCashParser.js";
-import { AbiEncodeWithSignatureContext } from "./SolidCashParser.js";
-import { MappingAccessContext } from "./SolidCashParser.js";
-import { InstantiationContext } from "./SolidCashParser.js";
-import { AbiEncodeWithSelectorContext } from "./SolidCashParser.js";
 import { ThisExprContext } from "./SolidCashParser.js";
 import { NullaryOpContext } from "./SolidCashParser.js";
 import { AbiDecodeContext } from "./SolidCashParser.js";
 import { BinaryOpContext } from "./SolidCashParser.js";
 import { UnaryIntrospectionOpContext } from "./SolidCashParser.js";
-import { StringConcatContext } from "./SolidCashParser.js";
 import { UnaryOpContext } from "./SolidCashParser.js";
 import { PostfixOpContext } from "./SolidCashParser.js";
 import { IndexedFunctionCallContext } from "./SolidCashParser.js";
 import { LiteralExpressionContext } from "./SolidCashParser.js";
 import { BytesConcatContext } from "./SolidCashParser.js";
-import { NewDynamicStringContext } from "./SolidCashParser.js";
-import { IndexRangeSliceContext } from "./SolidCashParser.js";
-import { NewDynamicBytesContext } from "./SolidCashParser.js";
+import { GroupedExpressionContext } from "./SolidCashParser.js";
 import { TernaryOpContext } from "./SolidCashParser.js";
 import { ArrayContext } from "./SolidCashParser.js";
-import { StateAccessContext } from "./SolidCashParser.js";
-import { NewArrayContext } from "./SolidCashParser.js";
 import { SliceContext } from "./SolidCashParser.js";
 import { BareAbiReferenceExpressionContext } from "./SolidCashParser.js";
-import { TupleIndexOpContext } from "./SolidCashParser.js";
 import { MethodCallNamedContext } from "./SolidCashParser.js";
 import { FieldAccessContext } from "./SolidCashParser.js";
-import { ParenthesizedFunctionCallContext } from "./SolidCashParser.js";
-import { AbiEncodePackedContext } from "./SolidCashParser.js";
 import { AbiEncodeCallContext } from "./SolidCashParser.js";
-import { ParenthesisedContext } from "./SolidCashParser.js";
 import { PrefixOpContext } from "./SolidCashParser.js";
 import { CallOptionsMemberContext } from "./SolidCashParser.js";
 import { TypeIntrospectionBaseContext } from "./SolidCashParser.js";
@@ -1231,6 +1222,69 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitTypeListItem?: (ctx: TypeListItemContext) => Result;
 	/**
+	 * Visit a parse tree produced by the `AssignmentExpression`
+	 * labeled alternative in `SolidCashParser.parenExpression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitAssignmentExpression?: (ctx: AssignmentExpressionContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `InstantiationWithOptions`
+	 * labeled alternative in `SolidCashParser.parenExpression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitInstantiationWithOptions?: (ctx: InstantiationWithOptionsContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `TupleExpression`
+	 * labeled alternative in `SolidCashParser.parenExpression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitTupleExpression?: (ctx: TupleExpressionContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `ParenthesizedFunctionCall`
+	 * labeled alternative in `SolidCashParser.parenExpression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitParenthesizedFunctionCall?: (ctx: ParenthesizedFunctionCallContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `Parenthesised`
+	 * labeled alternative in `SolidCashParser.parenExpression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitParenthesised?: (ctx: ParenthesisedContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `Instantiation`
+	 * labeled alternative in `SolidCashParser.newExpression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitInstantiation?: (ctx: InstantiationContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `NewArray`
+	 * labeled alternative in `SolidCashParser.newExpression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitNewArray?: (ctx: NewArrayContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `NewDynamicBytes`
+	 * labeled alternative in `SolidCashParser.newExpression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitNewDynamicBytes?: (ctx: NewDynamicBytesContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `NewDynamicString`
+	 * labeled alternative in `SolidCashParser.newExpression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitNewDynamicString?: (ctx: NewDynamicStringContext) => Result;
+	/**
 	 * Visit a parse tree produced by the `Cast`
 	 * labeled alternative in `SolidCashParser.expression`.
 	 * @param ctx the parse tree
@@ -1252,13 +1306,6 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitLegacyCallOptionCall?: (ctx: LegacyCallOptionCallContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `ChainedMethodCall`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitChainedMethodCall?: (ctx: ChainedMethodCallContext) => Result;
-	/**
 	 * Visit a parse tree produced by the `TypeIntrospection`
 	 * labeled alternative in `SolidCashParser.expression`.
 	 * @param ctx the parse tree
@@ -1266,33 +1313,19 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitTypeIntrospection?: (ctx: TypeIntrospectionContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `OutStateMappingFieldAccess`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitOutStateMappingFieldAccess?: (ctx: OutStateMappingFieldAccessContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `ChainedFunctionCall`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitChainedFunctionCall?: (ctx: ChainedFunctionCallContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `TupleExpression`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitTupleExpression?: (ctx: TupleExpressionContext) => Result;
-	/**
 	 * Visit a parse tree produced by the `AbiDecodeAt`
 	 * labeled alternative in `SolidCashParser.expression`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	visitAbiDecodeAt?: (ctx: AbiDecodeAtContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `ConstructedExpression`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitConstructedExpression?: (ctx: ConstructedExpressionContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `MethodCall`
 	 * labeled alternative in `SolidCashParser.expression`.
@@ -1321,48 +1354,6 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitIdentifier?: (ctx: IdentifierContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `AssignmentExpression`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitAssignmentExpression?: (ctx: AssignmentExpressionContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `InstantiationWithOptions`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitInstantiationWithOptions?: (ctx: InstantiationWithOptionsContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `AbiEncodeWithSignature`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitAbiEncodeWithSignature?: (ctx: AbiEncodeWithSignatureContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `MappingAccess`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitMappingAccess?: (ctx: MappingAccessContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `Instantiation`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitInstantiation?: (ctx: InstantiationContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `AbiEncodeWithSelector`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitAbiEncodeWithSelector?: (ctx: AbiEncodeWithSelectorContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `ThisExpr`
 	 * labeled alternative in `SolidCashParser.expression`.
@@ -1399,13 +1390,6 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitUnaryIntrospectionOp?: (ctx: UnaryIntrospectionOpContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `StringConcat`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitStringConcat?: (ctx: StringConcatContext) => Result;
-	/**
 	 * Visit a parse tree produced by the `UnaryOp`
 	 * labeled alternative in `SolidCashParser.expression`.
 	 * @param ctx the parse tree
@@ -1441,26 +1425,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitBytesConcat?: (ctx: BytesConcatContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `NewDynamicString`
+	 * Visit a parse tree produced by the `GroupedExpression`
 	 * labeled alternative in `SolidCashParser.expression`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
-	visitNewDynamicString?: (ctx: NewDynamicStringContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `IndexRangeSlice`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitIndexRangeSlice?: (ctx: IndexRangeSliceContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `NewDynamicBytes`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitNewDynamicBytes?: (ctx: NewDynamicBytesContext) => Result;
+	visitGroupedExpression?: (ctx: GroupedExpressionContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `TernaryOp`
 	 * labeled alternative in `SolidCashParser.expression`.
@@ -1476,20 +1446,6 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitArray?: (ctx: ArrayContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `StateAccess`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitStateAccess?: (ctx: StateAccessContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `NewArray`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitNewArray?: (ctx: NewArrayContext) => Result;
-	/**
 	 * Visit a parse tree produced by the `Slice`
 	 * labeled alternative in `SolidCashParser.expression`.
 	 * @param ctx the parse tree
@@ -1503,13 +1459,6 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitBareAbiReferenceExpression?: (ctx: BareAbiReferenceExpressionContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `TupleIndexOp`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitTupleIndexOp?: (ctx: TupleIndexOpContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `MethodCallNamed`
 	 * labeled alternative in `SolidCashParser.expression`.
@@ -1525,33 +1474,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitFieldAccess?: (ctx: FieldAccessContext) => Result;
 	/**
-	 * Visit a parse tree produced by the `ParenthesizedFunctionCall`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitParenthesizedFunctionCall?: (ctx: ParenthesizedFunctionCallContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `AbiEncodePacked`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitAbiEncodePacked?: (ctx: AbiEncodePackedContext) => Result;
-	/**
 	 * Visit a parse tree produced by the `AbiEncodeCall`
 	 * labeled alternative in `SolidCashParser.expression`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	visitAbiEncodeCall?: (ctx: AbiEncodeCallContext) => Result;
-	/**
-	 * Visit a parse tree produced by the `Parenthesised`
-	 * labeled alternative in `SolidCashParser.expression`.
-	 * @param ctx the parse tree
-	 * @return the visitor result
-	 */
-	visitParenthesised?: (ctx: ParenthesisedContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `PrefixOp`
 	 * labeled alternative in `SolidCashParser.expression`.

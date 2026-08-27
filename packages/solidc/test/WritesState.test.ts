@@ -66,6 +66,16 @@ describe('AbiFunction.writesState classification', () => {
     expect(r.write).toBe(true);
   });
 
+  it('preserves source read-only semantics through external-call lowering', () => {
+    const r = ws(`pragma solidity ^0.8.20;
+      interface ICounter { function length() external view returns (uint256); }
+      contract C {
+        ICounter counter;
+        function length() public view returns (uint256) { return counter.length(); }
+      }`, { solidityImportCompat: true });
+    expect(r.length).toBe(false);
+  });
+
   it('omits writesState for stateless contracts', () => {
     const abi = compileString(`pragma solidcash >=0.8.0;
       contract P2PKH(bytes20 pkh) {

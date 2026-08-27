@@ -54,6 +54,7 @@ import {
   ExternalLibraryAbi,
   isComputedBlockhashKey,
   encodePushdataValue,
+  getDefaultStateValue,
   preferZeroPrefixedEventBlob,
   keccakComputeLockingBytecode,
   keccakComputeLockingBytecodeLegacy,
@@ -73,7 +74,6 @@ import {
   messageBusVerifierCommitment,
   bytecodeToScript,
   scriptToAsm,
-  getDefaultStateValue,
 } from '@solidcash/utils';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import {
@@ -5113,7 +5113,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   maxDerivationIterations: number = 20;
 
-  /** VM evaluations performed by the most recent Phase 2 auto-derivation loop. */
+  /**
+   * VM evaluations performed by the most recent auto-derivation (Phase 2 probe loop).
+   * Zero when derivation was skipped (read-only getter / nothing to derive).
+   */
   lastDerivationIterations: number = 0;
 
   // ethers-v6-flavored constructor. Two forms:
@@ -13096,6 +13099,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   && candidate.token.nft?.capability === 'mutable'));
           const stateOutputBase = delegateMasterOutputIndex >= 0 ? delegateMasterOutputIndex + 1 : 1;
           const stateOutputRange = { min: stateOutputBase, max: stateOutputBase + stateCount };
+          // Relaxed discovery continues past a failed EQUALVERIFY so later NFT pins still appear. Later
+          // equalities then run on a corrupted stack and can clobber the first valid pin for the same
+          // output. Keep that first write when relaxation actually suppressed a verify.
           const stateCommits = extractCommitmentsFromTrace(
             fullTrace2, stateCount, stateOutputRange, delegatecallInputIndex !== undefined,
             outputVerificationMismatchObserved,
@@ -15798,7 +15804,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const predOutputs = plan?.outputs.filter(
           (output) => !targetValues.has(bytesToSlotValue(output.slot).toString()),
         ) ?? [];
-        if (predOutputs.length > 0) {
+        // The authenticated batch plan owns the complete trailing predecessor band, including the zero-width
+        // UPDATE case. Retaining an empty plan is significant: without it the generic derivation loop treats the
+        // collection as unresolved and seeds a speculative NEW node, inflating the collection cardinality even
+        // though every target already exists. Inactive route batches have no plan and therefore remain unowned.
+        if (plan) {
           batchPredCommitments.set(batch.collection, predOutputs.map((output) => binToHex(output.commitment)));
         }
         if (batch.linear && (!plan || !list)) {

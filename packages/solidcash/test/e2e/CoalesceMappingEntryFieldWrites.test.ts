@@ -51,7 +51,9 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
   it('partial write preserves untouched fields of an existing entry', async () => {
     const c = await setup();
     await c.fund(); await c.seed(1n, 10n, 20n, 30n, 40n, alicePub, sig).send();      // m[1] = {10,20,30,40}
+    expect(c.lastDerivationIterations).toBe(1);
     await c.fund(); await c.updTwo(1n, 111n, 222n, alicePub, sig).send();            // coalesced a=111,b=222
+    expect(c.lastDerivationIterations).toBe(1);
     await c.fund();
     expect(await c.chk(1n, 111n, 222n, 30n, 40n, alicePub, sig).send())
       .toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
@@ -60,6 +62,7 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
   it('partial write to a fresh entry zero-fills the untouched fields', async () => {
     const c = await setup();
     await c.fund(); await c.updTwo(7n, 5n, 6n, alicePub, sig).send();                // fresh key -> {5,6,0,0}
+    expect(c.lastDerivationIterations).toBe(1);
     await c.fund();
     expect(await c.chk(7n, 5n, 6n, 0n, 0n, alicePub, sig).send())
       .toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
@@ -69,6 +72,7 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
     const c = await setup();
     await c.fund(); await c.seed(2n, 1n, 1n, 1n, 1n, alicePub, sig).send();
     await c.fund(); await c.updAll(2n, 8n, 9n, 10n, 11n, alicePub, sig).send();      // all 4 fields (full cover)
+    expect(c.lastDerivationIterations).toBe(1);
     await c.fund();
     expect(await c.chk(2n, 8n, 9n, 10n, 11n, alicePub, sig).send())
       .toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });

@@ -57,6 +57,100 @@ describe('cross-function bytecode outlining', () => {
     expect(outlineSharedSpans(source, allocateId, () => 1_000).functions).toEqual([]);
   });
 
+  it('shares leftover short spans after a wider window has already outlined the long matches', () => {
+    const short: Script = [...FILLER, ...FILLER, Op.OP_DUP];
+    // After the first (window-12) pass, long matches are OP_INVOKE barriers. A 7-byte tail still repeats
+    // across bodies; window 5 is the first seed that can see it. Four sites repay a 1-byte identifier.
+    const outlined: Script = [Uint8Array.of(0x8c), Op.OP_INVOKE];
+    const leftover = outlineSharedSpans(
+      [
+        body([...outlined, Op.OP_DROP, ...short]),
+        body([...outlined, Op.OP_2DROP, ...short]),
+        body([...outlined, Op.OP_1ADD, ...short]),
+        body([...outlined, Op.OP_NEGATE, ...short]),
+      ],
+      allocateId,
+      () => 1,
+      'savings',
+      5,
+    );
+    expect(leftover.savedBytes).toBeGreaterThan(0);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+    expect(leftover.functions.some((fn) => fn.script.length <= 8)).toBe(true);
+  });
+
+  it('still shares leftover short spans without full-body diagonal memo tables', () => {
+    const short: Script = [...FILLER, ...FILLER, Op.OP_DUP];
+    const outlined: Script = [Uint8Array.of(0x8c), Op.OP_INVOKE];
+    const leftover = outlineSharedSpans(
+      [
+        body([...outlined, Op.OP_DROP, ...short]),
+        body([...outlined, Op.OP_2DROP, ...short]),
+        body([...outlined, Op.OP_1ADD, ...short]),
+        body([...outlined, Op.OP_NEGATE, ...short]),
+      ],
+      allocateId,
+      () => 1,
+      'savings',
+      5,
+    );
+    expect(leftover.savedBytes).toBeGreaterThan(0);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+  });
+
+  it('still shares leftover short spans when the follow-up pass is capped at two rounds', () => {
+    const short: Script = [...FILLER, ...FILLER, Op.OP_DUP];
+    const outlined: Script = [Uint8Array.of(0x8c), Op.OP_INVOKE];
+    const leftover = outlineSharedSpans(
+      [
+        body([...outlined, Op.OP_DROP, ...short]),
+        body([...outlined, Op.OP_2DROP, ...short]),
+        body([...outlined, Op.OP_1ADD, ...short]),
+        body([...outlined, Op.OP_NEGATE, ...short]),
+      ],
+      allocateId,
+      () => 1,
+      'savings',
+      5,
+      4096,
+      undefined,
+      2,
+    );
+    expect(leftover.savedBytes).toBeGreaterThan(0);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+    expect(leftover.functions.some((fn) => fn.script.length <= 8)).toBe(true);
+  });
+
+  it('still outlines at leftover window 5 and speed-hint window 8 with sliding hashes', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    expect(outlineSharedSpans(source, allocateId, () => 1, 'savings', 8).functions.length).toBeGreaterThan(0);
+    expect(outlineSharedSpans(source, allocateId, () => 1, 'savings', 5).functions.length).toBeGreaterThan(0);
+  });
+
+  it('still leftover-outlines when later rounds reuse interned fingerprints', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    const leftover = outlineSharedSpans(source, allocateId, () => 1, 'savings', 5, 4096, undefined, 2);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+    expect(leftover.savedBytes).toBeGreaterThan(0);
+  });
+
+  it('still leftover-outlines when body ids are packed in Int32Array', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    const leftover = outlineSharedSpans(source, allocateId, () => 1, 'savings', 5, 4096, undefined, 2);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+  });
+
+  it('does not mutate caller scripts when leftover outlining copies only rewritten bodies', () => {
+    const left = [...REPEATED, ...FILLER];
+    const right = [...FILLER, ...REPEATED];
+    const lonely = [...FILLER, Op.OP_NOP];
+    const source = [body(left), body(right), body(lonely)];
+    const leftover = outlineSharedSpans(source, allocateId, () => 1, 'savings', 5, 4096, undefined, 2);
+    expect(leftover.functions.length).toBeGreaterThan(0);
+    expect(lonely).toEqual([...FILLER, Op.OP_NOP]);
+    expect(source[2].script).toBe(lonely);
+  });
+
   it('allows the compiler to probe a narrower minimum without changing the conservative default', () => {
     const eleven = REPEATED.slice(0, 11);
     const source = [body([...eleven, ...FILLER]), body([...FILLER, ...eleven])];
@@ -93,6 +187,40 @@ describe('cross-function bytecode outlining', () => {
     outlineSharedSpans(source, allocator(), () => 1, 'savings', 12, 1024, cache);
     const cached = outlineSharedSpans(source, allocator(), () => 1, 'density', 12, 1024, cache);
     const uncached = outlineSharedSpans(source, allocator(), () => 1, 'density', 12, 1024);
+
+    expect(cached).toEqual(uncached);
+  });
+
+  it('recosts narrower-width discovery for wider identifiers without changing the selected output', () => {
+    const source = [
+      body([...REPEATED, ...FILLER, ...REPEATED]),
+      body([...FILLER, ...REPEATED, ...FILLER, ...REPEATED]),
+    ];
+    const allocator = (): (() => Uint8Array) => {
+      let id = -12;
+      return () => { id -= 1; return Uint8Array.of(0x80 | Math.abs(id)); };
+    };
+    const cache = new Map<string, unknown>();
+    outlineSharedSpans(source, allocator(), () => 1, 'savings', 12, 1024, cache);
+    const cached = outlineSharedSpans(source, allocator(), () => 3, 'density', 12, 1024, cache);
+    const uncached = outlineSharedSpans(source, allocator(), () => 3, 'density', 12, 1024);
+
+    expect(cached).toEqual(uncached);
+  });
+
+  it('reuses immutable corpus preparation across window probes without changing the selected output', () => {
+    const source = [
+      body([...REPEATED, ...FILLER, ...REPEATED]),
+      body([...FILLER, ...REPEATED, ...FILLER, ...REPEATED]),
+    ];
+    const allocator = (): (() => Uint8Array) => {
+      let id = -12;
+      return () => { id -= 1; return Uint8Array.of(0x80 | Math.abs(id)); };
+    };
+    const cache = new Map<string, unknown>();
+    outlineSharedSpans(source, allocator(), () => 1, 'savings', 12, 1024, cache);
+    const cached = outlineSharedSpans(source, allocator(), () => 1, 'savings', 10, 1024, cache);
+    const uncached = outlineSharedSpans(source, allocator(), () => 1, 'savings', 10, 1024);
 
     expect(cached).toEqual(uncached);
   });

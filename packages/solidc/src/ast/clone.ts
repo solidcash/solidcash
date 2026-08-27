@@ -1,4 +1,4 @@
-import { Node } from './AST.js';
+import { BoolLiteralNode, IdentifierNode, IntLiteralNode, Node } from './AST.js';
 import { YulNode } from './YulAST.js';
 
 /**
@@ -15,9 +15,42 @@ export function cloneNode<T extends Node>(node: T): T {
 function cloneNodeWithMemo<T extends Node>(node: T, memo: WeakMap<object, unknown>): T {
   const existing = memo.get(node);
   if (existing) return existing as T;
+  if (node instanceof IdentifierNode) {
+    const clone = Object.create(Object.getPrototypeOf(node)) as IdentifierNode;
+    memo.set(node, clone);
+    clone.name = node.name;
+    clone.location = node.location;
+    clone.type = node.type;
+    clone.definition = node.definition;
+    clone.functionReference = node.functionReference;
+    clone.isExternalSelfRef = node.isExternalSelfRef;
+    clone.storagePointerOnly = node.storagePointerOnly;
+    clone.fromModifier = node.fromModifier;
+    memo.delete(node);
+    return clone as unknown as T;
+  }
+  if (node instanceof IntLiteralNode) {
+    const clone = Object.create(Object.getPrototypeOf(node)) as IntLiteralNode;
+    memo.set(node, clone);
+    clone.value = node.value;
+    clone.location = node.location;
+    clone.type = node.type;
+    memo.delete(node);
+    return clone as unknown as T;
+  }
+  if (node instanceof BoolLiteralNode) {
+    const clone = Object.create(Object.getPrototypeOf(node)) as BoolLiteralNode;
+    memo.set(node, clone);
+    clone.value = node.value;
+    clone.location = node.location;
+    clone.type = node.type;
+    memo.delete(node);
+    return clone as unknown as T;
+  }
   const clone = Object.create(Object.getPrototypeOf(node));
   memo.set(node, clone);
   for (const [key, value] of Object.entries(node)) {
+    if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition' || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable' || key === 'collection' || key === 'type' || key === 'location') { clone[key] = value; continue; }
     clone[key] = cloneValue(value, memo);
   }
   // Preserve INTRA-node aliasing of a MethodCallStatementNode's `.call` and `.expression`: post-first-traversal they

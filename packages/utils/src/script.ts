@@ -11,6 +11,12 @@ import {
 } from '@bitauth/libauth';
 import OptimisationsEquivFile from './cashproof-optimisations.js';
 import { optimisationReplacements } from './optimisations.js';
+
+const compiledOptimisationReplacements = optimisationReplacements.map(([pattern, replacement]) => ({
+  pattern,
+  replacement,
+  regex: new RegExp(`${pattern}(\\s|$)`, 'g'),
+}));
 import { FullLocationData, PositionHint, SingleLocationData } from './types.js';
 import { LogEntry, RequireStatement } from './artifact.js';
 
@@ -292,7 +298,7 @@ export function optimiseBytecode(
   let rewritten = false;
   for (let i = 0; i < runs; i += 1) {
     const result = replaceOps(
-      asm, locationData, logs, requires, constructorParamLength, optimisationReplacements,
+      asm, locationData, logs, requires, constructorParamLength, compiledOptimisationReplacements,
     );
 
     // Break on fixed point: nothing matched, so every field is still the caller's own input.
@@ -411,17 +417,14 @@ function replaceOps(
   logs: LogEntry[],
   requires: RequireStatement[],
   constructorParamLength: number,
-  optimisations: string[][],
+  optimisations: { pattern: string; replacement: string; regex: RegExp }[],
 ): ReplaceOpsResult {
   let asm = originalAsm;
   let newLocationData = [...locationData];
   let newLogs = [...logs];
   let newRequires = [...requires];
 
-  optimisations.forEach(([pattern, replacement]) => {
-    // We add a space or end of string to the end of the pattern to ensure that we match the whole pattern
-    // (no partial matches)
-    const regex = new RegExp(`${pattern}(\\s|$)`, 'g');
+  optimisations.forEach(({ pattern, replacement, regex }) => {
     let matchIndex = asm.search(regex);
     // Most of the ~100 rules match nothing, and for those the rebuild below is the identity (`asm` is already
     // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per

@@ -23,6 +23,7 @@ describe('void early return in an entry-point function', () => {
   it('the early-return guard skips the branch body; the taken path runs it', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
     await sc.put(1n, 5n).send();
+    expect(sc.lastDerivationIterations).toBe(1);
     await expect(sc.readIf(1n, 99n, false).send()).resolves.toBeDefined(); // guard hit: check skipped, spends
     await expect(sc.readIf(1n, 5n, true)).resolves.toBeDefined();          // taken: m[1] == 5 holds
     await expect(sc.readIf(1n, 99n, true).send()).rejects.toThrow(verifyFailure);

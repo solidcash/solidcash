@@ -12,8 +12,20 @@ export interface CompilerOptions {
   maximumStackItemBytes?: number;
   /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
   optimizeForCompilationSpeed?: boolean;
+  /**
+   * Emit bytecode source maps on the artifact (`debug.sourceMap` and per-body maps). Default true.
+   * Set false to skip encoding maps at compile time and skip decoding them when attributing VM failures.
+   * Require/log instruction pointers and source line numbers are still recorded; BitAuth source comments
+   * and column-accurate failing snippets are not.
+   */
+  sourceMap?: boolean;
   /** Suppress non-fatal compiler warnings while preserving errors and ordinary command output. */
   suppressWarnings?: boolean;
+  /**
+   * Internal. Speculative message-bus admission only needs the verifier program and eligible handler names.
+   * Skip compiling ordinary entry-point bodies on that throwaway pass; the binder second pass emits them.
+   */
+  __cheapAdmissionCodegen?: boolean;
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
   __messageBusVerifierProgram?: {
     verifyFunctionId: number;
@@ -1233,7 +1245,11 @@ export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): strin
     return `export default ${stringifyAsTs(normalisedArtifact)} as const;\n`;
   }
 
-  return JSON.stringify(normalisedArtifact, null, 2);
+  const compact = (globalThis as { process?: { env?: Record<string, string> } }).process
+    ?.env?.SOLIDC_COMPACT_ARTIFACT === '1'
+    || (typeof normalisedArtifact.debug?.bytecode === 'string'
+      && normalisedArtifact.debug.bytecode.length > 400_000);
+  return JSON.stringify(normalisedArtifact, null, compact ? 0 : 2);
 }
 
 const indent = (level: number): string => '  '.repeat(level);

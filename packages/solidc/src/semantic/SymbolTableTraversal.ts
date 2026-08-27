@@ -326,11 +326,11 @@ function getMaxPushdataEncodedSizeForType(
  * The subset of RESOLVED_BACKREF_KEYS that leaves the current CONTRACT. A walk collecting work that this
  * contract's own block must fund follows the intra-contract edges and stops at these.
  */
-const CROSS_CONTRACT_BACKREF_KEYS = new Set(['referencedContract']);
+const CROSS_CONTRACT_BACKREF_KEYS = new Set(['referencedContract', 'type', 'location']);
 
 const RESOLVED_BACKREF_KEYS = new Set([
   'location', 'definition', 'resolvedFunction', 'collection', 'stateVariable', 'errorDefinition',
-  'referencedContract', 'symbolTable', 'type',
+  'referencedContract', 'symbolTable', 'type', 'name', 'functionId', 'functionReference', 'selectorHex', 'opRolls', 'abiType', 'error',
 ]);
 
 interface FunctionBodySurvey {
@@ -4566,6 +4566,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         && expressionType?.toString() === vt.toString();
       const valueParam = wholeValueWrite && chunkableValue && directValueParam
         ? valueIdentifier.name : undefined;
+      // Whole-value literals and direct params are known off-chain. The SDK pins the vmap node so the
+      // first derivation probe already carries the covenant-computed tail. Skip RMW and computed
+      // expressions: those values still come from a faithful VM trace.
+      // A fixed-array element write `m[k][i]=v` is an RMW of the whole array, but the index and element
+      // are known off-chain: record them so the SDK substitutes into the current tail.
       const arrayElementSource = node.arrayIndex !== undefined && !node.arrayPush && !node.arrayPop
         && this.isOffChainEvaluableMappingValue(node.arrayIndex)
         && this.isOffChainEvaluableMappingValue(node.expression)
@@ -7689,6 +7694,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     return `${prefix}:${constructorName}(${parts.join(',')})`;
   }
 
+  /**
+   * Reconstruct a local's net integer source from straight-line assignments
+   * (`tmp = 3; tmp = tmp * 2` -> `binop:*(lit:3,lit:2)`). Mapping reads abort: those still need a VM probe.
+   */
   private mappingLocalNetSource(name: string): string | undefined {
     if (!this.currentFunction) return undefined;
     const steps: ExpressionNode[] = [];
@@ -7750,6 +7759,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     return source;
   }
 
+  /**
+   * `for (int i = 0; i < n; i++) m[k] = i` flushes i == n-1. Record that so the SDK can pin the last
+   * counter value when n > 0. Loop-variable writes are not rmw deltas.
+   */
   private mappingLoopLastCounter(node: MappingAssignNode): string | undefined {
     if (!(node.expression instanceof IdentifierNode) || !this.currentFunction) return undefined;
     const written = node.expression.name;
@@ -7797,6 +7810,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     return bound === undefined ? undefined : `loopLast:id:${bound}`;
   }
 
+  /**
+   * `m[k] = m[k] ± C` (possibly after entry-cache lowering to a local) for a compile-time integer C.
+   * The SDK adds C to the current entry tail (`entry` is the on-chain value, not a function argument).
+   */
   private mappingRmwLiteralDelta(node: MappingAssignNode): string | undefined {
     const sameKey = (access: ExpressionNode): boolean => {
       if (!(access instanceof MappingAccessNode)) return false;
@@ -7883,6 +7900,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       : `binop:-(entry,lit:${(-net).toString()})`;
   }
 
+  /** Values the SDK's evalComputedKey can resolve from call arguments without a VM probe. */
   private isOffChainEvaluableMappingValue(node: ExpressionNode): boolean {
     const isParameter = (expression: ExpressionNode): boolean => (
       expression instanceof IdentifierNode

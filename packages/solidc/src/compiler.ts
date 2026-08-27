@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import {
-  BailErrorStrategy, CharStream, CommonTokenStream, ParserATNSimulator, PredictionContextCache, PredictionMode,
+  BailErrorStrategy, CharStream, CommonTokenStream, DefaultErrorStrategy, LexerATNSimulator,
+  ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
 import {
@@ -21,13 +22,14 @@ import {
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact, occurrenceInfoOf } from './artifact/Artifact.js';
 import {
-  Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
+  Ast, AssignNode, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode,
+  ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode,
   FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode,
   ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
-  StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
+  StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode, NewArrayNode,
   FunctionCallStatementNode,
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
@@ -36,7 +38,8 @@ import {
   SourceFileNode, StatementNode, TransferStatementNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
-  WhileNode, DoWhileNode,
+  WhileNode, DoWhileNode, UnaryOpNode, BreakNode, ContinueNode,
+  BranchNode, UncheckedNode, SwitchNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { GlobalFunction } from './ast/Globals.js';
@@ -96,7 +99,7 @@ import {
   LowLevelCallShapeError, validateFunctionLowLevelCallShapes, validateLowLevelCallShapes,
 } from './semantic/LowLevelCallShapes.js';
 import {
-  PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
+  containsIndirectCall, PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
 import LowerVMapCounterLoops from './semantic/LowerVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
@@ -135,7 +138,7 @@ import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, directCallNames,
   walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
-import { BinaryOperator, NullaryOperator } from './ast/Operator.js';
+import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
 
@@ -187,6 +190,10 @@ type InternalCompilerOptions = CompilerOptions & {
   __messageBusMode?: MessageBusMode;
   /** Original user selection, kept distinct from the binder's compiler-generated admitted-handler list. */
   __messageBusUserHandlers?: readonly string[];
+  __cheapAdmissionCodegen?: boolean;
+  __parsedAst?: Ast;
+  /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
+  __pristineAstBox?: { ast?: Ast };
 };
 
 const messageBusMaximumBlobBytes = (options: CompilerOptions): number => {
@@ -207,10 +214,27 @@ interface OptionalLoweringFeatures {
   needsCollectionJournal: boolean;
   needsExternalCallLowering: boolean;
   needsInlineAssembly: boolean;
+  needsTailRecursion: boolean;
+  needsReturnInLoop: boolean;
+  needsReturnNormalization: boolean;
+  needsNestedBranchReturn: boolean;
+  needsPostfixIncDec: boolean;
+  needsMappingFieldCoalesce: boolean;
+  needsLoop: boolean;
+  needsBreakContinue: boolean;
+  needsEarlyReturn: boolean;
+  needsVMapCounter: boolean;
+  needsAlphaRename: boolean;
   statefulnessSurveyComplete: boolean;
   hasContractInstantiation: boolean;
   deploysWithValue: boolean;
   emitsEvent: boolean;
+}
+
+/** True when `code` is the complete program (no external import files to search). Sibling contracts in the
+ * same string are already in `code`. */
+function rootSourceCoversProgram(ast: Ast): boolean {
+  return ast.imports.length === 0;
 }
 
 function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
@@ -250,11 +274,27 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let hasContractInstantiation = false;
   let deploysWithValue = false;
   let emitsEvent = false;
+  let hasFunctionPointers = false;
+  let needsTailRecursion = false;
+  let needsReturnInLoop = false;
+  let needsReturnNormalization = false;
+  let needsNestedBranchReturn = false;
+  let needsPostfixIncDec = false;
+  let needsMappingFieldCoalesce = false;
+  let needsLoop = false;
+  let needsBreakContinue = false;
+  let needsEarlyReturn = false;
+  let needsVMapCounter = false;
+  let needsAlphaRename = false;
+  const definedFunctionNames = new Set<string>();
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
     seenNodes.add(node);
     if (node instanceof AssemblyStatementNode) {
+      // Yul becomes main AST only after this survey, so its eventual globals, calls, state operations, returns,
+      // and control flow are not visible here. Admit every downstream pass that can own lowered Yul rather than
+      // making correctness depend on source-level Yul spellings or on the lowering's current output details.
       needsInlineAssembly = true;
       needsBlockOracle = true;
       needsMsgDataContext = true;
@@ -263,6 +303,16 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       needsDynamicStateJournal = true;
       needsCollectionJournal = true;
       needsExternalCallLowering = true;
+      needsTailRecursion = true;
+      needsReturnInLoop = true;
+      needsNestedBranchReturn = true;
+      needsPostfixIncDec = true;
+      needsMappingFieldCoalesce = true;
+      needsLoop = true;
+      needsBreakContinue = true;
+      needsEarlyReturn = true;
+      needsVMapCounter = true;
+      needsAlphaRename = true;
     } else if ((node instanceof NullaryOpNode && String(node.operator).startsWith('block.'))
       || (node instanceof IdentifierNode && node.name === 'now')
       || (node instanceof FunctionCallNode
@@ -286,6 +336,42 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     } else if (node instanceof EmitStatementNode) {
       emitsEvent = true;
     }
+    if (node instanceof FunctionDefinitionNode) {
+      definedFunctionNames.add(node.name);
+      // NamedReturnTransformation owns more than named return variables: it also materializes Solidity's
+      // implicit default on an unnamed returning function's fall-through path, and turns an implemented empty
+      // void body into an explicit no-op. Admission must therefore cover every shape the pass can rewrite, not
+      // only `returns (T name)`. The visitor itself cheaply rejects terminal-return and non-empty void bodies.
+      if (node.returnTypes.length > 0 || node.returnNames.length > 0
+        || (node.body && (node.body.statements?.length ?? 0) === 0 && node.name !== '__construct')) {
+        needsReturnNormalization = true;
+      }
+    }
+    if (node instanceof WhileNode || node instanceof DoWhileNode) needsLoop = true;
+    if (node instanceof BreakNode || node instanceof ContinueNode) needsBreakContinue = true;
+    if (node instanceof BranchNode || node instanceof UncheckedNode || node instanceof SwitchNode
+      || node instanceof TryCatchNode
+      || (node instanceof BlockNode && (node.statements ?? []).some((statement) => statement instanceof BlockNode))) {
+      needsAlphaRename = true;
+    }
+    if (node instanceof ReturnNode) {
+      needsEarlyReturn = true;
+      if (needsLoop) needsReturnInLoop = true;
+      needsNestedBranchReturn = true;
+    }
+    if (node instanceof MappingFieldAssignNode) needsMappingFieldCoalesce = true;
+    if (node instanceof AssignmentExpressionNode) needsPostfixIncDec = true;
+    if (node instanceof UnaryOpNode && (
+      node.operator === UnaryOperator.POSTFIX_INCREMENT
+      || node.operator === UnaryOperator.POSTFIX_DECREMENT
+      || node.operator === UnaryOperator.PREFIX_INCREMENT
+      || node.operator === UnaryOperator.PREFIX_DECREMENT
+    )) {
+      needsPostfixIncDec = true;
+    }
+    if (node instanceof FunctionCallNode && definedFunctionNames.has(node.identifier.name)) {
+      needsTailRecursion = true;
+    }
     if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
       || node instanceof LowLevelCallStatementNode || node instanceof MethodCallNode
       || node instanceof MethodCallStatementNode || node.constructor.name.startsWith('External')
@@ -294,6 +380,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     }
     if (node instanceof ContractNode) {
       if (node.collections.length > 0) needsCollectionJournal = true;
+      if (node.collections.some((collection) => collection.sorted)) needsVMapCounter = true;
       if (node.stateVariables.some((state) => state.isDynamic || state.type === PrimitiveType.STRING
         || (state.type instanceof BytesType && state.type.bound === undefined))) {
         needsDynamicStateJournal = true;
@@ -305,24 +392,9 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
         || ((value instanceof ArrayType || value instanceof MappingType
           || value instanceof StructType || value instanceof TupleType)
           && typeContainsFunction(value))) {
-        // Pointer-specific passes remain enabled, and conservatively retain the oracle traversal too. This keeps
-        // pointer-bearing contracts on their historical pipeline while pointer-free contracts get both gates
-        // from one structural survey.
-        return {
-          hasFunctionPointers: true,
-          needsBlockOracle: true,
-          needsMsgDataContext: true,
-          needsMsgSigContext: true,
-          needsSpecialMethodPruning: true,
-          needsDynamicStateJournal: true,
-          needsCollectionJournal: true,
-          needsExternalCallLowering: true,
-          needsInlineAssembly: true,
-          statefulnessSurveyComplete: false,
-          hasContractInstantiation,
-          deploysWithValue,
-          emitsEvent,
-        };
+        // Keep walking so assembly / msg.data / journal / oracle flags reflect the rest of the tree
+        // instead of forcing every optional lowering the moment a FunctionType appears (OZ imports).
+        hasFunctionPointers = true;
       }
       if ((value instanceof ArrayType || value instanceof MappingType
         || value instanceof StructType || value instanceof TupleType)
@@ -330,6 +402,13 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
         needsSpecialMethodPruning = true;
         needsCollectionJournal = true;
       }
+      // These fields are semantic metadata or back-references rather than AST children. Inspect their type
+      // values above for lowering admission, but never enqueue them: doing so revisits symbol graphs and defeats
+      // the structural survey's bounded walk.
+      if (key === 'location' || key === 'type' || key === 'name' || key === 'functionId'
+        || key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+        || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
+        || key === 'collection') continue;
       if (value instanceof Node) pending.push(value);
       else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node) pending.push(item);
@@ -337,7 +416,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     }
   }
   return {
-    hasFunctionPointers: false,
+    hasFunctionPointers,
     needsBlockOracle,
     needsMsgDataContext,
     needsMsgSigContext,
@@ -346,6 +425,17 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsCollectionJournal,
     needsExternalCallLowering,
     needsInlineAssembly,
+    needsTailRecursion,
+    needsReturnInLoop,
+    needsReturnNormalization,
+    needsNestedBranchReturn,
+    needsPostfixIncDec,
+    needsMappingFieldCoalesce,
+    needsLoop,
+    needsBreakContinue,
+    needsEarlyReturn,
+    needsVMapCounter,
+    needsAlphaRename,
     statefulnessSurveyComplete: true,
     hasContractInstantiation,
     deploysWithValue,
@@ -379,6 +469,23 @@ export interface CompileOptions extends CompilerOptions {
   errorListener?: SolidCashErrorListener;
   /** Select a named top-level contract instead of the source file's last concrete contract. */
   primaryContractName?: string;
+  /**
+   * Fully compile only these contract names. Other imported concrete contracts are omitted from the
+   * ArtifactMap (interfaces still get ABI-only artifacts). Project compilation uses this so an importing
+   * root does not pay a second full pipeline for declarations its declaring file will compile.
+   */
+  compileDeclarations?: readonly string[];
+}
+
+function compilerProfileEnabled(): boolean {
+  return (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_PROFILE === '1';
+}
+
+function profileLog(label: string, startedAt: number, extra?: Record<string, unknown>): void {
+  if (!compilerProfileEnabled()) return;
+  console.error('[solidc-profile]', JSON.stringify({
+    label, ms: Date.now() - startedAt, ...extra,
+  }));
 }
 
 export interface SplitCompileOptions extends CompileOptions {
@@ -693,9 +800,13 @@ function compileWithExternalAdmissionFallback(
   // Parse exactly once before entering the route-admission retry ladder. Syntax errors and custom listener
   // failures are properties of the source, not of a route candidate; replaying them at every rung duplicates
   // listener notifications and can replace the user's first diagnostic with retry noise.
-  let initialAst: Ast | undefined = parseAndResolve(
-    code, mergedCompilerOptions, errorListener, primaryContractName,
-  );
+  const incomingPristine = (mergedCompilerOptions as InternalCompilerOptions).__pristineAstBox?.ast;
+  let initialAst: Ast | undefined = (mergedCompilerOptions as InternalCompilerOptions).__parsedAst
+    ?? (incomingPristine !== undefined ? cloneNode(incomingPristine) : undefined)
+    ?? parseAndResolve(
+      code, mergedCompilerOptions, errorListener, primaryContractName,
+    );
+  delete (mergedCompilerOptions as InternalCompilerOptions).__parsedAst;
   const messageBusMode = (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode ?? 'auto';
   if (messageBusMode === 'auto' && !hasMessageBusGraphEdge(initialAst)) {
     mergedCompilerOptions.messageBus = false;
@@ -703,16 +814,46 @@ function compileWithExternalAdmissionFallback(
   if (messageBusMode === 'required' && !supportsAtomicMessageBus(initialAst, mergedCompilerOptions)) {
     throw new Error('messageBus: required route generation did not produce a composable artifact');
   }
+  // compileResolvedAst mutates the tree. Snapshot the resolved import graph before the first lowering pass so
+  // binder / admission retries clone instead of re-lexing Marketplace-scale Solidity (measured: 25ms clone vs
+  // 650ms+ re-parse on the verifier-binder pass).
+  const pristineBox = (mergedCompilerOptions as InternalCompilerOptions).__pristineAstBox;
+  if (pristineBox !== undefined && mergedCompilerOptions.messageBus && pristineBox.ast === undefined) {
+    pristineBox.ast = cloneNode(initialAst);
+  }
+  const takeAst = (): Ast => {
+    if (initialAst !== undefined) {
+      const ast = initialAst;
+      initialAst = undefined;
+      return ast;
+    }
+    if (pristineBox?.ast !== undefined) return cloneNode(pristineBox.ast);
+    return parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
+  };
   const compileOnce = (
     admitExternalHandlers: boolean, normalizeBareEntries = true, relaxResultRouteEffects = true,
     admitMixedScalarHandlers = true, admitBareForwardingHandlers = true,
   ): Artifact => {
-    const ast = initialAst ?? parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
-    initialAst = undefined;
-    const artifact = compileResolvedAst(
-      ast, code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
-      admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
-    );
+    const ast = takeAst();
+    const onceStarted = Date.now();
+    let artifact: Artifact;
+    try {
+      artifact = compileResolvedAst(
+        ast, code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+        admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
+      );
+    } catch (error) {
+      profileLog('compileOnce:throw', onceStarted, {
+        primary: primaryContractName,
+        admitExternalHandlers,
+        normalizeBareEntries,
+        relaxResultRouteEffects,
+        admitMixedScalarHandlers,
+        admitBareForwardingHandlers,
+        message: error instanceof Error ? error.message.split('\n')[0].slice(0, 240) : String(error).slice(0, 240),
+      });
+      throw error;
+    }
     if (messageBusMode === 'required' && !artifact.messageBus) {
       throw new Error('messageBus: required route generation did not produce a composable artifact');
     }
@@ -797,7 +938,7 @@ function compileWithExternalAdmissionFallback(
     }
     const directOptions = { ...mergedCompilerOptions, messageBus: false };
     return compileResolvedAst(
-      parseAndResolve(code, directOptions, errorListener, primaryContractName),
+      takeAst(),
       code, directOptions, false, true,
     );
   }
@@ -921,7 +1062,7 @@ function compileWithExternalAdmissionFallback(
   const directOptions = { ...mergedCompilerOptions, messageBus: false };
   try {
     return compileResolvedAst(
-      parseAndResolve(code, directOptions, errorListener, primaryContractName),
+      takeAst(),
       code, directOptions, false, true,
     );
   } catch (directError) {
@@ -931,8 +1072,11 @@ function compileWithExternalAdmissionFallback(
 
 function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const {
-    errorListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
+    errorListener, primaryContractName, suppressWarnings = false, compileDeclarations: _compileDeclarations,
+    ...artifactCompilerOptions
   } = compilerOptions;
+  const parsedAst = (compilerOptions as InternalCompilerOptions).__parsedAst;
+  delete (artifactCompilerOptions as InternalCompilerOptions).__parsedAst;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
     && !errorListener && !artifactCompilerOptions.importResolver
     // The diagnostic no-outline mode intentionally changes emitted bytecode. Never let it reuse or poison the
@@ -968,11 +1112,31 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
   mergedCompilerOptions.__messageBusUserHandlers = artifactCompilerOptions.messageBusHandlers;
+  if (parsedAst !== undefined) mergedCompilerOptions.__parsedAst = parsedAst;
+  const pristineAstBox = { ast: undefined as Ast | undefined };
+  mergedCompilerOptions.__pristineAstBox = pristineAstBox;
+  // The admission compile is discarded once the verifier-binder pass runs. Skip ordinary entry-point bodies
+  // there: eligibility is decided in synthesis, and the verifier program only needs the route/verifier closure.
+  if (mergedCompilerOptions.optimizeForCompilationSpeed
+    && mergedCompilerOptions.messageBus
+    && !artifactCompilerOptions.__messageBusVerifierProgram) {
+    mergedCompilerOptions.__cheapAdmissionCodegen = true;
+  }
+  const admissionStarted = Date.now();
   let artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
+  profileLog('admission', admissionStarted, { primary: primaryContractName });
   if (mergedCompilerOptions.__messageBusMode === 'required' && !artifact.messageBus) {
     throw new Error('messageBus: required route generation did not produce a composable artifact');
+  }
+  if (mergedCompilerOptions.__cheapAdmissionCodegen && !artifact.messageBus?.verifierProgram) {
+    // Cheap admission produced no binder continuation. Recompile fully so ABI function bodies are present.
+    const fullOptions = { ...mergedCompilerOptions };
+    delete fullOptions.__cheapAdmissionCodegen;
+    artifact = compileWithExternalAdmissionFallback(
+      code, fullOptions, errorListener, primaryContractName,
+    );
   }
   if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1'
     && !artifactCompilerOptions.__messageBusVerifierProgram && artifact.messageBus?.verifierProgram) {
@@ -996,10 +1160,19 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       __messageBusVerifierProgram: verifierProgram,
     });
     bindingOptions.__messageBusUserHandlers = mergedCompilerOptions.__messageBusUserHandlers;
+    const binderStarted = Date.now();
+    const binderAst = pristineAstBox.ast ?? parseAndResolve(
+      code, bindingOptions, errorListener, primaryContractName,
+    );
+    pristineAstBox.ast = undefined;
     artifact = compileResolvedAst(
-      parseAndResolve(code, bindingOptions, errorListener, primaryContractName),
+      binderAst,
       code, bindingOptions,
     );
+    profileLog('binder', binderStarted, {
+      primary: primaryContractName,
+      handlers: admittedMessageBusHandlers.length,
+    });
     if (artifact.messageBus) {
       artifact.messageBus.verifierProgram = verifierProgram;
       // The verifier-bound pass intentionally synthesizes only the admitted handler set. Preserve the first
@@ -1009,6 +1182,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     }
     if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
   }
+  // Cheap admission is only for the discarded speculative pass. The delegate variant recompiles from
+  // these options (including its own binder), so leaving the flag set would skip user/graph bodies in
+  // the shipped proxy artifact.
+  delete mergedCompilerOptions.__cheapAdmissionCodegen;
   attachDelegateVariant(
     artifact, code, mergedCompilerOptions, errorListener, primaryContractName,
     cacheable || !suppressWarnings,
@@ -1106,6 +1283,7 @@ function attachDelegateVariant(
       ...mergedCompilerOptions,
       autoDelegate: true,
       messageBus: (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode === 'enabled',
+      __cheapAdmissionCodegen: false,
     };
     const out = { delegateFunctionsMarked: 0 };
     let variantFailure: string | undefined;
@@ -1187,12 +1365,18 @@ function parseAndResolve(
   code: string, mergedCompilerOptions: CompilerOptions, errorListener?: SolidCashErrorListener,
   primaryName?: string,
 ): Ast {
+  const parseResolveStarted = Date.now();
+  const filesBefore = parseProfileTotals.files;
+  const msBefore = parseProfileTotals.ms;
+  const sllBefore = parseProfileTotals.sllFails;
   // `console` is tokenized as part of the built-in `console.log` statement, so it is not a general Identifier in
   // the Solidity selective-import grammar. Normalize Hardhat's equivalent named import before parsing.
-  const parseSource = code.replace(
-    /import\s*\{\s*console\s*\}\s*from\s*(["'])hardhat\/console\.sol\1\s*;/g,
-    (statement) => 'import "hardhat/console.sol";'.padEnd(statement.length, ' '),
-  );
+  const parseSource = code.includes('hardhat/console.sol')
+    ? code.replace(
+      /import\s*\{\s*console\s*\}\s*from\s*(["'])hardhat\/console\.sol\1\s*;/g,
+      (statement) => 'import "hardhat/console.sol";'.padEnd(statement.length, ' '),
+    )
+    : code;
   // Lexing + parsing
   let ast = parseCode(parseSource, errorListener, mergedCompilerOptions.solidityImportCompat,
     mergedCompilerOptions.chunkedArrays);
@@ -1223,6 +1407,11 @@ function parseAndResolve(
   // (`Todo[]` where `Todo` is imported) parses to a named AddressType placeholder. Now that imported struct
   // definitions are merged (and the primary is chosen), re-resolve those placeholders to the real StructType.
   if (hadImports) reresolveImportedStructTypes(ast);
+  profileLog('parseAndResolve', parseResolveStarted, {
+    files: parseProfileTotals.files - filesBefore,
+    sllFails: parseProfileTotals.sllFails - sllBefore,
+    parseCodeMs: parseProfileTotals.ms - msBefore,
+  });
   return ast;
 }
 
@@ -1393,6 +1582,10 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
     'a handler that ITERATES a collection reads every entry of it, and the route addresses entries through '
     + 'per-entry witnesses fixed at compile time, so an unbounded iteration has no representation in the '
     + 'block layout: read the entries the batch needs by key, or keep the iteration on the direct route',
+  'verified-mapping-runtime-loop-write-unsupported':
+    'a graph clone cannot represent a verified-mapping write whose loop key array is a local constructed in '
+    + 'the handler closure rather than a parameter (or a zero-length `new T[](0)` that never iterates): keep '
+    + 'that write on the direct route, or pass the key array as a handler parameter',
   'nested-dynamic-array-route-not-enabled':
     'nested dynamic-array state does not yet have a bounded message-bus row encoding; keep this handler on the '
     + 'direct route or flatten the nested array into separately keyed state',
@@ -1680,6 +1873,125 @@ function synthesizeMessageBusRoute(
     }
     return undefined;
   };
+  const isZeroLengthNewArray = (expression: ExpressionNode | undefined): boolean =>
+    expression instanceof NewArrayNode
+    && expression.size instanceof IntLiteralNode
+    && expression.size.value === 0n;
+  const expressionIdentifier = (expression: ExpressionNode): string | undefined => {
+    if (expression instanceof IdentifierNode) return expression.name;
+    if (expression instanceof CastNode) return expressionIdentifier(expression.expression);
+    return undefined;
+  };
+  const localInitOf = (fn: FunctionDefinitionNode, name: string): ExpressionNode | undefined => {
+    let init: ExpressionNode | undefined;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof VariableDefinitionNode && node.name === name && node.expression) {
+        init = node.expression;
+      }
+    });
+    return init;
+  };
+  /**
+   * Graph clones of a source handler inline its closure. A verified-mapping write `m[k][xs[i]] = v` in a
+   * runtime loop is only representable when `xs` is a parameter of THAT source handler (the SDK reads it from
+   * the row) or a zero-length `new T[](0)` that never iterates. A locally constructed non-empty array
+   * (`address[] memory xs = new address[](1); ... m[k][xs[i]] = v`) reaches code generation as an unsupported
+   * insert/update loop shape and used to fail only after lowering+semantic+partial codegen of the clone.
+   * Refuse the graph handler here so admission does not replay that compile.
+   */
+  const arraySupportedFromSource = (
+    arrayName: string,
+    owner: FunctionDefinitionNode,
+    source: FunctionDefinitionNode,
+    closure: Set<string>,
+    visiting: Set<string>,
+  ): boolean => {
+    const seen = `${owner.name}\0${arrayName}`;
+    if (visiting.has(seen)) return false;
+    visiting.add(seen);
+    if (owner === source) {
+      if (source.parameters.some((parameter) => parameter.name === arrayName)) return true;
+      const init = localInitOf(owner, arrayName);
+      if (isZeroLengthNewArray(init)) return true;
+      const alias = init === undefined ? undefined : expressionIdentifier(init);
+      return alias !== undefined && arraySupportedFromSource(alias, owner, source, closure, visiting);
+    }
+    const paramIndex = owner.parameters.findIndex((parameter) => parameter.name === arrayName);
+    if (paramIndex >= 0) {
+      let sawCall = false;
+      let allSupported = true;
+      for (const callerName of closure) {
+        for (const caller of byName.get(callerName) ?? []) {
+          // walkInvocationAst is synchronous; these accumulators do not escape this iteration.
+          // eslint-disable-next-line @typescript-eslint/no-loop-func
+          walkInvocationAst(caller.body, (node) => {
+            if (!(node instanceof FunctionCallNode) || node.identifier.name !== owner.name) return;
+            sawCall = true;
+            const argument = node.parameters[paramIndex];
+            if (isZeroLengthNewArray(argument)) return;
+            const argumentName = argument === undefined ? undefined : expressionIdentifier(argument);
+            if (argumentName === undefined
+              || !arraySupportedFromSource(argumentName, caller, source, closure, visiting)) {
+              allSupported = false;
+            }
+          });
+        }
+      }
+      return sawCall && allSupported;
+    }
+    const init = localInitOf(owner, arrayName);
+    if (isZeroLengthNewArray(init)) return true;
+    const alias = init === undefined ? undefined : expressionIdentifier(init);
+    return alias !== undefined && arraySupportedFromSource(alias, owner, source, closure, visiting);
+  };
+  const hasUnsupportedSortedRuntimeLoopWrite = (source: FunctionDefinitionNode): boolean => {
+    const closure = collectNamedFunctionClosure(source, byName);
+    let unsupported = false;
+    for (const name of closure) {
+      if (unsupported) break;
+      for (const candidate of byName.get(name) ?? []) {
+        if (unsupported) break;
+        const bound = locallyBoundNames(candidate);
+        // walkInvocationAst is synchronous; `unsupported` is the intended accumulator for this scan.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        walkInvocationAst(candidate.body, (node) => {
+          if (unsupported) return;
+          const bare = bareEntryAccessOf(node, bound);
+          const access = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+            || node instanceof MappingDeleteNode
+            ? { name: node.name, keys: node.keys as ExpressionNode[] }
+            : ((node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode) && bare
+              ? { name: bare.name, keys: bare.keys } : undefined);
+          if (!access || !collectionByName.has(access.name)) return;
+          const collection = collectionByName.get(access.name);
+          if (!(collection?.type instanceof MappingType)) return;
+          const occurrence = occurrenceInfoOf(candidate, node);
+          if (occurrence.occurrence !== 'loop' || occurrence.maximumOccurrences !== undefined) return;
+          let varyingName: string | undefined;
+          let varyingUnsupported = false;
+          for (let index = access.keys.length - 1; index >= 0; index -= 1) {
+            const key = access.keys[index];
+            if (!(key instanceof ArrayAccessNode)) continue;
+            if (key.array instanceof IdentifierNode) {
+              varyingName = key.array.name;
+              break;
+            }
+            varyingUnsupported = true;
+            break;
+          }
+          if (varyingUnsupported) {
+            unsupported = true;
+            return;
+          }
+          if (varyingName === undefined) return;
+          if (!arraySupportedFromSource(varyingName, candidate, source, closure, new Set())) {
+            unsupported = true;
+          }
+        });
+      }
+    }
+    return unsupported;
+  };
   /**
    * X187. A method call whose receiver is a CONTRACT/INTERFACE-TYPED VARIABLE - `bar.log()` for `IBar bar` -
    * parses as a NAMESPACED FunctionCall (`bar.log`), never as a MethodCall: `SymbolTableTraversal` turns it into
@@ -1734,6 +2046,11 @@ function synthesizeMessageBusRoute(
     });
   }
   for (const fn of functions) {
+    if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'lifecycle-or-unsafe-handler';
+      continue;
+    }
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
     let routeUsesMsgSender = false;
@@ -2648,6 +2965,8 @@ function synthesizeMessageBusRoute(
     } else if (!reason && (footprint.unknown
       || (!graphTailCallEligible && footprint.effects.some((effect) => effect === 'external-call')))) {
       reason = 'unresolved-or-effectful-handler';
+    } else if (!reason && graphTailCallEligible && hasUnsupportedSortedRuntimeLoopWrite(fn)) {
+      reason = 'verified-mapping-runtime-loop-write-unsupported';
     }
     fn.messageBusEligible = reason === undefined;
     fn.messageBusRejectionReason = reason;
@@ -5207,6 +5526,23 @@ function compileResolvedAst(
   fnPtrArraysPreLowered = false,
   out?: { delegateFunctionsMarked: number },
 ): Artifact {
+  const resolvedStarted = Date.now();
+  let phaseStarted = resolvedStarted;
+  let currentPhase = 'start';
+  const contractName = ast.contract?.name;
+  const mark = (phase: string): void => {
+    profileLog(`resolved:${phase}`, phaseStarted, { contract: contractName });
+    currentPhase = phase;
+    phaseStarted = Date.now();
+  };
+  const throwProfile = (error: unknown): never => {
+    profileLog('resolved:throw', resolvedStarted, {
+      contract: contractName,
+      after: currentPhase,
+      message: error instanceof Error ? error.message.split('\n')[0].slice(0, 240) : String(error).slice(0, 240),
+    });
+    throw error;
+  };
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
   // (internal/unmarked) functions has no entry point and cannot be compiled standalone.
@@ -5266,7 +5602,9 @@ function compileResolvedAst(
   // inline+substitute parent constructors/modifiers. A parent ctor's `name.toShortStringWithFallback(fb)` becomes
   // `ShortStrings.toShortStringWithFallback(name, fb)` (a real arg node) while `name` is still the parent's param, so
   // the constructor-arg substitution can then rewrite it - it cannot reach a receiver embedded in a call identifier.
-  ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('using '))) {
+    ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
+  }
 
   // Inheritance expansion (after import resolution, before modifier expansion)
   // Split facets arrive here after the logical contract has already been flattened. Keep this idempotent even
@@ -5336,7 +5674,16 @@ function compileResolvedAst(
   }
   const pointerTableBounds = new Map<string, PointerTableExpansion[]>();
   const rolledLoopCeilings: ProvenLoopCeilingMap = new Map<string, number[]>();
-  if (messageBusGraphMode) {
+  // Graph-mode pointer-table expansion is per function. A contract whose only graph edge is an IERC20
+  // transfer must not walk every sibling getter looking for `fns[i](...)`. Skip the whole pass when no
+  // function has a table call; the visitors still skip remaining functions that do not.
+  const needsPointerTableWork = messageBusGraphMode && [
+    ...ast.contract.functions,
+    ast.contract.constructorDef,
+    ast.contract.fallbackDef,
+    ast.contract.receiveDef,
+  ].some((fn) => !!fn && containsIndirectCall(fn.body));
+  if (needsPointerTableWork) {
     ast = ast.accept(new UnrollFixedBoundEntryLoop(true, pointerTableBounds)) as Ast;
     // A pointer-table loop whose trip count is RUNTIME-sized survives the fixed-bound pass. Admit it only when a
     // dominating source guard proves a finite ceiling, expand it to that many guarded rows, and reject every
@@ -5351,17 +5698,22 @@ function compileResolvedAst(
   // X169: the split path already ran this on the COMPLETE function set (`prepareSplitAst`). Re-running it on a
   // shard's filtered set would re-decide a table this pass declined there, and the decision appends state
   // variables - see `assertSplitLayoutsAgree`.
-  if (!fnPtrArraysPreLowered) {
+  if (!fnPtrArraysPreLowered
+    && !(rootSourceCoversProgram(ast) && !code.includes('function(') && !code.includes('function ('))) {
     ast = ast.accept(new LowerForeignFunctionPointerArrayElements(messageBusGraphMode)) as Ast;
   }
 
   // Fold keccak256/sha256 of a string/hex literal to a compile-time bytes32 constant (role ids, EIP-712
   // domains, EVM storage slots). Both fold to their REAL hash (keccak256 -> real keccak, Ethereum-identical).
-  ast = ast.accept(new FoldHashLiterals()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('keccak256') && !code.includes('sha256'))) {
+    ast = ast.accept(new FoldHashLiterals()) as Ast;
+  }
 
   // Solidity public state-var/mapping auto-getters -> real entry-point functions, so a ported callee invoked
   // via a getter (`timeLock.lockTime(addr)`) actually dispatches it. Gated on solidityImportCompat.
-  ast = ast.accept(new SynthesizePublicGetters(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
+  if (mergedCompilerOptions.solidityImportCompat) {
+    ast = ast.accept(new SynthesizePublicGetters(true)) as Ast;
+  }
 
   // Solidity has no `delegate` lifecycle keyword. An OZ-style upgradeable implementation identifies itself via
   // an `initializer`/`reinitializer` modifier; every externally callable implementation function (including the
@@ -5390,13 +5742,24 @@ function compileResolvedAst(
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
 
   // Modifier expansion (before semantic analysis)
-  ast = expandModifiers(ast);
-  validateExpandedSelfdestructs(ast.contract);
+  const hasCustomModifiers = ast.contract.modifierDefinitions.length > 0
+    || ast.libraryModifierDefinitions.length > 0
+    || ast.contract.functions.some((fn) => fn.customModifiers.length > 0)
+    || (ast.contract.constructorDef?.customModifiers.length ?? 0) > 0
+    || (ast.contract.fallbackDef?.customModifiers.length ?? 0) > 0
+    || (ast.contract.receiveDef?.customModifiers.length ?? 0) > 0
+    || ast.freeFunctions.some((fn) => fn.customModifiers.length > 0);
+  if (hasCustomModifiers) ast = expandModifiers(ast);
+  if (!(rootSourceCoversProgram(ast) && !code.includes('selfdestruct'))) {
+    validateExpandedSelfdestructs(ast.contract);
+  }
 
   // Lower `transient` state vars to per-function locals after modifier expansion. A transient reference in a
   // modifier argument/body is now visible in the concrete function body, and public getters synthesized above
   // receive the same zero-initialized transaction-local binding as ordinary functions.
-  ast = lowerTransientStateVars(ast);
+  if (!(rootSourceCoversProgram(ast) && !code.includes('transient'))) {
+    ast = lowerTransientStateVars(ast);
+  }
 
   // A low-level call written in a MODIFIER body is invisible to the source-shape pass above, and reaches the
   // user as `Block slot not found: lowLevelCall[0]` once inlined. Re-run the same check on the expanded bodies.
@@ -5438,7 +5801,9 @@ function compileResolvedAst(
   // published route could not settle a single row (owner-local: OP_EQUALVERIFY on the entry output commitment).
   // Lowering first makes the footprint honest: the same handlers are now refused BY NAME when their key is a
   // constant, and reserve a real entry slot when it is a parameter.
-  ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
+    ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
+  }
 
   // A fixed-array collection iteration must expose its compiler-owned indexed accesses before deciding whether
   // the hidden route is synthesized at the early collection boundary. Otherwise an unrelated collection
@@ -5539,18 +5904,24 @@ function compileResolvedAst(
   // the AstBuilder left `x.method()` raw): `x.method(args)` -> `L.method(x, args)`. After modifier expansion (so
   // inlined modifier bodies are covered) and reresolveImportedStructTypes (types resolved), before the inline
   // passes (a `T storage`-taking library method is inlined-and-dropped there).
-  ast = ast.accept(new RedesugarImportedUsingForCalls()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('using '))) {
+    ast = ast.accept(new RedesugarImportedUsingForCalls()) as Ast;
+  }
 
   // A field write on a LOCAL/PARAM struct var whose struct type was IMPORTED (`escrow.split[j]=v`, `escrow.claimed=v`
   // on `Escrow memory escrow`) was mis-built at parse - the type was unknown, so the AstBuilder emitted a mapping-field
   // assign (array field) or a field-dropping StateAssign (scalar field). Rewrite both into the read-modify-rebuild
   // block the AstBuilder emits for a same-file struct local. Before LowerMemoryModel (which lowers the rebuild).
-  ast = ast.accept(new RedesugarImportedStructFieldWrites()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('struct '))) {
+    ast = ast.accept(new RedesugarImportedStructFieldWrites()) as Ast;
+  }
 
   // `T.wrap(x)` / `T.unwrap(x)` on an IMPORTED user-defined value type (unknown at parse, so the AstBuilder left it
   // a dangling `T.wrap` FunctionCall) -> the identity cast the AstBuilder emits for a same-file UDVT. PRB-math's
   // UD2x18/UD60x18 converters + constants reach this transitively via Sablier.
-  ast = ast.accept(new RedesugarImportedUdvtWrap()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('.wrap') && !code.includes('.unwrap'))) {
+    ast = ast.accept(new RedesugarImportedUdvtWrap()) as Ast;
+  }
 
   // Preserve straight-line foreign function-pointer ternaries before control-flow normalization splits
   // their initialized declaration into a declaration plus branch assignments. The later invocation remains
@@ -5559,6 +5930,9 @@ function compileResolvedAst(
     hasFunctionPointers, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
     needsSpecialMethodPruning, needsDynamicStateJournal, needsCollectionJournal,
     needsExternalCallLowering, needsInlineAssembly,
+    needsTailRecursion, needsReturnInLoop, needsReturnNormalization, needsNestedBranchReturn,
+    needsPostfixIncDec, needsMappingFieldCoalesce, needsLoop, needsBreakContinue,
+    needsEarlyReturn, needsVMapCounter, needsAlphaRename,
     statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
   } = surveyOptionalLowerings(ast);
   const contractStatefulnessHint = statefulnessSurveyComplete && ast.freeFunctions.length === 0
@@ -5568,56 +5942,64 @@ function compileResolvedAst(
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
-  ast = ast.accept(new LowerTailRecursion()) as Ast;
-  ast = ast.accept(new DesugarReturnInLoop()) as Ast;
+  if (needsTailRecursion) ast = ast.accept(new LowerTailRecursion()) as Ast;
+  if (needsReturnInLoop) ast = ast.accept(new DesugarReturnInLoop()) as Ast;
 
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already
   // handles - a mapping write in a RUNTIME loop is rejected by EntryWriteInLoopError). Before break/continue
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
-  ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
 
   // Canonical dynamic vmap `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
-  ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
+  if (needsVMapCounter && needsLoop) ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
 
   // Break/continue expansion (before semantic analysis)
-  ast = expandBreakContinue(ast);
+  if (needsBreakContinue) ast = expandBreakContinue(ast);
 
   // Prove legacy checked-math wrapper shapes before named-return desugaring changes their minimal source form.
   if (mergedCompilerOptions.solidityImportCompat) ast = ast.accept(new MarkLegacyCheckedMath()) as Ast;
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
-  ast = ast.accept(new NamedReturnTransformation()) as Ast;
+  if (needsReturnNormalization) ast = ast.accept(new NamedReturnTransformation()) as Ast;
 
   // A return nested under further conditions with fall-through (internal fns) -> flag + gated tail +
   // terminal return (after NamedReturn so implicit tails are explicit; before semantic so locals resolve).
-  ast = ast.accept(new DesugarNestedBranchReturn()) as Ast;
+  if (needsNestedBranchReturn) ast = ast.accept(new DesugarNestedBranchReturn()) as Ast;
 
   // Solidity permits a nested block local to shadow an outer local/parameter. Target stack slots are named, so
   // alpha-rename the inner binding (and its lexical uses) before later lowerings and symbol analysis.
-  ast = ast.accept(new AlphaRenameLocalShadows()) as Ast;
+  if (needsAlphaRename) ast = ast.accept(new AlphaRenameLocalShadows()) as Ast;
 
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
-  ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
+  if (needsPostfixIncDec) ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
 
   // Coalesce consecutive whole-field writes to the same vmap mapping entry (`m[k].a=x; m[k].b=y`) into one entry
   // read + one whole-struct write, replacing N sorted-mapping upserts with one.
-  ast = ast.accept(new CoalesceMappingEntryFieldWrites()) as Ast;
+  if (needsMappingFieldCoalesce) ast = ast.accept(new CoalesceMappingEntryFieldWrites()) as Ast;
 
   // Coalesce a run of consecutive element writes to the same fixed-array field of a memory struct local (each
   // desugared to a whole-struct rebuild) into one read + one rebuild. After RedesugarImportedStructFieldWrites (so
   // imported-struct triples exist), before LowerMemoryModel (which lowers the rebuild).
-  ast = ast.accept(new CoalesceStructFieldArrayWrites()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('struct '))) {
+    ast = ast.accept(new CoalesceStructFieldArrayWrites()) as Ast;
+  }
 
   // Memory model: lower local `memory` reference types to linear-buffer pointer ops before the value-copy
   // desugars, so nested writes compose in place. The safety gate falls unsupported locals back to value-copy.
-  ast = ast.accept(new LowerMemoryModel()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('memory') && !code.includes('calldata'))) {
+    ast = ast.accept(new LowerMemoryModel()) as Ast;
+  }
 
   // Nested local-array element write `b[i][j] = v` -> read-modify-write over single-level ops (before semantic).
-  ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('[]'))) {
+    ast = ast.accept(new DesugarNestedArrayWrite()) as Ast;
+  }
 
   // Value-copy the local `bytes` element writes (`b[i] = v`) LowerMemoryModel did not convert to a pointer byte-
   // splice, including bytes-field temps introduced by DesugarNestedArrayWrite.
-  ast = ast.accept(new DesugarLocalBytesElementWrite()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('bytes['))) {
+    ast = ast.accept(new DesugarLocalBytesElementWrite()) as Ast;
+  }
 
   // A gratuitous internal fn-ptr state-var alias (`ev = eval; ev(x)`) -> the direct call (`eval(x)`), removing the
   // alias var. Sidesteps a higher-order internal-fn-ptr type mismatch; before any fn-ptr lowering.
@@ -5686,7 +6068,7 @@ function compileResolvedAst(
 
   // `(new C()).m(args)` -> `C __newcall_N = new C(); __newcall_N.m(args)`, so the deploy-then-call fold
   // machinery (which tracks named deploy locals) applies to inline deploy receivers too.
-  ast = ast.accept(new HoistInlineDeployCalls()) as Ast;
+  if (hasContractInstantiation) ast = ast.accept(new HoistInlineDeployCalls()) as Ast;
 
   // `A.getter().m(args)` (getter returns a contract) -> `IReturn __chaincall_N = A.getter(); __chaincall_N.m(..)`,
   // so the chained call on the getter's (integrity-bound) return dispatches via the audited interface-local path.
@@ -5719,10 +6101,10 @@ function compileResolvedAst(
   // A function returning a REASSIGNED `mapping storage` pointer (`returns (mapping storage r){ r=a; r=b; }`) is
   // resolved by straight-line dataflow into its side effects + the mapping it finally aliases, and inlined at call
   // sites - producing bare `mapping storage m = <mapping>` aliases the next pass handles.
-  ast = ast.accept(new InlineMappingReturnFunctions()) as Ast;
+  if (needsCollectionJournal) ast = ast.accept(new InlineMappingReturnFunctions()) as Ast;
   // A `mapping(..) storage m = get()` local (get() inlined above to a bare mapping or `c ? a : b`) has no runtime
   // value; rewrite each `m[k]` use to the underlying mapping (or a branch/ternary) and drop the declaration.
-  ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
+  if (needsCollectionJournal) ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
 
   // Re-run the fixed-bound unroll AFTER inlining: a `new T[](N)` literal substituted for an array param at an
   // inline site (`_updateJobWhitelist(id, allowed, new address[](0))`) now makes the loop bound compile-time
@@ -5730,28 +6112,31 @@ function compileResolvedAst(
   // sorted-mapping write over the empty array) reaches the entry-slot pre-scan / codegen. The first pass (before
   // inlining) can't see the literal, and everything it could unroll it already did, so this pass only fires on
   // these post-inline new-array-bound loops.
-  ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
 
   // A whole dynamic-array copy with a differing element type (`bytes10[] = bytes8[]`) desugars to a delete +
   // per-element casting push loop; must precede CacheDynamicArrayInLoop so the emitted push-in-loop is cached.
-  ast = ast.accept(new DesugarDynamicArrayCopyCast()) as Ast;
+  if (needsLoop || !(rootSourceCoversProgram(ast) && !code.includes('[]'))) {
+    ast = ast.accept(new DesugarDynamicArrayCopyCast()) as Ast;
+  }
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
   // model; cache it in a local, mutate the local in the loop, flush back once.
-  ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
+  if (needsLoop) ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
   // A vmap (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
-  ast = ast.accept(new CacheMappingEntryInLoop()) as Ast;
+  // Loop-free same-key writes (`m[k]=m[k]+a; m[k]=m[k]+b`) also need the one-upsert cache.
+  if (needsLoop || needsCollectionJournal) ast = ast.accept(new CacheMappingEntryInLoop()) as Ast;
 
   // A conditional `delete m[k]` inside a branch does not delete on the taken path (the covenant can't statically
   // tell it ran). If-convert it to an unconditional predicated write `m[k] = cond ? default : m[k]`.
-  ast = ast.accept(new IfConvertConditionalEntryOp()) as Ast;
+  if (needsCollectionJournal) ast = ast.accept(new IfConvertConditionalEntryOp()) as Ast;
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
   // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
   if (needsExternalCallLowering) ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
   // A guarded pointer-table row hoists its element + runtime-selector locals inside the branch; move only their
   // DECLARATIONS to the body top so the epilogue can read them while the reads stay conditional.
-  if (messageBusGraphMode) ast = ast.accept(new HoistPointerTableBranchLocals()) as Ast;
+  if (needsPointerTableWork) ast = ast.accept(new HoistPointerTableBranchLocals()) as Ast;
   // A branch-local interface-cast external-call target variable -> hoist its DECLARATION to the body top so the
   // co-spend reads it at the epilogue (UniswapV2Pair mint's `migrator`); the external calls stay conditional.
   if (needsExternalCallLowering) ast = ast.accept(new HoistBranchLocalExtcallTargets()) as Ast;
@@ -5777,7 +6162,7 @@ function compileResolvedAst(
 
   // Drop free/library functions the contract never reaches (OZ libraries ship many unused helpers). Runs last,
   // after every synthesis pass, so no reachable call is missed; conservative by name so nothing live is dropped.
-  ast = ast.accept(new PruneUnreachableFreeFunctions()) as Ast;
+  if (ast.freeFunctions.length > 0) ast = ast.accept(new PruneUnreachableFreeFunctions()) as Ast;
 
   // Drop dead internal/private methods that read msg.data (e.g. inherited OZ `Context._msgData`, never called):
   // msg.data is only reconstructible at an entry point, so a dead one would fail the whole compile. Conservative
@@ -5815,7 +6200,7 @@ function compileResolvedAst(
   // surveying only the entry body cannot see the NullaryOp and a delegate build then reaches code generation
   // without either a category witness or an authenticated hidden caller. Name-level closure resolution matches
   // the compiler's existing conservative internal-call analysis and deliberately errs toward carrying context.
-  {
+  if (!(rootSourceCoversProgram(ast) && !code.includes('msg.sender'))) {
     const byName = new Map<string, FunctionDefinitionNode[]>();
     const directSenderNames = new Set<string>();
     for (const fn of ast.contract.functions) {
@@ -5841,7 +6226,7 @@ function compileResolvedAst(
   // helpers (e.g. ECDSA.recover -> two tryRecover overloads -> ecrecover). Symbol resolution happens in the next
   // pass, so establish this name-level closure now, while imported free/library functions are still available.
   // SymbolTableTraversal's direct-body survey remains authoritative for direct calls and argument metadata.
-  {
+  if (!(rootSourceCoversProgram(ast) && !code.includes('ecrecover'))) {
     const functions = [...ast.contract.functions, ...ast.freeFunctions];
     const byName = new Map<string, FunctionDefinitionNode[]>();
     for (const fn of functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
@@ -5956,6 +6341,7 @@ function compileResolvedAst(
     }
   }
 
+  mark('lowering');
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
   // Bare msg.sender collection accesses are normalized to compiler-owned route parameters before semantic
@@ -6152,22 +6538,31 @@ function compileResolvedAst(
   )) as Ast;
 
   // Inject synthetic tx.locktime guard where tx.locktime is used without a protocol-enforcing time check
-  if (mergedCompilerOptions.enforceLocktimeGuard) {
+  if (mergedCompilerOptions.enforceLocktimeGuard
+    && !(rootSourceCoversProgram(ast) && !code.includes('tx.locktime') && !code.includes('tx.time'))) {
     ast = ast.accept(new InjectLocktimeGuardTraversal()) as Ast;
   }
 
   // Early return transformation (rewrites return statements into nested if-else)
-  ast = ast.accept(new EarlyReturnTransformation()) as Ast;
+  if (needsEarlyReturn) ast = ast.accept(new EarlyReturnTransformation()) as Ast;
 
   // Compile referenced contracts in dependency order
-  const compiledBytecodes = compileReferencedContracts(ast, mergedCompilerOptions);
+  const compiledBytecodes = ast.importedContracts.length === 0
+    ? new Map<string, Uint8Array>()
+    : compileReferencedContracts(ast, mergedCompilerOptions);
 
-  refuseEmittingReturningStateHelpers(ast.contract);
+  if (emitsEvent) refuseEmittingReturningStateHelpers(ast.contract);
 
+  mark('semantic');
   // Code generation
   const traversal = new GenerateTargetTraversal(mergedCompilerOptions);
   traversal.compiledBytecodes = compiledBytecodes;
-  ast = ast.accept(traversal) as Ast;
+  try {
+    ast = ast.accept(traversal) as Ast;
+  } catch (error) {
+    throwProfile(error);
+  }
+  mark('codegen');
 
   const constructorParamLength = ast.contract.parameters.length;
 
@@ -6182,7 +6577,8 @@ function compileResolvedAst(
     constructorParamLength,
   );
 
-  if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+  if (mergedCompilerOptions.optimizeForCompilationSpeed !== true
+    && traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
     && needsOptimiserCrossCheck(traversal.output)) {
     const optimisedBytecodeOld = optimiseBytecodeOld(traversal.output);
     if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
@@ -6202,7 +6598,7 @@ function compileResolvedAst(
 
   const debug = {
     bytecode: binToHex(scriptToBytecode(optimisationResult.script)),
-    sourceMap: generateSourceMap(optimisationResult.locationData),
+    sourceMap: generateSourceMap(optimisationResult.locationData, mergedCompilerOptions.sourceMap !== false),
     logs: optimisationResult.logs,
     requires: optimisationResult.requires,
     ...(functionDebug && { functionDebug }),
@@ -6218,9 +6614,15 @@ function compileResolvedAst(
 
   const fingerprint = computeBytecodeFingerprintWithConstructorArgs(optimisationResult.script, constructorParamLength);
 
+  mark('optimise');
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  mark('artifact');
+  profileLog('resolved', resolvedStarted, {
+    contract: artifact.contractName,
+    bytecodeBytes: artifact.debug?.bytecode ? artifact.debug.bytecode.length / 2 : undefined,
+  });
   // Solidity-compatible upgradeable contracts are marked delegate in the primary compilation pass (the
   // initializer/reinitializer inference above), rather than through the lazy `autoDelegate` variant. They use
   // the same pinned delegate covenant and must publish the same certificate; otherwise the SDK keeps the
@@ -6888,18 +7290,27 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
 }
 
 function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptions): ArtifactMap {
-  const { errorListener, ...artifactCompilerOptions } = compilerOptions;
+  const { errorListener, compileDeclarations, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
+  const requested = compileDeclarations === undefined ? undefined : new Set(compileDeclarations);
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
+  const probeStarted = Date.now();
   const probe = parseAndResolve(code, mergedCompilerOptions, errorListener);
+  profileLog('multi-probe', probeStarted, {
+    imported: probe.importedContracts.length,
+    interfaces: (probe.interfaceDefinitions ?? []).length,
+  });
   const allContracts = [...probe.importedContracts, probe.contract].filter(Boolean);
   const interfaces = probe.interfaceDefinitions ?? [];
 
   const map: ArtifactMap = {};
   const seen = new Set<string>();
+  for (const iface of interfaces) {
+    map[iface.name] = generateInterfaceArtifact(probe, iface.name, code);
+  }
   for (const contract of allContracts) {
     if (!contract || seen.has(contract.name)) continue;
     seen.add(contract.name);
@@ -6910,22 +7321,27 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
     // constructor effects (events/state writes) no transaction block layout.
     if (contract.isAbstract
       || contract.constructorDef?.modifiers.includes(FunctionModifier.INTERNAL)) continue;
+    if (requested && !requested.has(contract.name)) {
+      profileLog('multi-skip', Date.now(), { primary: contract.name });
+      continue;
+    }
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
     // Use the same complete pipeline as the single-artifact API. In particular, message-bus compilation is a
     // two-pass operation: the first pass extracts the verifier program and the second binds the compact route to
     // it. Calling the lower-level admission ladder here published route ABI from pass one beside bytecode that
     // could not select a participant-local verifier in an atomic graph.
+    const contractStarted = Date.now();
     map[contract.name] = compileStringUnchecked(code, {
       ...artifactCompilerOptions,
       errorListener,
       primaryContractName: contract.name,
+      ...(contract === probe.contract ? { __parsedAst: probe } : {}),
+    } as CompileOptions);
+    const compiled = map[contract.name];
+    profileLog('multi-contract', contractStarted, {
+      primary: contract.name,
+      bytecodeBytes: compiled.debug?.bytecode ? compiled.debug.bytecode.length / 2 : undefined,
     });
-  }
-
-  // Contract-less: each interface -> an ABI-only declaration artifact (function dispatch for external calls).
-  for (const iface of interfaces) {
-    if (map[iface.name]) continue; // a concrete contract of the same name wins
-    map[iface.name] = generateInterfaceArtifact(probe, iface.name, code);
   }
 
   return map;
@@ -7392,8 +7808,12 @@ function prepareSplitAst(
   code: string, options: CompilerOptions, listener: SolidCashErrorListener | undefined,
 ): Ast {
   let ast = parseAndResolve(code, options, listener);
-  ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
-  ast = expandInheritance(ast);
+  if (!(rootSourceCoversProgram(ast) && !code.includes('using '))) {
+    ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
+  }
+  if (ast.contract.parentInvocations.length > 0 || ast.contract.implements.length > 0) {
+    ast = expandInheritance(ast);
+  }
   // X169. The THIRD shard-dependent state-appending pass, and the one X162 recorded rather than built. Its
   // classification is usage-driven - a table whose writes name two methods is VARYING and gets a parallel
   // `bytes[] __fnsel_<name>` state variable, one whose surviving writes name one method is FIXED and gets none -
@@ -7406,7 +7826,12 @@ function prepareSplitAst(
   if (splitPreLowersFnPtrArrays(options)) {
     ast = ast.accept(new LowerForeignFunctionPointerArrayElements(false)) as Ast;
   }
-  ast = expandModifiers(ast);
+  if (ast.contract.modifierDefinitions.length > 0
+    || ast.libraryModifierDefinitions.length > 0
+    || ast.contract.functions.some((fn) => fn.customModifiers.length > 0)
+    || (ast.contract.constructorDef?.customModifiers.length ?? 0) > 0) {
+    ast = expandModifiers(ast);
+  }
   // X162. Both remaining state-appending passes are SHARD-DEPENDENT and must therefore run here, on the
   // complete function set, before `compileFacet` filters it. `LowerStorageSlotPointers` appends one hidden
   // state variable per ERC-7201 namespace in the order the SURVIVING functions first reach it, so running it
@@ -7414,13 +7839,17 @@ function prepareSplitAst(
   // The relative order with the block oracle matches the ordinary pipeline (slot pointers first), so the root
   // also agrees with the unsplit baseline. Both passes are idempotent once their source metadata is consumed,
   // so the ordinary pipeline's later invocations are no-ops on this AST.
-  ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
+    ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
+  }
   // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
   // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
   // Match the ordinary pipeline's Solidity-compat mode. In that mode block.timestamp is lowered directly to
   // tx.locktime rather than allocated as an oracle register; using the native default here made split roots
   // append __block_timestamp ahead of __block_number while their unsplit baseline did not.
-  ast = ast.accept(new SynthesizeBlockOracle(options.solidityImportCompat ?? false)) as Ast;
+  if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
+    ast = ast.accept(new SynthesizeBlockOracle(options.solidityImportCompat ?? false)) as Ast;
+  }
   return ast;
 }
 
@@ -7737,7 +8166,8 @@ function compileReferencedContracts(
 
     // MD2: run the same backwards-compat cross-check on referenced/child contracts too (it was only applied to
     // the top-level contract, so an optimiser divergence in a child script would have shipped unchecked).
-    if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+    if (compilerOptions.optimizeForCompilationSpeed !== true
+      && traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
       && needsOptimiserCrossCheck(traversal.output)) {
       const optimisedOld = optimiseBytecodeOld(traversal.output);
       if (!scriptsEqual(optimisedOld, optimisationResult.script)) {
@@ -8090,7 +8520,468 @@ function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   }
 }
 
+/** ANTLR's CharStream copies the source into `new Array(n)` of boxed numbers. Lexer `LA` is the hot path. */
+class PackedCharStream {
+  name = '<empty>';
+  private readonly strdata: string;
+  private _index = 0;
+  private readonly _size: number;
+
+  constructor(str: string) {
+    this.strdata = str;
+    this._size = str.length;
+  }
+
+  get index(): number { return this._index; }
+  get size(): number { return this._size; }
+  reset(): void { this._index = 0; }
+  consume(): void {
+    if (this._index >= this._size) throw new Error('cannot consume EOF');
+    this._index += 1;
+  }
+  LA(offset: number): number {
+    if (offset === 0) return 0;
+    if (offset < 0) offset += 1;
+    const i = this._index + offset - 1;
+    if (i < 0 || i >= this._size) return -1;
+    return this.strdata.charCodeAt(i);
+  }
+  LT(offset: number): number { return this.LA(offset); }
+  mark(): number { return -1; }
+  release(_marker: number): void { /* ANTLR CharStream marks are unused. */ }
+  seek(index: number): void {
+    this._index = index <= this._index ? index : Math.min(index, this._size);
+  }
+  getText(start: number | { start: number; stop: number }, stop?: number): string {
+    if (typeof start === 'object') {
+      stop = start.stop;
+      start = start.start;
+    }
+    if (stop === undefined) stop = this._size - 1;
+    if (stop >= this._size) stop = this._size - 1;
+    if (start >= this._size) return '';
+    return this.strdata.slice(start, stop + 1);
+  }
+  toString(): string { return this.strdata; }
+}
+
 const SHARED_PREDICTION_CONTEXT_CACHE = new PredictionContextCache();
+const SHARED_LEXER_PREDICTION_CONTEXT_CACHE = new PredictionContextCache();
+const parseProfileTotals = { files: 0, sllFails: 0, bytes: 0, ms: 0 };
+
+// SolidCashParser.expression() prefix switch (`adaptivePredict(..., 343, ...)`). Guarded at install time by
+// rule name so a grammar regen that shifts decision numbers silently falls back to ATN prediction.
+const STATEMENT_DECISION = 167;
+const STATEMENT_ALT_PLACEHOLDER = 1;
+const STATEMENT_ALT_BLOCK = 2;
+const STATEMENT_ALT_TIME_OP = 10;
+const STATEMENT_ALT_REQUIRE = 11;
+const STATEMENT_ALT_IF = 12;
+const STATEMENT_ALT_EMIT = 15;
+const STATEMENT_ALT_RETURN = 16;
+const STATEMENT_ALT_LOOP = 13;
+const STATEMENT_ALT_TRY = 19;
+const STATEMENT_ALT_SELFDESTRUCT = 17;
+const STATEMENT_ALT_SWITCH = 24;
+const STATEMENT_ALT_UNCHECKED = 23;
+const STATEMENT_ALT_ASSEMBLY = 18;
+const STATEMENT_ALT_CONTINUE = 26;
+const STATEMENT_ALT_BREAK = 25;
+const STATEMENT_ALT_DELETE = 22;
+const STATEMENT_ALT_ASSERT = 21;
+const STATEMENT_ALT_REVERT = 20;
+const STATEMENT_ALT_CONSOLE = 14;
+const EXPRESSION_PREFIX_DECISION = 343;
+const EXPRESSION_POSTFIX_LOOP_DECISION = 359;
+const EXPRESSION_POSTFIX_INNER_DECISION = 358;
+const EXPRESSION_POSTFIX_CONTINUE = 1;
+const EXPRESSION_POSTFIX_STOP = 2;
+const EXPRESSION_POSTFIX_INDEXED = 12;
+const EXPRESSION_POSTFIX_INDEXED_CALL = 20;
+const EXPRESSION_POSTFIX_METHOD = 18;
+const EXPRESSION_POSTFIX_FIELD = 21;
+const EXPRESSION_POSTFIX_SLICE = 15;
+const EXPRESSION_POSTFIX_SPLIT = 14;
+const EXPRESSION_POSTFIX_UNARY_MEMBER = 13;
+const EXPRESSION_POSTFIX_INC = 22;
+const EXPRESSION_POSTFIX_TERNARY = 23;
+const EXPRESSION_POSTFIX_BITOR = 7;
+const EXPRESSION_POSTFIX_BITXOR = 6;
+const EXPRESSION_POSTFIX_BITAND = 5;
+const EXPRESSION_POSTFIX_SHIFT = 4;
+const EXPRESSION_POSTFIX_POW = 1;
+const EXPRESSION_POSTFIX_OR = 11;
+const EXPRESSION_POSTFIX_AND = 10;
+const EXPRESSION_POSTFIX_CMP = 8;
+const EXPRESSION_POSTFIX_EQ = 9;
+const EXPRESSION_POSTFIX_MUL = 2;
+const EXPRESSION_POSTFIX_ADD = 3;
+const EXPRESSION_ALT_GROUPED = 1;
+const EXPRESSION_ALT_CAST = 2;
+const EXPRESSION_ALT_CALL = 3;
+const EXPRESSION_ALT_CONSTRUCTED = 4;
+const EXPRESSION_ALT_TYPE_INTROSPECTION = 5;
+const EXPRESSION_ALT_ABI_ENCODE = 6;
+const EXPRESSION_ALT_ABI_ENCODE_CALL = 7;
+const EXPRESSION_ALT_BYTES_CONCAT = 8;
+const EXPRESSION_ALT_ABI_DECODE = 9;
+const EXPRESSION_ALT_ABI_DECODE_AT = 10;
+const EXPRESSION_ALT_BARE_ABI = 11;
+const EXPRESSION_ALT_INTROSPECTION = 12;
+const EXPRESSION_ALT_UNARY = 14;
+const EXPRESSION_ALT_ARRAY_LITERAL = 15;
+const EXPRESSION_ALT_THIS = 16;
+const EXPRESSION_ALT_NULLARY = 17;
+const EXPRESSION_ALT_IDENTIFIER = 18;
+const EXPRESSION_ALT_LITERAL = 19;
+
+function skipBalanced(
+  input: { LA(i: number): number }, start: number, open: number, close: number,
+): number {
+  let depth = 0;
+  for (let i = start; i < start + 4096; i += 1) {
+    const token = input.LA(i);
+    if (token === -1) return i;
+    if (token === open) depth += 1;
+    else if (token === close) {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return start + 4096;
+}
+
+function predictExpressionPrefix(input: { LA(i: number): number; LT(i: number): { text?: string | undefined } }): number | undefined {
+  const first = input.LA(1);
+  const lparen = SolidCashParser.T__56;
+  const lbrack = SolidCashParser.T__81;
+  if (first === lparen) return EXPRESSION_ALT_GROUPED;
+  if (first === SolidCashParser.Identifier) {
+    // `uint(x)` is a typeCast alternative, not a call; let ATN keep that split.
+    if (input.LT(1).text === 'uint') return undefined;
+    const lbrace = SolidCashParser.T__3;
+    const dot = SolidCashParser.T__6;
+    const second = input.LA(2);
+    if (second === lparen || second === lbrace || (second === dot && input.LA(4) === lparen)) {
+      return EXPRESSION_ALT_CALL;
+    }
+    return EXPRESSION_ALT_IDENTIFIER;
+  }
+  if (first === SolidCashParser.NullaryOp) return EXPRESSION_ALT_NULLARY;
+  if (first === SolidCashParser.NumberLiteral || first === SolidCashParser.DecimalLiteral
+    || first === SolidCashParser.BooleanLiteral || first === SolidCashParser.StringLiteral
+    || first === SolidCashParser.UnicodeLiteral || first === SolidCashParser.HexStringLiteral
+    || first === SolidCashParser.DateLiteral || first === SolidCashParser.HexLiteral) {
+    return EXPRESSION_ALT_LITERAL;
+  }
+  if (first === SolidCashParser.BoundedUnsignedInt || first === SolidCashParser.BoundedSignedInt
+    || first === SolidCashParser.PrimitiveType || first === SolidCashParser.UnboundedBytes
+    || first === SolidCashParser.BoundedBytes || first === SolidCashParser.CryptoType
+    || first === SolidCashParser.UnsafeCast || first === SolidCashParser.BoundedSignedFixed
+    || first === SolidCashParser.BoundedUnsignedFixed
+    || first === SolidCashParser.T__90 || first === SolidCashParser.T__66
+    || first === SolidCashParser.T__88 || first === SolidCashParser.T__89) {
+    const second = input.LA(2);
+    if (second === lparen || second === lbrack) return EXPRESSION_ALT_CAST;
+  }
+  if (first === SolidCashParser.T__41) return EXPRESSION_ALT_THIS;
+  if (first === SolidCashParser.T__91) return EXPRESSION_ALT_CONSTRUCTED;
+  if (first === SolidCashParser.T__127 || first === SolidCashParser.T__128) {
+    return EXPRESSION_ALT_INTROSPECTION;
+  }
+  if (first === SolidCashParser.T__62) return EXPRESSION_ALT_TYPE_INTROSPECTION;
+  if (first === SolidCashParser.T__13 || first === SolidCashParser.T__26 || first === SolidCashParser.T__130) {
+    return EXPRESSION_ALT_UNARY;
+  }
+  if (first === lbrack) return EXPRESSION_ALT_ARRAY_LITERAL;
+  if (first === SolidCashParser.T__118 || first === SolidCashParser.T__119
+    || first === SolidCashParser.T__120 || first === SolidCashParser.T__121) {
+    return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_ENCODE : EXPRESSION_ALT_BARE_ABI;
+  }
+  if (first === SolidCashParser.T__122) {
+    return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_ENCODE_CALL : EXPRESSION_ALT_BARE_ABI;
+  }
+  if (first === SolidCashParser.T__123 || first === SolidCashParser.T__124) {
+    return EXPRESSION_ALT_BYTES_CONCAT;
+  }
+  if (first === SolidCashParser.T__125) {
+    return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_DECODE : EXPRESSION_ALT_BARE_ABI;
+  }
+  if (first === SolidCashParser.T__126) {
+    return input.LA(2) === lparen ? EXPRESSION_ALT_ABI_DECODE_AT : EXPRESSION_ALT_BARE_ABI;
+  }
+  return undefined;
+}
+
+const TOKEN_TYPE_BY_LITERAL = new Map<string, number>();
+function prefillParserTokenTypes(): void {
+  const names = SolidCashParser.literalNames;
+  for (let i = 0; i < names.length; i += 1) {
+    const name = names[i];
+    if (name !== null) TOKEN_TYPE_BY_LITERAL.set(name, i);
+  }
+}
+prefillParserTokenTypes();
+function tokenTypeByLiteral(literal: string): number | undefined {
+  const cached = TOKEN_TYPE_BY_LITERAL.get(literal);
+  if (cached !== undefined) return cached;
+  const names = SolidCashParser.literalNames;
+  for (let i = 0; i < names.length; i += 1) {
+    if (names[i] === literal) {
+      TOKEN_TYPE_BY_LITERAL.set(literal, i);
+      return i;
+    }
+  }
+  return undefined;
+}
+
+function installExpressionPrefixFastPath(parser: SolidCashParser): void {
+  const interp = parser._interp;
+  const prefixState = interp.atn.decisionToState[EXPRESSION_PREFIX_DECISION] as { ruleIndex?: number } | undefined;
+  const postfixState = interp.atn.decisionToState[EXPRESSION_POSTFIX_LOOP_DECISION] as { ruleIndex?: number } | undefined;
+  const postfixInnerState = interp.atn.decisionToState[EXPRESSION_POSTFIX_INNER_DECISION] as { ruleIndex?: number } | undefined;
+  const statementState = interp.atn.decisionToState[STATEMENT_DECISION] as { ruleIndex?: number } | undefined;
+  const prefixOk = prefixState !== undefined && parser.ruleNames[prefixState.ruleIndex ?? -1] === 'expression';
+  const postfixOk = postfixState !== undefined && parser.ruleNames[postfixState.ruleIndex ?? -1] === 'expression';
+  const postfixInnerOk = postfixInnerState !== undefined && parser.ruleNames[postfixInnerState.ruleIndex ?? -1] === 'expression';
+  const statementOk = statementState !== undefined && parser.ruleNames[statementState.ruleIndex ?? -1] === 'statement';
+  if (!prefixOk && !postfixOk && !postfixInnerOk && !statementOk) return;
+  const orig = interp.adaptivePredict.bind(interp);
+  const rparen = SolidCashParser.T__57;
+  const comma = SolidCashParser.T__4;
+  const semi = SolidCashParser.T__1;
+  const rbrack = SolidCashParser.T__82;
+  const rbrace = SolidCashParser.T__5;
+  const assign = SolidCashParser.T__47;
+  const lbrace = SolidCashParser.T__3;
+  const lbrack = SolidCashParser.T__81;
+  const lparen = SolidCashParser.T__56;
+  const requireTok = tokenTypeByLiteral("'require'");
+  const ifTok = tokenTypeByLiteral("'if'");
+  const emitTok = tokenTypeByLiteral("'emit'");
+  const returnTok = tokenTypeByLiteral("'return'");
+  const forTok = tokenTypeByLiteral("'for'");
+  const tryTok = tokenTypeByLiteral("'try'");
+  const selfdestructTok = tokenTypeByLiteral("'selfdestruct'");
+  const switchTok = tokenTypeByLiteral("'switch'");
+  const uncheckedTok = tokenTypeByLiteral("'unchecked'");
+  const assemblyTok = tokenTypeByLiteral("'assembly'");
+  const continueTok = tokenTypeByLiteral("'continue'");
+  const breakTok = tokenTypeByLiteral("'break'");
+  const deleteTok = tokenTypeByLiteral("'delete'");
+  const assertTok = tokenTypeByLiteral("'assert'");
+  const revertTok = tokenTypeByLiteral("'revert'");
+  const consoleTok = tokenTypeByLiteral("'console.log'");
+  const doTok = tokenTypeByLiteral("'do'");
+  const whileTok = tokenTypeByLiteral("'while'");
+  const valueTok = tokenTypeByLiteral("'.value'");
+  const sliceTok = tokenTypeByLiteral("'.slice'");
+  const splitTok = tokenTypeByLiteral("'.split'");
+  const reverseTok = tokenTypeByLiteral("'.reverse()'");
+  const lengthTok = tokenTypeByLiteral("'.length'");
+  const placeholderTok = tokenTypeByLiteral("'_'");
+  const minusminusTok = tokenTypeByLiteral("'--'");
+  const plusplusTok = tokenTypeByLiteral("'++'");
+  const qmarkTok = tokenTypeByLiteral("'?'");
+  const bitorTok = tokenTypeByLiteral("'|'");
+  const bitxorTok = tokenTypeByLiteral("'^'");
+  const bitandTok = tokenTypeByLiteral("'&'");
+  const shrTok = tokenTypeByLiteral("'>>'");
+  const shlTok = tokenTypeByLiteral("'<<'");
+  const powTok = tokenTypeByLiteral("'**'");
+  const ororTok = tokenTypeByLiteral("'||'");
+  const andandTok = tokenTypeByLiteral("'&&'");
+  const geTok = tokenTypeByLiteral("'>='");
+  const leTok = tokenTypeByLiteral("'<='");
+  const gtTok = tokenTypeByLiteral("'>'");
+  const ltTok = tokenTypeByLiteral("'<'");
+  const neqTok = tokenTypeByLiteral("'!='");
+  const eqTok = tokenTypeByLiteral("'=='");
+  const percentTok = tokenTypeByLiteral("'%'");
+  const slashTok = tokenTypeByLiteral("'/'");
+  const starTok = tokenTypeByLiteral("'*'");
+  const minusTok = tokenTypeByLiteral("'-'");
+  const plusTok = tokenTypeByLiteral("'+'");
+  const dotTok = tokenTypeByLiteral("'.'");
+  interp.adaptivePredict = ((input, decision, ctx) => {
+    if (prefixOk && decision === EXPRESSION_PREFIX_DECISION) {
+      const alt = predictExpressionPrefix(input);
+      if (alt !== undefined) return alt;
+    }
+    if (postfixOk && decision === EXPRESSION_POSTFIX_LOOP_DECISION) {
+      const token = input.LA(1);
+      if (token === rparen || token === comma || token === semi || token === rbrack
+        || token === rbrace || token === assign || token === -1) {
+        return EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === valueTok) {
+        const next = input.LA(2);
+        if (next === lparen || next === lbrace) {
+          return parser.precpred(ctx, 24) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+        }
+        return parser.precpred(ctx, 21) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === sliceTok) {
+        return parser.precpred(ctx, 27) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === splitTok) {
+        return parser.precpred(ctx, 28) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === reverseTok) {
+        return parser.precpred(ctx, 29) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === lengthTok) {
+        const next = input.LA(2);
+        if (next === lparen || next === lbrace) {
+          return parser.precpred(ctx, 24) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+        }
+        return parser.precpred(ctx, 29) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === minusminusTok) {
+        return parser.precpred(ctx, 20) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === plusplusTok) {
+        return parser.precpred(ctx, 20) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === qmarkTok) {
+        return parser.precpred(ctx, 6) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === bitorTok) {
+        return parser.precpred(ctx, 11) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === bitxorTok) {
+        return parser.precpred(ctx, 12) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === bitandTok) {
+        return parser.precpred(ctx, 13) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === shrTok) {
+        return parser.precpred(ctx, 14) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === shlTok) {
+        return parser.precpred(ctx, 14) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === powTok) {
+        return parser.precpred(ctx, 17) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === ororTok) {
+        return parser.precpred(ctx, 7) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === andandTok) {
+        return parser.precpred(ctx, 8) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === geTok) {
+        return parser.precpred(ctx, 10) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === leTok) {
+        return parser.precpred(ctx, 10) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === gtTok) {
+        return parser.precpred(ctx, 10) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === ltTok) {
+        return parser.precpred(ctx, 10) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === neqTok) {
+        return parser.precpred(ctx, 9) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === eqTok) {
+        return parser.precpred(ctx, 9) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === percentTok) {
+        return parser.precpred(ctx, 16) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === slashTok) {
+        return parser.precpred(ctx, 16) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === starTok) {
+        return parser.precpred(ctx, 16) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === minusTok) {
+        return parser.precpred(ctx, 15) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === plusTok) {
+        return parser.precpred(ctx, 15) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === dotTok) {
+        return parser.precpred(ctx, 21) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+      if (token === lbrack) {
+        return parser.precpred(ctx, 31) ? EXPRESSION_POSTFIX_CONTINUE : EXPRESSION_POSTFIX_STOP;
+      }
+    }
+    if (postfixInnerOk && decision === EXPRESSION_POSTFIX_INNER_DECISION) {
+      const innerTok = input.LA(1);
+      if (innerTok === lbrack) {
+        const after = skipBalanced(input, 1, lbrack, rbrack);
+        const next = input.LA(after);
+        if (next === lparen || next === lbrace) return EXPRESSION_POSTFIX_INDEXED_CALL;
+        return EXPRESSION_POSTFIX_INDEXED;
+      }
+      if (innerTok === valueTok) {
+        const next = input.LA(2);
+        if (next === lparen || next === lbrace) return EXPRESSION_POSTFIX_METHOD;
+        return EXPRESSION_POSTFIX_FIELD;
+      }
+      if (innerTok === sliceTok) return EXPRESSION_POSTFIX_SLICE;
+      if (innerTok === splitTok) return EXPRESSION_POSTFIX_SPLIT;
+      if (innerTok === reverseTok) return EXPRESSION_POSTFIX_UNARY_MEMBER;
+      if (innerTok === lengthTok) {
+        const next = input.LA(2);
+        if (next === lparen || next === lbrace) return EXPRESSION_POSTFIX_METHOD;
+        return EXPRESSION_POSTFIX_UNARY_MEMBER;
+      }
+      if (innerTok === minusminusTok) return EXPRESSION_POSTFIX_INC;
+      if (innerTok === plusplusTok) return EXPRESSION_POSTFIX_INC;
+      if (innerTok === qmarkTok) return EXPRESSION_POSTFIX_TERNARY;
+      if (innerTok === bitorTok) return EXPRESSION_POSTFIX_BITOR;
+      if (innerTok === bitxorTok) return EXPRESSION_POSTFIX_BITXOR;
+      if (innerTok === bitandTok) return EXPRESSION_POSTFIX_BITAND;
+      if (innerTok === shrTok) return EXPRESSION_POSTFIX_SHIFT;
+      if (innerTok === shlTok) return EXPRESSION_POSTFIX_SHIFT;
+      if (innerTok === powTok) return EXPRESSION_POSTFIX_POW;
+      if (innerTok === ororTok) return EXPRESSION_POSTFIX_OR;
+      if (innerTok === andandTok) return EXPRESSION_POSTFIX_AND;
+      if (innerTok === geTok) return EXPRESSION_POSTFIX_CMP;
+      if (innerTok === leTok) return EXPRESSION_POSTFIX_CMP;
+      if (innerTok === gtTok) return EXPRESSION_POSTFIX_CMP;
+      if (innerTok === ltTok) return EXPRESSION_POSTFIX_CMP;
+      if (innerTok === neqTok) return EXPRESSION_POSTFIX_EQ;
+      if (innerTok === eqTok) return EXPRESSION_POSTFIX_EQ;
+      if (innerTok === percentTok) return EXPRESSION_POSTFIX_MUL;
+      if (innerTok === slashTok) return EXPRESSION_POSTFIX_MUL;
+      if (innerTok === starTok) return EXPRESSION_POSTFIX_MUL;
+      if (innerTok === minusTok) return EXPRESSION_POSTFIX_ADD;
+      if (innerTok === plusTok) return EXPRESSION_POSTFIX_ADD;
+    }
+    if (statementOk && decision === STATEMENT_DECISION) {
+      const token = input.LA(1);
+      if (token === placeholderTok) return STATEMENT_ALT_PLACEHOLDER;
+      if (token === lbrace) return STATEMENT_ALT_BLOCK;
+      if (token === requireTok) {
+        return input.LA(3) === SolidCashParser.TxVar ? STATEMENT_ALT_TIME_OP : STATEMENT_ALT_REQUIRE;
+      }
+      if (token === ifTok) return STATEMENT_ALT_IF;
+      if (token === emitTok) return STATEMENT_ALT_EMIT;
+      if (token === returnTok) return STATEMENT_ALT_RETURN;
+      if (token === forTok) return STATEMENT_ALT_LOOP;
+      if (token === tryTok) return STATEMENT_ALT_TRY;
+      if (token === selfdestructTok) return STATEMENT_ALT_SELFDESTRUCT;
+      if (token === switchTok) return STATEMENT_ALT_SWITCH;
+      if (token === uncheckedTok) return STATEMENT_ALT_UNCHECKED;
+      if (token === assemblyTok) return STATEMENT_ALT_ASSEMBLY;
+      if (token === continueTok) return STATEMENT_ALT_CONTINUE;
+      if (token === breakTok) return STATEMENT_ALT_BREAK;
+      if (token === deleteTok) return STATEMENT_ALT_DELETE;
+      if (token === assertTok) return STATEMENT_ALT_ASSERT;
+      if (token === revertTok) return STATEMENT_ALT_REVERT;
+      if (token === consoleTok) return STATEMENT_ALT_CONSOLE;
+      if (token === doTok) return STATEMENT_ALT_LOOP;
+      if (token === whileTok) return STATEMENT_ALT_LOOP;
+    }
+    return orig(input, decision, ctx);
+  }) as typeof interp.adaptivePredict;
+}
 
 export function parseCode(
   code: string,
@@ -8102,26 +8993,33 @@ export function parseCode(
   // Solidity corpus files append diagnostic expectations after `// ----`; that trailer is test metadata, not
   // source text, and often repeats the SPDX spelling inside warning prose.
   if (solidityImportCompat) {
-    const diagnosticTrailer = code.search(/\n\/\/ ----/);
+    const diagnosticTrailer = code.includes('// ----') ? code.search(/\n\/\/ ----/) : -1;
     const spdxSource = diagnosticTrailer >= 0 ? code.slice(0, diagnosticTrailer) : code;
-    validateUnicodeDirectionMarkers(spdxSource);
+    // Marketplace/OZ sources have no bidi overrides. The token walk is linear in file size; skip it unless a
+    // direction marker is actually present.
+    if (/[\u202a\u202b\u202c\u202d\u202e]/.test(spdxSource)) {
+      validateUnicodeDirectionMarkers(spdxSource);
+    }
     // Common Solidity flattener output retains one SPDX header per concatenated source and marks every boundary
     // with `// File <path>`. MistSwap ships these generated `*Flat.sol` units directly. Keep the ordinary Solidity
     // source-unit diagnostic, but admit this explicit flattened format without rewriting the user's checkout.
-    const flattenedSource = /^\s*\/\/\s*File\s+\S+/m.test(spdxSource);
-    const spdxIdentifiers = spdxIdentifiersInComments(spdxSource);
-    if (!flattenedSource && new Set(spdxIdentifiers).size > 1) {
-      throw new Error(
-        'Multiple SPDX license identifiers found in source file. '
-        + 'Use "AND" or "OR" to combine multiple licenses.',
-      );
+    const firstSpdx = spdxSource.indexOf('SPDX-License-Identifier');
+    if (firstSpdx >= 0 && spdxSource.indexOf('SPDX-License-Identifier', firstSpdx + 1) >= 0) {
+      const flattenedSource = spdxSource.includes('// File ') && /^\s*\/\/\s*File\s+\S+/m.test(spdxSource);
+      const spdxIdentifiers = spdxIdentifiersInComments(spdxSource);
+      if (!flattenedSource && new Set(spdxIdentifiers).size > 1) {
+        throw new Error(
+          'Multiple SPDX license identifiers found in source file. '
+          + 'Use "AND" or "OR" to combine multiple licenses.',
+        );
+      }
     }
   }
   // Version-gated EVM instructions are ordinary Yul identifiers before their fork activates. Corpus fixtures
   // carry the requested EVM version in their harness trailer. Rename inactive spellings consistently so their
   // declarations remain legal, while an undeclared reference/call still produces the expected undefined-name
   // diagnostic. Equal-length replacements preserve all source offsets.
-  if (solidityImportCompat) {
+  if (solidityImportCompat && code.includes('EVMVersion:')) {
     const inactiveYulNames: string[] = [];
     if (/\/\/\s*EVMVersion:\s*(?:<=\s*berlin|<\s*london)\b/i.test(code)) inactiveYulNames.push('basefee');
     if (/\/\/\s*EVMVersion:\s*<\s*paris\b/i.test(code)) inactiveYulNames.push('prevrandao');
@@ -8140,7 +9038,7 @@ export function parseCode(
   // specifiers only belong to contracts), and has no BCH meaning. In import-compat mode, blank this exact
   // no-expression shape while retaining line/column positions; do not consume a real modifier invocation or
   // any expression between `at` and the body.
-  if (solidityImportCompat) {
+  if (solidityImportCompat && code.includes('layout at')) {
     code = code.replace(
       /(\bfunction\b[^{};]*?)(\s+layout\s+at\s*)(?=\{)/g,
       (_m, header, clause) => header + clause.replace(/[^\r\n]/g, ' '),
@@ -8151,33 +9049,35 @@ export function parseCode(
   // it has no meaning on the UTXO model, so drop the clause so the contract parses. Anchored to a
   // contract header (so a `layout at .. {` inside a string / body is not touched) and stopping at
   // the body `{`. The clause may span lines and contain NatSpec comments; blank its non-newline characters so
-  // downstream source locations keep their original line numbers. (Native code has no such clause, so the strip
-  // is a no-op there.)
+  // downstream source locations keep their original line numbers. Native generated helpers have no such
+  // clause; skip the two regex walks unless the source actually contains one.
   // Current Solidity grammar places the clause BEFORE inheritance (`contract C layout at 42 is A`); preserve the
   // `is A` tail rather than consuming it as part of the layout expression. Retain the older post-inheritance
   // spelling below for compatibility with sources SolidCash already accepted.
-  code = code.replace(
-    // eslint-disable-next-line max-len
-    /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
-    (_m, header, layoutPrefix, expr, inheritance) => {
-      if (/\berc7201\b/.test(expr)) {
-        console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
-          + 'base slot on the UTXO model, so the layout specifier is ignored.');
-      }
-      return header + (layoutPrefix + expr).replace(/[^\r\n]/g, ' ') + inheritance;
-    },
-  );
-  code = code.replace(
-    // eslint-disable-next-line max-len
-    /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
-    (_m, header, clause, expr) => {
-      if (/\berc7201\b/.test(expr)) {
-        console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
-          + 'base slot on the UTXO model, so the layout specifier is ignored.');
-      }
-      return header + clause.replace(/[^\r\n]/g, ' ');
-    },
-  );
+  if (code.includes('layout at')) {
+    code = code.replace(
+      // eslint-disable-next-line max-len
+      /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
+      (_m, header, layoutPrefix, expr, inheritance) => {
+        if (/\berc7201\b/.test(expr)) {
+          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
+            + 'base slot on the UTXO model, so the layout specifier is ignored.');
+        }
+        return header + (layoutPrefix + expr).replace(/[^\r\n]/g, ' ') + inheritance;
+      },
+    );
+    code = code.replace(
+      // eslint-disable-next-line max-len
+      /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
+      (_m, header, clause, expr) => {
+        if (/\berc7201\b/.test(expr)) {
+          console.log('Warning: `layout at erc7201(...)` is not supported in SolidCash - storage is not offset by a '
+            + 'base slot on the UTXO model, so the layout specifier is ignored.');
+        }
+        return header + clause.replace(/[^\r\n]/g, ' ');
+      },
+    );
+  }
 
   // X120. The file stamp has to cover LEXING AND PARSING, not only the AST build. An ANTLR error listener builds
   // its own `Location` from the offending token while the parse is still running, i.e. before
@@ -8188,47 +9088,76 @@ export function parseCode(
   // `withSourceFile(undefined, ..)` for a root parse CLEARS an ambient stamp rather than inheriting one, so a
   // nested parse of compiler-generated route source cannot pick up an importing file's id; the generated mark
   // wins over any file label anyway (`importedFileCaveat`).
-  return withSourceFile(importedFileId, () => {
-    const parse = (fast: boolean): ReturnType<SolidCashParser['sourceFile']> => {
-      const syntaxErrorListener = fast
-        ? ThrowingErrorListener.INSTANCE : new ForwardingErrorListener(errorListener);
-      const lexer = new SolidCashLexer(new CharStream(code));
-      lexer.removeErrorListeners();
-      lexer.addErrorListener(syntaxErrorListener);
-      const parser = new SolidCashParser(new CommonTokenStream(lexer));
-      // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
-      // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
-      // across instances; do the same, so a process that parses many sources - a compile also parses the generated
-      // message-bus route - reuses that work instead of repaying it.
-      parser._interp = new ParserATNSimulator(
-        parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
-      );
-      if (fast) {
-        parser._interp.predictionMode = PredictionMode.SLL;
-        parser._errHandler = new BailErrorStrategy();
-      }
-      parser.removeErrorListeners();
-      parser.addErrorListener(syntaxErrorListener);
-      const tree = parser.sourceFile();
-      if (!fast) (syntaxErrorListener as ForwardingErrorListener).throwFirstError();
-      return tree;
-    };
+  const parseStarted = compilerProfileEnabled() ? Date.now() : 0;
+  let sllFailed = false;
+  const ast = withSourceFile(importedFileId, () => {
+    const lexer = new SolidCashLexer(new PackedCharStream(code) as unknown as CharStream);
+    lexer.removeErrorListeners();
+    lexer.addErrorListener(ThrowingErrorListener.INSTANCE);
+    // Same sharing as the parser interpreter below: the generated lexer constructs a fresh
+    // PredictionContextCache per instance, which rebuilds lexer prediction contexts on every imported file.
+    lexer._interp = new LexerATNSimulator(
+      lexer, SolidCashLexer._ATN, SolidCashLexer.DecisionsToDFA, SHARED_LEXER_PREDICTION_CONTEXT_CACHE,
+    );
+    const tokens = new CommonTokenStream(lexer);
+    const parser = new SolidCashParser(tokens);
+    // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
+    // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
+    // across instances; do the same, so a process that parses many sources - a compile also parses the generated
+    // message-bus route - reuses that work instead of repaying it.
+    parser._interp = new ParserATNSimulator(
+      parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
+    );
+    parser.removeErrorListeners();
+    parser.addErrorListener(ThrowingErrorListener.INSTANCE);
+    // Solidity's semantic predicates (e.g. `hasFunctionCallAhead`) routinely defeat SLL. Trying SLL first on
+    // `.sol` import graphs pays a full failed parse of MarketplaceV1 plus several OZ units before LL retries.
+    // Native SolidCash and compiler-generated helpers still take the SLL fast path.
+    const trySll = !solidityImportCompat;
     let parseTree: ReturnType<SolidCashParser['sourceFile']>;
-    try {
-      parseTree = parse(true);
-    } catch {
-      // SLL cannot resolve every context-sensitive Solidity/SolidCash construct. Re-run those uncommon sources
-      // with the canonical full-context parser, which also owns user-facing syntax diagnostics.
-      parseTree = parse(false);
+    if (trySll) {
+      parser._interp.predictionMode = PredictionMode.SLL;
+      parser._errHandler = new BailErrorStrategy();
+      try {
+        parseTree = parser.sourceFile();
+      } catch {
+        sllFailed = true;
+        parser.reset();
+        const llListener = new ForwardingErrorListener(errorListener);
+        lexer.removeErrorListeners();
+        lexer.addErrorListener(llListener);
+        parser.removeErrorListeners();
+        parser.addErrorListener(llListener);
+        parser._interp.predictionMode = PredictionMode.LL;
+        parser._errHandler = new DefaultErrorStrategy();
+        parseTree = parser.sourceFile();
+        llListener.throwFirstError();
+      }
+    } else {
+      const llListener = new ForwardingErrorListener(errorListener);
+      lexer.removeErrorListeners();
+      lexer.addErrorListener(llListener);
+      parser.removeErrorListeners();
+      parser.addErrorListener(llListener);
+      parser._interp.predictionMode = PredictionMode.LL;
+      parser._errHandler = new DefaultErrorStrategy();
+      parseTree = parser.sourceFile();
+      llListener.throwFirstError();
     }
 
     // AST building
-    const ast = new AstBuilder(
+    return new AstBuilder(
       parseTree, solidityImportCompat, chunkedArrays, code, importedFileId,
     ).build() as Ast;
-
-    return ast;
   });
+  if (compilerProfileEnabled()) {
+    const ms = Date.now() - parseStarted;
+    parseProfileTotals.files += 1;
+    parseProfileTotals.bytes += code.length;
+    parseProfileTotals.ms += ms;
+    if (sllFailed) parseProfileTotals.sllFails += 1;
+  }
+  return ast;
 }
 
 // Re-resolve array element types that parsed to a named AddressType placeholder (an imported struct not yet

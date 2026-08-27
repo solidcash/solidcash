@@ -7147,6 +7147,9 @@ export class StatefulTransactionBuilder {
     const unusedIntArgs = visibleInputs
       .map((input, index) => ({ input, index }))
       .filter(({ input, index }) => !usedArgs.has(index) && isIntegerType(input.type));
+    // A leftover increment is only a good first-probe guess for a single unassigned counter. Blindly
+    // +1-ing every leftover packed field (or zipping a uint256 slot word onto a uint16) aborts
+    // derivation when encodePushdataValue rejects the out-of-range value.
     const applyLeftoverInts = zero || decrement || twice
       || (leftoverInts.length === 1 && unusedIntArgs.length === 0);
     const applyLeftoverBools = enable || disable || zero || leftoverBools.length === 1;
@@ -7172,7 +7175,10 @@ export class StatefulTransactionBuilder {
     return assigned.size > 0;
   }
 
-  /** Seed fixed-size array element writes whose ABI value source is a compile-time integer. */
+  /**
+   * Seed fixed-size array element writes whose ABI value source is a compile-time integer.
+   * Mapping writes use native slot-next-value commitments and must not go through setEntry.
+   */
   seedOptimisticArrayElementWrites(): boolean {
     if (this.entryUpdates.size > 0 || !isContractUnlocker(this.masterUtxo.unlocker)) return false;
     const { abiFunction } = this.masterUtxo.unlocker;

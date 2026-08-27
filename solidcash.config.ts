@@ -21,6 +21,7 @@ export default defineConfig({
     suppressWarnings: true,
   },
   typegen: {
+    jsonArtifactModules: true,
     targets: [{
       target: 'ethers6',
       layout: 'typechain',

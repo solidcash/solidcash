@@ -31,6 +31,7 @@ describe('fixed-bound loop mapping write (unrolled to N static entry writes)', (
 
     const tx = await sc.setAll([10n, 20n], [111n, 222n], alicePub, sig).send();
     expect(tx.txid).toBeDefined();
+    expect(sc.lastDerivationIterations).toBe(1);
 
     // Both entries are readable back off the persisted state.
     sc = StatefulContract.withCategory(contract, categoryId);

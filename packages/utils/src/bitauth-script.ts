@@ -16,19 +16,18 @@ export function buildLineToOpcodesMap(bytecode: Script, sourceMap: string): Line
   // incorrect CashAssembly in the debug template.
   let maxLine = 0;
 
-  return locationData.reduce<LineToOpcodesMap>((lineToOpcodeMap, { location, positionHint }, index) => {
-    if (index >= bytecode.length) return lineToOpcodeMap;
+  const lineToOpcodeMap: LineToOpcodesMap = {};
+  locationData.forEach(({ location, positionHint }, index) => {
+    if (index >= bytecode.length) return;
     const opcode = bytecode[index];
     let line = positionHint === PositionHint.END ? location?.end.line : location?.start.line;
 
     if (line !== undefined && line < maxLine) line = maxLine;
     if (line !== undefined) maxLine = Math.max(maxLine, line);
-
-    return {
-      ...lineToOpcodeMap,
-      [line]: [...(lineToOpcodeMap[line] || []), opcode],
-    };
-  }, {});
+    const bucket = lineToOpcodeMap[line] ?? (lineToOpcodeMap[line] = []);
+    bucket.push(opcode);
+  });
+  return lineToOpcodeMap;
 }
 
 export function buildLineToAsmMap(
@@ -66,6 +65,7 @@ export function formatBitAuthScript(
   sourceCode: string,
   instructionReplacements: ReadonlyMap<number, string> = new Map(),
 ): string {
+  if (!sourceMap) return scriptToBitAuthAsm(bytecode);
   const lineToAsmMap = buildLineToAsmMap(bytecode, sourceMap, instructionReplacements);
 
   const escapedSourceCode = sourceCode.replaceAll('/*', '\\/*').replaceAll('*/', '*\\/');

@@ -820,6 +820,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ];
 
   /**
+   * Script numbers whose push is two bytes (`OP_PUSHBYTES_1` plus a one-byte payload). The allocator used to
+   * walk from -12 downward after the single-byte pool, so unused positives in 17..127 (entry-point ids that
+   * are never OP_INVOKE'd, and therefore never reserved) were skipped while later outline helpers paid a
+   * three-byte push. Prefer these before falling into the three-byte range.
+   */
+  private static readonly TWO_BYTE_PUSH_IDS: readonly bigint[] = (() => {
+    const ids: bigint[] = [];
+    for (let n = -127n; n <= 127n; n += 1n) {
+      if (n === 0n) continue;
+      if (GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS.includes(n)) continue;
+      ids.push(n);
+    }
+    return ids;
+  })();
+
+  /** Unused 1-byte then 2-byte identifier slots, shortest encoding first. */
+  private static compactPushIdsPreferringShort(used: Set<bigint>, extra: readonly bigint[] = []): bigint[] {
+    return [...new Set([
+      ...GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS.filter((id) => !used.has(id)),
+      ...GenerateTargetTraversalWithLocation.TWO_BYTE_PUSH_IDS.filter((id) => !used.has(id)),
+      ...extra.filter((id) => !used.has(id)),
+    ])].sort((left, right) => encodeDataPush(encodeInt(left)).length - encodeDataPush(encodeInt(right)).length
+      || Number(left - right));
+  }
+
+  /**
    * Instructions whose failure the SDK reports against a source position. Relocating one changes the
    * instruction space the VM reports its pointer in, and the failure gets blamed on whatever line the shared
    * body inherited from its first site.
@@ -1414,6 +1440,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static alignLocations(
     locations: FullLocationData, length: number, fallback: SingleLocationData,
   ): FullLocationData {
+    if (locations.length === length) return locations;
     const aligned = locations.slice(0, length);
     while (aligned.length < length) aligned.push(locations[locations.length - 1] ?? fallback);
     return aligned;
@@ -1424,8 +1451,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // opcodes and location records dominates throwaway body generation on large contracts.
     if (this.isSubroutineUseProbe) return;
     if (Array.isArray(op)) {
-      op.forEach((element) => this.output.push(element as Op));
-      op.forEach(() => this.locationData.push(locationData));
+      for (let i = 0; i < op.length; i += 1) {
+        this.output.push(op[i] as Op);
+        this.locationData.push(locationData);
+      }
     } else {
       this.output.push(op);
       this.locationData.push(locationData);
@@ -1865,8 +1894,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitBytesNonEmptyInline(locationData: SingleLocationData): void {
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_GREATERTHAN, locationData);
+    this.emit(Op.OP_0NOTEQUAL, locationData);
   }
 
   private emitBytesNonEmpty(locationData: SingleLocationData): void {
@@ -3156,6 +3184,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // can read constructor params (the subroutine path is param-less - only declared args are pushed). Key on
     // `!isEntryPoint`, not `visibility !== 'public'`, so external entry points (also non-'public') are not broken.
     const invoked = this.reachableInvokedFunctionIds(node);
+    const cheapAdmission = this.compilerOptions.__cheapAdmissionCodegen === true;
+    const keepAdmissionBody = (fn: FunctionDefinitionNode): boolean => {
+      if (fn.messageBusRoute === true) return true;
+      if (fn === node.constructorDef || fn === node.fallbackDef || fn === node.receiveDef) return true;
+      const { name } = fn;
+      if (!name.startsWith('__message_bus')) return false;
+      // User-function clones are the expensive bodies. Skip them on the throwaway admission pass; keep the
+      // route, verifier, and compiler-owned parse/settle helpers.
+      return !name.startsWith('__message_bus_graph_')
+        && !name.startsWith('__message_bus_entry_')
+        && !name.startsWith('__message_bus_handler_')
+        && !name.startsWith('__message_bus_dynamic_')
+        && !name.startsWith('__message_bus_array_')
+        && !name.startsWith('__message_bus_external_')
+        && !name.startsWith('__message_bus_resource_');
+    };
     // The fallback is a subroutine candidate too: a self low-level call (`address(this).call(data)`) lowers
     // to an internal `__fallback(data)` invocation, so it needs an internal OP_DEFINE when invoked.
     const subroutineCandidates = node.fallbackDef ? [...node.functions, node.fallbackDef] : node.functions;
@@ -3165,6 +3209,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Historically every subroutine-only body was compiled, even if dead, so its fail-closed diagnostics
       // remain part of source validation. Entry points are compiled as definitions only when internally invoked;
       // compiling an ordinary entry as a parameter-less subroutine can itself be invalid.
+      // Cheap admission is throwaway: skip user/clone bodies that are not the verifier/route closure. The
+      // binder pass still compiles every body for diagnostics and the shipped artifact.
+      if (cheapAdmission && !keepAdmissionBody(f)) continue;
       if (!f.isEntryPoint || isInvoked) this.emitFunctionDefine(f, isInvoked);
     }
 
@@ -3206,6 +3253,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       // OP_DEFINE each entry-point function with its 4-byte hash selector, then dispatch
       dispatchFunctions.forEach((f) => {
+        if (cheapAdmission && f.isEntryPoint && !keepAdmissionBody(f)) return;
         this.emitEntryPointFunctionDefine(f, node.parameters);
       });
       this.outlineSharedFunctionBodies(outlineLoc);
@@ -3299,7 +3347,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ));
     const optimisationResult = GenerateTargetTraversalWithLocation.optimisedHelperBody(sub);
     const bodyScript = optimisationResult.script;
-    if (!this.isSubroutineUseProbe && sub.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+    if (!this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed !== true
+      && sub.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
       && needsOptimiserCrossCheck(normaliseScript(sub.output))) {
       if (!scriptsEqual(optimiseBytecodeOld(normaliseScript(sub.output)), bodyScript)) {
         throw new Error('Function body optimisation mismatch - please report this issue');
@@ -3312,7 +3361,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       name: `compiler helper ${id}`,
       requires: optimisationResult.requires,
       logs: optimisationResult.logs,
-      sourceMap: generateSourceMap(optimisationResult.locationData),
+      sourceMap: generateSourceMap(optimisationResult.locationData, this.compilerOptions.sourceMap !== false),
     });
     const start = this.output.length;
     this.definedBodyRecords.push({
@@ -3730,7 +3779,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       logs: subTraversal.consoleLogs,
       sourceMap: generateSourceMap(GenerateTargetTraversalWithLocation.alignLocations(
         subTraversal.locationData, bodyScript.length, locationData,
-      )),
+      ), this.compilerOptions.sourceMap !== false),
     });
     this.emit(scriptToBytecode(bodyScript), locationData);
     this.emit(encodeInt(BigInt(func.functionId!)), locationData);
@@ -4068,7 +4117,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // discarded, and running it there is worse than useless: `subroutineUseProbe` catches whatever the probe
     // throws and falls back to defining every subroutine, so a mismatch would silently degrade codegen instead
     // of reporting itself. The real pass re-runs this on the body that is actually emitted.
-    if (!this.isSubroutineUseProbe && normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+    if (!this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed !== true
+      && normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
       && needsOptimiserCrossCheck(normalizedOutput)) {
       const optimisedBytecodeOld = optimiseBytecodeOld(normalizedOutput);
       if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
@@ -4080,7 +4130,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.entryPointDebugInfo.set(selectorHex, {
       requires: optimisationResult.requires,
-      sourceMap: generateSourceMap(optimisationResult.locationData),
+      sourceMap: generateSourceMap(optimisationResult.locationData, this.compilerOptions.sourceMap !== false),
       logs: optimisationResult.logs,
     });
 
@@ -4107,21 +4157,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private outlineSharedFunctionBodies(locationData: SingleLocationData): void {
     if (this.definedBodyRecords.length === 0) return;
+    // Cheap admission is throwaway. Outlining it duplicated the expensive search on a body that is discarded.
+    if (this.compilerOptions.__cheapAdmissionCodegen === true) return;
+    // Dynamic collection writes combined with authenticated entry access are consumed structurally by the SDK:
+    // its derivation follows the emitted trace to recover the exact journal/chunk transition. Moving a repeated
+    // fragment behind another OP_INVOKE changes that active-program boundary and can make a valid transition fail
+    // before its return or state commitment is exposed. This is a contract-wide invariant, independent of the
+    // compilation-speed hint; retain the original bodies for every trace-stable contract.
     if (this.currentContractRequiresTraceStableBodies) return;
     // Keep this escape hatch ahead of candidate construction so diagnostic rebuilds avoid all outlining work.
     // Diagnostic escape hatch: SOLIDCASH_NO_OUTLINE=1 keeps every body inline, so a covenant failure can be
     // attributed to (or cleared of) span sharing without bisecting the optimiser.
     if ((globalThis as any).process?.env?.SOLIDCASH_NO_OUTLINE) return;
-    // Shared-span discovery is deliberately exhaustive enough to squeeze production contracts under BCH's 10KB
-    // input limit. On a permissive development profile, that work can dominate the entire compile while buying
-    // nothing: large generated graph routes already fit by orders of magnitude. Honour the compilation-speed hint
-    // only when the program emitted so far occupies at most one quarter of the configured limit. The headroom
-    // covers the selector dispatcher emitted after this pass; near-limit and every production-profile build keep
-    // the normal outliner, so the hint cannot turn a potentially rescuable 10KB artifact into a size failure.
+    // Speed-hinted compiles used to skip outlining entirely. Non-trace-stable contracts still repeat helper tails
+    // across bodies; a single cheap attempt recovers those bytes. Require-site anchors below keep SDK
+    // instruction-pointer attribution intact.
     const maximumInputBytes = this.compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
-    if (this.compilerOptions.optimizeForCompilationSpeed
+    const speedHintOutline = this.compilerOptions.optimizeForCompilationSpeed === true
       && maximumInputBytes > MAX_INPUT_BYTESIZE
-      && scriptToBytecode(this.output).length <= Math.floor(maximumInputBytes / 4)) return;
+      && scriptToBytecode(this.output).length <= Math.floor(maximumInputBytes / 4);
     if (!this.isSubroutineUseProbe) this.releaseUnusedSingleByteIdsForOutlining();
     const bodies = this.definedBodyRecords.map((record) => {
       // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
@@ -4146,10 +4200,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // contract that cost 47 bytes more than never admitting them. Neither width dominates, so run both and keep
     // whichever actually emitted less. Attempts are independent: each starts from the same bodies and has the
     // identifier pool restored underneath it.
-    const widths = [
-      this.peekCompactHelperIdPushBytes(),
-      GenerateTargetTraversalWithLocation.OUTLINE_CONSERVATIVE_ID_PUSH_BYTES,
-    ];
+    const widths = speedHintOutline
+      ? [this.peekCompactHelperIdPushBytes()]
+      : [
+        this.peekCompactHelperIdPushBytes(),
+        GenerateTargetTraversalWithLocation.OUTLINE_CONSERVATIVE_ID_PUSH_BYTES,
+      ];
     let result: ReturnType<typeof outlineSharedSpans> | undefined;
     let winningPool: ReturnType<typeof this.snapshotCompactHelperIds> | undefined;
     const entryPool = this.snapshotCompactHelperIds();
@@ -4157,42 +4213,237 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Exhaustive strategy probing dominated large-contract compile time: each attempt reaches the same fixed
       // point independently, and compiling an import graph repeats the matrix for every emitted contract. Corpus
       // measurements show that density ranking, the 512-group cap, body reordering, and the intermediate/legacy
-      // windows are strictly dominated by savings-ranked 12 or 10. Retain the one real competition (12 vs 10)
-      // and both identifier widths; message-bus bodies keep their trace-stable window of 12.
-      const minimumWindows = this.currentContractHasMessageBus ? [12] : [12, 10];
+      // windows are strictly dominated by savings-ranked 12 or 10. Production keeps that split: message-bus
+      // bodies stay at the trace-stable window of 12 (EntryWriteBehavior oscillated at 7/10/11), ordinary
+      // contracts compete 12 vs 10. Speed-hinted compiles (Marketplace-scale) measured window 8 as strictly
+      // dominating 12/10/9/7 on savedBytes, so they run 8 only.
+      const minimumWindows = speedHintOutline
+        ? [8]
+        : this.currentContractHasMessageBus
+          ? [12]
+          : [12, 10];
+      const candidateGroupsPerRound = speedHintOutline ? 12288 : 1024;
+      const originalOrder = bodies.map((_body, index) => index);
+      const shortestOrder = [...originalOrder].sort((left, right) =>
+        bodies[left].script.length - bodies[right].script.length);
+      const bodyOrder: 'original' | 'shortest' = speedHintOutline ? 'shortest' : 'original';
+      const orderedBodies = bodyOrder === 'shortest'
+        ? shortestOrder.map((index) => bodies[index])
+        : bodies;
       for (const minimumWindowElements of minimumWindows) {
         this.restoreCompactHelperIds(entryPool);
         const timingStart = Date.now();
-        const attempt = outlineSharedSpans(
-          bodies.map((body) => ({
-            ...body, script: [...body.script], locationData: [...body.locationData],
-          })),
+        const orderedAttempt = outlineSharedSpans(
+          orderedBodies,
           () => encodeInt(this.allocateCompactHelperId()),
           () => width,
           'savings',
           minimumWindowElements,
-          1024,
+          candidateGroupsPerRound,
+          undefined,
+          speedHintOutline ? 4 : 6,
         );
         if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
           console.error('[outline-timing]', JSON.stringify({
             width,
             ranking: 'savings',
             minimumWindowElements,
-            candidateGroupsPerRound: 1024,
-            bodyOrder: 'original',
+            candidateGroupsPerRound,
+            bodyOrder,
             bodies: bodies.length,
-            functions: attempt.functions.length,
-            savedBytes: attempt.savedBytes,
+            functions: orderedAttempt.functions.length,
+            savedBytes: orderedAttempt.savedBytes,
             elapsedMs: Date.now() - timingStart,
           }));
         }
-        if (result === undefined || attempt.savedBytes > result.savedBytes) {
-          result = attempt;
+        if (result === undefined || orderedAttempt.savedBytes > result.savedBytes) {
+          if (bodyOrder === 'shortest') {
+            const normalizedBodies = new Array(orderedAttempt.bodies.length);
+            shortestOrder.forEach((originalIndex, orderedIndex) => {
+              normalizedBodies[originalIndex] = orderedAttempt.bodies[orderedIndex];
+            });
+            result = { ...orderedAttempt, bodies: normalizedBodies };
+          } else {
+            result = orderedAttempt;
+          }
           winningPool = this.snapshotCompactHelperIds();
         }
       }
     }
     this.restoreCompactHelperIds(winningPool!);
+    // Window 8 cannot seed a leftover 5–7 opcode span, even when that span repeats after the longer matches
+    // have become OP_INVOKE barriers. A second, narrower pass on the rewritten bodies shares those leftovers
+    // without reopening the already-claimed long spans. Speed-hint only: production message-bus stays at 12.
+    if (speedHintOutline && result !== undefined && result.functions.length > 0) {
+      const leftoverStart = Date.now();
+      // First-pass outlining walks from -12 into three-byte pushes. Unused two-byte slots (typically
+      // never-invoked entry-point ids in 17..127) are still free; spend them on leftover helpers so the
+      // cost model matches the ids that will actually be allocated.
+      this.compactHelperIds.cheap = GenerateTargetTraversalWithLocation.compactPushIdsPreferringShort(
+        this.compactHelperIds.used,
+      );
+      const leftoverWidth = this.compactHelperIds.cheap.length > 0
+        ? encodeDataPush(encodeInt(this.compactHelperIds.cheap[0])).length
+        : this.peekCompactHelperIdPushBytes();
+      const leftoverUserCount = result.bodies.length;
+      const leftoverCache = new Map<string, unknown>();
+      const leftover = outlineSharedSpans(
+        [
+          ...result.bodies.map((body, index) => ({
+            script: body.script,
+            locationData: body.locationData,
+            anchors: bodies[index].anchors?.map((anchor) => body.indexMap[anchor] ?? anchor),
+          })),
+          // First-pass helpers re-enter the leftover corpus so a 5-7 opcode tail that now lives only
+          // inside an outlined body can still share with the remaining user-body copies.
+          ...result.functions.map((fn) => ({
+            script: fn.script,
+            locationData: fn.locationData,
+          })),
+        ],
+        () => encodeInt(this.allocateCompactHelperId()),
+        () => leftoverWidth,
+        'savings',
+        5,
+        4096,
+        leftoverCache,
+        2,
+      );
+      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
+        console.error('[outline-timing]', JSON.stringify({
+          width: leftoverWidth,
+          ranking: 'savings',
+          minimumWindowElements: 5,
+          candidateGroupsPerRound: 4096,
+          bodyOrder: 'leftover',
+          bodies: result.bodies.length,
+          functions: leftover.functions.length,
+          savedBytes: leftover.savedBytes,
+          elapsedMs: Date.now() - leftoverStart,
+        }));
+      }
+      if (leftover.savedBytes > 0 && leftover.functions.length > 0) {
+        result = {
+          bodies: leftover.bodies.slice(0, leftoverUserCount).map((leftoverBody, index) => ({
+            ...leftoverBody,
+            // Leftover indexMap is relative to the already-rewritten first-pass body. Compose so require/log
+            // pointers still map from the original instruction space.
+            indexMap: result!.bodies[index].indexMap.map((firstPos) =>
+              leftoverBody.indexMap[firstPos] ?? firstPos),
+          })),
+          functions: [
+            ...leftover.bodies.slice(leftoverUserCount).map((body, index) => ({
+              ...result!.functions[index],
+              script: body.script,
+              locationData: body.locationData,
+            })),
+            ...leftover.functions,
+          ],
+          savedBytes: result.savedBytes + leftover.savedBytes,
+        };
+      }
+      this.compactHelperIds.cheap = GenerateTargetTraversalWithLocation.compactPushIdsPreferringShort(
+        this.compactHelperIds.used,
+      );
+      const leftover4Width = this.compactHelperIds.cheap.length > 0
+        ? encodeDataPush(encodeInt(this.compactHelperIds.cheap[0])).length
+        : this.peekCompactHelperIdPushBytes();
+      const leftover4UserCount = result.bodies.length;
+      const leftover4Start = Date.now();
+      const leftover4Cache = new Map<string, unknown>();
+      const leftoverIntern = leftoverCache.get('intern');
+      if (leftoverIntern !== undefined) leftover4Cache.set('intern', leftoverIntern);
+      const leftover4 = outlineSharedSpans(
+        [
+          ...result.bodies.map((body, index) => ({
+            script: body.script,
+            locationData: body.locationData,
+            anchors: bodies[index].anchors?.map((anchor) => body.indexMap[anchor] ?? anchor),
+          })),
+          ...result.functions.map((fn) => ({
+            script: fn.script,
+            locationData: fn.locationData,
+          })),
+        ],
+        () => encodeInt(this.allocateCompactHelperId()),
+        () => leftover4Width,
+        'savings',
+        4,
+        8192,
+        leftover4Cache,
+        1,
+      );
+      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
+        console.error('[outline-timing]', JSON.stringify({
+          width: leftover4Width,
+          ranking: 'savings',
+          minimumWindowElements: 4,
+          candidateGroupsPerRound: 8192,
+          bodyOrder: 'leftover4',
+          bodies: result.bodies.length,
+          functions: leftover4.functions.length,
+          savedBytes: leftover4.savedBytes,
+          elapsedMs: Date.now() - leftover4Start,
+        }));
+      }
+      if (leftover4.savedBytes > 0 && leftover4.functions.length > 0) {
+        result = {
+          bodies: leftover4.bodies.slice(0, leftover4UserCount).map((leftoverBody, index) => ({
+            ...leftoverBody,
+            indexMap: result!.bodies[index].indexMap.map((firstPos) =>
+              leftoverBody.indexMap[firstPos] ?? firstPos),
+          })),
+          functions: [
+            ...leftover4.bodies.slice(leftover4UserCount).map((body, index) => ({
+              ...result!.functions[index],
+              script: body.script,
+              locationData: body.locationData,
+            })),
+            ...leftover4.functions,
+          ],
+          savedBytes: result.savedBytes + leftover4.savedBytes,
+        };
+      }
+    }
+    // Leftover outlining can leave trampoline helpers that are only `<id> OP_INVOKE`. Fold those aliases
+    // only on speed-hinted compiles: production message-bus traces and density budgets are pinned to the
+    // unfolder window-12/10 result.
+    if (speedHintOutline && result !== undefined && result.functions.length > 0) {
+      const idKey = (id: Uint8Array): string => binToHex(id);
+      const aliases = new Map<string, Uint8Array>();
+      const kept = result.functions.filter((fn) => {
+        if (fn.script.length === 2 && fn.script[1] === Op.OP_INVOKE && fn.script[0] instanceof Uint8Array) {
+          aliases.set(idKey(fn.id), fn.script[0]);
+          return false;
+        }
+        return true;
+      });
+      if (aliases.size > 0) {
+        const resolve = (id: Uint8Array): Uint8Array => {
+          let current = id;
+          const seen = new Set<string>();
+          while (aliases.has(idKey(current)) && !seen.has(idKey(current))) {
+            seen.add(idKey(current));
+            current = aliases.get(idKey(current))!;
+          }
+          return current;
+        };
+        const rewrite = (script: Script): Script => {
+          const rewritten = [...script];
+          for (let i = 1; i < rewritten.length; i += 1) {
+            if (rewritten[i] === Op.OP_INVOKE && rewritten[i - 1] instanceof Uint8Array) {
+              rewritten[i - 1] = resolve(rewritten[i - 1] as Uint8Array);
+            }
+          }
+          return rewritten;
+        };
+        result = {
+          ...result,
+          bodies: result.bodies.map((body) => ({ ...body, script: rewrite(body.script) })),
+          functions: kept.map((fn) => ({ ...fn, script: rewrite(fn.script) })),
+        };
+      }
+    }
     const outcome = result!;
     if (outcome.functions.length === 0) return;
 
@@ -4215,7 +4466,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             data: entry.data.map((item) =>
               (typeof item === 'string' ? item : { ...item, ip: remap(item.ip) })),
           })),
-          sourceMap: generateSourceMap(body.locationData),
+          sourceMap: generateSourceMap(body.locationData, this.compilerOptions.sourceMap !== false),
         });
       }
     });
@@ -4230,7 +4481,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.invokeDebugInfo.set(functionId, {
             ...debugInfo,
             bytecode: binToHex(bytecode),
-            sourceMap: generateSourceMap(body.locationData),
+            sourceMap: generateSourceMap(body.locationData, this.compilerOptions.sourceMap !== false),
             requires: debugInfo.requires.map((entry) => ({ ...entry, ip: remap(entry.ip) })),
             logs: debugInfo.logs.map((entry) => ({
               ...entry,
@@ -4250,7 +4501,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.invokeDebugInfo.set(compilerHelperId, {
             ...debugInfo,
             bytecode: binToHex(bytecode),
-            sourceMap: generateSourceMap(body.locationData),
+            sourceMap: generateSourceMap(body.locationData, this.compilerOptions.sourceMap !== false),
             requires: debugInfo.requires.map((entry) => ({ ...entry, ip: remap(entry.ip) })),
             logs: debugInfo.logs.map((entry) => ({
               ...entry,
@@ -4271,7 +4522,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         name: `outlined source span ${id}`,
         requires: [],
         logs: [],
-        sourceMap: generateSourceMap(outlined.locationData),
+        sourceMap: generateSourceMap(outlined.locationData, this.compilerOptions.sourceMap !== false),
       });
       this.emit(bytecode, locationData);
       this.emit(outlined.id, locationData);

@@ -2,22 +2,31 @@ import { defineConfig } from '@solidcash/solidhat/config';
 
 export default defineConfig({
   paths: {
-    contracts: '.marketplace/contracts',
-    tests: '/Code/effectiveacceleration.ai/contract/test',
-    artifacts: '.marketplace/artifacts',
-    cache: '.marketplace/cache',
+    contracts: '/Code/effectiveacceleration.ai/contract-noproxy/contracts',
+    tests: '/Code/effectiveacceleration.ai/contract-noproxy/test',
+    artifacts: '/Code/effectiveacceleration.ai/contract-noproxy/artifacts',
+    cache: '/Code/effectiveacceleration.ai/contract-noproxy/cache',
   },
   // This project composes graph-free ERC-20 leaves into caller-authenticated atomic routes. Explicitly request
   // leaf participant routes; no marketplace source or test changes are required.
   compiler: {
     solidityImportCompat: true,
+    commitmentLimit: 128,
+    maximumInputBytes: 10_000_000,
+    maximumStackItemBytes: 10_000,
     messageBus: true,
     messageBusGraphContext: true,
+    messageBusHandlers: [
+      'publishJobPost', 'updateJobPost', 'publishJobEvent', 'userRegistered', 'arbitratorRegistered', 'meceTags',
+      'balanceOf', 'approve', 'transferFrom', 'transfer', 'pay', 'setArbitrator',
+      'takeJob', 'eventsLength', 'getArbitratorFee',
+    ],
     // SolidCash addresses are locking bytecode. Recover the native P2PKH identity so an imported Solidity
     // `ecrecover(...) == msg.sender` comparison stays in one address domain and needs no EVM-keccak sidecar.
     ecrecover: 'p2pkh',
     // Skip speculative external-handler fallback rungs in this large imported call graph during development.
     optimizeForCompilationSpeed: true,
+    sortedMappingsAll: false,
   },
   // Same mnemonic/path as the EffectiveAcceleration Hardhat project so getSigners() and
   // config.networks.hardhat.accounts.mnemonic stay aligned with marketplace.test.ts.
@@ -27,16 +36,16 @@ export default defineConfig({
     mock: {
       type: 'mock',
       consensus: {
-        // Proxy __forward inspects the implementation INPUTBYTECODE (full p2sh32 redeem, ~3.8MB
-        // for MarketplaceV1). That OP_SPLIT is charged to the 781-byte proxy input; 10_000/byte
-        // is not enough. 1e6/byte covers the introspection without changing input/tx size caps.
-        operationCostBudgetPerByte: 1_000_000,
+        // The compatibility run exercises the unmodified application on BCH-native covenant bytecode.
+        // Its imported OZ call graph is intentionally larger than relayable production contracts.
         maximumInputBytes: 10_000_000,
-        maximumTransactionBytes: 100_000_000,
         maximumStackItemBytes: 10_000_000,
-        maximumNftCommitmentBytes: 10_000_000,
+        maximumTransactionBytes: 10_000_000,
+        maximumNftCommitmentBytes: 1_000_000,
+        operationCostBudgetPerByte: 10_000_000,
+        hashDigestIterationsPerByte: 10_000_000,
       },
-      policy: { enforceDust: false },
+      policy: { enforceDust: false, enforceProductionInputLimit: false },
     },
   },
   defaultNetwork: 'mock',

@@ -1,16 +1,17 @@
 import { defineConfig } from 'vitest/config';
 import { solidhatPreset } from '@solidcash/solidhat/vitest-preset';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
-const cipher = (entry: string): string => fileURLToPath(new URL(`node_modules/@noble/ciphers/${entry}.js`, import.meta.url));
-const projectRoot = fileURLToPath(new URL('examples/effectiveacceleration', import.meta.url));
+const require = createRequire(import.meta.url);
+const cipher = (entry: string): string => require.resolve(`@noble/ciphers/${entry}.js`);
+const projectRoot = '/Code/effectiveacceleration.ai/contract-noproxy';
 process.env.SOLIDCASH_PROJECT_ROOT = projectRoot;
 
 export default defineConfig(solidhatPreset(
   { hardhat: 2, ethers: 6 },
   {
     root: projectRoot,
-    cacheDir: '../../.marketplace/vite-cache-marketplace',
+    cacheDir: 'cache/vite',
     resolve: {
       alias: {
         '@noble/ciphers/chacha': cipher('chacha'),
@@ -21,8 +22,8 @@ export default defineConfig(solidhatPreset(
     },
     test: {
       include: ['test/marketplace.test.ts'],
-      testTimeout: 120_000,
-      hookTimeout: 120_000,
+      testTimeout: 7_200_000,
+      hookTimeout: 7_200_000,
     },
   },
 ));

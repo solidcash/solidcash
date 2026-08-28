@@ -1685,6 +1685,7 @@ function synthesizeMessageBusRoute(
   attribution?: ExternalAdmissionAttribution,
 ): void {
   if (!compilerOptions.messageBus) return;
+  const synthesizeStarted = Date.now();
   const contract = ast.contract;
   assertNoReservedMessageBusSelector(contract.functions);
   const requestedHandlerNames = compilerOptions.messageBusHandlers === undefined
@@ -5311,16 +5312,25 @@ function synthesizeMessageBusRoute(
   // handing back a number the user cannot act on.
   let helpers: FunctionDefinitionNode[];
   let route: FunctionDefinitionNode;
+  const helperParseStarted = Date.now();
   try {
     helpers = parseMessageBusHelpers(helperSource, compilerOptions.chunkedArrays ?? true);
+    const helperMs = Date.now() - helperParseStarted;
     // X92. Mark every position this parse builds as a position in generated source, so a diagnostic raised
     // LATER - during semantic analysis of the merged AST - says so too. X71's catch below covers only a
     // failure of the parse itself, which is one of the two sites this class has.
+    const routeParseStarted = Date.now();
     const routeAst = withGeneratedSource(
       `the message-bus route generated for '${contract.name}'`,
       () => parseCode(routeSource, undefined, false, compilerOptions.chunkedArrays),
     );
     route = routeAst.contract.functions[routeAst.contract.functions.length - 1];
+    profileLog('messageBus:parseRoute', routeParseStarted, {
+      contract: contract.name,
+      routeChars: routeSource.length,
+      helperChars: helperSource.length,
+      helperMs,
+    });
   } catch (error) {
     throw new Error(
       `The message-bus route generated for '${contract.name}' does not parse - ${(error as Error).message}. `
@@ -5359,6 +5369,11 @@ function synthesizeMessageBusRoute(
   route.location = contract.location;
   for (const helper of helpers) helper.location = contract.location;
   contract.functions.push(...helpers, route);
+  profileLog('messageBus:synthesize', synthesizeStarted, {
+    contract: contract.name,
+    helpers: helpers.length,
+    routeChars: routeSource.length,
+  });
 }
 
 /**
@@ -5372,8 +5387,10 @@ function synthesizeMessageBusRoute(
 const messageBusHelperCache = new Map<string, FunctionDefinitionNode[]>();
 
 function parseMessageBusHelpers(source: string, chunkedArrays: boolean): FunctionDefinitionNode[] {
+  const started = Date.now();
   const key = `${chunkedArrays ? '1' : '0'}\x00${source}`;
   let template = messageBusHelperCache.get(key);
+  const cacheHit = template !== undefined;
   if (!template) {
     // The origin label stays contract-independent because the parsed helpers are: naming whichever contract
     // happened to populate the cache would misattribute every later contract's diagnostic.
@@ -5383,7 +5400,13 @@ function parseMessageBusHelpers(source: string, chunkedArrays: boolean): Functio
     ).contract.functions;
     messageBusHelperCache.set(key, template);
   }
-  return template.map((helper) => cloneNode(helper));
+  const cloned = template.map((helper) => cloneNode(helper));
+  profileLog('messageBus:parseHelpers', started, {
+    cacheHit,
+    chars: source.length,
+    functions: cloned.length,
+  });
+  return cloned;
 }
 
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by

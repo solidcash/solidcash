@@ -4186,6 +4186,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.definedBodyRecords.length === 0) return;
     // Cheap admission is throwaway. Outlining it duplicated the expensive search on a body that is discarded.
     if (this.compilerOptions.__cheapAdmissionCodegen === true) return;
+    const outlineStarted = Date.now();
     // Keep this escape hatch ahead of candidate construction so diagnostic rebuilds avoid all outlining work.
     // Diagnostic escape hatch: SOLIDCASH_NO_OUTLINE=1 keeps every body inline, so a covenant failure can be
     // attributed to (or cleared of) span sharing without bisecting the optimiser.
@@ -4254,6 +4255,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const minimumWindowElements of minimumWindows) {
         this.restoreCompactHelperIds(entryPool);
         const timingStart = Date.now();
+        // Speed-hint MarketplaceV1: window-8 rounds 0-1 saved 84105 bytes in ~5.3s; rounds 2-3 saved 56 bytes
+        // in ~1.9s. Size-bounded search stops after two rounds.
         const orderedAttempt = outlineSharedSpans(
           orderedBodies,
           () => encodeInt(this.allocateCompactHelperId()),
@@ -4262,7 +4265,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           minimumWindowElements,
           candidateGroupsPerRound,
           undefined,
-          speedHintOutline ? 4 : 6,
+          speedHintOutline ? 2 : 6,
         );
         if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
           console.error('[outline-timing]', JSON.stringify({
@@ -4363,68 +4366,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           savedBytes: result.savedBytes + leftover.savedBytes,
         };
       }
-      this.compactHelperIds.cheap = GenerateTargetTraversalWithLocation.compactPushIdsPreferringShort(
-        this.compactHelperIds.used,
-      );
-      const leftover4Width = this.compactHelperIds.cheap.length > 0
-        ? encodeDataPush(encodeInt(this.compactHelperIds.cheap[0])).length
-        : this.peekCompactHelperIdPushBytes();
-      const leftover4UserCount = result.bodies.length;
-      const leftover4Start = Date.now();
-      const leftover4Cache = new Map<string, unknown>();
-      const leftoverIntern = leftoverCache.get('intern');
-      if (leftoverIntern !== undefined) leftover4Cache.set('intern', leftoverIntern);
-      const leftover4 = outlineSharedSpans(
-        [
-          ...result.bodies.map((body, index) => ({
-            script: body.script,
-            locationData: body.locationData,
-            anchors: bodies[index].anchors?.map((anchor) => body.indexMap[anchor] ?? anchor),
-          })),
-          ...result.functions.map((fn) => ({
-            script: fn.script,
-            locationData: fn.locationData,
-          })),
-        ],
-        () => encodeInt(this.allocateCompactHelperId()),
-        () => leftover4Width,
-        'savings',
-        4,
-        8192,
-        leftover4Cache,
-        1,
-      );
-      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
-        console.error('[outline-timing]', JSON.stringify({
-          width: leftover4Width,
-          ranking: 'savings',
-          minimumWindowElements: 4,
-          candidateGroupsPerRound: 8192,
-          bodyOrder: 'leftover4',
-          bodies: result.bodies.length,
-          functions: leftover4.functions.length,
-          savedBytes: leftover4.savedBytes,
-          elapsedMs: Date.now() - leftover4Start,
-        }));
-      }
-      if (leftover4.savedBytes > 0 && leftover4.functions.length > 0) {
-        result = {
-          bodies: leftover4.bodies.slice(0, leftover4UserCount).map((leftoverBody, index) => ({
-            ...leftoverBody,
-            indexMap: result!.bodies[index].indexMap.map((firstPos) =>
-              leftoverBody.indexMap[firstPos] ?? firstPos),
-          })),
-          functions: [
-            ...leftover4.bodies.slice(leftover4UserCount).map((body, index) => ({
-              ...result!.functions[index],
-              script: body.script,
-              locationData: body.locationData,
-            })),
-            ...leftover4.functions,
-          ],
-          savedBytes: result.savedBytes + leftover4.savedBytes,
-        };
-      }
+      // Window-4 leftover was measured on MarketplaceV1 at 7 saved bytes in ~400-900ms after leftover 5.
+      // Size-bounded speed-hint search stops at leftover 5.
     }
     // Leftover outlining can leave trampoline helpers that are only `<id> OP_INVOKE`. Fold those aliases
     // only on speed-hinted compiles: production message-bus traces and density budgets are pinned to the
@@ -4466,6 +4409,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     const outcome = result!;
+    if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1'
+      || (globalThis as any).process?.env?.SOLIDC_PROFILE === '1') {
+      console.error('[solidc-profile]', JSON.stringify({
+        label: 'outline',
+        ms: Date.now() - outlineStarted,
+        bodies: bodies.length,
+        functions: outcome.functions.length,
+        savedBytes: outcome.savedBytes,
+        speedHintOutline,
+      }));
+    }
     if (outcome.functions.length === 0) return;
 
     outcome.bodies.forEach((body, index) => {

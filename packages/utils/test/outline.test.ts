@@ -127,6 +127,15 @@ describe('cross-function bytecode outlining', () => {
     expect(outlineSharedSpans(source, allocateId, () => 1, 'savings', 5).functions.length).toBeGreaterThan(0);
   });
 
+  it('two-round window-8 search still shares the long span', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    const two = outlineSharedSpans(source, allocateId, () => 1, 'savings', 8, 12288, undefined, 2);
+    const four = outlineSharedSpans(source, allocateId, () => 1, 'savings', 8, 12288, undefined, 4);
+    expect(two.functions.length).toBeGreaterThan(0);
+    expect(two.savedBytes).toBeGreaterThan(0);
+    expect(two.savedBytes).toBe(four.savedBytes);
+  });
+
   it('still leftover-outlines when later rounds reuse interned fingerprints', () => {
     const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
     const leftover = outlineSharedSpans(source, allocateId, () => 1, 'savings', 5, 4096, undefined, 2);

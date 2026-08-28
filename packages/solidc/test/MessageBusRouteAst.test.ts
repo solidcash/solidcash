@@ -6,9 +6,11 @@ pragma solidcash ^0.13.0;
 
 contract Bus() {
   int public stored;
+  event Changed(int indexed next);
   function set(int next) public {
     require(next >= 0);
     this.stored = next;
+    emit Changed(next);
   }
 }
 `;

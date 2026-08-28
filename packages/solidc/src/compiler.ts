@@ -5391,16 +5391,17 @@ function synthesizeMessageBusRoute(
         oracle: true,
       });
     } else {
+      const routeParseStarted = Date.now();
       const host = parseGeneratedHostFunction(routeHostSource, chunkedArrays, routeOrigin);
       const rows = assembleMessageBusRowStatements(
         preamble, parser, parseOneRow, resultMode, !!fixedStandaloneResourceBatch,
         !!(eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode
           || signatureMode || tokenContainerMode),
-        routeMaximumRows, chunkedArrays, routeOrigin, contract.location,
+        routeMaximumRows, chunkedArrays, routeOrigin,
       );
       spliceMessageBusRows(host.body, rows);
       route = host;
-      profileLog('messageBus:parseRoute', Date.now(), {
+      profileLog('messageBus:parseRoute', routeParseStarted, {
         contract: contract.name,
         routeChars: routeOracleSource.length,
         helperChars: helperSource.length,
@@ -5477,24 +5478,129 @@ function spliceMessageBusRows(body: BlockNode, rows: StatementNode[]): void {
   body.statements = [...statements.slice(0, index), ...rows, ...statements.slice(index + 1)];
 }
 
+const MB_ROW_PLACEHOLDER = '__MB_ROW__';
+
+function replaceMbRowPlaceholder(node: Node, row: bigint): void {
+  for (const key in node) {
+    if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+      || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
+      || key === 'collection' || key === 'type' || key === 'location' || key === 'name') continue;
+    const child = node[key as keyof Node];
+    if (child instanceof IdentifierNode && child.name === MB_ROW_PLACEHOLDER) {
+      const literal = new IntLiteralNode(row);
+      literal.location = child.location;
+      (node as unknown as Record<string, unknown>)[key] = literal;
+    } else if (child instanceof Node) {
+      replaceMbRowPlaceholder(child, row);
+    } else if (Array.isArray(child)) {
+      for (let i = 0; i < child.length; i += 1) {
+        const item = child[i];
+        if (item instanceof IdentifierNode && item.name === MB_ROW_PLACEHOLDER) {
+          const literal = new IntLiteralNode(row);
+          literal.location = item.location;
+          child[i] = literal;
+        } else if (item instanceof Node) {
+          replaceMbRowPlaceholder(item, row);
+        }
+      }
+    }
+  }
+}
+
+function remapTemplateRowNames(node: Node, fromRow: number, toRow: number): void {
+  const fromSuffix = new RegExp(`_r${fromRow}(?!\\d)`, 'g');
+  const fromValue = `__message_bus_value_${fromRow}_`;
+  const toSuffix = `_r${toRow}`;
+  const toValue = `__message_bus_value_${toRow}_`;
+  walkInvocationAst(node, (child) => {
+    const named = child as { name?: string };
+    if (typeof named.name !== 'string' || named.name === MB_ROW_PLACEHOLDER) return;
+    named.name = named.name.replace(fromSuffix, toSuffix).replace(fromValue, toValue);
+  });
+}
+
+function shouldPruneRowBranch(condition: ExpressionNode, row: number): boolean {
+  if (condition instanceof BinaryOpNode && condition.operator === BinaryOperator.EQ
+    && condition.left instanceof IdentifierNode && condition.right instanceof IdentifierNode
+    && condition.left.name === condition.right.name) return true;
+  let future = false;
+  walkInvocationAst(condition, (child) => {
+    if (!(child instanceof IdentifierNode)) return;
+    for (const match of child.name.matchAll(/_r(\d+)/g)) {
+      if (Number(match[1]) > row) future = true;
+    }
+  });
+  return future;
+}
+
+function pruneFutureRowAliases(node: Node, row: number): void {
+  for (const key in node) {
+    if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+      || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
+      || key === 'collection' || key === 'type' || key === 'location' || key === 'name') continue;
+    const child = node[key as keyof Node];
+    if (child instanceof BranchNode && shouldPruneRowBranch(child.condition, row)) {
+      const replacement = child.elseBlock ?? new BlockNode([]);
+      (node as unknown as Record<string, unknown>)[key] = replacement;
+      pruneFutureRowAliases(replacement, row);
+    } else if (child instanceof Node) {
+      pruneFutureRowAliases(child, row);
+    } else if (Array.isArray(child)) {
+      for (let i = 0; i < child.length; i += 1) {
+        const item = child[i];
+        if (item instanceof BranchNode && shouldPruneRowBranch(item.condition, row)) {
+          const replacement = item.elseBlock ?? new BlockNode([]);
+          child[i] = replacement;
+          pruneFutureRowAliases(replacement, row);
+        } else if (item instanceof Node) {
+          pruneFutureRowAliases(item, row);
+        }
+      }
+    }
+  }
+}
+
+function instantiateTemplatedRow(template: StatementNode[], templateRow: number, row: number): StatementNode[] {
+  return template.map((statement) => {
+    const cloned = cloneNode(statement);
+    remapTemplateRowNames(cloned, templateRow, row);
+    replaceMbRowPlaceholder(cloned, BigInt(row));
+    pruneFutureRowAliases(cloned, row);
+    return cloned;
+  });
+}
+
 function assembleMessageBusRowStatements(
   preamble: string,
   parser: string,
-  _parseOneRow: (rowExpression: string, captureResults?: boolean, rowIndex?: number) => string,
-  _resultMode: boolean,
-  _fixedStandalone: boolean,
-  _unrolledIf: boolean,
-  _routeMaximumRows: number,
+  parseOneRow: (rowExpression: string, captureResults?: boolean, rowIndex?: number) => string,
+  resultMode: boolean,
+  fixedStandalone: boolean,
+  unrolledIf: boolean,
+  routeMaximumRows: number,
   chunkedArrays: boolean,
   origin: string,
-  _location: Location,
 ): StatementNode[] {
-  // Each generated row is unique (cross-row alias dispatch grows with row index). Parse the emitted
-  // parser fragment as statements and splice it into the cached host; do not clone row 0.
-  return parseGeneratedHostFunction(
-    `${preamble}    contract __MessageBusHost() { function __message_bus_fragment() { ${parser} } }`,
+  if (!fixedStandalone && !unrolledIf) {
+    return parseGeneratedHostFunction(
+      `${preamble}    contract __MessageBusHost() { function __message_bus_fragment() { ${parser} } }`,
+      chunkedArrays, origin,
+    ).body.statements ?? [];
+  }
+  const templateRow = Math.max(0, routeMaximumRows - 1);
+  const rowBody = parseOneRow(MB_ROW_PLACEHOLDER, resultMode, templateRow);
+  const fragment = fixedStandalone
+    ? `{ ${rowBody} }`
+    : `if (rowCount > ${MB_ROW_PLACEHOLDER}) { ${rowBody} }`;
+  const template = parseGeneratedHostFunction(
+    `${preamble}    contract __MessageBusHost() { function __message_bus_fragment() { ${fragment} } }`,
     chunkedArrays, origin,
   ).body.statements ?? [];
+  const rows: StatementNode[] = [];
+  for (let row = 0; row < routeMaximumRows; row += 1) {
+    rows.push(...instantiateTemplatedRow(template, templateRow, row));
+  }
+  return rows;
 }
 
 /**

@@ -64,7 +64,7 @@ const runOnce = (label) => {
   const synthesize = profile.filter((row) => row.label === 'messageBus:synthesize');
   const outlines = profile.filter((row) => row.label === 'outline');
   const cacheHits = profile.filter((row) => row.label === 'artifact-cache');
-  const parseRouteMs = parseRoutes.reduce((sum, row) => sum + (row.assembled ? 0 : (row.ms ?? 0)), 0);
+  const parseRouteMs = parseRoutes.reduce((sum, row) => sum + (row.ms ?? 0), 0);
   return {
     label,
     exitCode: result.status,

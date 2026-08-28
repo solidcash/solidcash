@@ -551,6 +551,60 @@ function compileCacheGet(cacheKey: string): Artifact | undefined {
   return artifact;
 }
 
+const compileMultiCache = new Map<string, ArtifactMap>();
+let artifactCacheHits = 0;
+
+function recordArtifactCacheHit(detail: Record<string, unknown>): void {
+  artifactCacheHits += 1;
+  profileLog('artifact-cache', Date.now(), detail);
+}
+
+function artifactCacheEnabled(
+  options: CompilerOptions, errorListener: SolidCashErrorListener | undefined, suppressWarnings: boolean,
+): boolean {
+  const want = process.env.SOLIDC_COMPILE_CACHE === '1' || options.__artifactCache === true;
+  return want
+    && !errorListener
+    && (options.__artifactCache === true || !options.importResolver)
+    && !process.env.SOLIDCASH_NO_OUTLINE
+    && (suppressWarnings
+      || (console.log === diagnosticConsoleLog && console.warn === diagnosticConsoleWarn));
+}
+
+function cacheableCompilerOptions(options: CompilerOptions): Record<string, unknown> {
+  const keyOptions = { ...options } as Record<string, unknown>;
+  delete keyOptions.importResolver;
+  delete keyOptions.__artifactCache;
+  delete keyOptions.__cheapAdmissionCodegen;
+  delete keyOptions.__messageBusRouteParseOracle;
+  delete keyOptions.__parsedAst;
+  delete keyOptions.__pristineAstBox;
+  return keyOptions;
+}
+
+function buildArtifactCacheKey(
+  code: string, options: CompilerOptions, primaryContractName: string | undefined,
+): string {
+  const closure = importClosureFingerprint(code, options.rootFileId, options.importResolver);
+  return `artifact-v5\x00${COMPILER_CACHE_BUILD_ID}\x00${primaryContractName ?? ''}`
+    + `\x00${closure}\x00${code}\x00${JSON.stringify(cacheableCompilerOptions(options))}`;
+}
+
+function buildMultiArtifactCacheKey(
+  code: string, options: CompilerOptions, compileDeclarations: readonly string[] | undefined,
+): string {
+  const names = compileDeclarations ? [...compileDeclarations].sort().join(',') : '*';
+  return `multi-v1\x00${names}\x00${buildArtifactCacheKey(code, options, '')}`;
+}
+
+function cloneArtifactMap(map: ArtifactMap, suppressWarnings: boolean): ArtifactMap {
+  const cloned: ArtifactMap = {};
+  for (const [name, artifact] of Object.entries(map)) {
+    cloned[name] = cloneArtifact(artifact, suppressWarnings);
+  }
+  return cloned;
+}
+
 function compileCacheSet(cacheKey: string, artifact: Artifact): void {
   compileCache.delete(cacheKey);
   const limit = compileCacheLimit();
@@ -1069,18 +1123,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   } = compilerOptions;
   const parsedAst = (compilerOptions as InternalCompilerOptions).__parsedAst;
   delete (artifactCompilerOptions as InternalCompilerOptions).__parsedAst;
-  const wantArtifactCache = process.env.SOLIDC_COMPILE_CACHE === '1'
-    || artifactCompilerOptions.__artifactCache === true;
-  const cacheable = wantArtifactCache
-    && !errorListener
-    && (artifactCompilerOptions.__artifactCache === true || !artifactCompilerOptions.importResolver)
-    // The diagnostic no-outline mode intentionally changes emitted bytecode. Never let it reuse or poison the
-    // ordinary deterministic artifact cache; project-level compilation gives this mode its own job identity.
-    && !process.env.SOLIDCASH_NO_OUTLINE
-    // Diagnostic-spy tests and callers observing warnings require the pipeline's side effects on every call.
-    // Vitest spies replace these function identities; bypass any existing hit rather than hiding a warning.
-    && (suppressWarnings
-      || (console.log === diagnosticConsoleLog && console.warn === diagnosticConsoleWarn));
+  const cacheable = artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings);
   let cacheKey = '';
   if (cacheable) {
     // Keep cached artifacts tied to their published shape. Compiler versions can remain unchanged throughout
@@ -1089,26 +1132,15 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     // are otherwise identical, so omitting the primary name aliases every declaration to whichever artifact was
     // cached first. Keep the selected contract in the semantic key; the schema bump also prevents older entries
     // produced before verifier-bound multi-artifact compilation from being reused.
-    const closure = importClosureFingerprint(
-      code, artifactCompilerOptions.rootFileId, artifactCompilerOptions.importResolver,
-    );
-    const keyOptions = { ...artifactCompilerOptions };
-    delete keyOptions.importResolver;
-    delete keyOptions.__artifactCache;
-    delete keyOptions.__cheapAdmissionCodegen;
-    delete keyOptions.__messageBusRouteParseOracle;
-    delete (keyOptions as InternalCompilerOptions).__parsedAst;
-    delete (keyOptions as InternalCompilerOptions).__pristineAstBox;
-    cacheKey = `artifact-v5\x00${COMPILER_CACHE_BUILD_ID}\x00${primaryContractName ?? ''}`
-      + `\x00${closure}\x00${code}\x00${JSON.stringify(keyOptions)}`;
+    cacheKey = buildArtifactCacheKey(code, artifactCompilerOptions, primaryContractName);
     const memHit = compileCacheGet(cacheKey);
     if (memHit) {
-      profileLog('artifact-cache', Date.now(), { hit: 'memory', primary: primaryContractName });
+      recordArtifactCacheHit({ hit: 'memory', primary: primaryContractName });
       return cloneArtifact(memHit, suppressWarnings);
     }
     const diskHit = diskCacheGet(cacheKey);
     if (diskHit) {
-      profileLog('artifact-cache', Date.now(), { hit: 'disk', primary: primaryContractName });
+      recordArtifactCacheHit({ hit: 'disk', primary: primaryContractName });
       // Disk stores the primary artifact only (JSON cannot preserve the lazy getter).
       // Re-attach delegateArtifact before promoting so a cold worker matches a warm one.
       const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
@@ -1235,11 +1267,18 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
 /** Clear the in-process compile memo Map (tests / cold-worker simulation). Does not touch disk. */
 export function clearCompileCache(): void {
   compileCache.clear();
+  compileMultiCache.clear();
+  artifactCacheHits = 0;
 }
 
 /** Current in-process memo entry count (cache diagnostics and tests). */
 export function getCompileCacheEntryCount(): number {
   return compileCache.size;
+}
+
+/** Hits served from the in-process or disk artifact cache since the last clear. */
+export function getArtifactCacheHitCount(): number {
+  return artifactCacheHits;
 }
 
 /**
@@ -7375,10 +7414,25 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
 }
 
 function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptions): ArtifactMap {
-  const { errorListener, compileDeclarations, ...artifactCompilerOptions } = compilerOptions;
+  const { errorListener, compileDeclarations, suppressWarnings = false, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
   const requested = compileDeclarations === undefined ? undefined : new Set(compileDeclarations);
+  const cacheable = artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings);
+  const multiCacheKey = cacheable
+    ? buildMultiArtifactCacheKey(code, artifactCompilerOptions, compileDeclarations)
+    : '';
+  if (multiCacheKey) {
+    const cached = compileMultiCache.get(multiCacheKey);
+    if (cached) {
+      recordArtifactCacheHit({
+        hit: 'memory',
+        multi: true,
+        artifacts: Object.keys(cached),
+      });
+      return cloneArtifactMap(cached, suppressWarnings);
+    }
+  }
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
@@ -7419,6 +7473,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
     map[contract.name] = compileStringUnchecked(code, {
       ...artifactCompilerOptions,
       errorListener,
+      suppressWarnings,
       primaryContractName: contract.name,
       ...(contract === probe.contract ? { __parsedAst: probe } : {}),
     } as CompileOptions);
@@ -7429,6 +7484,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
     });
   }
 
+  if (multiCacheKey) compileMultiCache.set(multiCacheKey, map);
   return map;
 }
 

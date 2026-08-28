@@ -6,6 +6,7 @@ export {
   classifyMessageBusRejection,
   clearCompileCache,
   compileString, compileStringMulti, compileStringSplit, DEFAULT_COMPILER_OPTIONS,
+  getArtifactCacheHitCount,
   type CompileOptions, type SplitCompileOptions,
 } from './compiler.js';export { type ArtifactMap, type SplitArtifactBundle, type SplitManifest } from '@solidcash/utils';
 export { createMapResolver } from './createMapResolver.js';

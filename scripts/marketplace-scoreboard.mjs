@@ -58,7 +58,8 @@ const runOnce = (label) => {
       } catch { /* ignore truncated */ }
     }
   }
-  const fileRow = [...profile].reverse().find((row) => row.label === 'marketplace-file');
+  const filePasses = profile.filter((row) => row.label === 'marketplace-file');
+  const fileRow = [...filePasses].reverse().find((row) => row.pass === 'warm') ?? filePasses.at(-1);
   const resolved = profile.filter((row) => row.label === 'resolved');
   const parseRoutes = profile.filter((row) => row.label === 'messageBus:parseRoute');
   const synthesize = profile.filter((row) => row.label === 'messageBus:synthesize');
@@ -71,6 +72,8 @@ const runOnce = (label) => {
     wallMs,
     artifacts: fileRow?.artifacts ?? [],
     marketplaceBytes: (fileRow?.artifacts ?? []).find((a) => a.name === 'MarketplaceV1')?.bytecodeBytes,
+    coldFileMs: filePasses.find((row) => row.pass === 'cold')?.ms,
+    warmFileMs: filePasses.find((row) => row.pass === 'warm')?.ms,
     totals: sumByLabel(profile),
     parseRouteMs,
     resolved,

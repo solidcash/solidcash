@@ -153,6 +153,40 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   chainId: 0,
 };
 
+function scanSourceImports(code: string): string[] {
+  const specs: string[] = [];
+  const importRe = /import\s+(?:(?:[\w*{}\s,]+)\s+from\s+)?["']([^"']+)["']/g;
+  let match: RegExpExecArray | null = importRe.exec(code);
+  while (match) {
+    specs.push(match[1]);
+    match = importRe.exec(code);
+  }
+  return specs;
+}
+
+function importClosureFingerprint(
+  code: string,
+  rootFileId: string | undefined,
+  resolver: CompilerOptions['importResolver'],
+): string {
+  const digest = createHash('sha256').update(code);
+  if (!resolver || !rootFileId) return digest.digest('hex');
+  const seen = new Set<string>([rootFileId]);
+  const queue = scanSourceImports(code).map((spec) => ({ spec, from: rootFileId }));
+  while (queue.length > 0) {
+    const item = queue.pop()!;
+    const resolved = resolver(item.spec, item.from);
+    if (!resolved || seen.has(resolved.id)) continue;
+    seen.add(resolved.id);
+    digest.update('\x00');
+    digest.update(resolved.id);
+    digest.update('\x00');
+    digest.update(resolved.source);
+    for (const spec of scanSourceImports(resolved.source)) queue.push({ spec, from: resolved.id });
+  }
+  return digest.digest('hex');
+}
+
 const compilerModuleStat = statSync(fileURLToPath(import.meta.url));
 const COMPILER_CACHE_BUILD_ID = process.env.SOLIDC_COMPILE_CACHE_BUILD_ID
   ?? `${compilerModuleStat.size}:${compilerModuleStat.mtimeMs}`;
@@ -1035,8 +1069,11 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   } = compilerOptions;
   const parsedAst = (compilerOptions as InternalCompilerOptions).__parsedAst;
   delete (artifactCompilerOptions as InternalCompilerOptions).__parsedAst;
-  const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
-    && !errorListener && !artifactCompilerOptions.importResolver
+  const wantArtifactCache = process.env.SOLIDC_COMPILE_CACHE === '1'
+    || artifactCompilerOptions.__artifactCache === true;
+  const cacheable = wantArtifactCache
+    && !errorListener
+    && (artifactCompilerOptions.__artifactCache === true || !artifactCompilerOptions.importResolver)
     // The diagnostic no-outline mode intentionally changes emitted bytecode. Never let it reuse or poison the
     // ordinary deterministic artifact cache; project-level compilation gives this mode its own job identity.
     && !process.env.SOLIDCASH_NO_OUTLINE
@@ -1052,12 +1089,26 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     // are otherwise identical, so omitting the primary name aliases every declaration to whichever artifact was
     // cached first. Keep the selected contract in the semantic key; the schema bump also prevents older entries
     // produced before verifier-bound multi-artifact compilation from being reused.
-    cacheKey = `artifact-v4\x00${COMPILER_CACHE_BUILD_ID}\x00${primaryContractName ?? ''}`
-      + `\x00${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
+    const closure = importClosureFingerprint(
+      code, artifactCompilerOptions.rootFileId, artifactCompilerOptions.importResolver,
+    );
+    const keyOptions = { ...artifactCompilerOptions };
+    delete keyOptions.importResolver;
+    delete keyOptions.__artifactCache;
+    delete keyOptions.__cheapAdmissionCodegen;
+    delete keyOptions.__messageBusRouteParseOracle;
+    delete (keyOptions as InternalCompilerOptions).__parsedAst;
+    delete (keyOptions as InternalCompilerOptions).__pristineAstBox;
+    cacheKey = `artifact-v5\x00${COMPILER_CACHE_BUILD_ID}\x00${primaryContractName ?? ''}`
+      + `\x00${closure}\x00${code}\x00${JSON.stringify(keyOptions)}`;
     const memHit = compileCacheGet(cacheKey);
-    if (memHit) return cloneArtifact(memHit, suppressWarnings);
+    if (memHit) {
+      profileLog('artifact-cache', Date.now(), { hit: 'memory', primary: primaryContractName });
+      return cloneArtifact(memHit, suppressWarnings);
+    }
     const diskHit = diskCacheGet(cacheKey);
     if (diskHit) {
+      profileLog('artifact-cache', Date.now(), { hit: 'disk', primary: primaryContractName });
       // Disk stores the primary artifact only (JSON cannot preserve the lazy getter).
       // Re-attach delegateArtifact before promoting so a cold worker matches a warm one.
       const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
@@ -5288,7 +5339,7 @@ function synthesizeMessageBusRoute(
         bigint cursor = 7;
         ${!graphExecutionContext ? '' : 'bigint __message_bus_graph_caller_cursor = 0;'}
         ${resultDeclarations}
-        ${parser}
+        require(__MB_ROWS__);
         require(cursor == batchBlob.length);
         ${!graphExecutionContext ? ''
     : 'require(__internal__graphCompletionPositions.length == rowCount * 2);'}
@@ -5306,6 +5357,11 @@ function synthesizeMessageBusRoute(
         ${returnStatement}
       }
     }`;
+  const routeHostSource = routeSource;
+  const routeOracleSource = routeHostSource.replace('require(__MB_ROWS__);', parser);
+  if (process.env.SOLIDC_DUMP_ROUTE === '1') {
+    console.error(routeOracleSource);
+  }
   // X71. Both sources are generated immediately above, so a parse failure here carries a Line/Column in THAT
   // text. Reported bare, it reads as a position in the user's file and is not one: it even moves by tens of
   // lines when an unrelated compile option changes the generated preamble. Say what the position is instead of
@@ -5313,24 +5369,45 @@ function synthesizeMessageBusRoute(
   let helpers: FunctionDefinitionNode[];
   let route: FunctionDefinitionNode;
   const helperParseStarted = Date.now();
+  const chunkedArrays = compilerOptions.chunkedArrays ?? true;
+  const routeOrigin = `the message-bus route generated for '${contract.name}'`;
+  const useRouteParseOracle = compilerOptions.__messageBusRouteParseOracle === true
+    || process.env.SOLIDC_ROUTE_PARSE_ORACLE === '1';
   try {
-    helpers = parseMessageBusHelpers(helperSource, compilerOptions.chunkedArrays ?? true);
+    helpers = parseMessageBusHelpers(helperSource, chunkedArrays);
     const helperMs = Date.now() - helperParseStarted;
-    // X92. Mark every position this parse builds as a position in generated source, so a diagnostic raised
-    // LATER - during semantic analysis of the merged AST - says so too. X71's catch below covers only a
-    // failure of the parse itself, which is one of the two sites this class has.
-    const routeParseStarted = Date.now();
-    const routeAst = withGeneratedSource(
-      `the message-bus route generated for '${contract.name}'`,
-      () => parseCode(routeSource, undefined, false, compilerOptions.chunkedArrays),
-    );
-    route = routeAst.contract.functions[routeAst.contract.functions.length - 1];
-    profileLog('messageBus:parseRoute', routeParseStarted, {
-      contract: contract.name,
-      routeChars: routeSource.length,
-      helperChars: helperSource.length,
-      helperMs,
-    });
+    if (useRouteParseOracle) {
+      const routeParseStarted = Date.now();
+      const routeAst = withGeneratedSource(
+        routeOrigin,
+        () => parseCode(routeOracleSource, undefined, false, chunkedArrays),
+      );
+      route = routeAst.contract.functions[routeAst.contract.functions.length - 1];
+      profileLog('messageBus:parseRoute', routeParseStarted, {
+        contract: contract.name,
+        routeChars: routeOracleSource.length,
+        helperChars: helperSource.length,
+        helperMs,
+        oracle: true,
+      });
+    } else {
+      const host = parseGeneratedHostFunction(routeHostSource, chunkedArrays, routeOrigin);
+      const rows = assembleMessageBusRowStatements(
+        preamble, parser, parseOneRow, resultMode, !!fixedStandaloneResourceBatch,
+        !!(eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode
+          || signatureMode || tokenContainerMode),
+        routeMaximumRows, chunkedArrays, routeOrigin, contract.location,
+      );
+      spliceMessageBusRows(host.body, rows);
+      route = host;
+      profileLog('messageBus:parseRoute', Date.now(), {
+        contract: contract.name,
+        routeChars: routeOracleSource.length,
+        helperChars: helperSource.length,
+        helperMs,
+        assembled: true,
+      });
+    }
   } catch (error) {
     throw new Error(
       `The message-bus route generated for '${contract.name}' does not parse - ${(error as Error).message}. `
@@ -5374,6 +5451,50 @@ function synthesizeMessageBusRoute(
     helpers: helpers.length,
     routeChars: routeSource.length,
   });
+}
+
+const generatedHostFunctionCache = new Map<string, FunctionDefinitionNode>();
+
+function parseGeneratedHostFunction(
+  source: string, chunkedArrays: boolean, origin: string,
+): FunctionDefinitionNode {
+  const key = `${chunkedArrays ? '1' : '0'}\x00${source}`;
+  let template = generatedHostFunctionCache.get(key);
+  if (!template) {
+    const ast = withGeneratedSource(origin, () => parseCode(source, undefined, false, chunkedArrays));
+    template = ast.contract.functions[ast.contract.functions.length - 1];
+    generatedHostFunctionCache.set(key, template);
+  }
+  return cloneNode(template);
+}
+
+function spliceMessageBusRows(body: BlockNode, rows: StatementNode[]): void {
+  const statements = body.statements ?? [];
+  const index = statements.findIndex((statement) => statement instanceof RequireNode
+    && statement.expression instanceof IdentifierNode
+    && statement.expression.name === '__MB_ROWS__');
+  if (index < 0) throw new Error('generated message-bus route host is missing the row sentinel');
+  body.statements = [...statements.slice(0, index), ...rows, ...statements.slice(index + 1)];
+}
+
+function assembleMessageBusRowStatements(
+  preamble: string,
+  parser: string,
+  _parseOneRow: (rowExpression: string, captureResults?: boolean, rowIndex?: number) => string,
+  _resultMode: boolean,
+  _fixedStandalone: boolean,
+  _unrolledIf: boolean,
+  _routeMaximumRows: number,
+  chunkedArrays: boolean,
+  origin: string,
+  _location: Location,
+): StatementNode[] {
+  // Each generated row is unique (cross-row alias dispatch grows with row index). Parse the emitted
+  // parser fragment as statements and splice it into the cached host; do not clone row 0.
+  return parseGeneratedHostFunction(
+    `${preamble}    contract __MessageBusHost() { function __message_bus_fragment() { ${parser} } }`,
+    chunkedArrays, origin,
+  ).body.statements ?? [];
 }
 
 /**

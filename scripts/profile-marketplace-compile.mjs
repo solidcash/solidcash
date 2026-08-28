@@ -11,9 +11,8 @@ import { compileFileMulti } from 'solidc';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = path.join(root, '.marketplace/contracts/MarketplaceV1.sol');
 const ownedOnly = process.argv.includes('--owned-only');
-const started = Date.now();
-
-const map = compileFileMulti(source, {
+const warm = process.argv.includes('--warm');
+const options = {
   solidityImportCompat: true,
   messageBus: true,
   messageBusGraphContext: true,
@@ -23,16 +22,25 @@ const map = compileFileMulti(source, {
   maximumInputBytes: 10_000_000,
   commitmentLimit: 10_000_000,
   ...(ownedOnly ? { compileDeclarations: ['MarketplaceV1'] } : {}),
-});
+};
 
-const names = Object.entries(map).map(([name, artifact]) => ({
-  name,
-  bytecodeBytes: artifact.debug?.bytecode ? artifact.debug.bytecode.length / 2 : 0,
-  functions: artifact.abi?.length ?? 0,
-}));
-console.error('[solidc-profile]', JSON.stringify({
-  label: 'marketplace-file',
-  ms: Date.now() - started,
-  ownedOnly,
-  artifacts: names,
-}));
+const compileOnce = (label) => {
+  const started = Date.now();
+  const map = compileFileMulti(source, options);
+  const names = Object.entries(map).map(([name, artifact]) => ({
+    name,
+    bytecodeBytes: artifact.debug?.bytecode ? artifact.debug.bytecode.length / 2 : 0,
+    functions: artifact.abi?.length ?? 0,
+  }));
+  console.error('[solidc-profile]', JSON.stringify({
+    label: 'marketplace-file',
+    pass: label,
+    ms: Date.now() - started,
+    ownedOnly,
+    artifacts: names,
+  }));
+  return map;
+};
+
+compileOnce('cold');
+if (warm) compileOnce('warm');

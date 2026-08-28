@@ -68,14 +68,14 @@ function readSourceWithResolver(
 
 export function compileFile(codeFile: PathLike, compilerOptions: CompileOptions = {}): Artifact {
   const { code, options } = readSourceWithResolver(codeFile, compilerOptions);
-  return compileString(code, options);
+  return compileString(code, { ...options, __artifactCache: true });
 }
 
 /** Like compileFile, but returns an Artifact per top-level declaration (a map keyed by name). See
  *  docs/multi-contract-artifacts.md. */
 export function compileFileMulti(codeFile: PathLike, compilerOptions: CompileOptions = {}): ArtifactMap {
   const { code, options } = readSourceWithResolver(codeFile, compilerOptions);
-  return compileStringMulti(code, options);
+  return compileStringMulti(code, { ...options, __artifactCache: true });
 }
 
 /** Compile a file to a statically-linked root/facet bundle. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString, compileStringMulti } from '../src/index.js';
+import { compileString, compileStringMulti, DEFAULT_COMPILER_OPTIONS } from '../src/index.js';
 
 /**
  * Representative default-limit compile: no `maximumInputBytes` override (BCH 10,000-byte cap).
@@ -138,5 +138,14 @@ contract SameKey() {
     expect(twoKeyBytes).toBeGreaterThan(sameBytes);
     // One extra same-key write is a local add + one upsert, not a second entry slot.
     expect(sameBytes - onceBytes).toBeLessThan(Math.floor((twoKeyBytes - onceBytes) / 8));
+  });
+
+  it('does not enable leftover-window-8 outlining by default', () => {
+    expect(DEFAULT_COMPILER_OPTIONS.optimizeForCompilationSpeed).not.toBe(true);
+    const artifact = compileString(DEFAULT_LIMIT_SOURCE);
+    const bytes = bytecodeBytes(artifact.debug?.bytecode);
+    expect(bytes).toBeGreaterThan(0);
+    expect(bytes).toBeLessThanOrEqual(10_000);
+    expect(artifact.abi.some((fn) => fn.name === 'transfer')).toBe(true);
   });
 });

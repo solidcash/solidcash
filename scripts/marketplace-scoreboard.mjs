@@ -12,7 +12,6 @@ import path from 'node:path';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ownedOnly = process.argv.includes('--owned-only');
 const warm = process.argv.includes('--warm');
-const rounds = warm ? 2 : 1;
 
 const sumByLabel = (rows) => {
   const totals = {};
@@ -28,7 +27,8 @@ const runOnce = (label) => {
   const result = spawnSync(
     process.execPath,
     ['--max-old-space-size=8192', path.join(root, 'scripts/profile-marketplace-compile.mjs'),
-      ...(ownedOnly ? ['--owned-only'] : [])],
+      ...(ownedOnly ? ['--owned-only'] : []),
+      ...(warm ? ['--warm'] : [])],
     {
       cwd: root,
       encoding: 'utf8',
@@ -52,12 +52,10 @@ const runOnce = (label) => {
     }
     const outlineMatch = line.match(/^\[outline-timing\]\s+(\{.*\})$/);
     if (outlineMatch) {
-      try { outlineAttempts.push(JSON.parse(outlineMatch[1])); } catch { /* ignore truncated */ }
-      continue;
-    }
-    const roundMatch = line.match(/^\[outline-round\]\s+(\{.*\})$/);
-    if (roundMatch) {
-      try { outlineAttempts.push({ kind: 'round', ...JSON.parse(roundMatch[1]) }); } catch { /* ignore truncated */ }
+      try {
+        const row = JSON.parse(outlineMatch[1]);
+        if (row.bodyOrder) outlineAttempts.push(row);
+      } catch { /* ignore truncated */ }
     }
   }
   const fileRow = [...profile].reverse().find((row) => row.label === 'marketplace-file');
@@ -65,6 +63,8 @@ const runOnce = (label) => {
   const parseRoutes = profile.filter((row) => row.label === 'messageBus:parseRoute');
   const synthesize = profile.filter((row) => row.label === 'messageBus:synthesize');
   const outlines = profile.filter((row) => row.label === 'outline');
+  const cacheHits = profile.filter((row) => row.label === 'artifact-cache');
+  const parseRouteMs = parseRoutes.reduce((sum, row) => sum + (row.assembled ? 0 : (row.ms ?? 0)), 0);
   return {
     label,
     exitCode: result.status,
@@ -72,10 +72,12 @@ const runOnce = (label) => {
     artifacts: fileRow?.artifacts ?? [],
     marketplaceBytes: (fileRow?.artifacts ?? []).find((a) => a.name === 'MarketplaceV1')?.bytecodeBytes,
     totals: sumByLabel(profile),
+    parseRouteMs,
     resolved,
     parseRoutes,
     synthesize,
     outlines,
+    cacheHits,
     outlineAttempts: outlineAttempts.map((row) => ({
       window: row.minimumWindowElements,
       bodyOrder: row.bodyOrder,
@@ -87,10 +89,7 @@ const runOnce = (label) => {
   };
 };
 
-const runs = [];
-for (let i = 0; i < rounds; i += 1) {
-  runs.push(runOnce(i === 0 ? 'cold' : 'warm'));
-}
+const runs = [runOnce(warm ? 'cold+warm' : 'cold')];
 
 const scoreboard = {
   ownedOnly,

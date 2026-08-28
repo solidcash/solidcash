@@ -1512,6 +1512,8 @@ export function classifyMessageBusRejection(reason: string): MessageBusStaticRej
 }
 const MAX_MESSAGE_BUS_ROWS = 8;
 const RESOURCE_SHAPED_BATCH_ROWS = 2;
+const MB_ROW_PLACEHOLDER = '__MB_ROW__';
+const MB_DISPATCH_SENTINEL = '__MB_DISPATCH__';
 
 type InvocationExternalCall = NonNullable<Artifact['abi'][number]['externalCalls']>[number];
 
@@ -4138,6 +4140,7 @@ function synthesizeMessageBusRoute(
   }
   const buildDecodeAndCall = (
     captureResults = false, rowIndex?: number, rowExpression = String(rowIndex ?? 0),
+    markDispatch = false,
   ): string =>
     eligible.map((fn, handlerIndex) => {
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
@@ -4339,19 +4342,9 @@ function synthesizeMessageBusRoute(
         // compare the current tuple with earlier row tuples and pass the earlier IDENTIFIERS into the helper.
         // LowerCollectionJournalHelpers then assigns both calls one cache local, preserving ordinary sequential
         // read-after-write semantics and letting conditional entry analysis gate off the duplicate physical slot.
-        const crossRowGroups: number[][] = [];
-        for (let start = 0; start < entryShape.length;) {
-          const first = entryShape[start];
-          const width = collectionByName.get(first.collection)?.allKeyTypes.length ?? 1;
-          const indices = Array.from({ length: width }, (_unused, offset) => start + offset)
-            .filter((index) => index < entryShape.length
-              && entryShape[index].collection === first.collection);
-          if (indices.length === width && indices.every((index) => entryShape[index].perRow
-            && crossHandlerPerRowWitnesses.has(entryShape[index].base))) {
-            crossRowGroups.push(indices);
-          }
-          start += Math.max(1, indices.length);
-        }
+        const crossRowGroups = messageBusCrossRowGroups(
+          entryShape, collectionByName, crossHandlerPerRowWitnesses,
+        );
         if (crossRowGroups.length > 1) {
           // Expanding independent alias choices here produces their Cartesian product (and made an eight-row
           // ERC-20 route several megabytes). Mark the pooled helper for LowerCollectionJournalHelpers' linear
@@ -4381,7 +4374,10 @@ function synthesizeMessageBusRoute(
       // `abi.decodeAt(rowArgs, ...)` can occur repeatedly in the key checks and the handler arguments. Keep the
       // row blob live through the whole dispatch arm: otherwise last-use relocation may OP_ROLL the tracked local
       // during an earlier decode, and a later decode then reads the adjacent selector-prefixed row instead.
-      return `${condition} { ${decode} ${keyChecks} ${outStateBoundaryChecks} ${dispatch}
+      const wrappedDispatch = markDispatch
+        ? `require(${MB_DISPATCH_SENTINEL}); ${dispatch} require(${MB_DISPATCH_SENTINEL});`
+        : dispatch;
+      return `${condition} { ${decode} ${keyChecks} ${outStateBoundaryChecks} ${wrappedDispatch}
         require(rowArgs == rowArgs); }`;
     }).join(' ');
   const declaredWitnessNames = new Set<string>();
@@ -4459,7 +4455,9 @@ function synthesizeMessageBusRoute(
             __internal__graphCallers, __message_bus_graph_caller_cursor
           );
   `;
-  const parseOneRow = (rowExpression: string, captureResults = false, rowIndex?: number): string => `
+  const parseOneRow = (
+    rowExpression: string, captureResults = false, rowIndex?: number, markDispatch = false,
+  ): string => `
           ${parseGraphCaller}
           bytes4 rowSelector;
           bytes rowArgs;
@@ -4476,7 +4474,7 @@ function synthesizeMessageBusRoute(
             __internal__graphCompletionPositions.slice(${rowExpression} * 2, (${rowExpression} + 1) * 2),
             hex"00"
           ));`}
-          ${buildDecodeAndCall(captureResults, rowIndex, rowExpression)}
+          ${buildDecodeAndCall(captureResults, rowIndex, rowExpression, markDispatch)}
           else { revert("unknown batch selector"); }
   `;
   // A standalone resource batch historically materializes every compiled row because each row owns part of its
@@ -5432,13 +5430,27 @@ function synthesizeMessageBusRoute(
     } else {
       const routeParseStarted = Date.now();
       const host = parseGeneratedHostFunction(routeHostSource, chunkedArrays, routeOrigin);
-      const rows = assembleMessageBusRowStatements(
+      const assembled = assembleMessageBusRowStatements(
         preamble, parser, parseOneRow, resultMode, !!fixedStandaloneResourceBatch,
         !!(eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode
           || signatureMode || tokenContainerMode),
         routeMaximumRows, chunkedArrays, routeOrigin,
+        buildMessageBusRowAliasPlans({
+          eligible,
+          resourceShapedHandler,
+          resourceHandlerInvokeName,
+          resourceSelfAliasHandlerInvokeName,
+          resourceSwappedHandlerInvokeName,
+          graphHandlerInvokeNames,
+          siblingHandlerInvokeNames,
+          fixedArrayHandlerInvokeNames,
+          handlerEntryKeys,
+          collectionByName,
+          crossHandlerPerRowWitnesses,
+          contract,
+        }),
       );
-      spliceMessageBusRows(host.body, rows);
+      spliceMessageBusRows(host.body, assembled.statements);
       route = host;
       profileLog('messageBus:parseRoute', routeParseStarted, {
         contract: contract.name,
@@ -5446,6 +5458,8 @@ function synthesizeMessageBusRoute(
         helperChars: helperSource.length,
         helperMs,
         assembled: true,
+        templateChars: assembled.templateChars,
+        templateRow: 0,
       });
     }
   } catch (error) {
@@ -5516,8 +5530,6 @@ function spliceMessageBusRows(body: BlockNode, rows: StatementNode[]): void {
   if (index < 0) throw new Error('generated message-bus route host is missing the row sentinel');
   body.statements = [...statements.slice(0, index), ...rows, ...statements.slice(index + 1)];
 }
-
-const MB_ROW_PLACEHOLDER = '__MB_ROW__';
 
 function replaceMbRowPlaceholder(node: Node, row: bigint): void {
   for (const key in node) {
@@ -5609,25 +5621,285 @@ function instantiateTemplatedRow(template: StatementNode[], templateRow: number,
   });
 }
 
+type MessageBusEntryKey = { base: string; perRow: boolean; collection: string };
+
+interface MessageBusRowAliasPlan {
+  invokeNames: string[];
+  resource?: { sharedBase: string; varyingBase: string };
+  crossRowGroup?: string[];
+}
+
+function messageBusCrossRowGroups(
+  entryShape: MessageBusEntryKey[],
+  collectionByName: Map<string, { allKeyTypes: { length: number } }>,
+  crossHandlerPerRowWitnesses: Set<string>,
+): number[][] {
+  const crossRowGroups: number[][] = [];
+  for (let start = 0; start < entryShape.length;) {
+    const first = entryShape[start];
+    const width = collectionByName.get(first.collection)?.allKeyTypes.length ?? 1;
+    const indices = Array.from({ length: width }, (_unused, offset) => start + offset)
+      .filter((index) => index < entryShape.length
+        && entryShape[index].collection === first.collection);
+    if (indices.length === width && indices.every((index) => entryShape[index].perRow
+      && crossHandlerPerRowWitnesses.has(entryShape[index].base))) {
+      crossRowGroups.push(indices);
+    }
+    start += Math.max(1, indices.length);
+  }
+  return crossRowGroups;
+}
+
+function resourceAliasShape(
+  fn: FunctionDefinitionNode,
+  resourceShapedHandler: FunctionDefinitionNode | undefined,
+  entryShape: MessageBusEntryKey[] | undefined,
+): { sharedBase: string; varyingBase: string } | undefined {
+  if (fn !== resourceShapedHandler || !entryShape) return undefined;
+  const varyingEntryIndex = entryShape.findIndex((entry) => entry.perRow
+    && entryShape.some((candidate) => !candidate.perRow
+      && candidate.collection === entry.collection && `${candidate.base}_row` === entry.base));
+  const varyingEntry = varyingEntryIndex >= 0 ? entryShape[varyingEntryIndex] : undefined;
+  const sharedEntryIndex = varyingEntry
+    ? entryShape.findIndex((entry) =>
+      !entry.perRow && `${entry.base}_row` === varyingEntry.base)
+    : -1;
+  if (!varyingEntry || sharedEntryIndex < 0) return undefined;
+  if (entryShape.filter((entry) => entry.perRow
+    && entry.collection === varyingEntry.collection).length !== 1) return undefined;
+  return { sharedBase: entryShape[sharedEntryIndex].base, varyingBase: varyingEntry.base };
+}
+
+function buildMessageBusRowAliasPlans(input: {
+  eligible: FunctionDefinitionNode[];
+  resourceShapedHandler: FunctionDefinitionNode | undefined;
+  resourceHandlerInvokeName: string | undefined;
+  resourceSelfAliasHandlerInvokeName: string | undefined;
+  resourceSwappedHandlerInvokeName: string | undefined;
+  graphHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
+  siblingHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
+  fixedArrayHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
+  handlerEntryKeys: Map<FunctionDefinitionNode, MessageBusEntryKey[]>;
+  collectionByName: Map<string, { allKeyTypes: { length: number } }>;
+  crossHandlerPerRowWitnesses: Set<string>;
+  contract: ContractNode;
+}): MessageBusRowAliasPlan[] {
+  return input.eligible.map((fn) => {
+    const invokeName = fn === input.resourceShapedHandler
+      ? input.resourceHandlerInvokeName!
+      : (input.graphHandlerInvokeNames.get(fn) ?? input.siblingHandlerInvokeNames.get(fn)
+        ?? input.fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
+    const invokeNames = new Set<string>([invokeName, fn.name]);
+    if (fn === input.resourceShapedHandler) {
+      if (input.resourceSelfAliasHandlerInvokeName) invokeNames.add(input.resourceSelfAliasHandlerInvokeName);
+      if (input.resourceSwappedHandlerInvokeName) invokeNames.add(input.resourceSwappedHandlerInvokeName);
+    }
+    const entryShape = input.handlerEntryKeys.get(fn);
+    const crossRowGroups = entryShape
+      ? messageBusCrossRowGroups(entryShape, input.collectionByName, input.crossHandlerPerRowWitnesses)
+      : [];
+    if (crossRowGroups.length > 1) {
+      const runtimeAliasHandler = input.contract.functions.find((candidate) => candidate.name === invokeName);
+      if (!runtimeAliasHandler) throw new Error(`Message-bus runtime-alias handler '${invokeName}' is missing`);
+      runtimeAliasHandler.collectionJournalRuntimeAliases = true;
+    }
+    return {
+      invokeNames: [...invokeNames],
+      resource: resourceAliasShape(fn, input.resourceShapedHandler, entryShape),
+      crossRowGroup: crossRowGroups.length === 1
+        ? crossRowGroups[0].map((index) => entryShape![index].base)
+        : undefined,
+    };
+  });
+}
+
+function isMbDispatchSentinel(statement: StatementNode): boolean {
+  return statement instanceof RequireNode
+    && statement.expression instanceof IdentifierNode
+    && statement.expression.name === MB_DISPATCH_SENTINEL;
+}
+
+function identifierEq(left: string, right: string, location?: Location): BinaryOpNode {
+  const node = new BinaryOpNode(new IdentifierNode(left), BinaryOperator.EQ, new IdentifierNode(right));
+  if (location) {
+    node.location = location;
+    node.left.location = location;
+    node.right.location = location;
+  }
+  return node;
+}
+
+function andEqualities(pairs: Array<[string, string]>, location?: Location): ExpressionNode {
+  const terms = pairs.map(([left, right]) => identifierEq(left, right, location));
+  return terms.reduce((left, right) => {
+    const node = new BinaryOpNode(left, BinaryOperator.AND, right);
+    if (location) node.location = location;
+    return node;
+  });
+}
+
+function aliasBranch(
+  condition: ExpressionNode, ifStatements: StatementNode[], elseStatements: StatementNode[],
+): BranchNode {
+  const branch = new BranchNode(condition, new BlockNode(ifStatements), new BlockNode(elseStatements));
+  branch.location = condition.location;
+  branch.ifBlock.location = condition.location;
+  if (branch.elseBlock) branch.elseBlock.location = condition.location;
+  return branch;
+}
+
+function rewriteFnArgIdentifier(nodes: StatementNode[], from: string, to: string): void {
+  for (const node of nodes) {
+    walkInvocationAst(node, (child) => {
+      if (!(child instanceof FunctionCallNode)) return;
+      for (let index = 0; index < child.parameters.length; index += 1) {
+        const argument = child.parameters[index];
+        if (argument instanceof IdentifierNode && argument.name === from) {
+          child.parameters[index] = Object.assign(new IdentifierNode(to), { location: argument.location });
+        }
+      }
+    });
+  }
+}
+
+function matchAliasPlan(
+  dispatch: StatementNode[], plans: MessageBusRowAliasPlan[],
+): MessageBusRowAliasPlan | undefined {
+  const names = new Set<string>();
+  for (const statement of dispatch) {
+    walkInvocationAst(statement, (node) => {
+      if (node instanceof FunctionCallNode) names.add(node.identifier.name);
+      if (node instanceof FunctionCallStatementNode) names.add(node.call.identifier.name);
+    });
+  }
+  return plans.find((plan) => plan.invokeNames.some((name) => names.has(name)));
+}
+
+function isIdentifierEquality(condition: ExpressionNode, left: string, right: string): boolean {
+  return condition instanceof BinaryOpNode && condition.operator === BinaryOperator.EQ
+    && condition.left instanceof IdentifierNode && condition.right instanceof IdentifierNode
+    && condition.left.name === left && condition.right.name === right;
+}
+
+function findSharedSelfBranch(
+  dispatch: StatementNode[], shared: string, varyingNow: string,
+): BranchNode | undefined {
+  if (dispatch.length === 1 && dispatch[0] instanceof BlockNode) {
+    return findSharedSelfBranch(dispatch[0].statements ?? [], shared, varyingNow);
+  }
+  if (dispatch.length === 1 && dispatch[0] instanceof BranchNode
+    && isIdentifierEquality(dispatch[0].condition, varyingNow, shared)) {
+    return dispatch[0];
+  }
+  return undefined;
+}
+
+function injectResourcePriorAliases(
+  dispatch: StatementNode[], row: number, resource: { sharedBase: string; varyingBase: string },
+): StatementNode[] {
+  const varyingNow = `${resource.varyingBase}_r${row}`;
+  const sharedSelf = findSharedSelfBranch(dispatch, resource.sharedBase, varyingNow);
+  if (!sharedSelf) {
+    throw new Error('resource-shaped message-bus dispatch is missing the shared-self alias branch');
+  }
+  const oriented = (sharedSelf.elseBlock?.statements ?? []).map((statement) => cloneNode(statement));
+  let inner = sharedSelf.elseBlock?.statements ?? [];
+  for (let priorRow = row - 1; priorRow >= 0; priorRow -= 1) {
+    const aliased = oriented.map((statement) => cloneNode(statement));
+    rewriteFnArgIdentifier(aliased, varyingNow, `${resource.varyingBase}_r${priorRow}`);
+    inner = [aliasBranch(identifierEq(varyingNow, `${resource.varyingBase}_r${priorRow}`, sharedSelf.location),
+      aliased, inner)];
+  }
+  sharedSelf.elseBlock = new BlockNode(inner);
+  sharedSelf.elseBlock.location = sharedSelf.location;
+  return dispatch;
+}
+
+function injectCrossHandlerAliases(
+  dispatch: StatementNode[], row: number, bases: string[],
+): StatementNode[] {
+  let wrapped = dispatch;
+  for (let priorRow = row - 1; priorRow >= 0; priorRow -= 1) {
+    const aliased = dispatch.map((statement) => cloneNode(statement));
+    for (const base of bases) {
+      rewriteFnArgIdentifier(aliased, `${base}_r${row}`, `${base}_r${priorRow}`);
+    }
+    const location = dispatch[0]?.location;
+    wrapped = [aliasBranch(
+      andEqualities(bases.map((base) => [`${base}_r${row}`, `${base}_r${priorRow}`]), location),
+      aliased, wrapped,
+    )];
+  }
+  return wrapped;
+}
+
+function injectDispatchAliases(
+  dispatch: StatementNode[], row: number, plans: MessageBusRowAliasPlan[],
+): StatementNode[] {
+  if (row <= 0) return dispatch;
+  const plan = matchAliasPlan(dispatch, plans);
+  let current = dispatch;
+  if (plan?.resource) current = injectResourcePriorAliases(current, row, plan.resource);
+  if (plan?.crossRowGroup) current = injectCrossHandlerAliases(current, row, plan.crossRowGroup);
+  return current;
+}
+
+function processDispatchRegions(
+  statements: StatementNode[], row: number, plans: MessageBusRowAliasPlan[],
+): StatementNode[] {
+  const out: StatementNode[] = [];
+  for (let index = 0; index < statements.length; index += 1) {
+    const statement = statements[index];
+    if (isMbDispatchSentinel(statement)) {
+      const inner: StatementNode[] = [];
+      index += 1;
+      while (index < statements.length && !isMbDispatchSentinel(statements[index])) {
+        inner.push(statements[index]);
+        index += 1;
+      }
+      if (index >= statements.length || !isMbDispatchSentinel(statements[index])) {
+        throw new Error('generated message-bus row is missing the dispatch end sentinel');
+      }
+      out.push(...injectDispatchAliases(inner, row, plans));
+      continue;
+    }
+    if (statement instanceof BranchNode) {
+      statement.ifBlock.statements = processDispatchRegions(statement.ifBlock.statements ?? [], row, plans);
+      if (statement.elseBlock) {
+        statement.elseBlock.statements = processDispatchRegions(statement.elseBlock.statements ?? [], row, plans);
+      }
+    } else if (statement instanceof BlockNode) {
+      statement.statements = processDispatchRegions(statement.statements ?? [], row, plans);
+    }
+    out.push(statement);
+  }
+  return out;
+}
+
 function assembleMessageBusRowStatements(
   preamble: string,
   parser: string,
-  parseOneRow: (rowExpression: string, captureResults?: boolean, rowIndex?: number) => string,
+  parseOneRow: (
+    rowExpression: string, captureResults?: boolean, rowIndex?: number, markDispatch?: boolean,
+  ) => string,
   resultMode: boolean,
   fixedStandalone: boolean,
   unrolledIf: boolean,
   routeMaximumRows: number,
   chunkedArrays: boolean,
   origin: string,
-): StatementNode[] {
+  aliasPlans: MessageBusRowAliasPlan[],
+): { statements: StatementNode[]; templateChars: number } {
   if (!fixedStandalone && !unrolledIf) {
-    return parseGeneratedHostFunction(
-      `${preamble}    contract __MessageBusHost() { function __message_bus_fragment() { ${parser} } }`,
-      chunkedArrays, origin,
-    ).body.statements ?? [];
+    return {
+      statements: parseGeneratedHostFunction(
+        `${preamble}    contract __MessageBusHost() { function __message_bus_fragment() { ${parser} } }`,
+        chunkedArrays, origin,
+      ).body.statements ?? [],
+      templateChars: parser.length,
+    };
   }
-  const templateRow = Math.max(0, routeMaximumRows - 1);
-  const rowBody = parseOneRow(MB_ROW_PLACEHOLDER, resultMode, templateRow);
+  const rowBody = parseOneRow(MB_ROW_PLACEHOLDER, resultMode, 0, true);
   const fragment = fixedStandalone
     ? `{ ${rowBody} }`
     : `if (rowCount > ${MB_ROW_PLACEHOLDER}) { ${rowBody} }`;
@@ -5637,9 +5909,10 @@ function assembleMessageBusRowStatements(
   ).body.statements ?? [];
   const rows: StatementNode[] = [];
   for (let row = 0; row < routeMaximumRows; row += 1) {
-    rows.push(...instantiateTemplatedRow(template, templateRow, row));
+    const instantiated = instantiateTemplatedRow(template, 0, row);
+    rows.push(...processDispatchRegions(instantiated, row, aliasPlans));
   }
-  return rows;
+  return { statements: rows, templateChars: fragment.length };
 }
 
 /**

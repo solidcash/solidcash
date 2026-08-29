@@ -859,6 +859,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * compact helper ids, which the probe draws from the same pool the real pass continues from.
    */
   private isSubroutineUseProbe = false;
+  private bodyOptimiseMs = 0;
 
   // Function IDs are allocated monotonically from zero, so reserve compact negative script numbers for
   // compiler helpers. This saves one byte at nearly every fixed-helper definition and invocation.
@@ -2485,6 +2486,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       console.error('[solidc-profile]', JSON.stringify({
         label: 'codegen:emitBodies',
         ms: Date.now() - emitStarted,
+        bodyOptimiseMs: this.bodyOptimiseMs,
         contract: node.name,
       }));
     }
@@ -4171,13 +4173,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Optimize: same dual-optimizer approach as main script (compiler.ts). optimiseBytecodeOld is a compat
     // cross-check only; skip it above a size threshold where its fixpoint is prohibitively slow (huge arrays).
-    const optimisationResult = optimiseBytecode(
-      normalizedOutput,
-      normalizedLocationData,
-      [...subTraversal.consoleLogs],
-      [...subTraversal.requires],
-      0, // no constructor param pushes in function body bytecode
-    );
+    // Speed-hint MarketplaceV1: peephole on 151 OP_DEFINE bodies was ~1.6s of emit. Skipping it,
+    // outlining recovered most of the repetition (window-8 savedBytes 81755 -> 85086). The
+    // contract-level optimiser still runs. Owned-only pin 178769 -> 179123.
+    const bodyOptStarted = Date.now();
+    const optimisationResult = this.compilerOptions.optimizeForCompilationSpeed === true
+      ? {
+        script: normalizedOutput,
+        locationData: normalizedLocationData,
+        logs: [...subTraversal.consoleLogs],
+        requires: [...subTraversal.requires],
+      }
+      : optimiseBytecode(
+        normalizedOutput,
+        normalizedLocationData,
+        [...subTraversal.consoleLogs],
+        [...subTraversal.requires],
+        0, // no constructor param pushes in function body bytecode
+      );
+    this.bodyOptimiseMs += Date.now() - bodyOptStarted;
     // The cross-check guards bytecode that SHIPS. A usage probe emits a throwaway body whose bytes are
     // discarded, and running it there is worse than useless: `subroutineUseProbe` catches whatever the probe
     // throws and falls back to defining every subroutine, so a mismatch would silently degrade codegen instead

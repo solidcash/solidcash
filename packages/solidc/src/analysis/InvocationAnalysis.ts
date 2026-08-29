@@ -89,10 +89,14 @@ export function collectNamedFunctionClosure(
   return closure;
 }
 
-interface FootprintAnalysisCache {
+export interface FootprintAnalysisCache {
   directCalls: WeakMap<FunctionDefinitionNode, Set<string>>;
   bodyNodes: WeakMap<FunctionDefinitionNode, { locallyBound: Set<string>; nodes: Node[] }>;
   directFootprints: WeakMap<FunctionDefinitionNode, SplitStateFootprint>;
+}
+
+export function createFootprintAnalysisCache(): FootprintAnalysisCache {
+  return { directCalls: new WeakMap(), bodyNodes: new WeakMap(), directFootprints: new WeakMap() };
 }
 
 export function analyseFunctionFootprint(

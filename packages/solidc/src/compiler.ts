@@ -136,7 +136,8 @@ import {
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
-  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, directCallNames,
+  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, createFootprintAnalysisCache,
+  directCallNames,
   walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
@@ -2077,6 +2078,7 @@ function synthesizeMessageBusRoute(
     group.push(fn);
     byName.set(fn.name, group);
   }
+  const footprintCache = createFootprintAnalysisCache();
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.type === PrimitiveType.STRING
     || (state.type instanceof BytesType && state.type.bound === undefined)).map((state) => state.name));
@@ -2363,7 +2365,7 @@ function synthesizeMessageBusRoute(
       fn.messageBusRejectionReason = 'lifecycle-or-unsafe-handler';
       continue;
     }
-    const footprint = analyseFunctionFootprint(fn, byName);
+    const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
     let routeSensitive = false;
     let routeUsesMsgSender = false;
     let routeUsesMsgData = false;
@@ -2885,7 +2887,7 @@ function synthesizeMessageBusRoute(
       }
       const fixedCollectionHelperClosure = [...closure].every((name) => name === fn.name
         || [...(byName.get(name) ?? [])].every((candidate) => {
-          const helperFootprint = analyseFunctionFootprint(candidate, byName);
+          const helperFootprint = analyseFunctionFootprint(candidate, byName, footprintCache);
           const touchesCollection = [...helperFootprint.reads, ...helperFootprint.writes]
             .some((resource) => resource.startsWith('collection:'));
           return !touchesCollection || fixedArrayIdentityShape(candidate);
@@ -3323,7 +3325,7 @@ function synthesizeMessageBusRoute(
   eligible = eligible.filter((fn) => fn.messageBusEligible !== false);
 
   const eligibleFootprint = (fn: FunctionDefinitionNode): ReturnType<typeof analyseFunctionFootprint> =>
-    analyseFunctionFootprint(fn, byName);
+    analyseFunctionFootprint(fn, byName, footprintCache);
   const carriesRawValueOption = (fn: FunctionDefinitionNode): boolean => {
     let found = false;
     walkInvocationAst(fn.body, (node) => {
@@ -4229,7 +4231,7 @@ function synthesizeMessageBusRoute(
   // direct handler and the inlined batch body on the normal token-covenant path; a synthetic internal clone
   // would incorrectly try to emit a second, context-free token covenant.
   for (const sourceHandler of eligible) {
-    const footprint = analyseFunctionFootprint(sourceHandler, byName);
+    const footprint = analyseFunctionFootprint(sourceHandler, byName, footprintCache);
     const touchesTokenContainer = [...footprint.reads, ...footprint.writes]
       .some((resource) => resource.startsWith('collection:tokens:'));
     if (!touchesTokenContainer) continue;
@@ -4260,7 +4262,7 @@ function synthesizeMessageBusRoute(
   for (const sourceHandler of eligible) {
     if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)
       || siblingHandlerInvokeNames.has(sourceHandler)) continue;
-    const footprint = analyseFunctionFootprint(sourceHandler, byName);
+    const footprint = analyseFunctionFootprint(sourceHandler, byName, footprintCache);
     const touchesDynamic = [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)));
     if (!touchesDynamic) continue;
@@ -6707,6 +6709,7 @@ function compileResolvedAst(
     messageBusFunctionsByName.set(fn.name, group);
   }
   const collectionNames = new Set(ast.contract.collections.map((collection) => collection.name));
+  const prefixFootprintCache = createFootprintAnalysisCache();
   const loweredFunctionPointerTables = new Set<string>();
   for (const collection of ast.contract.collections) {
     if (collection.type instanceof ArrayType
@@ -6723,7 +6726,7 @@ function compileResolvedAst(
     }
   }
   for (const fn of ast.contract.functions) {
-    const footprint = analyseFunctionFootprint(fn, messageBusFunctionsByName);
+    const footprint = analyseFunctionFootprint(fn, messageBusFunctionsByName, prefixFootprintCache);
     for (const resource of [...footprint.reads, ...footprint.writes]) {
       if (!resource.startsWith('collection:__fnsel_')) continue;
       const selectorName = resource.slice('collection:'.length).split(':', 1)[0];
@@ -6735,7 +6738,7 @@ function compileResolvedAst(
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)
     && ast.contract.functions.some((fn) => {
-      const footprint = analyseFunctionFootprint(fn, messageBusFunctionsByName);
+      const footprint = analyseFunctionFootprint(fn, messageBusFunctionsByName, prefixFootprintCache);
       return [...footprint.reads, ...footprint.writes]
         .some((resource) => {
           if (!resource.startsWith('collection:')) return false;
@@ -8201,11 +8204,12 @@ function compileStringSplitUnchecked(
   // consensus capacity, they must become delegate-return facets too; otherwise an oversized query surface can
   // leave the forwarding root undeployable (BoringHelperV1).
   const moveReadOnlyEntries = byteSize(baseline) > maxShardBytes;
+  const splitFootprintCache = createFootprintAnalysisCache();
   const plans = (baseline.stateLayout
     ? functions.filter((fn) => isMovableSplitEntry(fn, moveReadOnlyEntries)) : []).map((fn) => ({
     name: fn.name,
     closure: collectNamedFunctionClosure(fn, byName),
-    footprint: analyseFunctionFootprint(fn, byName),
+    footprint: analyseFunctionFootprint(fn, byName, splitFootprintCache),
   }));
 
   if ((!forceSplit && byteSize(baseline) <= maxShardBytes) || plans.length === 0) {

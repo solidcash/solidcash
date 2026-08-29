@@ -5970,6 +5970,29 @@ function isCheapAdmissionKeptFunction(fn: FunctionDefinitionNode): boolean {
     && !name.startsWith('__message_bus_resource_');
 }
 
+function isCheapAdmissionParkableFunction(fn: FunctionDefinitionNode): boolean {
+  return fn.name.startsWith('__message_bus') && !isCheapAdmissionKeptFunction(fn);
+}
+
+/**
+ * Cheap admission still has to SYNTHESIZE graph/handler/route clones so prune/eligibility see their
+ * call graph, but those bodies are stubbed before codegen. Parking them for the post-synthesize
+ * lowering/survey window avoids walking thousands of throwaway clones (unroll, named-return, feature
+ * survey). Restore before prune so Address-style reachability still matches the previous fail-fast.
+ */
+function parkCheapAdmissionUnkeptMessageBusFunctions(
+  ast: Ast, enabled: boolean,
+): FunctionDefinitionNode[] | undefined {
+  if (!enabled) return undefined;
+  const original = ast.contract.functions;
+  ast.contract.functions = original.filter((fn) => !isCheapAdmissionParkableFunction(fn));
+  return original;
+}
+
+function restoreParkedFunctions(ast: Ast, original: FunctionDefinitionNode[] | undefined): void {
+  if (original !== undefined) ast.contract.functions = original;
+}
+
 function stubCheapAdmissionBodies(ast: Ast): void {
   const stub = (fn: FunctionDefinitionNode | undefined): void => {
     if (!fn || isCheapAdmissionKeptFunction(fn) || !fn.body) return;
@@ -6371,6 +6394,9 @@ function compileResolvedAst(
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
   }
+  const cheapAdmissionPark = parkCheapAdmissionUnkeptMessageBusFunctions(
+    ast, mergedCompilerOptions.__cheapAdmissionCodegen === true && synthesizeBatchBeforeLowering,
+  );
 
   // Redo the using-for method desugar for calls whose receiver is an IMPORTED struct (unknown at parse time, so
   // the AstBuilder left `x.method()` raw): `x.method(args)` -> `L.method(x, args)`. After modifier expansion (so
@@ -6438,6 +6464,7 @@ function compileResolvedAst(
   // terminal return (after NamedReturn so implicit tails are explicit; before semantic so locals resolve).
   if (needsNestedBranchReturn) ast = ast.accept(new DesugarNestedBranchReturn()) as Ast;
 
+  restoreParkedFunctions(ast, cheapAdmissionPark);
   // Drop unused OZ low-level-call / assembly helpers before journal and memory lowering. Marketplace's
   // public-only admission otherwise spends seconds lowering Address/SafeERC20 helpers the route will prune
   // later; the late prune after synthesis remains so a later pass can still root a helper.

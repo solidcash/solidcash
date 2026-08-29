@@ -62,6 +62,13 @@ function decodeAuthenticationInstructionViews(bytecode: Uint8Array): DecodedInst
 // the provider lifetime and bound it so long-running mock/miner-direct processes cannot retain every script seen.
 const decodedP2shByProvider = new WeakMap<NetworkProvider, Map<string, DecodedInstructions>>();
 const MAX_CACHED_P2SH_SCRIPTS = 64;
+const observerlessVmByProvider = new WeakMap<
+  NetworkProvider, Map<string, ReturnType<typeof createVirtualMachineBch2026>>
+>();
+
+function observerlessVmCacheKey(provider: NetworkProvider, standard: boolean): string {
+  return `${standard ? '1' : '0'}:${JSON.stringify(provider.consensusLimits ?? null)}`;
+}
 
 function decodeCachedP2sh(
   provider: NetworkProvider,
@@ -362,19 +369,42 @@ function installSparseProbeBranchSkips(
  *   state array into `push`, which exceeds V8's argument limit between 100,014 and 124,014 states. Past that
  *   point the observer is the only usable instrument, which is exactly what the gate selects it for.
  */
+type ProviderVmObserver = {
+  opcodes: ReadonlySet<number>;
+  beforeOperation: (state: unknown) => void;
+  /** Probe-only operation wrapper. Consensus callers must omit this; their operation remains byte-for-byte stock. */
+  operation?: (
+    opcode: number, state: unknown, operation: (state: never) => unknown,
+  ) => unknown;
+};
+
 export function createVirtualMachineBch2026ForProvider(
   provider?: NetworkProvider,
-  observer?: {
-    opcodes: ReadonlySet<number>;
-    beforeOperation: (state: unknown) => void;
-    /** Probe-only operation wrapper. Consensus callers must omit this; their operation remains byte-for-byte stock. */
-    operation?: (
-      opcode: number, state: unknown, operation: (state: never) => unknown,
-    ) => unknown;
-  },
+  observer?: ProviderVmObserver,
   options?: { standard?: boolean },
 ): ReturnType<typeof createVirtualMachineBch2026> {
   const standard = options?.standard ?? true;
+  if (observer === undefined && provider !== undefined) {
+    const key = observerlessVmCacheKey(provider, standard);
+    let byKey = observerlessVmByProvider.get(provider);
+    if (byKey === undefined) {
+      byKey = new Map();
+      observerlessVmByProvider.set(provider, byKey);
+    }
+    const cached = byKey.get(key);
+    if (cached !== undefined) return cached;
+    const built = buildVirtualMachineBch2026ForProvider(provider, undefined, standard);
+    byKey.set(key, built);
+    return built;
+  }
+  return buildVirtualMachineBch2026ForProvider(provider, observer, standard);
+}
+
+function buildVirtualMachineBch2026ForProvider(
+  provider: NetworkProvider | undefined,
+  observer: ProviderVmObserver | undefined,
+  standard: boolean,
+): ReturnType<typeof createVirtualMachineBch2026> {
   const limits = provider?.consensusLimits;
   // Nothing to customise. This is not a silent drop: with no limits AND no observer, libauth's own factory
   // builds precisely the instruction set the rest of this function would assemble.

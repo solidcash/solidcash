@@ -1786,6 +1786,7 @@ function synthesizeMessageBusRoute(
   attribution?: ExternalAdmissionAttribution,
 ): void {
   if (!compilerOptions.messageBus) return;
+  const cheapAdmission = (compilerOptions as InternalCompilerOptions).__cheapAdmissionCodegen === true;
   const synthesizeStarted = Date.now();
   const contract = ast.contract;
   assertNoReservedMessageBusSelector(contract.functions);
@@ -3635,7 +3636,7 @@ function synthesizeMessageBusRoute(
   const allGraphEmissionHandlersRuntime = graphTailHandlers.size > 0
     && [...graphTailHandlers].every((handler) => graphRuntimeHandlers.has(handler));
   if (resourceShapedHandler) {
-    const handler = cloneNode(resourceShapedHandler);
+    const handler = cloneMessageBusHandler(resourceShapedHandler, cheapAdmission);
     handler.name = `__message_bus_resource_${resourceShapedHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
@@ -3749,7 +3750,7 @@ function synthesizeMessageBusRoute(
   if (resourceShapedHandler && eligible.length > 1) {
     for (const sourceHandler of eligible) {
       if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)) continue;
-      const handler = cloneNode(sourceHandler);
+      const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
       handler.name = `__message_bus_handler_${sourceHandler.name}`;
       handler.modifiers = [FunctionModifier.INTERNAL];
       handler.functionId = undefined;
@@ -3785,7 +3786,7 @@ function synthesizeMessageBusRoute(
       if (node instanceof MappingDeleteNode && collectionByName.has(node.name)) deletesEntry = true;
     });
     if (!deletesEntry) continue;
-    const handler = cloneNode(sourceHandler);
+    const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_handler_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
@@ -3838,7 +3839,7 @@ function synthesizeMessageBusRoute(
     // Deferring the whole handler preserves the literal identity set and does not widen the journal's stable-key
     // rule; dynamically-cardinal collection iteration remains ineligible before clone selection reaches here.
     if (touchesFixedArray || fixedArrayRouteHandlers.has(sourceHandler)) continue;
-    const handler = cloneNode(sourceHandler);
+    const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_entry_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
@@ -3871,7 +3872,7 @@ function synthesizeMessageBusRoute(
       || siblingHandlerInvokeNames.has(sourceHandler)
       || (footprint.effects.length === 0 && !hasTokenEffect)
     ) continue;
-    const handler = cloneNode(sourceHandler);
+    const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_handler_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
@@ -3886,7 +3887,7 @@ function synthesizeMessageBusRoute(
   }
   for (const sourceHandler of graphTailHandlers) {
     if (!eligible.includes(sourceHandler) || sourceHandler === resourceShapedHandler) continue;
-    const handler = cloneNode(sourceHandler);
+    const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_graph_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
@@ -3991,7 +3992,7 @@ function synthesizeMessageBusRoute(
     const touchesDynamic = [...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)));
     if (!touchesDynamic) continue;
-    const handler = cloneNode(sourceHandler);
+    const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_dynamic_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
@@ -4016,7 +4017,7 @@ function synthesizeMessageBusRoute(
       if (bare && fixedArrayCollections.has(bare.name)) touchesFixedArray = true;
     });
     if (!touchesFixedArray && !fixedArrayRouteHandlers.has(sourceHandler)) continue;
-    const handler = cloneNode(sourceHandler);
+    const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_array_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
@@ -4037,7 +4038,7 @@ function synthesizeMessageBusRoute(
     if (sourceHandler.name !== contract.name || sourceHandler === resourceShapedHandler
       || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
       || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
-    const handler = cloneNode(sourceHandler);
+    const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_handler_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
@@ -4059,7 +4060,7 @@ function synthesizeMessageBusRoute(
     if (sourceHandler.visibility !== 'external' || sourceHandler === resourceShapedHandler
       || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
       || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
-    const handler = cloneNode(sourceHandler);
+    const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_external_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
@@ -5439,37 +5440,52 @@ function synthesizeMessageBusRoute(
     } else {
       const routeParseStarted = Date.now();
       const host = parseGeneratedHostFunction(routeHostSource, chunkedArrays, routeOrigin);
-      const assembled = assembleMessageBusRowStatements(
-        preamble, parser, parseOneRow, resultMode, !!fixedStandaloneResourceBatch,
-        !!(eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode
-          || signatureMode || tokenContainerMode),
-        routeMaximumRows, chunkedArrays, routeOrigin,
-        buildMessageBusRowAliasPlans({
-          eligible,
-          resourceShapedHandler,
-          resourceHandlerInvokeName,
-          resourceSelfAliasHandlerInvokeName,
-          resourceSwappedHandlerInvokeName,
-          graphHandlerInvokeNames,
-          siblingHandlerInvokeNames,
-          fixedArrayHandlerInvokeNames,
-          handlerEntryKeys,
-          collectionByName,
-          crossHandlerPerRowWitnesses,
-          contract,
-        }),
-      );
-      spliceMessageBusRows(host.body, assembled.statements);
-      route = host;
-      profileLog('messageBus:parseRoute', routeParseStarted, {
-        contract: contract.name,
-        routeChars: routeOracleSource.length,
-        helperChars: helperSource.length,
-        helperMs,
-        assembled: true,
-        templateChars: assembled.templateChars,
-        templateRow: 0,
-      });
+      if (cheapAdmission) {
+        // The unrolled route is parked/stubbed before codegen. Keep the host signature for
+        // symbol/ABI metadata; skip instantiating every row of a throwaway body.
+        stubFunctionBody(host);
+        route = host;
+        profileLog('messageBus:parseRoute', routeParseStarted, {
+          contract: contract.name,
+          routeChars: routeHostSource.length,
+          helperChars: helperSource.length,
+          helperMs,
+          assembled: true,
+          cheapStub: true,
+        });
+      } else {
+        const assembled = assembleMessageBusRowStatements(
+          preamble, parser, parseOneRow, resultMode, !!fixedStandaloneResourceBatch,
+          !!(eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode
+            || signatureMode || tokenContainerMode),
+          routeMaximumRows, chunkedArrays, routeOrigin,
+          buildMessageBusRowAliasPlans({
+            eligible,
+            resourceShapedHandler,
+            resourceHandlerInvokeName,
+            resourceSelfAliasHandlerInvokeName,
+            resourceSwappedHandlerInvokeName,
+            graphHandlerInvokeNames,
+            siblingHandlerInvokeNames,
+            fixedArrayHandlerInvokeNames,
+            handlerEntryKeys,
+            collectionByName,
+            crossHandlerPerRowWitnesses,
+            contract,
+          }),
+        );
+        spliceMessageBusRows(host.body, assembled.statements);
+        route = host;
+        profileLog('messageBus:parseRoute', routeParseStarted, {
+          contract: contract.name,
+          routeChars: routeOracleSource.length,
+          helperChars: helperSource.length,
+          helperMs,
+          assembled: true,
+          templateChars: assembled.templateChars,
+          templateRow: 0,
+        });
+      }
     }
   } catch (error) {
     throw new Error(
@@ -5993,14 +6009,43 @@ function restoreParkedFunctions(ast: Ast, original: FunctionDefinitionNode[] | u
   if (original !== undefined) ast.contract.functions = original;
 }
 
+function stubFunctionBody(fn: FunctionDefinitionNode): void {
+  const revert = new RevertNode();
+  revert.location = fn.location;
+  const body = new BlockNode([revert]);
+  body.location = fn.location;
+  fn.body = body;
+}
+
+/** Cheap admission never emits these clones. Skip deep-cloning Marketplace-scale handler bodies. */
+function cloneMessageBusHandler(
+  source: FunctionDefinitionNode, cheap: boolean,
+): FunctionDefinitionNode {
+  if (!cheap) return cloneNode(source);
+  const handler = Object.create(Object.getPrototypeOf(source)) as FunctionDefinitionNode;
+  for (const [key, value] of Object.entries(source)) {
+    if (key === 'body' || key === 'opRolls') continue;
+    if (key === 'parameters') {
+      handler.parameters = (value as ParameterNode[]).map((parameter) => cloneNode(parameter));
+      continue;
+    }
+    if (key === 'modifiers' || key === 'returnTypes' || key === 'returnModifiers' || key === 'returnNames'
+      || key === 'customModifiers') {
+      (handler as unknown as Record<string, unknown>)[key] = Array.isArray(value) ? [...value] : value;
+      continue;
+    }
+    (handler as unknown as Record<string, unknown>)[key] = value;
+  }
+  handler.opRolls = new Map();
+  stubFunctionBody(handler);
+  handler.location = source.location;
+  return handler;
+}
+
 function stubCheapAdmissionBodies(ast: Ast): void {
   const stub = (fn: FunctionDefinitionNode | undefined): void => {
     if (!fn || isCheapAdmissionKeptFunction(fn) || !fn.body) return;
-    const revert = new RevertNode();
-    revert.location = fn.location;
-    const body = new BlockNode([revert]);
-    body.location = fn.location;
-    fn.body = body;
+    stubFunctionBody(fn);
   };
   for (const fn of ast.contract.functions) stub(fn);
   stub(ast.contract.constructorDef);

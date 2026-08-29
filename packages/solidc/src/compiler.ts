@@ -5987,7 +5987,7 @@ function isCheapAdmissionKeptFunction(fn: FunctionDefinitionNode): boolean {
 }
 
 function isCheapAdmissionParkableFunction(fn: FunctionDefinitionNode): boolean {
-  return fn.name.startsWith('__message_bus') && !isCheapAdmissionKeptFunction(fn);
+  return !isCheapAdmissionKeptFunction(fn);
 }
 
 /**
@@ -6448,6 +6448,8 @@ function compileResolvedAst(
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
   }
+  // Cheap admission does not emit user/clone/route bodies. Park them before survey/unroll so
+  // throwaway Marketplace entry points are not named-return/loop-lowered, then restore for prune.
   const cheapAdmissionPark = parkCheapAdmissionUnkeptMessageBusFunctions(
     ast, mergedCompilerOptions.__cheapAdmissionCodegen === true && synthesizeBatchBeforeLowering,
   );
@@ -7888,13 +7890,18 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
     // two-pass operation: the first pass extracts the verifier program and the second binds the compact route to
     // it. Calling the lower-level admission ladder here published route ABI from pass one beside bytecode that
     // could not select a participant-local verifier in an atomic graph.
+    // The probe AST is the complete import graph. Cloning it (~25ms) is much cheaper than re-lexing
+    // Marketplace-scale Solidity for every imported primary (~650ms+). The last contract can consume the
+    // probe itself; every other primary gets an isolated clone with itself selected.
     const contractStarted = Date.now();
+    const parsedAst = contract === probe.contract ? probe : cloneAst(probe, 'multi-primary');
+    if (contract !== probe.contract) setPrimaryContract(parsedAst, contract.name);
     map[contract.name] = compileStringUnchecked(code, {
       ...artifactCompilerOptions,
       errorListener,
       suppressWarnings,
       primaryContractName: contract.name,
-      ...(contract === probe.contract ? { __parsedAst: probe } : {}),
+      __parsedAst: parsedAst,
     } as CompileOptions);
     const compiled = map[contract.name];
     profileLog('multi-contract', contractStarted, {

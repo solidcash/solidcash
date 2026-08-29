@@ -7240,7 +7240,9 @@ function compileResolvedAst(
 
   mark('lowering');
   // Semantic analysis
+  const semanticStarted = Date.now();
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
+  profileLog('resolved:symbol', semanticStarted, { contract: contractName });
   // Bare msg.sender collection accesses are normalized to compiler-owned route parameters before semantic
   // analysis. Preserve their origin in the published entry metadata: treating that synthetic parameter as a
   // source ABI argument leaves the SDK trying to read an argument the user-visible handler does not have.
@@ -7385,12 +7387,16 @@ function compileResolvedAst(
         .map((prior) => prior.slotIndex);
     }
   }
+  const typeCheckStarted = Date.now();
   ast = ast.accept(new TypeCheckTraversal(
     true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
   )) as Ast;
+  profileLog('resolved:typecheck', typeCheckStarted, { contract: contractName });
+  const finalRequireStarted = Date.now();
   ast = ast.accept(new EnsureFinalRequireTraversal(
     mergedCompilerOptions.enforceFinalRequire, mergedCompilerOptions.allowUnsafeOperations,
   )) as Ast;
+  profileLog('resolved:finalRequire', finalRequireStarted, { contract: contractName });
 
   // Inject synthetic tx.locktime guard where tx.locktime is used without a protocol-enforcing time check
   if (mergedCompilerOptions.enforceLocktimeGuard
@@ -7402,9 +7408,13 @@ function compileResolvedAst(
   if (needsEarlyReturn) ast = ast.accept(new EarlyReturnTransformation()) as Ast;
 
   // Compile referenced contracts in dependency order
+  const referencedStarted = Date.now();
   const compiledBytecodes = ast.importedContracts.length === 0
     ? new Map<string, Uint8Array>()
     : compileReferencedContracts(ast, mergedCompilerOptions);
+  profileLog('resolved:referenced', referencedStarted, {
+    contract: contractName, imported: ast.importedContracts.length, compiled: compiledBytecodes.size,
+  });
 
   if (emitsEvent) refuseEmittingReturningStateHelpers(ast.contract);
 
@@ -9432,6 +9442,28 @@ const EXPRESSION_ALT_THIS = 16;
 const EXPRESSION_ALT_NULLARY = 17;
 const EXPRESSION_ALT_IDENTIFIER = 18;
 const EXPRESSION_ALT_LITERAL = 19;
+// yulBlock / yulStatement / yulExpression (`adaptivePredict(..., 265/266/277, ...)`).
+const YUL_BLOCK_LOOP_DECISION = 265;
+const YUL_BLOCK_LOOP_CONTINUE = 1;
+const YUL_BLOCK_LOOP_STOP = 2;
+const YUL_STATEMENT_DECISION = 266;
+const YUL_EXPRESSION_DECISION = 277;
+const YUL_STMT_NESTED_BLOCK = 1;
+const YUL_STMT_LET = 2;
+const YUL_STMT_ASSIGN = 3;
+const YUL_STMT_IF = 4;
+const YUL_STMT_SWITCH = 5;
+const YUL_STMT_FOR = 6;
+const YUL_STMT_FUNCTION = 7;
+const YUL_STMT_BREAK = 8;
+const YUL_STMT_CONTINUE = 9;
+const YUL_STMT_LEAVE = 10;
+const YUL_STMT_CALL = 11;
+const YUL_STMT_PATH = 12;
+const YUL_STMT_LITERAL = 13;
+const YUL_EXPR_CALL = 1;
+const YUL_EXPR_PATH = 2;
+const YUL_EXPR_LITERAL = 3;
 
 function skipBalanced(
   input: { LA(i: number): number }, start: number, open: number, close: number,
@@ -9539,11 +9571,20 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
   const postfixState = interp.atn.decisionToState[EXPRESSION_POSTFIX_LOOP_DECISION] as { ruleIndex?: number } | undefined;
   const postfixInnerState = interp.atn.decisionToState[EXPRESSION_POSTFIX_INNER_DECISION] as { ruleIndex?: number } | undefined;
   const statementState = interp.atn.decisionToState[STATEMENT_DECISION] as { ruleIndex?: number } | undefined;
+  const yulBlockState = interp.atn.decisionToState[YUL_BLOCK_LOOP_DECISION] as { ruleIndex?: number } | undefined;
+  const yulStatementState = interp.atn.decisionToState[YUL_STATEMENT_DECISION] as { ruleIndex?: number } | undefined;
+  const yulExpressionState = interp.atn.decisionToState[YUL_EXPRESSION_DECISION] as { ruleIndex?: number } | undefined;
   const prefixOk = prefixState !== undefined && parser.ruleNames[prefixState.ruleIndex ?? -1] === 'expression';
   const postfixOk = postfixState !== undefined && parser.ruleNames[postfixState.ruleIndex ?? -1] === 'expression';
   const postfixInnerOk = postfixInnerState !== undefined && parser.ruleNames[postfixInnerState.ruleIndex ?? -1] === 'expression';
   const statementOk = statementState !== undefined && parser.ruleNames[statementState.ruleIndex ?? -1] === 'statement';
-  if (!prefixOk && !postfixOk && !postfixInnerOk && !statementOk) return;
+  const yulBlockOk = yulBlockState !== undefined && parser.ruleNames[yulBlockState.ruleIndex ?? -1] === 'yulBlock';
+  const yulStatementOk = yulStatementState !== undefined
+    && parser.ruleNames[yulStatementState.ruleIndex ?? -1] === 'yulStatement';
+  const yulExpressionOk = yulExpressionState !== undefined
+    && parser.ruleNames[yulExpressionState.ruleIndex ?? -1] === 'yulExpression';
+  if (!prefixOk && !postfixOk && !postfixInnerOk && !statementOk
+    && !yulBlockOk && !yulStatementOk && !yulExpressionOk) return;
   const orig = interp.adaptivePredict.bind(interp);
   const rparen = SolidCashParser.T__57;
   const comma = SolidCashParser.T__4;
@@ -9566,6 +9607,11 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
   const assemblyTok = tokenTypeByLiteral("'assembly'");
   const continueTok = tokenTypeByLiteral("'continue'");
   const breakTok = tokenTypeByLiteral("'break'");
+  const letTok = tokenTypeByLiteral("'let'");
+  const colonEqTok = tokenTypeByLiteral("':='");
+  const leaveTok = tokenTypeByLiteral("'leave'");
+  const functionTok = tokenTypeByLiteral("'function'");
+  const addressTok = tokenTypeByLiteral("'address'");
   const deleteTok = tokenTypeByLiteral("'delete'");
   const assertTok = tokenTypeByLiteral("'assert'");
   const revertTok = tokenTypeByLiteral("'revert'");
@@ -9601,6 +9647,47 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
   const minusTok = tokenTypeByLiteral("'-'");
   const plusTok = tokenTypeByLiteral("'+'");
   const dotTok = tokenTypeByLiteral("'.'");
+  const isYulNameToken = (token: number): boolean =>
+    token === SolidCashParser.Identifier
+    || token === returnTok
+    || token === revertTok
+    || token === selfdestructTok
+    || token === addressTok
+    || token === SolidCashParser.BoundedBytes;
+  const isYulLiteralToken = (token: number): boolean =>
+    token === SolidCashParser.NumberLiteral
+    || token === SolidCashParser.HexLiteral
+    || token === SolidCashParser.HexStringLiteral
+    || token === SolidCashParser.StringLiteral
+    || token === SolidCashParser.BooleanLiteral;
+  const looksLikeYulAssignment = (input: { LA(i: number): number }): boolean => {
+    let i = 1;
+    const consumePath = (): boolean => {
+      if (!isYulNameToken(input.LA(i))) return false;
+      i += 1;
+      while (true) {
+        const token = input.LA(i);
+        if (token === lengthTok) {
+          i += 1;
+          continue;
+        }
+        if (token !== dotTok) return true;
+        i += 1;
+        const member = input.LA(i);
+        if (member === addressTok || isYulNameToken(member)) {
+          i += 1;
+          continue;
+        }
+        return false;
+      }
+    };
+    if (!consumePath()) return false;
+    while (input.LA(i) === comma) {
+      i += 1;
+      if (!consumePath()) return false;
+    }
+    return input.LA(i) === colonEqTok;
+  };
   interp.adaptivePredict = ((input, decision, ctx) => {
     if (prefixOk && decision === EXPRESSION_PREFIX_DECISION) {
       const alt = predictExpressionPrefix(input);
@@ -9775,6 +9862,40 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
       if (token === doTok) return STATEMENT_ALT_LOOP;
       if (token === whileTok) return STATEMENT_ALT_LOOP;
     }
+    if (yulBlockOk && decision === YUL_BLOCK_LOOP_DECISION) {
+      const token = input.LA(1);
+      if (token === rbrace || token === -1) return YUL_BLOCK_LOOP_STOP;
+      if (token === lbrace || token === letTok || token === ifTok || token === switchTok
+        || token === forTok || token === functionTok || token === breakTok || token === continueTok
+        || token === leaveTok || isYulNameToken(token) || isYulLiteralToken(token)) {
+        return YUL_BLOCK_LOOP_CONTINUE;
+      }
+    }
+    if (yulStatementOk && decision === YUL_STATEMENT_DECISION) {
+      const token = input.LA(1);
+      if (token === lbrace) return YUL_STMT_NESTED_BLOCK;
+      if (token === letTok) return YUL_STMT_LET;
+      if (token === ifTok) return YUL_STMT_IF;
+      if (token === switchTok) return YUL_STMT_SWITCH;
+      if (token === forTok) return YUL_STMT_FOR;
+      if (token === functionTok) return YUL_STMT_FUNCTION;
+      if (token === breakTok) return YUL_STMT_BREAK;
+      if (token === continueTok) return YUL_STMT_CONTINUE;
+      if (token === leaveTok) return YUL_STMT_LEAVE;
+      if (isYulLiteralToken(token)) return YUL_STMT_LITERAL;
+      if (isYulNameToken(token)) {
+        if (looksLikeYulAssignment(input)) return YUL_STMT_ASSIGN;
+        if (input.LA(2) === lparen) return YUL_STMT_CALL;
+        return YUL_STMT_PATH;
+      }
+    }
+    if (yulExpressionOk && decision === YUL_EXPRESSION_DECISION) {
+      const token = input.LA(1);
+      if (isYulLiteralToken(token)) return YUL_EXPR_LITERAL;
+      if (isYulNameToken(token)) {
+        return input.LA(2) === lparen ? YUL_EXPR_CALL : YUL_EXPR_PATH;
+      }
+    }
     return orig(input, decision, ctx);
   }) as typeof interp.adaptivePredict;
 }
@@ -9912,6 +10033,7 @@ export function parseCode(
     // Native SolidCash and compiler-generated helpers still take the SLL fast path.
     const trySll = !solidityImportCompat;
     let parseTree: ReturnType<SolidCashParser['sourceFile']>;
+    const antlrStarted = compilerProfileEnabled() ? Date.now() : 0;
     if (trySll) {
       parser._interp.predictionMode = PredictionMode.SLL;
       parser._errHandler = new BailErrorStrategy();
@@ -9942,10 +10064,22 @@ export function parseCode(
       llListener.throwFirstError();
     }
 
+    const antlrMs = compilerProfileEnabled() ? Date.now() - antlrStarted : 0;
     // AST building
-    return new AstBuilder(
+    const astStarted = compilerProfileEnabled() ? Date.now() : 0;
+    const built = new AstBuilder(
       parseTree, solidityImportCompat, chunkedArrays, code, importedFileId,
     ).build() as Ast;
+    if (compilerProfileEnabled()) {
+      profileLog('parseCode:file', parseStarted, {
+        file: importedFileId ?? 'root',
+        bytes: code.length,
+        antlrMs,
+        astBuilderMs: Date.now() - astStarted,
+        sllFailed,
+      });
+    }
+    return built;
   });
   if (compilerProfileEnabled()) {
     const ms = Date.now() - parseStarted;

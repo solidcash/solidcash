@@ -4359,7 +4359,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Window 8 cannot seed a leftover 5–7 opcode span, even when that span repeats after the longer matches
     // have become OP_INVOKE barriers. A second, narrower pass on the rewritten bodies shares those leftovers
     // without reopening the already-claimed long spans. Speed-hint only: production message-bus stays at 12.
-    if (speedHintOutline && result !== undefined && result.functions.length > 0) {
+    // Marketplace owned-only: leftover window-5 saved ~5KB in ~500ms after window-8 already saved ~86KB.
+    // Skip that pass once the first round did the heavy sharing (pin 175546 -> 180748).
+    const skipSpeedHintLeftover = speedHintOutline && (result?.savedBytes ?? 0) >= 40_000;
+    if (speedHintOutline && !skipSpeedHintLeftover && result !== undefined && result.functions.length > 0) {
       const leftoverStart = Date.now();
       // First-pass outlining walks from -12 into three-byte pushes. Unused two-byte slots (typically
       // never-invoked entry-point ids in 17..127) are still free; spend them on leftover helpers so the

@@ -3188,12 +3188,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const invoked = this.reachableInvokedFunctionIds(node);
     const cheapAdmission = this.compilerOptions.__cheapAdmissionCodegen === true;
     const keepAdmissionBody = (fn: FunctionDefinitionNode): boolean => {
-      if (fn.messageBusRoute === true) return true;
-      if (fn === node.constructorDef || fn === node.fallbackDef || fn === node.receiveDef) return true;
+      // The throwaway pass only needs the atomic verifier closure so the binder can offload it.
+      // Compiling the unrolled `__message_bus1` route here duplicated most of the binder's codegen.
+      if (fn.messageBusRoute === true) return false;
+      if (fn === node.constructorDef || fn === node.fallbackDef || fn === node.receiveDef) return false;
       const { name } = fn;
       if (!name.startsWith('__message_bus')) return false;
-      // User-function clones are the expensive bodies. Skip them on the throwaway admission pass; keep the
-      // route, verifier, and compiler-owned parse/settle helpers.
+      // User-function clones are the expensive bodies. Keep the verifier and compiler-owned parse/settle
+      // helpers; skip graph/entry/handler clones and the unrolled route.
       return !name.startsWith('__message_bus_graph_')
         && !name.startsWith('__message_bus_entry_')
         && !name.startsWith('__message_bus_handler_')
@@ -3248,9 +3250,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const outlineLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     if (dispatchFunctions.length === 1 && !hasFallback && !hasReceive && !soleFnNeedsSelectorDispatch) {
       this.outlineSharedFunctionBodies(outlineLoc);
-      const visited = this.visitList(dispatchFunctions) as FunctionDefinitionNode[];
-      if (node.constructorDef) {
-        node.constructorDef = visited[visited.length - 1];
+      if (cheapAdmission && !keepAdmissionBody(dispatchFunctions[0])) {
+        // Throwaway admission omitted the only entry body; helper defines already emitted.
+      } else {
+        const visited = this.visitList(dispatchFunctions) as FunctionDefinitionNode[];
+        if (node.constructorDef) {
+          node.constructorDef = visited[visited.length - 1];
+        }
       }
     } else {
       // OP_DEFINE each entry-point function with its 4-byte hash selector, then dispatch
@@ -3259,7 +3265,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitEntryPointFunctionDefine(f, node.parameters);
       });
       this.outlineSharedFunctionBodies(outlineLoc);
-      this.emitDispatch(node, allFunctions, hasFallback, hasReceive);
+      // Cheap admission does not ship this script; skip the selector dispatcher once every user/route
+      // entry body has been omitted. Helper OP_DEFINEs above are enough to extract verifierProgram.
+      if (!cheapAdmission) this.emitDispatch(node, allFunctions, hasFallback, hasReceive);
     }
   }
 

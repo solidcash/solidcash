@@ -6528,9 +6528,15 @@ function compileResolvedAst(
   if (needsExternalCallLowering) ast = ast.accept(new HoistChainedContractCalls()) as Ast;
 
   // Lower eligible single-entry mapping helpers to value-threaded OP_INVOKE handlers before the legacy
-  // entry-reading inline passes see them.
-  if (needsDynamicStateJournal) ast = ast.accept(new LowerDynamicStateJournalHelpers()) as Ast;
-  if (needsCollectionJournal) ast = ast.accept(new LowerCollectionJournalHelpers()) as Ast;
+  // entry-reading inline passes see them. Cheap admission does not emit user/clone bodies or the unrolled
+  // route, so journaling them is throwaway work; the binder pass still runs the full journal.
+  const cheapAdmissionCodegen = mergedCompilerOptions.__cheapAdmissionCodegen === true;
+  if (needsDynamicStateJournal && !cheapAdmissionCodegen) {
+    ast = ast.accept(new LowerDynamicStateJournalHelpers()) as Ast;
+  }
+  if (needsCollectionJournal && !cheapAdmissionCodegen) {
+    ast = ast.accept(new LowerCollectionJournalHelpers()) as Ast;
+  }
 
   // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
   // body, capture the return in a temp). Same block-layout reason as the void case below; run first so a void

@@ -220,6 +220,14 @@ function validateExpandedSelfdestructs(contract: ContractNode): void {
 // `enabled` is the user-facing `messageBus: true`: skip graph-edge narrowing but keep the direct-only fallback.
 // `required` is the internal verifier-program route, where a composable artifact is mandatory and absence throws.
 type MessageBusMode = 'disabled' | 'auto' | 'enabled' | 'required';
+type AdmissionWinner = {
+  direct?: boolean;
+  admitExternalHandlers: boolean;
+  normalizeBareEntries: boolean;
+  relaxResultRouteEffects: boolean;
+  admitMixedScalarHandlers: boolean;
+  admitBareForwardingHandlers: boolean;
+};
 type InternalCompilerOptions = CompilerOptions & {
   __messageBusExplicitlyDisabled?: boolean;
   __messageBusMode?: MessageBusMode;
@@ -235,6 +243,11 @@ type InternalCompilerOptions = CompilerOptions & {
   __synthesizeBoundRoutePlaceholder?: boolean;
   /** Inlined verifier source for `__synthesizeBoundRoutePlaceholder`; compiled as a detached mini-contract. */
   __singlePassVerifierSource?: string;
+  /**
+   * Shared with the shallow-copied admission options. Records the rung that produced the returned artifact so
+   * a missing verifierProgram does not replay the whole search as full compiles.
+   */
+  __admissionWinnerBox?: { winner?: AdmissionWinner };
 };
 
 interface OptionalLoweringFeatures {
@@ -598,6 +611,7 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   delete keyOptions.__pristineAstBox;
   delete keyOptions.__synthesizeBoundRoutePlaceholder;
   delete keyOptions.__singlePassVerifierSource;
+  delete keyOptions.__admissionWinnerBox;
   return keyOptions;
 }
 
@@ -935,6 +949,16 @@ function compileWithExternalAdmissionFallback(
     if (messageBusMode === 'required' && !artifact.messageBus) {
       throw new Error('messageBus: required route generation did not produce a composable artifact');
     }
+    const winnerBox = (mergedCompilerOptions as InternalCompilerOptions).__admissionWinnerBox;
+    if (winnerBox) {
+      winnerBox.winner = {
+        admitExternalHandlers,
+        normalizeBareEntries,
+        relaxResultRouteEffects,
+        admitMixedScalarHandlers,
+        admitBareForwardingHandlers,
+      };
+    }
     return artifact;
   };
   if (!mergedCompilerOptions.messageBus) return compileOnce(true);
@@ -996,9 +1020,11 @@ function compileWithExternalAdmissionFallback(
       [false, false, false, true],
       [false, false, false, false],
     ];
+    let skipRelaxedResultRungs = false;
     for (const [
       normalizeBareEntries, relaxResultRouteEffects, admitMixedScalarHandlers, admitBareForwardingHandlers,
     ] of publicRungs) {
+      if (skipRelaxedResultRungs && relaxResultRouteEffects) continue;
       try {
         return compileOnce(
           false, normalizeBareEntries, relaxResultRouteEffects,
@@ -1007,6 +1033,13 @@ function compileWithExternalAdmissionFallback(
       } catch (error) {
         firstError ??= error;
         latestError = error;
+        // MarketplaceDataV1: every relaxResultRouteEffects=true public rung dies on the same generated
+        // journal-key gap. Later true-rungs cannot admit a key the earlier ones refused; skip to the
+        // false-rungs that actually compile.
+        const message = error instanceof Error ? error.message : String(error);
+        if (relaxResultRouteEffects && message.includes('requires a stable key expression')) {
+          skipRelaxedResultRungs = true;
+        }
       }
     }
     // The speed hint changes only which speculative route candidates are attempted. It must retain the normal
@@ -1015,6 +1048,18 @@ function compileWithExternalAdmissionFallback(
       throw firstError instanceof Error ? firstError : new Error(String(firstError ?? latestError));
     }
     const directOptions = { ...mergedCompilerOptions, messageBus: false };
+    delete (directOptions as InternalCompilerOptions).__cheapAdmissionCodegen;
+    const winnerBox = (mergedCompilerOptions as InternalCompilerOptions).__admissionWinnerBox;
+    if (winnerBox) {
+      winnerBox.winner = {
+        direct: true,
+        admitExternalHandlers: true,
+        normalizeBareEntries: true,
+        relaxResultRouteEffects: true,
+        admitMixedScalarHandlers: true,
+        admitBareForwardingHandlers: true,
+      };
+    }
     return compileResolvedAst(
       takeAst(),
       code, directOptions, false, true,
@@ -1138,6 +1183,18 @@ function compileWithExternalAdmissionFallback(
   // attempt throws its original direct-mode diagnostic (rather than an incidental failure from a generated message-bus batch
   // clone); if it succeeds, the resolved compiler options truthfully publish the fallback as direct-only.
   const directOptions = { ...mergedCompilerOptions, messageBus: false };
+  delete (directOptions as InternalCompilerOptions).__cheapAdmissionCodegen;
+  const winnerBox = (mergedCompilerOptions as InternalCompilerOptions).__admissionWinnerBox;
+  if (winnerBox) {
+    winnerBox.winner = {
+      direct: true,
+      admitExternalHandlers: true,
+      normalizeBareEntries: true,
+      relaxResultRouteEffects: true,
+      admitMixedScalarHandlers: true,
+      admitBareForwardingHandlers: true,
+    };
+  }
   try {
     return compileResolvedAst(
       takeAst(),
@@ -1187,6 +1244,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   if (parsedAst !== undefined) mergedCompilerOptions.__parsedAst = parsedAst;
   const pristineAstBox = { ast: undefined as Ast | undefined };
   mergedCompilerOptions.__pristineAstBox = pristineAstBox;
+  const admissionWinnerBox: { winner?: AdmissionWinner } = {};
+  mergedCompilerOptions.__admissionWinnerBox = admissionWinnerBox;
   // The admission compile is discarded once the verifier-binder pass runs. Skip ordinary entry-point bodies
   // there: eligibility is decided in synthesis, and the verifier program only needs the route/verifier closure.
   if (mergedCompilerOptions.optimizeForCompilationSpeed
@@ -1203,12 +1262,36 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     throw new Error('messageBus: required route generation did not produce a composable artifact');
   }
   if (mergedCompilerOptions.__cheapAdmissionCodegen && !artifact.messageBus?.verifierProgram) {
-    // Cheap admission produced no binder continuation. Recompile fully so ABI function bodies are present.
-    const fullOptions = { ...mergedCompilerOptions };
+    // Cheap (or search) admission produced a shippable artifact without a verifier continuation. Recompile
+    // THAT winning shape once. Replaying the whole admission ladder as full compiles is how MarketplaceDataV1
+    // spent ~8s retrying rungs the first pass already refused.
+    const fullOptions: InternalCompilerOptions = { ...mergedCompilerOptions };
     delete fullOptions.__cheapAdmissionCodegen;
-    artifact = compileWithExternalAdmissionFallback(
-      code, fullOptions, errorListener, primaryContractName,
-    );
+    delete fullOptions.__admissionWinnerBox;
+    const winner = admissionWinnerBox.winner;
+    const fullAst = pristineAstBox.ast !== undefined
+      ? cloneAst(pristineAstBox.ast, 'full-recompile')
+      : parseAndResolve(code, fullOptions, errorListener, primaryContractName);
+    const fullStarted = Date.now();
+    if (winner?.direct || fullOptions.messageBus === false) {
+      artifact = compileResolvedAst(fullAst, code, { ...fullOptions, messageBus: false }, false, true);
+    } else if (winner) {
+      fullOptions.__synthesizeBoundRoutePlaceholder = true;
+      artifact = compileResolvedAst(
+        fullAst, code, fullOptions, false,
+        winner.admitExternalHandlers, winner.normalizeBareEntries, winner.relaxResultRouteEffects,
+        winner.admitMixedScalarHandlers, winner.admitBareForwardingHandlers,
+      );
+    } else {
+      artifact = compileWithExternalAdmissionFallback(
+        code, fullOptions, errorListener, primaryContractName,
+      );
+    }
+    profileLog('full-recompile', fullStarted, {
+      primary: primaryContractName,
+      direct: winner?.direct === true,
+      hasVerifier: !!artifact.messageBus?.verifierProgram,
+    });
   }
   const alreadyVerifierBound = artifact.messageBus?.route?.inputs
     ?.some((input) => input.name === '__internal__activeVerifierIndex') === true;

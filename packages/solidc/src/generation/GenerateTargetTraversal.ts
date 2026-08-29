@@ -2193,8 +2193,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const FRAME = GenerateTargetTraversalWithLocation.PUSHDATA_FRAME_SUBROUTINE_ID;
     const INTENC = GenerateTargetTraversalWithLocation.INT_ENCODE_SUBROUTINE_ID;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    const probeStarted = Date.now();
     const probe = this.subroutineUseProbe(node);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_PROFILE === '1'
+      && !this.isSubroutineUseProbe) {
+      console.error('[solidc-profile]', JSON.stringify({
+        label: 'codegen:probe',
+        ms: Date.now() - probeStarted,
+        contract: node.name,
+      }));
+    }
     const count = (id: bigint): number => probe?.get(id) ?? 0;
+    const helpersStarted = Date.now();
 
     const emitFrame = (t: GenerateTargetTraversalWithLocation): void => t.emitStandardPushdataFrame(loc);
     const emitIntEncode = (t: GenerateTargetTraversalWithLocation): void => {
@@ -2460,7 +2470,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     this.subroutineUseCount = new Map();
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_PROFILE === '1'
+      && !this.isSubroutineUseProbe) {
+      console.error('[solidc-profile]', JSON.stringify({
+        label: 'codegen:helpers',
+        ms: Date.now() - helpersStarted,
+        contract: node.name,
+      }));
+    }
+    const emitStarted = Date.now();
     this.emitFunctionDefinesAndDispatch(node);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_PROFILE === '1'
+      && !this.isSubroutineUseProbe) {
+      console.error('[solidc-profile]', JSON.stringify({
+        label: 'codegen:emitBodies',
+        ms: Date.now() - emitStarted,
+        contract: node.name,
+      }));
+    }
 
     // A captured helper may itself invoke an earlier helper. Keep every transitive dependency of a helper reached
     // by the real bodies; otherwise dead-DEFINE elimination could remove code referenced only from another DEFINE.
@@ -4114,9 +4141,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let subTraversal = compileBody();
     // X151. Recompile until every emitted chunk-read basis agrees with the footprint the body ended up
     // publishing. One extra pass is enough in principle; the bound is a guard, and `verifyDynamicReadBases`
-    // refuses if it is ever hit.
-    for (let attempt = 0; attempt < 2 && this.dynamicReadBasisUnstable(subTraversal, func); attempt += 1) {
-      subTraversal = compileBody();
+    // refuses if it is ever hit. The usage probe only counts helper sites; a second visit would re-walk
+    // Marketplace-scale entry bodies for a throwaway traversal.
+    if (!this.isSubroutineUseProbe) {
+      for (let attempt = 0; attempt < 2 && this.dynamicReadBasisUnstable(subTraversal, func); attempt += 1) {
+        subTraversal = compileBody();
+      }
     }
     this.currentContractRequiresTraceStableBodies ||= subTraversal.currentContractRequiresTraceStableBodies;
 

@@ -3223,6 +3223,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (fn === node.constructorDef || fn === node.fallbackDef || fn === node.receiveDef) return false;
       const { name } = fn;
       if (!name.startsWith('__message_bus')) return false;
+      // The inlined sidecar is the verifier program. Skip the bound compact wrapper so its helpers
+      // cannot pollute the sidecar closure or steal compact-helper ids.
+      if (name === '__message_bus_verify_atomic'
+        && node.functions.some((candidate) => candidate.name === '__message_bus_verify_atomic_program')) {
+        return false;
+      }
       // User-function clones are the expensive bodies. Keep the verifier and compiler-owned parse/settle
       // helpers; skip graph/entry/handler clones and the unrolled route.
       return !name.startsWith('__message_bus_graph_')
@@ -3703,7 +3709,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitFunctionDefine(func: FunctionDefinitionNode, emitDefinition = true): void {
     const locationData = { location: func.location, positionHint: PositionHint.START };
 
-    if (func.name === '__message_bus_verify_atomic'
+    if ((func.name === '__message_bus_verify_atomic'
+      || func.name === '__message_bus_verify_atomic_program')
       && (this.outlinedComputeBlockBaseFunctionIds.has(func.functionId!)
         || this.outlinedDynamicReadThreadedFunctionIds.has(func.functionId!)
         || this.constructorCaptures(func).length > 0)) {
@@ -3816,7 +3823,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Unreachable functions are still compiled above: code-generation performs a number of important
     // fail-closed validations which must not disappear merely because a helper is dead. Their bodies do not,
     // however, need to occupy consensus-limited locking bytecode.
-    if (func.name === '__message_bus_verify_atomic') {
+    if (func.name === '__message_bus_verify_atomic'
+      || func.name === '__message_bus_verify_atomic_program') {
       this.detachedVerifierBytecodes.set(func.functionId!, scriptToBytecode(bodyScript));
     }
     if (!emitDefinition) return;

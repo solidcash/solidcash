@@ -227,6 +227,14 @@ type InternalCompilerOptions = CompilerOptions & {
   __parsedAst?: Ast;
   /** Shared box so the shallow-copied admission options and the binder see the same pre-lowering snapshot. */
   __pristineAstBox?: { ast?: Ast };
+  /**
+   * Speed-hint public-only admission: synthesize the bound route with a placeholder lock and keep the
+   * inlined verifier source so one lowering can compile the sidecar, patch the lock, and full-codegen
+   * the same AST.
+   */
+  __synthesizeBoundRoutePlaceholder?: boolean;
+  /** Inlined verifier source for `__synthesizeBoundRoutePlaceholder`; compiled as a detached mini-contract. */
+  __singlePassVerifierSource?: string;
 };
 
 interface OptionalLoweringFeatures {
@@ -588,6 +596,8 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   delete keyOptions.__messageBusRouteParseOracle;
   delete keyOptions.__parsedAst;
   delete keyOptions.__pristineAstBox;
+  delete keyOptions.__synthesizeBoundRoutePlaceholder;
+  delete keyOptions.__singlePassVerifierSource;
   return keyOptions;
 }
 
@@ -892,9 +902,22 @@ function compileWithExternalAdmissionFallback(
     const ast = takeAst();
     const onceStarted = Date.now();
     let artifact: Artifact;
+    // Widest/external rungs stay cheap-stubbed throwaways. The public-only success path lowers the bound
+    // route once, cheap-emits the inlined verifier sidecar, patches the lock, and full-emits the same AST.
+    let onceOptions: InternalCompilerOptions = mergedCompilerOptions as InternalCompilerOptions;
+    if (
+      !admitExternalHandlers
+      && mergedCompilerOptions.optimizeForCompilationSpeed
+      && mergedCompilerOptions.messageBus
+      && !(mergedCompilerOptions as InternalCompilerOptions).__messageBusVerifierProgram
+    ) {
+      onceOptions = { ...onceOptions };
+      delete onceOptions.__cheapAdmissionCodegen;
+      onceOptions.__synthesizeBoundRoutePlaceholder = true;
+    }
     try {
       artifact = compileResolvedAst(
-        ast, code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+        ast, code, onceOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
         admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
       );
     } catch (error) {
@@ -1187,7 +1210,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       code, fullOptions, errorListener, primaryContractName,
     );
   }
+  const alreadyVerifierBound = artifact.messageBus?.route?.inputs
+    ?.some((input) => input.name === '__internal__activeVerifierIndex') === true;
   if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1'
+    && !alreadyVerifierBound
     && !artifactCompilerOptions.__messageBusVerifierProgram && artifact.messageBus?.verifierProgram) {
     const verifierProgram = artifact.messageBus.verifierProgram;
     // The speculative pass may have attributed a generated-route gap to one external handler and retained its
@@ -1478,6 +1504,169 @@ function setPrimaryContract(ast: Ast, name: string): void {
 }
 
 const MESSAGE_BUS_SELECTOR_HEX = '53434231';
+const MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM = '__message_bus_verify_atomic_program';
+/** Artifact-fixed P2SH32 shape (`OP_HASH256 <32> OP_EQUAL`); content is patched after cheap verifier emit. */
+const MESSAGE_BUS_PLACEHOLDER_LOCK = Uint8Array.from([
+  0xaa, 0x20, ...Array.from({ length: 32 }, () => 0xb1), 0x87,
+]);
+const MESSAGE_BUS_PLACEHOLDER_LOCK_HEX = binToHex(MESSAGE_BUS_PLACEHOLDER_LOCK);
+
+type MessageBusVerifierProgram = NonNullable<NonNullable<Artifact['messageBus']>['verifierProgram']>;
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) if (left[i] !== right[i]) return false;
+  return true;
+}
+
+function bindPlaceholderVerifierLock(
+  ast: Ast, verifierProgram: MessageBusVerifierProgram, compilerOptions: CompilerOptions,
+): void {
+  const lock = messageBusVerifierLockingBytecode(verifierProgram, compilerOptions.maximumInputBytes);
+  if (lock.length !== MESSAGE_BUS_PLACEHOLDER_LOCK.length) {
+    throw new Error(
+      `single-pass bind: offloaded lock is ${lock.length} bytes, placeholder is `
+      + `${MESSAGE_BUS_PLACEHOLDER_LOCK.length}`,
+    );
+  }
+  const verify = ast.contract.functions.find((fn) => fn.name === '__message_bus_verify_atomic');
+  if (!verify?.body) throw new Error('single-pass bind: missing __message_bus_verify_atomic');
+  let patched = 0;
+  walkInvocationAst(verify.body, (node) => {
+    if (!(node instanceof HexLiteralNode) || !bytesEqual(node.value, MESSAGE_BUS_PLACEHOLDER_LOCK)) return;
+    node.value = lock;
+    patched += 1;
+  });
+  if (patched !== 1) {
+    throw new Error(`single-pass bind: expected 1 placeholder lock literal, found ${patched}`);
+  }
+}
+
+function extractMessageBusVerifierProgram(
+  ast: Ast,
+  traversal: GenerateTargetTraversal,
+  script: ReturnType<typeof bytecodeToScript>,
+): MessageBusVerifierProgram | undefined {
+  const verifierFunction = ast.contract.functions.find((fn) => fn.name === MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM)
+    ?? ast.contract.functions.find((fn) => fn.name === '__message_bus_verify_atomic');
+  const functionNameById = new Map(ast.contract.functions
+    .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn.name]));
+  const verifierBytecodes = new Map([
+    ...traversal.detachedVerifierBytecodes,
+    ...traversal.invokedFunctionBytecodes,
+    ...traversal.outlinedSubroutineBytecodes,
+  ]);
+  const collectDefinitions = (bodyScript: ReturnType<typeof bytecodeToScript>): void => {
+    for (let i = 2; i < bodyScript.length; i++) {
+      if (bodyScript[i] !== Op.OP_DEFINE) continue;
+      const body = bodyScript[i - 2];
+      const encodedId = bodyScript[i - 1];
+      if (!(body instanceof Uint8Array)) continue;
+      let id: number | undefined;
+      if (encodedId instanceof Uint8Array) {
+        try {
+          const decoded = decodeInt(encodedId);
+          if (decoded >= BigInt(Number.MIN_SAFE_INTEGER)
+            && decoded <= BigInt(Number.MAX_SAFE_INTEGER)) id = Number(decoded);
+        } catch {
+          // OP_DEFINE can occur as ordinary executable data; only minimally encoded numeric predecessors
+          // identify compiler-emitted function definitions.
+        }
+      } else if (encodedId === Op.OP_0) id = 0;
+      else if (encodedId >= Op.OP_1 && encodedId <= Op.OP_16) id = encodedId - Op.OP_1 + 1;
+      if (id !== undefined) verifierBytecodes.set(id, body);
+    }
+  };
+  collectDefinitions(script);
+  const messageBusEntryBody = traversal.entryPointBytecodes.get(MESSAGE_BUS_SELECTOR_HEX);
+  if (messageBusEntryBody) collectDefinitions(bytecodeToScript(messageBusEntryBody));
+  const decodeFunctionId = (encoded: ReturnType<typeof bytecodeToScript>[number]): number | undefined => {
+    if (encoded instanceof Uint8Array) {
+      try {
+        const decoded = decodeInt(encoded);
+        if (decoded >= BigInt(Number.MIN_SAFE_INTEGER) && decoded <= BigInt(Number.MAX_SAFE_INTEGER)) {
+          return Number(decoded);
+        }
+      } catch { return undefined; }
+    } else if (encoded === Op.OP_0) return 0;
+    else if (encoded >= Op.OP_1 && encoded <= Op.OP_16) return encoded - Op.OP_1 + 1;
+    return undefined;
+  };
+  const isHelperId = (id: number): boolean => id <= -12
+    || traversal.allocatedHelperIds.has(BigInt(id))
+    || id === verifierFunction?.functionId;
+  const requiredVerifierIds = new Set([...traversal.invokedFunctionBytecodes.keys()]
+    .filter((id) => isHelperId(id) && verifierBytecodes.has(id)));
+  if (verifierFunction?.functionId !== undefined && verifierBytecodes.has(verifierFunction.functionId)) {
+    requiredVerifierIds.add(verifierFunction.functionId);
+  }
+  const pendingVerifierIds = [...requiredVerifierIds];
+  while (pendingVerifierIds.length > 0) {
+    const id = pendingVerifierIds.pop()!;
+    const bytecode = verifierBytecodes.get(id);
+    if (!bytecode) continue;
+    const bodyScript = bytecodeToScript(bytecode);
+    for (let i = 1; i < bodyScript.length; i++) {
+      if (bodyScript[i] !== Op.OP_INVOKE) continue;
+      const invokedId = decodeFunctionId(bodyScript[i - 1]);
+      if (invokedId === undefined || requiredVerifierIds.has(invokedId) || !verifierBytecodes.has(invokedId)) continue;
+      requiredVerifierIds.add(invokedId);
+      pendingVerifierIds.push(invokedId);
+    }
+  }
+  if (verifierFunction?.functionId === undefined || !verifierBytecodes.has(verifierFunction.functionId)) {
+    return undefined;
+  }
+  const verifierFunctionIds = [...requiredVerifierIds].sort((a, b) => a - b);
+  return {
+    verifyFunctionId: verifierFunction.functionId,
+    inputCount: verifierFunction.parameters.length,
+    inputs: verifierFunction.parameters.map((parameter) => ({
+      name: parameter.name,
+      type: parameter.type.toString().replace(/address payable/g, 'address'),
+    })),
+    functions: verifierFunctionIds.map((id) => ({
+      id,
+      name: functionNameById.get(id) ?? `__internal_${id}`,
+      bytecode: binToHex(verifierBytecodes.get(id)!),
+    })),
+  };
+}
+
+function compileDetachedMessageBusVerifier(
+  source: string, compilerOptions: CompilerOptions,
+): MessageBusVerifierProgram {
+  const started = Date.now();
+  const chunkedArrays = compilerOptions.chunkedArrays ?? true;
+  let ast = withGeneratedSource(
+    'the detached message-bus verifier program generated by the compiler',
+    () => parseCode(source, undefined, false, chunkedArrays),
+  );
+  ast = ast.accept(new ValidateDataLocations(false)) as Ast;
+  ast = ast.accept(new SymbolTableTraversal({ ...compilerOptions, messageBus: false })) as Ast;
+  ast = ast.accept(new TypeCheckTraversal(true, false, compilerOptions.rootFileId)) as Ast;
+  ast = ast.accept(new EnsureFinalRequireTraversal(false, true)) as Ast;
+  const traversal = new GenerateTargetTraversal({
+    ...compilerOptions,
+    messageBus: false,
+    __cheapAdmissionCodegen: false,
+    optimizeForCompilationSpeed: true,
+  });
+  ast = ast.accept(traversal) as Ast;
+  const optimisationResult = optimiseBytecode(
+    traversal.output,
+    traversal.getLocationDataForOptimisation(),
+    traversal.consoleLogs,
+    traversal.requires,
+    ast.contract.parameters.length,
+  );
+  const program = extractMessageBusVerifierProgram(ast, traversal, optimisationResult.script);
+  if (!program) {
+    throw new Error('single-pass bind: detached verifier emit did not produce verifierProgram');
+  }
+  profileLog('singlePass:verifier', started, { functions: program.functions.length });
+  return program;
+}
 
 export function assertNoReservedMessageBusSelector(
   functions: readonly Pick<FunctionDefinitionNode, 'name' | 'functionSelector' | 'location'>[],
@@ -4442,7 +4631,10 @@ function synthesizeMessageBusRoute(
   const localCallerRouteParameters = !graphExecutionContext
     && eligible.some((fn) => logicalMsgSenderHandlers.has(fn))
     ? ['bytes32 __internal__msgSenderCategory'] : [];
-  const verifierBinderRouteParameters = compilerOptions.__messageBusVerifierProgram
+  const offloadedVerifier = compilerOptions.__messageBusVerifierProgram;
+  const useBoundRoute = !!offloadedVerifier
+    || (compilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true;
+  const verifierBinderRouteParameters = useBoundRoute
     ? ['bigint __internal__activeVerifierIndex'] : [];
   const routeParameters = [
     'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
@@ -4517,11 +4709,11 @@ function synthesizeMessageBusRoute(
     : '';
   const graphPrologue = '';
   const graphCallManifestLoader = '';
-  const offloadedVerifier = compilerOptions.__messageBusVerifierProgram;
   const offloadedVerifierLock = offloadedVerifier
     ? binToHex(messageBusVerifierLockingBytecode(
       offloadedVerifier, compilerOptions.maximumInputBytes,
-    )) : '';
+    ))
+    : useBoundRoute ? MESSAGE_BUS_PLACEHOLDER_LOCK_HEX : '';
   const compactAtomicBinder = `
         bigint activeMasterOutput = -1;
         for (bigint masterOutput = 0; masterOutput < tx.outputs.length; masterOutput = masterOutput + 1) {
@@ -4559,25 +4751,7 @@ function synthesizeMessageBusRoute(
           toPaddedBytes(suppliedFixedSize, 2), toPaddedBytes(suppliedBlockSize, 2), sha256(suppliedEmissions),
           sha256(suppliedCallers), toPaddedBytes(suppliedSettlementBoundary, 2),
           sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
-  const atomicCallManifestLoader = `
-      function __message_bus_verify_atomic(
-        bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
-        ${!offloadedVerifier ? '' : ', bigint __internal__activeVerifierIndex'}
-        ${!graphExecutionContext ? '' : `,
-        bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
-        bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
-      ) internal view returns (bytes) {
-        bytes unlocking = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
-        require(unlocking.slice(0, 1) == hex"4d");
-        bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(1, 3), hex"00"));
-        bytes messageEnvelope = unlocking.slice(3, 3 + messageEnvelopeLength);
-        bytes callManifest = messageEnvelope.slice(8, messageEnvelope.length);
-        ${!offloadedVerifier ? '' : `bytes bindingDigest = sha256(bytes.concat(
-          sha256(callManifest), toPaddedBytes(activeInputIndex, 2),
-          toPaddedBytes(expectedLocalRows, 2), sha256(localBatch)
-          ${bindingDigestGraphValues}
-        ));`}
-        ${offloadedVerifier ? compactAtomicBinder : `
+  const inlinedAtomicVerifierBody = `
         require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");
         require(int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length);
         bigint participantCount = int(bytes.concat(callManifest.slice(12, 13), hex"00"));
@@ -5170,7 +5344,26 @@ function synthesizeMessageBusRoute(
           }
           require(tx.outputs[activeReturnOutput].nftCommitment == expectedCommitment);
         }
-        `}
+  `;
+  const atomicCallManifestLoader = `
+      function __message_bus_verify_atomic(
+        bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
+        ${!useBoundRoute ? '' : ', bigint __internal__activeVerifierIndex'}
+        ${!graphExecutionContext ? '' : `,
+        bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
+        bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
+      ) internal view returns (bytes) {
+        bytes unlocking = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
+        require(unlocking.slice(0, 1) == hex"4d");
+        bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(1, 3), hex"00"));
+        bytes messageEnvelope = unlocking.slice(3, 3 + messageEnvelopeLength);
+        bytes callManifest = messageEnvelope.slice(8, messageEnvelope.length);
+        ${!useBoundRoute ? '' : `bytes bindingDigest = sha256(bytes.concat(
+          sha256(callManifest), toPaddedBytes(activeInputIndex, 2),
+          toPaddedBytes(expectedLocalRows, 2), sha256(localBatch)
+          ${bindingDigestGraphValues}
+        ));`}
+        ${useBoundRoute ? compactAtomicBinder : inlinedAtomicVerifierBody}
         return bytes.concat(
           bindingDigest,
           sha256(bytes.concat(hex"4c334331", toPaddedBytes(callManifest.length, 4), callManifest))
@@ -5185,11 +5378,11 @@ function synthesizeMessageBusRoute(
   // admission verifier.
   const localAuthenticatedRoute = !graphExecutionContext && localCallerRouteParameters.length > 0;
   const atomicPrologue = localAuthenticatedRoute ? '' : `
-        if (${offloadedVerifier && !graphExecutionContext ? '__internal__activeVerifierIndex >= 0 && ' : ''}
+        if (${useBoundRoute && !graphExecutionContext ? '__internal__activeVerifierIndex >= 0 && ' : ''}
           tx.inputs[${atomicParticipantInput}].outpointIndex != 4294967295) {
           bytes __internal__atomicBindingDigest = __message_bus_verify_atomic(
             ${atomicParticipantInput}, rowCount, batchBlob
-            ${!offloadedVerifier ? '' : ', __internal__activeVerifierIndex'}
+            ${!useBoundRoute ? '' : ', __internal__activeVerifierIndex'}
             ${!graphExecutionContext ? '' : `,
             __internal__graphFixedSize, __internal__graphBlockSize,
             __internal__graphEmissions, __internal__graphCallers,
@@ -5525,10 +5718,40 @@ function synthesizeMessageBusRoute(
   route.location = contract.location;
   for (const helper of helpers) helper.location = contract.location;
   contract.functions.push(...helpers, route);
+  if (useBoundRoute && !offloadedVerifier) {
+    const verifierHost = `${preamble}    contract __MessageBusVerifierHost() {
+      function ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
+        bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
+        ${!graphExecutionContext ? '' : `,
+        bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
+        bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
+      ) internal view returns (bytes) {
+        bytes unlocking = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
+        require(unlocking.slice(0, 1) == hex"4d");
+        bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(1, 3), hex"00"));
+        bytes messageEnvelope = unlocking.slice(3, 3 + messageEnvelopeLength);
+        bytes callManifest = messageEnvelope.slice(8, messageEnvelope.length);
+        ${inlinedAtomicVerifierBody}
+        return bytes.concat(
+          bindingDigest,
+          sha256(bytes.concat(hex"4c334331", toPaddedBytes(callManifest.length, 4), callManifest))
+        );
+      }
+      function __invoke_message_bus_verifier_program() public {
+        bytes got = ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
+          0, 0, hex""
+          ${!graphExecutionContext ? '' : ', 0, 0, hex"", hex"", 0, hex"", hex""'}
+        );
+        require(got.length != 0x7fffffffffffffff);
+      }
+    }`;
+    (compilerOptions as InternalCompilerOptions).__singlePassVerifierSource = verifierHost;
+  }
   profileLog('messageBus:synthesize', synthesizeStarted, {
     contract: contract.name,
     helpers: helpers.length,
     routeChars: routeSource.length,
+    singlePassProgram: useBoundRoute && !offloadedVerifier,
   });
 }
 
@@ -7100,6 +7323,24 @@ function compileResolvedAst(
   if (emitsEvent) refuseEmittingReturningStateHelpers(ast.contract);
 
   mark('semantic');
+  let singlePassVerifierProgram: MessageBusVerifierProgram | undefined;
+  const singlePassVerifierSource = (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
+  if ((mergedCompilerOptions as InternalCompilerOptions).__synthesizeBoundRoutePlaceholder === true
+    && !mergedCompilerOptions.__messageBusVerifierProgram
+    && singlePassVerifierSource) {
+    try {
+      singlePassVerifierProgram = compileDetachedMessageBusVerifier(
+        singlePassVerifierSource, mergedCompilerOptions,
+      );
+    } catch (error) {
+      throwProfile(error);
+    }
+    if (!singlePassVerifierProgram) {
+      throw new Error('single-pass bind: detached verifier emit did not produce verifierProgram');
+    }
+    bindPlaceholderVerifierLock(ast, singlePassVerifierProgram, mergedCompilerOptions);
+    delete (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
+  }
   // Code generation
   const traversal = new GenerateTargetTraversal(mergedCompilerOptions);
   traversal.compiledBytecodes = compiledBytecodes;
@@ -7325,93 +7566,8 @@ function compileResolvedAst(
     }
     const messageBusMaximumRows = ast.contract.functions.find((fn) =>
       fn.messageBusRoute)?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
-    const verifierFunction = ast.contract.functions.find((fn) => fn.name === '__message_bus_verify_atomic');
-    const functionNameById = new Map(ast.contract.functions
-      .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn.name]));
-    // Compiler compact helpers are selected dynamically from IDs kept in the verifier frame, so they cannot be
-    // recovered by scanning only literal OP_INVOKE predecessors. Split facets compact that namespace into unused
-    // positive IDs as well as negatives; named contract functions remain the exact exclusion set.
-    const verifierBytecodes = new Map([
-      ...traversal.detachedVerifierBytecodes,
-      ...traversal.invokedFunctionBytecodes,
-      ...traversal.outlinedSubroutineBytecodes,
-    ]);
-    const collectDefinitions = (script: ReturnType<typeof bytecodeToScript>): void => {
-      for (let i = 2; i < script.length; i++) {
-        if (script[i] !== Op.OP_DEFINE) continue;
-        const body = script[i - 2];
-        const encodedId = script[i - 1];
-        if (!(body instanceof Uint8Array)) continue;
-        let id: number | undefined;
-        if (encodedId instanceof Uint8Array) {
-          try {
-            const decoded = decodeInt(encodedId);
-            if (decoded >= BigInt(Number.MIN_SAFE_INTEGER)
-              && decoded <= BigInt(Number.MAX_SAFE_INTEGER)) id = Number(decoded);
-          } catch {
-            // OP_DEFINE can occur as ordinary executable data; only minimally encoded numeric predecessors
-            // identify compiler-emitted function definitions.
-          }
-        } else if (encodedId === Op.OP_0) id = 0;
-        else if (encodedId >= Op.OP_1 && encodedId <= Op.OP_16) id = encodedId - Op.OP_1 + 1;
-        if (id !== undefined) verifierBytecodes.set(id, body);
-      }
-    };
-    collectDefinitions(optimisationResult.script);
-    const messageBusEntryBody = traversal.entryPointBytecodes.get(MESSAGE_BUS_SELECTOR_HEX);
-    if (messageBusEntryBody) collectDefinitions(bytecodeToScript(messageBusEntryBody));
-    const decodeFunctionId = (encoded: ReturnType<typeof bytecodeToScript>[number]): number | undefined => {
-      if (encoded instanceof Uint8Array) {
-        try {
-          const decoded = decodeInt(encoded);
-          if (decoded >= BigInt(Number.MIN_SAFE_INTEGER) && decoded <= BigInt(Number.MAX_SAFE_INTEGER)) {
-            return Number(decoded);
-          }
-        } catch { return undefined; }
-      } else if (encoded === Op.OP_0) return 0;
-      else if (encoded >= Op.OP_1 && encoded <= Op.OP_16) return encoded - Op.OP_1 + 1;
-      return undefined;
-    };
-    // `outlinedSubroutineBytecodes` contains every shared outline in the whole contract. Most are unrelated to the
-    // atomic verifier; embedding all of them can make the verifier covenant exceed BCH's 10KB script limit. Begin
-    // with the verifier and the dynamically selected compact-helper namespace, then add only statically invoked
-    // outlines, transitively. OP_INVOKE hard-fails on an omitted definition, so this is an exact fail-closed closure.
-    // A helper is identified by having been ALLOCATED as one, not by its numeric range and not by lacking a
-    // name: helper ids are drawn from a single-byte pool as well as the descending one, and a single-byte value
-    // is indistinguishable from a small user function id. Missing one strands its OP_DEFINE outside the
-    // verifier program and the participant dies at run time with "OP_INVOKE an undefined function identifier".
-    const isHelperId = (id: number): boolean => id <= -12
-      || traversal.allocatedHelperIds.has(BigInt(id))
-      || id === verifierFunction?.functionId;
-    // The traversal records a bytecode body before reachability/inline elimination. A compiler-owned journal
-    // clone can therefore remain in `invokedFunctionBytecodes` after its only call was inlined and its OP_DEFINE
-    // was removed. Seed the verifier closure only from definitions that are physically present; otherwise the
-    // artifact serializer attempts to hex-encode an undefined body for a helper no script can invoke.
-    const requiredVerifierIds = new Set([...traversal.invokedFunctionBytecodes.keys()]
-      .filter((id) => isHelperId(id) && verifierBytecodes.has(id)));
-    if (verifierFunction?.functionId !== undefined && verifierBytecodes.has(verifierFunction.functionId)) {
-      requiredVerifierIds.add(verifierFunction.functionId);
-    }
-    const pendingVerifierIds = [...requiredVerifierIds];
-    while (pendingVerifierIds.length > 0) {
-      const id = pendingVerifierIds.pop()!;
-      const bytecode = verifierBytecodes.get(id);
-      if (!bytecode) continue;
-      const script = bytecodeToScript(bytecode);
-      for (let i = 1; i < script.length; i++) {
-        if (script[i] !== Op.OP_INVOKE) continue;
-        const invokedId = decodeFunctionId(script[i - 1]);
-        if (invokedId === undefined || requiredVerifierIds.has(invokedId) || !verifierBytecodes.has(invokedId)) continue;
-        requiredVerifierIds.add(invokedId);
-        pendingVerifierIds.push(invokedId);
-      }
-    }
-    const verifierFunctionIds = [...requiredVerifierIds].sort((a, b) => a - b);
-    const verifierFunctions = verifierFunctionIds.map((id) => ({
-      id,
-      name: functionNameById.get(id) ?? `__internal_${id}`,
-      bytecode: binToHex(verifierBytecodes.get(id)!),
-    }));
+    const extractedVerifierProgram = singlePassVerifierProgram
+      ?? extractMessageBusVerifierProgram(ast, traversal, optimisationResult.script);
     artifact.messageBus = {
       version: 1,
       selector: MESSAGE_BUS_SELECTOR_HEX,
@@ -7429,18 +7585,7 @@ function compileResolvedAst(
         maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
         maximumRows: ATOMIC_MESSAGE_BUS_MAX_ROWS,
       },
-      ...(verifierFunction?.functionId !== undefined
-        && verifierBytecodes.has(verifierFunction.functionId) && {
-        verifierProgram: {
-          verifyFunctionId: verifierFunction.functionId,
-          inputCount: verifierFunction.parameters.length,
-          inputs: verifierFunction.parameters.map((parameter) => ({
-            name: parameter.name,
-            type: parameter.type.toString().replace(/address payable/g, 'address'),
-          })),
-          functions: verifierFunctions,
-        },
-      }),
+      ...(extractedVerifierProgram && { verifierProgram: extractedVerifierProgram }),
       route: messageBusRouteAbi!,
       handlers: ast.contract.functions.filter((fn) => !fn.messageBusRoute && fn.isEntryPoint).map((fn) => ({
         name: fn.name,

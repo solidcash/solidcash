@@ -4331,7 +4331,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         5,
         4096,
         leftoverCache,
-        2,
+        // Marketplace leftover round 1 saved 26 bytes in ~290ms after round 0's ~2783. Size-bounded
+        // speed-hint search stops after the first leftover round.
+        1,
       );
       if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
         console.error('[outline-timing]', JSON.stringify({
@@ -4367,7 +4369,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         };
       }
       // Window-4 leftover was measured on MarketplaceV1 at 7 saved bytes in ~400-900ms after leftover 5.
-      // Size-bounded speed-hint search stops at leftover 5.
+      // Leftover round 1 saved 26 bytes in ~290ms. Size-bounded speed-hint search stops after leftover
+      // window 5 round 0. Marketplace owned-only pin 178497 -> 178523.
     }
     // Leftover outlining can leave trampoline helpers that are only `<id> OP_INVOKE`. Fold those aliases
     // only on speed-hinted compiles: production message-bus traces and density budgets are pinned to the

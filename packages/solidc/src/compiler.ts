@@ -48,7 +48,9 @@ import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
 import SymbolTableTraversal from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
-import EnsureFinalRequireTraversal from './semantic/EnsureFinalRequireTraversal.js';
+import EnsureFinalRequireTraversal, {
+  rejectFreeFunctionMissingReturns,
+} from './semantic/EnsureFinalRequireTraversal.js';
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
@@ -6318,6 +6320,7 @@ function compileResolvedAst(
       loweredFunctionPointerTables.add(selectorName.slice('__fnsel_'.length));
     }
   }
+  mark('prefix');
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)
     && ast.contract.functions.some((fn) => {
@@ -6411,6 +6414,10 @@ function compileResolvedAst(
   // public-only admission otherwise spends seconds lowering Address/SafeERC20 helpers the route will prune
   // later; the late prune after synthesis remains so a later pass can still root a helper.
   if (ast.freeFunctions.length > 0) ast = ast.accept(new PruneUnreachableFreeFunctions()) as Ast;
+  // Throwaway admission still ran journal/memory lowering on those reachable helpers, then threw the
+  // same MissingReturnError. Fail here on the cheap-admission probe so the widest external rung does
+  // not pay that lowering when the source path is already uncovered.
+  if (mergedCompilerOptions.__cheapAdmissionCodegen) rejectFreeFunctionMissingReturns(ast);
 
   // Solidity permits a nested block local to shadow an outer local/parameter. Target stack slots are named, so
   // alpha-rename the inner binding (and its lexical uses) before later lowerings and symbol analysis.

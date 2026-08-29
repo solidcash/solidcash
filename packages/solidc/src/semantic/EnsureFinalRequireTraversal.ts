@@ -175,6 +175,19 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
   }
 }
 
+/**
+ * Cheap-admission fail-fast: returning free/library helpers whose source already has an uncovered path
+ * (OZ Address.verifyCallResultFromTarget's `_revert` arm) throw here instead of after journal/memory
+ * lowering. Public-only rungs prune those helpers first, so they do not refuse. Helpers that only become
+ * covered after later lowering are not cheap-admission; the full EnsureFinalRequire pass still runs.
+ */
+export function rejectFreeFunctionMissingReturns(ast: SourceFileNode): void {
+  for (const fn of ast.freeFunctions ?? []) {
+    if (fn.isAbstract || !fn.body || fn.returnTypes.length === 0) continue;
+    if (!allPathsReturn(fn.body.statements)) throw new MissingReturnError(fn);
+  }
+}
+
 // A path with no verification (no require/assert/revert/timeop) and no state change compiles as
 // unconditionally-spendable (codegen ends it with OP_1). This is a hard error by default; callers must
 // explicitly disable enforceFinalRequire to permit it, in which case the compiler still emits a warning.

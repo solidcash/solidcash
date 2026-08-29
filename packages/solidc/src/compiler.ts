@@ -6272,6 +6272,15 @@ function compileResolvedAst(
     }
   }
 
+  // Cheap-admission widest rung: OZ Address.verifyCallResultFromTarget has an uncovered `_revert`
+  // arm. Generated external-call clones root it, then throw after route synthesis (~0.4s). Refuse
+  // that source-level gap before inlining/synthesis. Public-only rungs skip this so unused Address
+  // is still pruned. A speed-hint compile whose widest route would have succeeded despite an unused
+  // uncovered-return helper now falls through to public-only.
+  if (mergedCompilerOptions.__cheapAdmissionCodegen && admitExternalHandlers) {
+    rejectFreeFunctionMissingReturns(ast);
+  }
+
   // Message-bus synthesis sometimes runs before the main lowering pipeline so collection/effect footprints are
   // visible to its wrapper. Beta-reduce side-effect-free foreign function-pointer return/pass helpers before that
   // snapshot too; otherwise the source entry point is lowered later to an external edge while its already-cloned

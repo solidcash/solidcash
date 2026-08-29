@@ -480,6 +480,13 @@ function profileLog(label: string, startedAt: number, extra?: Record<string, unk
   }));
 }
 
+function cloneAst(ast: Ast, reason: string): Ast {
+  const started = Date.now();
+  const cloned = cloneNode(ast);
+  profileLog('clone', started, { reason, contract: ast.contract?.name });
+  return cloned;
+}
+
 export interface SplitCompileOptions extends CompileOptions {
   /**
    * Maximum redeem-script bytes for each generated shard, honoured literally.
@@ -848,7 +855,7 @@ function compileWithExternalAdmissionFallback(
   // listener notifications and can replace the user's first diagnostic with retry noise.
   const incomingPristine = (mergedCompilerOptions as InternalCompilerOptions).__pristineAstBox?.ast;
   let initialAst: Ast | undefined = (mergedCompilerOptions as InternalCompilerOptions).__parsedAst
-    ?? (incomingPristine !== undefined ? cloneNode(incomingPristine) : undefined)
+    ?? (incomingPristine !== undefined ? cloneAst(incomingPristine, 'incoming-pristine') : undefined)
     ?? parseAndResolve(
       code, mergedCompilerOptions, errorListener, primaryContractName,
     );
@@ -865,7 +872,7 @@ function compileWithExternalAdmissionFallback(
   // 650ms+ re-parse on the verifier-binder pass).
   const pristineBox = (mergedCompilerOptions as InternalCompilerOptions).__pristineAstBox;
   if (pristineBox !== undefined && mergedCompilerOptions.messageBus && pristineBox.ast === undefined) {
-    pristineBox.ast = cloneNode(initialAst);
+    pristineBox.ast = cloneAst(initialAst, 'pristine-snapshot');
   }
   const takeAst = (): Ast => {
     if (initialAst !== undefined) {
@@ -873,7 +880,7 @@ function compileWithExternalAdmissionFallback(
       initialAst = undefined;
       return ast;
     }
-    if (pristineBox?.ast !== undefined) return cloneNode(pristineBox.ast);
+    if (pristineBox?.ast !== undefined) return cloneAst(pristineBox.ast, 'admission-retry');
     return parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
   };
   const compileOnce = (
@@ -6400,6 +6407,11 @@ function compileResolvedAst(
   // terminal return (after NamedReturn so implicit tails are explicit; before semantic so locals resolve).
   if (needsNestedBranchReturn) ast = ast.accept(new DesugarNestedBranchReturn()) as Ast;
 
+  // Drop unused OZ low-level-call / assembly helpers before journal and memory lowering. Marketplace's
+  // public-only admission otherwise spends seconds lowering Address/SafeERC20 helpers the route will prune
+  // later; the late prune after synthesis remains so a later pass can still root a helper.
+  if (ast.freeFunctions.length > 0) ast = ast.accept(new PruneUnreachableFreeFunctions()) as Ast;
+
   // Solidity permits a nested block local to shadow an outer local/parameter. Target stack slots are named, so
   // alpha-rename the inner binding (and its lexical uses) before later lowerings and symbol analysis.
   if (needsAlphaRename) ast = ast.accept(new AlphaRenameLocalShadows()) as Ast;
@@ -8281,7 +8293,7 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
   try {
     preparedContract.functions = completeFunctions.filter((fn) => keep.has(fn.name));
     preparedContract.constructorDef = undefined;
-    ast = cloneNode(prepared);
+    ast = cloneAst(prepared, `facet:${facetName}`);
   } finally {
     preparedContract.functions = completeFunctions;
     preparedContract.constructorDef = completeConstructor;

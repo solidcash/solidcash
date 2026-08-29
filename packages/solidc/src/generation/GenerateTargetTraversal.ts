@@ -10641,6 +10641,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, locationData);
       return;
     }
+    // Probe already counted this site. Nested skip/decode uses are recounted on the real helper
+    // definition; inlining the scan loop into a throwaway body dominated Marketplace probe time.
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitScanLoopInline(elemType, locationData);
   }
 
@@ -10681,6 +10684,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, locationData);
       return;
     }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitVariableArrayElementExtractInline(elemType, locationData);
   }
 
@@ -10706,6 +10710,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, locationData);
       return;
     }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitVariableArraySplitInline(elemType, locationData);
   }
 
@@ -10739,6 +10744,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, locationData);
       return;
     }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitVariableArrayTruncateInline(elemType, locationData);
   }
 
@@ -14388,6 +14394,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, locationData);
       return;
     }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitStructFieldExtractInline(type, fieldIndex, locationData);
   }
 
@@ -14426,6 +14433,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, locationData);
       return;
     }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitStructFieldPrefixSkipInline(type, fieldIndex, locationData);
   }
 
@@ -14452,7 +14460,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.subroutineDefined.get(id)) {
         this.emit(encodeInt(id), locationData);
         this.emit(Op.OP_INVOKE, locationData);
-      } else {
+      } else if (!(this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true)) {
         this.emitPushdataSkipCompositeInline(type, locationData);
       }
       return;
@@ -16548,6 +16556,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_INVOKE, loc);
         return;
       }
+      if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     }
     this.emitEntryP2sh32(collectionHash, loc);
   }
@@ -22048,6 +22057,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, loc);
       return;
     }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitStateFieldReadInline(this.stateReads.get(key)!, loc);
   }
 
@@ -22088,6 +22098,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, loc);
       return;
     }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitDataNftPreservationInline(offset, loc);
   }
 
@@ -22130,6 +22141,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, loc);
       return;
     }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitDataNftCommitmentPreservationInline(offset, loc);
   }
 
@@ -22177,6 +22189,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, loc);
       return;
     }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitDataNftOutputCommitmentInline(offset, loc);
   }
 
@@ -22222,6 +22235,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, loc);
       return;
     }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
     this.emitStateFieldDecodeInline(this.stateDecodes.get(key)!, loc);
   }
 

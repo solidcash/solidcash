@@ -32,7 +32,7 @@ import {
   FunctionCallStatementNode,
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
-  MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
+  MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, RevertNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, StatementNode, TransferStatementNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
@@ -5957,6 +5957,34 @@ function parseMessageBusHelpers(source: string, chunkedArrays: boolean): Functio
   return cloned;
 }
 
+function isCheapAdmissionKeptFunction(fn: FunctionDefinitionNode): boolean {
+  if (fn.messageBusRoute === true) return false;
+  const { name } = fn;
+  if (!name.startsWith('__message_bus')) return false;
+  return !name.startsWith('__message_bus_graph_')
+    && !name.startsWith('__message_bus_entry_')
+    && !name.startsWith('__message_bus_handler_')
+    && !name.startsWith('__message_bus_dynamic_')
+    && !name.startsWith('__message_bus_array_')
+    && !name.startsWith('__message_bus_external_')
+    && !name.startsWith('__message_bus_resource_');
+}
+
+function stubCheapAdmissionBodies(ast: Ast): void {
+  const stub = (fn: FunctionDefinitionNode | undefined): void => {
+    if (!fn || isCheapAdmissionKeptFunction(fn) || !fn.body) return;
+    const revert = new RevertNode();
+    revert.location = fn.location;
+    const body = new BlockNode([revert]);
+    body.location = fn.location;
+    fn.body = body;
+  };
+  for (const fn of ast.contract.functions) stub(fn);
+  stub(ast.contract.constructorDef);
+  stub(ast.contract.fallbackDef);
+  stub(ast.contract.receiveDef);
+}
+
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by
 // compileString and compileStringMulti.
 function compileResolvedAst(
@@ -6417,7 +6445,12 @@ function compileResolvedAst(
   // Throwaway admission still ran journal/memory lowering on those reachable helpers, then threw the
   // same MissingReturnError. Fail here on the cheap-admission probe so the widest external rung does
   // not pay that lowering when the source path is already uncovered.
-  if (mergedCompilerOptions.__cheapAdmissionCodegen) rejectFreeFunctionMissingReturns(ast);
+  if (mergedCompilerOptions.__cheapAdmissionCodegen) {
+    rejectFreeFunctionMissingReturns(ast);
+    // Synthesis already recorded eligibility on the surviving entry nodes. Replace unemitted
+    // user/clone/route bodies with a terminal revert so later lowering/typecheck do not walk them.
+    stubCheapAdmissionBodies(ast);
+  }
 
   // Solidity permits a nested block local to shadow an outer local/parameter. Target stack slots are named, so
   // alpha-rename the inner binding (and its lexical uses) before later lowerings and symbol analysis.

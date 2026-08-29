@@ -4263,8 +4263,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const minimumWindowElements of minimumWindows) {
         this.restoreCompactHelperIds(entryPool);
         const timingStart = Date.now();
-        // Speed-hint MarketplaceV1: window-8 rounds 0-1 saved 84105 bytes in ~5.3s; rounds 2-3 saved 56 bytes
-        // in ~1.9s. Size-bounded search stops after two rounds.
+        // Speed-hint MarketplaceV1: window-8 round 0 saved 81755 bytes in ~1.1s; round 1 saved 2350 bytes
+        // in ~350ms. Size-bounded search stops after one window-8 round. Leftover window 5 still runs
+        // and recovers most of that round (Marketplace owned-only pin 178523 -> 178769).
         const orderedAttempt = outlineSharedSpans(
           orderedBodies,
           () => encodeInt(this.allocateCompactHelperId()),
@@ -4273,7 +4274,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           minimumWindowElements,
           candidateGroupsPerRound,
           undefined,
-          speedHintOutline ? 2 : 6,
+          speedHintOutline ? 1 : 6,
         );
         if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1') {
           console.error('[outline-timing]', JSON.stringify({

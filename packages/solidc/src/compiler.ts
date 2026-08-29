@@ -6487,6 +6487,12 @@ function compileResolvedAst(
     // user/clone/route bodies with a terminal revert so later lowering/typecheck do not walk them.
     stubCheapAdmissionBodies(ast);
   }
+  // Stubbed graph/handler/route clones are revert() only. Parking them again skips memory, fn-ptr,
+  // assembly, and extcall lowering that cannot change the throwaway admission artifact. Restore
+  // before late synthesis / delegate marking so those passes still see the full function set.
+  const cheapAdmissionPostStubPark = parkCheapAdmissionUnkeptMessageBusFunctions(
+    ast, mergedCompilerOptions.__cheapAdmissionCodegen === true && synthesizeBatchBeforeLowering,
+  );
 
   // Solidity permits a nested block local to shadow an outer local/parameter. Target stack slots are named, so
   // alpha-rename the inner binding (and its lexical uses) before later lowerings and symbol analysis.
@@ -6715,6 +6721,7 @@ function compileResolvedAst(
     if (col.type instanceof MappingType) col.sorted = true;
   }
 
+  restoreParkedFunctions(ast, cheapAdmissionPostStubPark);
   // Delegate-variant compile: mark the proxy-implementable functions now that the function set is final (after
   // inheritance/modifier/getter expansion) and before SymbolTableTraversal injects _proxyMasterIndex. `delegate`
   // is never written in source; see AutoMarkDelegateFunctions.

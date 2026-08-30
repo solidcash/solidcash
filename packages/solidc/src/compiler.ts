@@ -1776,8 +1776,20 @@ export type MessageBusStaticRejectionCode = NonNullable<
 NonNullable<Artifact['messageBus']>['handlers'][number]['rejectionCode']
 >;
 
+/** Map a legacy admission reason onto the frozen kernel catalog. Unknown leftovers become KERNEL_LAYOUT. */
+function kernelAdmissionReason(reason: string): string {
+  if (reason.startsWith('KERNEL_')) return reason;
+  if (reason === 'lifecycle-or-unsafe-handler') return 'KERNEL_LIFECYCLE';
+  if (reason === 'transaction-signature-route-binding-required') return 'KERNEL_TX_SIGNATURE';
+  if (reason === 'verified-mapping-runtime-loop-write-unsupported') return 'KERNEL_UNBOUNDED_KEY';
+  if (reason === 'atomic-delegate-context-unpreservable') return 'KERNEL_FOREIGN_DELEGATE';
+  if (reason === 'opaque-assembly-effects-callManifest-ineligible') return 'KERNEL_OPAQUE_EFFECT';
+  return 'KERNEL_LAYOUT';
+}
+
 /** Classify every published route refusal into one of callManifest-v1 section 9.2's stable classes. */
 export function classifyMessageBusRejection(reason: string): MessageBusStaticRejectionCode {
+  if (reason.startsWith('KERNEL_')) return 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT';
   if (/foreign-(outstate|intermediate-state)/.test(reason)) return 'MESSAGE_BUS_FOREIGN_INTERMEDIATE_STATE_READ';
   if (/(future|ancestor|result-before-use)/.test(reason)) return 'MESSAGE_BUS_FUTURE_RESULT_DEPENDENCY';
   if (/(unbounded-recursion|external-recursion)/.test(reason)) return 'MESSAGE_BUS_EXTERNAL_RECURSION_UNBOUNDED';
@@ -2362,7 +2374,8 @@ function synthesizeMessageBusRoute(
   for (const fn of functions) {
     if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       fn.messageBusEligible = false;
-      fn.messageBusRejectionReason = 'lifecycle-or-unsafe-handler';
+      fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
+        ? 'KERNEL_LIFECYCLE' : 'lifecycle-or-unsafe-handler';
       continue;
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
@@ -3272,6 +3285,35 @@ function synthesizeMessageBusRoute(
     } else if (!reason && graphTailCallEligible && hasUnsupportedSortedRuntimeLoopWrite(fn)) {
       reason = 'verified-mapping-runtime-loop-write-unsupported';
     }
+    if (compilerOptions.messageBusKernel === true) {
+      const parameterNames = new Set(fn.parameters.map((parameter) => parameter.name));
+      let unboundedKey = false;
+      let deploys = false;
+      for (const name of collectNamedFunctionClosure(fn, byName)) {
+        for (const candidate of byName.get(name) ?? []) {
+          walkInvocationAst(candidate.body, (node) => {
+            if (node instanceof InstantiationNode) deploys = true;
+            const access = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+              || node instanceof MappingDeleteNode
+              ? { name: node.name, keys: node.keys as ExpressionNode[] }
+              : ((node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode)
+                && collectionByName.has(node.name)
+                ? { name: node.name, keys: [node.index] as ExpressionNode[] }
+                : undefined);
+            if (!access || !(collectionByName.get(access.name)?.type instanceof MappingType)) return;
+            for (const key of access.keys) {
+              if (key instanceof IdentifierNode && parameterNames.has(key.name)) continue;
+              if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) continue;
+              unboundedKey = true;
+            }
+          });
+        }
+      }
+      if (hasUnsupportedSortedRuntimeLoopWrite(fn) || unboundedKey) reason = 'KERNEL_UNBOUNDED_KEY';
+      else if (deploys && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
+        reason = 'KERNEL_LAYOUT';
+      } else if (reason !== undefined) reason = kernelAdmissionReason(reason);
+    }
     fn.messageBusEligible = reason === undefined;
     fn.messageBusRejectionReason = reason;
     fn.messageBusKeyWitnesses = reason === undefined && keyWitnesses.length > 0
@@ -3624,6 +3666,14 @@ function synthesizeMessageBusRoute(
   const {
     eventMode, resultMode, valueEffectMode, nestedCollectionMode, fixedArrayMode, tokenContainerMode,
   } = selection;
+  if (compilerOptions.messageBusKernel === true) {
+    for (const fn of functions) {
+      if (fn.messageBusEligible === true || !fn.messageBusRejectionReason) continue;
+      if (!fn.messageBusRejectionReason.startsWith('KERNEL_')) {
+        fn.messageBusRejectionReason = kernelAdmissionReason(fn.messageBusRejectionReason);
+      }
+    }
+  }
   if (eligible.length === 0) {
     return;
   }

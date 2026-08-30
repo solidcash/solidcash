@@ -104,6 +104,12 @@ export interface CompilerOptions {
   // still need per-row logical callers when one composed transaction reaches them from different parents.
   // Omitted preserves the compact local-caller route used by standalone batching.
   messageBusGraphContext?: boolean;
+  /**
+   * Require the kernel calling convention (`packages/solidc/docs/message-bus-kernel.md`). Ineligible
+   * handlers publish `KERNEL_*` reasons instead of the legacy admission catalog. Omitted keeps today's
+   * clone/unroll path for contracts that are not kernel-shaped.
+   */
+  messageBusKernel?: boolean;
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
   // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
   delegateArtifactContracts?: readonly string[];

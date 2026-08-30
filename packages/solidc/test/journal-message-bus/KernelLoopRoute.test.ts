@@ -1,3 +1,4 @@
+import { hexToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from '../../src/compiler.js';
@@ -90,5 +91,55 @@ describe('message-bus kernel loop route', () => {
     expect(artifact.messageBus?.maximumRows).toBeGreaterThanOrEqual(2);
     expect(artifact.messageBus?.route.inputs.some((input) => input.name === 'batchBlob')).toBe(true);
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
+  });
+
+  it('keeps event-emitting handlers on the legacy unroll rather than inventing a new clone family', () => {
+    const artifact = compileString(`
+pragma solidcash ^0.13.0;
+contract Acc() {
+  event Ping(int n);
+  int x;
+  function ping(int n) public {
+    emit Ping(n);
+    require(true);
+  }
+}
+`, OPTIONS);
+    const ping = artifact.messageBus?.handlers.find((handler) => handler.name === 'ping');
+    expect(ping?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => /^__message_bus_(graph|array|resource)_/.test(fn.name))).toBe(false);
+    expect(artifact.invocationAnalysis?.functions.some((fn) =>
+      /^__message_bus_(graph|array|resource)_/.test(fn.name))).toBe(false);
+  });
+
+  it('journals a reusable scalar helper as one OP_INVOKE body on the kernel route', () => {
+    const artifact = compileString(`
+pragma solidcash ^0.13.0;
+contract Acc() {
+  int x;
+  function bump(int n) internal { this.x = ((this.x + n) * 3 - n) / 2; }
+  function add(int a, int b, int c) public {
+    bump(a);
+    bump(b);
+    bump(c);
+    require(a >= 0);
+  }
+}
+`, OPTIONS);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'add')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => /^__message_bus_(graph|array|resource)_/.test(fn.name))).toBe(false);
+    expect(artifact.invocationAnalysis?.functions.some((fn) =>
+      /^__message_bus_(graph|array|resource)_/.test(fn.name))).toBe(false);
+    const bump = artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'bump');
+    expect(bump).toBeDefined();
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'add')?.calls)
+      .toContain(bump?.id);
+    const asm = routeAsm(artifact);
+    expect(asm).toMatch(/OP_UNTIL|OP_BEGIN/);
+    const add = artifact.messageBus?.handlers.find((handler) => handler.name === 'add');
+    expect(selectorPushCount(asm, add!.selector)).toBe(1);
+    const addAsm = bytecodeToAsm(hexToBin(artifact.functionBodies![add!.selector]));
+    // bump is function id 0 (first declared). Three call sites share one defined body.
+    expect([...addAsm.replace(/\s+/g, ' ').matchAll(/OP_0 OP_INVOKE/g)]).toHaveLength(3);
   });
 });

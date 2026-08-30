@@ -93,7 +93,7 @@ describe('message-bus kernel loop route', () => {
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
   });
 
-  it('keeps event-emitting handlers on the legacy unroll rather than inventing a new clone family', () => {
+  it('dispatches event-emitting handlers from the runtime row loop without a new clone family', () => {
     const artifact = compileString(`
 pragma solidcash ^0.13.0;
 contract Acc() {
@@ -110,6 +110,10 @@ contract Acc() {
     expect(artifact.abi.some((fn) => /^__message_bus_(graph|array|resource)_/.test(fn.name))).toBe(false);
     expect(artifact.invocationAnalysis?.functions.some((fn) =>
       /^__message_bus_(graph|array|resource)_/.test(fn.name))).toBe(false);
+    const asm = routeAsm(artifact);
+    expect(asm).toMatch(/OP_UNTIL|OP_BEGIN/);
+    expect(selectorPushCount(asm, ping!.selector)).toBe(1);
+    expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
   });
 
   it('journals a reusable scalar helper as one OP_INVOKE body on the kernel route', () => {

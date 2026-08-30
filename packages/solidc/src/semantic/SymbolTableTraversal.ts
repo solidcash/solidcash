@@ -12824,24 +12824,32 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (handlers.length === 0) return;
     const byName = new Map(handlers.map((fn) => [fn.name, fn]));
     const siteCounts = new Map<string, number>();
+    let loopDispatch = false;
+    walkInvocationAst(route.body, (candidate) => {
+      if (!(candidate instanceof WhileNode)) return;
+      walkInvocationAst(candidate.block, (inner) => {
+        if (inner instanceof FunctionCallNode && byName.has(inner.identifier.name)) loopDispatch = true;
+      });
+    });
     walkInvocationAst(route.body, (candidate) => {
       if (!(candidate instanceof FunctionCallNode)) return;
       const target = byName.get(candidate.identifier.name);
       if (!target) return;
       const ordinal = siteCounts.get(target.name) ?? 0;
       candidate.graphEffectSite = ordinal;
+      if (loopDispatch) candidate.graphEffectSiteFromRow = true;
       siteCounts.set(target.name, ordinal + 1);
     });
-    const sites = Math.max(0, ...siteCounts.values());
+    const sites = loopDispatch
+      ? (route.messageBusMaximumRows ?? Math.max(0, ...siteCounts.values()))
+      : Math.max(0, ...siteCounts.values());
     if (sites === 0) return;
     // Fail closed if the route could reach a handler more often than it has dispatch sites. That happens only
-    // under the LOOP parser (`for (row = 0; row < rowCount; ..)`), where one syntactic call site serves every
-    // row: two rows would then share one frame, two emits would verify against ONE output, and equal blobs
-    // would settle with an event missing - a partial silent drop rather than a rejection. Unreachable today
-    // (an emit or a transfer forces `eventMode`/`valueEffectMode`, which unroll the parser to one site per row)
-    // and asserted rather than assumed so a future parser change cannot reintroduce the drop quietly.
+    // under a LOOP parser that does not thread the runtime `row` as the effect-site ordinal: one syntactic
+    // call would then share one frame across rows. Kernel dispatch sets `graphEffectSiteFromRow` and sizes
+    // the frame to `messageBusMaximumRows` so each reached row owns a distinct window.
     for (const [name, count] of siteCounts) {
-      if (count >= (route.messageBusMaximumRows ?? count)) continue;
+      if (loopDispatch || count >= (route.messageBusMaximumRows ?? count)) continue;
       throw new GraphEmissionEffectError(
         contract.functions.find((fn) => fn.name === name) ?? route,
         name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),

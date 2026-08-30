@@ -199,10 +199,16 @@ separate cutover.
 
 ---
 
-## 9. Cutover (out of scope here)
+## 9. Cutover
 
-Switch a contract to the kernel when toys cover: returning ERC-20-shaped handlers, token-container
-effects in the loop, `msg.sender` as a mapping key without `_r${row}` ABI, and delegate
-implementation in the owner's frame. Then delete unroll and clone families for that eligibility
-class. Until then, if Marketplace does not kernel-compile, it stays legacy — it is not a reason to
-grow the catalog.
+Kernel toys now cover the designed eligibility class:
+
+- returning ERC-20-shaped mapping handlers (`return true` after a parameter-keyed write);
+- token-container effects and satoshi transfers appended from the row loop (X29 site = runtime `row`);
+- `msg.sender` as a mapping key without `_r${row}` ABI;
+- `delegate` implementation functions in this participant's owner frame.
+
+Compiler evidence: `KernelLoopRoute.test.ts`, `KernelCutoverRoute.test.ts`. SDK: `KernelLoopCompose.test.ts`,
+`KernelCutoverCompose.test.ts`. Resource-shaped per-row frames, transaction `sig` rows, unbounded keys, and
+foreign `delegatecall` stay on the legacy unroll. Marketplace owned-only is **not** a kernel gate; if it does
+not kernel-compile, it stays legacy — it is not a reason to grow the catalog.

@@ -2108,7 +2108,7 @@ function synthesizeMessageBusRoute(
     .map((collection) => collection.name));
   const disallowedModifiers = new Set([
     FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT,
-    FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
+    FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.UNSAFE,
   ]);
   const inferredSolidityImplementation = !!compilerOptions.solidityImportCompat
     && contract.functions.some((candidate) => candidate.isEntryPoint
@@ -3731,22 +3731,17 @@ function synthesizeMessageBusRoute(
   const isTransactionSignatureType = (type: string): boolean => type === 'sig' || type === 'sig[]';
   const signatureMode = eligible.some((fn) =>
     fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
-  // Kernel dispatch: one for-row loop, no AST unroll. Returning scalars currently set resultMode and
-  // unroll `if (rowCount > i)` only because result locals were named with a compile-time row index.
-  // Effects, nested keys, token slots, signatures, and resource frames stay on the legacy unroll.
+  // Kernel dispatch: one for-row loop, no AST unroll. Resource-shaped per-row frames, transaction
+  // signatures, and fixed-array identity sets stay on the legacy unroll. Events, value, tokens, and
+  // parameter/`msg.sender`-keyed mappings use the loop when they need no `_rN` witnesses.
   // See packages/solidc/docs/message-bus-kernel.md.
   const kernelLoopDispatch = resourceShapedHandler === undefined
     && !signatureMode
-    && !eventMode
-    && !valueEffectMode
-    && !nestedCollectionMode
     && !fixedArrayMode
-    && !tokenContainerMode
     && eligible.every((fn) => {
       if ((fn.messageBusKeyWitnesses ?? []).some((binding) => binding.perRow)) return false;
       const footprint = eligibleFootprint(fn);
-      if (footprint.effects.includes('external-call')) return false;
-      return ![...footprint.reads, ...footprint.writes].some((resource) => resource.startsWith('collection:'));
+      return !footprint.effects.includes('external-call');
     });
   const signatureWitnessName = (
     handlerIndex: number, parameterIndex: number, row: number,
@@ -4153,7 +4148,7 @@ function synthesizeMessageBusRoute(
   // and the per-handler ABI in agreement.
   for (const sourceHandler of eligible) {
     if (sourceHandler === resourceShapedHandler
-      || graphTailHandlers.has(sourceHandler)
+      || (graphTailHandlers.has(sourceHandler) && !kernelLoopDispatch)
       || siblingHandlerInvokeNames.has(sourceHandler)) continue;
     // The pre-semantic AST has dedicated compound/field lvalue shapes which are not all Mapping* nodes yet.
     // Admission has already proven and recorded their collection key witnesses, so use that authoritative
@@ -4180,6 +4175,10 @@ function synthesizeMessageBusRoute(
     // Deferring the whole handler preserves the literal identity set and does not widen the journal's stable-key
     // rule; dynamically-cardinal collection iteration remains ineligible before clone selection reaches here.
     if (touchesFixedArray || fixedArrayRouteHandlers.has(sourceHandler)) continue;
+    const touchesTokenContainer = [...eligibleFootprint(sourceHandler).reads, ...eligibleFootprint(sourceHandler).writes]
+      .some((resource) => resource.startsWith('collection:tokens:'));
+    if (touchesTokenContainer) continue;
+    if (graphTailHandlers.has(sourceHandler) && !kernelLoopDispatch) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_entry_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
@@ -4189,6 +4188,11 @@ function synthesizeMessageBusRoute(
     handler.messageBusRejectionReason = undefined;
     handler.messageBusKeyWitnesses = undefined;
     handler.forceCollectionJournalPool = true;
+    const entryLiteralResult = terminalLiteralResult(sourceHandler);
+    if (entryLiteralResult !== undefined) {
+      handler.returnTypes = [];
+      handler.body!.statements!.pop();
+    }
     if (eligibleFootprint(sourceHandler).effects.length > 0) {
       handler.graphEmissionHandler = true;
       localEffectFrameHandlers.add(sourceHandler);
@@ -4211,6 +4215,7 @@ function synthesizeMessageBusRoute(
     });
     if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)
       || siblingHandlerInvokeNames.has(sourceHandler)
+      || hasTokenEffect
       || (footprint.effects.length === 0 && !hasTokenEffect)
     ) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
@@ -4227,6 +4232,7 @@ function synthesizeMessageBusRoute(
     contract.functions.push(handler);
   }
   for (const sourceHandler of graphTailHandlers) {
+    if (kernelLoopDispatch) continue;
     if (!eligible.includes(sourceHandler) || sourceHandler === resourceShapedHandler) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_graph_${sourceHandler.name}`;
@@ -7672,7 +7678,8 @@ function compileResolvedAst(
       const sourceHandler = ast.contract.functions.find((fn) => fn.name === sourceHandlerName && fn.isEntryPoint);
       const authenticatedGraphHandler = summary.name.startsWith('__message_bus_entry_')
         && sourceHandler?.messageBusEligible === true
-        && sourceHandler.messageBusKeyWitnesses?.some((witness) => witness.source === 'msgSender');
+        && sourceHandler.messageBusKeyWitnesses?.some((witness) => witness.source === 'msgSender')
+        && ast.contract.functions.some((fn) => fn.name === `__message_bus_graph_${sourceHandlerName}`);
       return ({
         id: summary.id,
         name: authenticatedGraphHandler ? `__message_bus_graph_${sourceHandlerName}` : summary.name,

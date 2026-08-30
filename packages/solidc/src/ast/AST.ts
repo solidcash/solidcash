@@ -1308,6 +1308,8 @@ export class FunctionCallNode extends ExpressionNode {
   // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
   // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
   graphEffectSite?: number;
+  // Kernel row loop: the dispatch-site ordinal is the runtime `row` iterator, not a compile-time copy count.
+  graphEffectSiteFromRow?: boolean;
 
   constructor(
     public identifier: IdentifierNode,

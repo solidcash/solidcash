@@ -1642,6 +1642,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Kernel row loop: push `master + frameOffset + row * width + slotIndex` using the live `row` iterator.
+   * The unrolled path instead bakes a compile-time `graphEffectSite` into the slot index.
+   */
+  private emitLoopRowEffectSlotIndex(
+    kind: 'event' | 'transfer' | 'tcTransfer',
+    slotIndex: number,
+    frame: NonNullable<FunctionDefinitionNode['graphEffectFrame']>,
+    locationData: SingleLocationData,
+  ): void {
+    const width = kind === 'event' ? frame.eventWidth
+      : kind === 'transfer' ? frame.transferWidth : frame.tokenTransferWidth;
+    const routeOffset = kind === 'event' ? frame.eventOffset
+      : kind === 'transfer' ? frame.transferOffset : frame.tokenTransferOffset;
+    const base = kind === 'event' ? frame.eventBase
+      : kind === 'transfer' ? frame.transferBase : frame.tokenTransferBase;
+    const constant = (routeOffset ?? this.getBlockSlotOffset(kind, base)) + slotIndex;
+    const rowIndex = this.getStackIndex('row');
+    if (rowIndex < 0) {
+      throw new Error("Runtime effect slot missing loop variable 'row'");
+    }
+    this.emit(encodeInt(BigInt(rowIndex)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    if (width > 1) {
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_MUL, locationData);
+    }
+    if (constant > 0) {
+      this.emit(encodeInt(BigInt(constant)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    this.emitMasterInputIndex(locationData, 1);
+    this.emit(Op.OP_ADD, locationData);
+  }
+
+  /**
    * X29. Push `master + frameBase + site * width + slotIndex` for an event/transfer slot owned by an
    * effect-carrying graph emission handler. Returns false when this is not that case, so the caller keeps the
    * ordinary compile-time path. The site ordinal is a hidden context value the route pushed at the call site.
@@ -9264,10 +9299,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X29. Which owner-local effect frame this invocation owns. OP_DEFINE declares this context before its
     // graph-result contexts, so it is pushed after the authenticated results and therefore sits above them.
     if (targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame) {
-      if (node.graphEffectSite === undefined) {
+      if (node.graphEffectSiteFromRow) {
+        const rowIndex = this.getStackIndex('row');
+        if (rowIndex < 0) {
+          throw new Error(`Runtime graph effect site missing loop variable 'row' at a call to '${targetFunc.name}'`);
+        }
+        this.emit(encodeInt(BigInt(rowIndex)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      } else if (node.graphEffectSite === undefined) {
         throw new Error(`Unplanned graph effect frame at a call to '${targetFunc.name}'`);
+      } else {
+        this.emit(encodeInt(BigInt(node.graphEffectSite)), locationData);
       }
-      this.emit(encodeInt(BigInt(node.graphEffectSite)), locationData);
       this.pushToStack(`(__graph_effect_site_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
@@ -9408,8 +9451,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const frame = targetFunc.graphEffectFrame!;
       // A heterogeneous frame's suffix is reserved capacity, not a transfer made by this handler.
       for (let slot = 0; slot < (targetFunc.transferInfos?.length ?? 0); slot += 1) {
-        const ordinal = node.graphEffectSite! * frame.transferWidth + slot;
-        this.emitBlockSlotIndex('transfer', ordinal, locationData);
+        if (node.graphEffectSiteFromRow) {
+          this.emitLoopRowEffectSlotIndex('transfer', slot, frame, locationData);
+        } else {
+          const ordinal = node.graphEffectSite! * frame.transferWidth + slot;
+          this.emitBlockSlotIndex('transfer', ordinal, locationData);
+        }
         this.emit(Op.OP_OUTPUTVALUE, locationData);
         this.emit(Op.OP_ADD, locationData);
       }
@@ -9424,7 +9471,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (targetFunc.emitInfos?.length ?? 0) > 0 && this.stack.includes(GRAPH_EVENT_SITE)) {
       this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_EVENT_SITE))), locationData);
       this.emit(Op.OP_PICK, locationData);
-      this.emit(encodeInt(1n << BigInt(node.graphEffectSite!)), locationData);
+      if (node.graphEffectSiteFromRow) {
+        const rowIndex = this.getStackIndex('row');
+        if (rowIndex < 0) {
+          throw new Error(`Runtime event site missing loop variable 'row' at a call to '${targetFunc.name}'`);
+        }
+        // Mask was just PICK'd untracked; the subsequent `1` is untracked too.
+        this.emit(encodeInt(1n), locationData);
+        this.emit(encodeInt(BigInt(rowIndex + 2)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(Op.OP_LSHIFTNUM, locationData);
+      } else {
+        this.emit(encodeInt(1n << BigInt(node.graphEffectSite!)), locationData);
+      }
       this.emit(Op.OP_ADD, locationData);
       this.pushToStack('(graph_event_sites_new)');
       this.emitReplaceCompilerRouteFrameValue(GRAPH_EVENT_SITE, node);

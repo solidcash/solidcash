@@ -3681,6 +3681,23 @@ function synthesizeMessageBusRoute(
   const isTransactionSignatureType = (type: string): boolean => type === 'sig' || type === 'sig[]';
   const signatureMode = eligible.some((fn) =>
     fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
+  // Kernel dispatch: one for-row loop, no AST unroll. Returning scalars currently set resultMode and
+  // unroll `if (rowCount > i)` only because result locals were named with a compile-time row index.
+  // Effects, nested keys, token slots, signatures, and resource frames stay on the legacy unroll.
+  // See packages/solidc/docs/message-bus-kernel.md.
+  const kernelLoopDispatch = resourceShapedHandler === undefined
+    && !signatureMode
+    && !eventMode
+    && !valueEffectMode
+    && !nestedCollectionMode
+    && !fixedArrayMode
+    && !tokenContainerMode
+    && eligible.every((fn) => {
+      if ((fn.messageBusKeyWitnesses ?? []).some((binding) => binding.perRow)) return false;
+      const footprint = eligibleFootprint(fn);
+      if (footprint.effects.includes('external-call')) return false;
+      return ![...footprint.reads, ...footprint.writes].some((resource) => resource.startsWith('collection:'));
+    });
   const signatureWitnessName = (
     handlerIndex: number, parameterIndex: number, row: number,
   ): string => `__message_bus_sig_${handlerIndex}_${parameterIndex}_r${row}`;
@@ -4452,8 +4469,10 @@ function synthesizeMessageBusRoute(
         __message_bus_results, abi.encode(${literalResult})
       );`;
         }
+        // Kernel / runtime-row dispatch reuses one local per handler field. Unrolled rows keep
+        // distinct names because every `if (rowCount > i)` band shares the wrapper's function scope.
         const names = fn.returnTypes.map((_type, index) =>
-          `__message_bus_value_${rowIndex}_${handlerIndex}_${index}`);
+          `__message_bus_value_${rowIndex === undefined ? 'i' : rowIndex}_${handlerIndex}_${index}`);
         const declarations = fn.returnTypes.map((type, index) =>
           `${type.toString()} ${names[index]};`).join(' ');
         const assignment = fn.returnTypes.length === 1
@@ -4778,6 +4797,10 @@ function synthesizeMessageBusRoute(
       // ERC20 balanceOf/approve/transfer and failed while decoding it. Capture results exactly as the other
       // unrolled route modes do; fixed row count and result collection are independent concerns.
       `{ ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
+    : kernelLoopDispatch
+      ? `for (bigint row = 0; row < rowCount; row = row + 1) {
+        ${parseOneRow('row', resultMode)}
+      }`
     : eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode || signatureMode
       || tokenContainerMode
       ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
@@ -5734,8 +5757,8 @@ function synthesizeMessageBusRoute(
       } else {
         const assembled = assembleMessageBusRowStatements(
           preamble, parser, parseOneRow, resultMode, !!fixedStandaloneResourceBatch,
-          !!(eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode
-            || signatureMode || tokenContainerMode),
+          !kernelLoopDispatch && !!(eventMode || resultMode || valueEffectMode || nestedCollectionMode
+            || fixedArrayMode || signatureMode || tokenContainerMode),
           routeMaximumRows, chunkedArrays, routeOrigin,
           buildMessageBusRowAliasPlans({
             eligible,

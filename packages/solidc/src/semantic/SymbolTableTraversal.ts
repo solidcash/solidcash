@@ -12897,6 +12897,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         .some((access) => access.transferNftCount > 0)),
     };
     route.graphEffectFrame = frame;
+    if (loopDispatch && frame.tokenTransferWidth > 0) {
+      const reserved = frame.sites * frame.tokenTransferWidth;
+      for (const access of route.tokenContainerAccesses ?? []) {
+        if (access.transferCount > 0) access.transferCount = Math.max(access.transferCount, reserved);
+        if (access.transferNftCount > 0) {
+          access.transferNftCount = Math.max(access.transferNftCount, reserved);
+        }
+      }
+    }
     for (const fn of handlers) {
       fn.graphEffectFrame = frame;
       // SEC-8. `frame` is SHARED, so its widths are group maxima. Whether the route's not-reached container
@@ -12937,6 +12946,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const graphFrame = node.messageBusRoute ? node.graphEffectFrame : undefined;
     const graphEvents = (graphFrame?.sites ?? 0) * (graphFrame?.eventWidth ?? 0);
     const graphTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.transferWidth ?? 0);
+    const graphTokenTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.tokenTransferWidth ?? 0);
 
     // Master
     slots.push({ kind: 'master', offset: offset++ });
@@ -13058,7 +13068,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({ kind: 'transfer', offset: offset++, slotIndex: i, conditional: true });
     }
 
-    // TC transfers (output-only - one slot per transfer/transferNft operation)
+    // TC transfers (output-only - one slot per transfer/transferNft operation). Kernel/graph frames
+    // reserve `sites * tokenTransferWidth` so a loop dispatch can index row `s` at
+    // `[base + s * width, ...)`, matching satoshi `graphTransfers` padding.
     if (node.tokenContainerAccesses) {
       let tcTransferIdx = 0;
       for (const tca of node.tokenContainerAccesses) {
@@ -13066,6 +13078,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         for (let j = 0; j < opCount; j++) {
           slots.push({ kind: 'tcTransfer', offset: offset++, slotIndex: tcTransferIdx++ });
         }
+      }
+      for (let i = tcTransferIdx; i < graphTokenTransfers; i++) {
+        slots.push({ kind: 'tcTransfer', offset: offset++, slotIndex: i, conditional: true });
+      }
+    } else {
+      for (let i = 0; i < graphTokenTransfers; i++) {
+        slots.push({ kind: 'tcTransfer', offset: offset++, slotIndex: i, conditional: true });
       }
     }
 

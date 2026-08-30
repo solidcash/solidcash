@@ -117,8 +117,8 @@ contract Acc() {
 `, 'add');
   });
 
-  it('dispatches a token-container transfer from the runtime row loop', () => {
-    assertKernelRoute(`
+  it('keeps token-container transfers on the legacy unroll with a full tcTransfer frame', () => {
+    const artifact = compileString(`
 pragma solidcash ^0.13.0;
 contract Vault() {
   function send(bytes32 category, bytes recipient, int amount) public {
@@ -127,6 +127,15 @@ contract Vault() {
     require(true);
   }
 }
-`, 'send');
+`, OPTIONS);
+    const send = artifact.messageBus?.handlers.find((handler) => handler.name === 'send');
+    expect(send?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(artifact.invocationAnalysis?.functions.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
+    const route = artifact.messageBus!.route;
+    const tcSlots = route.blockLayout?.slots.filter((slot) => slot.kind === 'tcTransfer') ?? [];
+    expect(tcSlots.length).toBeGreaterThanOrEqual(artifact.messageBus!.maximumRows);
+    expect(route.blockLayout?.slots.some((slot) => slot.kind === 'tokenContainer')).toBe(true);
   });
 });

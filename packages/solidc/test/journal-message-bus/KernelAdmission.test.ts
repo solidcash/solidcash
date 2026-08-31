@@ -34,7 +34,7 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('refuses an unbounded mapping loop write as KERNEL_UNBOUNDED_KEY', () => {
+  it('refuses a counter-keyed mapping loop as KERNEL_UNBOUNDED_KEY', () => {
     expect(denied(`contract C() {
       mapping(int => int) slots;
       function denied(int n) public {
@@ -45,6 +45,57 @@ describe('required kernel admission', () => {
     }`, 'denied')).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+  });
+
+  it('admits an expression-keyed mapping write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      int next;
+      function push(int n) public {
+        this.slots[this.next] = n;
+        this.next = this.next + 1;
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'push')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('admits a literal local key array that unrolls to an expression-keyed write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(bytes20 => int)) seen;
+      bytes20 worker;
+      function refund(int id) public {
+        bytes20[] xs = new bytes20[](1);
+        xs[0] = this.worker;
+        for (int i = 0; i < xs.length; i = i + 1) {
+          this.seen[id][xs[i]] = 0;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refund')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('admits an expression-keyed parameter-array mapping loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(bytes20 => int)) seen;
+      int[] jobs;
+      function create(bytes20[] workers) public {
+        this.jobs.push(0);
+        int id = this.jobs.length - 1;
+        for (int i = 0; i < int(workers.length); i = i + 1) {
+          this.seen[id][workers[i]] = 1;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'create')).toMatchObject({
+      eligible: true,
     });
   });
 

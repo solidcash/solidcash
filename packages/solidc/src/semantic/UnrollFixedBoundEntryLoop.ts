@@ -29,6 +29,7 @@ import {
   NewArrayNode,
   CollectionIterationNode,
   ArrayAccessNode,
+  CastNode,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -317,7 +318,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     }
 
     // Each iteration is wrapped in its own block so body-local declarations (`address user = ...`) don't collide
-    // across the N copies (Solidity block scoping). The loop variable is substituted by its per-iteration literal.
+    // across the N copies (Solidity block scoping). A single iteration is inlined into the enclosing block so
+    // message-bus admission still sees a top-level mapping write (computed-key journal).
     const result: StatementNode[] = [];
     for (const v of values) {
       const iterStmts: StatementNode[] = [];
@@ -326,9 +328,13 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
         this.substituteVar(clone, varName, v);
         iterStmts.push(clone);
       }
-      const block = new BlockNode(iterStmts);
-      block.location = w.block.location;
-      result.push(this.visit(block) as StatementNode); // recurse into the wrapped body (nested loops)
+      if (values.length === 1) {
+        for (const st of iterStmts) result.push(this.visit(st) as StatementNode);
+      } else {
+        const block = new BlockNode(iterStmts);
+        block.location = w.block.location;
+        result.push(this.visit(block) as StatementNode);
+      }
     }
     return result;
   }
@@ -339,6 +345,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   // to ZERO iterations, eliminating a provably-dead loop whose body would otherwise reach codegen (e.g. a vmap
   // sorted mapping write over an empty array). This is why the pass is run a second time, post-inline.
   private evalBound(expr: Node): bigint | undefined {
+    if (expr instanceof CastNode) return this.evalBound(expr.expression);
     if (expr instanceof IntLiteralNode) return expr.value;
     if (expr instanceof UnaryOpNode && expr.operator === UnaryOperator.SIZE) {
       if (expr.expression instanceof IdentifierNode) {

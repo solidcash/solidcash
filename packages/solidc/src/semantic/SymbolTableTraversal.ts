@@ -1541,6 +1541,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // visited, because both need per-handler metadata assigned during that function's own visit.
     this.refuseUnframedGraphEffects(node);
     this.planGraphEffectFrames(node);
+    this.shareRouteLayoutWithLoopEntryHandlers(node);
 
     if (node.fallbackDef) {
       const loc = node.fallbackDef.location ? ` at line ${node.fallbackDef.location.start.line}` : '';
@@ -12930,6 +12931,21 @@ export default class SymbolTableTraversal extends AstTraversal {
     // `tcTransfer` output index.
     for (const fn of handlers) {
       if (tokenTransferCount(fn) > 0) fn.blockLayout = route.blockLayout;
+    }
+  }
+
+  /**
+   * Kernel row-loop clones settle trailing vmap upserts (`m[xs[i]] = v`) inside OP_INVOKE. Those writes index
+   * outputs from the route's `blockSize`, so the clone must share the route layout rather than the 1-slot
+   * default an internal function would otherwise compile against. Source entry points keep their own layout
+   * for direct calls.
+   */
+  private shareRouteLayoutWithLoopEntryHandlers(contract: ContractNode): void {
+    const route = contract.functions.find((fn) => fn.messageBusRoute);
+    if (!route?.blockLayout) return;
+    for (const fn of contract.functions) {
+      if (fn === route || !fn.name.startsWith('__message_bus_')) continue;
+      if (fn.entryAccesses?.some((entry) => entry.inLoop)) fn.blockLayout = route.blockLayout;
     }
   }
 

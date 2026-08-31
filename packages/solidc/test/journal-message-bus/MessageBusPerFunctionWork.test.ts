@@ -35,7 +35,8 @@ describe('message-bus heavy work is per function', () => {
     const invokeNames = Object.values(artifact.debug?.invokeDebug ?? {}).map((debug) => debug.name);
     expect(invokeNames).not.toContain('__message_bus_graph_ping');
     expect(invokeNames).not.toContain('__message_bus_handler_ping');
-    expect(invokeNames).toContain('__message_bus_graph_pay');
+    expect(invokeNames.some((name) => name === '__message_bus_graph_pay'
+      || name === '__message_bus_handler_pay')).toBe(true);
     expect(artifact.abi.find((fn) => fn.name === 'ping')).toBeDefined();
     expect(artifact.abi.find((fn) => fn.name === 'pay')).toBeDefined();
   });
@@ -64,6 +65,7 @@ describe('message-bus heavy work is per function', () => {
     const invokeNames = Object.values(artifact.debug?.invokeDebug ?? {}).map((debug) => debug.name);
     expect(invokeNames).not.toContain('__message_bus_graph_ping');
     expect(invokeNames).not.toContain('__message_bus_handler_ping');
-    expect(invokeNames).toContain('__message_bus_graph_pay');
+    expect(invokeNames.some((name) => name === '__message_bus_graph_pay'
+      || name === '__message_bus_handler_pay')).toBe(true);
   });
 });

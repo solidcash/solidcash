@@ -1534,6 +1534,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Pre-allocate only this function's own fixed entry slots. `collectMappingSlots` follows invoked callees, so a
+   * kernel row loop that dispatches `create(...)` would otherwise treat a callee's trailing upsert (`m[xs[i]]=v`,
+   * inLoop, no block descriptor) as `entry[0]` on the wrapper and fail closed in `emitEntryCovenantVerification`.
+   * Those writes settle inside the invoked body against the route layout; they are not wrapper epilogue slots.
+   */
+  private ownsFixedEntrySlot(slotIndex: number): boolean {
+    const slot = this.entrySlots[slotIndex];
+    return slot !== undefined && slot.inLoop !== true;
+  }
+
+  /**
    * Ordinary delegate entry points own a co-spent implementation block, so their execution resources are based
    * at OP_INPUTINDEX. Compiler-owned message-bus delegates instead execute after one complete, published proxy
    * block; every slot in that route layout is therefore based at the authenticated proxy master.
@@ -6352,8 +6363,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // have NO fixed block slot, so they must not be pre-allocated into the fixed-slot epilogue write path (the
       // epilogue would then look up a non-existent entry[i] slot). Matches the other two pre-alloc sites; without
       // it a loop mapping write reachable through a branch (EACC publishJobPost's whitelistWorkers loop) trips
-      // "Block slot not found: entry[N]".
-      if (this.entrySlots?.[slotIndex]?.inLoop) continue;
+      // "Block slot not found: entry[N]". Callee trailing upserts are the same class when the kernel row loop
+      // only *invokes* the writer.
+      if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (this.entrySlots?.[slotIndex]?.aliasCondDeleteSlot !== undefined
         && this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIndex))) continue;
       if (!this.preAllocatedEntryWrites.has(slotIndex) && !this.pendingEntryWrites.has(slotIndex)) {
@@ -7053,7 +7065,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const slotIndex of mappingWriteSlots) {
       // Loop-write entries emit a runtime counter-indexed trailing output per iteration (emitLoopEntryWrite);
       // they have no fixed block slot, so must not be pre-allocated into the fixed-slot epilogue write path.
-      if (this.entrySlots?.[slotIndex]?.inLoop) continue;
+      if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (!this.preAllocatedEntryWrites.has(slotIndex) && !this.pendingEntryWrites.has(slotIndex)) {
         const keyStackName = `__entry_key_enc_${slotIndex}`;
         const valueStackName = `__entry_value_enc_${slotIndex}`;
@@ -7067,6 +7079,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     for (const slotIndex of mappingDeleteSlots) {
+      if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (!this.preAllocatedEntryDeletes.has(slotIndex)) {
         this.pendingEntryDeletes.add(slotIndex);
         this.preAllocatedEntryDeletes.add(slotIndex);
@@ -7217,7 +7230,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const slotIndex of mappingWriteSlots) {
       // Loop-write entries emit a runtime-counter-indexed trailing output per iteration (emitLoopEntryWrite); they
       // have no fixed block slot, so must not be pre-allocated into the fixed-slot epilogue write path.
-      if (this.entrySlots?.[slotIndex]?.inLoop) continue;
+      if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (!this.preAllocatedEntryWrites.has(slotIndex) && !this.pendingEntryWrites.has(slotIndex)) {
         const keyStackName = `__entry_key_enc_${slotIndex}`;
         const valueStackName = `__entry_value_enc_${slotIndex}`;
@@ -7231,6 +7244,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     for (const slotIndex of mappingDeleteSlots) {
+      if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (!this.preAllocatedEntryDeletes.has(slotIndex)) {
         this.pendingEntryDeletes.add(slotIndex);
         this.preAllocatedEntryDeletes.add(slotIndex);
@@ -7401,6 +7415,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const mappingDeleteSlots = new Set<number>();
     this.collectMappingSlots(node.body, mappingWriteSlots, mappingDeleteSlots);
     for (const slotIndex of mappingWriteSlots) {
+      if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (!this.preAllocatedEntryWrites.has(slotIndex) && !this.pendingEntryWrites.has(slotIndex)) {
         const keyStackName = `__entry_key_enc_${slotIndex}`;
         const valueStackName = `__entry_value_enc_${slotIndex}`;
@@ -7977,6 +7992,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.defaultCase) this.collectMappingSlots(node.defaultCase, mappingWriteSlots, mappingDeleteSlots);
 
     for (const slotIndex of mappingWriteSlots) {
+      if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (!this.preAllocatedEntryWrites.has(slotIndex) && !this.pendingEntryWrites.has(slotIndex)) {
         const keyStackName = `__entry_key_enc_${slotIndex}`;
         const valueStackName = `__entry_value_enc_${slotIndex}`;

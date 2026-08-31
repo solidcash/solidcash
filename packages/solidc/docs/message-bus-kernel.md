@@ -110,12 +110,14 @@ A contract uses the kernel path when **every** handler the route would dispatch 
 - no `sig` / `sig[]` parameters (those cannot live in the envelope);
 - no dedicated resource-shaped handler that owns a fixed per-row physical frame as route ABI;
 - no `_r${row}` witnesses required for soundness;
-- results and effects can be appended in the loop (concat / effect table);
+- results and effects (events, BCH, token-container, **typed external calls**) can be appended in
+  the loop (concat / effect table / authenticated emission context on one `OP_INVOKE`);
 - no frozen-forbidden construct (section 5).
 
 Otherwise the contract stays on the **legacy** path: current clones, current unroll, current
-`messageBusRejectionReason` strings. MarketplaceV1 is expected to remain legacy until a later cutover
-that is not part of the kernel-toy work.
+`messageBusRejectionReason` strings. A Marketplace-shaped handler is kernel-eligible when its keys
+and calls have a loop representation; the whole contract stays legacy only while some sibling still
+needs `_rN` witnesses or a frozen-forbidden construct.
 
 An explicit compiler option `messageBusKernel: true` (when added) **requires** the kernel path and
 fails with a `KERNEL_*` reason instead of falling back to legacy.
@@ -132,7 +134,7 @@ every kernel toy.
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
 | `KERNEL_TX_SIGNATURE` | A transaction `sig` / `sig[]` in the row or envelope | `ecrecover` / ECDSA over **data** (existing compute sidecar) |
-| `KERNEL_UNBOUNDED_KEY` | A mapping/collection write whose key is not in the row and not a published witness | Parameter-keyed or `msg.sender`-keyed vmap |
+| `KERNEL_UNBOUNDED_KEY` | A counter-keyed `m[i]` loop (`i < n`) or a locally constructed key array whose length is not a compile-time `N <= 64` | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), or literal `new T[](N)` local (unrolled to scalar writes) |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Inline assembly or a low-level call the journal cannot summarize as a call/effect row | After Solidity-compat lowering to `call` plus returndata |
 | `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper |
@@ -211,6 +213,6 @@ Kernel toys now cover the designed eligibility class:
 - `delegate` implementation functions in this participant's owner frame.
 
 Compiler evidence: `KernelLoopRoute.test.ts`, `KernelCutoverRoute.test.ts`. SDK: `KernelLoopCompose.test.ts`,
-`KernelCutoverCompose.test.ts`. Resource-shaped per-row frames, transaction `sig` rows, unbounded keys, and
-foreign `delegatecall` stay on the legacy unroll. Marketplace owned-only is **not** a kernel gate; if it does
-not kernel-compile, it stays legacy — it is not a reason to grow the catalog.
+`KernelCutoverCompose.test.ts`. Resource-shaped per-row frames, transaction `sig` rows, counter-keyed
+`m[i]` loops, and foreign `delegatecall` stay on the legacy unroll. Typed external calls and literal
+`new T[](N)` key arrays use the row loop (`__message_bus_handler_*` DEFINE, not `__message_bus_graph_*`).

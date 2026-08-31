@@ -2199,10 +2199,11 @@ function synthesizeMessageBusRoute(
     }
     return undefined;
   };
+  const literalNewArraySize = (expression: ExpressionNode | undefined): bigint | undefined =>
+    expression instanceof NewArrayNode && expression.size instanceof IntLiteralNode
+      ? expression.size.value : undefined;
   const isZeroLengthNewArray = (expression: ExpressionNode | undefined): boolean =>
-    expression instanceof NewArrayNode
-    && expression.size instanceof IntLiteralNode
-    && expression.size.value === 0n;
+    literalNewArraySize(expression) === 0n;
   const expressionIdentifier = (expression: ExpressionNode): string | undefined => {
     if (expression instanceof IdentifierNode) return expression.name;
     if (expression instanceof CastNode) return expressionIdentifier(expression.expression);
@@ -2231,16 +2232,22 @@ function synthesizeMessageBusRoute(
     source: FunctionDefinitionNode,
     closure: Set<string>,
     visiting: Set<string>,
+    boundedLiteralMax = 0n,
   ): boolean => {
     const seen = `${owner.name}\0${arrayName}`;
     if (visiting.has(seen)) return false;
     visiting.add(seen);
+    const literalOk = (expression: ExpressionNode | undefined): boolean => {
+      const size = literalNewArraySize(expression);
+      return size !== undefined && size <= boundedLiteralMax;
+    };
     if (owner === source) {
       if (source.parameters.some((parameter) => parameter.name === arrayName)) return true;
       const init = localInitOf(owner, arrayName);
-      if (isZeroLengthNewArray(init)) return true;
+      if (literalOk(init)) return true;
       const alias = init === undefined ? undefined : expressionIdentifier(init);
-      return alias !== undefined && arraySupportedFromSource(alias, owner, source, closure, visiting);
+      return alias !== undefined
+        && arraySupportedFromSource(alias, owner, source, closure, visiting, boundedLiteralMax);
     }
     const paramIndex = owner.parameters.findIndex((parameter) => parameter.name === arrayName);
     if (paramIndex >= 0) {
@@ -2254,10 +2261,12 @@ function synthesizeMessageBusRoute(
             if (!(node instanceof FunctionCallNode) || node.identifier.name !== owner.name) return;
             sawCall = true;
             const argument = node.parameters[paramIndex];
-            if (isZeroLengthNewArray(argument)) return;
+            if (literalOk(argument)) return;
             const argumentName = argument === undefined ? undefined : expressionIdentifier(argument);
             if (argumentName === undefined
-              || !arraySupportedFromSource(argumentName, caller, source, closure, visiting)) {
+              || !arraySupportedFromSource(
+                argumentName, caller, source, closure, visiting, boundedLiteralMax,
+              )) {
               allSupported = false;
             }
           });
@@ -2266,11 +2275,14 @@ function synthesizeMessageBusRoute(
       return sawCall && allSupported;
     }
     const init = localInitOf(owner, arrayName);
-    if (isZeroLengthNewArray(init)) return true;
+    if (literalOk(init)) return true;
     const alias = init === undefined ? undefined : expressionIdentifier(init);
-    return alias !== undefined && arraySupportedFromSource(alias, owner, source, closure, visiting);
+    return alias !== undefined
+      && arraySupportedFromSource(alias, owner, source, closure, visiting, boundedLiteralMax);
   };
-  const hasUnsupportedSortedRuntimeLoopWrite = (source: FunctionDefinitionNode): boolean => {
+  const hasUnsupportedSortedRuntimeLoopWrite = (
+    source: FunctionDefinitionNode, boundedLiteralMax = 0n,
+  ): boolean => {
     const closure = collectNamedFunctionClosure(source, byName);
     let unsupported = false;
     for (const name of closure) {
@@ -2310,13 +2322,51 @@ function synthesizeMessageBusRoute(
             return;
           }
           if (varyingName === undefined) return;
-          if (!arraySupportedFromSource(varyingName, candidate, source, closure, new Set())) {
+          if (!arraySupportedFromSource(
+            varyingName, candidate, source, closure, new Set(), boundedLiteralMax,
+          )) {
             unsupported = true;
           }
         });
       }
     }
     return unsupported;
+  };
+  /**
+   * `for (i = 0; i < n; i++) m[i] = ...` still needs an SDK slot-order permutation ABI. Expression keys
+   * (`m[jobs.length-1]`) and array-element loops (`m[k][xs[i]]`) already have a journal/trailing representation;
+   * those are not this shape.
+   */
+  const hasCounterKeyedRuntimeLoopWrite = (source: FunctionDefinitionNode): boolean => {
+    const closure = collectNamedFunctionClosure(source, byName);
+    let found = false;
+    for (const name of closure) {
+      if (found) break;
+      for (const candidate of byName.get(name) ?? []) {
+        if (found) break;
+        const parameterNames = new Set(candidate.parameters.map((parameter) => parameter.name));
+        const bound = locallyBoundNames(candidate);
+        walkInvocationAst(candidate.body, (node) => {
+          if (found || !(node instanceof WhileNode)) return;
+          const condition = node.condition;
+          const logical = condition instanceof BinaryOpNode && condition.operator === BinaryOperator.LT
+            && condition.left instanceof IdentifierNode ? condition.left.name : undefined;
+          if (!logical || parameterNames.has(logical)) return;
+          walkInvocationAst(node.block, (inner) => {
+            if (found) return;
+            const bare = bareEntryAccessOf(inner, bound);
+            const access = inner instanceof MappingAssignNode || inner instanceof MappingFieldAssignNode
+              || inner instanceof MappingDeleteNode
+              ? { keys: inner.keys as ExpressionNode[] }
+              : ((inner instanceof ArrayAssignNode || inner instanceof ArrayDeleteNode) && bare
+                ? { keys: bare.keys } : undefined);
+            if (!access) return;
+            if (access.keys.some((key) => key instanceof IdentifierNode && key.name === logical)) found = true;
+          });
+        });
+      }
+    }
+    return found;
   };
   /**
    * X187. A method call whose receiver is a CONTRACT/INTERFACE-TYPED VARIABLE - `bar.log()` for `IBar bar` -
@@ -3286,31 +3336,21 @@ function synthesizeMessageBusRoute(
       reason = 'verified-mapping-runtime-loop-write-unsupported';
     }
     if (compilerOptions.messageBusKernel === true) {
-      const parameterNames = new Set(fn.parameters.map((parameter) => parameter.name));
-      let unboundedKey = false;
       let deploys = false;
       for (const name of collectNamedFunctionClosure(fn, byName)) {
         for (const candidate of byName.get(name) ?? []) {
           walkInvocationAst(candidate.body, (node) => {
             if (node instanceof InstantiationNode) deploys = true;
-            const access = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
-              || node instanceof MappingDeleteNode
-              ? { name: node.name, keys: node.keys as ExpressionNode[] }
-              : ((node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode)
-                && collectionByName.has(node.name)
-                ? { name: node.name, keys: [node.index] as ExpressionNode[] }
-                : undefined);
-            if (!access || !(collectionByName.get(access.name)?.type instanceof MappingType)) return;
-            for (const key of access.keys) {
-              if (key instanceof IdentifierNode && parameterNames.has(key.name)) continue;
-              if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) continue;
-              unboundedKey = true;
-            }
           });
         }
       }
-      if (hasUnsupportedSortedRuntimeLoopWrite(fn) || unboundedKey) reason = 'KERNEL_UNBOUNDED_KEY';
-      else if (deploys && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
+      // Expression keys, parameter-array loops, and literal `new T[](N)` locals (N<=64, unrolled to scalar
+      // writes) journal as trailing upserts / published witnesses. Only a counter-keyed `m[i]` loop
+      // (slot-order permutation ABI) or an unbounded constructed key array still has no kernel representation.
+      if (hasCounterKeyedRuntimeLoopWrite(fn)
+        || hasUnsupportedSortedRuntimeLoopWrite(fn, 64n)) {
+        reason = 'KERNEL_UNBOUNDED_KEY';
+      } else if (deploys && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
         reason = 'KERNEL_LAYOUT';
       } else if (reason !== undefined) reason = kernelAdmissionReason(reason);
     }
@@ -3731,17 +3771,15 @@ function synthesizeMessageBusRoute(
   const signatureMode = eligible.some((fn) =>
     fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
   // Kernel dispatch: one for-row loop, no AST unroll. Resource-shaped per-row frames, transaction
-  // signatures, and fixed-array identity sets stay on the legacy unroll. Events, value, tokens, and
-  // parameter/`msg.sender`-keyed mappings use the loop when they need no `_rN` witnesses.
+  // signatures, and fixed-array identity sets stay on the legacy unroll. Events, value, tokens,
+  // typed external calls (`__message_bus_handler_*` DEFINE, not `__message_bus_graph_*`), and mapping
+  // trailing upserts use the loop when they need no `_rN` witnesses.
   // See packages/solidc/docs/message-bus-kernel.md.
   const kernelLoopDispatch = resourceShapedHandler === undefined
     && !signatureMode
     && !fixedArrayMode
-    && eligible.every((fn) => {
-      if ((fn.messageBusKeyWitnesses ?? []).some((binding) => binding.perRow)) return false;
-      const footprint = eligibleFootprint(fn);
-      return !footprint.effects.includes('external-call');
-    });
+    && eligible.every((fn) =>
+      !(fn.messageBusKeyWitnesses ?? []).some((binding) => binding.perRow));
   const signatureWitnessName = (
     handlerIndex: number, parameterIndex: number, row: number,
   ): string => `__message_bus_sig_${handlerIndex}_${parameterIndex}_r${row}`;
@@ -4212,9 +4250,11 @@ function synthesizeMessageBusRoute(
       if (node instanceof TokenContainerMethodStatementNode
         && (node.methodName === 'transfer' || node.methodName === 'transferNft')) hasTokenEffect = true;
     });
-    if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)
+    if (sourceHandler === resourceShapedHandler
+      || (graphTailHandlers.has(sourceHandler) && !kernelLoopDispatch)
       || siblingHandlerInvokeNames.has(sourceHandler)
-      || (footprint.effects.length === 0 && !hasTokenEffect)
+      || (!(graphTailHandlers.has(sourceHandler) && kernelLoopDispatch)
+        && footprint.effects.length === 0 && !hasTokenEffect)
     ) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_handler_${sourceHandler.name}`;
@@ -4225,6 +4265,9 @@ function synthesizeMessageBusRoute(
     handler.messageBusRejectionReason = undefined;
     handler.messageBusKeyWitnesses = undefined;
     handler.graphEmissionHandler = true;
+    handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(sourceHandler);
+    handler.graphRuntimeEmissionThreaded = handler.graphRuntimeEmissionHandler
+      && allGraphEmissionHandlersRuntime;
     localEffectFrameHandlers.add(sourceHandler);
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
@@ -4542,10 +4585,11 @@ function synthesizeMessageBusRoute(
           : String(rowIndex * graphBlockhashReadWidth))
         : undefined;
       const witnessName = (binding: { routeInput: string; perRow?: boolean }): string =>
-        binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
+        (binding.perRow && rowIndex !== undefined)
+          ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
       const entryKeyArguments = (handler: FunctionDefinitionNode): string[] =>
         (handlerEntryKeys.get(handler) ?? []).map(({ base, perRow }) =>
-          (perRow ? `${base}_r${rowIndex}` : base));
+          (perRow && rowIndex !== undefined ? `${base}_r${rowIndex}` : base));
       const ownerContextArgs = routeOwnedCloneNames.has(invokeName) ? [routeOwnerInputExpression] : [];
       if (fn.parameters.length === 0) {
         const logicalCaller = graphExecutionContext ? '__message_bus_graph_caller' : 'msg.sender';
@@ -4749,7 +4793,7 @@ function synthesizeMessageBusRoute(
         binding.routeInput === witness.name && binding.perRow))
         || [...handlerEntryKeys.values()].some((entries) => entries.some((entry) =>
           entry.base === witness.name && entry.perRow));
-      return perRow
+      return perRow && !kernelLoopDispatch
         ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
           `${witness.type.toString()} ${witness.name}_r${row}`)
         : [`${witness.type.toString()} ${witness.name}`];
@@ -6812,6 +6856,13 @@ function compileResolvedAst(
     }
   }
   mark('prefix');
+  // Literal `new T[](N)` key loops (`new address[](1); xs[0]=w; for i<xs.length m[k][xs[i]]=v`) must unroll
+  // before kernel route admission clones the body. Otherwise clones snapshot the runtime loop, skip key
+  // binding, and fail closed looking up entry[0] on a clone with no block descriptor. The graph path keeps
+  // refusing that shape (`verified-mapping-runtime-loop-write-unsupported`) until its own clones unroll.
+  if (mergedCompilerOptions.messageBusKernel === true) {
+    ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+  }
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)
     && ast.contract.functions.some((fn) => {

@@ -212,6 +212,113 @@ contract Vault() {
     expect(route.blockLayout?.slots.some((slot) => slot.kind === 'tokenContainer')).toBe(true);
   });
 
+  it('journals a counter-keyed mapping loop from the runtime row loop', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Slots() {
+  mapping(int => int) slots;
+  function fill(int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.slots[i] = 1; }
+    require(true);
+  }
+}
+`, 'fill');
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+  });
+
+  it('journals takeJob-shaped msg.sender and getter argument keys without _rN', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Jobs() {
+  mapping(int => mapping(address => int)) whitelistWorkers;
+  function take(int id) public {
+    require(this.whitelistWorkers[id][msg.sender] == 1);
+    this.whitelistWorkers[id][msg.sender] = 0;
+    require(true);
+  }
+  function peek(int id, address who) public {
+    require(this.whitelistWorkers[id][who] == 1 || this.whitelistWorkers[id][who] == 0);
+  }
+}
+`, 'take');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'peek')).toMatchObject({
+      eligible: true,
+    });
+    expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
+    expect(artifact.abi.some((fn) => fn.name === '__message_bus_resource_take')).toBe(false);
+  });
+
+  it('keeps a scalar pause handler beside a collection sibling on the row loop', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Governed() {
+  address owner;
+  bool paused;
+  mapping(address => int) balances;
+  constructor() { this.owner = msg.sender; }
+  function pause() public {
+    require(msg.sender == this.owner);
+    this.paused = true;
+    require(this.paused);
+  }
+  function credit(address who, int n) public {
+    this.balances[who] = this.balances[who] + n;
+    require(true);
+  }
+}
+`, 'pause');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'credit')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('journals ERC-20 transferFrom from/to as two row-arg slots on the loop', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Token() {
+  mapping(address => int) balances;
+  mapping(address => mapping(address => int)) allowances;
+  function transferFrom(address from, address to, int value) public returns (bool) {
+    int allowed = this.allowances[from][msg.sender];
+    require(allowed >= value);
+    this.allowances[from][msg.sender] = allowed - value;
+    this.balances[from] = this.balances[from] - value;
+    this.balances[to] = this.balances[to] + value;
+    return true;
+  }
+}
+`, 'transferFrom');
+    expect(artifact.messageBus?.maximumRows).toBeGreaterThan(2);
+    expect(artifact.abi.some((fn) => fn.name.startsWith('__message_bus_resource_'))).toBe(false);
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name === '__message_bus_key_balances_0_row' || input.name.endsWith('_row'))).toBe(true);
+  });
+
+  it('journals a helper-refund whitelist loop after unrolling the literal key array', () => {
+    assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Ledger() {
+  mapping(int => mapping(bytes20 => int)) seen;
+  bytes20 worker;
+  function _update(int id, bytes20[] allowed, bytes20[] denied) internal {
+    for (int i = 0; i < int(allowed.length); i = i + 1) {
+      this.seen[id][allowed[i]] = 1;
+    }
+    for (int j = 0; j < int(denied.length); j = j + 1) {
+      this.seen[id][denied[j]] = 0;
+    }
+  }
+  function refund(int id) public {
+    bytes20[] xs = new bytes20[](1);
+    xs[0] = this.worker;
+    _update(id, new bytes20[](0), xs);
+    require(true);
+  }
+}
+`, 'refund');
+  });
+
   it('dispatches a token-container NFT transfer from the runtime row loop', () => {
     const artifact = assertKernelRoute(`
 pragma solidcash ^0.13.0;

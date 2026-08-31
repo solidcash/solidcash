@@ -108,8 +108,10 @@ loop variable), never a compile-time integer.
 A contract uses the kernel path when **every** handler the route would dispatch is kernel-shaped:
 
 - no `sig` / `sig[]` parameters (those cannot live in the envelope);
-- no dedicated resource-shaped handler that owns a fixed per-row physical frame as route ABI;
-- no `_r${row}` witnesses required for soundness;
+- no dedicated resource-shaped handler that owns a fixed per-row physical frame as route ABI
+  (param-keyed `from`/`to` alternatives journal as two slots of the same row);
+- no `_r${row}` witnesses required for soundness (`msg.sender` is a shared published identity;
+  argument and expression keys are decoded from the row);
 - results and effects (events, BCH, token-container, **typed external calls**) can be appended in
   the loop (concat / effect table / authenticated emission context on one `OP_INVOKE`);
 - no frozen-forbidden construct (section 5).
@@ -134,7 +136,7 @@ every kernel toy.
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
 | `KERNEL_TX_SIGNATURE` | A transaction `sig` / `sig[]` in the row or envelope | `ecrecover` / ECDSA over **data** (existing compute sidecar) |
-| `KERNEL_UNBOUNDED_KEY` | A counter-keyed `m[i]` loop (`i < n`) or a locally constructed key array whose length is not a compile-time `N <= 64` | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), or literal `new T[](N)` local (unrolled to scalar writes) |
+| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64` | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), or counter-keyed `m[i]` (`i < n`, hidden `__internal__vmapCounterPerm_*` witness) |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Inline assembly or a low-level call the journal cannot summarize as a call/effect row | After Solidity-compat lowering to `call` plus returndata |
 | `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper |
@@ -213,6 +215,8 @@ Kernel toys now cover the designed eligibility class:
 - `delegate` implementation functions in this participant's owner frame.
 
 Compiler evidence: `KernelLoopRoute.test.ts`, `KernelCutoverRoute.test.ts`. SDK: `KernelLoopCompose.test.ts`,
-`KernelCutoverCompose.test.ts`. Resource-shaped per-row frames, transaction `sig` rows, counter-keyed
-`m[i]` loops, and foreign `delegatecall` stay on the legacy unroll. Typed external calls and literal
-`new T[](N)` key arrays use the row loop (`__message_bus_handler_*` DEFINE, not `__message_bus_graph_*`).
+`KernelCutoverCompose.test.ts`. Resource-shaped per-row frames that are not param-keyed `from`/`to`
+alternatives, transaction `sig` rows, and foreign `delegatecall` stay on the legacy unroll. Typed
+external calls, literal `new T[](N)` key arrays, counter-keyed `m[i]` loops, and cross-handler
+`msg.sender` / argument keys use the row loop (`__message_bus_handler_*` DEFINE, not
+`__message_bus_graph_*`).

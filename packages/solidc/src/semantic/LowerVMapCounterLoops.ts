@@ -1,12 +1,14 @@
 import {
   ArrayAccessNode, ArrayAssignNode, AssignNode, BinaryOpNode, ContractNode, ExpressionNode,
-  FunctionDefinitionNode, IdentifierNode, MappingDeleteNode, Node, ParameterNode, SourceFileNode, WhileNode,
+  FunctionDefinitionNode, IdentifierNode, MappingAssignNode, MappingDeleteNode, Node, ParameterNode,
+  SourceFileNode, WhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { ArrayType, IntType } from '@solidcash/utils';
 
-const PREFIX = '__internal__vmapCounterPerm_';
+export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
+const PREFIX = VMAP_COUNTER_PERM_PREFIX;
 
 /**
  * Lower the deliberately narrow, order-independent vmap counter loop
@@ -42,8 +44,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ? condition.left.name : undefined;
         const count = condition instanceof BinaryOpNode && condition.right instanceof IdentifierNode
           ? condition.right.name : undefined;
-        const writes = stmts.filter((s) => s instanceof ArrayAssignNode || s instanceof MappingDeleteNode) as
-          Array<ArrayAssignNode | MappingDeleteNode>;
+        const writes = stmts.filter((s) => s instanceof ArrayAssignNode
+          || s instanceof MappingAssignNode || s instanceof MappingDeleteNode) as
+          Array<ArrayAssignNode | MappingAssignNode | MappingDeleteNode>;
         let update: AssignNode | undefined;
         const findUpdate = (x: Node): void => {
           if (x instanceof AssignNode && x.identifier.name === logical) { update = x; return; }
@@ -54,7 +57,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) findUpdate(e);
           }
         };
-        for (const s of stmts) if (!(s instanceof ArrayAssignNode) && !(s instanceof MappingDeleteNode)) findUpdate(s);
+        for (const s of stmts) {
+          if (!(s instanceof ArrayAssignNode) && !(s instanceof MappingAssignNode)
+            && !(s instanceof MappingDeleteNode)) findUpdate(s);
+        }
         const canonicalUpdate = logical && update?.identifier.name === logical;
         const writeKey = writes[0] instanceof ArrayAssignNode ? writes[0].index : writes[0]?.keys[0];
         if (logical && count && writes.length === 1 && stmts.length === 2 && canonicalUpdate
@@ -84,6 +90,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (write instanceof ArrayAssignNode) {
             write.index = permRead();
             write.value = replace(write.value) as ExpressionNode;
+          } else if (write instanceof MappingAssignNode) {
+            write.keys[0] = permRead();
+            write.expression = replace(write.expression) as ExpressionNode;
           } else {
             write.keys[0] = permRead();
           }

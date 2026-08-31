@@ -28,7 +28,7 @@ import {
   ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
-  StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode, NewArrayNode,
+  StateAccessNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode, NewArrayNode,
   FunctionCallStatementNode,
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
@@ -102,7 +102,7 @@ import {
 import {
   containsIndirectCall, PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
-import LowerVMapCounterLoops from './semantic/LowerVMapCounterLoops.js';
+import LowerVMapCounterLoops, { VMAP_COUNTER_PERM_PREFIX } from './semantic/LowerVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
@@ -2194,8 +2194,11 @@ function synthesizeMessageBusRoute(
         keys.unshift(base.index);
         base = base.array;
       }
-      if (!(base instanceof IdentifierNode) || !named(base.name)) return undefined;
-      return { name: base.name, keys, chain };
+      const baseName = base instanceof IdentifierNode ? base.name
+        : (compilerOptions.messageBusKernel === true && base instanceof StateAccessNode)
+          ? base.name : undefined;
+      if (baseName === undefined || !named(baseName)) return undefined;
+      return { name: baseName, keys, chain };
     }
     return undefined;
   };
@@ -2331,42 +2334,6 @@ function synthesizeMessageBusRoute(
       }
     }
     return unsupported;
-  };
-  /**
-   * `for (i = 0; i < n; i++) m[i] = ...` still needs an SDK slot-order permutation ABI. Expression keys
-   * (`m[jobs.length-1]`) and array-element loops (`m[k][xs[i]]`) already have a journal/trailing representation;
-   * those are not this shape.
-   */
-  const hasCounterKeyedRuntimeLoopWrite = (source: FunctionDefinitionNode): boolean => {
-    const closure = collectNamedFunctionClosure(source, byName);
-    let found = false;
-    for (const name of closure) {
-      if (found) break;
-      for (const candidate of byName.get(name) ?? []) {
-        if (found) break;
-        const parameterNames = new Set(candidate.parameters.map((parameter) => parameter.name));
-        const bound = locallyBoundNames(candidate);
-        walkInvocationAst(candidate.body, (node) => {
-          if (found || !(node instanceof WhileNode)) return;
-          const condition = node.condition;
-          const logical = condition instanceof BinaryOpNode && condition.operator === BinaryOperator.LT
-            && condition.left instanceof IdentifierNode ? condition.left.name : undefined;
-          if (!logical || parameterNames.has(logical)) return;
-          walkInvocationAst(node.block, (inner) => {
-            if (found) return;
-            const bare = bareEntryAccessOf(inner, bound);
-            const access = inner instanceof MappingAssignNode || inner instanceof MappingFieldAssignNode
-              || inner instanceof MappingDeleteNode
-              ? { keys: inner.keys as ExpressionNode[] }
-              : ((inner instanceof ArrayAssignNode || inner instanceof ArrayDeleteNode) && bare
-                ? { keys: bare.keys } : undefined);
-            if (!access) return;
-            if (access.keys.some((key) => key instanceof IdentifierNode && key.name === logical)) found = true;
-          });
-        });
-      }
-    }
-    return found;
   };
   /**
    * X187. A method call whose receiver is a CONTRACT/INTERFACE-TYPED VARIABLE - `bar.log()` for `IBar bar` -
@@ -3036,7 +3003,13 @@ function synthesizeMessageBusRoute(
           reason = 'collection-route-has-ambiguous-global-and-row-key';
         }
         if (!reason) {
-          resourceShapedHandler ??= fn;
+          // Kernel journals both alternatives from this row's arguments (ERC-20 transferFrom from/to) as two
+          // physical slots of one invocation. That is not a 2-row resource template and must not set
+          // `resourceShapedHandler` or `_rN` copies. Legacy keeps the compact two-row resource batch.
+          const kernelParamKeyedResource = compilerOptions.messageBusKernel === true
+            && [...directKeys.values()].every((alternatives) =>
+              alternatives.every((indices) => indices.every((index) => index >= 0 || index === -2)));
+          if (!kernelParamKeyedResource) resourceShapedHandler ??= fn;
           // Witnesses are named by the physical entry they address - collection, key position, and whether the
           // entry is shared by every row or row-local - never by the handler or its parameter names. Two
           // handlers that touch the same entry then resolve to the same route input and the same vmap slot. Naming
@@ -3045,10 +3018,10 @@ function synthesizeMessageBusRoute(
             const collection = collectionByName.get(collectionName)!;
             const safeName = collectionName.replace(/[^A-Za-z0-9_]/g, '_');
             alternatives.forEach((indices, alternativeIndex) => {
-              const perRow = alternativeIndex > 0;
+              const perRow = alternativeIndex > 0 && !kernelParamKeyedResource;
               indices.forEach((inputIndex, keyIndex) => {
                 if (inputIndex < 0 && inputIndex !== -2) return;
-                const routeInput = perRow
+                const routeInput = alternativeIndex > 0
                   ? `__message_bus_key_${safeName}_${keyIndex}_row`
                   : `__message_bus_key_${safeName}_${keyIndex}`;
                 routeKeyWitnesses.set(routeInput, [{
@@ -3059,7 +3032,9 @@ function synthesizeMessageBusRoute(
                 keyWitnesses.push({
                   routeInput,
                   inputIndex,
-                  ...(inputIndex === -2 && { source: 'msgSender' as const }),
+                  ...(inputIndex === -2
+                    ? { source: 'msgSender' as const }
+                    : kernelParamKeyedResource ? { source: 'argument' as const } : {}),
                   ...(perRow && { perRow: true }),
                 });
               });
@@ -3344,11 +3319,11 @@ function synthesizeMessageBusRoute(
           });
         }
       }
-      // Expression keys, parameter-array loops, and literal `new T[](N)` locals (N<=64, unrolled to scalar
-      // writes) journal as trailing upserts / published witnesses. Only a counter-keyed `m[i]` loop
-      // (slot-order permutation ABI) or an unbounded constructed key array still has no kernel representation.
-      if (hasCounterKeyedRuntimeLoopWrite(fn)
-        || hasUnsupportedSortedRuntimeLoopWrite(fn, 64n)) {
+      // Expression keys, parameter-array loops, literal `new T[](N)` locals (N<=64, unrolled to scalar
+      // writes), and counter-keyed `m[i]` loops (hidden `__internal__vmapCounterPerm_*` witness) journal as
+      // trailing upserts / published witnesses. Only an unbounded constructed key array still has no kernel
+      // representation.
+      if (hasUnsupportedSortedRuntimeLoopWrite(fn, 64n)) {
         reason = 'KERNEL_UNBOUNDED_KEY';
       } else if (deploys && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
         reason = 'KERNEL_LAYOUT';
@@ -3453,8 +3428,16 @@ function synthesizeMessageBusRoute(
     // no binder at all; and the alias gating that collapses a duplicated row key onto an earlier slot lives
     // INSIDE the entry handler's dispatch arm, so a hand-supplied key makes the derivation co-spend one entry
     // NFT twice. Both are measured, and neither is reachable by widening this predicate.
+    //
+    // Kernel dispatch does not emit `_rN` witnesses: msg.sender is a shared published identity and argument /
+    // expression keys are decoded from the row. Those `perRow` marks must not demote scalar siblings such as
+    // `pause`. Resource-shaped `_row` alternatives (no kernel-representable source) still need the exception.
+    const kernelRepresentableKeySource = (
+      source: 'argument' | 'msgSender' | 'expression' | undefined,
+    ): boolean => source === 'msgSender' || source === 'argument' || source === 'expression';
     const perRowEntryRoute = survivors.some((fn) =>
-      fn.messageBusKeyWitnesses?.some((binding) => binding.perRow));
+      fn.messageBusKeyWitnesses?.some((binding) => binding.perRow
+        && !(compilerOptions.messageBusKernel === true && kernelRepresentableKeySource(binding.source))));
     if ((dropMixedScalars || !admitMixedScalarHandlers || perRowEntryRoute)
       && survivors.some((fn) => (fn.messageBusKeyWitnesses?.length ?? 0) > 0)) {
       for (const fn of survivors) {
@@ -3722,18 +3705,24 @@ function synthesizeMessageBusRoute(
   // Such a value is row-local even when each handler individually has only one key spelling. Promoting the
   // shared name preserves one physical identity per row and prevents the SDK from being asked to choose one
   // contradictory global value for the whole batch.
+  //
+  // Kernel dispatch does not emit `_rN`: msg.sender is one shared published witness and getter/argument keys
+  // are decoded from the live row. Promoting those identities would force the legacy unroll (and demote
+  // scalar siblings). Leave them unpromoted; a mixed batch that actually disagrees fails the row require.
   const bindingsByRouteInput = new Map<string, Array<{ inputIndex: number; source?: string }>>();
   for (const fn of eligible) for (const binding of fn.messageBusKeyWitnesses ?? []) {
     const bindings = bindingsByRouteInput.get(binding.routeInput) ?? [];
     bindings.push({ inputIndex: binding.inputIndex, source: binding.source });
     bindingsByRouteInput.set(binding.routeInput, bindings);
   }
-  for (const [routeInput, bindings] of bindingsByRouteInput) {
-    const identities = new Set(bindings.map((binding) => `${binding.source ?? 'argument'}:${binding.inputIndex}`));
-    if (identities.size <= 1) continue;
-    crossHandlerPerRowWitnesses.add(routeInput);
-    for (const fn of eligible) for (const binding of fn.messageBusKeyWitnesses ?? []) {
-      if (binding.routeInput === routeInput) binding.perRow = true;
+  if (compilerOptions.messageBusKernel !== true) {
+    for (const [routeInput, bindings] of bindingsByRouteInput) {
+      const identities = new Set(bindings.map((binding) => `${binding.source ?? 'argument'}:${binding.inputIndex}`));
+      if (identities.size <= 1) continue;
+      crossHandlerPerRowWitnesses.add(routeInput);
+      for (const fn of eligible) for (const binding of fn.messageBusKeyWitnesses ?? []) {
+        if (binding.routeInput === routeInput) binding.perRow = true;
+      }
     }
   }
 
@@ -3772,14 +3761,23 @@ function synthesizeMessageBusRoute(
     fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
   // Kernel dispatch: one for-row loop, no AST unroll. Resource-shaped per-row frames, transaction
   // signatures, and fixed-array identity sets stay on the legacy unroll. Events, value, tokens,
-  // typed external calls (`__message_bus_handler_*` DEFINE, not `__message_bus_graph_*`), and mapping
-  // trailing upserts use the loop when they need no `_rN` witnesses.
+  // typed external calls (`__message_bus_handler_*` DEFINE, not `__message_bus_graph_*`), mapping
+  // trailing upserts, and kernel-representable keys (shared msg.sender, row-decoded arguments /
+  // expressions) use the loop. A `perRow` mark without one of those sources is the resource `_row`
+  // alternative and still forces the legacy unroll.
   // See packages/solidc/docs/message-bus-kernel.md.
+  const kernelRepresentablePerRow = (
+    binding: { perRow?: boolean; source?: 'argument' | 'msgSender' | 'expression' },
+  ): boolean => !binding.perRow
+    || binding.source === 'msgSender' || binding.source === 'argument' || binding.source === 'expression';
   const kernelLoopDispatch = resourceShapedHandler === undefined
     && !signatureMode
     && !fixedArrayMode
-    && eligible.every((fn) =>
-      !(fn.messageBusKeyWitnesses ?? []).some((binding) => binding.perRow));
+    && (compilerOptions.messageBusKernel === true
+      ? eligible.every((fn) =>
+        (fn.messageBusKeyWitnesses ?? []).every((binding) => kernelRepresentablePerRow(binding)))
+      : eligible.every((fn) =>
+        !(fn.messageBusKeyWitnesses ?? []).some((binding) => binding.perRow)));
   const signatureWitnessName = (
     handlerIndex: number, parameterIndex: number, row: number,
   ): string => `__message_bus_sig_${handlerIndex}_${parameterIndex}_r${row}`;
@@ -4662,6 +4660,8 @@ function synthesizeMessageBusRoute(
                 return '__message_bus_graph_owner_input(__internal__graphSettlementTable, '
               + `${decodedName(targetIndex)})`;
               })()
+              : parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
+                ? parameter.name
               : i === tokenCategoryInputByHandler.get(fn)
                 ? '__message_bus_token_category'
                 : (witnessByInput.get(i) ?? decodedName(i))),
@@ -4804,6 +4804,14 @@ function synthesizeMessageBusRoute(
         ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
           `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
         : []));
+  const declaredPermNames = new Set<string>();
+  const routeCounterPermParameters = eligible.flatMap((fn) =>
+    fn.parameters.filter((parameter) => {
+      if (!parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)) return false;
+      if (declaredPermNames.has(parameter.name)) return false;
+      declaredPermNames.add(parameter.name);
+      return true;
+    }).map((parameter) => `${parameter.type.toString()} ${parameter.name}`));
   const resourceVerificationMode = eligible.some((fn) => {
     const footprint = eligibleFootprint(fn);
     return footprint.reads.length > 0 || footprint.writes.length > 0;
@@ -4841,7 +4849,7 @@ function synthesizeMessageBusRoute(
   const routeParameters = [
     'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
     ...localCallerRouteParameters,
-    ...routeSignatureParameters, ...routeKeyParameters,
+    ...routeSignatureParameters, ...routeKeyParameters, ...routeCounterPermParameters,
   ].join(', ');
   // Compiler-route unlockers publish the canonical batch as the first positional item after the selector for
   // both direct and delegate execution. The ordinary (reverse-pushed) ABI frame follows that positional prefix,
@@ -5095,9 +5103,9 @@ function synthesizeMessageBusRoute(
           require(cursor + 29 <= callManifest.length);
           bigint rowStart = cursor;
           bigint kind = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
-          bigint owner = int(bytes.concat(callManifest.slice(cursor + 1, cursor + 2), hex"00"));
+          bigint __message_bus_row_owner = int(bytes.concat(callManifest.slice(cursor + 1, cursor + 2), hex"00"));
           bigint consumer = int(bytes.concat(callManifest.slice(cursor + 2, cursor + 3), hex"00"));
-          require(kind <= 6 && owner < participantCount && consumer < participantCount);
+          require(kind <= 6 && __message_bus_row_owner < participantCount && consumer < participantCount);
           bigint sourceOffset = int(bytes.concat(callManifest.slice(cursor + 6, cursor + 8), hex"00"));
           bigint targetOffset = int(bytes.concat(callManifest.slice(cursor + 8, cursor + 10), hex"00"));
           bigint completion = int(bytes.concat(callManifest.slice(cursor + 14, cursor + 16), hex"00"));
@@ -5111,11 +5119,11 @@ function synthesizeMessageBusRoute(
             participantSizes.slice(consumer * 2, consumer * 2 + 2), hex"00"
           ));
           bigint ownerSize = int(bytes.concat(
-            participantSizes.slice(owner * 2, owner * 2 + 2), hex"00"
+            participantSizes.slice(__message_bus_row_owner * 2, __message_bus_row_owner * 2 + 2), hex"00"
           ));
           bigint targetSlot = participantBase + targetOffset;
           bigint sourceSlot = sourceOffset == 65535 ? 65535 : int(bytes.concat(
-            participantBases.slice(owner * 2, owner * 2 + 2), hex"00"
+            participantBases.slice(__message_bus_row_owner * 2, __message_bus_row_owner * 2 + 2), hex"00"
           )) + sourceOffset;
           if (kind == 0) {
             // The root executes the participant's physical master. Nested calls may target a distinct logical
@@ -5126,11 +5134,11 @@ function synthesizeMessageBusRoute(
             require(effectsStarted == 0 && targetOffset < participantSize
               && (row > 0 || targetOffset == 0));
             if (row == 0) {
-              require(parent == 65535 && depth == 0 && sourceOffset == 65535 && owner == consumer);
+              require(parent == 65535 && depth == 0 && sourceOffset == 65535 && __message_bus_row_owner == consumer);
               rootSubtreeEnd = subtreeEnd;
             } else {
               require(parent < invocationRows && depth >= 1 && depth <= 7);
-              require(owner == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
+              require(__message_bus_row_owner == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
               require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")) + 1);
               require(sourceOffset < ownerSize);
             }
@@ -5142,7 +5150,7 @@ function synthesizeMessageBusRoute(
             require((kind == 1 || kind == 2 || kind == 3 || kind == 4 || kind == 6)
               && invocationRows > 0);
             effectsStarted = 1;
-            require(owner == consumer && sourceOffset == targetOffset && targetOffset < participantSize);
+            require(__message_bus_row_owner == consumer && sourceOffset == targetOffset && targetOffset < participantSize);
             require(int(bytes.concat(callManifest.slice(cursor + 3, cursor + 5), hex"00"))
               == targetOffset);
             require(callManifest.slice(cursor + 10, cursor + 14) == hex"00000000");
@@ -5200,7 +5208,7 @@ function synthesizeMessageBusRoute(
             if (field == 3) { rowEffect = callManifest.slice(cursor, cursor + fieldLength); }
             cursor = cursor + fieldLength;
           }
-          ${resourceVerificationMode ? `if (kind == 1 && owner == activeParticipant) {
+          ${resourceVerificationMode ? `if (kind == 1 && __message_bus_row_owner == activeParticipant) {
             bigint resourceMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
             require(rowSubject.length > 0);
             if (resourceMode == 3) {
@@ -5213,7 +5221,7 @@ function synthesizeMessageBusRoute(
                 == int(bytes.concat(rowArguments, hex"00")));
               require(tx.outputs[targetSlot].value
                 == int(bytes.concat(rowEffect, hex"00")));
-              if (owner == activeParticipant) { activeSatoshiContainerRows = activeSatoshiContainerRows + 1; }
+              if (__message_bus_row_owner == activeParticipant) { activeSatoshiContainerRows = activeSatoshiContainerRows + 1; }
             } else if (resourceMode == 4) {
               require((rowArguments.length == 32 || rowArguments.length == 33)
                 && rowResult.length >= 8 && rowEffect.length >= 1);
@@ -5238,7 +5246,7 @@ function synthesizeMessageBusRoute(
                   == rowEffect.slice(9 + outputCategoryLength, rowEffect.length));
                 require(tx.inputs[sourceSlot].value == tx.outputs[targetSlot].value);
               }
-              if (owner == activeParticipant) { activeTokenContainerRows = activeTokenContainerRows + 1; }
+              if (__message_bus_row_owner == activeParticipant) { activeTokenContainerRows = activeTokenContainerRows + 1; }
             } else {
               require(rowArguments.length == 33 && rowArguments.slice(32, 33) == hex"01");
               if (resourceMode != 1) {
@@ -5272,22 +5280,22 @@ function synthesizeMessageBusRoute(
               if (resourceMode == 0 || resourceMode == 5) {
                 require(tx.inputs[sourceSlot].value == tx.outputs[targetSlot].value);
               }
-              if (owner == activeParticipant) {
+              if (__message_bus_row_owner == activeParticipant) {
                 activeResourceEndpoints = activeResourceEndpoints
                   + (resourceMode == 0 || resourceMode == 5 ? 2 : 1);
               }
             }
           }` : ''}
-          ${eventMode ? `if (kind == 2 && owner == activeParticipant) {
+          ${eventMode ? `if (kind == 2 && __message_bus_row_owner == activeParticipant) {
             require(rowArguments.length == 0 && rowResult.length == 0 && rowEffect.length > 0);
             require(rowSubject == tx.outputs[targetSlot].lockingBytecode);
             require(rowEffect == tx.outputs[targetSlot].nftCommitment);
             require(tx.outputs[targetSlot].tokenCategory == activeCategory
-              || owner != activeParticipant);
+              || __message_bus_row_owner != activeParticipant);
             require(tx.outputs[targetSlot].tokenAmount == 0);
-            if (owner == activeParticipant) { activeEventRows = activeEventRows + 1; }
+            if (__message_bus_row_owner == activeParticipant) { activeEventRows = activeEventRows + 1; }
           }` : ''}
-          ${valueEffectMode ? `if (kind == 3 && owner == activeParticipant) {
+          ${valueEffectMode ? `if (kind == 3 && __message_bus_row_owner == activeParticipant) {
             require(rowArguments.length == 0 && rowResult.length == 0 && rowEffect.length == 8);
             require(rowSubject.length > 0 && rowSubject != hex"51");
             require(tx.inputs[sourceSlot].lockingBytecode
@@ -5296,9 +5304,9 @@ function synthesizeMessageBusRoute(
               && tx.outputs[targetSlot].tokenCategory.length == 0);
             require(tx.outputs[targetSlot].lockingBytecode == rowSubject);
             require(tx.outputs[targetSlot].value == int(bytes.concat(rowEffect, hex"00")));
-            if (owner == activeParticipant) { activeValueRows = activeValueRows + 1; }
+            if (__message_bus_row_owner == activeParticipant) { activeValueRows = activeValueRows + 1; }
           }` : ''}
-          ${tokenContainerMode ? `if (kind == 4 && owner == activeParticipant) {
+          ${tokenContainerMode ? `if (kind == 4 && __message_bus_row_owner == activeParticipant) {
             bigint tokenMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
             require((tokenMode == 0 && rowArguments.length == 32 && rowEffect.length == 8)
               || (tokenMode == 1 && rowArguments.length == 32)
@@ -5319,9 +5327,9 @@ function synthesizeMessageBusRoute(
               require(tx.outputs[targetSlot].tokenAmount == 0
                 && tx.outputs[targetSlot].nftCommitment == rowEffect);
             }
-            if (owner == activeParticipant) { activeTokenRows = activeTokenRows + 1; }
+            if (__message_bus_row_owner == activeParticipant) { activeTokenRows = activeTokenRows + 1; }
           }` : ''}
-          ${sidecarVerificationMode ? `if (kind == 6 && owner == activeParticipant) {
+          ${sidecarVerificationMode ? `if (kind == 6 && __message_bus_row_owner == activeParticipant) {
             require(rowSubject.length > 0 && rowArguments.length >= 32 && rowResult.length == 0
               && rowEffect.length >= 8);
             bigint categoryLength = tx.inputs[sourceSlot].tokenCategory.length;
@@ -5337,7 +5345,7 @@ function synthesizeMessageBusRoute(
               && tx.outputs[targetSlot].value
                 == int(bytes.concat(rowEffect.slice(0, 8), hex"00"))
               && tx.outputs[targetSlot].nftCommitment == rowEffect.slice(8, rowEffect.length));
-            if (owner == activeParticipant) {
+            if (__message_bus_row_owner == activeParticipant) {
               activeSidecarRows = activeSidecarRows + 1;
               activeSidecarTargets = bytes.concat(activeSidecarTargets, toPaddedBytes(targetSlot, 2));
             }
@@ -5351,7 +5359,7 @@ function synthesizeMessageBusRoute(
               participantBoundaries.slice(consumer * 2 + 2, participantBoundaries.length)
             );
           }
-          if (kind == 0 && row > 0 && owner == activeParticipant) {
+          if (kind == 0 && row > 0 && __message_bus_row_owner == activeParticipant) {
             bytes targetLbc = tx.inputs[targetSlot].lockingBytecode;
             expectedEmissions = bytes.concat(
               expectedEmissions, toPaddedBytes(targetLbc.length, 2), targetLbc,
@@ -6862,6 +6870,9 @@ function compileResolvedAst(
   // refusing that shape (`verified-mapping-runtime-loop-write-unsupported`) until its own clones unroll.
   if (mergedCompilerOptions.messageBusKernel === true) {
     ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+    // Counter-keyed `m[i]` must expose `__internal__vmapCounterPerm_*` on the source handler before
+    // admission clones it, so the route can pass that hidden witness into the DEFINE body.
+    ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
   }
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)

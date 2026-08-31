@@ -34,18 +34,20 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('refuses a counter-keyed mapping loop as KERNEL_UNBOUNDED_KEY', () => {
-    expect(denied(`contract C() {
+  it('admits a counter-keyed mapping loop via a hidden permutation witness', () => {
+    const artifact = compileString(`contract C() {
       mapping(int => int) slots;
-      function denied(int n) public {
+      function fill(int n) public {
         for (int i = 0; i < n; i = i + 1) { slots[i] = 1; }
         require(true);
       }
       function control() public { require(true); }
-    }`, 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill')).toMatchObject({
+      eligible: true,
     });
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
   it('admits an expression-keyed mapping write', () => {

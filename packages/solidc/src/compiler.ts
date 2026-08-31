@@ -3455,10 +3455,9 @@ function synthesizeMessageBusRoute(
       });
       return found;
     });
-    // Token transfers reserve one concrete output slot per reached row. Keep each bounded row as a distinct AST
-    // call site so semantic analysis and code generation allocate and populate every transfer slot; a runtime
-    // parser loop has only one syntactic transfer and cannot safely materialize N independently authenticated
-    // outputs.
+    // Token-container reads/transfers still flag verifier kind-4 rows and layout reservation. Kernel-shaped
+    // handlers no longer need an AST unroll: the route keeps one tokenContainer input and a per-row
+    // `tcTransfer` output window indexed by the live `row` (see `kernelLoopDispatch`).
     const tokenContainerMode = survivors.some((fn) => {
       const footprint = eligibleFootprint(fn);
       return [...footprint.reads, ...footprint.writes]
@@ -3732,13 +3731,12 @@ function synthesizeMessageBusRoute(
   const signatureMode = eligible.some((fn) =>
     fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
   // Kernel dispatch: one for-row loop, no AST unroll. Resource-shaped per-row frames, transaction
-  // signatures, fixed-array identity sets, and token-container transfers stay on the legacy unroll.
-  // Events, value, and parameter/`msg.sender`-keyed mappings use the loop when they need no `_rN`
-  // witnesses. See packages/solidc/docs/message-bus-kernel.md.
+  // signatures, and fixed-array identity sets stay on the legacy unroll. Events, value, tokens, and
+  // parameter/`msg.sender`-keyed mappings use the loop when they need no `_rN` witnesses.
+  // See packages/solidc/docs/message-bus-kernel.md.
   const kernelLoopDispatch = resourceShapedHandler === undefined
     && !signatureMode
     && !fixedArrayMode
-    && !tokenContainerMode
     && eligible.every((fn) => {
       if ((fn.messageBusKeyWitnesses ?? []).some((binding) => binding.perRow)) return false;
       const footprint = eligibleFootprint(fn);

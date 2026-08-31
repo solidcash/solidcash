@@ -12925,6 +12925,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     frame.eventOffset = offsetOf('event', frame.eventBase);
     frame.transferOffset = offsetOf('transfer', frame.transferBase);
     frame.tokenTransferOffset = offsetOf('tcTransfer', frame.tokenTransferBase);
+    // Token-container INPUT identity lives on the route's one co-spent slot. Share that layout with the
+    // OP_INVOKE handler so a `tokenContainer` OP_UTXO uses the compile-time offset, never a row-relative
+    // `tcTransfer` output index.
+    for (const fn of handlers) {
+      if (tokenTransferCount(fn) > 0) fn.blockLayout = route.blockLayout;
+    }
   }
 
   /**

@@ -1686,6 +1686,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): boolean {
     const frame = this.currentFunction.graphEffectFrame;
     if (!frame || !this.currentFunction.graphEmissionHandler) return false;
+    // tokenContainer is a co-spent INPUT for the whole route, not a per-site output window. Indexing it
+    // through the live row would turn unused `tcTransfer` output offsets into OP_UTXO indices.
     if (kind !== 'event' && kind !== 'transfer' && kind !== 'tcTransfer') return false;
     const base = kind === 'event' ? frame.eventBase
       : kind === 'transfer' ? frame.transferBase : frame.tokenTransferBase;
@@ -28617,8 +28619,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // untracked: tcCat
       }
 
-      // Get master's 32-byte categoryId
-      this.emitMasterInputIndex(locationData);
+      // Get master's 32-byte categoryId. The category pick above is untracked, so owner/master
+      // PICKs must skip it; otherwise a graph-emission handler reads `amount` as a UTXO index.
+      this.emitMasterInputIndex(locationData, keyParamName ? 1 : 0);
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
       this.emit(encodeInt(32n), locationData);
       this.emit(Op.OP_SPLIT, locationData);
@@ -28731,7 +28734,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // 1 untracked (tcCategoryId)
 
       // Get master's 32-byte categoryId
-      this.emitMasterInputIndex(locationData);
+      this.emitMasterInputIndex(locationData, 1);
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
       this.emit(encodeInt(32n), locationData);
       this.emit(Op.OP_SPLIT, locationData);

@@ -117,8 +117,8 @@ contract Acc() {
 `, 'add');
   });
 
-  it('keeps token-container transfers on the legacy unroll with a full tcTransfer frame', () => {
-    const artifact = compileString(`
+  it('dispatches a token-container transfer from the runtime row loop', () => {
+    const artifact = assertKernelRoute(`
 pragma solidcash ^0.13.0;
 contract Vault() {
   function send(bytes32 category, bytes recipient, int amount) public {
@@ -127,15 +127,36 @@ contract Vault() {
     require(true);
   }
 }
-`, OPTIONS);
-    const send = artifact.messageBus?.handlers.find((handler) => handler.name === 'send');
-    expect(send?.eligible).toBe(true);
-    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
-    expect(artifact.invocationAnalysis?.functions.some((fn) => clonePrefix.test(fn.name))).toBe(false);
-    expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
+`, 'send');
+    const frame = artifact.messageBus!.route.graphEffectFrame;
+    expect(frame).toBeDefined();
+    expect(frame!.sites).toBeGreaterThanOrEqual(2);
+    expect(frame!.tokenTransferWidth).toBeGreaterThanOrEqual(1);
     const route = artifact.messageBus!.route;
     const tcSlots = route.blockLayout?.slots.filter((slot) => slot.kind === 'tcTransfer') ?? [];
-    expect(tcSlots.length).toBeGreaterThanOrEqual(artifact.messageBus!.maximumRows);
+    expect(tcSlots.length).toBe(frame!.sites * frame!.tokenTransferWidth);
+    expect(route.blockLayout?.slots.some((slot) => slot.kind === 'tokenContainer')).toBe(true);
+  });
+
+  it('dispatches a token-container NFT transfer from the runtime row loop', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Vault() {
+  function sendNft(bytes32 category, bytes recipient, bytes commitment, int capability) public {
+    require(this.tokens[category].tokenAmount >= 0);
+    this.tokens[category].transferNft(recipient, commitment, capability);
+    require(true);
+  }
+}
+`, 'sendNft');
+    const frame = artifact.messageBus!.route.graphEffectFrame;
+    expect(frame).toBeDefined();
+    expect(frame!.sites).toBeGreaterThanOrEqual(2);
+    expect(frame!.tokenTransferWidth).toBeGreaterThanOrEqual(1);
+    expect(frame!.tokenNftTransfers).toBe(true);
+    const route = artifact.messageBus!.route;
+    const tcSlots = route.blockLayout?.slots.filter((slot) => slot.kind === 'tcTransfer') ?? [];
+    expect(tcSlots.length).toBe(frame!.sites * frame!.tokenTransferWidth);
     expect(route.blockLayout?.slots.some((slot) => slot.kind === 'tokenContainer')).toBe(true);
   });
 });

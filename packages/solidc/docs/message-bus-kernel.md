@@ -32,7 +32,7 @@ The kernel is how the **compiler** expresses it:
   count.
 
 The interpreter to grow is the loop `assembleMessageBusRowStatements` already emits when a route is
-not in event/result/value/collection/array/signature/token/resource mode:
+not in collection/array/signature/resource mode:
 
 ```text
 for (bigint row = 0; row < rowCount; row = row + 1) {
@@ -204,13 +204,11 @@ separate cutover.
 Kernel toys now cover the designed eligibility class:
 
 - returning ERC-20-shaped mapping handlers (`return true` after a parameter-keyed write);
-- satoshi transfers and events appended from the row loop (X29 site = runtime `row`);
+- satoshi transfers, events, and token-container FT/NFT transfers appended from the row loop
+  (X29 site = runtime `row`; one co-spent `tokenContainer` input plus `sites × tokenTransferWidth`
+  `tcTransfer` outputs);
 - `msg.sender` as a mapping key without `_r${row}` ABI;
 - `delegate` implementation functions in this participant's owner frame.
-
-Token-container FT/NFT transfers stay on the legacy `if (rowCount > i)` unroll: a single syntactic
-`tokens[c].transfer` in a loop cannot yet allocate N authenticated `tcTransfer` outputs that the SDK
-probe and 1:1 block agree on. That is not a seventh `KERNEL_*` code and not a new clone family.
 
 Compiler evidence: `KernelLoopRoute.test.ts`, `KernelCutoverRoute.test.ts`. SDK: `KernelLoopCompose.test.ts`,
 `KernelCutoverCompose.test.ts`. Resource-shaped per-row frames, transaction `sig` rows, unbounded keys, and

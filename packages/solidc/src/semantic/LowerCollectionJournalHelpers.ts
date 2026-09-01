@@ -3,6 +3,10 @@ import {
   BinaryOpNode,
   BranchNode,
   AssignNode,
+  DoWhileNode,
+  SwitchNode,
+  UncheckedNode,
+  WhileNode,
   ArrayAccessNode,
   ArrayAssignNode,
   ArrayDeleteNode,
@@ -558,6 +562,33 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (statement.elseBlock) statement.elseBlock = this.rewriteBlock(statement.elseBlock);
       return statement;
     }
+    // Kernel dispatch is a desugared `for` (`{ init; while { body; update } }`). Assignment-form
+    // invokes of returning journal helpers live in that while body; visiting only if/else left them
+    // at the pre-journal arity and failed typecheck (`bool` pending prepended, call site unchanged).
+    if (statement instanceof BlockNode) return this.rewriteBlock(statement);
+    if (statement instanceof WhileNode) {
+      statement.condition = this.rewriteExpression(statement.condition);
+      statement.block = this.rewriteBlock(statement.block);
+      return statement;
+    }
+    if (statement instanceof DoWhileNode) {
+      statement.block = this.rewriteBlock(statement.block);
+      statement.condition = this.rewriteExpression(statement.condition);
+      return statement;
+    }
+    if (statement instanceof UncheckedNode) {
+      statement.block = this.rewriteBlock(statement.block);
+      return statement;
+    }
+    if (statement instanceof SwitchNode) {
+      statement.expression = this.rewriteExpression(statement.expression);
+      statement.cases = statement.cases.map((switchCase) => {
+        switchCase.body = this.rewriteBlock(switchCase.body);
+        return switchCase;
+      });
+      if (statement.defaultCase) statement.defaultCase = this.rewriteBlock(statement.defaultCase);
+      return statement;
+    }
     // Use the ordinary visitor for expression-bearing statement shapes. The
     // dedicated mapping/call cases above are the only statement replacements.
     return this.visit(statement) as StatementNode;
@@ -961,7 +992,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     wrapperParameters: Set<string>,
   ): string | undefined {
     if (key instanceof IdentifierNode && (wrapperParameters.has(key.name)
-      || key.name.startsWith('__message_bus_key_'))) {
+      || key.name.startsWith('__message_bus_key_')
+      || key.name.startsWith('__message_bus_arg_'))) {
+      // Kernel row-decoded arguments are wrapper locals (`__message_bus_arg_*`), not formal parameters.
+      // They are still one identity per physical entry of this invocation.
       return `parameter:${key.name}`;
     }
     if (key instanceof LiteralNode) {

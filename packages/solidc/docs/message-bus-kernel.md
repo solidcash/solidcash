@@ -139,7 +139,7 @@ every kernel toy.
 | `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64` | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), or counter-keyed `m[i]` (`i < n`, hidden `__internal__vmapCounterPerm_*` witness) |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Inline assembly or a low-level call the journal cannot summarize as a call/effect row | After Solidity-compat lowering to `call` plus returndata |
-| `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper |
+| `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors (not child deploys) |
 
 Legacy `messageBusRejectionReason` strings (`dynamic-and-collection-route-not-enabled`,
 `atomic-delegate-context-unpreservable`, …) remain on the legacy path only so existing diagnostics
@@ -215,8 +215,28 @@ Kernel toys now cover the designed eligibility class:
 - `delegate` implementation functions in this participant's owner frame.
 
 Compiler evidence: `KernelLoopRoute.test.ts`, `KernelCutoverRoute.test.ts`. SDK: `KernelLoopCompose.test.ts`,
-`KernelCutoverCompose.test.ts`. Resource-shaped per-row frames that are not param-keyed `from`/`to`
-alternatives, transaction `sig` rows, and foreign `delegatecall` stay on the legacy unroll. Typed
-external calls, literal `new T[](N)` key arrays, counter-keyed `m[i]` loops, and cross-handler
-`msg.sender` / argument keys use the row loop (`__message_bus_handler_*` DEFINE, not
-`__message_bus_graph_*`).
+`KernelCutoverCompose.test.ts`. Transaction `sig` rows and foreign `delegatecall` stay on the legacy
+unroll. Typed external calls, collection-plus-typed-call handlers (a mapping journal clone promoted
+onto the graph `OP_INVOKE` frame), interface-typed state receivers (`this.data.userRegistered(..)`),
+literal `new T[](N)` key arrays, counter-keyed `m[i]` loops,
+cross-handler `msg.sender` / argument keys, public mapping getters, expression-keyed second
+alternatives, nested-branch / helper-inlined expression keys (`if (byWorker) m[id][job.worker]`),
+mapping field writes, complete fixed-array `T[N]` identity sets, mapping-of-array values (`m[k][i]`,
+`m[k].push`; a `T[N]` value journals the entry `m[k]`, and `m[k][i]` is a whole-entry
+read-modify-write before clone/journal), packed and nested dynamic arrays, returning resizes,
+N satoshi transfers, typed `{value:}` calls, token-container transfers without a prior
+`tokenAmount` read (including two categories as two container slots), `blockhash(n)` with a
+mapping write, `this.activeBytecode`, `new LockingBytecode*` constructors
+including NullData, mixed event widths and non-emitting siblings on an event route, typed call
+plus `emit`, native `I(cat).fn.call()` / `.staticcall()` including one-arg statement form,
+enumerable mapping iteration, `try`/`catch` around a typed call, public dynamic-array getters,
+`delete this.items[i]`, `fallback`/`receive` (including `msg.value`, satoshi transfer, and typed
+call), mapping-of-struct-array field writes (`m[k][i].x = v`), modifier-keyed mapping RMW
+(`onlyOwner(id)` plus `ownerOf[id] = ...`), and `ecrecover`.
+Public whole-struct getters, public enum getters, recursive mapping handlers, and result types
+the wrapper cannot `abi.encode` (enum, `Rec[]`) stay `KERNEL_LAYOUT`. Counter-keyed mapping
+loops with `continue`/`break` stay `KERNEL_UNBOUNDED_KEY`.
+sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
+DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
+`messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay
+`KERNEL_UNBOUNDED_KEY` without aborting sibling handlers.

@@ -1576,6 +1576,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
       || node.name.startsWith('__internal__valueWitness_')
       || node.name.startsWith('__internal__leadingPushValue_')
+      || node.name.startsWith('__internal__collectionIter')
       || [
         '__internal__msgData',
         '__internal__msgSig',
@@ -1592,6 +1593,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__blockhashInputIndex',
         '__internal__blockhashRowOffset',
         '__internal__messageBusOwnerInput',
+        '__internal__vmapBatchTrailingCount',
       ].includes(node.name);
     if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
@@ -2394,9 +2396,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
         if ((node.sortedBatchInfo?.length ?? 0) > 0) {
-          const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__vmapBatchTrailingCount');
+          const existing = node.parameters.find((parameter) => parameter.name === '__internal__vmapBatchTrailingCount');
+          const param = existing ?? new ParameterNode(PrimitiveType.BIGINT, '__internal__vmapBatchTrailingCount');
           param.location = node.location;
-          node.parameters.push(param);
+          if (!existing) node.parameters.push(param);
           this.symbolTables[0].set(Symbol.variable(param));
           const sym = this.symbolTables[0].get(param.name);
           if (sym) sym.references.push({ name: param.name } as IdentifierNode);
@@ -2421,18 +2424,20 @@ export default class SymbolTableTraversal extends AstTraversal {
             && /^arridx\(id:\w+,.+\)$/.test(s.canonical ?? ''));
           const wtype = info.inLoop || varyingArrayKey
             ? new ArrayType(new BytesType()) : new BytesType();
-          const wparam = new ParameterNode(wtype, wname);
+          const existingW = node.parameters.find((parameter) => parameter.name === wname);
+          const wparam = existingW ?? new ParameterNode(wtype, wname);
           wparam.location = node.location;
-          node.parameters.push(wparam);
+          if (!existingW) node.parameters.push(wparam);
           this.symbolTables[0].set(Symbol.variable(wparam));
           const wsym = this.symbolTables[0].get(wname);
           if (wsym) wsym.references.push({ name: wname } as IdentifierNode);
           this.pushToStack(wparam);
           if (info.operations.includes('write')) {
             const lname = `__internal__leadingPushValue_${info.slotIndex}`;
-            const lparam = new ParameterNode(new BytesType(), lname);
+            const existingL = node.parameters.find((parameter) => parameter.name === lname);
+            const lparam = existingL ?? new ParameterNode(new BytesType(), lname);
             lparam.location = node.location;
-            node.parameters.push(lparam);
+            if (!existingL) node.parameters.push(lparam);
             this.symbolTables[0].set(Symbol.variable(lparam));
             const lsym = this.symbolTables[0].get(lname);
             if (lsym) lsym.references.push({ name: lname } as IdentifierNode);
@@ -2474,12 +2479,16 @@ export default class SymbolTableTraversal extends AstTraversal {
         for (let i = 0; i < collectionIterations.length; i++) {
           collectionIterations[i].iterationIndex = i;
 
-          const countParam = new ParameterNode(PrimitiveType.BIGINT, `__internal__collectionIterCount_${i}`);
-          countParam.location = node.location;
-          node.parameters.push(countParam);
+          const countName = `__internal__collectionIterCount_${i}`;
+          let countParam = node.parameters.find((parameter) => parameter.name === countName);
+          if (!countParam) {
+            countParam = new ParameterNode(PrimitiveType.BIGINT, countName);
+            countParam.location = node.location;
+            node.parameters.push(countParam);
+          }
           this.symbolTables[0].set(Symbol.variable(countParam));
-          const sym = this.symbolTables[0].get(`__internal__collectionIterCount_${i}`);
-          if (sym) sym.references.push({ name: `__internal__collectionIterCount_${i}` } as IdentifierNode);
+          const sym = this.symbolTables[0].get(countName);
+          if (sym) sym.references.push({ name: countName } as IdentifierNode);
           this.pushToStack(countParam);
 
           // SORTED (vmap) KEYS/ENTRIES iteration: the entry stores slot=H(key), not the raw key, so the caller
@@ -2488,16 +2497,37 @@ export default class SymbolTableTraversal extends AstTraversal {
           // sorted-VALUES iteration ABIs are unchanged.
           const coll = this.collectionMap.get(collectionIterations[i].collection);
           if (coll?.sorted && collectionIterations[i].mode !== CollectionIterationMode.VALUES) {
-            const keysParam = new ParameterNode(new BytesType(), `__internal__collectionIterKeys_${i}`);
-            keysParam.location = node.location;
-            node.parameters.push(keysParam);
+            const keysName = `__internal__collectionIterKeys_${i}`;
+            let keysParam = node.parameters.find((parameter) => parameter.name === keysName);
+            if (!keysParam) {
+              keysParam = new ParameterNode(new BytesType(), keysName);
+              keysParam.location = node.location;
+              node.parameters.push(keysParam);
+            }
             this.symbolTables[0].set(Symbol.variable(keysParam));
-            const ksym = this.symbolTables[0].get(`__internal__collectionIterKeys_${i}`);
-            if (ksym) ksym.references.push({ name: `__internal__collectionIterKeys_${i}` } as IdentifierNode);
+            const ksym = this.symbolTables[0].get(keysName);
+            if (ksym) ksym.references.push({ name: keysName } as IdentifierNode);
             this.pushToStack(keysParam);
           }
         }
       }
+    }
+
+    if (node.messageBusRoute) {
+      walkInvocationAst(node.body, (candidate) => {
+        if (!(candidate instanceof FunctionCallNode)) return;
+        const target = (this.functionDefinitions.get(candidate.identifier.name) ?? [])
+          .find((definition) => definition.parameters.length === candidate.parameters.length);
+        if (!target?.collectionIterations?.length) return;
+        const existing = node.collectionIterations ?? [];
+        node.collectionIterations = [
+          ...existing,
+          ...target.collectionIterations.map((iteration, index) => ({
+            ...iteration,
+            iterationIndex: existing.length + index,
+          })),
+        ];
+      });
     }
 
     // External reads pre-scan: collect all external state/collection reads and assign slot indices
@@ -5485,7 +5515,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     const seen = new Set<string>();
     const walk = (n: unknown): void => {
       if (found || !n || typeof n !== 'object') return;
-      if (n instanceof ArrayAccessNode && n.index instanceof IdentifierNode) { found = n.index; return; }
+      if (n instanceof ArrayAccessNode && n.index instanceof IdentifierNode
+        && n.index.name !== '__message_bus_row') {
+        found = n.index;
+        return;
+      }
       if (n instanceof IdentifierNode && !seen.has(n.name)) {
         seen.add(n.name);
         // resolve a plain local, then a tuple-destructure element (`(input,output)=(path[i],path[i+1])`) to its RHS
@@ -5494,7 +5528,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (init) { walk(init); return; }
       }
       for (const k of Object.keys(n as Record<string, unknown>)) {
-        if (k === 'type' || k === 'location' || k === 'symbolTable') continue;
+        if (k === 'type' || k === 'location' || k === 'symbolTable'
+          || k === 'definition' || k === 'references' || k === 'functionReference') continue;
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) v.forEach(walk); else if (v instanceof Node) walk(v);
       }
@@ -5578,7 +5613,11 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         };
         collect(node);
-        result = candidates.find((candidate) => candidate.name === 'i') ?? candidates[0];
+        result = candidates.find((candidate) => candidate.name === 'i')
+          ?? candidates.find((candidate) => candidate.name !== '__message_bus_row');
+        if (result?.name === '__message_bus_row') result = undefined;
+        if (result) return;
+        scan(node instanceof WhileNode || node instanceof DoWhileNode ? node.block : node, seen);
         return;
       }
       for (const value of Object.values(node)) {
@@ -5641,6 +5680,12 @@ export default class SymbolTableTraversal extends AstTraversal {
             }
           };
           findConditionCounter(node.condition);
+        }
+        // The kernel dispatch `for (__message_bus_row ...)` is not a per-iteration callee-target loop.
+        // Locals declared in a row body must keep looking for a nested source loop.
+        if (result?.name === '__message_bus_row') {
+          result = undefined;
+          scan(node.block, seen);
         }
         return;
       }
@@ -12165,11 +12210,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Visit call parameters
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
 
-        const callMode = node.methodName === 'call'
-          ? ExternalCallMode.CALL
+        // Typed `I(cat).fn.call()` is the documented SolidCash invoke spelling, not a low-level
+        // payload `addr.call(bytes)`. Keep it on the regular/static graph modes the kernel loop already
+        // lowers; `CALL` is the opaque raw-calldata mode.
+        const callMode = node.methodName === 'staticcall'
+          ? ExternalCallMode.STATICCALL
           : node.methodName === 'delegatecall'
             ? ExternalCallMode.DELEGATECALL
-            : ExternalCallMode.STATICCALL;
+            : ExternalCallMode.REGULAR;
 
         // Create ExternalFunctionCallNode with callMode
         const callNode = new ExternalFunctionCallNode(
@@ -12411,13 +12459,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // `var.method{value:}(..)`: `var` is an interface/contract-typed identifier (a function/constructor param,
-    // or a synthesized __extaddr_ local for a state-var target). The no-option form is a namespaced
-    // FunctionCall (handled in visitFunctionCall); the call-option form arrives here. Route to external call.
-    if (node.object instanceof IdentifierNode) {
+    // or a synthesized __extaddr_ local for a state-var target). `this.var.method(..)` is the same target
+    // spelled as a state access (Marketplace `marketplaceData.userRegistered(msg.sender)`). The no-option
+    // identifier form is a namespaced FunctionCall (handled in visitFunctionCall); the call-option form and
+    // the `this.` spelling arrive here. Route to external call.
+    if (node.object instanceof IdentifierNode || node.object instanceof StateAccessNode) {
       const varName = node.object.name;
-      const varIdentifier = new IdentifierNode(varName);
-      varIdentifier.location = node.object.location;
-      const visitedVar = this.visit(varIdentifier) as ExpressionNode;
+      const visitedVar = node.object instanceof StateAccessNode
+        ? this.visit(node.object) as ExpressionNode
+        : this.visit(Object.assign(new IdentifierNode(varName), { location: node.object.location })) as ExpressionNode;
       const varType = visitedVar.type
         ?? (visitedVar instanceof IdentifierNode ? visitedVar.definition?.type : undefined)
         ?? this.stateVariableMap.get(varName)?.type;
@@ -12779,21 +12829,22 @@ export default class SymbolTableTraversal extends AstTraversal {
   private framesSettleEveryTransfer(fn: FunctionDefinitionNode): boolean {
     const declared = fn.transferInfos?.length ?? 0;
     if (declared === 0) return true;
-    let direct = 0;
+    let thisTransfers = 0;
+    let valueCalls = 0;
     walkInvocationAst(fn.body, (node) => {
       if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
-        || node instanceof AddressSendExpressionNode) direct += 1;
-      if (node instanceof ExternalFunctionCallNode && node.interfaceName === '__raw__'
-        && hasEffectiveCallValue(node.callOptions?.value)) direct += 1;
+        || node instanceof AddressSendExpressionNode) thisTransfers += 1;
+      if ((node instanceof ExternalFunctionCallNode || node instanceof MethodCallNode)
+        && hasEffectiveCallValue(node.callOptions?.value)) valueCalls += 1;
     });
-    if (direct === declared) return true;
-    if (direct > 0 || (fn.emitInfos?.length ?? 0) > 0) {
+    if (thisTransfers > 0 && valueCalls > 0) {
       throw new GraphEmissionEffectError(
         fn, fn.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
         'a value call option alongside an emit or transfer',
       );
     }
-    return false;
+    if (valueCalls > 0) return true;
+    return thisTransfers === declared;
   }
 
   /**
@@ -12820,7 +12871,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       );
     const handlers = contract.functions.filter((fn) => fn.graphEmissionHandler
       && ((fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0
-        || tokenTransferCount(fn) > 0)
+        || tokenTransferCount(fn) > 0 || (fn.ecrecoverCompute && (fn.ecrecoverCallCount ?? 0) > 0))
       && this.framesSettleEveryTransfer(fn));
     if (handlers.length === 0) return;
     const byName = new Map(handlers.map((fn) => [fn.name, fn]));
@@ -12896,6 +12947,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       tokenTransferWidth: Math.max(0, ...handlers.map(tokenTransferCount)),
       tokenNftTransfers: handlers.some((fn) => (fn.tokenContainerAccesses ?? [])
         .some((access) => access.transferNftCount > 0)),
+      ecrecoverBase: 0,
+      ecrecoverWidth: Math.max(0, ...handlers.map((fn) =>
+        (fn.ecrecoverCompute ? (fn.ecrecoverCallCount ?? 0) * 2 : 0))),
     };
     route.graphEffectFrame = frame;
     if (loopDispatch && frame.tokenTransferWidth > 0) {
@@ -12921,16 +12975,22 @@ export default class SymbolTableTraversal extends AstTraversal {
     // countOutputOnlySlotsBefore reads it), so the frames must land in the same position a flattened handler's
     // own effects would have.
     route.blockLayout = this.computeBlockLayout(route);
-    const offsetOf = (kind: 'event' | 'transfer' | 'tcTransfer', slotIndex: number): number | undefined =>
+    const offsetOf = (
+      kind: 'event' | 'transfer' | 'tcTransfer' | 'ecrecoverSideCar', slotIndex: number,
+    ): number | undefined =>
       route.blockLayout!.slots.find((slot) => slot.kind === kind && slot.slotIndex === slotIndex)?.offset;
     frame.eventOffset = offsetOf('event', frame.eventBase);
     frame.transferOffset = offsetOf('transfer', frame.transferBase);
     frame.tokenTransferOffset = offsetOf('tcTransfer', frame.tokenTransferBase);
+    frame.ecrecoverOffset = offsetOf('ecrecoverSideCar', frame.ecrecoverBase ?? 0);
     // Token-container INPUT identity lives on the route's one co-spent slot. Share that layout with the
     // OP_INVOKE handler so a `tokenContainer` OP_UTXO uses the compile-time offset, never a row-relative
     // `tcTransfer` output index.
     for (const fn of handlers) {
-      if (tokenTransferCount(fn) > 0) fn.blockLayout = route.blockLayout;
+      if (tokenTransferCount(fn) > 0 || ((fn.ecrecoverCallCount ?? 0) > 0)
+        || (fn.transferInfos?.length ?? 0) > 0 || (fn.emitInfos?.length ?? 0) > 0) {
+        fn.blockLayout = route.blockLayout;
+      }
     }
   }
 
@@ -12969,6 +13029,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const graphEvents = (graphFrame?.sites ?? 0) * (graphFrame?.eventWidth ?? 0);
     const graphTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.transferWidth ?? 0);
     const graphTokenTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.tokenTransferWidth ?? 0);
+    const graphEcrecover = (graphFrame?.sites ?? 0) * (graphFrame?.ecrecoverWidth ?? 0);
 
     // Master
     slots.push({ kind: 'master', offset: offset++ });
@@ -13040,6 +13101,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 2 * i });     // A (checkpoint)
         slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 2 * i + 1 }); // B (pubkey)
       }
+    }
+    const existingEcrecover = slots.filter((slot) => slot.kind === 'ecrecoverSideCar').length;
+    for (let i = existingEcrecover; i < graphEcrecover; i++) {
+      slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: i, conditional: true });
     }
 
     // Reserve offset space for outState groups (between reads and entries)

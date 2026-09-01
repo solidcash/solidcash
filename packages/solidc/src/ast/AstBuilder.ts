@@ -9112,15 +9112,20 @@ export default class AstBuilder
     const callArgs = this.buildCallArguments(ctx.expressionList(0));
     // Low-level `.call`/`.staticcall`/`.delegatecall(payload)` takes exactly one arg. A same-named method with a
     // different arity (e.g. `IFoo(c).increment.call()` - an interface method reached via a field access) is not a
-    // low-level call and falls through to the generic method-call wrap below.
+    // low-level call and falls through to the generic method-call wrap below. One-arg typed invoke
+    // `IFoo(c).increment.call(n)` is the same FieldAccess spelling and must not be stolen as `addr.call(bytes)`.
     if ((method === 'call' || method === 'staticcall' || method === 'delegatecall') && callArgs.length === 1) {
-      const node = new LowLevelCallStatementNode(this.visit(recvCtx) as ExpressionNode, callArgs[0], method);
-      node.callOptions = this.parseCallOptions(ctx.callOptions());
-      if (node.callOptions?.value && (method === 'staticcall' || method === 'delegatecall')) {
-        throw new ParseError(`Cannot set call option 'value' for ${method}`, loc);
+      const recv = this.visit(recvCtx) as ExpressionNode;
+      const typedInvoke = recv instanceof FieldAccessNode && recv.expression instanceof FunctionCallNode;
+      if (!typedInvoke) {
+        const node = new LowLevelCallStatementNode(recv, callArgs[0], method);
+        node.callOptions = this.parseCallOptions(ctx.callOptions());
+        if (node.callOptions?.value && (method === 'staticcall' || method === 'delegatecall')) {
+          throw new ParseError(`Cannot set call option 'value' for ${method}`, loc);
+        }
+        node.location = loc;
+        return node;
       }
-      node.location = loc;
-      return node;
     }
     const recvPeeled = peelExpr(recvCtx);
     if (recvPeeled instanceof ThisExprContext && isThisMapping(recvPeeled)

@@ -87,8 +87,11 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     for (const fn of all) {
       // Graph handlers intentionally execute behind OP_INVOKE: their hidden callManifest/caller/result
       // frame is what makes each reached edge authoritative. Flattening one into __message_bus1 erases that
-      // context and turns its external calls into inert ordinary-call nodes.
-      if (!fn.graphEmissionHandler && fn.body && this.canDiscardCallResult(fn)
+      // context and turns its external calls into inert ordinary-call nodes. Public entry points and
+      // compiler-owned route clones are the same: inlining them into the kernel row loop makes
+      // SymbolTableTraversal rewrite `token.transfer` against an unbound `__internal__loopTargets`.
+      if (!fn.graphEmissionHandler && !fn.isEntryPoint && !fn.name.startsWith('__message_bus_')
+        && fn.body && this.canDiscardCallResult(fn)
         && (this.makesExternalCall(fn) || this.hasConditionalCollectionAccess(fn))) {
         this.voidExternalCallHelpers.add(fn.name);
       }

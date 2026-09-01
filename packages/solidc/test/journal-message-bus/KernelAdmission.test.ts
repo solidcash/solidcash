@@ -125,6 +125,19 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('refuses a native low-level call as KERNEL_OPAQUE_EFFECT', () => {
+    expect(denied(`contract C(address target) {
+      function denied(bytes data) public {
+        target.call(data);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_OPAQUE_EFFECT',
+    });
+  });
+
   it('refuses a deploy-in-handler as KERNEL_LAYOUT', () => {
     expect(denied(`contract Child() { }
       contract C() {
@@ -134,6 +147,101 @@ describe('required kernel admission', () => {
       eligible: false,
       rejectionReason: 'KERNEL_LAYOUT',
     });
+  });
+
+  it('admits a LockingBytecode constructor which is not a child deploy', () => {
+    const artifact = compileString(`contract C() {
+      function ping(bytes20 pkh) public {
+        bytes lb = new LockingBytecodeP2PKH(pkh);
+        require(lb.length == 25);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'ping')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('names KERNEL_UNBOUNDED_KEY for a runtime-constructed key array and still compiles siblings', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function denied(int n) public {
+        int[] xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('publishes KERNEL_* handlers when every entry point is refused', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract C() {
+        function denied() public { assembly { OP_1 OP_DROP } require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_OPAQUE_EFFECT',
+    });
+  });
+
+  it('refuses a continue/break counter-keyed mapping loop as KERNEL_UNBOUNDED_KEY', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (i == 0) { continue; }
+          if (i == 3) { break; }
+          this.m[i] = i;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('refuses a public enum getter as KERNEL_LAYOUT and keeps siblings', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      enum Status { A, B }
+      contract C {
+        Status public last;
+        function denied() public { last = Status.B; require(true); }
+        function control() public { require(true); }
+      }`, { ...KERNEL, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'last')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses a Rec[] result as KERNEL_LAYOUT and keeps siblings', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Rec { uint x; }
+      contract C {
+        Rec[] jobs;
+        function denied() public view returns (Rec[] memory) { return jobs; }
+        function control() public { require(true); }
+      }`, { ...KERNEL, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
   it('leaves legacy reasons on non-kernel compiles', () => {

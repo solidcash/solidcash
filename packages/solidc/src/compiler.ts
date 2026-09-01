@@ -8,7 +8,7 @@ import {
 } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
 import {
-  Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
+  Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
@@ -28,7 +28,8 @@ import {
   ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
-  StateAccessNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode, NewArrayNode,
+  CollectionIterationMode,
+  CollectionNode, StateAccessNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode, NewArrayNode,
   FunctionCallStatementNode,
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
@@ -41,7 +42,7 @@ import {
   BranchNode, UncheckedNode, SwitchNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
-import { GlobalFunction } from './ast/Globals.js';
+import { Class, GlobalFunction } from './ast/Globals.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
@@ -92,6 +93,7 @@ import LowerDynamicStateJournalHelpers from './semantic/LowerDynamicStateJournal
 import DesugarPostfixExpressions from './semantic/DesugarPostfixExpressions.js';
 import AlphaRenameLocalShadows from './semantic/AlphaRenameLocalShadows.js';
 import DesugarNestedArrayWrite from './semantic/DesugarNestedArrayWrite.js';
+import { createDefaultValueExpression } from './ast/defaults.js';
 import DesugarExternalFunctionPointers from './semantic/DesugarExternalFunctionPointers.js';
 import DesugarReturnInLoop from './semantic/DesugarReturnInLoop.js';
 import UnrollFixedBoundEntryLoop from './semantic/UnrollFixedBoundEntryLoop.js';
@@ -132,6 +134,7 @@ import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
+  SortedMappingCodegenPendingError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -735,6 +738,8 @@ interface ExternalAdmissionAttribution {
   refused: Set<string>;
   /** One entry per external entry point route synthesis considered. Accumulated across attempts, deduped. */
   spans: { key: string; name: string; location?: Location }[];
+  /** Optional KERNEL_* / named reason to apply instead of the generic attributed refusal. */
+  reasons: Map<string, string>;
 }
 
 /** Identity of one source handler: name plus declaration position, so two overloads stay distinct. */
@@ -801,15 +806,24 @@ function attributeExternalHandlerRefusal(
     }
   }
   if (named !== undefined) {
-    return candidates.filter((span) => span.name === named).map((span) => span.key);
+    const keys = candidates.filter((span) => span.name === named).map((span) => span.key);
+    if (error instanceof SortedMappingCodegenPendingError) {
+      for (const key of keys) attribution.reasons.set(key, 'KERNEL_UNBOUNDED_KEY');
+    }
+    return keys;
   }
   // Some late code-generation diagnostics retain the source handler name but not its cloned route prefix or
   // node location (for example, an unresolved raw target reports "in function 'refund'"). Attribute only an
   // exact, unambiguous entry-point name; overloads remain deliberately unattributed without a source span.
-  const sourceFunction = /\bin function '([^']+)'/.exec(message)?.[1];
+  const sourceFunction = /\bin (?:function|runtime loop) '([^']+)'/.exec(message)?.[1];
   if (sourceFunction) {
     const exact = candidates.filter((span) => span.name === sourceFunction);
-    if (exact.length === 1) return [exact[0].key];
+    if (exact.length === 1) {
+      if (error instanceof SortedMappingCodegenPendingError) {
+        attribution.reasons.set(exact[0].key, 'KERNEL_UNBOUNDED_KEY');
+      }
+      return [exact[0].key];
+    }
   }
   const location = (error as { node?: { location?: Location } } | undefined)?.node?.location;
   if (!location || generatedOriginOf(location)) return [];
@@ -876,7 +890,7 @@ function compileWithExternalAdmissionFallback(
   // Auto selection is per primary contract. Multi-artifact compilation reuses its normalized option object, so
   // never let one graph-free declaration disable route selection for a later sibling that has graph edges.
   mergedCompilerOptions = { ...mergedCompilerOptions };
-  const attribution: ExternalAdmissionAttribution = { refused: new Set(), spans: [] };
+  const attribution: ExternalAdmissionAttribution = { refused: new Set(), spans: [], reasons: new Map() };
   // Parse exactly once before entering the route-admission retry ladder. Syntax errors and custom listener
   // failures are properties of the source, not of a route candidate; replaying them at every rung duplicates
   // listener notifications and can replace the user's first diagnostic with retry noise.
@@ -1783,7 +1797,12 @@ function kernelAdmissionReason(reason: string): string {
   if (reason === 'transaction-signature-route-binding-required') return 'KERNEL_TX_SIGNATURE';
   if (reason === 'verified-mapping-runtime-loop-write-unsupported') return 'KERNEL_UNBOUNDED_KEY';
   if (reason === 'atomic-delegate-context-unpreservable') return 'KERNEL_FOREIGN_DELEGATE';
-  if (reason === 'opaque-assembly-effects-callManifest-ineligible') return 'KERNEL_OPAQUE_EFFECT';
+  if (reason === 'opaque-assembly-effects-callManifest-ineligible'
+    || reason === 'unresolved-or-effectful-handler'
+    || reason === 'batched-handler-forward-call-not-enabled'
+    || reason === 'return-consuming-low-level-call-route-not-enabled') {
+    return 'KERNEL_OPAQUE_EFFECT';
+  }
   return 'KERNEL_LAYOUT';
 }
 
@@ -2064,6 +2083,108 @@ function hasMessageBusGraphEdge(ast: Ast): boolean {
   return found;
 }
 
+/** Snapshot enumerable-iteration hidden witnesses before kernel clones, matching SymbolTableTraversal. */
+function injectCollectionIterationWitnesses(ast: Ast): void {
+  const inject = (fn: FunctionDefinitionNode | undefined): void => {
+    if (!fn?.body) return;
+    const modes: CollectionIterationMode[] = [];
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof CollectionIterationNode) modes.push(node.mode);
+    });
+    modes.forEach((mode, index) => {
+      const countName = `__internal__collectionIterCount_${index}`;
+      if (!fn.parameters.some((parameter) => parameter.name === countName)) {
+        fn.parameters.push(new ParameterNode(PrimitiveType.BIGINT, countName));
+      }
+      if (mode === CollectionIterationMode.VALUES) return;
+      const keysName = `__internal__collectionIterKeys_${index}`;
+      if (!fn.parameters.some((parameter) => parameter.name === keysName)) {
+        fn.parameters.push(new ParameterNode(new BytesType(), keysName));
+      }
+    });
+  };
+  for (const fn of ast.contract.functions) inject(fn);
+  inject(ast.contract.fallbackDef);
+  inject(ast.contract.receiveDef);
+}
+
+/** After ST injects hidden witnesses, pad kernel clone callsites that were generated at the pre-ST arity. */
+function padMessageBusCloneCalls(ast: Ast): void {
+  const callees = ast.contract.functions;
+  const byName = new Map(callees.map((fn) => [fn.name, fn]));
+  const route = ast.contract.functions.find((fn) => fn.messageBusRoute);
+  const routeParams = new Set((route?.parameters ?? []).map((parameter) => parameter.name));
+  const padCall = (
+    node: FunctionCallNode, callerParams: Set<string>, requireOwnedPassThrough: boolean,
+  ): void => {
+    const callee = byName.get(node.identifier.name);
+    if (!callee || node.parameters.length >= callee.parameters.length) return;
+    const extras = callee.parameters.slice(node.parameters.length);
+    if (requireOwnedPassThrough
+      && !extras.every((parameter) => parameter.name.startsWith('__internal__')
+        && callerParams.has(parameter.name))) return;
+    for (const parameter of extras) {
+      const arg = callerParams.has(parameter.name) || routeParams.has(parameter.name)
+        ? Object.assign(new IdentifierNode(parameter.name), { location: node.location })
+        : createDefaultValueExpression(parameter.type, node.location);
+      arg.type = parameter.type;
+      node.parameters.push(arg);
+    }
+  };
+  walkInvocationAst(ast.contract, (node) => {
+    if (!(node instanceof FunctionCallNode)) return;
+    if (!node.identifier.name.startsWith('__message_bus_')) return;
+    padCall(node, routeParams, false);
+  });
+  for (const fn of callees) {
+    const callerParams = new Set(fn.parameters.map((parameter) => parameter.name));
+    walkInvocationAst(fn.body, (node) => {
+      if (!(node instanceof FunctionCallNode)) return;
+      if (node.identifier.name.startsWith('__message_bus_')) return;
+      padCall(node, callerParams, true);
+    });
+  }
+}
+
+function injectChunkableEntryWitnesses(ast: Ast): void {
+  const chunkable = new Set(
+    ast.contract.collections.filter((collection) => {
+      let current: Type = collection.type;
+      while (current instanceof MappingType) current = current.valueType;
+      return current instanceof ArrayType
+        || current === PrimitiveType.STRING
+        || (current instanceof BytesType && current.bound === undefined);
+    }).map((collection) => collection.name),
+  );
+  const inject = (fn: FunctionDefinitionNode | undefined): void => {
+    if (!fn?.body || chunkable.size === 0) return;
+    const written = new Set<string>();
+    walkInvocationAst(fn.body, (node) => {
+      if ((node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+        || node instanceof MappingDeleteNode) && chunkable.has(node.name)) {
+        written.add(node.name);
+      }
+    });
+    [...written].forEach((_name, slot) => {
+      const witness = `__internal__valueWitness_${slot}`;
+      if (!fn.parameters.some((parameter) => parameter.name === witness)) {
+        fn.parameters.push(new ParameterNode(new BytesType(), witness));
+      }
+      const leading = `__internal__leadingPushValue_${slot}`;
+      if (!fn.parameters.some((parameter) => parameter.name === leading)) {
+        fn.parameters.push(new ParameterNode(new BytesType(), leading));
+      }
+    });
+    if (written.size > 0
+      && !fn.parameters.some((parameter) => parameter.name === '__internal__vmapBatchTrailingCount')) {
+      fn.parameters.push(new ParameterNode(PrimitiveType.BIGINT, '__internal__vmapBatchTrailingCount'));
+    }
+  };
+  for (const fn of ast.contract.functions) inject(fn);
+  inject(ast.contract.fallbackDef);
+  inject(ast.contract.receiveDef);
+}
+
 function synthesizeMessageBusRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
   normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
@@ -2077,7 +2198,14 @@ function synthesizeMessageBusRoute(
   assertNoReservedMessageBusSelector(contract.functions);
   const requestedHandlerNames = compilerOptions.messageBusHandlers === undefined
     ? undefined : new Set(compilerOptions.messageBusHandlers);
-  const functions = contract.functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract
+  const entryFunctions = compilerOptions.messageBusKernel === true
+    ? [
+      ...contract.functions,
+      ...(contract.fallbackDef ? [contract.fallbackDef] : []),
+      ...(contract.receiveDef ? [contract.receiveDef] : []),
+    ]
+    : contract.functions;
+  const functions = entryFunctions.filter((fn) => fn.isEntryPoint && !fn.isAbstract
     && (requestedHandlerNames === undefined || requestedHandlerNames.has(fn.name)));
   // Record every entry point's span BEFORE any refusal is decided and before anything downstream
   // can throw, so the fallback can attribute a later route-generation failure to the handler containing it.
@@ -2085,13 +2213,14 @@ function synthesizeMessageBusRoute(
     recordExternalHandlerSpan(attribution, fn);
   }
   const byName = new Map<string, FunctionDefinitionNode[]>();
-  for (const fn of contract.functions) {
+  for (const fn of entryFunctions) {
     const group = byName.get(fn.name) ?? [];
     group.push(fn);
     byName.set(fn.name, group);
   }
   const footprintCache = createFootprintAnalysisCache();
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
+    || state.isPacked
     || state.type === PrimitiveType.STRING
     || (state.type instanceof BytesType && state.type.bound === undefined)).map((state) => state.name));
   const nestedDynamicArrayState = new Set(contract.stateVariables.filter((state) => {
@@ -2144,6 +2273,14 @@ function synthesizeMessageBusRoute(
     return undefined;
   };
   const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
+  if (compilerOptions.messageBusKernel === true) {
+    for (const state of contract.stateVariables) {
+      if (!(state.type instanceof MappingType) || collectionByName.has(state.name)) continue;
+      const collection = new CollectionNode(state.type, state.name);
+      collection.sorted = true;
+      collectionByName.set(state.name, collection);
+    }
+  }
   const routeKeyWitnesses = new Map<string, { name: string; type: Type }[]>();
   const crossHandlerPerRowWitnesses = new Set<string>();
   const fixedIterationCollections = new Set<string>();
@@ -2301,8 +2438,10 @@ function synthesizeMessageBusRoute(
           const access = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
             || node instanceof MappingDeleteNode
             ? { name: node.name, keys: node.keys as ExpressionNode[] }
-            : ((node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode) && bare
-              ? { name: bare.name, keys: bare.keys } : undefined);
+            : (node instanceof StateArrayAssignNode
+              ? { name: node.name, keys: [node.index] }
+              : ((node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode) && bare
+                ? { name: bare.name, keys: bare.keys } : undefined));
           if (!access || !collectionByName.has(access.name)) return;
           const collection = collectionByName.get(access.name);
           if (!(collection?.type instanceof MappingType)) return;
@@ -2312,6 +2451,17 @@ function synthesizeMessageBusRoute(
           let varyingUnsupported = false;
           for (let index = access.keys.length - 1; index >= 0; index -= 1) {
             const key = access.keys[index];
+            if (key instanceof IdentifierNode) {
+              const isParam = candidate.parameters.some((parameter) => parameter.name === key.name)
+                || source.parameters.some((parameter) => parameter.name === key.name);
+              // Supported counter-keyed loops have already been rewritten to `m[perm[i]]`. A remaining
+              // loop-local identifier (`continue`/`break` in `for (i) m[i] = ...`) has no kernel representation.
+              if (!isParam) {
+                unsupported = true;
+                return;
+              }
+              continue;
+            }
             if (!(key instanceof ArrayAccessNode)) continue;
             if (key.array instanceof IdentifierNode) {
               varyingName = key.array.name;
@@ -2438,7 +2588,10 @@ function synthesizeMessageBusRoute(
             else if (node.operator === NullaryOperator.MSG_DATA) routeUsesMsgData = true;
             else if (node.operator === NullaryOperator.MSG_SIG) routeUsesMsgSig = true;
             else if (node.operator === NullaryOperator.MSG_VALUE) routeUsesMsgValue = true;
-            else if (node.operator === NullaryOperator.INPUT_INDEX) {
+            else if (node.operator === NullaryOperator.INPUT_INDEX
+              || node.operator === NullaryOperator.BYTECODE) {
+              // `this.activeInputIndex` and `this.activeBytecode` name this participant's own executing
+              // input. Kernel reconstructs neither from the row; the wrapper is the layout owner.
               routeUsesStableOwnerIntrospection = true;
             } else if (node.operator === NullaryOperator.TX_ORIGIN) routeUsesTxOrigin = true;
             else routeUsesOtherIntrospection = true;
@@ -2477,8 +2630,15 @@ function synthesizeMessageBusRoute(
             statefulExternalCall = true;
             methodCallCount += 1;
             if (candidate === fn) directExternalCallsites.add(node);
-            if (['call', 'staticcall', 'delegatecall'].includes(node.methodName)) graphHasLowLevelCall = true;
-            if (node.methodName === 'delegatecall') graphHasDelegatecall = true;
+            // Typed `I(cat).fn.call()` / `.staticcall()` is a FieldAccess receiver (the method), not a
+            // low-level payload call `addr.call(bytes)`. Only the payload form is opaque.
+            if (['call', 'staticcall', 'delegatecall'].includes(node.methodName)
+              && node.parameters.length === 1
+              && !(node.object instanceof FieldAccessNode)) {
+              graphHasLowLevelCall = true;
+            }
+            if (node.methodName === 'delegatecall'
+              && !(node.object instanceof FieldAccessNode)) graphHasDelegatecall = true;
             if (node.parameters.some((parameter) => !(parameter instanceof IdentifierNode))) {
               graphHasComputedCallArguments = true;
             }
@@ -2502,9 +2662,13 @@ function synthesizeMessageBusRoute(
             && /\.(call|staticcall|delegatecall)$/.test(node.identifier.name)) {
             statefulExternalCall = true;
             methodCallCount += 1;
-            graphHasLowLevelCall = true;
+            const parts = node.identifier.name.split('.');
+            // `addr.call` is two parts; `receiver.method.call` is the typed invoke spelling.
+            if (parts.length === 2) graphHasLowLevelCall = true;
             if (candidate === fn) directExternalCallsites.add(node);
-            if (node.identifier.name.endsWith('.delegatecall')) graphHasDelegatecall = true;
+            if (parts.length === 2 && node.identifier.name.endsWith('.delegatecall')) {
+              graphHasDelegatecall = true;
+            }
           }
         });
       }
@@ -2644,12 +2808,14 @@ function synthesizeMessageBusRoute(
     // publishes the multiplied occurrence ceiling from that final body. Runtime emission consumes and authenticates
     // a row there, so branches, computed/local arguments, and an independent source return value remain exact.
     // Auto mode retains its narrower compatibility heuristic.
+    const kernelCompatibleEffect = (effect: string): boolean => effect === 'external-call'
+      || (compilerOptions.messageBusKernel === true && (effect === 'events' || effect === 'value'));
     const graphBoundedRuntimeEligible = explicitlyEnabledMessageBus
       && methodCallCount > 0
       && boundedNamedClosure
       && !graphHasDelegatecall
-      && !graphHasCallValue
-      && footprint.effects.every((effect) => effect === 'external-call')
+      && (!graphHasCallValue || compilerOptions.messageBusKernel === true)
+      && footprint.effects.every(kernelCompatibleEffect)
       && [...directExternalCallsites].every((callsite) => {
         const occurrence = occurrenceInfoOf(fn, callsite);
         return occurrence.occurrence !== 'loop' || occurrence.maximumOccurrences !== undefined;
@@ -2664,8 +2830,8 @@ function synthesizeMessageBusRoute(
       && namedClosureShape.acyclic
       && !graphHasLowLevelCall
       && !graphHasDelegatecall
-      && !graphHasCallValue
-      && footprint.effects.every((effect) => effect === 'external-call');
+      && (!graphHasCallValue || compilerOptions.messageBusKernel === true)
+      && footprint.effects.every(kernelCompatibleEffect);
     const graphRuntimeEligible = graphBoundedRuntimeEligible || graphProtocolBoundedRuntimeEligible;
     // Outgoing-call handlers participate in the atomic messageEnvelope protocol by construction. Admission is
     // inferred from the handler closure; there is no compiler option that can opt a handler into the protocol.
@@ -2674,7 +2840,7 @@ function synthesizeMessageBusRoute(
         || (admitBareForwardingHandlers && graphBareTailStatement)
         || graphRuntimeEligible
         || (fn.returnTypes.length === 0
-          && !graphHasCallValue
+          && (!graphHasCallValue || compilerOptions.messageBusKernel === true)
           && bodyStatements[bodyStatements.length - 1] instanceof RequireNode));
     if (admitBareForwardingHandlers && graphBareTailStatement) graphBareTailHandlers.add(fn);
     const keyWitnesses: {
@@ -2786,15 +2952,52 @@ function synthesizeMessageBusRoute(
           const parameterIndex = alias === undefined ? undefined : parameterAliases.get(alias);
           if (parameterIndex !== undefined) parameterAliases.set(node.name, parameterIndex);
         });
+        // Modifier expansion binds `onlyOwner(id)` as `id__<line>_<i> = id`. The unique local is not a
+        // function parameter name, so without this alias the modifier read and the body write look like
+        // two key alternatives and the kernel route names a `_row` witness ST cannot map.
+        for (const name of locallyBound) {
+          if (parameterAliases.has(name)) continue;
+          const prefix = name.replace(/__\d+(?:_\d+)*$/, '');
+          const sourceIndex = prefix === name ? undefined : parameterAliases.get(prefix);
+          if (sourceIndex !== undefined) parameterAliases.set(name, sourceIndex);
+        }
         walkInvocationAst(fn.body, (node) => {
           if (consumed.has(node)) return;
           const flattened = includeBare && flattenBare ? bareEntryAccessOf(node, locallyBound) : undefined;
           for (const inner of flattened?.chain ?? []) consumed.add(inner);
-          const access = node instanceof MappingAccessNode || node instanceof MappingAssignNode
+          let access = node instanceof MappingAccessNode || node instanceof MappingAssignNode
             || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode
             ? { name: node.name, keys: node.keys as ExpressionNode[] }
             : (flattened ?? (includeBare && !flattenBare ? bareAccessOf(node) : undefined));
+          if (!access && node instanceof ArrayAccessNode) {
+            const keys: ExpressionNode[] = [node.index];
+            let base: ExpressionNode = node.array;
+            while (base instanceof ArrayAccessNode) {
+              keys.unshift(base.index);
+              base = base.array;
+            }
+            if (base instanceof MappingAccessNode) {
+              access = { name: base.name, keys: [...base.keys, ...keys] };
+            } else if (compilerOptions.messageBusKernel === true
+              && ((base instanceof StateAccessNode && collectionByName.has(base.name))
+                || (base instanceof IdentifierNode && collectionByName.has(base.name)))) {
+              access = { name: (base as StateAccessNode | IdentifierNode).name, keys };
+            }
+          }
+          if (node instanceof ReturnNode && node.expressions.length === 1 && !access) {
+            const returned = node.expressions[0];
+            if (returned instanceof MappingAccessNode) {
+              access = { name: returned.name, keys: returned.keys as ExpressionNode[] };
+            }
+          }
           if (!access || !collectionByName.has(access.name)) return;
+          const keyWidth = collectionByName.get(access.name)!.allKeyTypes.length;
+          // Extra indices after the mapping keys address an array VALUE (`m[k][i] = v` for `mapping => T[N]`),
+          // not further mapping keys. Kernel journals the entry `m[k]` and lets the value-index ride in the body.
+          if (compilerOptions.messageBusKernel === true && access.keys.length > keyWidth) {
+            access = { name: access.name, keys: access.keys.slice(0, keyWidth) };
+          }
+          if (access.keys.length !== keyWidth) return;
           if (runtimeLoopWrites.has(node)) return;
           const indices = access.keys.map((key) => {
             if (key instanceof IdentifierNode) {
@@ -2934,7 +3137,7 @@ function synthesizeMessageBusRoute(
       // below fall through with no reason at all. That is how an iteration handler reached the wrapper and
       // crashed it on arity. Nor is `directKeys.size === 0` the right test: a handler that BOTH iterates and
       // writes one keyed entry has a non-empty key set while the iteration's reads are still unreserved.
-      if (iteratesCollection) {
+      if (iteratesCollection && compilerOptions.messageBusKernel !== true) {
         reason = 'collection-iteration-handler-not-enabled';
       } else if (fixedIterationShape
         || (directKeys.size === 0 && hasFixedCollectionHelper && fixedCollectionHelperClosure)) {
@@ -2971,7 +3174,10 @@ function synthesizeMessageBusRoute(
         const perRowInputs = new Set<number>();
         for (const [collectionName, alternatives] of directKeys) {
           const collection = collectionByName.get(collectionName)!;
-          if (alternatives.some((indices) => indices.some((index) => index === -1)
+          const kernelJournaledAlts = compilerOptions.messageBusKernel === true
+            && alternatives.every((indices) => indices.length === collection.allKeyTypes.length
+              && indices.every((index) => index >= -2));
+          if (!kernelJournaledAlts && alternatives.some((indices) => indices.some((index) => index === -1)
             || indices.length !== collection.allKeyTypes.length)) {
             reason = 'collection-route-requires-parameter-keyed-resource-shape';
             break;
@@ -3008,7 +3214,7 @@ function synthesizeMessageBusRoute(
           // `resourceShapedHandler` or `_rN` copies. Legacy keeps the compact two-row resource batch.
           const kernelParamKeyedResource = compilerOptions.messageBusKernel === true
             && [...directKeys.values()].every((alternatives) =>
-              alternatives.every((indices) => indices.every((index) => index >= 0 || index === -2)));
+              alternatives.every((indices) => indices.every((index) => index >= -2)));
           if (!kernelParamKeyedResource) resourceShapedHandler ??= fn;
           // Witnesses are named by the physical entry they address - collection, key position, and whether the
           // entry is shared by every row or row-local - never by the handler or its parameter names. Two
@@ -3020,7 +3226,7 @@ function synthesizeMessageBusRoute(
             alternatives.forEach((indices, alternativeIndex) => {
               const perRow = alternativeIndex > 0 && !kernelParamKeyedResource;
               indices.forEach((inputIndex, keyIndex) => {
-                if (inputIndex < 0 && inputIndex !== -2) return;
+                if (inputIndex < -2) return;
                 const routeInput = alternativeIndex > 0
                   ? `__message_bus_key_${safeName}_${keyIndex}_row`
                   : `__message_bus_key_${safeName}_${keyIndex}`;
@@ -3034,7 +3240,9 @@ function synthesizeMessageBusRoute(
                   inputIndex,
                   ...(inputIndex === -2
                     ? { source: 'msgSender' as const }
-                    : kernelParamKeyedResource ? { source: 'argument' as const } : {}),
+                    : inputIndex === -1
+                      ? { source: 'expression' as const }
+                      : kernelParamKeyedResource ? { source: 'argument' as const } : {}),
                   ...(perRow && { perRow: true }),
                 });
               });
@@ -3052,7 +3260,11 @@ function synthesizeMessageBusRoute(
               ? { name: statement.name, keys: statement.keys as ExpressionNode[] } : bare;
             return access?.name === collectionName && access.keys.length === collection.allKeyTypes.length;
           });
-          const admitComputedKey = explicitlyEnabledMessageBus && directComputedWrite;
+          // Kernel journals an expression-keyed write from the row whether it is a top-level statement or
+          // nested in `if` / `_refund` after helper inlining (Marketplace `if (byWorker) whitelist[id][worker]`).
+          // Legacy still requires a direct statement so auto-mode artifacts stay byte-identical.
+          const admitComputedKey = explicitlyEnabledMessageBus
+            && (compilerOptions.messageBusKernel === true || directComputedWrite);
           if (alternatives.length !== 1 || (computedKey && !admitComputedKey)
             || alternatives[0].length !== collection.allKeyTypes.length) {
             reason = 'collection-route-requires-one-parameter-keyed-entry-per-collection';
@@ -3194,13 +3406,15 @@ function synthesizeMessageBusRoute(
       // of the same struct remain batchable; refuse only the mutation shape until it has a row encoding.
       reason = 'array-struct-element-write-route-not-enabled';
     } else if (!reason && fn.returnTypes.length > 0 && resizesDynamicArrayState
-      && !(explicitlyEnabledMessageBus && graphTailCallEligible)) {
+      && !(explicitlyEnabledMessageBus && (graphTailCallEligible
+        || compilerOptions.messageBusKernel === true))) {
       // A standalone result row cannot also carry a dynamic-state resize. An explicitly requested graph tail is
       // different: its OP_INVOKE frame executes inside the authenticated route owner, whose shared dynamic journal
       // settles the resize independently while the invocation row commits the returned value. Keep auto/plain
       // batches on the established fail-closed path; only that compiler-owned graph frame reaches the widening.
       reason = 'result-route-requires-effect-free-handlers';
-    } else if (!reason && reachesNestedDynamicArray) {
+    } else if (!reason && reachesNestedDynamicArray
+      && compilerOptions.messageBusKernel !== true) {
       // A nested dynamic-array state handler currently reaches the same direct-only fallback after several
       // expensive generated-route attempts. Refuse it before cloning: no message-bus handler survives today,
       // while the ordinary entry point compiles and remains unchanged.
@@ -3239,7 +3453,8 @@ function synthesizeMessageBusRoute(
       reason = 'return-consuming-low-level-call-route-not-enabled';
     }
     const readsTokenContainer = footprint.reads.some((resource) => resource.startsWith('collection:tokens:'));
-    if (!reason && hasTokenContainerEffect && !readsTokenContainer) {
+    if (!reason && hasTokenContainerEffect && !readsTokenContainer
+      && compilerOptions.messageBusKernel !== true) {
       reason = 'token-container-effect-route-not-enabled';
     }
     // Atomic participants authenticate token-container resources and settlements directly in the
@@ -3249,7 +3464,7 @@ function synthesizeMessageBusRoute(
       && [...footprint.reads, ...footprint.writes].some((resource) => resource.startsWith('collection:tokens:'));
     const attributedRefusal = attribution?.refused.has(externalHandlerKey(fn)) ?? false;
     const visibilityRefusal = attributedRefusal
-      ? 'handler-route-generation-unsupported'
+      ? (attribution?.reasons.get(externalHandlerKey(fn)) ?? 'handler-route-generation-unsupported')
       : fn.visibility !== 'public' && fn.visibility !== 'external'
       ? 'initial-v1-route-requires-public-visibility'
       : fn.visibility !== 'external'
@@ -3288,7 +3503,8 @@ function synthesizeMessageBusRoute(
       && (routeUsesMsgData || routeUsesMsgSig
         || (routeUsesMsgSender && !graphRuntimeEligible))) {
       reason = 'emission-handler-logical-context-reconstruction-unsupported';
-    } else if (!reason && routeUsesForeignTryCatch) {
+    } else if (!reason && routeUsesForeignTryCatch
+      && compilerOptions.messageBusKernel !== true) {
       reason = 'foreign-try-catch-callManifest-ineligible';
     } else if (!reason && routeUsesOpaqueAssembly) {
       reason = 'opaque-assembly-effects-callManifest-ineligible';
@@ -3298,6 +3514,8 @@ function synthesizeMessageBusRoute(
       // proxy handler as an ordinary graph edge would authorize the wrong owner/output context. Refuse every
       // surface spelling (including internal-closure calls) detected above instead of inheriting legacy slots.
       reason = 'atomic-delegate-context-unpreservable';
+    } else if (!reason && graphHasLowLevelCall && !authenticatedBoundedLowLevelConsumer) {
+      reason = 'opaque-assembly-effects-callManifest-ineligible';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
     // Result-consuming effect handlers remain behind their authenticated graph OP_INVOKE frame. X29's
@@ -3312,17 +3530,22 @@ function synthesizeMessageBusRoute(
     }
     if (compilerOptions.messageBusKernel === true) {
       let deploys = false;
+      const lockingBytecode = new Set<string>(Object.values(Class));
       for (const name of collectNamedFunctionClosure(fn, byName)) {
         for (const candidate of byName.get(name) ?? []) {
           walkInvocationAst(candidate.body, (node) => {
-            if (node instanceof InstantiationNode) deploys = true;
+            // `new LockingBytecodeP2PKH(pkh)` is an InstantiationNode but not a child deploy; it is a
+            // compile-time locking-bytecode constructor and does not need a handler-owned block layout.
+            if (node instanceof InstantiationNode && !lockingBytecode.has(node.identifier.name)) {
+              deploys = true;
+            }
           });
         }
       }
-      // Expression keys, parameter-array loops, literal `new T[](N)` locals (N<=64, unrolled to scalar
-      // writes), and counter-keyed `m[i]` loops (hidden `__internal__vmapCounterPerm_*` witness) journal as
-      // trailing upserts / published witnesses. Only an unbounded constructed key array still has no kernel
-      // representation.
+      // Expression keys (including nested `if` / helper-inlined writes), parameter-array loops, literal
+      // `new T[](N)` locals (N<=64, unrolled to scalar writes), and counter-keyed `m[i]` loops (hidden
+      // `__internal__vmapCounterPerm_*` witness) journal as trailing upserts / published witnesses. Only an
+      // unbounded constructed key array still has no kernel representation.
       if (hasUnsupportedSortedRuntimeLoopWrite(fn, 64n)) {
         reason = 'KERNEL_UNBOUNDED_KEY';
       } else if (deploys && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
@@ -3334,6 +3557,13 @@ function synthesizeMessageBusRoute(
     fn.messageBusKeyWitnesses = reason === undefined && keyWitnesses.length > 0
       ? keyWitnesses : undefined;
     if (!reason) eligible.push(fn);
+    if (!reason) {
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof FunctionCallNode && node.identifier.name === 'blockhash') {
+          graphTailHandlers.add(fn);
+        }
+      });
+    }
     const returningEffectHandler = fn.returnTypes.length > 0
       && footprint.effects.some((effect) => effect === 'events' || effect === 'value');
     if (!reason && (graphTailCallEligible || returningEffectHandler
@@ -3363,11 +3593,31 @@ function synthesizeMessageBusRoute(
   // contract's real struct-reading/writing entry points remain batchable.
   const routeStructNames = new Set([...ast.structDefinitions, ...contract.structDefinitions]
     .map((definition) => definition.name));
+  const routeEnumNames = new Set([...ast.enumDefinitions, ...contract.enumDefinitions]
+    .map((definition) => definition.name));
+  const kernelResultEncodable = (type: Type): boolean => {
+    if (type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT || type === PrimitiveType.STRING
+      || type === PrimitiveType.INT) return true;
+    if (type instanceof IntType || type instanceof BytesType) return true;
+    if (type instanceof AddressType) {
+      const named = type.interfaceName;
+      if (named && (routeEnumNames.has(named) || routeStructNames.has(named))) return false;
+      return true;
+    }
+    if (type instanceof EnumType) return false;
+    if (type instanceof StructType) return type.fields.every((field) => kernelResultEncodable(field.type));
+    if (type instanceof ArrayType) {
+      if (type.elementType instanceof StructType || type.elementType instanceof EnumType) return false;
+      return kernelResultEncodable(type.elementType);
+    }
+    return false;
+  };
   for (const fn of eligible) {
     const state = contract.stateVariables.find((candidate) => candidate.name === fn.name);
     const collection = collectionByName.get(fn.name);
     const keyedMappingGetter = collection?.type instanceof MappingType && fn.parameters.length > 0;
-    if ((collection || state?.type instanceof ArrayType) && !keyedMappingGetter) {
+    const kernelGetter = compilerOptions.messageBusKernel === true;
+    if (!kernelGetter && (collection || state?.type instanceof ArrayType) && !keyedMappingGetter) {
       // Public collection getters are synthesized into the function list for direct ABI dispatch, but are not
       // published as message-bus handlers. Excluding them here avoids repeatedly compiling an unobservable route
       // candidate during fallback selection; the ordinary getter and every real mutating handler are unchanged.
@@ -3375,8 +3625,17 @@ function synthesizeMessageBusRoute(
       fn.messageBusRejectionReason = 'collection-state-getter-route-not-enabled';
     } else if (fn.parameters.length === 0 && state
       && (state.type instanceof StructType || routeStructNames.has(state.type.toString()))) {
+      // Kernel wrapper source is parsed before getter-projection lowering and cannot spell a
+      // field-shaped `rec()` return as a struct value. Keep the ordinary getter; mutating siblings stay eligible.
       fn.messageBusEligible = false;
-      fn.messageBusRejectionReason = 'struct-state-getter-route-not-enabled';
+      fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
+        ? 'KERNEL_LAYOUT' : 'struct-state-getter-route-not-enabled';
+    } else if (compilerOptions.messageBusKernel === true
+      && fn.returnTypes.some((type) => !kernelResultEncodable(type))) {
+      // Result concatenation uses `abi.encode` in the generated wrapper. Enum and dynamic-array-of-struct
+      // returns throw `evmCompat abi.encode: unsupported type` and would otherwise drop the whole bus.
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     }
   }
   eligible = eligible.filter((fn) => fn.messageBusEligible !== false);
@@ -3542,6 +3801,12 @@ function synthesizeMessageBusRoute(
         // no event rows. The atomic manifest binds every event row to its
         // parent invocation, so an empty frame is unambiguous.
         if (resultMode && effects.length === 0) continue;
+        // Kernel sizes the effect frame to the max width and indexes it by live row. A sibling with
+        // fewer emits (or none) owns the empty suffix of that frame, same as an unreached row.
+        if (compilerOptions.messageBusKernel === true) {
+          if (directEmits > 0) directEventWidths.add(directEmits);
+          continue;
+        }
         if (directEmits < 1 || effects.length === 0
           || effects.some((effect) => !['events', 'value'].includes(effect))
           || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
@@ -3556,6 +3821,7 @@ function synthesizeMessageBusRoute(
       // site. A wholly flattened route has no such call-site guard: different direct widths would make the
       // unrolled conditional branches reuse incompatible event indices. Keep that older shape fail-closed.
       if (!resultMode && directEventWidths.size > 1
+        && compilerOptions.messageBusKernel !== true
         && !survivors.some((fn) => graphTailHandlers.has(fn))) {
         for (const fn of survivors) {
           fn.messageBusEligible = false;
@@ -3565,7 +3831,7 @@ function synthesizeMessageBusRoute(
       }
       if (survivors.length === 0) return { survivors, ...modes() };
     }
-    if (valueEffectMode) {
+    if (valueEffectMode && compilerOptions.messageBusKernel !== true) {
       for (const fn of survivors) {
         let directTransfers = 0;
         walkInvocationAst(fn.body, (node) => {
@@ -3772,7 +4038,7 @@ function synthesizeMessageBusRoute(
     || binding.source === 'msgSender' || binding.source === 'argument' || binding.source === 'expression';
   const kernelLoopDispatch = resourceShapedHandler === undefined
     && !signatureMode
-    && !fixedArrayMode
+    && (compilerOptions.messageBusKernel === true || !fixedArrayMode)
     && (compilerOptions.messageBusKernel === true
       ? eligible.every((fn) =>
         (fn.messageBusKeyWitnesses ?? []).every((binding) => kernelRepresentablePerRow(binding)))
@@ -3800,7 +4066,7 @@ function synthesizeMessageBusRoute(
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   const siblingHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   const fixedArrayHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
-  const tokenCategoryInputByHandler = new Map<FunctionDefinitionNode, number>();
+  const tokenCategoryInputByHandler = new Map<FunctionDefinitionNode, Map<number, string>>();
 
   // A `msg.sender` mapping key blocks value-threaded journalling: the collection-journal lowering only accepts
   // parameter-keyed entries, so without this the batched clone re-reads and re-flushes the same physical entry
@@ -3830,7 +4096,11 @@ function synthesizeMessageBusRoute(
   const keySignature = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode
   | MappingFieldAssignNode): string =>
     node.keys.map((key) => {
-      if (key instanceof IdentifierNode) return `p:${key.name}`;
+      if (key instanceof IdentifierNode) {
+        // Modifier expansion binds `onlyOwner(id)` as `id__<line>_<col>_<i> = id`. Treat that local as
+        // the source parameter so the clone does not allocate a second `_row` alternative.
+        return `p:${key.name.replace(/__\d+(?:_\d+)*$/, '')}`;
+      }
       if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) return 'sender';
       return 'other';
     }).join('|');
@@ -3930,7 +4200,7 @@ function synthesizeMessageBusRoute(
         const binding = source.messageBusKeyWitnesses?.find((candidate) =>
           candidate.routeInput === base && candidate.source === 'expression');
         if (!binding) return;
-        const witness = keyRowLocal && !binding.perRow ? `${base}_row` : base;
+        const witness = keyRowLocal && !binding.perRow && !base.endsWith('_row') ? `${base}_row` : base;
         const guard = new RequireNode(Object.assign(new BinaryOpNode(
           cloneNode(key) as ExpressionNode,
           BinaryOperator.EQ,
@@ -4006,6 +4276,26 @@ function synthesizeMessageBusRoute(
   let resourceSwappedHandlerInvokeName: string | undefined;
   const allGraphEmissionHandlersRuntime = graphTailHandlers.size > 0
     && [...graphTailHandlers].every((handler) => graphRuntimeHandlers.has(handler));
+  // Collection-journal clones are created before the graph-effect clone pass. A handler that both
+  // touches a mapping and makes a typed call (Marketplace `postThreadMessage`) would otherwise keep
+  // a journal clone without `graphEmissionHandler`, so semantic analysis injects selector/index
+  // parameters the kernel row invoke never supplies. Promote that existing clone onto the graph
+  // OP_INVOKE frame instead of emitting a second `__message_bus_graph_*` family.
+  const markGraphEmissionClone = (
+    handler: FunctionDefinitionNode, source: FunctionDefinitionNode,
+  ): void => {
+    handler.graphEmissionHandler = true;
+    handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(source);
+    handler.graphRuntimeEmissionThreaded = handler.graphRuntimeEmissionHandler
+      && allGraphEmissionHandlersRuntime;
+    localEffectFrameHandlers.add(source);
+  };
+  const existingClone = (source: FunctionDefinitionNode): FunctionDefinitionNode | undefined => {
+    const name = siblingHandlerInvokeNames.get(source);
+    return name === undefined
+      ? undefined
+      : contract.functions.find((candidate) => candidate.name === name);
+  };
   if (resourceShapedHandler) {
     const handler = cloneMessageBusHandler(resourceShapedHandler, cheapAdmission);
     handler.name = `__message_bus_resource_${resourceShapedHandler.name}`;
@@ -4135,9 +4425,9 @@ function synthesizeMessageBusRoute(
         handler.returnTypes = [];
         handler.body!.statements!.pop();
       }
-      if (eligibleFootprint(sourceHandler).effects.length > 0) {
-        handler.graphEmissionHandler = true;
-        localEffectFrameHandlers.add(sourceHandler);
+      if (eligibleFootprint(sourceHandler).effects.length > 0
+        || graphTailHandlers.has(sourceHandler)) {
+        markGraphEmissionClone(handler, sourceHandler);
       }
       bindEntryKeyParameters(handler, sourceHandler);
       siblingHandlerInvokeNames.set(sourceHandler, handler.name);
@@ -4166,9 +4456,9 @@ function synthesizeMessageBusRoute(
     handler.messageBusRejectionReason = undefined;
     handler.messageBusKeyWitnesses = undefined;
     handler.forceCollectionJournalPool = true;
-    if (eligibleFootprint(sourceHandler).effects.length > 0) {
-      handler.graphEmissionHandler = true;
-      localEffectFrameHandlers.add(sourceHandler);
+    if (eligibleFootprint(sourceHandler).effects.length > 0
+      || graphTailHandlers.has(sourceHandler)) {
+      markGraphEmissionClone(handler, sourceHandler);
     }
     bindEntryKeyParameters(handler, sourceHandler);
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
@@ -4203,7 +4493,8 @@ function synthesizeMessageBusRoute(
         if (fixedArrayCollections.has(bare.name)) touchesFixedArray = true;
       }
     });
-    if (!touchesEntry) continue;
+    const stateGetter = contract.stateVariables.some((state) => state.name === sourceHandler.name);
+    if (!touchesEntry && !(compilerOptions.messageBusKernel === true && stateGetter)) continue;
     // Fixed-array handlers are cloned by the dedicated pass below. Letting the generic entry clone claim one
     // first rewrites its compiler-owned literal identities (the unrolled 0..N-1 indices) to spender-facing
     // synthetic key parameters. The collection journal then correctly rejects those parameters as unstable.
@@ -4214,6 +4505,13 @@ function synthesizeMessageBusRoute(
       .some((resource) => resource.startsWith('collection:tokens:'));
     if (touchesTokenContainer) continue;
     if (graphTailHandlers.has(sourceHandler) && !kernelLoopDispatch) continue;
+    if (compilerOptions.messageBusKernel === true
+      && sourceHandler.returnTypes.length > 0
+      && !eligibleFootprint(sourceHandler).writes.some((resource) => resource.startsWith('collection:'))
+      && !collectionByName.has(sourceHandler.name)
+      && !contract.stateVariables.some((state) => state.name === sourceHandler.name)) {
+      continue;
+    }
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_entry_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
@@ -4228,9 +4526,9 @@ function synthesizeMessageBusRoute(
       handler.returnTypes = [];
       handler.body!.statements!.pop();
     }
-    if (eligibleFootprint(sourceHandler).effects.length > 0) {
-      handler.graphEmissionHandler = true;
-      localEffectFrameHandlers.add(sourceHandler);
+    if (eligibleFootprint(sourceHandler).effects.length > 0
+      || graphTailHandlers.has(sourceHandler)) {
+      markGraphEmissionClone(handler, sourceHandler);
     }
     bindEntryKeyParameters(handler, sourceHandler);
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
@@ -4248,12 +4546,24 @@ function synthesizeMessageBusRoute(
       if (node instanceof TokenContainerMethodStatementNode
         && (node.methodName === 'transfer' || node.methodName === 'transferNft')) hasTokenEffect = true;
     });
+    let hasEcrecoverCall = false;
+    walkInvocationAst(sourceHandler.body, (node) => {
+      if (node instanceof FunctionCallNode && /^ecrecover/i.test(node.identifier.name)) hasEcrecoverCall = true;
+    });
     if (sourceHandler === resourceShapedHandler
       || (graphTailHandlers.has(sourceHandler) && !kernelLoopDispatch)
-      || siblingHandlerInvokeNames.has(sourceHandler)
       || (!(graphTailHandlers.has(sourceHandler) && kernelLoopDispatch)
-        && footprint.effects.length === 0 && !hasTokenEffect)
+        && footprint.effects.length === 0 && !hasTokenEffect && !hasEcrecoverCall)
     ) continue;
+    const already = existingClone(sourceHandler);
+    if (already) {
+      markGraphEmissionClone(already, sourceHandler);
+      if (graphBlockhashReads.has(sourceHandler)
+        && !already.parameters.some((parameter) => parameter.name === '__internal__blockhashRowOffset')) {
+        already.parameters.push(new ParameterNode(PrimitiveType.BIGINT, '__internal__blockhashRowOffset'));
+      }
+      continue;
+    }
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
     handler.name = `__message_bus_handler_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
@@ -4262,11 +4572,10 @@ function synthesizeMessageBusRoute(
     handler.messageBusEligible = undefined;
     handler.messageBusRejectionReason = undefined;
     handler.messageBusKeyWitnesses = undefined;
-    handler.graphEmissionHandler = true;
-    handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(sourceHandler);
-    handler.graphRuntimeEmissionThreaded = handler.graphRuntimeEmissionHandler
-      && allGraphEmissionHandlersRuntime;
-    localEffectFrameHandlers.add(sourceHandler);
+    markGraphEmissionClone(handler, sourceHandler);
+    if (graphBlockhashReads.has(sourceHandler)) {
+      handler.parameters.push(new ParameterNode(PrimitiveType.BIGINT, '__internal__blockhashRowOffset'));
+    }
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
@@ -4346,8 +4655,12 @@ function synthesizeMessageBusRoute(
     const footprint = analyseFunctionFootprint(sourceHandler, byName, footprintCache);
     const touchesTokenContainer = [...footprint.reads, ...footprint.writes]
       .some((resource) => resource.startsWith('collection:tokens:'));
-    if (!touchesTokenContainer) continue;
-    let categoryInput = -1;
+    let hasTokenMethod = false;
+    walkInvocationAst(sourceHandler.body, (node) => {
+      if (node instanceof TokenContainerMethodStatementNode) hasTokenMethod = true;
+    });
+    if (!touchesTokenContainer && !hasTokenMethod) continue;
+    const categoryInputs: number[] = [];
     walkInvocationAst(sourceHandler.body, (node) => {
       const key = node instanceof TokenContainerMethodStatementNode
         ? node.tokenContainerKeyExpression
@@ -4356,20 +4669,24 @@ function synthesizeMessageBusRoute(
       if (!key) return;
       if (!(key instanceof IdentifierNode)) return;
       const input = sourceHandler.parameters.findIndex((parameter) => parameter.name === key.name);
-      if (input < 0 || (categoryInput >= 0 && categoryInput !== input)) return;
-      categoryInput = input;
+      if (input < 0 || categoryInputs.includes(input)) return;
+      categoryInputs.push(input);
     });
-    if (categoryInput < 0) continue;
-    const routeInput = '__message_bus_token_category';
-    routeKeyWitnesses.set(routeInput, [{
-      name: routeInput,
-      type: new BytesType(32),
-    }]);
-    sourceHandler.messageBusKeyWitnesses = [
-      ...(sourceHandler.messageBusKeyWitnesses ?? []),
-      { routeInput, inputIndex: categoryInput, source: 'argument' },
-    ];
-    tokenCategoryInputByHandler.set(sourceHandler, categoryInput);
+    if (categoryInputs.length === 0) continue;
+    const names = new Map<number, string>();
+    categoryInputs.forEach((input, index) => {
+      const routeInput = index === 0 ? '__message_bus_token_category' : `__message_bus_token_category_${index}`;
+      routeKeyWitnesses.set(routeInput, [{
+        name: routeInput,
+        type: new BytesType(32),
+      }]);
+      sourceHandler.messageBusKeyWitnesses = [
+        ...(sourceHandler.messageBusKeyWitnesses ?? []),
+        { routeInput, inputIndex: input, source: 'argument' },
+      ];
+      names.set(input, routeInput);
+    });
+    tokenCategoryInputByHandler.set(sourceHandler, names);
   }
   for (const sourceHandler of eligible) {
     if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)
@@ -4390,6 +4707,7 @@ function synthesizeMessageBusRoute(
     contract.functions.push(handler);
   }
   for (const sourceHandler of eligible) {
+    if (kernelLoopDispatch) continue;
     if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)
       || siblingHandlerInvokeNames.has(sourceHandler)) continue;
     let touchesFixedArray = false;
@@ -4597,8 +4915,9 @@ function synthesizeMessageBusRoute(
           : logicalMsgSenderHandlers.has(fn)
             && !graphTailHandlers.has(fn) && !localEffectFrameHandlers.has(fn)
             ? ['__internal__msgSenderCategory'] : [];
-        const entryOnly = [...entryKeyArguments(fn), ...(blockhashRowOffset
-          ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : []), ...callerContextArgs,
+        const blockhashArgs = blockhashRowOffset
+          ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [];
+        const entryOnly = [...entryKeyArguments(fn), ...blockhashArgs, ...callerContextArgs,
         ...ownerContextArgs];
         const senderChecks = (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source === 'msgSender')
@@ -4661,12 +4980,16 @@ function synthesizeMessageBusRoute(
               + `${decodedName(targetIndex)})`;
               })()
               : parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
+                || parameter.name.startsWith('__internal__collectionIter')
+                || parameter.name.startsWith('__internal__valueWitness_')
+                || parameter.name.startsWith('__internal__leadingPushValue_')
+                || parameter.name === '__internal__vmapBatchTrailingCount'
                 ? parameter.name
-              : i === tokenCategoryInputByHandler.get(fn)
-                ? '__message_bus_token_category'
-                : (witnessByInput.get(i) ?? decodedName(i))),
-        ...(blockhashRowOffset ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : []),
+              : (tokenCategoryInputByHandler.get(fn)?.get(i)
+                ?? witnessByInput.get(i) ?? decodedName(i))),
       ];
+      const blockhashArgs = blockhashRowOffset
+        ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [];
       const physicalEntryArgs = entryKeyArguments(fn);
       const selectedIsClone = invokeName !== fn.name;
       const callerContextArgs = selectedIsClone
@@ -4693,7 +5016,7 @@ function synthesizeMessageBusRoute(
       // semantics. The distinct arm retains its own physical entry slot. Later semantic metadata gates that slot
       // off when one of these equality arms is taken.
       const dispatchFor = (entryArgs: string[]): string => {
-        const callArgs = [...sourceCallArgs, ...entryArgs, ...callerContextArgs, ...ownerContextArgs].join(', ');
+        const callArgs = [...sourceCallArgs, ...entryArgs, ...blockhashArgs, ...callerContextArgs, ...ownerContextArgs].join(', ');
         if (!(fn === resourceShapedHandler && rowIndex !== undefined
           && entryShape && varyingEntry
           && entryShape.filter((entry) => entry.perRow
@@ -4807,7 +5130,11 @@ function synthesizeMessageBusRoute(
   const declaredPermNames = new Set<string>();
   const routeCounterPermParameters = eligible.flatMap((fn) =>
     fn.parameters.filter((parameter) => {
-      if (!parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)) return false;
+      if (!parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
+        && !parameter.name.startsWith('__internal__collectionIter')
+        && !parameter.name.startsWith('__internal__valueWitness_')
+        && !parameter.name.startsWith('__internal__leadingPushValue_')
+        && parameter.name !== '__internal__vmapBatchTrailingCount') return false;
       if (declaredPermNames.has(parameter.name)) return false;
       declaredPermNames.add(parameter.name);
       return true;
@@ -4904,15 +5231,15 @@ function synthesizeMessageBusRoute(
       // unrolled route modes do; fixed row count and result collection are independent concerns.
       `{ ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
     : kernelLoopDispatch
-      ? `for (bigint row = 0; row < rowCount; row = row + 1) {
-        ${parseOneRow('row', resultMode)}
+      ? `for (bigint __message_bus_row = 0; __message_bus_row < rowCount; __message_bus_row = __message_bus_row + 1) {
+        ${parseOneRow('__message_bus_row', resultMode)}
       }`
     : eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode || signatureMode
       || tokenContainerMode
       ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
         `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
-      : `for (bigint row = 0; row < rowCount; row = row + 1) {
-        ${parseOneRow('row')}
+      : `for (bigint __message_bus_row = 0; __message_bus_row < rowCount; __message_bus_row = __message_bus_row + 1) {
+        ${parseOneRow('__message_bus_row')}
       }`;
   const resultDeclarations = resultMode ? 'bytes __message_bus_results = hex\"\";' : '';
   const returnDeclaration = resultMode
@@ -6458,24 +6785,31 @@ function stubFunctionBody(fn: FunctionDefinitionNode): void {
 function cloneMessageBusHandler(
   source: FunctionDefinitionNode, cheap: boolean,
 ): FunctionDefinitionNode {
-  if (!cheap) return cloneNode(source);
-  const handler = Object.create(Object.getPrototypeOf(source)) as FunctionDefinitionNode;
-  for (const [key, value] of Object.entries(source)) {
-    if (key === 'body' || key === 'opRolls') continue;
-    if (key === 'parameters') {
-      handler.parameters = (value as ParameterNode[]).map((parameter) => cloneNode(parameter));
-      continue;
+  const handler = cheap ? (() => {
+    const clone = Object.create(Object.getPrototypeOf(source)) as FunctionDefinitionNode;
+    for (const [key, value] of Object.entries(source)) {
+      if (key === 'body' || key === 'opRolls') continue;
+      if (key === 'parameters') {
+        clone.parameters = (value as ParameterNode[]).map((parameter) => cloneNode(parameter));
+        continue;
+      }
+      if (key === 'modifiers' || key === 'returnTypes' || key === 'returnModifiers' || key === 'returnNames'
+        || key === 'customModifiers') {
+        (clone as unknown as Record<string, unknown>)[key] = Array.isArray(value) ? [...value] : value;
+        continue;
+      }
+      (clone as unknown as Record<string, unknown>)[key] = value;
     }
-    if (key === 'modifiers' || key === 'returnTypes' || key === 'returnModifiers' || key === 'returnNames'
-      || key === 'customModifiers') {
-      (handler as unknown as Record<string, unknown>)[key] = Array.isArray(value) ? [...value] : value;
-      continue;
-    }
-    (handler as unknown as Record<string, unknown>)[key] = value;
-  }
-  handler.opRolls = new Map();
-  stubFunctionBody(handler);
-  handler.location = source.location;
+    clone.opRolls = new Map();
+    stubFunctionBody(clone);
+    clone.location = source.location;
+    return clone;
+  })() : cloneNode(source);
+  // `isEntryPoint` is true whenever `isFallback`/`isReceive` is set, even after the clone is marked
+  // `internal`. Leaving those flags on makes codegen compile the clone as a direct receive/fallback
+  // body (no OP_INVOKE hidden context) while still treating it as a graph emission handler.
+  handler.isFallback = false;
+  handler.isReceive = false;
   return handler;
 }
 
@@ -6873,6 +7207,14 @@ function compileResolvedAst(
     // Counter-keyed `m[i]` must expose `__internal__vmapCounterPerm_*` on the source handler before
     // admission clones it, so the route can pass that hidden witness into the DEFINE body.
     ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
+    // Single `m[k].field = v` writes become a whole-entry MappingAssign so kernel admission sees a
+    // parameter-keyed journal slot instead of a field-update layout gap.
+    ast = ast.accept(new CoalesceMappingEntryFieldWrites(true)) as Ast;
+    // `m[k][i] = v` / `return m[k][i]` on mapping(K => T[N]) journals as the entry `m[k]`. The late
+    // nested-array pass only hoists 2D+ value indices; kernel clones must snapshot the 1-index RMW.
+    ast = ast.accept(new DesugarNestedArrayWrite(1)) as Ast;
+    injectCollectionIterationWitnesses(ast);
+    injectChunkableEntryWitnesses(ast);
   }
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)
@@ -7381,6 +7723,7 @@ function compileResolvedAst(
   // Semantic analysis
   const semanticStarted = Date.now();
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
+  if (mergedCompilerOptions.messageBusKernel === true) padMessageBusCloneCalls(ast);
   profileLog('resolved:symbol', semanticStarted, { contract: contractName });
   // Bare msg.sender collection accesses are normalized to compiler-owned route parameters before semantic
   // analysis. Preserve their origin in the published entry metadata: treating that synthetic parameter as a
@@ -7406,12 +7749,12 @@ function compileResolvedAst(
     && fn.messageBusEligible && fn.ecrecoverCompute && (fn.ecrecoverCallCount ?? 0) > 0);
   if (messageBusRoute?.blockLayout && ecrecoverHandlers.length > 0) {
     const maximumCalls = Math.max(...ecrecoverHandlers.map((fn) => fn.ecrecoverCallCount!));
-    const requiredSidecars = maximumCalls * 2;
     const existingSidecars = messageBusRoute.blockLayout.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar').length;
+    const rows = messageBusRoute.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
+    const requiredSidecars = maximumCalls * 2 * rows;
     const missingSidecars = Math.max(0, requiredSidecars - existingSidecars);
     const firstOffset = messageBusRoute.blockLayout.blockSize;
-    messageBusRoute.messageBusMaximumRows = 1;
     messageBusRoute.ecrecoverCompute = true;
     messageBusRoute.blockLayout = {
       ...messageBusRoute.blockLayout,
@@ -7461,10 +7804,11 @@ function compileResolvedAst(
                 ?.find((binding) => binding.source === 'msgSender'
                   && binding.routeInput.startsWith(witnessPrefix))?.routeInput;
             }
-            if (source.kind === 'expression') {
+            if (source.kind === 'expression' || source.kind === 'state') {
               return fn.messageBusKeyWitnesses
                 ?.find((binding) => binding.source === 'expression'
-                  && binding.routeInput === `${witnessPrefix}${keyIndex}`)?.routeInput;
+                  && (binding.routeInput === `${witnessPrefix}${keyIndex}`
+                    || binding.routeInput === `${witnessPrefix}${keyIndex}_row`))?.routeInput;
             }
             if (source.kind !== 'param') return undefined;
             const inputIndex = fn.parameters
@@ -7823,7 +8167,13 @@ function compileResolvedAst(
       },
       ...(extractedVerifierProgram && { verifierProgram: extractedVerifierProgram }),
       route: messageBusRouteAbi!,
-      handlers: ast.contract.functions.filter((fn) => !fn.messageBusRoute && fn.isEntryPoint).map((fn) => ({
+      handlers: [
+        ...ast.contract.functions,
+        ...(mergedCompilerOptions.messageBusKernel === true && ast.contract.fallbackDef
+          ? [ast.contract.fallbackDef] : []),
+        ...(mergedCompilerOptions.messageBusKernel === true && ast.contract.receiveDef
+          ? [ast.contract.receiveDef] : []),
+      ].filter((fn) => !fn.messageBusRoute && fn.isEntryPoint).map((fn) => ({
         name: fn.name,
         selector: fn.functionSelector ? binToHex(fn.functionSelector) : '',
         inputs: fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).map((parameter) => ({
@@ -7962,6 +8312,51 @@ function compileResolvedAst(
       code: 'message-bus-route-not-synthesized',
       message: messageBusAbsenceMessage(artifact.contractName, ast.contract.functions),
     }];
+    if (mergedCompilerOptions.messageBusKernel === true) {
+      artifact.messageBus = {
+        version: 1,
+        selector: MESSAGE_BUS_SELECTOR_HEX,
+        maximumRows: MAX_MESSAGE_BUS_ROWS,
+        maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+        atomicMessageBus: {
+          domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
+          messageEnvelope: {
+            region: 'participant-verifiers',
+            canonicalInput: 'final-participant-verifier',
+            unlockingPush: 0,
+          },
+          maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
+          maximumRows: ATOMIC_MESSAGE_BUS_MAX_ROWS,
+        },
+        route: {
+          name: '__message_bus1',
+          selector: MESSAGE_BUS_SELECTOR_HEX,
+          inputs: [{ name: 'batchBlob', type: 'bytes' }],
+        },
+        handlers: [
+          ...ast.contract.functions,
+          ...(mergedCompilerOptions.messageBusKernel === true && ast.contract.fallbackDef
+            ? [ast.contract.fallbackDef] : []),
+          ...(mergedCompilerOptions.messageBusKernel === true && ast.contract.receiveDef
+            ? [ast.contract.receiveDef] : []),
+        ].filter((fn) => !fn.messageBusRoute && fn.isEntryPoint).map((fn) => {
+          const reason = fn.messageBusRejectionReason ?? 'not-examined-by-route-synthesis';
+          const kernelReason = reason.startsWith('KERNEL_') ? reason : kernelAdmissionReason(reason);
+          return {
+            name: fn.name,
+            selector: fn.functionSelector ? binToHex(fn.functionSelector) : '',
+            inputs: fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+              .map((parameter) => ({
+                name: parameter.name,
+                type: parameter.type.toString().replace(/address payable/g, 'address'),
+              })),
+            eligible: false,
+            rejectionReason: kernelReason,
+            rejectionCode: classifyMessageBusRejection(kernelReason),
+          };
+        }),
+      };
+    }
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;

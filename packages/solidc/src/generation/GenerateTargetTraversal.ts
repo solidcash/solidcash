@@ -1669,9 +1669,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const base = kind === 'event' ? frame.eventBase
       : kind === 'transfer' ? frame.transferBase : frame.tokenTransferBase;
     const constant = (routeOffset ?? this.getBlockSlotOffset(kind, base)) + slotIndex;
-    const rowIndex = this.getStackIndex('row');
+    const rowIndex = this.getStackIndex('__message_bus_row');
     if (rowIndex < 0) {
-      throw new Error("Runtime effect slot missing loop variable 'row'");
+      throw new Error("Runtime effect slot missing loop variable '__message_bus_row'");
     }
     this.emit(encodeInt(BigInt(rowIndex)), locationData);
     this.emit(Op.OP_PICK, locationData);
@@ -1699,18 +1699,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!frame || !this.currentFunction.graphEmissionHandler) return false;
     // tokenContainer is a co-spent INPUT for the whole route, not a per-site output window. Indexing it
     // through the live row would turn unused `tcTransfer` output offsets into OP_UTXO indices.
-    if (kind !== 'event' && kind !== 'transfer' && kind !== 'tcTransfer') return false;
+    if (kind !== 'event' && kind !== 'transfer' && kind !== 'tcTransfer' && kind !== 'ecrecoverSideCar') {
+      return false;
+    }
     const base = kind === 'event' ? frame.eventBase
-      : kind === 'transfer' ? frame.transferBase : frame.tokenTransferBase;
+      : kind === 'transfer' ? frame.transferBase
+        : kind === 'tcTransfer' ? frame.tokenTransferBase
+          : (frame.ecrecoverBase ?? 0);
     const width = kind === 'event' ? frame.eventWidth
-      : kind === 'transfer' ? frame.transferWidth : frame.tokenTransferWidth;
+      : kind === 'transfer' ? frame.transferWidth
+        : kind === 'tcTransfer' ? frame.tokenTransferWidth
+          : (frame.ecrecoverWidth ?? 0);
     if (width === 0) return false;
     // The frame's first slot; the rest are consecutive because computeBlockLayout pushes them in one run.
     const routeOffset = kind === 'event' ? frame.eventOffset
-      : kind === 'transfer' ? frame.transferOffset : frame.tokenTransferOffset;
+      : kind === 'transfer' ? frame.transferOffset
+        : kind === 'tcTransfer' ? frame.tokenTransferOffset
+          : frame.ecrecoverOffset;
     const constant = (routeOffset ?? this.getBlockSlotOffset(kind, base)) + (slotIndex ?? 0);
     // Read the ordinal BEFORE pushing anything untracked, so getStackIndex needs no offset correction.
-    this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_EFFECT_SITE))), locationData);
+    // Kernel loop dispatch indexes the frame by live `__message_bus_row` when the hidden site is absent
+    // (receive/fallback clones compiled outside OP_DEFINE still share the route's row loop).
+    const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
+      : this.stack.includes('__message_bus_row') ? '__message_bus_row' : GRAPH_EFFECT_SITE;
+    this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
     this.emit(Op.OP_PICK, locationData);
     if (width > 1) {
       this.emit(encodeInt(BigInt(width)), locationData);
@@ -9318,9 +9330,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // graph-result contexts, so it is pushed after the authenticated results and therefore sits above them.
     if (targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame) {
       if (node.graphEffectSiteFromRow) {
-        const rowIndex = this.getStackIndex('row');
+        const rowIndex = this.getStackIndex('__message_bus_row');
         if (rowIndex < 0) {
-          throw new Error(`Runtime graph effect site missing loop variable 'row' at a call to '${targetFunc.name}'`);
+          throw new Error(`Runtime graph effect site missing loop variable '__message_bus_row' at a call to '${targetFunc.name}'`);
         }
         this.emit(encodeInt(BigInt(rowIndex)), locationData);
         this.emit(Op.OP_PICK, locationData);
@@ -9490,9 +9502,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_EVENT_SITE))), locationData);
       this.emit(Op.OP_PICK, locationData);
       if (node.graphEffectSiteFromRow) {
-        const rowIndex = this.getStackIndex('row');
+        const rowIndex = this.getStackIndex('__message_bus_row');
         if (rowIndex < 0) {
-          throw new Error(`Runtime event site missing loop variable 'row' at a call to '${targetFunc.name}'`);
+          throw new Error(`Runtime event site missing loop variable '__message_bus_row' at a call to '${targetFunc.name}'`);
         }
         // Mask was just PICK'd untracked; the subsequent `1` is untracked too.
         this.emit(encodeInt(1n), locationData);
@@ -9766,7 +9778,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // OP_RETURN
       this.emit(hexToBin('6a'), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack('(value)');
-      const { elements } = node.parameters[0] as ArrayNode;
+      const chunksArg = node.parameters[0];
+      const elements = chunksArg instanceof ArrayNode ? chunksArg.elements
+        : chunksArg !== undefined ? [chunksArg] : [];
       // <VarInt data chunk size (dynamic)>
       elements.forEach((element) => {
         this.visit(element);
@@ -17773,10 +17787,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.updateSortedUpsertLoopContext(upsertContext);
         return emitted;
       }
-      throw new SortedMappingCodegenPendingError(node, node.collection.name,
-        `The verified-mapping write on '${node.collection.name}' in runtime loop '${this.currentFunction.name}' `
-        + `does not match a supported insert or update loop shape (keys=${node.keys.map((key) => (
-          key instanceof IdentifierNode ? key.name : key.constructor.name)).join(',')}).`);
+      // Constructed-key loops (`m[xs[i]]`) and loop-local identifier keys (`m[i]` with continue/break)
+      // have no kernel representation. Fail-close the write so sibling handlers still compile;
+      // admission names KERNEL_UNBOUNDED_KEY.
+      const loc = { location: node.location, positionHint: PositionHint.INNER };
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_VERIFY, loc);
+      return node;
     }
     // Sorted (vmap linked-list) mapping write `m[k] = v` (or nested `m[a][b] = v`): never the omittable entry-model
     // write. Always an UPSERT (update the value if the key is present, else insert) - this is how `m[k]=false` /

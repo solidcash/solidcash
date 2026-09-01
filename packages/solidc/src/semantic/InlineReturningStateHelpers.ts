@@ -337,9 +337,15 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const compilerOwnedRouteClone = fn.name.startsWith('__message_bus_entry_')
         || fn.name.startsWith('__message_bus_resource_')
         || (fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler
-          && (fn.externalCalls?.length ?? 0) === 0);
+          && !this.transitivelyContainsExternalCall(fn)
+          && !this.transitivelyContainsLowLevelCall(fn));
       const returningEntryEffectClone = fn.name.startsWith('__message_bus_entry_')
-        && fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler && this.eligibleShape(fn);
+        && fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler && this.eligibleShape(fn)
+        // An IERC20/SafeERC20 edge must keep its graph OP_INVOKE frame. Flattening it into the kernel
+        // dispatch loop makes SymbolTableTraversal treat the row iterator as a callee-target index and
+        // rewrite `token.transfer` to an unbound `__internal__loopTargets[jobId]`.
+        && !this.transitivelyContainsExternalCall(fn)
+        && !this.transitivelyContainsLowLevelCall(fn);
       if (returningEntryEffectClone || (compilerOwnedRouteClone
         && fn.collectionJournal && writesDynamicArray
         && (fn.parameters[0]?.name === `__dj_${fn.name}`
@@ -404,6 +410,17 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       } else if (this.eligibleShape(fn)
         && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
         this.inlinedFns.add(fn.name);
+      }
+    }
+    // Kernel/graph clones must stay OP_INVOKE bodies. Inlining one into `__message_bus1` puts typed
+    // calls inside the row loop, and SymbolTableTraversal then rewrites their targets to an unbound
+    // `__internal__loopTargets[rowArg]`.
+    for (const fn of node.functions) {
+      if (!(fn.name.startsWith('__message_bus_entry_') || fn.name.startsWith('__message_bus_handler_')
+        || fn.name.startsWith('__message_bus_resource_'))) continue;
+      if (fn.graphEmissionHandler || this.transitivelyContainsExternalCall(fn)
+        || this.transitivelyContainsLowLevelCall(fn)) {
+        this.inlinedFns.delete(fn.name);
       }
     }
     if (this.inlinedFns.size === 0) return node;

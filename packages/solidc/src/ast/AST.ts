@@ -297,6 +297,9 @@ export interface GraphEffectFrame {
   tokenTransferWidth: number;
   tokenTransferOffset?: number;
   tokenNftTransfers: boolean;
+  ecrecoverBase?: number;
+  ecrecoverWidth?: number;
+  ecrecoverOffset?: number;
 }
 
 export interface CustomModifierInvocation {

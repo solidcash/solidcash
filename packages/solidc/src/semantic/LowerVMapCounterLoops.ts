@@ -1,8 +1,9 @@
 import {
-  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, AssignNode, BinaryOpNode, BreakNode, ContinueNode,
-  ContractNode, DoWhileNode, ExpressionNode,
-  FunctionDefinitionNode, IdentifierNode, MappingAssignNode, MappingDeleteNode, Node, ParameterNode,
-  SourceFileNode, WhileNode,
+  AddressSendExpressionNode, AddressTransferStatementNode, ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode,
+  AssignNode, BinaryOpNode, BreakNode, ContinueNode, ContractNode, DoWhileNode, EmitStatementNode, ExpressionNode,
+  ExternalFunctionCallNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
+  MappingAssignNode, MappingDeleteNode, MethodCallNode, MethodCallStatementNode, Node, ParameterNode,
+  SourceFileNode, TransferStatementNode, WhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { BinaryOperator } from '../ast/Operator.js';
@@ -13,12 +14,11 @@ const PREFIX = VMAP_COUNTER_PERM_PREFIX;
 
 /**
  * Lower the deliberately narrow, order-independent vmap counter loop
- *   for (int i=0; i<n; i++) { m[i] = f(i); I(dest).r(i); }
- * to execute logical indices through an SDK-supplied slot-order permutation. The physical loop counter and its
- * update remain untouched; the mapping write's index/value and other uses of `i` in the body (except the
- * increment) are rewritten to perm[i]. This lets the active vmap upsert-loop covenant process hash slots in
- * ascending order while keeping a paired typed call / transfer on the same logical key.
- * `continue`/`break` still skip the rewrite: a permutation of 0..n-1 is not a skip-set.
+ *   for (int i=0; i<n; i++) m[i] = f(i);
+ * to execute logical indices through an SDK-supplied slot-order permutation. Only mapping/array writes are
+ * rewritten to perm[i]. Typed calls, transfers, events, and other statements stay in source order; mixing them
+ * into this rewrite would hash-sort observable effects. `continue`/`break` still skip: a permutation of
+ * 0..n-1 is not a skip-set. Mixed counter loops remain KERNEL_UNBOUNDED_KEY.
  */
 export default class LowerVMapCounterLoops extends AstTraversal {
   private collections = new Set<string>();
@@ -56,6 +56,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       return false;
     };
+    const hasObservableEffect = (x: Node): boolean => {
+      if (x instanceof FunctionCallNode || x instanceof FunctionCallStatementNode
+        || x instanceof MethodCallNode || x instanceof MethodCallStatementNode
+        || x instanceof ExternalFunctionCallNode || x instanceof TransferStatementNode
+        || x instanceof AddressTransferStatementNode || x instanceof AddressSendExpressionNode
+        || x instanceof EmitStatementNode) return true;
+      for (const key of Object.keys(x)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
+        const v = (x as unknown as Record<string, unknown>)[key];
+        if (v instanceof Node && hasObservableEffect(v)) return true;
+        if (Array.isArray(v) && v.some((e) => e instanceof Node && hasObservableEffect(e))) return true;
+      }
+      return false;
+    };
     const tryLower = (condition: ExpressionNode, block: Node, location: typeof node.location): void => {
       const stmts = ('statements' in block && Array.isArray((block as { statements?: Node[] }).statements))
         ? (block as { statements: Node[] }).statements : [];
@@ -81,8 +95,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const key = writeKeyOf(write);
         return this.collections.has(write.name) && key instanceof IdentifierNode && key.name === logical;
       });
+      const extra = stmts.filter((statement) => !isWrite(statement)
+        && !(statement instanceof AssignNode && statement.identifier.name === logical));
       if (!logical || !count || !canonicalUpdate || keyed.length === 0 || keyed.length !== writes.length
-        || hasJump(block)) return;
+        || extra.length > 0 || hasJump(block) || keyed.some((write) => hasObservableEffect(write))) return;
       const hidden = `${PREFIX}${count}_${this.serial++}`;
       const physical = (): IdentifierNode => {
         const id = new IdentifierNode(logical); id.location = location; return id;
@@ -103,7 +119,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return x;
       };
-      const writeSet = new Set<Node>(keyed);
       for (const write of keyed) {
         if (write instanceof ArrayAssignNode) {
           write.index = permRead();
@@ -116,11 +131,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         } else {
           write.keys[0] = permRead();
         }
-      }
-      for (const statement of stmts) {
-        if (writeSet.has(statement)) continue;
-        if (statement instanceof AssignNode && statement.identifier.name === logical) continue;
-        replace(statement);
       }
       const p = new ParameterNode(new ArrayType(new IntType(true, 256)), hidden);
       p.location = node.location;

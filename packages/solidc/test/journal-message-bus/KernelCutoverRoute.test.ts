@@ -310,8 +310,8 @@ contract C {
     expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
   });
 
-  it('journals a counter-keyed mapping loop that also makes a typed call', () => {
-    const artifact = assertKernelRoute(`
+  it('refuses a counter-keyed mapping loop that also makes a typed call as KERNEL_UNBOUNDED_KEY', () => {
+    const artifact = compileString(`
 pragma solidcash ^0.13.0;
 interface I { function r(int i); }
 contract Slots() {
@@ -326,9 +326,12 @@ contract Slots() {
   }
   function control() public { require(true); }
 }
-`, 'denied');
-    expect(artifact.messageBus?.route.inputs.some((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+`, OPTIONS);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
   it('dispatches using-for Address.sendValue from the runtime row loop', () => {
@@ -412,8 +415,26 @@ contract Slots() {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
-  it('journals a do-while counter-keyed mapping loop with a typed call', () => {
+  it('journals a do-while counter-keyed mapping-only loop on the row loop', () => {
     const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Slots() {
+  mapping(int => int) m;
+  function denied(int n) public {
+    int i = 0;
+    do { this.m[i] = 1; i = i + 1; } while (i < n);
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, 'denied');
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+  });
+
+  it('refuses a do-while counter-keyed mapping loop that also makes a typed call as KERNEL_UNBOUNDED_KEY',
+    () => {
+      const artifact = compileString(`
 pragma solidcash ^0.13.0;
 interface I { function r(int i); }
 contract Slots() {
@@ -426,9 +447,13 @@ contract Slots() {
   }
   function control() public { require(true); }
 }
-`, 'denied');
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
-  });
+`, OPTIONS);
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+      });
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    });
 
   it('journals fallback that wraps a UDVT mapping key on the row loop', () => {
     const artifact = compileString(`

@@ -2518,7 +2518,7 @@ function synthesizeMessageBusRoute(
     return new Set([...typed].filter(([, isInterface]) => isInterface).map(([name]) => name));
   };
   /** `recv.method(..)` on a contract-typed receiver, excluding the low-level forms counted separately. */
-  const contractTypedReceiverCall = (node: Node, receivers: Set<string>): node is FunctionCallNode => {
+  const contractTypedReceiverCall = (node: Node, receivers: Set<string>): boolean => {
     if (!(node instanceof FunctionCallNode)) return false;
     const parts = node.identifier.name.split('.');
     return parts.length === 2 && receivers.has(parts[0])
@@ -2656,7 +2656,7 @@ function synthesizeMessageBusRoute(
             }
           }
           // X187. The namespaced spelling of the same outgoing edge, recovered from the receiver's declared type.
-          if (contractTypedReceiverCall(node, receivers)) {
+          if (node instanceof FunctionCallNode && contractTypedReceiverCall(node, receivers)) {
             statefulExternalCall = true;
             methodCallCount += 1;
             if (candidate === fn) directExternalCallsites.add(node);

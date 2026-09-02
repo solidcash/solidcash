@@ -235,22 +235,23 @@ call, and fallback that both writes a mapping of `msg.sig` and makes a typed cal
 `address.transfer` / `.send` (the same satoshi-transfer effect as `this.transfer`),
 if/else satoshi transfers, `address.transfer` inside an internal helper, UDVT `wrap`/`unwrap`
 then a mapping write, typed calls with a struct-array argument (`I.r(Rec[])`),
-library-wrapped IERC20 transfer (`using SafeTransfer for IERC20`), counter-keyed `m[i]`
-loops that also make a typed call or satoshi transfer,
+library-wrapped IERC20 transfer (`using SafeTransfer for IERC20`),
 mapping-of-struct-array field writes (`m[k][i].x = v`), modifier-keyed mapping RMW
 (`onlyOwner(id)` plus `ownerOf[id] = ...`), `ecrecover`,
 library `Address.sendValue` (`to.transfer` inside a free/library helper, including
 `using Address for address payable; to.sendValue(...)`),
 returning a user-defined value type (`returns (TokenId)`),
 counter-keyed `delete this.m[i]` (and two mapping writes in one counter loop),
-do-while counter-keyed mapping loops with a typed call,
+do-while counter-keyed mapping-only loops,
 `fallback` that wraps a UDVT mapping key,
 an invariant parameter key written inside `while (true) { ...; break; }`,
 mapping values of `pubkey` / `datasig` / `fixedMxN` / `ufixedMxN`
 (journal cache defaults are type-correct empty/`0` rather than `int` 0).
 Public whole-struct getters, public enum getters, recursive mapping handlers, and result types
 the wrapper cannot `abi.encode` (enum, `Rec[]`) stay `KERNEL_LAYOUT`. Counter-keyed mapping
-loops with `continue`/`break` stay `KERNEL_UNBOUNDED_KEY`.
+loops with `continue`/`break`, or with mixed typed calls / transfers / events in the same body,
+stay `KERNEL_UNBOUNDED_KEY` (permuting those effects with hash-sorted keys would change source
+order).
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay

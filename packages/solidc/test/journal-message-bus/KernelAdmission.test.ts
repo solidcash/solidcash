@@ -328,7 +328,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
   });
 
-  it('admits a counter-keyed mapping loop that also makes a typed call', () => {
+  it('refuses a counter-keyed mapping loop that also makes a typed call as KERNEL_UNBOUNDED_KEY', () => {
     const artifact = compileString(`interface I { function r(int i); }
       contract C() {
         mapping(int => int) m;
@@ -339,9 +339,11 @@ describe('required kernel admission', () => {
         }
         function control() public { require(true); }
       }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
-    expect(artifact.messageBus?.route.inputs.some((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
   it('admits using-for Address.sendValue on address payable', () => {
@@ -411,20 +413,40 @@ describe('required kernel admission', () => {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
-  it('admits a do-while counter-keyed mapping loop with a typed call', () => {
-    const artifact = compileString(`interface I { function r(int i); }
-      contract C() {
-        mapping(int => int) m;
-        address dest;
-        function denied(int n) public {
-          int i = 0;
-          do { this.m[i] = 1; I(this.dest).r(i); i = i + 1; } while (i < n);
-          require(true);
-        }
-        function control() public { require(true); }
-      }`, KERNEL);
+  it('admits a do-while counter-keyed mapping-only loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n) public {
+        int i = 0;
+        do { this.m[i] = 1; i = i + 1; } while (i < n);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
+
+  it('refuses a do-while counter-keyed mapping loop that also makes a typed call as KERNEL_UNBOUNDED_KEY',
+    () => {
+      const artifact = compileString(`interface I { function r(int i); }
+        contract C() {
+          mapping(int => int) m;
+          address dest;
+          function denied(int n) public {
+            int i = 0;
+            do { this.m[i] = 1; I(this.dest).r(i); i = i + 1; } while (i < n);
+            require(true);
+          }
+          function control() public { require(true); }
+        }`, KERNEL);
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+      });
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    });
 
   it('admits fallback that wraps a UDVT mapping key', () => {
     const artifact = compileString(`type TokenId is bytes32;

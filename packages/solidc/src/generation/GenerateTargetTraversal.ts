@@ -17795,7 +17795,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Constructed-key loops (`m[xs[i]]`) and loop-local identifier keys (`m[i]` with continue/break)
       // have no kernel representation. Fail-close the write so sibling handlers still compile;
       // admission names KERNEL_UNBOUNDED_KEY.
-      const loc = { location: node.location, positionHint: PositionHint.INNER };
+      const loc = { location: node.location, positionHint: PositionHint.END };
       this.emit(Op.OP_0, loc);
       this.emit(Op.OP_VERIFY, loc);
       return node;

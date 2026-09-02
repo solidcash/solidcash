@@ -148,8 +148,8 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   visitArrayAccess(node: ArrayAccessNode): Node {
     const { base, keys: accessKeys } = this.flattenAccess(node);
     const mappingName = this.mappingArrayValueBaseName(base);
-    const info = mappingName ? this.mappings.get(mappingName) : undefined;
-    if (info) {
+    const info = mappingName === undefined ? undefined : this.mappings.get(mappingName);
+    if (mappingName !== undefined && info) {
       const prefixKeys = base instanceof MappingAccessNode ? base.keys : [];
       const keys = [...prefixKeys, ...accessKeys];
       let dims = 0; let t: Type = info.valueType;

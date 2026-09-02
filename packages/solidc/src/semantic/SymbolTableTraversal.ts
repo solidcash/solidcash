@@ -5705,12 +5705,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         findCounter(node.block);
         // Ordinary `for` loops are desugared to a while whose condition retains the source induction variable.
         // Prefer the explicit tail-loop ordinal above, then use the canonical condition's first identifier.
+        // Collect into a local: a nested walk assigning `result` is not visible to TypeScript's control flow.
         if (!result) {
+          let conditionCounter: IdentifierNode | undefined;
           const findConditionCounter = (candidate: Node | undefined, visited = new Set<Node>()): void => {
-            if (!candidate || result || visited.has(candidate)) return;
+            if (!candidate || conditionCounter || visited.has(candidate)) return;
             visited.add(candidate);
             if (candidate instanceof IdentifierNode && candidate.name !== localName) {
-              result = candidate;
+              conditionCounter = candidate;
               return;
             }
             for (const value of Object.values(candidate)) {
@@ -5721,10 +5723,11 @@ export default class SymbolTableTraversal extends AstTraversal {
             }
           };
           findConditionCounter(node.condition);
+          result = conditionCounter;
         }
         // The kernel dispatch `for (__message_bus_row ...)` is not a per-iteration callee-target loop.
         // Locals declared in a row body must keep looking for a nested source loop.
-        if (result?.name === '__message_bus_row') {
+        if (result !== undefined && result.name === '__message_bus_row') {
           result = undefined;
           scan(node.block, seen);
         }

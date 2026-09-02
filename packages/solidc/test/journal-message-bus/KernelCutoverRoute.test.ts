@@ -178,6 +178,325 @@ contract Pay() {
 `, 'pay');
   });
 
+  it('dispatches Solidity address.transfer from the runtime row loop', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+contract Pay {
+  function denied(address payable to) public { to.transfer(1); require(true); }
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    const slots = artifact.messageBus?.route.blockLayout?.slots ?? [];
+    expect(slots.some((slot) => slot.kind === 'satoshiContainer')).toBe(true);
+    expect(slots.some((slot) => slot.kind === 'transfer')).toBe(true);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('dispatches Solidity address.send from the runtime row loop', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+contract Pay {
+  function denied(address payable to) public { require(to.send(1)); }
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    const slots = artifact.messageBus?.route.blockLayout?.slots ?? [];
+    expect(slots.some((slot) => slot.kind === 'satoshiContainer')).toBe(true);
+    expect(slots.some((slot) => slot.kind === 'transfer')).toBe(true);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('dispatches if/else this.transfer from the runtime row loop', () => {
+    assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Pay() {
+  function denied(bool p, bytes a, bytes b) public {
+    if (p) this.transfer(a, 1); else this.transfer(b, 1);
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, 'denied');
+  });
+
+  it('dispatches if/else address.transfer from the runtime row loop', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+contract Pay {
+  function denied(bool p, address payable a, address payable b) public {
+    if (p) a.transfer(1); else b.transfer(1);
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('dispatches address.transfer from an internal helper on the runtime row loop', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+contract Pay {
+  function _pay(address payable to) internal { to.transfer(1); }
+  function denied(address payable to) public { _pay(to); require(true); }
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('journals a UDVT wrap as an expression-keyed mapping write on the row loop', () => {
+    assertKernelRoute(`
+pragma solidcash ^0.13.0;
+type TokenId is bytes32;
+contract Ledger() {
+  mapping(TokenId => int) m;
+  function denied(bytes32 raw) public {
+    TokenId id = TokenId.wrap(raw);
+    this.m[id] = 1;
+    require(TokenId.unwrap(id).length == 32);
+  }
+  function control() public { require(true); }
+}
+`, 'denied');
+  });
+
+  it('dispatches a typed call with a struct-array argument from the runtime row loop', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+struct Rec { uint x; address y; }
+interface I { function r(Rec[] memory xs) external; }
+contract C {
+  address dest;
+  function denied(Rec[] memory xs) public { I(dest).r(xs); require(true); }
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('dispatches a library-wrapped IERC20 transfer from the runtime row loop', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+interface IERC20 { function transfer(address to, uint amt) external returns (bool); }
+library SafeTransfer {
+  function send(IERC20 token, address to, uint amt) internal { require(token.transfer(to, amt)); }
+}
+contract C {
+  using SafeTransfer for IERC20;
+  address token;
+  function denied(address to, uint amt) public { IERC20(token).send(to, amt); require(true); }
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('journals a counter-keyed mapping loop that also makes a typed call', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+interface I { function r(int i); }
+contract Slots() {
+  mapping(int => int) m;
+  address dest;
+  function denied(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.m[i] = 1;
+      I(this.dest).r(i);
+    }
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, 'denied');
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+  });
+
+  it('dispatches using-for Address.sendValue from the runtime row loop', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+library Address {
+  function sendValue(address payable to, uint amt) internal { to.transfer(amt); }
+}
+contract C {
+  using Address for address payable;
+  function denied(address payable to) public { to.sendValue(uint(1)); require(true); }
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('dispatches a library Address.sendValue from the runtime row loop', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+library Address {
+  function sendValue(address payable to, uint amt) internal { to.transfer(amt); }
+}
+contract C {
+  function denied(address payable to, uint amt) public { Address.sendValue(to, amt); require(true); }
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('captures a returning UDVT inside the same loop', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+type TokenId is bytes32;
+contract Ledger() {
+  TokenId last;
+  function denied() public returns (TokenId) { return this.last; }
+  function control() public { require(true); }
+}
+`, 'denied');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('journals a counter-keyed mapping delete loop on the row loop', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Slots() {
+  mapping(int => int) m;
+  function denied(int n) public {
+    for (int i = 0; i < n; i = i + 1) { delete this.m[i]; }
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, 'denied');
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+  });
+
+  it('journals a counter-keyed loop that writes two mappings on the row loop', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Slots() {
+  mapping(int => int) a;
+  mapping(int => int) b;
+  function denied(int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.a[i] = 1; this.b[i] = 2; }
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, 'denied');
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+  });
+
+  it('journals a do-while counter-keyed mapping loop with a typed call', () => {
+    const artifact = assertKernelRoute(`
+pragma solidcash ^0.13.0;
+interface I { function r(int i); }
+contract Slots() {
+  mapping(int => int) m;
+  address dest;
+  function denied(int n) public {
+    int i = 0;
+    do { this.m[i] = 1; I(this.dest).r(i); i = i + 1; } while (i < n);
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, 'denied');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('journals fallback that wraps a UDVT mapping key on the row loop', () => {
+    const artifact = compileString(`
+pragma solidcash ^0.13.0;
+type TokenId is bytes32;
+contract C() {
+  mapping(TokenId => int) hits;
+  fallback(bytes input) external {
+    this.hits[TokenId.wrap(bytes32(input))] = 1;
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, OPTIONS);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === '__fallback')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('journals a fixed-point mapping value write on the row loop', () => {
+    assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Ledger() {
+  mapping(int => fixed128x18) m;
+  function denied(int k, fixed128x18 v) public { this.m[k] = v; require(true); }
+  function control() public { require(true); }
+}
+`, 'denied');
+  });
+
+  it('journals a ufixed mapping value write on the row loop', () => {
+    assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Ledger() {
+  mapping(int => ufixed128x18) m;
+  function denied(int k, ufixed128x18 v) public { this.m[k] = v; require(true); }
+  function control() public { require(true); }
+}
+`, 'denied');
+  });
+
+  it('journals a pubkey mapping value write on the row loop', () => {
+    assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Keys() {
+  mapping(bytes20 => pubkey) m;
+  function denied(bytes20 k, pubkey pk) public { this.m[k] = pk; require(true); }
+  function control() public { require(true); }
+}
+`, 'denied');
+  });
+
+  it('journals an invariant-key mapping write inside a while-true break loop', () => {
+    assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract Slots() {
+  mapping(int => int) m;
+  function denied(int k) public {
+    int i = 0;
+    while (true) { this.m[k] = i; break; }
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, 'denied');
+  });
+
   it('dispatches owner-frame delegate handlers from the runtime row loop', () => {
     assertKernelRoute(`
 pragma solidcash ^0.13.0;
@@ -980,6 +1299,24 @@ contract C() {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === '__fallback')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+  });
+
+  it('dispatches fallback that writes a mapping and makes a typed call from the runtime row loop', () => {
+    const artifact = compileString(`
+pragma solidity ^0.8.0;
+interface I { function r() external; }
+contract C {
+  address dest;
+  mapping(bytes4 => uint) hits;
+  fallback() external { hits[msg.sig] = 1; I(dest).r(); require(true); }
+  function control() public { require(true); }
+}
+`, { ...OPTIONS, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === '__fallback')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'hits')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
   });
 
   it('journals a modifier that keys and writes the same mapping on the row loop', () => {

@@ -6418,6 +6418,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // epilogue would then look for a stack slot that no longer exists. The message-bus batch row loop dispatches every
       // handler through exactly this branch shape, so without the guard a `delete m[k]` handler aborted code
       // generation outright.
+      // Per-iteration vmap deletes (`for (i) delete m[k[i]]`) are the same class as loop writes: they have no
+      // fixed `entry[N]` slot. collectMappingSlots follows the invoked clone, so the kernel row-dispatch
+      // `if (selector) handler()` would otherwise soft-delete-allocate `entry[0]` on `__message_bus1`.
+      if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (this.pendingEntryDeletes.has(slotIndex)) continue;
       this.preAllocateCondDeleteWrite(slotIndex, locationData);
     }
@@ -8018,6 +8022,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Switch-case deletes keep the plain conditional-delete path (soft-delete lowering is branch-only for now).
     for (const slotIndex of mappingDeleteSlots) {
+      if (!this.ownsFixedEntrySlot(slotIndex)) continue;
       if (!this.preAllocatedEntryDeletes.has(slotIndex)) {
         this.pendingEntryDeletes.add(slotIndex);
         this.preAllocatedEntryDeletes.add(slotIndex);
@@ -21674,6 +21679,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     for (const slotIdx of this.condDeleteSlots) {
       if (node.messageBusHandlerManagedEntrySlots?.includes(slotIdx)) continue;
+      if (!this.ownsFixedEntrySlot(slotIdx)) continue;
       const writeInfo = this.pendingEntryWrites.get(slotIdx)!;
       this.emitSlotExistsCheck('entry', slotIdx, locationData);
       this.emit(Op.OP_IF, locationData);
@@ -21725,6 +21731,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Clean up the soft-delete slots' key_enc/value_enc.
     for (const slotIdx of this.condDeleteSlots) {
+      if (!this.ownsFixedEntrySlot(slotIdx)) continue;
       const writeInfo = this.pendingEntryWrites.get(slotIdx)!;
       this.emitDropSettlementValue(writeInfo.keyStackName, locationData, node);
       this.emitDropSettlementValue(writeInfo.valueStackName, locationData, node);

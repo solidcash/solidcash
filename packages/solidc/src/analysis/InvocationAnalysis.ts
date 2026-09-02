@@ -30,6 +30,19 @@ export interface InvocationAnalysis {
 
 const contractInvocationAnalysisCache = new WeakMap<ContractNode, InvocationAnalysis>();
 
+/**
+ * Solidity `address.transfer` / `.send` before symbol resolution. `this.transfer` is already a
+ * TransferStatementNode at parse; the address-receiver spelling is still `to.transfer` / `to.send`.
+ * IERC20 `token.transfer(to, amount)` has two arguments and is not a satoshi transfer.
+ */
+function isPreSemanticAddressValueTransfer(node: Node): boolean {
+  const call = node instanceof FunctionCallStatementNode ? node.call
+    : node instanceof FunctionCallNode ? node : undefined;
+  if (!call || call.parameters.length !== 1) return false;
+  const name = call.identifier.name;
+  return name.endsWith('.transfer') || name.endsWith('.send');
+}
+
 export function walkInvocationAst(
   value: unknown,
   visit: (node: Node) => void,
@@ -184,7 +197,13 @@ export function analyseFunctionFootprint(
           && resourceName && !locallyBound.has(resourceName)) {
           directWrites.add(collectionResource);
         } else if (kind === 'EmitStatementNode') directEffects.add('events');
-        else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode') directEffects.add('value');
+        else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode'
+          || isPreSemanticAddressValueTransfer(node)) {
+          // Solidity `to.transfer(1)` / `to.send(1)` parse as `to.transfer` / `to.send` FunctionCalls until
+          // SymbolTableTraversal rewrites them. Without this, the kernel route never clones the handler as a
+          // satoshi-transfer effect and later inlines the rewrite into `__message_bus1` with no transfer slots.
+          directEffects.add('value');
+        }
         else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {
           directEffects.add('external-call');
         } else if (node instanceof IndirectCallNode) directUnknown = true;

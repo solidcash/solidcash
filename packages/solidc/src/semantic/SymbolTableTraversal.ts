@@ -126,7 +126,9 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { cloneNode } from '../ast/clone.js';
 import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
-import { computeBranchOps, countBranchOps, hasEffectiveCallValue } from './branchOps.js';
+import {
+  computeBranchOps, countBranchOps, countTransfersMinMax, hasEffectiveCallValue, isDirectOwnerTransferNode,
+} from './branchOps.js';
 import {
   FunctionRedefinitionError,
   VariableRedefinitionError,
@@ -2272,7 +2274,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         for (const [sk, info] of entryAccessMap) {
           if (!loopWritten.has(sk)) continue;
           const ops = info.operations;
-          const isPureWrite = ops.length === 1 && ops[0] === 'write';
+          const isPureWrite = ops.length === 1 && (ops[0] === 'write' || ops[0] === 'delete');
           // A SORTED (vmap) RMW loop write `for(i) m[k[i]] += v[i]` is the per-iteration UPDATE loop (multitransfer
           // credit): also excluded from the fixed block - its co-spend + mint sit in the trailing region AFTER all
           // fixed slots (emitSortedUpsertLoopBody), so it may COEXIST with other fixed entry accesses (e.g. the cached
@@ -3479,6 +3481,23 @@ export default class SymbolTableTraversal extends AstTraversal {
       transferInfos.push({ transferIndex });
       return;
     }
+    // `.send` is an expression (`require(to.send(1))`, `if (to.send(1))`, `return to.send(1)`). Statement
+    // wrappers were previously skipped, so the public entry compiled AddressSend with no transferInfos and
+    // failed closed at `transfer[0]`.
+    if (node instanceof RequireNode || node instanceof AssertNode) {
+      this.collectTransferStatements(node.expression, transferInfos, seen);
+      if (node instanceof RequireNode) {
+        for (const arg of node.args) this.collectTransferStatements(arg, transferInfos, seen);
+      }
+    }
+    if (node instanceof ReturnNode) {
+      for (const expression of node.expressions) {
+        this.collectTransferStatements(expression, transferInfos, seen);
+      }
+    }
+    if (node instanceof WhileNode || node instanceof DoWhileNode) {
+      this.collectTransferStatements(node.condition, transferInfos, seen);
+    }
     // {value: X} call option on low-level call statement
     if (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value)) {
       node.valueTransferIndex = transferInfos.length;
@@ -3500,6 +3519,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       transferInfos.push({ transferIndex: node.valueTransferIndex });
     }
     // For branches: walk the longer branch to create entries, shorter to assign indices
+    if (node instanceof BranchNode) {
+      this.collectTransferStatements(node.condition, transferInfos, seen);
+    }
     if (node instanceof BranchNode && node.branchOps && node.branchOps.transferCount > 0) {
       const startIndex = transferInfos.length;
       const ifIsLonger = node.branchOps.ifTransferCount >= node.branchOps.transferCount - node.branchOps.ifTransferCount;
@@ -3578,6 +3600,25 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node instanceof AddressSendExpressionNode) {
       node.transferIndex = startIndex;
       return startIndex + 1;
+    }
+    if (node instanceof RequireNode || node instanceof AssertNode) {
+      startIndex = this.assignTransferIndices(node.expression, startIndex);
+      if (node instanceof RequireNode) {
+        for (const arg of node.args) startIndex = this.assignTransferIndices(arg, startIndex);
+      }
+      return startIndex;
+    }
+    if (node instanceof ReturnNode) {
+      for (const expression of node.expressions) {
+        startIndex = this.assignTransferIndices(expression, startIndex);
+      }
+      return startIndex;
+    }
+    if (node instanceof WhileNode || node instanceof DoWhileNode) {
+      startIndex = this.assignTransferIndices(node.condition, startIndex);
+    }
+    if (node instanceof BranchNode) {
+      startIndex = this.assignTransferIndices(node.condition, startIndex);
     }
     if (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value)) {
       node.valueTransferIndex = startIndex;
@@ -12829,14 +12870,15 @@ export default class SymbolTableTraversal extends AstTraversal {
   private framesSettleEveryTransfer(fn: FunctionDefinitionNode): boolean {
     const declared = fn.transferInfos?.length ?? 0;
     if (declared === 0) return true;
-    let thisTransfers = 0;
     let valueCalls = 0;
     walkInvocationAst(fn.body, (node) => {
-      if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
-        || node instanceof AddressSendExpressionNode) thisTransfers += 1;
       if ((node instanceof ExternalFunctionCallNode || node instanceof MethodCallNode)
         && hasEffectiveCallValue(node.callOptions?.value)) valueCalls += 1;
     });
+    // if/else arms are mutually exclusive: sum-of-nodes counted both `this.transfer` statements and
+    // disagreed with `collectTransferStatements` (max of arms), so the clone never joined the route frame
+    // and `__message_bus1` compiled the transfer with no `transfer[0]` slot.
+    const thisTransfers = countTransfersMinMax(fn.body, isDirectOwnerTransferNode).max;
     if (thisTransfers > 0 && valueCalls > 0) {
       throw new GraphEmissionEffectError(
         fn, fn.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
@@ -13003,9 +13045,29 @@ export default class SymbolTableTraversal extends AstTraversal {
   private shareRouteLayoutWithLoopEntryHandlers(contract: ContractNode): void {
     const route = contract.functions.find((fn) => fn.messageBusRoute);
     if (!route?.blockLayout) return;
+    const extras: typeof route.entryAccesses = [];
     for (const fn of contract.functions) {
       if (fn === route || !fn.name.startsWith('__message_bus_')) continue;
-      if (fn.entryAccesses?.some((entry) => entry.inLoop)) fn.blockLayout = route.blockLayout;
+      for (const access of fn.entryAccesses ?? []) {
+        const already = (route.entryAccesses ?? []).some((existing) =>
+          existing.collection === access.collection
+          && existing.operations.join(',') === access.operations.join(',')
+          && existing.inLoop === access.inLoop);
+        if (!already && !(extras ?? []).some((existing) =>
+          existing.collection === access.collection
+          && existing.operations.join(',') === access.operations.join(',')
+          && existing.inLoop === access.inLoop)) {
+          extras.push({ ...access, slotIndex: (route.entryAccesses?.length ?? 0) + extras.length });
+        }
+      }
+    }
+    if (extras.length > 0) {
+      route.entryAccesses = [...(route.entryAccesses ?? []), ...extras];
+      route.blockLayout = this.computeBlockLayout(route);
+    }
+    for (const fn of contract.functions) {
+      if (fn === route || !fn.name.startsWith('__message_bus_')) continue;
+      if (fn.entryAccesses?.length) fn.blockLayout = route.blockLayout;
     }
   }
 

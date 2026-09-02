@@ -36,6 +36,8 @@ import {
   EmitStatementNode,
   TokenContainerMethodStatementNode,
   TransferStatementNode,
+  AddressTransferStatementNode,
+  AddressSendExpressionNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
   MethodCallNode,
@@ -312,7 +314,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // storage, ...)` body behind makes its `table[k]` look like an ordinary local ArrayAssign and loses the
     // declared mapping key type. The substitution below already routes mapping writes to the caller collection.
     for (const fn of this.freeFns) {
-      if (fn.body && fn.returnTypes.length === 0 && this.hasStoragePointerParam(fn)) {
+      if (fn.body && fn.returnTypes.length === 0
+        && (this.hasStoragePointerParam(fn) || this.hasPhysicalEffects(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -597,8 +600,18 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   }
 
   private hasPhysicalEffects(fn: FunctionDefinitionNode): boolean {
-    return this.nodesOf(fn).some((node) => node instanceof EmitStatementNode
-      || node instanceof TransferStatementNode || node instanceof TokenContainerMethodStatementNode);
+    return this.nodesOf(fn).some((node) => {
+      if (node instanceof EmitStatementNode || node instanceof TransferStatementNode
+        || node instanceof TokenContainerMethodStatementNode
+        || node instanceof AddressTransferStatementNode
+        || node instanceof AddressSendExpressionNode) return true;
+      // Solidity `to.transfer(1)` / `to.send(1)` is still `to.transfer` until symbol resolution.
+      const call = node instanceof FunctionCallStatementNode ? node.call
+        : node instanceof FunctionCallNode ? node : undefined;
+      if (!call || call.parameters.length !== 1) return false;
+      const name = call.identifier.name;
+      return name.endsWith('.transfer') || name.endsWith('.send');
+    });
   }
 
   // The set of contract functions that DIRECTLY or TRANSITIVELY require an entry-point layout. A caller of a
@@ -642,14 +655,30 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         // Resolve the exact overload by (name, arity); fall back to the name map for a single-overload callee whose
         // arity was adjusted by reorderNamedTail. The recursion guard is keyed by (name, arity) too, so inlining
         // `_approve/4` from inside `_approve/3` is not blocked by the shared name.
-        const callee = this.funcByKey.get(key) ?? this.funcByName.get(name);
-        if (callee) this.reorderNamedTail(stmt.call, callee);
-        if (callee && this.inlinedFns.has(name) && !stack.includes(inlineKey(name, callee.parameters.length))
-          && stmt.call.parameters.length === callee.parameters.length) {
-          if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
-            throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);
+        let callee = this.funcByKey.get(key) ?? this.funcByName.get(name);
+        let args = stmt.call.parameters;
+        // `using L for T; recv.method(x)` is still `recv.method` here. Physical-effect library helpers
+        // (`Address.sendValue`) are selected for inlining by their `L.method` name; without rewriting this
+        // spelling the helper is dropped and ST later reports `recv.method` as undefined on the message-bus path.
+        const dot = name.lastIndexOf('.');
+        if (!callee && dot > 0) {
+          const method = name.slice(dot + 1);
+          const matches = this.freeFns.filter((fn) => fn.name.endsWith(`.${method}`) && this.inlinedFns.has(fn.name)
+            && stmt.call.parameters.length + 1 === fn.parameters.length);
+          if (matches.length === 1) {
+            callee = matches[0];
+            const receiver = new IdentifierNode(name.slice(0, dot));
+            receiver.location = stmt.call.location;
+            args = [receiver, ...stmt.call.parameters];
           }
-          out.push(...this.inlineCall(callee, stmt.call.parameters, stack));
+        }
+        if (callee) this.reorderNamedTail(stmt.call, callee);
+        if (callee && this.inlinedFns.has(callee.name) && !stack.includes(inlineKey(callee.name, callee.parameters.length))
+          && args.length === callee.parameters.length) {
+          if (this.ambiguousInlineKeys.has(inlineKey(callee.name, args.length))) {
+            throw new AmbiguousInlineOverloadError(stmt.call, callee.name, args.length);
+          }
+          out.push(...this.inlineCall(callee, args, stack));
           continue;
         }
       }

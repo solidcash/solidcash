@@ -119,22 +119,29 @@ function isValueTransferNode(node: Node): boolean {
 // sequential statements sum. This pins how many transfer slots to pre-allocate (max) and which are conditional
 // (min < max => may not execute). A plain count sums nested/else-if arms, over-allocating slots AND mis-marking a
 // conditional transfer as always-happening. Flat if/else has no nested branch, so min===max===count (unchanged).
-export function countTransfersMinMax(node: Node): { min: number; max: number } {
+export function isDirectOwnerTransferNode(node: Node): boolean {
+  return node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+    || node instanceof AddressSendExpressionNode;
+}
+
+export function countTransfersMinMax(
+  node: Node, isTransfer: (candidate: Node) => boolean = isValueTransferNode,
+): { min: number; max: number } {
   if (node instanceof BranchNode) {
-    const i = countTransfersMinMax(node.ifBlock);
-    const e = node.elseBlock ? countTransfersMinMax(node.elseBlock) : { min: 0, max: 0 };
+    const i = countTransfersMinMax(node.ifBlock, isTransfer);
+    const e = node.elseBlock ? countTransfersMinMax(node.elseBlock, isTransfer) : { min: 0, max: 0 };
     return { min: Math.min(i.min, e.min), max: Math.max(i.max, e.max) };
   }
   if (node instanceof SwitchNode) {
-    const arms = node.cases.map((c) => countTransfersMinMax(c.body));
-    if (node.defaultCase) arms.push(countTransfersMinMax(node.defaultCase));
+    const arms = node.cases.map((c) => countTransfersMinMax(c.body, isTransfer));
+    if (node.defaultCase) arms.push(countTransfersMinMax(node.defaultCase, isTransfer));
     // No default: the value may match no case, so a path with zero transfers exists (min 0).
     const min = node.defaultCase && arms.length > 0 ? Math.min(...arms.map((a) => a.min)) : 0;
     const max = arms.length > 0 ? Math.max(...arms.map((a) => a.max)) : 0;
     return { min, max };
   }
-  if (node instanceof TryCatchNode) return countTransfersMinMax(node.tryBlock);
-  const self = isValueTransferNode(node) ? 1 : 0;
+  if (node instanceof TryCatchNode) return countTransfersMinMax(node.tryBlock, isTransfer);
+  const self = isTransfer(node) ? 1 : 0;
   let min = self;
   let max = self;
   const children: Node[] = [];
@@ -147,7 +154,7 @@ export function countTransfersMinMax(node: Node): { min: number; max: number } {
   // A var-def / expression-statement initializer may BE a `new C{value:}()` (a value transfer).
   if (anyNode.expression instanceof Node) children.push(anyNode.expression);
   for (const child of children) {
-    const c = countTransfersMinMax(child);
+    const c = countTransfersMinMax(child, isTransfer);
     min += c.min;
     max += c.max;
   }

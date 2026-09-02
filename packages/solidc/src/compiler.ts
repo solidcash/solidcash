@@ -2136,6 +2136,14 @@ function padMessageBusCloneCalls(ast: Ast): void {
     if (!node.identifier.name.startsWith('__message_bus_')) return;
     padCall(node, routeParams, false);
   });
+  // ST injects hidden `__internal__*` parameters onto the public handler after the route source is
+  // generated. Library-inlined IERC20 edges are the measured case: the route still spells `denied(to, amt)`.
+  if (route) {
+    walkInvocationAst(route.body, (node) => {
+      if (!(node instanceof FunctionCallNode)) return;
+      padCall(node, routeParams, false);
+    });
+  }
   for (const fn of callees) {
     const callerParams = new Set(fn.parameters.map((parameter) => parameter.name));
     walkInvocationAst(fn.body, (node) => {
@@ -2656,6 +2664,24 @@ function synthesizeMessageBusRoute(
               graphHasComputedCallArguments = true;
             }
           }
+          // Same-file `using L for IERC20` desugars at parse to `L.send(token, to, amt)`. That is not a
+          // MethodCall and not a contract-typed receiver, so the IERC20 edge was invisible here and the
+          // route called the public handler without the hidden call-slot parameters ST injects later.
+          if (node instanceof FunctionCallNode && node.identifier.name.includes('.')) {
+            const parts = node.identifier.name.split('.');
+            const method = parts[parts.length - 1];
+            const addressValue = (method === 'transfer' || method === 'send') && node.parameters.length === 1;
+            if (parts.length >= 2 && !['call', 'staticcall', 'delegatecall'].includes(method)
+              && !addressValue && !contractTypedReceiverCall(node, receivers)
+              && !intrinsicNamespaceMethodCall(node)) {
+              statefulExternalCall = true;
+              methodCallCount += 1;
+              if (candidate === fn) directExternalCallsites.add(node);
+              if (node.parameters.some((parameter) => !(parameter instanceof IdentifierNode))) {
+                graphHasComputedCallArguments = true;
+              }
+            }
+          }
           if (node instanceof FunctionCallNode
             && ['checkSig', 'checkMultiSig'].includes(node.identifier.name)) signatureCheck = true;
           if (node instanceof FunctionCallNode
@@ -2903,6 +2929,19 @@ function synthesizeMessageBusRoute(
             if (!access || !collectionByName.has(access.name)) return;
             const occurrence = occurrenceInfoOf(candidate, node);
             if (occurrence.occurrence !== 'loop' || occurrence.maximumOccurrences !== undefined) return;
+            // An invariant parameter / msg.sender key inside a loop is still one physical entry. Treating it as a
+            // runtime-loop collection skipped bindEntryKeyParameters, so the kernel row loop's journal write-back
+            // used the branch-local `__message_bus_arg_*` (out of scope at wrapper exit) and dropped the bus.
+            const keyVaries = access.keys.some((key) => {
+              if (key instanceof IdentifierNode) {
+                return !candidate.parameters.some((parameter) => parameter.name === key.name)
+                  && !fn.parameters.some((parameter) => parameter.name === key.name);
+              }
+              if (key instanceof NullaryOpNode && (key.operator === NullaryOperator.MSG_SENDER
+                || key.operator === NullaryOperator.TX_ORIGIN)) return false;
+              return true;
+            });
+            if (!keyVaries) return;
             if (candidate === fn) runtimeLoopWrites.add(node);
             runtimeLoopCollections.add(access.name);
           });
@@ -2936,7 +2975,11 @@ function synthesizeMessageBusRoute(
         const parameterAliases = new Map(fn.parameters.map((parameter, index) => [parameter.name, index]));
         const aliasedIdentifier = (expression: ExpressionNode): string | undefined => {
           if (expression instanceof IdentifierNode) return expression.name;
-          if (expression instanceof CastNode) return aliasedIdentifier(expression.expression);
+          // `TokenId.wrap(raw)` is an identity CastNode to a UDVT. Treating it as the underlying
+          // parameter made the route require `bytes32 == TokenId`.
+          if (expression instanceof CastNode && !(expression.type instanceof ValueType)) {
+            return aliasedIdentifier(expression.expression);
+          }
           return undefined;
         };
         walkInvocationAst(fn.body, (node) => {
@@ -3499,7 +3542,10 @@ function synthesizeMessageBusRoute(
     // an out-of-range OP_SPLIT, while msg.sig reaches OP_VERIFY. Refuse that position by name rather than
     // publishing a route which can only fail as a malformed script. `msg.value` is deliberately absent: its
     // row-local parsed value has independent multi-row VM proof.
-    } else if (!reason && graphTailCallEligible
+    // Kernel graph-emission DEFINEs already receive `__internal__handlerMsgSig` / msg.data / the authenticated
+    // caller from the row (`rowSelector`, `__message_bus_graph_msg_data`, `__message_bus_graph_caller`), so a
+    // fallback that both journals `msg.sig` and makes a typed call is the same shape as receive+map+call.
+    } else if (!reason && graphTailCallEligible && compilerOptions.messageBusKernel !== true
       && (routeUsesMsgData || routeUsesMsgSig
         || (routeUsesMsgSender && !graphRuntimeEligible))) {
       reason = 'emission-handler-logical-context-reconstruction-unsupported';
@@ -3605,6 +3651,7 @@ function synthesizeMessageBusRoute(
       return true;
     }
     if (type instanceof EnumType) return false;
+    if (type instanceof ValueType) return kernelResultEncodable(type.underlyingType);
     if (type instanceof StructType) return type.fields.every((field) => kernelResultEncodable(field.type));
     if (type instanceof ArrayType) {
       if (type.elementType instanceof StructType || type.elementType instanceof EnumType) return false;
@@ -4444,7 +4491,8 @@ function synthesizeMessageBusRoute(
       || siblingHandlerInvokeNames.has(sourceHandler)) continue;
     let deletesEntry = false;
     walkInvocationAst(sourceHandler.body, (node) => {
-      if (node instanceof MappingDeleteNode && collectionByName.has(node.name)) deletesEntry = true;
+      if ((node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode)
+        && collectionByName.has(node.name)) deletesEntry = true;
     });
     if (!deletesEntry) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);

@@ -1,5 +1,5 @@
 import {
-  AddressType, ArrayType, BytesType, EnumType, FunctionType, PrimitiveType, StructType, Type, ValueType,
+  AddressType, ArrayType, BytesType, EnumType, FixedType, FunctionType, PrimitiveType, StructType, Type, ValueType,
 } from '@solidcash/utils';
 import {
   BoolLiteralNode,
@@ -35,6 +35,17 @@ export function createDefaultValueExpression(type: Type, location: Location): Ex
     const size = new IntLiteralNode(BigInt(type.bound ?? 0));
     size.location = location;
     node = new NewArrayNode(type.elementType, size);
+  } else if (type === PrimitiveType.PUBKEY || type === PrimitiveType.SIG || type === PrimitiveType.DATASIG) {
+    // pubkey/sig/datasig are byte sequences (implicitly castable from bytes), not ints. An int 0 default
+    // fails type-check when the collection journal lazily initializes a cache local of that value type.
+    const empty = new HexLiteralNode(new Uint8Array(0));
+    empty.location = location;
+    node = new CastNode(type, empty, false);
+  } else if (type instanceof FixedType) {
+    // fixedMxN / ufixedMxN do not implicitly take an int 0; wrap like address(0).
+    const zero = new IntLiteralNode(0n);
+    zero.location = location;
+    node = new CastNode(type, zero, false);
   } else if (type instanceof AddressType || type instanceof EnumType) {
     // address / enum have no int-0 literal of their own type: `0` is typed int and does not implicitly cast to
     // address (and reads confusingly for enums). Wrap in a cast to the target type, mirroring `address(0)` /

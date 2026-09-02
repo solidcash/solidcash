@@ -7556,6 +7556,17 @@ export default class AstBuilder
       if (close < 0 || !/^(?:\[[^\]]*\])*$/.test(text.slice(close + 1))) break;
       text = text.slice(1, close) + text.slice(close + 1);
     }
+    // `parseType('Rec[]')` yields `ArrayType(undefined)` because `Rec` is not a primitive. Falling through
+    // to `resolveType` (struct/enum/UDVT maps) is required; otherwise the kernel wrapper's
+    // `abi.decodeAt(rowArgs, (Rec[]), 0)` types as `address[]`.
+    if (text.endsWith(']') && text.includes('[')) {
+      const bracketIdx = text.lastIndexOf('[');
+      const elementTypeStr = text.substring(0, bracketIdx);
+      const boundStr = text.substring(bracketIdx + 1, text.length - 1);
+      const elementType = this.resolveAbiDecodeType(elementTypeStr);
+      const bound = boundStr ? parseInt(boundStr, 10) : undefined;
+      return new ArrayType(elementType, bound !== undefined && !Number.isNaN(bound) ? bound : undefined);
+    }
     const ty = parseType(text) ?? this.resolveType(text);
     // An interface/contract-typed decode item (`abi.decode(data, (IERC20))`, BentoBox/Kashi) has no primitive or
     // struct type - a contract/interface handle is an address on BCH, so decode it as an address (matching the `C[]`
@@ -7566,18 +7577,7 @@ export default class AstBuilder
       return new AddressType(false, text);
     }
     if (!ty) throw new Error(`Unsupported type '${text}' in abi.decode`);
-    const elemName = text.replace(/(\[\])+$/, '');
-    const fixup = (t: Type): Type => {
-      if (t instanceof ArrayType) {
-        // preserve the bound: a fixed-size array (uint256[3]) must stay bounded, not collapse to a dynamic array
-        return new ArrayType(
-          t.elementType === undefined ? new AddressType(false, elemName) : fixup(t.elementType),
-          t.bound,
-        );
-      }
-      return t;
-    };
-    return fixup(ty);
+    return ty;
   }
 
   visitAbiDecode(ctx: AbiDecodeContext): AbiDecodeNode {

@@ -230,13 +230,28 @@ mapping write, `this.activeBytecode`, `new LockingBytecode*` constructors
 including NullData, mixed event widths and non-emitting siblings on an event route, typed call
 plus `emit`, native `I(cat).fn.call()` / `.staticcall()` including one-arg statement form,
 enumerable mapping iteration, `try`/`catch` around a typed call, public dynamic-array getters,
-`delete this.items[i]`, `fallback`/`receive` (including `msg.value`, satoshi transfer, and typed
-call), mapping-of-struct-array field writes (`m[k][i].x = v`), modifier-keyed mapping RMW
-(`onlyOwner(id)` plus `ownerOf[id] = ...`), and `ecrecover`.
+`delete this.items[i]`, `fallback`/`receive` (including `msg.value`, satoshi transfer, typed
+call, and fallback that both writes a mapping of `msg.sig` and makes a typed call), Solidity
+`address.transfer` / `.send` (the same satoshi-transfer effect as `this.transfer`),
+if/else satoshi transfers, `address.transfer` inside an internal helper, UDVT `wrap`/`unwrap`
+then a mapping write, typed calls with a struct-array argument (`I.r(Rec[])`),
+library-wrapped IERC20 transfer (`using SafeTransfer for IERC20`), counter-keyed `m[i]`
+loops that also make a typed call or satoshi transfer,
+mapping-of-struct-array field writes (`m[k][i].x = v`), modifier-keyed mapping RMW
+(`onlyOwner(id)` plus `ownerOf[id] = ...`), `ecrecover`,
+library `Address.sendValue` (`to.transfer` inside a free/library helper, including
+`using Address for address payable; to.sendValue(...)`),
+returning a user-defined value type (`returns (TokenId)`),
+counter-keyed `delete this.m[i]` (and two mapping writes in one counter loop),
+do-while counter-keyed mapping loops with a typed call,
+`fallback` that wraps a UDVT mapping key,
+an invariant parameter key written inside `while (true) { ...; break; }`,
+mapping values of `pubkey` / `datasig` / `fixedMxN` / `ufixedMxN`
+(journal cache defaults are type-correct empty/`0` rather than `int` 0).
 Public whole-struct getters, public enum getters, recursive mapping handlers, and result types
 the wrapper cannot `abi.encode` (enum, `Rec[]`) stay `KERNEL_LAYOUT`. Counter-keyed mapping
 loops with `continue`/`break` stay `KERNEL_UNBOUNDED_KEY`.
-sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
+Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay
 `KERNEL_UNBOUNDED_KEY` without aborting sibling handlers.

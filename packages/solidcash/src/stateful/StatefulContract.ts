@@ -179,6 +179,7 @@ const signerUtxoSnapshots = new WeakMap<object, Map<string, Map<string, Utxo>>>(
 
 interface VmapCounterPermutationSpec {
   countName: string;
+  boundOffset: bigint;
   postTest: boolean;
   start: bigint;
   step: bigint;
@@ -199,34 +200,53 @@ function vmapCounterPermutationSpec(name: string): VmapCounterPermutationSpec | 
   const range = name.match(
     /^__internal__vmapCounterPerm_(.+)_\d+_from_([pn]\d+)_step_([pn]\d+)(_post)?$/,
   );
+  const affine = name.match(
+    /^__internal__vmapCounterPerm_(.+)_\d+_bound_([pn]\d+)(?:_from_([pn]\d+)_step_([pn]\d+))?(_post)?$/,
+  );
+  if (affine) {
+    return {
+      countName: affine[1],
+      boundOffset: decodeSigned(affine[2]),
+      start: affine[3] === undefined ? 0n : decodeSigned(affine[3]),
+      step: affine[4] === undefined ? 1n : decodeSigned(affine[4]),
+      postTest: affine[5] !== undefined,
+    };
+  }
   if (range) {
     return {
       countName: range[1],
+      boundOffset: 0n,
       start: decodeSigned(range[2]),
       step: decodeSigned(range[3]),
       postTest: range[4] !== undefined,
     };
   }
   const postTest = name.match(/^__internal__vmapCounterPerm_(.+)_\d+_post$/);
-  if (postTest) return { countName: postTest[1], postTest: true, start: 0n, step: 1n };
+  if (postTest) return {
+    countName: postTest[1], boundOffset: 0n, postTest: true, start: 0n, step: 1n,
+  };
   const preTest = name.match(/^__internal__vmapCounterPerm_(.+)_\d+$/);
-  return preTest ? { countName: preTest[1], postTest: false, start: 0n, step: 1n } : undefined;
+  return preTest ? {
+    countName: preTest[1], boundOffset: 0n, postTest: false, start: 0n, step: 1n,
+  } : undefined;
 }
 
 function vmapCounterPermutationValues(
   bound: bigint,
   spec: VmapCounterPermutationSpec,
 ): bigint[] {
+  const effectiveBound = bound + spec.boundOffset;
   if (spec.step === 0n) throw new Error('vmap counter loop step must be non-zero');
   // Legacy unit-domain rows authenticate the public bound itself as the iteration count, including its
-  // historical non-negative constraint. Ranged rows authenticate the derived progression length, so a bound
-  // below their start is a valid zero-trip domain.
-  if (!spec.postTest && spec.start === 0n && spec.step === 1n && bound < 0n) {
+  // historical non-negative constraint. Ranged and affine rows authenticate the derived progression length,
+  // so a bound below their start is a valid zero-trip domain.
+  if (spec.boundOffset === 0n && !spec.postTest
+    && spec.start === 0n && spec.step === 1n && effectiveBound < 0n) {
     throw new Error(`vmap counter loop bound '${spec.countName}' must be between 0 and 64`);
   }
   const naturalCount = spec.step > 0n
-    ? (bound > spec.start ? ((bound - spec.start - 1n) / spec.step) + 1n : 0n)
-    : (bound < spec.start ? ((spec.start - bound - 1n) / -spec.step) + 1n : 0n);
+    ? (effectiveBound > spec.start ? ((effectiveBound - spec.start - 1n) / spec.step) + 1n : 0n)
+    : (effectiveBound < spec.start ? ((spec.start - effectiveBound - 1n) / -spec.step) + 1n : 0n);
   const iterationCount = spec.postTest && naturalCount === 0n ? 1n : naturalCount;
   if (iterationCount < 0n || iterationCount > 64n) {
     throw new Error(

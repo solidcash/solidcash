@@ -56,6 +56,19 @@ contract KernelCounterMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
+const AFFINE_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelAffineCounterMapping() {
+  mapping(int => int) m;
+  function writeAffine(int n, int value) public {
+    int requested = n;
+    int intermediate = requested - 2;
+    int limit = 1 + intermediate;
+    for (int i = 1; i < limit; i = i + 2) { this.m[i] = value; }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.m[key] == expected); }
+}`;
+
 const COUNTER_MAPPING_RMW_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelCounterMappingRmw() {
   mapping(int => int) m;
@@ -476,6 +489,43 @@ describe('kernel signature-array rows', () => {
 });
 
 describe('kernel counter-key mapping loop compose', () => {
+  it('derives immutable affine loop bounds for direct and routed calls', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(AFFINE_COUNTER_MAPPING_SOURCE, KERNEL);
+    const handler = artifact.abi.find((candidate) => candidate.name === 'writeAffine')!;
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeAffine'))
+      .toMatchObject({ eligible: true });
+    const permutationInput = handler.inputs.find((input) =>
+      /^__internal__vmapCounterPerm_n_\d+_bound_n1_from_p1_step_p2$/.test(input.name));
+    expect(permutationInput).toMatchObject({ type: 'int256[]' });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const zeroTrip = StatefulContract.withCategory(inner, categoryId).call.writeAffine(0n, 5n);
+    await expect(zeroTrip.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+
+    const direct = StatefulContract.withCategory(inner, categoryId).call.writeAffine(5n, 10n);
+    await expect(direct.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+
+    const routedContract = StatefulContract.withCategory(inner, categoryId);
+    const routed = routedContract.batch([{ function: 'writeAffine', args: [7n, 20n] }]);
+    const routedBuilder = await routed.build();
+    const routeInput = routedBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    if (!routeInput || !('params' in routeInput.unlocker)) throw new Error('message-bus route input is missing');
+    const permutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === permutationInput!.name);
+    expect(routeInput.unlocker.params[permutationIndex]).toEqual([[1n, 3n, 5n]]);
+    await expect(routed.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+
+    for (const key of [1n, 3n, 5n]) {
+      await expect(StatefulContract.withCategory(inner, categoryId).check(key, 20n).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+  }, 180_000);
+
   it('settles an old-entry transition without a row-local fixed key witness', async () => {
     const provider = createTestProvider();
     const artifact = compileString(COUNTER_MAPPING_RMW_SOURCE, KERNEL);

@@ -538,7 +538,7 @@ describe('required kernel admission', () => {
     } while (i < n);`],
     ['a mutated public bound', `n = n - 1;
       for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }`],
-    ['a computed local bound', `int limit = n - 1;
+    ['a non-affine computed local bound', `int limit = n * 2;
       for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }`],
     ['a reassigned local bound', `int limit = n; limit = n - 1;
       for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }`],
@@ -575,6 +575,27 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill')?.eligible).toBe(true);
     expect(artifact.abi.find((handler) => handler.name === 'fill')?.inputs).toContainEqual(
       expect.objectContaining({ name: expect.stringMatching(/^__internal__vmapCounterPerm_n_/), type: 'int256[]' }),
+    );
+  });
+
+  it('admits an immutable affine local bound derived from a public argument', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function fill(int n) public {
+        int requested = n;
+        int intermediate = requested - 2;
+        int limit = 1 + intermediate;
+        for (int i = 0; i < limit; i = i + 1) { this.m[i] = i + 10; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill')?.eligible).toBe(true);
+    expect(artifact.abi.find((handler) => handler.name === 'fill')?.inputs).toContainEqual(
+      expect.objectContaining({
+        name: expect.stringMatching(/^__internal__vmapCounterPerm_n_\d+_bound_n1$/),
+        type: 'int256[]',
+      }),
     );
   });
 

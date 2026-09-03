@@ -134,6 +134,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       count: string;
       boundNames: string[];
       boundDefinitions: VariableDefinitionNode[];
+      boundOffset: bigint;
       start: bigint;
       step: bigint;
       postTest: boolean;
@@ -154,31 +155,50 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             .filter((parameter) => !parameter.name.startsWith('__internal__'))
             .map((parameter) => parameter.name));
           const resolveBound = (
-            name: string,
+            expression: ExpressionNode,
             before: number,
             seen = new Set<string>(),
-          ): { count: string; definitions: VariableDefinitionNode[] } | undefined => {
-            if (visibleCounts.has(name)) return { count: name, definitions: [] };
+          ): { count: string; definitions: VariableDefinitionNode[]; offset: bigint } | undefined => {
+            if (expression instanceof BinaryOpNode
+              && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
+              && expression.right instanceof IntLiteralNode) {
+              const parent = resolveBound(expression.left, before, seen);
+              if (!parent) return undefined;
+              return {
+                ...parent,
+                offset: parent.offset + (expression.operator === BinaryOperator.PLUS
+                  ? expression.right.value : -expression.right.value),
+              };
+            }
+            if (expression instanceof BinaryOpNode
+              && expression.operator === BinaryOperator.PLUS
+              && expression.left instanceof IntLiteralNode) {
+              const parent = resolveBound(expression.right, before, seen);
+              if (!parent) return undefined;
+              return { ...parent, offset: parent.offset + expression.left.value };
+            }
+            if (!(expression instanceof IdentifierNode)) return undefined;
+            const { name } = expression;
+            if (visibleCounts.has(name)) return { count: name, definitions: [], offset: 0n };
             if (seen.has(name)) return undefined;
             const definitions = statements.slice(0, before)
               .map((statement, position) => ({ statement, position }))
               .filter((candidate): candidate is { statement: VariableDefinitionNode; position: number } =>
                 candidate.statement instanceof VariableDefinitionNode && candidate.statement.name === name);
-            if (definitions.length !== 1 || !(definitions[0].statement.expression instanceof IdentifierNode)) {
-              return undefined;
-            }
+            if (definitions.length !== 1 || definitions[0].statement.expression === undefined) return undefined;
             const parent = resolveBound(
-              definitions[0].statement.expression.name,
+              definitions[0].statement.expression,
               definitions[0].position,
               new Set(seen).add(name),
             );
             return parent && {
               count: parent.count,
               definitions: [...parent.definitions, definitions[0].statement],
+              offset: parent.offset,
             };
           };
           const boundResolution = bound instanceof IdentifierNode
-            ? resolveBound(bound.name, index - 1) : undefined;
+            ? resolveBound(bound, index - 1) : undefined;
           if (!(loop instanceof WhileNode || loop instanceof DoWhileNode)
             || !(variable instanceof VariableDefinitionNode)
             || !(loop.condition instanceof BinaryOpNode)
@@ -209,6 +229,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             count: boundResolution.count,
             boundNames: [boundResolution.count, ...boundResolution.definitions.map((definition) => definition.name)],
             boundDefinitions: boundResolution.definitions,
+            boundOffset: boundResolution.offset,
             start: preTest ? variable.loopInitialValue! : 0n,
             step: preTest ? variable.loopStepValue! : 1n,
             postTest,
@@ -386,7 +407,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const tryLower = (loop: WhileNode | DoWhileNode, apply: boolean): boolean => {
       const canonical = canonicalLoops.get(loop);
       if (!canonical) return false;
-      const { logical, count, boundNames, boundDefinitions, start, step, postTest, counterUpdate } = canonical;
+      const {
+        logical, count, boundNames, boundDefinitions, boundOffset, start, step, postTest, counterUpdate,
+      } = canonical;
       const { block, location } = loop;
       const writes: Array<ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
       | MappingFieldAssignNode> = [];
@@ -733,7 +756,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const signedComponent = (value: bigint): string => value < 0n ? `n${-value}` : `p${value}`;
       const rangeSuffix = start === 0n && step === 1n
         ? '' : `_from_${signedComponent(start)}_step_${signedComponent(step)}`;
-      const hidden = `${PREFIX}${count}_${serial}${rangeSuffix}${postTest ? '_post' : ''}`;
+      const boundSuffix = boundOffset === 0n ? '' : `_bound_${signedComponent(boundOffset)}`;
+      const hidden = `${PREFIX}${count}_${serial}${boundSuffix}${rangeSuffix}${postTest ? '_post' : ''}`;
       const oldValueHidden = (collection: string): string =>
         `${VMAP_COUNTER_OLD_PREFIX}${count}_${serial}_${collection}`;
       const logicalValue = `__internal__vmapCounterLogical_${serial}`;
@@ -747,28 +771,30 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const lit = (value: bigint): IntLiteralNode => at(new IntLiteralNode(value));
       const binary = (left: ExpressionNode, operator: BinaryOperator, right: ExpressionNode): BinaryOpNode =>
         at(new BinaryOpNode(left, operator, right));
+      const boundValue = (): ExpressionNode => boundOffset === 0n
+        ? id(count) : binary(id(count), BinaryOperator.PLUS, lit(boundOffset));
       const positiveIterationCount = (): ExpressionNode => binary(
         binary(binary(
           step > 0n
-            ? binary(id(count), BinaryOperator.MINUS, lit(start))
-            : binary(lit(start), BinaryOperator.MINUS, id(count)),
+            ? binary(boundValue(), BinaryOperator.MINUS, lit(start))
+            : binary(lit(start), BinaryOperator.MINUS, boundValue()),
           BinaryOperator.MINUS, lit(1n)),
         BinaryOperator.DIV, lit(step > 0n ? step : -step)),
         BinaryOperator.PLUS,
         lit(1n),
       );
       const derivedIterationCount = (): ExpressionNode => at(new TernaryOpNode(
-        binary(id(count), step > 0n ? BinaryOperator.GT : BinaryOperator.LT, lit(start)),
+        binary(boundValue(), step > 0n ? BinaryOperator.GT : BinaryOperator.LT, lit(start)),
         positiveIterationCount(),
         lit(postTest ? 1n : 0n),
       ));
       const iterationCount = (): ExpressionNode => {
         // Preserve the established unit-domain form: it is both smaller and bytecode-compatible with existing
         // counter rows. General progressions pay for the ceiling division only when they actually need it.
-        if (unitDomain && !postTest) return id(count);
+        if (unitDomain && !postTest && boundOffset === 0n) return boundValue();
         if (unitDomain) {
           return at(new TernaryOpNode(
-            binary(id(count), BinaryOperator.GT, lit(0n)), id(count), lit(1n),
+            binary(boundValue(), BinaryOperator.GT, lit(0n)), boundValue(), lit(postTest ? 1n : 0n),
           ));
         }
         return id(rangedIterationCount);

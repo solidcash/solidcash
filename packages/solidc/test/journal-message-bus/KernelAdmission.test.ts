@@ -542,9 +542,6 @@ describe('required kernel admission', () => {
       for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }`],
     ['a reassigned local bound', `int limit = n; limit = n - 1;
       for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }`],
-    ['a counter-dependent write guard', `for (int i = 0; i < n; i = i + 1) {
-      if (i < 2) this.m[i] = 1; else this.m[i] = 2;
-    }`],
     ['a sibling read of the mutated mapping', `for (int i = 0; i < n; i = i + 1) {
       int before = this.m[0]; this.m[i] = before + 1;
     }`],
@@ -559,6 +556,28 @@ describe('required kernel admission', () => {
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('admits an exact counter-selected mapping-write domain', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, int ceiling) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (i < ceiling) this.m[i] = i + 10;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationCondition).toEqual({
+      kind: 'binary', operator: '<',
+      left: {
+        kind: 'source',
+        source: { kind: 'loopIndex', initialValue: '0', stepValue: '1' },
+      },
+      right: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+    });
   });
 
   it('admits an immutable local alias chain of the public counter-loop bound', () => {
@@ -774,10 +793,6 @@ describe('required kernel admission', () => {
       for (int i = 0; i < n; i = i + 1) {
         if (take) this.m[i] = i;
         take = !take;
-      }`],
-    ['a loop-defined alias guard', `for (int i = 0; i < n; i = i + 1) {
-        bool take = i < 2;
-        if (take) this.m[i] = i;
       }`],
     ['the counter in two composite-key positions', `for (int i = 0; i < n; i = i + 1) {
         this.nested[i][i] = 1;

@@ -400,10 +400,17 @@ export class FunctionDefinitionNode extends Node implements Named {
     oldValuesWitnessParam?: string;
     /** Source-path predicate for a conditionally reached runtime loop. */
     condition?: ExpressionNode;
+    /** Per-source-iteration predicate selecting the exact logical mapping-write domain. */
+    iterationCondition?: ExpressionNode;
+    iterationCounter?: { name: string; initialValue: bigint; stepValue: bigint };
     op: '+' | '-' | 'set' | 'delete';
   }>;
   /** Source-path predicate keyed by the compiler-owned counter permutation parameter. */
   runtimeCounterLoopConditions?: Map<string, ExpressionNode>;
+  /** Per-iteration selection predicate keyed by compiler-owned counter permutation parameter. */
+  runtimeCounterLoopIterationConditions?: Map<string, {
+    expression: ExpressionNode; counter: { name: string; initialValue: bigint; stepValue: bigint };
+  }>;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[]; linear?: boolean }>;

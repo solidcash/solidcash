@@ -4366,9 +4366,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // State-derived predicates are intentionally unresolved here: _batchRaw is synchronous and performs no
         // chain reads. Publish an empty placeholder; _createBuilder recomputes the exact permutation after loading
         // authenticated state. Parameter-only false paths can avoid even validating an unreachable large bound.
-        const permutation = active === true
+        const domain = active === true
           ? vmapCounterPermutationValues(BigInt(countValue as bigint | number | string), permutationSpec)
           : [];
+        const selectedDomain = loopInfo?.iterationCondition && active === true
+          ? domain.map((value, occurrenceIndex) => ({
+            value,
+            selected: this._evaluateExternalExpression(
+              loopInfo.iterationCondition!,
+              [...row.args],
+              executionArtifact,
+              undefined,
+              visible,
+              undefined,
+              occurrenceIndex,
+            ),
+          })) : undefined;
+        // Authenticated state is loaded only by the asynchronous builder. If any per-iteration result is not yet
+        // resolvable, retain an empty placeholder and replace it after hydration below.
+        const permutation = selectedDomain?.every(({ selected }) => typeof selected === 'boolean')
+          ? selectedDomain.filter(({ selected }) => selected).map(({ value }) => value)
+          : loopInfo?.iterationCondition ? [] : domain;
         (row.internalArgs as Record<string, FunctionArgument>)[input.name] = permutation;
         rowPermutations[rowIndex] = permutation;
       }
@@ -8895,6 +8913,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     state: Record<string, unknown>,
     callerInputs?: readonly { type: string }[],
     executionSelfAddress?: FunctionArgument,
+    occurrenceIndices: readonly number[] = [0],
   ): Promise<Record<string, unknown>> {
     const collections = artifact.stateLayout?.collections ?? [];
     const mappingByName = new Map(collections
@@ -8921,12 +8940,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const hydrated: Record<string, unknown> = { ...state };
     const entriesBySignature = new Map<string, Awaited<ReturnType<typeof this.getEntries>>>();
-    const pending = new Set(accesses);
+    const pending = new Set(accesses.flatMap((access) => occurrenceIndices.map((occurrenceIndex) => ({
+      access, occurrenceIndex,
+    }))));
     // Accesses were collected child-first, but iterate to a fixed point as a guard for shared/nested expression
     // objects. A mapping key may itself contain another stable mapping read.
     for (let pass = 0; pass <= accesses.length && pending.size > 0; pass += 1) {
       let progressed = false;
-      for (const access of [...pending]) {
+      for (const task of [...pending]) {
+        const { access, occurrenceIndex } = task;
         const collection = mappingByName.get(access.name!);
         if (!collection) continue;
         const keys = (access.args ?? []).map((keyExpression) => this._evaluateExternalExpression(
@@ -8936,7 +8958,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           hydrated,
           callerInputs,
           undefined,
-          0,
+          occurrenceIndex,
           false,
           executionSelfAddress,
         ));
@@ -8977,7 +8999,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             target = target[property] as Record<string, unknown>;
           }
         }
-        pending.delete(access);
+        pending.delete(task);
         progressed = true;
       }
       if (!progressed) break;
@@ -13954,9 +13976,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (typeof active !== 'boolean') {
         throw new Error(`Could not resolve runtime loop predicate for '${abiFunction!.name}'.`);
       }
-      const perm = active
+      const candidateDomain = active
         ? vmapCounterPermutationValues(BigInt(args[countIdx]), permutationSpec)
         : [];
+      if (active && loopInfo?.iterationCondition) {
+        directPredicateState = await this._hydrateExternalPredicateState(
+          [loopInfo.iterationCondition],
+          visibleArgs,
+          this.inner.artifact,
+          directPredicateState,
+          visibleInputs,
+          executionSelfAddress,
+          candidateDomain.map((_value, index) => index),
+        );
+      }
+      const perm = active ? candidateDomain.filter((_value, occurrenceIndex) => {
+        if (!loopInfo?.iterationCondition) return true;
+        const selected = this._evaluateExternalExpression(
+          loopInfo.iterationCondition,
+          visibleArgs,
+          this.inner.artifact,
+          directPredicateState,
+          visibleInputs,
+          undefined,
+          occurrenceIndex,
+          false,
+          executionSelfAddress,
+        );
+        if (typeof selected !== 'boolean') {
+          throw new Error(`Could not resolve runtime loop iteration predicate for '${abiFunction!.name}'.`);
+        }
+        return selected;
+      }) : [];
       perm.sort((a, b) => {
         const av = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(a)]));
         const bv = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(b)]));
@@ -15619,7 +15670,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const i = loopAbiFunction.inputs.findIndex((p) => p.name === name);
         return i >= 0 ? loopArgs[i] : undefined;
       };
-      if (info.condition) {
+      if (info.condition || info.iterationCondition) {
         const visibleInputs = visibleHandlerInputs(loopAbiFunction.inputs);
         const conditionArgs = upsertFrame.routed
           ? [...upsertFrame.row!.args]
@@ -15627,15 +15678,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const index = loopAbiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
             return loopArgs[index];
           }) as FunctionArgument[];
-        loopPredicateState = await this._hydrateExternalPredicateState(
-          [info.condition],
-          conditionArgs,
-          entryArtifact,
-          loopPredicateState,
-          visibleInputs,
-          executionSelfAddress,
-        );
-        const active = this._evaluateExternalExpression(
+        if (info.condition) {
+          loopPredicateState = await this._hydrateExternalPredicateState(
+            [info.condition],
+            conditionArgs,
+            entryArtifact,
+            loopPredicateState,
+            visibleInputs,
+            executionSelfAddress,
+          );
+        }
+        const active = info.condition ? this._evaluateExternalExpression(
           info.condition,
           conditionArgs,
           entryArtifact,
@@ -15645,7 +15698,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           0,
           false,
           executionSelfAddress,
-        );
+        ) : true;
         if (typeof active !== 'boolean') {
           throw new Error(`Could not resolve runtime loop predicate for '${loopAbiFunction.name}'.`);
         }
@@ -15655,26 +15708,52 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (varyingIndex < 0) throw new Error(
           `Runtime loop in '${loopAbiFunction.name}' is missing '${info.varyingArrayParam}'.`,
         );
-        if (!active) {
-          replaceLoopArgument(varyingIndex, []);
-        } else {
-          const permutationSpec = vmapCounterPermutationSpec(info.varyingArrayParam);
-          if (permutationSpec) {
-            const countValue = argOf(permutationSpec.countName);
-            if (countValue === undefined) throw new Error(
-              `vmap counter loop bound '${permutationSpec.countName}' must be a public argument`,
-            );
-            const permutation = vmapCounterPermutationValues(
-              BigInt(countValue as bigint | number | string), permutationSpec,
-            );
-            permutation.sort((left, right) => {
-              const leftSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(left)]));
-              const rightSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(right)]));
-              return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1 : 0;
-            });
-            replaceLoopArgument(varyingIndex, permutation);
-          }
+        const permutationSpec = vmapCounterPermutationSpec(info.varyingArrayParam);
+        if (!permutationSpec) throw new Error(
+          `Runtime loop in '${loopAbiFunction.name}' has an invalid permutation parameter.`,
+        );
+        const countValue = argOf(permutationSpec.countName);
+        if (countValue === undefined) throw new Error(
+          `vmap counter loop bound '${permutationSpec.countName}' must be a public argument`,
+        );
+        const domain = active ? vmapCounterPermutationValues(
+          BigInt(countValue as bigint | number | string), permutationSpec,
+        ) : [];
+        if (active && info.iterationCondition) {
+          loopPredicateState = await this._hydrateExternalPredicateState(
+            [info.iterationCondition],
+            conditionArgs,
+            entryArtifact,
+            loopPredicateState,
+            visibleInputs,
+            executionSelfAddress,
+            domain.map((_value, occurrenceIndex) => occurrenceIndex),
+          );
         }
+        const permutation = active ? domain.filter((_value, occurrenceIndex) => {
+          if (!info.iterationCondition) return true;
+          const selected = this._evaluateExternalExpression(
+            info.iterationCondition,
+            conditionArgs,
+            entryArtifact,
+            loopPredicateState,
+            visibleInputs,
+            undefined,
+            occurrenceIndex,
+            false,
+            executionSelfAddress,
+          );
+          if (typeof selected !== 'boolean') throw new Error(
+            `Could not resolve runtime loop iteration predicate for '${loopAbiFunction.name}'.`,
+          );
+          return selected;
+        }) : [];
+        permutation.sort((left, right) => {
+          const leftSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(left)]));
+          const rightSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(right)]));
+          return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1 : 0;
+        });
+        replaceLoopArgument(varyingIndex, permutation);
       }
       const keyTypes = collection.keyTypes ?? [collection.keyType];
       const encKey = (v: unknown, keyType: string): Uint8Array => (

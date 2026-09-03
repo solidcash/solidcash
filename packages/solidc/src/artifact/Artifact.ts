@@ -1347,12 +1347,21 @@ function buildFunctionAbiMetadata(
     ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && {
       sortedUpsertLoopInfo: func.sortedUpsertLoopInfo.map((info) => {
         const condition = info.condition && serializeCondition(info.condition);
+        const iterationCondition = info.iterationCondition && serializeCondition(
+          info.iterationCondition,
+          info.iterationCounter,
+        );
         if (info.condition && !condition) {
           throw new Error(`Runtime loop condition in '${func.name}' cannot be represented in artifact metadata`);
+        }
+        if (info.iterationCondition && !iterationCondition) {
+          throw new Error(`Runtime loop iteration condition in '${func.name}' cannot be represented in artifact metadata`);
         }
         return {
           ...info,
           condition,
+          iterationCondition,
+          iterationCounter: undefined,
           ...(info.fixedKeySources && { fixedKeySources: info.fixedKeySources.map((source) => ({
             kind: source.kind,
             ...(source.paramName && { paramName: source.paramName }),

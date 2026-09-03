@@ -183,6 +183,23 @@ contract KernelConditionalCounterLoop() {
   function checkScoped(int key, int expected) public { require(this.scoped[key] == expected); }
 }`;
 
+const SELECTED_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+event Selected(int i);
+contract KernelSelectedCounterMapping() {
+  mapping(int => int) m;
+  function write(int n, int ceiling) public {
+    for (int i = 0; i < n; i = i + 1) {
+      bool selected = i < ceiling;
+      if (selected) {
+        this.m[i] = i + 10;
+        emit Selected(i);
+      }
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.m[key] == expected); }
+}`;
+
 const INDEPENDENT_ROW_LOOP_SOURCE = `pragma solidcash ^0.13.0;
 event ABefore(int n);
 event AHit(int i);
@@ -534,6 +551,78 @@ describe('kernel signature-array rows', () => {
 });
 
 describe('kernel counter-key mapping loop compose', () => {
+  it('settles exactly the iterations selected by a runtime predicate', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SELECTED_COUNTER_MAPPING_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    const writeHandler = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(writeHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    let contract = StatefulContract.withCategory(inner, categoryId);
+
+    const direct = contract.call.write(5n, 2n);
+    const directBuilder = await direct.build();
+    const directInput = directBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === 'write');
+    if (!directInput || !('params' in directInput.unlocker)) throw new Error('direct write input is missing');
+    const directPermutationIndex = writeHandler.inputs.findIndex((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'));
+    expect([...(directInput.unlocker.params[directPermutationIndex] as bigint[])]
+      .sort((left, right) => Number(left - right))).toEqual([0n, 1n]);
+    await expect(direct.send()).resolves.toMatchObject({
+      events: [{ args: { i: 0n } }, { args: { i: 1n } }],
+    });
+
+    contract = StatefulContract.withCategory(inner, categoryId);
+    const routed = contract.batch([{ function: 'write', args: [5n, 4n] }]);
+    const builder = await routed.build();
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no parameters');
+    const permutationName = writeHandler.inputs.find((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))!.name;
+    const routePermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === permutationName);
+    const rowPermutations = routeUnlocker.params[routePermutationIndex] as bigint[][];
+    expect([...rowPermutations[0]].sort((left, right) => Number(left - right))).toEqual([0n, 1n, 2n, 3n]);
+
+    const routeSelector = artifact.messageBus!.route.selector!;
+    const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
+      routeUnlocker.abiFunction, hexToBin(routeSelector),
+    );
+    const originalUnlocker = routeUnlocker;
+    const hostileVm = createVirtualMachineBch2026ForProvider(provider);
+    for (const hostile of [rowPermutations[0].slice(1), [...rowPermutations[0], 0n]]) {
+      const hostileParams = [...routeUnlocker.params];
+      hostileParams[routePermutationIndex] = [hostile];
+      builder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileParams);
+      const transaction = builder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      expect(hostileVm.stateSuccess(hostileVm.evaluate({
+        inputIndex: routeInputIndex, sourceOutputs, transaction,
+      })), `hostile selected-domain witness ${hostile.join(',')}`).not.toBe(true);
+    }
+    builder.inputs[routeInputIndex].unlocker = originalUnlocker;
+
+    await expect(routed.send()).resolves.toMatchObject({
+      events: [{ args: { i: 0n } }, { args: { i: 1n } }, { args: { i: 2n } }, { args: { i: 3n } }],
+    });
+    for (const [key, expected] of [[0n, 10n], [1n, 11n], [2n, 12n], [3n, 13n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+  }, 180_000);
+
   it('settles conditionally reached counter loops and plans inactive rows as empty', async () => {
     const provider = createTestProvider();
     const artifact = compileString(CONDITIONAL_COUNTER_LOOP_SOURCE, {

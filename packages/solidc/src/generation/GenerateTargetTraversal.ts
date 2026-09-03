@@ -21381,6 +21381,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (!existingInfo) {
       const condition = this.currentFunction.runtimeCounterLoopConditions?.get(varyingArrayParam);
+      const iteration = this.currentFunction.runtimeCounterLoopIterationConditions?.get(varyingArrayParam);
       infos.push({ collection: collection.name, fixedKeyParams, fixedKeySources, varyingArrayParam,
         ...(decodedKeyRecipe && {
           ...(decodedKeyRecipe.keyDecodeTupleIndex !== undefined
@@ -21400,6 +21401,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           && writeNode.messageBusRuntimeOldValueWitness.array instanceof IdentifierNode
           && { oldValuesWitnessParam: writeNode.messageBusRuntimeOldValueWitness.array.name }), op });
       if (condition) infos.at(-1)!.condition = condition;
+      if (iteration) {
+        infos.at(-1)!.iterationCondition = iteration.expression;
+        infos.at(-1)!.iterationCounter = iteration.counter;
+      }
     }
     this.sortedWrittenCollections.add(collection.name);
 

@@ -322,8 +322,11 @@ between those loops, and the SDK publishes their predecessor and commitment runs
 concrete runtime keys overlap, the SDK rejects the repeated predecessor as requiring a read-your-writes topology
 derived from the earlier pending output.
 Every mapping/array write in that loop must use the counter in exactly one key component, and multiple
-writes must have the same complete key tuple (for example `a[k][i]` plus `b[k][i]`). Counter-dependent
-or loop-carried write guards, sibling reads of a mutated mapping, foreign counter-keyed reads, and
+writes must have the same complete key tuple (for example `a[k][i]` plus `b[k][i]`). A stable,
+serializable per-iteration write guard (including an immutable loop-local alias) publishes the exact selected
+logical subset: the SDK sorts only selected keys, while the covenant proves range, uniqueness, predicate
+completeness, and source-order cursor consumption. Multiple `if`/`else` write paths are combined as their
+logical disjunction. Loop-carried write guards, sibling reads of a mutated mapping, foreign counter-keyed reads, and
 write values derived through mutable/loop-carried locals or scalar state mutated by the loop remain
 `KERNEL_UNBOUNDED_KEY`. Integer same-entry expressions are supported generally: for example,
 `m[i] = max(m[i] * 2, m[i] + i)` evaluates with an SDK-supplied old-value vector whose elements are verified

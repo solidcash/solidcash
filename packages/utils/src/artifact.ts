@@ -535,6 +535,8 @@ export interface SortedUpsertLoopAbi {
   oldValuesWitnessParam?: string;
   /** Runtime predicate controlling whether this loop contributes any journal entries. */
   condition?: ExternalCallExpression;
+  /** Predicate selecting logical counter values which actually contribute journal entries. */
+  iterationCondition?: ExternalCallExpression;
   op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default
 }
 

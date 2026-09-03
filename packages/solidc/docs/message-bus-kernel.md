@@ -339,7 +339,10 @@ token-container effects remain supported before or after the loop.
 Nested counter keys `m[k][i]` permute the inner key only.
 At transaction construction time, selected rows with independent pre-state journals may share one envelope. The
 compiler threads predecessor and output cursors across physical rows, and the SDK emits each row's collection and
-event segments in the same order. If two rows require the same predecessor or existing-entry UTXO, construction
+event segments in the same order. Independence currently also requires distinct physical collections: even disjoint
+keys at one collection address participate in one transaction-wide cardinality covenant, which the first row cannot
+finalize before later rows execute. The SDK refuses that shape rather than weakening the covenant to a partial count.
+If two rows require the same predecessor or existing-entry UTXO, construction
 fails closed: the later row needs a read-your-writes transition from the earlier row's pending output. This includes
 byte-identical absolute `set`/`delete` rows; executing both row segments cannot be represented by reusing one
 physical settlement. Multiple rows with runtime-derived values or mutations remain fenced for the same reason

@@ -113,6 +113,25 @@ describe('StatefulTransactionBuilder', () => {
       expect(builder.getChunkOutputBase()).toBe(58);
       expect(builder.getChunkOutputBase()).toBeLessThan(121);
     });
+
+    it('preserves an exact runtime-loop width while commitments converge', () => {
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({
+        allowImplicitNftBurn: true,
+        loopEntryVars: [{
+          collection: 'entries', lockingBytecode: new Uint8Array([0x51]), categoryId,
+        }],
+      }));
+
+      builder.setLoopEntryCommitments('entries', ['aa']);
+      builder.requireLoopEntryCount('entries', 3);
+      expect(builder.getLoopEntryCommitments('entries')).toEqual(['aa', '00', '00']);
+
+      builder.setLoopEntryCommitments('entries', []);
+      expect(builder.getLoopEntryCommitments('entries')).toEqual(['00', '00', '00']);
+
+      builder.setLoopEntryCommitments('entries', ['11', '22', '33', '44']);
+      expect(builder.getLoopEntryCommitments('entries')).toEqual(['11', '22', '33']);
+    });
   });
 
   describe('runtime-loop value chunk suffix layout', () => {

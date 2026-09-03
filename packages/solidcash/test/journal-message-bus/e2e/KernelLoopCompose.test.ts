@@ -151,6 +151,22 @@ contract KernelIndependentRows() {
   function checkB(int key, int expected) public { require(this.b[key] == expected); }
 }`;
 
+const DISJOINT_SAME_COLLECTION_ROWS_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelDisjointSameCollectionRows() {
+  mapping(int => mapping(int => int)) values;
+  function seed(int group, int key, int value) public {
+    this.values[group][key] = value;
+    require(true);
+  }
+  function write(int group, int n, int base) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[group][i] = base; }
+    require(true);
+  }
+  function check(int group, int key, int expected) public {
+    require(this.values[group][key] == expected);
+  }
+}`;
+
 const COUNTER_MAPPING_TYPED_CALLER_SOURCE = `pragma solidcash ^0.13.0;
 interface IKernelCounterSink { function ping(int value); }
 contract KernelCounterCaller(address sink) {
@@ -874,6 +890,30 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(StatefulContract.withCategory(inner, categoryId).call.checkA(2n, 12n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 180_000);
+
+  it('refuses disjoint rows in one physical collection before an unsound partial count pin', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(DISJOINT_SAME_COLLECTION_ROWS_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toEqual(expect.objectContaining({ eligible: true }));
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    for (const group of [1n, 2n]) {
+      for (let key = 0n; key < 2n; key += 1n) {
+        await contract.call.seed(group, key, 1n).send();
+      }
+    }
+    const call = contract.batch([
+      { function: 'write', args: [2n, 2n, 20n] },
+      { function: 'write', args: [1n, 2n, 10n] },
+    ]);
+    await expect(call.build()).rejects.toThrow(
+      /rows 0, 1 both mutate the 'values' runtime journal.*split these rows into separate transactions/,
+    );
   }, 180_000);
 
   it('settles source-order typed calls beside a permuted mapping loop', async () => {

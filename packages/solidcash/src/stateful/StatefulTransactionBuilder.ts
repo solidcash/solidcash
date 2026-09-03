@@ -10128,14 +10128,20 @@ export class StatefulTransactionBuilder {
    */
   setLoopEntryCommitments(collection: string, commitments: string[]): this {
     const required = this.requiredLoopEntryCounts.get(collection);
-    this.loopEntryCommitments.set(collection, required === undefined ? commitments : commitments.slice(0, required));
+    this.loopEntryCommitments.set(collection, required === undefined ? commitments : Array.from(
+      { length: required }, (_, index) => commitments[index] ?? '00',
+    ));
     return this;
   }
 
   requireLoopEntryCount(collection: string, count: number): this {
     this.requiredLoopEntryCounts.set(collection, count);
     const existing = this.loopEntryCommitments.get(collection);
-    if (existing && existing.length > count) this.loopEntryCommitments.set(collection, existing.slice(0, count));
+    if (existing) {
+      this.loopEntryCommitments.set(collection, Array.from(
+        { length: count }, (_, index) => existing[index] ?? '00',
+      ));
+    }
     return this;
   }
 
@@ -12333,7 +12339,11 @@ export class StatefulTransactionBuilder {
         for (let index = 0; index < segment.count; index++) {
           const commitment = commitments[segment.offset + index];
           if (commitment === undefined) {
-            throw new Error(`Runtime loop segment for '${segment.collection}' exceeds its commitment plan`);
+            throw new Error(
+              `Runtime loop segment for '${segment.collection}' exceeds its commitment plan `
+              + `(${segment.offset + segment.count} > ${commitments.length}; `
+              + `required=${this.getRequiredLoopEntryCount(segment.collection)})`,
+            );
           }
           appendLoopEntry(variable, commitment);
         }

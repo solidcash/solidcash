@@ -14709,7 +14709,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const plan = list.planBatchUpsert(writes);
         const targetValues = new Set(writes.map((w) => bytesToSlotValue(w.slot).toString()));
         const predOutputs = plan.outputs.filter((o) => !targetValues.has(bytesToSlotValue(o.slot).toString()));
-        batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
+        // An all-update batch has no rewritten predecessor suffix. Do not publish an empty
+        // collection family: a routed counter loop may independently own non-empty rewritten
+        // entries for the same collection, and zero-width metadata must not erase that plan.
+        if (predOutputs.length > 0) {
+          batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
+        }
         const linearRows = batch.linear ? batch.slotIndices
           .filter((slotIndex) => !batchAliasSkips.has(slotIndex))
           .map((slotIndex) => {
@@ -15283,6 +15288,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const value = selectedRowArgument(row, info.varyingArrayParam);
       return !Array.isArray(value) || value.length > 0;
     }));
+    const selectedRowsByCollection = new Map<string, number[]>();
+    for (const row of activeSelectedUpsertRows) {
+      const rowIndex = routeRowIndex(row);
+      for (const collection of new Set((row.handler.sortedUpsertLoopInfo ?? []).map((info) => info.collection))) {
+        const rows = selectedRowsByCollection.get(collection) ?? [];
+        rows.push(rowIndex);
+        selectedRowsByCollection.set(collection, rows);
+      }
+    }
+    const repeatedCollection = [...selectedRowsByCollection].find(([, rows]) => rows.length > 1);
     if (activeSelectedUpsertRows.length > 1 && activeSelectedUpsertRows.some((row) => (
       row.handler.sortedUpsertLoopInfo ?? []
     ).some((info) => info.valueRuntimeLocal || info.mutation !== undefined))) {
@@ -15946,6 +15961,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
       }
+    }
+
+    // A physical overlap is diagnosed while planning the rows above because it specifically requires a
+    // read-your-writes transition. Disjoint rows still cannot share an address-count covenant: its first
+    // handler observes the later row's entries in the whole transaction and cannot soundly finalize early.
+    if (repeatedCollection) {
+      const [collection, rows] = repeatedCollection;
+      throw new Error(
+        `Message-bus rows ${rows.join(', ')} both mutate the '${collection}' runtime journal. `
+        + 'The collection-wide input/output cardinality covenant cannot finalize before its last row; '
+        + 'split these rows into separate transactions.',
+      );
     }
 
     // Handle external state reads (cross-contract reads via interfaces)
@@ -23216,6 +23243,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         delegateStateCategoryId,
         entryAccesses: entryAccesses?.length ?? 0,
         orderedLoopCollections,
+        runtimeLoopEntrySegments,
+        sortedLoopCommitmentCounts: [...sortedLoopCommitments].map(([collection, commitments]) => ({
+          collection, count: commitments.length,
+        })),
         loopEntryVars: loopEntryVars.map((v) => ({
           collection: v.collection,
           chunkable: v.chunkable,

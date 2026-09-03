@@ -322,10 +322,11 @@ Every mapping/array write in that loop must use the counter in exactly one key c
 writes must have the same complete key tuple (for example `a[k][i]` plus `b[k][i]`). Counter-dependent
 or loop-carried write guards, sibling reads of a mutated mapping, foreign counter-keyed reads, and
 write values derived through mutable/loop-carried locals or scalar state mutated by the loop remain
-`KERNEL_UNBOUNDED_KEY`. The compact old-entry transition recognizes only `m[i] + rhs` and `m[i] - rhs`;
-non-additive old-entry expressions such as `m[i] * 2` also remain frozen rather than being reinterpreted as an
-additive update. The old value in the admitted `+`/`-` form is supplied by the same authenticated runtime journal
-entry as the write; it is not published as a separate fixed-key route witness.
+`KERNEL_UNBOUNDED_KEY`. Integer same-entry expressions are supported generally: for example,
+`m[i] = max(m[i] * 2, m[i] + i)` evaluates with an SDK-supplied old-value vector whose elements are verified
+against the authenticated entries (or against the integer default `0` for an insertion). The compact
+`m[i] + rhs` / `m[i] - rhs` forms continue to read the old value directly from the runtime journal and need no
+additional witness. Structural mapping values and expressions that read another mapping entry remain frozen.
 An immutable, direct loop-local value definition is expanded into the mapping value before permutation, so
 `int value = i + 10; m[i] = value` has the same representation as the direct expression.
 

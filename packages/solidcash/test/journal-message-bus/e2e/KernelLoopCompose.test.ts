@@ -187,6 +187,12 @@ contract KernelDisjointSameCollectionRows() {
     }
     require(true);
   }
+  function transform(int group, int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.values[group][i] = max(this.values[group][i] * 2, this.values[group][i] + i + 5);
+    }
+    require(true);
+  }
   function check(int group, int key, int expected) public {
     require(this.values[group][key] == expected);
   }
@@ -940,7 +946,7 @@ describe('kernel composite counter-key settlement', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    for (const group of [1n, 2n, 3n, 4n, 5n, 6n]) {
+    for (const group of [1n, 2n, 3n, 4n, 5n, 6n, 7n]) {
       const keys = group === 3n ? [0n, 1n, 10n, 11n] : [0n, 1n];
       if (group === 5n) keys.push(2n, 3n);
       for (const key of keys) {
@@ -976,6 +982,55 @@ describe('kernel composite counter-key settlement', () => {
     await expect(updated.call.check(6n, 0n, 60n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(updated.call.check(6n, 1n, 61n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.transform(7n, 2n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(7n, 0n, 6n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(7n, 1n, 7n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+
+    const repeated = updated.batch([{ function: 'transform', args: [7n, 2n] }]);
+    const hostileBuilder = await repeated.build();
+    const routeInputIndex = hostileBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const routeUnlocker = hostileBuilder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no contract parameters');
+    const oldValueInput = artifact.abi.find((candidate) => candidate.name === 'transform')!.inputs.find((input) =>
+      input.name.startsWith('__internal__vmapCounterOld_'))!;
+    const oldValueRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === oldValueInput.name);
+    expect(oldValueRouteIndex).toBeGreaterThanOrEqual(0);
+    expect(routeUnlocker.params[oldValueRouteIndex]).toEqual([[6n, 7n]]);
+    const routeSelector = artifact.messageBus!.route.selector;
+    if (!routeSelector) throw new Error('message-bus route has no selector');
+    const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
+      routeUnlocker.abiFunction, hexToBin(routeSelector),
+    );
+    const hostileParams = [...routeUnlocker.params];
+    hostileParams[oldValueRouteIndex] = [[999n, 7n]];
+    hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileParams);
+    const hostileVm = createVirtualMachineBch2026ForProvider(provider);
+    const hostileTransaction = hostileBuilder.buildLibauthTransaction();
+    const hostileSourceOutputs = generateLibauthSourceOutputs(hostileBuilder.inputs);
+    expect(hostileVm.stateSuccess(hostileVm.evaluate({
+      inputIndex: routeInputIndex, sourceOutputs: hostileSourceOutputs, transaction: hostileTransaction,
+    }))).not.toBe(true);
+    hostileBuilder.inputs[routeInputIndex].unlocker = routeUnlocker;
+
+    await expect(repeated.send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(7n, 0n, 12n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(7n, 1n, 14n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+
+    await expect(updated.batch([{ function: 'transform', args: [8n, 2n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(8n, 0n, 5n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(8n, 1n, 6n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 

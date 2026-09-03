@@ -1,6 +1,6 @@
 import {
   AddressSendExpressionNode, AddressTransferStatementNode, ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode,
-  AssignNode, BinaryOpNode, BlockNode, BranchNode, BreakNode, ContinueNode, ContractNode, DoWhileNode,
+  AssignNode, BinaryOpNode, BlockNode, BranchNode, BreakNode, CollectionNode, ContinueNode, ContractNode, DoWhileNode,
   EmitStatementNode, ExpressionNode, ExternalFunctionCallNode, FunctionCallNode, FunctionCallStatementNode,
   FunctionDefinitionNode, IdentifierNode, IntLiteralNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, SourceFileNode,
@@ -15,6 +15,7 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { ArrayType, IntType } from '@solidcash/utils';
 
 export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
+export const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
 export const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
 export const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
 export const vmapRuntimeInputCountName = (collection: string): string =>
@@ -50,6 +51,7 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  */
 export default class LowerVMapCounterLoops extends AstTraversal {
   private collections = new Set<string>();
+  private collectionsByName = new Map<string, CollectionNode>();
   private functionsByName = new Map<string, FunctionDefinitionNode[]>();
   private eventfulFunctionNames = new Set<string>();
   private externalTypeNames = new Set<string>();
@@ -67,6 +69,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     this.collections = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
+    this.collectionsByName = new Map(node.collections.map((collection) => [collection.name, collection]));
     this.functionsByName = new Map();
     for (const fn of node.functions) {
       const overloads = this.functionsByName.get(fn.name) ?? [];
@@ -589,20 +592,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
-      // The compact old-entry transition has exactly one supported shape: `m[key] +/- rhs`, with all mapping
-      // state confined to the left operand. Other operators need the old value in a general expression journal;
-      // rewriting them onto the permutation would otherwise let codegen mistake (for example) `* 2` for `+ 2`.
+      // A general scalar same-entry RMW can evaluate against an authenticated old-value array. Structural/array
+      // element writes retain their specialized journal lowerings; reads of another entry remain fenced above.
+      const generalOldEntryWrites = new Set<ArrayAssignNode | MappingAssignNode>();
       const hasUnsupportedOldEntryExpression = keyed.some((write) => {
         const expression = write instanceof MappingAssignNode ? write.expression
           : write instanceof ArrayAssignNode ? write.value : undefined;
         if (!expression || !containsCollectionAccess(expression)) return false;
         const left = expression instanceof BinaryOpNode ? collectionAccessOf(expression.left) : undefined;
-        if (!(expression instanceof BinaryOpNode)
-          || (expression.operator !== BinaryOperator.PLUS && expression.operator !== BinaryOperator.MINUS)
-          || !left
-          || left.name !== write.name
-          || left.keys.map(expressionShape).join('|') !== writeKeyShape(write)
-          || containsCollectionAccess(expression.right)) return true;
+        const compact = expression instanceof BinaryOpNode
+          && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
+          && !!left && left.name === write.name
+          && left.keys.map(expressionShape).join('|') === writeKeyShape(write)
+          && !containsCollectionAccess(expression.right);
+        if (compact) return false;
+        const collection = this.collectionsByName.get(write.name);
+        if (!(write instanceof MappingAssignNode || write instanceof ArrayAssignNode)
+          || (write instanceof MappingAssignNode && (write.arrayIndex !== undefined
+            || write.arrayPush || write.arrayPop)) || !collection
+          || !(collection.innermostValueType instanceof IntType)) return true;
+        generalOldEntryWrites.add(write);
         return false;
       });
       // Do not silently turn a physical loop rank into a logical mapping value through an alias or loop-carried
@@ -617,8 +626,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         else if (x instanceof AssignNode) {
           loopAssignedLocals.add(x.identifier.name);
           if (x !== counterUpdate) loopReassignedLocals.add(x.identifier.name);
-        }
-        else if (x instanceof StateAssignNode || x instanceof StateArrayAssignNode
+        } else if (x instanceof StateAssignNode || x instanceof StateArrayAssignNode
           || x instanceof StateArrayDeleteNode || x instanceof StateArrayPopNode
           || x instanceof StateArrayPushNode) loopWrittenState.add(x.name);
         for (const key of Object.keys(x)) {
@@ -726,6 +734,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const rangeSuffix = start === 0n && step === 1n
         ? '' : `_from_${signedComponent(start)}_step_${signedComponent(step)}`;
       const hidden = `${PREFIX}${count}_${serial}${rangeSuffix}${postTest ? '_post' : ''}`;
+      const oldValueHidden = (collection: string): string =>
+        `${VMAP_COUNTER_OLD_PREFIX}${count}_${serial}_${collection}`;
       const logicalValue = `__internal__vmapCounterLogical_${serial}`;
       const logicalRank = `__internal__vmapCounterRank_${serial}`;
       const rangedIterationCount = `__internal__vmapCounterCount_${serial}`;
@@ -799,6 +809,40 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           // contains no collection read. Preserve that ownership across the key/value permutation rewrite so the
           // route census does not invent a fixed witness for a value supplied by the runtime journal entry.
           expression.left.messageBusRuntimeLoopTransitionRead = true;
+        }
+        if (generalOldEntryWrites.has(write as ArrayAssignNode | MappingAssignNode)) {
+          const mappingWrite = write as ArrayAssignNode | MappingAssignNode;
+          const oldRead = (): ArrayAccessNode => {
+            const valueType = this.collectionsByName.get(mappingWrite.name)!.innermostValueType;
+            const values = new IdentifierNode(oldValueHidden(mappingWrite.name)); values.location = location;
+            values.type = new ArrayType(valueType);
+            const read = new ArrayAccessNode(values, physical()); read.location = location;
+            read.type = valueType;
+            return read;
+          };
+          const replaceOldEntry = (candidate: Node): Node => {
+            const access = candidate instanceof ExpressionNode ? collectionAccessOf(candidate) : undefined;
+            if (access?.name === mappingWrite.name
+              && access.keys.map(expressionShape).join('|') === writeKeyShape(mappingWrite)) return oldRead();
+            for (const property of Object.keys(candidate)) {
+              if (property === 'location' || property === 'definition' || property === 'symbol'
+                || property === 'type' || property === 'collection') continue;
+              const value = (candidate as unknown as Record<string, unknown>)[property];
+              if (value instanceof Node) {
+                (candidate as unknown as Record<string, unknown>)[property] = replaceOldEntry(value);
+              } else if (Array.isArray(value)) {
+                (candidate as unknown as Record<string, unknown>)[property] = value.map((item) =>
+                  item instanceof Node ? replaceOldEntry(item) : item);
+              }
+            }
+            return candidate;
+          };
+          if (mappingWrite instanceof MappingAssignNode) {
+            mappingWrite.expression = replaceOldEntry(mappingWrite.expression) as ExpressionNode;
+          } else {
+            mappingWrite.value = replaceOldEntry(mappingWrite.value) as ExpressionNode;
+          }
+          mappingWrite.messageBusRuntimeOldValueWitness = oldRead();
         }
         if (write instanceof ArrayAssignNode) {
           write.index = permRead();
@@ -893,6 +937,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const p = new ParameterNode(new ArrayType(new IntType(true, 256)), hidden);
       p.location = node.location;
       added.push(p);
+      if (generalOldEntryWrites.size > 0) {
+        const seen = new Set<string>();
+        for (const write of generalOldEntryWrites) {
+          if (seen.has(write.name)) continue;
+          seen.add(write.name);
+          const old = new ParameterNode(
+            new ArrayType(this.collectionsByName.get(write.name)!.innermostValueType), oldValueHidden(write.name),
+          );
+          old.location = node.location;
+          added.push(old);
+        }
+      }
       for (const collection of keyedCollections) runtimeCountCollections.add(collection);
       return true;
     };

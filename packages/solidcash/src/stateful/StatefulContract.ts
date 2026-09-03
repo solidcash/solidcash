@@ -186,6 +186,7 @@ interface VmapCounterPermutationSpec {
 
 const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
 const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
+const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
 const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
 const vmapRuntimeOutputCountName = (collection: string): string =>
@@ -4342,6 +4343,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && !input.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX))
         || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
       resolvedCallerInternalWitnesses[input.name] = 0n;
+    }
+    for (const input of capability.route.inputs) {
+      if (!input.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
+        || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
+      const rowValues = Array.from({ length: effectiveRowArguments?.length ?? 0 }, () => []);
+      for (const row of effectiveRowArguments ?? []) {
+        if (row.handler.inputs.some((candidate) => candidate.name === input.name)) {
+          (row.internalArgs as Record<string, FunctionArgument>)[input.name] = [];
+        }
+      }
+      resolvedCallerInternalWitnesses[input.name] = rowValues as FunctionArgument;
     }
     const expectedWitnesses = capability.route.inputs
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__')).length;
@@ -15531,6 +15543,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (Array.isArray(valsArr) && info.valueArrayOffset !== undefined) {
         valsArr = (valsArr as unknown[]).map((v) => toBig(v) + BigInt(info.valueArrayOffset!));
+      }
+      if (info.oldValuesWitnessParam?.startsWith(VMAP_COUNTER_OLD_PREFIX)) {
+        const witnessIndex = loopAbiFunction.inputs.findIndex(
+          (input) => input.name === info.oldValuesWitnessParam,
+        );
+        if (witnessIndex < 0) {
+          throw new Error(`vmap runtime expression loop ${info.collection}: missing old-value witness ABI input`);
+        }
+        const oldValues = keysArr.map((key) => {
+          const slot = keyToSlotMulti([...fixedBins, encKey(key, varyType)]);
+          const entry = list.find(slot);
+          return entry
+            ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint
+            : 0n;
+        });
+        replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
       }
       // Per-key RAWBYTES value `m[k[i]] = vs[i]` (vs a bytes[]/array-of-array param): each vs[i] is committed as its own
       // inline tail. Detected from the arg (an empty array does no work). op is always 'set' here (the guard gates it).

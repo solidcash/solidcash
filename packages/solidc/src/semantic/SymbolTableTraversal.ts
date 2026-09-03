@@ -1576,6 +1576,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitParameter(node: ParameterNode): Node {
     const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
+      || node.name.startsWith('__internal__vmapCounterOld_')
       || node.name.startsWith('__internal__vmapRuntimeInputCount_')
       || node.name.startsWith('__internal__vmapRuntimeOutputCount_')
       || node.name.startsWith('__internal__valueWitness_')
@@ -2153,6 +2154,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.body = this.visit(node.body);
     } finally {
       this.activeBodySurvey = undefined;
+    }
+    // General counter-loop RMW values are read by backend-generated code inside the physical upsert loop. That
+    // loop is emitted around the resolved assignment rather than represented by an AST scope, so the ordinary
+    // `scopeDepth > 0` protection cannot prevent the last syntactic array access from becoming OP_ROLL. Keep the
+    // witness parameter in its frame slot for every physical iteration; normal function cleanup drops it once.
+    for (const parameter of node.parameters) {
+      if (parameter.name.startsWith('__internal__vmapCounterOld_')) node.opRolls.delete(parameter.name);
     }
     // Compiler-generated message-bus handlers consume this hidden parameter during block-slot code generation,
     // rather than through a source-level IdentifierNode. Record that real backend use in the symbol table so it
@@ -8603,7 +8611,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       stateNode.location = node.location;
       // Carry the inlined-helper origin so the private-collection visibility check sees the defining contract
       // (an inlined vmap-write helper's `m[k]=v` was tagged in tagModifierStateAccess before this rewrite).
-      if (stateNode instanceof MappingAssignNode) stateNode.fromModifier = node.fromModifier;
+      if (stateNode instanceof MappingAssignNode) {
+        stateNode.fromModifier = node.fromModifier;
+        stateNode.messageBusRuntimeOldValueWitness = node.messageBusRuntimeOldValueWitness;
+      }
       return this.visit(stateNode);
     }
 

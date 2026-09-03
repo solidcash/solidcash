@@ -106,6 +106,7 @@ import {
   containsIndirectCall, PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
 import LowerVMapCounterLoops, {
+  VMAP_COUNTER_OLD_PREFIX,
   VMAP_COUNTER_PERM_PREFIX,
   VMAP_RUNTIME_INPUT_COUNT_PREFIX,
   VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
@@ -5082,7 +5083,8 @@ function synthesizeMessageBusRoute(
               + `${decodedName(targetIndex)})`;
               })()
               : (() => {
-                if (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)) {
+                if (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
+                  || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)) {
                   return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
                 }
                 if (parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
@@ -5242,6 +5244,7 @@ function synthesizeMessageBusRoute(
   const routeCounterPermParameters = eligible.flatMap((fn) =>
     fn.parameters.filter((parameter) => {
       if (!parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
+        && !parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
         && !parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
         && !parameter.name.startsWith('__internal__collectionIter')
@@ -5253,7 +5256,8 @@ function synthesizeMessageBusRoute(
       return true;
     }).map((parameter) => {
       const type = parameter.type.toString();
-      return parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX) && kernelLoopDispatch
+      return (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
+        || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)) && kernelLoopDispatch
         ? `${type}[] ${parameter.name}` : `${type} ${parameter.name}`;
     }));
   const resourceVerificationMode = eligible.some((fn) => {

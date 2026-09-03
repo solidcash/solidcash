@@ -1200,6 +1200,10 @@ export class MappingAssignNode extends StatementNode implements Named {
   noArg?: boolean;     // Set for `map[k].push()`: `expression` is a placeholder, replaced with the element default
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
   keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
+  // A counter-loop general RMW (`m[i] = f(m[i], ...)`) replaces the same-entry read in `expression` with this
+  // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
+  // before accepting the computed output commitment.
+  messageBusRuntimeOldValueWitness?: ArrayAccessNode;
 
   constructor(
     public name: string,
@@ -1581,6 +1585,7 @@ export class ArrayPopNode extends StatementNode implements Named {
 export class ArrayAssignNode extends StatementNode implements Named {
   arrayType?: ArrayType;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
+  messageBusRuntimeOldValueWitness?: ArrayAccessNode;
 
   constructor(
     public name: string,

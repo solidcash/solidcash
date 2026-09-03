@@ -110,11 +110,11 @@ describe('required kernel admission', () => {
     }
   });
 
-  it('refuses a non-additive old-entry expression instead of reinterpreting it as addition', () => {
+  it('journals a general same-entry expression without reinterpreting it as addition', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function transform(int n) public {
-        for (int i = 0; i < n; i = i + 1) { slots[i] = slots[i] * 2; }
+        for (int i = 0; i < n; i = i + 1) { slots[i] = max(slots[i] * 2, slots[i] + i); }
         require(true);
       }
       function credit(int n, int amount) public {
@@ -127,10 +127,18 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'transform')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'transform')?.eligible).toBe(true);
+    expect(artifact.abi.find((handler) => handler.name === 'transform')?.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({
+        op: 'set',
+        valueRuntimeExpression: true,
+        oldValuesWitnessParam: expect.stringMatching(/^__internal__vmapCounterOld_/),
+      }),
+    ]);
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: expect.stringMatching(/^__internal__vmapCounterOld_/),
+      type: 'int256[][]',
+    }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'credit')?.eligible).toBe(true);
     expect(artifact.abi.find((handler) => handler.name === 'credit')?.sortedUpsertLoopInfo).toEqual([
       expect.objectContaining({ op: '+', valueScalarParam: 'amount' }),

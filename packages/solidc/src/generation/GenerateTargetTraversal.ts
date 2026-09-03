@@ -19594,6 +19594,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Copy a batch-topology witness from the compiler-tracked top frame. */
   private emitPickVMapWitness(name: string, loc: SingleLocationData, extraStackOffset = 0): void {
+    if (this.isCompilerMessageBusRoute()
+      && (name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+        || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX))) {
+      // The route splits each collection cardinality into an immutable ABI witness and a mutable remainder before
+      // invoking any row handler. Read the physical-census expectation from that bottom-frame witness directly.
+      // Restored alt-stack snapshots share the handler's temporary array-decoding stack and are therefore a weaker
+      // boundary for rows carrying nested permutation/value vectors; the original witness is never forwarded or
+      // mutated and its bottom ordinal is stable across both OP_INVOKE and untracked epilogue working values.
+      const witness = `(__vmap_cardinality_witness_${name})`;
+      if (this.getStackIndex(witness, true) < 0) {
+        throw new Error(`Missing immutable runtime-loop cardinality witness '${witness}'`);
+      }
+      this.emitPickTrackedFromBottom(witness, loc);
+      return;
+    }
     const resolved = this.vmapWitnessName(name);
     if (this.isCompilerMessageBusRoute() && this.vmapUpsertWitnessSnapshotNames?.includes(name)) {
       this.emitCopyUpsertVMapWitness(name, loc);
@@ -21358,7 +21373,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(valueRuntimeLocal && { valueRuntimeLocal }),
         ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
         ...(valueArrayOffset !== undefined && { valueArrayOffset }),
-        ...(valueRuntimeLocal && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }), op });
+        ...(valueRuntimeLocal && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }),
+        ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeOldValueWitness
+          && writeNode.messageBusRuntimeOldValueWitness.array instanceof IdentifierNode
+          && { oldValuesWitnessParam: writeNode.messageBusRuntimeOldValueWitness.array.name }), op });
     }
     this.sortedWrittenCollections.add(collection.name);
 
@@ -21627,6 +21645,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // rawbytes (bytesN/address) is stored verbatim (no tail), matching the single-write path + the reader.
     const isRawbytes = this.sortedValueKind(collection.innermostValueType) === 'rawbytes';
     const isChunkableVal = isRawbytes && this.isChunkableValue(collection.innermostValueType);
+    const oldWitness = node instanceof MappingAssignNode ? node.messageBusRuntimeOldValueWitness : undefined;
     const iterIdx = (): number => this.getStackIndex(this.sortedUpsertLoopCounterName);
     const outIdxC = (): number => this.getStackIndex(this.sortedUpsertLoopOutCounterName);
     const addrIdx = (): number => this.getStackIndex(this.sortedUpsertLoopAddrName);
@@ -21654,6 +21673,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // or the whole assign expression ('set'); 'delete' has no value - nullify to the type default (0/empty).
     this.emitSortedKeyHash(node, slotIndex, loc);
     this.pushToStack('(credit_hk)');
+    if (oldWitness) {
+      this.visit(oldWitness);
+      // Expression visitors already track their result as `(value)`. Rename that real slot; pushing another
+      // tracked name here creates a phantom stack item and makes the next physical iteration address the array
+      // parameter at depth -1.
+      this.stack[0] = '(credit_old)';
+    }
     if (op === 'delete') {
       this.emit(Op.OP_0, loc); this.pushToStack('(credit_amt)'); // default value tail (0 = empty for int)
     } else {
@@ -21692,6 +21718,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, loc);
       this.scopeDepth += 1;
       // ---- UPDATE: mint output[..+outCounter] = coSlot|coNext|newValue ----
+      if (oldWitness) {
+        // Only a present target owns coValue. On an insertion, the co-spent record is the predecessor and the
+        // language-level mapping read is instead the value-type default (verified in the absent branch below).
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 4)), loc);
+        this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      }
       if (op === 'set' || op === 'delete') {
         this.emit(Op.OP_DROP, loc);                                          // drop coValue -> [.., coSlot, coNext] U=2
         this.emit(encodeInt(BigInt(amtIdx() + 2)), loc); this.emit(Op.OP_PICK, loc);
@@ -21721,6 +21754,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ELSE, loc);
       // ---- INSERT (absent -> NEW recipient): only for `+=`; `-=`/`delete` fail closed (branch-balanced) ----
       if (isMinus || op === 'delete') { this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc); }
+      if (oldWitness) {
+        // An absent mapping entry reads as the value-type default. The witness cannot manufacture a non-zero base.
+        this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 3)), loc);
+        this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+        this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      }
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);       // coSlot# (U=4)
       this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
       this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);                                   // coSlot < Hk (U=3)
@@ -21833,9 +21872,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       emitMergeOrNormalDispatch();                                            // -> [coSlot,coNext,X] U=3
     }
 
-    // common cleanup: drop the 3 untracked temps + [credit_amt, credit_hk].
+    // common cleanup: drop the 3 untracked temps + [credit_amt, optional credit_old, credit_hk].
     this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_DROP, loc); this.popFromStack(); // credit_amt
+    if (oldWitness) { this.emit(Op.OP_DROP, loc); this.popFromStack(); }
     this.emit(Op.OP_DROP, loc); this.popFromStack(); // credit_hk
     return node;
   }

@@ -76,6 +76,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     type CanonicalLoop = {
       logical: string;
       count: string;
+      boundNames: string[];
+      boundDefinitions: VariableDefinitionNode[];
       postTest: boolean;
       counterUpdate?: AssignNode;
     };
@@ -89,13 +91,40 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const bound = (loop instanceof WhileNode || loop instanceof DoWhileNode)
             && loop.condition instanceof BinaryOpNode
             ? loop.condition.right : undefined;
+          const visibleCounts = new Set(node.parameters
+            .filter((parameter) => !parameter.name.startsWith('__internal__'))
+            .map((parameter) => parameter.name));
+          const resolveBound = (
+            name: string,
+            before: number,
+            seen = new Set<string>(),
+          ): { count: string; definitions: VariableDefinitionNode[] } | undefined => {
+            if (visibleCounts.has(name)) return { count: name, definitions: [] };
+            if (seen.has(name)) return undefined;
+            const definitions = statements.slice(0, before)
+              .map((statement, position) => ({ statement, position }))
+              .filter((candidate): candidate is { statement: VariableDefinitionNode; position: number } =>
+                candidate.statement instanceof VariableDefinitionNode && candidate.statement.name === name);
+            if (definitions.length !== 1 || !(definitions[0].statement.expression instanceof IdentifierNode)) {
+              return undefined;
+            }
+            const parent = resolveBound(
+              definitions[0].statement.expression.name,
+              definitions[0].position,
+              new Set(seen).add(name),
+            );
+            return parent && {
+              count: parent.count,
+              definitions: [...parent.definitions, definitions[0].statement],
+            };
+          };
+          const boundResolution = bound instanceof IdentifierNode
+            ? resolveBound(bound.name, index - 1) : undefined;
           if (!(loop instanceof WhileNode || loop instanceof DoWhileNode)
             || !(variable instanceof VariableDefinitionNode)
             || !(loop.condition instanceof BinaryOpNode) || loop.condition.operator !== BinaryOperator.LT
             || !(loop.condition.left instanceof IdentifierNode) || loop.condition.left.name !== variable.name
-            || !(bound instanceof IdentifierNode)
-            || !node.parameters.some((parameter) => !parameter.name.startsWith('__internal__')
-              && parameter.name === bound.name)) continue;
+            || !(bound instanceof IdentifierNode) || boundResolution === undefined) continue;
           const update = loop.block.statements?.at(-1);
           const unitUpdate = update instanceof AssignNode && update.identifier.name === variable.name
             && update.expression instanceof BinaryOpNode && update.expression.operator === BinaryOperator.PLUS
@@ -111,7 +140,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (!preTest && !postTest) continue;
           canonicalLoops.set(loop, {
             logical: variable.name,
-            count: bound.name,
+            count: boundResolution.count,
+            boundNames: [boundResolution.count, ...boundResolution.definitions.map((definition) => definition.name)],
+            boundDefinitions: boundResolution.definitions,
             postTest,
             counterUpdate: update as AssignNode,
           });
@@ -272,7 +303,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const tryLower = (loop: WhileNode | DoWhileNode): void => {
       const canonical = canonicalLoops.get(loop);
       if (!canonical || loweredCounterLoop || counterWriteLoops.length !== 1) return;
-      const { logical, count, postTest, counterUpdate } = canonical;
+      const { logical, count, boundNames, boundDefinitions, postTest, counterUpdate } = canonical;
       const { block, location } = loop;
       const writes: Array<ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
       | MappingFieldAssignNode> = [];
@@ -296,9 +327,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ): boolean => {
         if (x instanceof AssignNode
           && ((inspectLogical && x.identifier.name === logical && x !== counterUpdate)
-            || (inspectBound && x.identifier.name === count))) return true;
+            || (inspectBound && boundNames.includes(x.identifier.name)))) return true;
         if (x instanceof VariableDefinitionNode
-          && ((inspectLogical && x.name === logical) || (inspectBound && x.name === count))) return true;
+          && ((inspectLogical && x.name === logical)
+            || (inspectBound && boundNames.includes(x.name) && !boundDefinitions.includes(x)))) return true;
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
             || key === 'resolvedFunction') continue;

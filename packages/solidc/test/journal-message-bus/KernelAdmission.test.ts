@@ -334,7 +334,10 @@ describe('required kernel admission', () => {
     } while (i < n);`],
     ['a mutated public bound', `n = n - 1;
       for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }`],
-    ['a local rather than public bound', 'int limit = n; for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }'],
+    ['a computed local bound', `int limit = n - 1;
+      for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }`],
+    ['a reassigned local bound', `int limit = n; limit = n - 1;
+      for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }`],
     ['a counter-dependent write guard', `for (int i = 0; i < n; i = i + 1) {
       if (i < 2) this.m[i] = 1; else this.m[i] = 2;
     }`],
@@ -352,6 +355,23 @@ describe('required kernel admission', () => {
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('admits an immutable local alias chain of the public counter-loop bound', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function fill(int n, int value) public {
+        int requested = n;
+        int limit = requested;
+        for (int i = 0; i < limit; i = i + 1) { this.m[i] = value; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill')?.eligible).toBe(true);
+    expect(artifact.abi.find((handler) => handler.name === 'fill')?.inputs).toContainEqual(
+      expect.objectContaining({ name: expect.stringMatching(/^__internal__vmapCounterPerm_n_/), type: 'int256[]' }),
+    );
   });
 
   it('refuses an early return from a counter-keyed mapping loop', () => {

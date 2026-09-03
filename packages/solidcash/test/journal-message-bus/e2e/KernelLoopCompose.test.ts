@@ -47,7 +47,9 @@ const COUNTER_MAPPING_RMW_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelCounterMappingRmw() {
   mapping(int => int) m;
   function credit(int n, int amount) public {
-    for (int i = 0; i < n; i = i + 1) {
+    int requested = n;
+    int limit = requested;
+    for (int i = 0; i < limit; i = i + 1) {
       this.m[i] = this.m[i] + amount;
     }
     require(true);

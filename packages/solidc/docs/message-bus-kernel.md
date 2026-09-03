@@ -146,7 +146,7 @@ every kernel toy.
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
 | `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob | Any finite `sig` array parameter (one aligned outer row dimension); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
-| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; or a counter loop that repeats a fixed-slot effect (event, BCH transfer, or token-container transfer) | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical counter-keyed `for (int i = 0; i < n; i = i + 1)` (domain `n`) or `int i = 0; do { ...; i = i + 1; } while (i < n)` (domain `max(n, 1)`) over `m[i]` / nested `m[k][i]`, or those rewrites beside source-order typed external calls / invariant `if`/`switch` |
+| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; or a counter loop that repeats a fixed-slot effect (event, BCH transfer, or token-container transfer) | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical counter-keyed `for (int i = 0; i < n; i = i + 1)` (domain `n`, also through an immutable local identifier-alias chain) or `int i = 0; do { ...; i = i + 1; } while (i < n)` (domain `max(n, 1)`) over `m[i]` / nested `m[k][i]`, or those rewrites beside source-order typed external calls / invariant `if`/`switch` |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Inline assembly or a low-level call the journal cannot summarize as a call/effect row | After Solidity-compat lowering to `call` plus returndata |
 | `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors (not child deploys) |
@@ -273,11 +273,13 @@ Solidity field tuple), and dynamic arrays of structs or enums returned through t
 (journal cache defaults are type-correct empty/`0` rather than `int` 0).
 Recursive mapping handlers and result types the wrapper cannot encode stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
-Counter-keyed mapping loops with `continue`/`break`/early `return`, non-zero starts/steps, local or mutated
+Counter-keyed mapping loops with `continue`/`break`/early `return`, non-zero starts/steps, computed or mutated
 bounds, or extra counter mutations stay `KERNEL_UNBOUNDED_KEY` (a permutation of `0..n-1` is neither a
 skip-set nor a witness for a different iteration domain). The exact post-test form
 `int i = 0; do { ...; i = i + 1; } while (i < n)` is supported with an authenticated
-`max(n, 1)` permutation; other `do-while` domains remain refused. A handler currently admits at most one
+`max(n, 1)` permutation; an immutable local identifier-alias chain such as `requested = n; limit = requested`
+preserves the same authenticated domain, while computed and reassigned aliases remain refused. Other `do-while`
+domains remain refused. A handler currently admits at most one
 counter-keyed physical loop.
 Every mapping/array write in that loop must use the counter in exactly one key component, and multiple
 writes must have the same complete key tuple (for example `a[k][i]` plus `b[k][i]`). Counter-dependent

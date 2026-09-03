@@ -131,6 +131,15 @@ contract KernelRepeatedCounterKey() {
   }
 }`;
 
+const DERIVED_COUNTER_KEY_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelDerivedCounterKey() {
+  mapping(int => mapping(int => int)) nested;
+  function write(int bound) public {
+    for (int i = 3; i < bound; i = i + 2) { this.nested[i + 1][i] = i + 10; }
+    require(true);
+  }
+}`;
+
 const SEQUENTIAL_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelSequentialMultiMapping() {
   mapping(int => int) a;
@@ -1523,6 +1532,35 @@ describe('kernel composite counter-key settlement', () => {
     ]));
     for (const [key, expected] of [[0n, 20n], [1n, 22n], [2n, 24n]]) {
       const slot = keyToSlotMulti([bigIntToVmNumber(key), bigIntToVmNumber(7n), bigIntToVmNumber(key)]);
+      expect(valuesBySlot.get(binToHex(slot))).toBe(expected);
+    }
+  }, 180_000);
+
+  it('settles a composite key component derived from the counter', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(DERIVED_COUNTER_KEY_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const info = artifact.abi.find((candidate) => candidate.name === 'write')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingKeyExpressions).toHaveLength(2);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'write', args: [8n] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const valuesBySlot = new Map((await contract.getEntries('nested')).map((entry) => [
+      binToHex(entry.slot), entry.value,
+    ]));
+    for (const [key, expected] of [[3n, 13n], [5n, 15n], [7n, 17n]]) {
+      const slot = keyToSlotMulti([bigIntToVmNumber(key + 1n), bigIntToVmNumber(key)]);
       expect(valuesBySlot.get(binToHex(slot))).toBe(expected);
     }
   }, 180_000);

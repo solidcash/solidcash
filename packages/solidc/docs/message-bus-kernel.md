@@ -325,8 +325,9 @@ between those loops, and the SDK publishes their predecessor and commitment runs
 concrete runtime keys overlap, the SDK rejects the repeated predecessor as requiring a read-your-writes topology
 derived from the earlier pending output.
 Every runtime-keyed mapping/array write in that loop must have at least one direct counter key component. Repeated
-direct components such as `m[i][scope][i]` share the same authenticated logical value; the artifact publishes their
-exact positions so the SDK derives the complete composite slot. Collections
+direct components such as `m[i][scope][i]` share the same authenticated logical value. Additional serializable
+components may derive from it (`m[i + 1][i]`, including non-zero starts and steps): the artifact publishes either
+the repeated positions or complete component recipes so the SDK derives the full composite slot. Collections
 with the same complete key expression and selected iteration set share one authenticated permutation; collections
 with different invariant components (for example `a[left][i]` plus `b[right][i]`) receive independent permutations
 so each follows its own full composite-key slot order. Different selected iteration subsets across collections also

@@ -390,6 +390,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     fixedKeySources?: KeySourceInfo[];
     /** Composite-key positions populated from the same varying array element. Omitted for the usual final key. */
     varyingKeyIndices?: number[];
+    /** Original complete key tuple, serialized for SDK reconstruction when components derive from the counter. */
+    varyingKeyExpressions?: ExpressionNode[];
     keyDecodeTupleIndex?: number; keyDecodeTupleTypes?: string[];
     predicateArrayParam?: string; predicateEquals?: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
@@ -421,6 +423,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   }>;
   /** Expanded public-argument expression which computes a non-affine counter-loop bound. */
   runtimeCounterLoopBounds?: Map<string, ExpressionNode>;
+  /** Original key tuples keyed by `<permutation>\0<collection>`, before physical-loop rewriting. */
+  runtimeCounterLoopKeyExpressions?: Map<string, ExpressionNode[]>;
+  /** Source counter descriptor keyed by compiler-owned permutation parameter. */
+  runtimeCounterLoopCounters?: Map<string, { name: string; initialValue: bigint; stepValue: bigint }>;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[]; linear?: boolean }>;

@@ -965,14 +965,31 @@ describe('required kernel admission', () => {
     ]);
   });
 
+  it('publishes complete key recipes for counter-derived composite components', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) nested;
+      function write(int n) public {
+        for (int i = 0; i < n; i = i + 1) { this.nested[i + 1][i] = i + 10; }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({
+        varyingKeyExpressions: [
+          expect.objectContaining({ kind: 'binary', operator: '+' }),
+          expect.objectContaining({ kind: 'source', source: expect.objectContaining({ kind: 'loopIndex' }) }),
+        ],
+      }),
+    ]);
+  });
+
   it.each([
     ['a loop-carried local guard', `bool take = true;
       for (int i = 0; i < n; i = i + 1) {
         if (take) this.m[i] = i;
         take = !take;
-      }`],
-    ['the counter in an additional composite-key expression', `for (int i = 0; i < n; i = i + 1) {
-        this.nested[i + 1][i] = 1;
       }`],
   ])('refuses one physical permutation with %s', (_label, body) => {
     const artifact = compileString(`contract C() {

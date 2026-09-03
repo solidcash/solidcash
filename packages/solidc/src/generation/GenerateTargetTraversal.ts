@@ -21387,9 +21387,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const condition = this.currentFunction.runtimeCounterLoopConditions?.get(varyingArrayParam);
       const iteration = this.currentFunction.runtimeCounterLoopIterationConditions?.get(varyingArrayParam);
       const iterationBound = this.currentFunction.runtimeCounterLoopBounds?.get(varyingArrayParam);
+      const counter = this.currentFunction.runtimeCounterLoopCounters?.get(varyingArrayParam);
+      const varyingKeyExpressions = this.currentFunction.runtimeCounterLoopKeyExpressions
+        ?.get(`${varyingArrayParam}\0${collection.name}`);
       infos.push({ collection: collection.name, fixedKeyParams, fixedKeySources, varyingArrayParam,
         ...(varyingKeyIndices.length !== 1
           || varyingKeyIndices[0] !== metadataKeySources.length - 1 ? { varyingKeyIndices } : {}),
+        ...(varyingKeyExpressions && { varyingKeyExpressions }),
         ...(decodedKeyRecipe && {
           ...(decodedKeyRecipe.keyDecodeTupleIndex !== undefined
             && { keyDecodeTupleIndex: decodedKeyRecipe.keyDecodeTupleIndex }),
@@ -21406,13 +21410,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(valueRuntimeLocal && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }),
         ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeOldValueWitness
           && writeNode.messageBusRuntimeOldValueWitness.array instanceof IdentifierNode
-          && { oldValuesWitnessParam: writeNode.messageBusRuntimeOldValueWitness.array.name }), op });
+          && { oldValuesWitnessParam: writeNode.messageBusRuntimeOldValueWitness.array.name }),
+        ...(counter && { iterationCounter: counter }), op });
       if (condition) infos.at(-1)!.condition = condition;
       if (iterationBound) infos.at(-1)!.iterationBound = iterationBound;
       if (iteration) {
         infos.at(-1)!.iterationCondition = iteration.expression;
         infos.at(-1)!.iterationBreakCondition = iteration.breakCondition;
-        infos.at(-1)!.iterationCounter = iteration.counter;
       }
     }
     this.sortedWrittenCollections.add(collection.name);

@@ -1346,6 +1346,8 @@ function buildFunctionAbiMetadata(
     }),
     ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && {
       sortedUpsertLoopInfo: func.sortedUpsertLoopInfo.map((info) => {
+        const varyingKeyExpressions = info.varyingKeyExpressions?.map((expression) =>
+          serializeCondition(expression, info.iterationCounter));
         const condition = info.condition && serializeCondition(info.condition);
         const iterationCondition = info.iterationCondition && serializeCondition(
           info.iterationCondition,
@@ -1368,8 +1370,12 @@ function buildFunctionAbiMetadata(
         if (info.iterationBound && !iterationBound) {
           throw new Error(`Runtime loop bound in '${func.name}' cannot be represented in artifact metadata`);
         }
+        if (varyingKeyExpressions?.some((expression) => expression === undefined)) {
+          throw new Error(`Runtime loop key in '${func.name}' cannot be represented in artifact metadata`);
+        }
         return {
           ...info,
+          varyingKeyExpressions: varyingKeyExpressions as ExternalCallExpression[] | undefined,
           condition,
           iterationCondition,
           iterationBreakCondition,

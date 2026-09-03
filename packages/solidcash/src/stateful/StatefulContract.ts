@@ -15775,14 +15775,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const i = loopAbiFunction.inputs.findIndex((p) => p.name === name);
         return i >= 0 ? loopArgs[i] : undefined;
       };
+      const visibleInputs = visibleHandlerInputs(loopAbiFunction.inputs);
+      const conditionArgs = upsertFrame.routed
+        ? [...upsertFrame.row!.args]
+        : visibleInputs.map((input) => {
+          const index = loopAbiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
+          return loopArgs[index];
+        }) as FunctionArgument[];
       if (info.condition || info.iterationCondition || info.iterationBreakCondition) {
-        const visibleInputs = visibleHandlerInputs(loopAbiFunction.inputs);
-        const conditionArgs = upsertFrame.routed
-          ? [...upsertFrame.row!.args]
-          : visibleInputs.map((input) => {
-            const index = loopAbiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
-            return loopArgs[index];
-          }) as FunctionArgument[];
         if (info.condition) {
           loopPredicateState = await this._hydrateExternalPredicateState(
             [info.condition],
@@ -15896,12 +15896,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const fixedSources = info.fixedKeySources ?? info.fixedKeyParams.map((paramName) => ({
         kind: 'param' as const, paramName,
       }));
+      const keyExpressions = info.varyingKeyExpressions;
       const varyingKeyIndices = info.varyingKeyIndices?.length
         ? [...info.varyingKeyIndices] : [keyTypes.length - 1];
       const varyingKeyIndexSet = new Set(varyingKeyIndices);
       const fixedKeyIndices = keyTypes.map((_type, index) => index)
         .filter((index) => !varyingKeyIndexSet.has(index));
-      const fixedBins = fixedSources.map((source, i) => {
+      const fixedBins = keyExpressions?.length ? [] : fixedSources.map((source, i) => {
         let value: unknown;
         if (source.kind === 'param') value = argOf(source.paramName);
         else if (source.kind === 'constant') value = BigInt(source.constantValue ?? '0');
@@ -15939,13 +15940,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         return encKey(value, keyTypes[fixedKeyIndices[i] ?? i] ?? collection.keyType);
       });
       const varyType = keyTypes[varyingKeyIndices[0]] ?? collection.keyType;
-      const keyBinsFor = (key: unknown): Uint8Array[] => {
-        let fixedIndex = 0;
-        return keyTypes.map((keyType, index) => varyingKeyIndexSet.has(index)
-          ? encKey(key, keyType)
-          : fixedBins[fixedIndex++]);
-      };
-      const slotForKey = (key: unknown): Uint8Array => keyToSlotMulti(keyBinsFor(key));
       let keysArr = argOf(info.varyingArrayParam) as unknown[];
       const runtimeFiltered = info.keyDecodeTupleIndex !== undefined || info.predicateArrayParam !== undefined;
       if (runtimeFiltered) {
@@ -15984,6 +15978,55 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         keysArr = selected;
       }
+      const counterSpec = keyExpressions ? vmapCounterPermutationSpec(info.varyingArrayParam) : undefined;
+      const occurrenceOf = (key: unknown): number => {
+        if (!counterSpec) return 0;
+        const value = typeof key === 'bigint' ? key : BigInt(key as number | string);
+        const rank = (value - counterSpec.start) / counterSpec.step;
+        const occurrence = Number(rank);
+        if (!Number.isSafeInteger(occurrence) || occurrence < 0) {
+          throw new Error(`vmap upsert loop ${info.collection}: invalid counter-derived key rank ${rank}`);
+        }
+        return occurrence;
+      };
+      if (keyExpressions?.length) {
+        loopPredicateState = await this._hydrateExternalPredicateState(
+          keyExpressions,
+          conditionArgs,
+          entryArtifact,
+          loopPredicateState,
+          visibleInputs,
+          executionSelfAddress,
+          keysArr.map(occurrenceOf),
+        );
+      }
+      const keyBinsFor = (key: unknown): Uint8Array[] => {
+        if (keyExpressions?.length) {
+          const occurrence = occurrenceOf(key);
+          return keyExpressions.map((expression, index) => {
+            const value = this._evaluateExternalExpression(
+              expression,
+              conditionArgs,
+              entryArtifact,
+              loopPredicateState,
+              visibleInputs,
+              undefined,
+              occurrence,
+              false,
+              executionSelfAddress,
+            );
+            if (value === undefined) {
+              throw new Error(`vmap upsert loop ${info.collection}: cannot resolve key component ${index}`);
+            }
+            return encKey(value, keyTypes[index] ?? collection.keyType);
+          });
+        }
+        let fixedIndex = 0;
+        return keyTypes.map((keyType, index) => varyingKeyIndexSet.has(index)
+          ? encKey(key, keyType)
+          : fixedBins[fixedIndex++]);
+      };
+      const slotForKey = (key: unknown): Uint8Array => keyToSlotMulti(keyBinsFor(key));
       if (Array.isArray(keysArr) && info.varyingArrayParam.startsWith(VMAP_COUNTER_PERM_PREFIX)) {
         keysArr = [...keysArr].sort((left, right) => {
           const leftSlot = bytesToSlotValue(slotForKey(left));

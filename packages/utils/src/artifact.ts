@@ -515,6 +515,8 @@ export interface SortedUpsertLoopAbi {
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
   /** Composite-key positions populated from the same varying element. Omitted means the final key component. */
   varyingKeyIndices?: readonly number[];
+  /** Complete key-component recipes evaluated at the logical counter value before physical slot sorting. */
+  varyingKeyExpressions?: readonly ExternalCallExpression[];
   /** The varying array contains ABI blobs; decode this tuple element to obtain each key. */
   keyDecodeTupleIndex?: number;
   keyDecodeTupleTypes?: readonly string[];

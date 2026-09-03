@@ -970,14 +970,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // runtime domain, including assignments which occur before the loop.
         || hasUnexpectedLoopControlMutation(block, true, false)
         || hasUnexpectedLoopControlMutation(node.body, false, true)) return false;
-      // One direct counter component selects the physical cursor. Additional direct counter components can use
-      // the same authenticated logical value (`m[i][i]`); expressions such as `m[i + 1][i]` still need a
-      // serializable composite-key recipe before the SDK can derive the complete slot.
+      // One direct counter component selects the physical cursor. Every additional counter-dependent component
+      // must be replayable from the authenticated logical value so the SDK can derive the complete composite
+      // slot before sorting (`m[i + 1][i]`, casts, ternaries, and immutable aliases all use this path).
       if (keyed.some((write) => {
         const keys = keyExpressions(write);
         const at = counterKeyIndex(write, logical);
         return keys.some((key, index) => index !== at && containsIdentifier(key, logical)
-          && !(key instanceof IdentifierNode && key.name === logical));
+          && !runtimePathExpressionSupported(key, logical));
       })) return false;
       // One collection currently owns one physical entry stream per iteration, but different collections need
       // not share their invariant key components. `a[left][i]` and `b[right][i]` therefore receive independently
@@ -1337,6 +1337,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         group.collections.map((collection) => [collection, group] as const)));
       const primaryGroup = groups[0];
       for (const group of groups) {
+        (node.runtimeCounterLoopCounters ??= new Map()).set(group.hidden, {
+          name: logical, initialValue: start, stepValue: step,
+        });
         if (boundExpression) {
           (node.runtimeCounterLoopBounds ??= new Map()).set(group.hidden, cloneNode(boundExpression));
         }
@@ -1434,6 +1437,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       for (const write of keyed) {
         const group = groupByCollection.get(write.name)!;
         const keyIndex = counterKeyIndex(write, logical);
+        const keyRecipe = `${group.hidden}\0${write.name}`;
+        const originalKeys = keyExpressions(write);
+        const hasDerivedCounterComponent = originalKeys.some((key) =>
+          containsIdentifier(key, logical) && !(key instanceof IdentifierNode && key.name === logical));
+        if (hasDerivedCounterComponent && !node.runtimeCounterLoopKeyExpressions?.has(keyRecipe)) {
+          (node.runtimeCounterLoopKeyExpressions ??= new Map()).set(
+            keyRecipe, originalKeys.map((key) => cloneNode(key)),
+          );
+        }
         const expression = write instanceof ArrayAssignNode ? write.value
           : write instanceof MappingAssignNode ? write.expression : undefined;
         if (expression instanceof BinaryOpNode
@@ -1485,11 +1497,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           write.index = permRead(group);
         } else if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) {
           write.keys = write.keys.map((key, index) => index === keyIndex
-            || (key instanceof IdentifierNode && key.name === logical) ? permRead(group) : key);
+            || (key instanceof IdentifierNode && key.name === logical) ? permRead(group)
+            : containsIdentifier(key, logical) ? replace(key, group) as ExpressionNode : key);
           write.expression = replace(write.expression, group) as ExpressionNode;
         } else {
           write.keys = write.keys.map((key, index) => index === keyIndex
-            || (key instanceof IdentifierNode && key.name === logical) ? permRead(group) : key);
+            || (key instanceof IdentifierNode && key.name === logical) ? permRead(group)
+            : containsIdentifier(key, logical) ? replace(key, group) as ExpressionNode : key);
         }
       }
       if (runtimeEmits.length > 0) {

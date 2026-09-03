@@ -16,6 +16,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { ArrayType, IntType, StructType } from '@solidcash/utils';
+import { isFunctionEntryInvariantMappingKey } from './CacheMappingEntryInLoop.js';
 
 export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 export const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
@@ -1027,13 +1028,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || collection.innermostValueType instanceof ArrayType
           || collection.innermostValueType instanceof StructType) return false;
         const key = write.keys[0];
-        if (key instanceof LiteralNode) return true;
-        if (key instanceof NullaryOpNode) {
-          return key.operator === NullaryOperator.MSG_SENDER || key.operator === NullaryOperator.TX_ORIGIN;
-        }
-        return key instanceof IdentifierNode
-          && visibleParameters.some((parameter) => parameter.name === key.name)
-          && !assignedInFunction(key.name);
+        return isFunctionEntryInvariantMappingKey(
+          key,
+          node.body,
+          new Set(visibleParameters.map((parameter) => parameter.name)),
+        ) && (!(key instanceof IdentifierNode) || !assignedInFunction(key.name));
       };
       if (invariantWrites.some((write) => !invariantWriteCacheable(write))) return false;
       const containsKeyedWrite = (x: Node): boolean => {

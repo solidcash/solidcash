@@ -190,6 +190,7 @@ contract KernelSelectedCounterMapping() {
   mapping(int => int) m;
   mapping(uint => uint) u;
   mapping(int => int) totals;
+  mapping(bytes32 => int) hashedTotals;
   function write(int n, int ceiling) public {
     for (int i = 0; i < n; i = i + 1) {
       bool selected = i < ceiling;
@@ -270,9 +271,19 @@ contract KernelSelectedCounterMapping() {
     }
     require(true);
   }
+  function writeComputedKey(int n, bytes owner) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.m[i] = i + 800;
+      this.hashedTotals[sha256(owner)] = i;
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.m[key] == expected); }
   function checkUnsigned(uint key, uint expected) public { require(this.u[key] == expected); }
   function checkTotal(int key, int expected) public { require(this.totals[key] == expected); }
+  function checkHashedTotal(bytes owner, int expected) public {
+    require(this.hashedTotals[sha256(owner)] == expected);
+  }
 }`;
 
 const INDEPENDENT_ROW_LOOP_SOURCE = `pragma solidcash ^0.13.0;
@@ -641,6 +652,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const unsignedHandler = artifact.abi.find((candidate) => candidate.name === 'writeUnsigned')!;
     const computedHandler = artifact.abi.find((candidate) => candidate.name === 'writeComputed')!;
     const mixedHandler = artifact.abi.find((candidate) => candidate.name === 'writeMixed')!;
+    const computedKeyHandler = artifact.abi.find((candidate) => candidate.name === 'writeComputedKey')!;
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
       .toMatchObject({ eligible: true });
     expect(writeHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
@@ -678,6 +690,9 @@ describe('kernel counter-key mapping loop compose', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeMixed'))
       .toMatchObject({ eligible: true });
     expect(mixedHandler.sortedUpsertLoopInfo).toHaveLength(1);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeComputedKey'))
+      .toMatchObject({ eligible: true });
+    expect(computedKeyHandler.sortedUpsertLoopInfo).toHaveLength(1);
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -910,6 +925,20 @@ describe('kernel counter-key mapping loop compose', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(StatefulContract.withCategory(inner, categoryId).call.checkTotal(9n, 2n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const owner = hexToBin('01020304');
+    await expect(StatefulContract.withCategory(inner, categoryId).call.writeComputedKey(4n, owner).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.checkHashedTotal(owner, 3n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeComputedKey', args: [3n, owner] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.checkHashedTotal(owner, 2n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(() => StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'writeComputedKey', args: [1n, owner] },
+      { function: 'writeComputedKey', args: [1n, hexToBin('05060708')] },
+    ])).toThrow(/computed route witness .* disagrees across batch rows/);
   }, 180_000);
 
   it('settles conditionally reached counter loops and plans inactive rows as empty', async () => {

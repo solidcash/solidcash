@@ -29,6 +29,12 @@ import {
   LiteralNode,
   TupleAssignmentNode,
   BoolLiteralNode,
+  ExpressionNode,
+  CastNode,
+  UnaryOpNode,
+  BinaryOpNode,
+  TernaryOpNode,
+  FunctionModifier,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import { MappingType, ArrayType, StructType, Type, PrimitiveType } from '@solidcash/utils';
@@ -45,7 +51,14 @@ const PREFIX = '__vmapcache_';
 type KeyKind =
   | { kind: 'id'; name: string }
   | { kind: 'nullary'; op: NullaryOperator }
-  | { kind: 'literal'; node: LiteralNode; canon: string };
+  | { kind: 'literal'; node: LiteralNode; canon: string }
+  | { kind: 'expression'; node: ExpressionNode; canon: string };
+
+const PURE_KEY_BUILTINS = new Set([
+  'abs', 'min', 'max', 'within', 'addmod', 'mulmod',
+  'ripemd160', 'sha1', 'sha256', 'hash160', 'hash256',
+  'toPaddedBytes', 'intToString', 'stringToInt',
+]);
 
 function literalCanon(k: LiteralNode): string {
   const value = k.value instanceof Uint8Array ? [...k.value].join(',') : String(k.value);
@@ -54,15 +67,68 @@ function literalCanon(k: LiteralNode): string {
 
 // canon groups accesses of the same entry; null = an unsupported key (arr[i], m[k2], expression) -> not cached, so
 // the multi-write / loop write falls through to the fail-closed sorted-codegen path (sound, never a silent skip).
-function canonKeyOf(k: Node, allowLiteral = false): { canon: string; key: KeyKind } | null {
+function expressionCanon(k: Node): string | undefined {
+  if (k instanceof IdentifierNode) return `id:${k.name}`;
+  if (k instanceof LiteralNode) return `literal:${literalCanon(k)}`;
+  if (k instanceof NullaryOpNode
+    && (k.operator === NullaryOperator.MSG_SENDER || k.operator === NullaryOperator.TX_ORIGIN)) {
+    return `nullary:${k.operator}`;
+  }
+  if (k instanceof CastNode) {
+    const inner = expressionCanon(k.expression);
+    return inner ? `cast:${k.type.toString()}(${inner})` : undefined;
+  }
+  if (k instanceof UnaryOpNode) {
+    const inner = expressionCanon(k.expression);
+    return inner ? `unary:${k.operator}(${inner})` : undefined;
+  }
+  if (k instanceof BinaryOpNode) {
+    const left = expressionCanon(k.left);
+    const right = expressionCanon(k.right);
+    return left && right ? `binary:${k.operator}(${left},${right})` : undefined;
+  }
+  if (k instanceof TernaryOpNode) {
+    const condition = expressionCanon(k.condition);
+    const ifTrue = expressionCanon(k.ifTrue);
+    const ifFalse = expressionCanon(k.ifFalse);
+    return condition && ifTrue && ifFalse ? `ternary(${condition},${ifTrue},${ifFalse})` : undefined;
+  }
+  if (k instanceof FieldAccessNode) {
+    const inner = expressionCanon(k.expression);
+    return inner ? `field:${k.name}(${inner})` : undefined;
+  }
+  if (k instanceof ArrayAccessNode) {
+    const array = expressionCanon(k.array);
+    const index = expressionCanon(k.index);
+    return array && index ? `index(${array},${index})` : undefined;
+  }
+  if (k instanceof FunctionCallNode) {
+    const pure = PURE_KEY_BUILTINS.has(k.identifier.name)
+      || k.resolvedFunction?.modifiers.includes(FunctionModifier.PURE) === true;
+    if (!pure) return undefined;
+    const args = k.parameters.map(expressionCanon);
+    return args.every((arg): arg is string => arg !== undefined)
+      ? `call:${k.identifier.name}(${args.join(',')})` : undefined;
+  }
+  return undefined;
+}
+
+function canonKeyOf(k: Node, allowExpression = false): { canon: string; key: KeyKind } | null {
   if (k instanceof IdentifierNode) return { canon: `id:${k.name}`, key: { kind: 'id', name: k.name } };
   if (k instanceof NullaryOpNode
     && (k.operator === NullaryOperator.MSG_SENDER || k.operator === NullaryOperator.TX_ORIGIN)) {
     return { canon: `nullary:${k.operator}`, key: { kind: 'nullary', op: k.operator } };
   }
-  if (allowLiteral && k instanceof LiteralNode) {
+  if (allowExpression && k instanceof LiteralNode) {
     const canon = literalCanon(k);
     return { canon: `literal:${canon}`, key: { kind: 'literal', node: cloneNode(k), canon } };
+  }
+  if (allowExpression && k instanceof ExpressionNode) {
+    const canon = expressionCanon(k);
+    if (canon) return {
+      canon: `expression:${canon}`,
+      key: { kind: 'expression', node: cloneNode(k), canon },
+    };
   }
   return null;
 }
@@ -79,7 +145,61 @@ function keyNodeMatches(k: Node | undefined, key: KeyKind): boolean {
   if (!k) return false;
   if (key.kind === 'id') return k instanceof IdentifierNode && k.name === key.name;
   if (key.kind === 'nullary') return k instanceof NullaryOpNode && k.operator === key.op;
-  return k instanceof LiteralNode && literalCanon(k) === key.canon;
+  if (key.kind === 'literal') return k instanceof LiteralNode && literalCanon(k) === key.canon;
+  return expressionCanon(k) === key.canon;
+}
+
+function expressionParameterDependencies(node: Node, out = new Set<string>()): Set<string> {
+  if (node instanceof IdentifierNode) out.add(node.name);
+  if (node instanceof FunctionCallNode) {
+    for (const parameter of node.parameters) expressionParameterDependencies(parameter, out);
+    return out;
+  }
+  for (const [field, value] of Object.entries(node)) {
+    if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+      'stateVariable', 'type'].includes(field)) continue;
+    if (value instanceof Node) expressionParameterDependencies(value, out);
+    else if (Array.isArray(value)) {
+      for (const item of value) if (item instanceof Node) expressionParameterDependencies(item, out);
+    }
+  }
+  return out;
+}
+
+function mutatesExpressionDependency(root: Node, dependencies: ReadonlySet<string>): boolean {
+  let mutated = false;
+  const scan = (node: Node): void => {
+    if (mutated) return;
+    if ((node instanceof AssignNode && dependencies.has(node.identifier.name))
+      || (node instanceof VariableDefinitionNode && dependencies.has(node.name))
+      || (node instanceof ArrayAssignNode && dependencies.has(node.name))
+      || (node instanceof ArrayPushNode && dependencies.has(node.name))
+      || (node instanceof ArrayPopNode && dependencies.has(node.name))) {
+      mutated = true;
+      return;
+    }
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) scan(value);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) scan(item);
+    }
+  };
+  scan(root);
+  return mutated;
+}
+
+/** Whether the function-wide entry cache can evaluate this key once without changing its source meaning. */
+export function isFunctionEntryInvariantMappingKey(
+  key: Node,
+  body: Node,
+  publicParameterNames: ReadonlySet<string>,
+): boolean {
+  if (!canonKeyOf(key, true)) return false;
+  if (key instanceof LiteralNode || key instanceof NullaryOpNode) return true;
+  const dependencies = expressionParameterDependencies(key);
+  return [...dependencies].every((name) => publicParameterNames.has(name))
+    && !mutatesExpressionDependency(body, dependencies);
 }
 
 type EntryInfo = {
@@ -113,6 +233,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private structMappings: Map<string, StructType> = new Map();
   private counter = 0;
 
+  constructor(private computedKeysOnly = false) { super(); }
+
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
@@ -143,6 +265,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 
   private transformFunction(fn: FunctionDefinitionNode): void {
     for (const e of this.collectCacheableEntries(fn.body)) {
+      if (this.computedKeysOnly && e.key.kind !== 'expression') continue;
       const local = `${PREFIX}${e.mapping}_${this.counter++}`;
       const dirty = `${local}_dirty`;
       new EntryRedirect(e.mapping, e.key, local, dirty, e.valueType).visit(fn.body);
@@ -284,6 +407,14 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // key must be invariant across the function: an identifier must not be reassigned; nullary keys always are.
       if (e.key.kind === 'id'
         && (this.assignsName(body, e.key.name) || this.declaresNameInsideLoop(body, e.key.name))) continue;
+      if (e.key.kind === 'expression') {
+        const dependencies = expressionParameterDependencies(e.key.node);
+        // Expression keys are hoisted to the function entry, so every runtime dependency must already be in
+        // scope there and remain immutable for the complete invocation. In practice these are public arguments;
+        // local aliases can be supported later by moving this cache to the loop boundary rather than pretending
+        // they exist at function entry.
+        if (mutatesExpressionDependency(body, dependencies)) continue;
+      }
       out.push({
         mapping: e.mapping, key: e.key,
         valueType: (this.arrayMappings.get(e.mapping) ?? this.scalarMappings.get(e.mapping)

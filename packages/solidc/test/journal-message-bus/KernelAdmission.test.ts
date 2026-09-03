@@ -838,11 +838,29 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('does not admit a computed invariant loop key before it has a cache representation', () => {
+  it('journals a computed invariant loop key beside a counter-keyed physical loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) keyed;
+      mapping(bytes32 => int) totals;
+      function write(int n, bytes owner) public {
+        for (int i = 0; i < n; i = i + 1) { this.keyed[i] = i; this.totals[sha256(owner)] = i; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses a computed loop key whose parameter dependency is reassigned', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) keyed;
       mapping(bytes32 => int) totals;
       function denied(int n, bytes owner) public {
+        owner = hex"01";
         for (int i = 0; i < n; i = i + 1) { this.keyed[i] = i; this.totals[sha256(owner)] = i; }
         require(true);
       }

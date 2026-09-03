@@ -4301,7 +4301,42 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   batch(
     invocations: readonly { function: string; args?: readonly FunctionArgument[] }[],
   ): StatefulFunctionCall {
-    const { blob, routeWitnesses } = encodeMessageBatch(this.inner.artifact, invocations);
+    // Owner-local batch construction is synchronous, but argument-only computed entry keys are still completely
+    // derivable here. Publish them as the route witnesses encodeMessageBatch expects; state-dependent expressions
+    // remain on the async graph-composition path, which can load authenticated state before evaluating them.
+    const computedRouteWitnesses: Record<string, FunctionArgument> = {};
+    const computedRouteWitnessHex = new Map<string, string>();
+    invocations.forEach((invocation, rowIndex) => {
+      const handler = this.inner.artifact.messageBus?.handlers.find((candidate) =>
+        candidate.name === invocation.function);
+      const abi = this.inner.artifact.abi.find((candidate) => candidate.name === invocation.function);
+      if (!handler || !abi) return;
+      for (const binding of handler.batchKeyWitnesses ?? []) {
+        if (binding.source !== 'expression' || !binding.expressionLabel) continue;
+        const encoded = evalComputedKey(binding.expressionLabel, [...(invocation.args ?? [])], abi.inputs);
+        if (!encoded) continue;
+        const name = binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
+        const encodedHex = binToHex(encoded);
+        const priorHex = computedRouteWitnessHex.get(name);
+        if (priorHex !== undefined && priorHex !== encodedHex) {
+          throw new Error(`messageBus: computed route witness '${name}' disagrees across batch rows`);
+        }
+        computedRouteWitnessHex.set(name, encodedHex);
+        const routeType = this.inner.artifact.messageBus?.route.inputs.find((input) => input.name === name)?.type;
+        const value: FunctionArgument = routeType === 'bool'
+          ? vmNumberToBigInt(encoded) !== 0n
+          : routeType === 'bigint' || routeType === 'int' || routeType === 'uint'
+            || /^u?int\d+$/.test(routeType ?? '')
+            ? vmNumberToBigInt(encoded)
+            : encoded;
+        computedRouteWitnesses[name] = value;
+      }
+    });
+    const { blob, routeWitnesses } = encodeMessageBatch(
+      this.inner.artifact,
+      invocations,
+      computedRouteWitnesses,
+    );
     const rowArguments = invocations.map((invocation) => {
       const handler = this.inner.artifact.abi.find((candidate) => candidate.name === invocation.function);
       if (!handler) throw new Error(`Message-bus handler ABI '${invocation.function}' is missing`);

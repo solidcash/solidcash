@@ -7347,6 +7347,11 @@ function compileResolvedAst(
     // `m[k][i] = v` / `return m[k][i]` on mapping(K => T[N]) journals as the entry `m[k]`. The late
     // nested-array pass only hoists 2D+ value indices; kernel clones must snapshot the 1-index RMW.
     ast = ast.accept(new DesugarNestedArrayWrite(1)) as Ast;
+    // Route synthesis below snapshots collection-bearing handlers. Cache invariant entries before that snapshot
+    // so a computed key (for example totals[sha256(owner)]) is represented identically in the source handler and
+    // its row-loop clone: one authenticated read, local mutations, and one fixed-entry flush. The later pass is
+    // idempotent and still covers shapes exposed by intervening desugaring.
+    ast = ast.accept(new CacheMappingEntryInLoop(true)) as Ast;
     injectCollectionIterationWitnesses(ast);
     injectChunkableEntryWitnesses(ast);
   }

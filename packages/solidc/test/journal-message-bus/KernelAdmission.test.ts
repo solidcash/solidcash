@@ -438,7 +438,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses two independently settled counter loops in one handler', () => {
+  it('refuses two counter loops over the same collection without a read-your-writes journal', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) a;
       function denied(int n) public {
@@ -455,6 +455,25 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((handler) => handler.name === 'denied')?.inputs.filter((input) =>
       input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(0);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('admits sequential counter loops over disjoint collections', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a;
+      mapping(int => int) b;
+      function writeBoth(int left, int right) public {
+        for (int i = 0; i < left; i = i + 1) { this.a[i] = i + 10; }
+        for (int j = 2; j < right; j = j + 2) { this.b[j] = j + 20; }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeBoth');
+    expect(handler?.eligible).toBe(true);
+    expect(artifact.abi.find((candidate) => candidate.name === 'writeBoth')?.inputs.filter((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
+    expect(artifact.abi.find((candidate) => candidate.name === 'writeBoth')?.sortedUpsertLoopInfo?.map(
+      (info) => info.collection,
+    )).toEqual(['a', 'b']);
   });
 
   it('refuses an invariant mapping write beside a counter-keyed write in the physical loop', () => {

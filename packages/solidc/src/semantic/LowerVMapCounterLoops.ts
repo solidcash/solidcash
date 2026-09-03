@@ -30,7 +30,9 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * inner-iteration-scoped, so those loops remain unlowered. The canonical pre-test domain
  * `for (int i = constantStart; i < publicBound; i = i + positiveConstantStep)` and post-test domain
  * `int i = 0; do { ...; i = i + 1; } while (i < publicBound)` lower. The latter authenticates
- * `max(publicBound, 1)` entries. Counter-dependent guards, sibling reads of the mutated mapping,
+ * `max(publicBound, 1)` entries. Multiple unconditional source-order loops may lower together when their
+ * collection sets are disjoint; each loop receives its own authenticated trailing input/output segment.
+ * Counter-dependent guards, sibling reads of the mutated mapping,
  * `continue`/`break`, and other domains need a separate logical-journal/physical-settlement phase.
  *
  * The permutation is an untrusted unlocking witness. Generated checks prove it has exactly the canonical domain's
@@ -71,8 +73,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const added: ParameterNode[] = [];
     const prelude: StatementNode[] = [];
     // The compiler invokes this pass both before speculative admission and, when needed, before final codegen.
-    // A hidden parameter is also the durable marker that this function already consumed its one physical cursor.
-    let loweredCounterLoop = node.parameters.some((parameter) => parameter.name.startsWith(PREFIX));
+    // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
+    // the generated proof statements on the second pass.
+    if (node.parameters.some((parameter) => parameter.name.startsWith(PREFIX))) return node;
     type CanonicalLoop = {
       logical: string;
       count: string;
@@ -82,6 +85,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       step: bigint;
       postTest: boolean;
       counterUpdate?: AssignNode;
+      parent: BlockNode;
     };
     const canonicalLoops = new Map<WhileNode | DoWhileNode, CanonicalLoop>();
     const findCanonicalLoops = (x: Node): void => {
@@ -151,6 +155,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             step: preTest ? variable.loopStepValue! : 1n,
             postTest,
             counterUpdate: update as AssignNode,
+            parent: x,
           });
         }
       }
@@ -302,13 +307,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       walk(loop.block);
       return found;
     };
-    // The current physical settlement frame owns one runtime cursor. Decide this before mutating the AST so a
-    // refused two-loop handler does not leak an unused compiler-owned permutation into its ordinary ABI.
+    // Analyze every candidate before mutating the AST. This keeps the lowering transactional: one unsupported
+    // loop cannot leak an unused compiler-owned permutation into an otherwise ordinary ABI.
     const counterWriteLoops = [...canonicalLoops].filter(([loop, canonical]) =>
       isCounterWriteLoop(loop, canonical.logical));
-    const tryLower = (loop: WhileNode | DoWhileNode): void => {
+    const preflightCollections = new Map<WhileNode | DoWhileNode, Set<string>>();
+    const tryLower = (loop: WhileNode | DoWhileNode, apply: boolean): boolean => {
       const canonical = canonicalLoops.get(loop);
-      if (!canonical || loweredCounterLoop || counterWriteLoops.length !== 1) return;
+      if (!canonical) return false;
       const { logical, count, boundNames, boundDefinitions, start, step, postTest, counterUpdate } = canonical;
       const { block, location } = loop;
       const writes: Array<ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
@@ -357,16 +363,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // public bound anywhere in the function similarly disconnects the SDK-derived witness length from the
         // runtime domain, including assignments which occur before the loop.
         || hasUnexpectedLoopControlMutation(block, true, false)
-        || hasUnexpectedLoopControlMutation(node.body, false, true)) return;
+        || hasUnexpectedLoopControlMutation(node.body, false, true)) return false;
       // Exactly one key component is the physical cursor. If the counter also occurs in another component
       // (`m[i][i]`, `m[i + 1][i]`), replacing only the settlement key would change the logical tuple.
       if (keyed.some((write) => {
         const keys = keyExpressions(write);
         const at = counterKeyIndex(write, logical);
         return keys.some((key, index) => index !== at && containsIdentifier(key, logical));
-      })) return;
+      })) return false;
       const firstKeyShape = writeKeyShape(keyed[0]);
-      if (keyed.some((write) => writeKeyShape(write) !== firstKeyShape)) return;
+      if (keyed.some((write) => writeKeyShape(write) !== firstKeyShape)) return false;
       const keyedSet = new Set<Node>(keyed);
       const keyedCollections = new Set(keyed.map((write) => write.name));
       const containsLogical = (x: Node): boolean => {
@@ -537,9 +543,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       if (hasCounterDependentGuard(block) || hasSiblingMappingRead(block) || hasUnsafeRead(block)
         || hasUnsupportedOldEntryExpression
-        || hasLoopCarriedWriteGuard(block) || keyed.some(dependsOnLoopMutation)) return;
+        || hasLoopCarriedWriteGuard(block) || keyed.some(dependsOnLoopMutation)) return false;
 
-      loweredCounterLoop = true;
+      if (!apply) {
+        preflightCollections.set(loop, keyedCollections);
+        return true;
+      }
+
       const serial = this.serial++;
       const signedComponent = (value: bigint): string => value < 0n ? `n${-value}` : `p${value}`;
       const rangeSuffix = start === 0n && step === 1n
@@ -696,17 +706,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const p = new ParameterNode(new ArrayType(new IntType(true, 256)), hidden);
       p.location = node.location;
       added.push(p);
+      return true;
     };
-    const lower = (n: Node): void => {
-      if (n instanceof WhileNode || n instanceof DoWhileNode) tryLower(n);
-      for (const key of Object.keys(n)) {
-        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
-        const v = (n as unknown as Record<string, unknown>)[key];
-        if (v instanceof Node) lower(v);
-        else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) lower(e);
-      }
-    };
-    lower(node.body);
+    const allSafe = counterWriteLoops.length > 0
+      // Multiple physical journals must be unconditional peers in source order. A branch/nesting-aware plan needs
+      // reachability metadata in the SDK; admitting it here would make the builder materialize inactive loops.
+      && (counterWriteLoops.length === 1
+        || counterWriteLoops.every(([, canonical]) => canonical.parent === node.body))
+      && counterWriteLoops.every(([loop]) => tryLower(loop, false));
+    const seenCollections = new Set<string>();
+    const disjoint = allSafe && counterWriteLoops.every(([loop]) => {
+      const loopCollections = preflightCollections.get(loop)!;
+      if ([...loopCollections].some((collection) => seenCollections.has(collection))) return false;
+      for (const collection of loopCollections) seenCollections.add(collection);
+      return true;
+    });
+    if (disjoint) for (const [loop] of counterWriteLoops) tryLower(loop, true);
     if (prelude.length > 0) node.body.statements = [...prelude, ...(node.body.statements ?? [])];
     node.parameters.push(...added);
     return node;

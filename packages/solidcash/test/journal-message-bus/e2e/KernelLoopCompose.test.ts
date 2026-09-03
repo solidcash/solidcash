@@ -76,6 +76,23 @@ contract KernelNestedMultiMapping() {
   }
 }`;
 
+const SEQUENTIAL_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelSequentialMultiMapping() {
+  mapping(int => int) a;
+  mapping(int => int) b;
+  function writeBoth(int left, int right) public {
+    for (int i = 0; i < left; i = i + 1) {
+      this.a[i] = i + 10;
+    }
+    for (int j = 2; j < right; j = j + 2) {
+      this.b[j] = j + 20;
+    }
+    require(true);
+  }
+  function checkA(int key, int expected) public { require(this.a[key] == expected); }
+  function checkB(int key, int expected) public { require(this.b[key] == expected); }
+}`;
+
 const COUNTER_MAPPING_EVENT_SOURCE = `pragma solidcash ^0.13.0;
 event Hit(int i);
 contract KernelCounterMappingEvent() {
@@ -579,6 +596,70 @@ describe('kernel direct-selector coexistence', () => {
 });
 
 describe('kernel composite counter-key settlement', () => {
+  it('settles sequential counter loops over independent collection journals', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SEQUENTIAL_MULTI_MAPPING_SOURCE, KERNEL);
+    const writeBoth = artifact.abi.find((candidate) => candidate.name === 'writeBoth')!;
+    expect(writeBoth.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_')))
+      .toHaveLength(2);
+    expect(writeBoth.sortedUpsertLoopInfo?.map((info) => info.collection)).toEqual(['a', 'b']);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    for (let pass = 0; pass < 2; pass += 1) {
+      const call = contract.batch([{ function: 'writeBoth', args: [3n, 8n] }]);
+      const builder = await call.build();
+      const vm = createVirtualMachineBch2026ForProvider(provider);
+      const transaction = builder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+          `pass ${pass}, input ${inputIndex}`).toBe(true);
+      }
+      if (pass === 0) {
+        const routeInputIndex = builder.inputs.findIndex((input) =>
+          'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+        const outputWithValue = (value: number): number => transaction.outputs.findIndex((output) => {
+          const commitment = output.token?.nft?.commitment;
+          return commitment?.length === 65 && commitment.at(-1) === value;
+        });
+        const firstSegmentOutput = outputWithValue(10);
+        const secondSegmentOutput = outputWithValue(22);
+        expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+        expect(firstSegmentOutput).toBeGreaterThanOrEqual(0);
+        expect(secondSegmentOutput).toBeGreaterThanOrEqual(0);
+        const hostile = { ...transaction, outputs: [...transaction.outputs] };
+        [hostile.outputs[firstSegmentOutput], hostile.outputs[secondSegmentOutput]] =
+          [hostile.outputs[secondSegmentOutput], hostile.outputs[firstSegmentOutput]];
+        expect(vm.stateSuccess(vm.evaluate({
+          inputIndex: routeInputIndex, sourceOutputs, transaction: hostile,
+        })), 'swapped disjoint journal segments').not.toBe(true);
+      }
+      await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    const direct = StatefulContract.withCategory(inner, categoryId).call.writeBoth(3n, 8n);
+    const directBuilder = await direct.build();
+    const directVm = createVirtualMachineBch2026ForProvider(provider);
+    const directTransaction = directBuilder.buildLibauthTransaction();
+    const directSourceOutputs = generateLibauthSourceOutputs(directBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < directTransaction.inputs.length; inputIndex += 1) {
+      expect(directVm.stateSuccess(directVm.evaluate({
+        inputIndex, sourceOutputs: directSourceOutputs, transaction: directTransaction,
+      })), `direct input ${inputIndex}`).toBe(true);
+    }
+    await expect(direct.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const key of [0n, 1n, 2n]) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.checkA(key, key + 10n).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    for (const key of [2n, 4n, 6n]) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.checkB(key, key + 20n).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+  }, 180_000);
+
   it('settles two nested counter-key collections for inserts and updates', async () => {
     const provider = createTestProvider();
     const artifact = compileString(NESTED_MULTI_MAPPING_SOURCE, KERNEL);

@@ -76,6 +76,7 @@ import {
 } from './upsertKeySources.js';
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
 import { hasEffectiveCallValue } from '../semantic/branchOps.js';
+import { VMAP_COUNTER_PERM_PREFIX } from '../semantic/LowerVMapCounterLoops.js';
 import {
   ContractNode,
   ParameterNode,
@@ -1149,12 +1150,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private pendingDynamicWrites: Map<string, { valueStackName: string; sv: StateVariableNode }> = new Map();
   private valueChunkTrailingCountActive = false;
   private static readonly VALUE_CHUNK_TRAILING_COUNT = '__internal__valueChunkTrailingCount';
+  private runtimeLoopEntryInputCountActive = false;
+  private static readonly RUNTIME_LOOP_ENTRY_INPUT_COUNT = '__internal__runtimeLoopEntryInputCount';
   private runtimeLoopEntryOutputCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_OUTPUT_COUNT = '__internal__runtimeLoopEntryOutputCount';
-  // Outlined functions on a dynamic-write path return this counter through the same copy-in/copy-out frame as
-  // scalar journals. The set is contract-wide because one OP_DEFINE body has one hidden ABI shared by every
-  // caller, including independently compiled direct entry points.
+  // Outlined functions return live runtime-loop offsets through the same copy-in/copy-out frame as scalar
+  // journals. Output offsets also separate mapping entries from dynamic chunks; paired input/output offsets
+  // separate sequential mapping journals. The sets are contract-wide because one OP_DEFINE body has one hidden
+  // ABI shared by every caller, including independently compiled direct entry points.
   private runtimeLoopEntryOutputCountFunctionIds: Set<number> = new Set();
+  private runtimeLoopEntryInputCountFunctionIds: Set<number> = new Set();
 
   // X151. Every chunk-backed read loop emitted in this contract, with the trailing-offset basis it was built
   // from. `verifyDynamicReadBases` re-derives each one from the function's FINAL published footprint at the end
@@ -3800,6 +3805,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.forceFullStateLayout = true;
     subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
     subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
+    subTraversal.runtimeLoopEntryInputCountFunctionIds = this.runtimeLoopEntryInputCountFunctionIds;
     subTraversal.runtimeLoopEntryOutputCountFunctionIds = this.runtimeLoopEntryOutputCountFunctionIds;
     subTraversal.constantExpressions = new Map(this.constantExpressions);
     // Compiled child bytecodes (for `type(C).creationCode` / `new C()` inside an extracted function body).
@@ -4145,6 +4151,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
       subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
       subTraversal.journalWriterFunctionIds = this.journalWriterFunctionIds;
+      subTraversal.runtimeLoopEntryInputCountFunctionIds = this.runtimeLoopEntryInputCountFunctionIds;
       subTraversal.runtimeLoopEntryOutputCountFunctionIds = this.runtimeLoopEntryOutputCountFunctionIds;
       subTraversal.constantExpressions = new Map(this.constantExpressions);
       subTraversal.compiledBytecodes = this.compiledBytecodes;
@@ -4766,6 +4773,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.activeJournalSlots = activeJournalSlots;
     this.journalSettlementActive = !this.isDefineSubTraversal && activeJournalSlots.length > 0;
+    const runtimeLoopEntryInputCountRequired = this.functionNeedsRuntimeLoopEntryInputCount(node);
     const runtimeLoopEntryOutputCountRequired = this.functionNeedsRuntimeLoopEntryOutputCount(node);
     // The AST node is shared by several codegen traversals. Preserve a positive result
     // so ABI generation conservatively classifies an entrypoint that settles a journal
@@ -4788,6 +4796,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
     this.valueChunkTrailingCountActive = false;
+    this.runtimeLoopEntryInputCountActive = false;
     this.runtimeLoopEntryOutputCountActive = false;
     this.coSpendPreservedDynValues = new Set();
     this.pendingTransfers = [];
@@ -5112,6 +5121,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // witnesses) one slot too shallow and can reinterpret this byte vector as a Script Number.
       this.pushToStack('__internal__graphEmissions', true);
     }
+    if (this.isDefineSubTraversal && runtimeLoopEntryInputCountRequired) {
+      // A second runtime mapping loop starts after the exact input width consumed by its predecessors.
+      this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT, true);
+    }
     if (this.isDefineSubTraversal && runtimeLoopEntryOutputCountRequired) {
       // Copy-in/copy-out context supplied by visitUserFunctionCall. It is declared before journal fields to match
       // targetJournalContextNames and survives the handler cleanup alongside those fields.
@@ -5321,6 +5334,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.collectStateWriteKeys(node.body, staticStateWriteKeys);
     const hasStaticDynamicWrite = this.stateVariables.some((sv) => sv.isDynamic
       && staticStateWriteKeys.has(`${sv.nftIndex}:${sv.fieldIndex}`));
+    if (runtimeLoopEntryInputCountRequired) {
+      if (!this.isDefineSubTraversal) {
+        this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+        this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
+      }
+      this.runtimeLoopEntryInputCountActive = true;
+    }
     if (runtimeLoopEntryOutputCountRequired) {
       // Runtime mapping loops and dynamic-state writes share one trailing frame. Keep an exact path-stable total
       // of mapping outputs so the dynamic epilogue cannot claim the same first output. A physical entry starts
@@ -5484,6 +5504,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const slots = node.functionId === undefined ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
       const journalNames = new Set(slots.flatMap((sv) => this.journalContextNames(sv)));
       if (node.graphRuntimeEmissionHandler) journalNames.add('__internal__graphEmissions');
+      if (runtimeLoopEntryInputCountRequired) {
+        journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
+      }
       if (runtimeLoopEntryOutputCountRequired) {
         journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT);
       }
@@ -6672,23 +6695,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Compute the hidden copy-in/copy-out counter ABI used by outlined mapping loops on dynamic-write paths.
+   * Compute the hidden copy-in/copy-out counter ABI used by outlined mapping loops.
    *
    * Scalar-journal closure analysis already tells us which functions participate in a dynamic state transition,
    * including generated graph handlers and every invoker which must hold their live value. Intersecting that
-   * closure with the executable runtime-loop scan keeps unrelated mapping loops byte-identical while ensuring a
-   * shared OP_DEFINE body has one stable hidden ABI at all call sites.
+   * closure with the executable runtime-loop scan keeps unrelated mapping loops byte-identical. Functions with
+   * multiple lowered counter loops additionally carry exact input/output cursors so each independent journal owns
+   * a distinct trailing segment. A shared OP_DEFINE body therefore has one stable hidden ABI at all call sites.
    */
   private computeRuntimeLoopEntryOutputCountFunctions(node: ContractNode): void {
     const functions = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions]
       .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
-    this.runtimeLoopEntryOutputCountFunctionIds = new Set(functions
+    const multipleCounterLoopIds = new Set(functions
+      .filter((fn) => fn.functionId !== undefined && fn.parameters.filter(
+        (parameter) => parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX),
+      ).length > 1)
+      .map((fn) => fn.functionId!));
+    this.runtimeLoopEntryInputCountFunctionIds = multipleCounterLoopIds;
+    const dynamicWriteLoopIds = functions
       .filter((fn) => fn.functionId !== undefined
         && this.journalWriterFunctionIds.has(fn.functionId)
         && (this.journalSlotsByFunctionId.get(fn.functionId) ?? []).some((sv) => sv.isDynamic)
         && fn.body !== undefined
         && this.hasRuntimeLoopEntryWrite(fn.body))
-      .map((fn) => fn.functionId!));
+      .map((fn) => fn.functionId!);
+    this.runtimeLoopEntryOutputCountFunctionIds = new Set([
+      ...dynamicWriteLoopIds,
+      ...multipleCounterLoopIds,
+    ]);
+  }
+
+  private functionNeedsRuntimeLoopEntryInputCount(node: FunctionDefinitionNode): boolean {
+    return node.functionId !== undefined
+      && this.runtimeLoopEntryInputCountFunctionIds.has(node.functionId);
   }
 
   private functionNeedsRuntimeLoopEntryOutputCount(node: FunctionDefinitionNode): boolean {
@@ -9177,12 +9216,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.END };
     const targetJournalSlots = targetFunc.functionId === undefined
       ? [] : (this.journalSlotsByFunctionId.get(targetFunc.functionId) ?? []);
+    const targetRuntimeLoopEntryInputCount = this.functionNeedsRuntimeLoopEntryInputCount(targetFunc);
     const targetRuntimeLoopEntryOutputCount = this.functionNeedsRuntimeLoopEntryOutputCount(targetFunc);
+    const callerOwnsRuntimeLoopEntryInputCount = this.stack.includes(
+      GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT,
+    );
     const callerOwnsRuntimeLoopEntryOutputCount = this.stack.includes(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT,
     );
     const targetJournalContextNames = [
       ...(targetFunc.graphRuntimeEmissionThreaded ? ['__internal__graphEmissions'] : []),
+      ...(targetRuntimeLoopEntryInputCount
+        ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT] : []),
       ...(targetRuntimeLoopEntryOutputCount
         ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT] : []),
       ...targetJournalSlots.flatMap((sv) => this.journalContextNames(sv)),
@@ -9194,11 +9239,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = targetJournalContextNames.length - 1; i >= 0; i--) {
       const stackName = targetJournalContextNames[i];
       if (!this.stack.includes(stackName)) {
-        if (stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT) {
-          // A shared outlined body has one hidden ABI. A caller outside a dynamic-write path supplies a neutral
-          // counter and discards the returned total; callers which settle dynamic chunks copy their live value.
+        if (stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT
+          || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT) {
+          // A shared outlined body has one hidden ABI. A caller which does not own this trailing-family cursor
+          // supplies a neutral value and discards the returned total.
           this.emit(encodeInt(0n), locationData);
-          this.pushToStack(`(__runtime_loop_entry_output_arg_${targetFunc.functionId})`);
+          const direction = stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT
+            ? 'input' : 'output';
+          this.pushToStack(`(__runtime_loop_entry_${direction}_arg_${targetFunc.functionId})`);
           continue;
         }
         throw new Error(`Missing journal context '${stackName}' while invoking '${targetFunc.name}'`);
@@ -9455,8 +9503,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // leaving the surrounding frame byte-for-byte in its pre-call order.
     for (let i = 0; i < targetJournalContextNames.length; i++) {
       const originalName = targetJournalContextNames[i];
-      if (originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT
-        && !callerOwnsRuntimeLoopEntryOutputCount) {
+      if ((originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT
+          && !callerOwnsRuntimeLoopEntryInputCount)
+        || (originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT
+          && !callerOwnsRuntimeLoopEntryOutputCount)) {
         this.emit(Op.OP_DROP, locationData);
         this.popFromStack();
         continue;
@@ -9642,9 +9692,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const graphEmissionContext = this.currentFunction.graphRuntimeEmissionHandler
       && this.stack.includes('__internal__graphEmissions');
     if (this.isDefineSubTraversal && (this.activeJournalSlots.length > 0 || graphEmissionContext
-      || this.runtimeLoopEntryOutputCountActive)) {
+      || this.runtimeLoopEntryInputCountActive || this.runtimeLoopEntryOutputCountActive)) {
       const journalNames = [
         ...(graphEmissionContext ? ['__internal__graphEmissions'] : []),
+        ...(this.functionNeedsRuntimeLoopEntryInputCount(this.currentFunction)
+          ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT] : []),
         ...(this.functionNeedsRuntimeLoopEntryOutputCount(this.currentFunction)
           ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT] : []),
         ...this.activeJournalSlots.flatMap((sv) => this.journalContextNames(sv)),
@@ -20360,6 +20412,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // entry-input count == 1 (only the single bracketing predecessor P is co-spent at this address).
     this.emit(Op.OP_1, loc); this.pushToStack('(il_incount)');
     this.emitVerifyChunkUtxoCount('(il_incount)', false, loc, this.sortedInsertLoopAddrName);
+    this.emitAccumulateRuntimeLoopEntryInputs('(il_incount)', loc);
     const ic = this.getStackIndex('(il_incount)');
     this.emit(encodeInt(BigInt(ic)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
     this.removeFromStack(ic);
@@ -21385,6 +21438,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitVerifyAdjacentUtxoCount(this.sortedUpsertLoopCounterName, false, loc, nFixed);
       this.emitVerifyAdjacentUtxoCount(this.sortedUpsertLoopOutCounterName, true, loc, nFixed);
     }
+    this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertLoopCounterName, loc);
     this.emitAccumulateRuntimeLoopEntryOutputs(this.sortedUpsertLoopOutCounterName, loc);
 
     const dropNames = [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName,
@@ -21434,6 +21488,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(runtime_loop_entry_output_total)');
     this.emitReplaceCompilerRouteFrameValue(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, this.currentFunction,
+    );
+    this.popFromStack();
+  }
+
+  /** Add one completed runtime mapping loop's exact input width to the next loop's trailing-input base. */
+  private emitAccumulateRuntimeLoopEntryInputs(
+    sourceName: string, locationData: SingleLocationData,
+  ): void {
+    if (!this.runtimeLoopEntryInputCountActive) return;
+    this.emit(encodeInt(BigInt(this.getStackIndex(sourceName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(runtime_loop_entry_input_delta)');
+    this.emitPickCompilerRouteFrameValue(
+      GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT, locationData,
+    );
+    this.pushToStack('(runtime_loop_entry_input_prior)');
+    this.emit(Op.OP_ADD, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(runtime_loop_entry_input_total)');
+    this.emitReplaceCompilerRouteFrameValue(
+      GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT, this.currentFunction,
     );
     this.popFromStack();
   }
@@ -22172,6 +22247,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const finalTemps = [...writtenValueStackNames, ...fReadTempNames];
     if (this.valueChunkTrailingCountActive) {
       finalTemps.push(GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT);
+    }
+    if (this.runtimeLoopEntryInputCountActive) {
+      finalTemps.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
     }
     if (this.runtimeLoopEntryOutputCountActive) {
       finalTemps.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT);
@@ -25878,6 +25956,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitAddForeignReadOnlyChunkCounts(
       locationData, true, extraStackOffset,
     ); // written old chunks occupy trailing inputs
+    if (this.runtimeLoopEntryInputCountActive) {
+      this.emitPickCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT,
+        locationData,
+        1 + extraStackOffset,
+      );
+      this.emit(Op.OP_ADD, locationData);
+    }
   }
 
   /**
@@ -25890,6 +25976,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     this.emitTrailingBlockBase(blockSize, locationData, trailingBase, extraStackOffset);
     this.emitAddCollectionIterCounts(locationData, extraStackOffset);
+    if (this.runtimeLoopEntryInputCountActive && this.runtimeLoopEntryOutputCountActive) {
+      this.emitPickCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT,
+        locationData,
+        1 + extraStackOffset,
+      );
+      this.emit(Op.OP_ADD, locationData);
+    }
   }
 
   /**

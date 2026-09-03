@@ -146,7 +146,7 @@ every kernel toy.
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
 | `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob | Any finite `sig` array parameter (one aligned outer row dimension); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
-| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; or a counter loop that repeats a fixed-slot effect (event, BCH transfer, or token-container transfer) | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical counter-keyed `for (int i = S; i < n; i = i + D)` for constant `S` and positive constant `D` (also through an immutable bound-alias chain), or `int i = 0; do { ...; i = i + 1; } while (i < n)` over `m[i]` / nested `m[k][i]`, or those rewrites beside source-order typed external calls / invariant `if`/`switch` |
+| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; multiple counter loops that overlap one collection or do not have an unconditional source-order journal plan; or a counter loop that repeats a fixed-slot effect (event, BCH transfer, or token-container transfer) | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical counter-keyed `for (int i = S; i < n; i = i + D)` for constant `S` and positive constant `D` (also through an immutable bound-alias chain), or `int i = 0; do { ...; i = i + 1; } while (i < n)` over `m[i]` / nested `m[k][i]`, multiple unconditional sequential loops over disjoint collection sets, or those rewrites beside source-order typed external calls / invariant `if`/`switch` |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Inline assembly or a low-level call the journal cannot summarize as a call/effect row | After Solidity-compat lowering to `call` plus returndata |
 | `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors (not child deploys) |
@@ -280,8 +280,11 @@ the authenticated permutation is over those logical counter values rather than a
 `int i = 0; do { ...; i = i + 1; } while (i < n)` is supported with an authenticated
 `max(n, 1)` permutation; an immutable local identifier-alias chain such as `requested = n; limit = requested`
 preserves the same authenticated domain, while computed and reassigned aliases remain refused. Other `do-while`
-domains remain refused. A handler currently admits at most one
-counter-keyed physical loop.
+domains remain refused. A handler may contain multiple unconditional top-level counter loops in source order when
+their collection sets are pairwise disjoint. The compiler threads exact accumulated input and output widths between
+those loops, and the SDK publishes their predecessor and commitment runs in the same order. Sequential loops which
+touch the same collection remain refused: the later loop would need a read-your-writes topology derived from the
+earlier loop's pending transition rather than independently querying pre-state.
 Every mapping/array write in that loop must use the counter in exactly one key component, and multiple
 writes must have the same complete key tuple (for example `a[k][i]` plus `b[k][i]`). Counter-dependent
 or loop-carried write guards, sibling reads of a mutated mapping, foreign counter-keyed reads, and
@@ -303,7 +306,8 @@ only when every mutation is a compiler-described absolute parameter/array/consta
 has no other owner-local state or entry access, and the encoded visible arguments match. This is idempotent replay:
 each logical row proves the same old-to-new transition. Differing rows, arbitrary runtime `set` expressions, and
 relative `+`/`-` updates remain rejected until the SDK/compiler protocol has row-scoped predecessor journals and
-cursors. Multiple collections in one admitted row share its authenticated permutation.
+cursors. Multiple collections in one admitted loop share its authenticated permutation; separate disjoint loops
+use separate permutations and separate accumulated physical segments.
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay

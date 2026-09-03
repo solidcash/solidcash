@@ -970,12 +970,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // runtime domain, including assignments which occur before the loop.
         || hasUnexpectedLoopControlMutation(block, true, false)
         || hasUnexpectedLoopControlMutation(node.body, false, true)) return false;
-      // Exactly one key component is the physical cursor. If the counter also occurs in another component
-      // (`m[i][i]`, `m[i + 1][i]`), replacing only the settlement key would change the logical tuple.
+      // One direct counter component selects the physical cursor. Additional direct counter components can use
+      // the same authenticated logical value (`m[i][i]`); expressions such as `m[i + 1][i]` still need a
+      // serializable composite-key recipe before the SDK can derive the complete slot.
       if (keyed.some((write) => {
         const keys = keyExpressions(write);
         const at = counterKeyIndex(write, logical);
-        return keys.some((key, index) => index !== at && containsIdentifier(key, logical));
+        return keys.some((key, index) => index !== at && containsIdentifier(key, logical)
+          && !(key instanceof IdentifierNode && key.name === logical));
       })) return false;
       // One collection currently owns one physical entry stream per iteration, but different collections need
       // not share their invariant key components. `a[left][i]` and `b[right][i]` therefore receive independently
@@ -1409,6 +1411,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const r = new ArrayAccessNode(a, physical(group)); r.location = location; return r;
       };
       const replace = (x: Node, group: typeof groups[number]): Node => {
+        // Old-entry witnesses are settlement-position vectors. Their subscript is the physical loop rank (or
+        // selected-write cursor), never the permuted logical key. In particular, ranged domains such as 3,5,7
+        // cannot soundly use the key itself as an index into a three-element witness.
+        if (x instanceof ArrayAccessNode && x.array instanceof IdentifierNode
+          && x.array.name.startsWith(VMAP_COUNTER_OLD_PREFIX)) return x;
         if (x instanceof IdentifierNode && x.name === logical) return id(group.logicalValue);
         if (x instanceof IdentifierNode && safeLoopValueAlias(x.name)) {
           return replace(cloneNode(loopValueDefinitions.get(x.name)!), group);
@@ -1477,10 +1484,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         } else if (write instanceof ArrayDeleteNode) {
           write.index = permRead(group);
         } else if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) {
-          write.keys[keyIndex] = permRead(group);
+          write.keys = write.keys.map((key, index) => index === keyIndex
+            || (key instanceof IdentifierNode && key.name === logical) ? permRead(group) : key);
           write.expression = replace(write.expression, group) as ExpressionNode;
         } else {
-          write.keys[keyIndex] = permRead(group);
+          write.keys = write.keys.map((key, index) => index === keyIndex
+            || (key instanceof IdentifierNode && key.name === logical) ? permRead(group) : key);
         }
       }
       if (runtimeEmits.length > 0) {

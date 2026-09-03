@@ -388,6 +388,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   sortedUpsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
     fixedKeySources?: KeySourceInfo[];
+    /** Composite-key positions populated from the same varying array element. Omitted for the usual final key. */
+    varyingKeyIndices?: number[];
     keyDecodeTupleIndex?: number; keyDecodeTupleTypes?: string[];
     predicateArrayParam?: string; predicateEquals?: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;

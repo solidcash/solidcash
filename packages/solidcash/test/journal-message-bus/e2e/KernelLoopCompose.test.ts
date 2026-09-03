@@ -1,4 +1,4 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import {
 import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
+import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 import { alicePriv, alicePub, bobPriv, bobPub } from '../../fixture/vars.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
@@ -110,6 +111,21 @@ contract KernelSelectedMultiMapping() {
     for (int i = 0; i < n; i = i + 1) {
       if (i % 2 == 0) this.a[aPrefix][i] = i + 10;
       if (i % 2 != 0) this.b[bPrefix][i] = i + 20;
+    }
+    require(true);
+  }
+}`;
+
+const REPEATED_COUNTER_KEY_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelRepeatedCounterKey() {
+  mapping(int => mapping(int => mapping(int => int))) nested;
+  function write(int scope, int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.nested[i][scope][i] = i + 10; }
+    require(true);
+  }
+  function transform(int scope, int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.nested[i][scope][i] = max(this.nested[i][scope][i] * 2, this.nested[i][scope][i] + i + 5);
     }
     require(true);
   }
@@ -1478,6 +1494,39 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
+  it('settles a composite key with the counter in multiple positions', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(REPEATED_COUNTER_KEY_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    expect(write.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({ varyingKeyIndices: [0, 2] }),
+    ]);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    for (const functionName of ['write', 'transform']) {
+      const call = contract.batch([{ function: functionName, args: [7n, 3n] }]);
+      const builder = await call.build();
+      const vm = createVirtualMachineBch2026ForProvider(provider);
+      const transaction = builder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+          `${functionName}, input ${inputIndex}`).toBe(true);
+      }
+      await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    const valuesBySlot = new Map((await contract.getEntries('nested')).map((entry) => [
+      binToHex(entry.slot), entry.value,
+    ]));
+    for (const [key, expected] of [[0n, 20n], [1n, 22n], [2n, 24n]]) {
+      const slot = keyToSlotMulti([bigIntToVmNumber(key), bigIntToVmNumber(7n), bigIntToVmNumber(key)]);
+      expect(valuesBySlot.get(binToHex(slot))).toBe(expected);
+    }
+  }, 180_000);
+
   it('settles repeated loop events in source order while mapping keys use the authenticated permutation', async () => {
     const provider = createTestProvider();
     const artifact = compileString(COUNTER_MAPPING_EVENT_SOURCE, KERNEL);
@@ -1714,14 +1763,24 @@ describe('kernel composite counter-key settlement', () => {
     const oldValueRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
       input.name === oldValueInput.name);
     expect(oldValueRouteIndex).toBeGreaterThanOrEqual(0);
-    expect(routeUnlocker.params[oldValueRouteIndex]).toEqual([[6n, 7n]]);
+    const transformAbi = artifact.abi.find((candidate) => candidate.name === 'transform')!;
+    const permutationName = transformAbi.sortedUpsertLoopInfo?.[0].varyingArrayParam;
+    const permutationRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === permutationName);
+    expect(permutationRouteIndex).toBeGreaterThanOrEqual(0);
+    const rowPermutations = routeUnlocker.params[permutationRouteIndex] as bigint[][];
+    // Old-value witnesses use the same physical settlement order as the authenticated key permutation.
+    expect(routeUnlocker.params[oldValueRouteIndex]).toEqual([
+      rowPermutations[0].map((key) => key + 6n),
+    ]);
     const routeSelector = artifact.messageBus!.route.selector;
     if (!routeSelector) throw new Error('message-bus route has no selector');
     const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
       routeUnlocker.abiFunction, hexToBin(routeSelector),
     );
     const hostileParams = [...routeUnlocker.params];
-    hostileParams[oldValueRouteIndex] = [[999n, 7n]];
+    hostileParams[oldValueRouteIndex] = [[999n, ...(routeUnlocker.params[oldValueRouteIndex] as bigint[][])[0]
+      .slice(1)]];
     hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileParams);
     const hostileVm = createVirtualMachineBch2026ForProvider(provider);
     const hostileTransaction = hostileBuilder.buildLibauthTransaction();

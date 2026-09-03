@@ -934,14 +934,42 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it('uses one authenticated logical value in every direct counter-key component', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => mapping(int => int))) nested;
+      function write(int scope, int n) public {
+        for (int i = 0; i < n; i = i + 1) { this.nested[i][scope][i] = i + 10; }
+        require(true);
+      }
+      function transform(int scope, int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.nested[i][scope][i] = max(
+            this.nested[i][scope][i] * 2,
+            this.nested[i][scope][i] + i + 5
+          );
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const write = artifact.abi.find((handler) => handler.name === 'write');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(write?.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(1);
+    expect(write?.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({ varyingKeyIndices: [0, 2] }),
+    ]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'transform'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'transform')?.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({ varyingKeyIndices: [0, 2], valueRuntimeExpression: true }),
+    ]);
+  });
+
   it.each([
     ['a loop-carried local guard', `bool take = true;
       for (int i = 0; i < n; i = i + 1) {
         if (take) this.m[i] = i;
         take = !take;
-      }`],
-    ['the counter in two composite-key positions', `for (int i = 0; i < n; i = i + 1) {
-        this.nested[i][i] = 1;
       }`],
     ['the counter in an additional composite-key expression', `for (int i = 0; i < n; i = i + 1) {
         this.nested[i + 1][i] = 1;

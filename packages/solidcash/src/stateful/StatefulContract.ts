@@ -188,6 +188,7 @@ interface VmapCounterPermutationSpec {
 
 const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
 const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
+const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
 const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
@@ -15895,6 +15896,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const fixedSources = info.fixedKeySources ?? info.fixedKeyParams.map((paramName) => ({
         kind: 'param' as const, paramName,
       }));
+      const varyingKeyIndices = info.varyingKeyIndices?.length
+        ? [...info.varyingKeyIndices] : [keyTypes.length - 1];
+      const varyingKeyIndexSet = new Set(varyingKeyIndices);
+      const fixedKeyIndices = keyTypes.map((_type, index) => index)
+        .filter((index) => !varyingKeyIndexSet.has(index));
       const fixedBins = fixedSources.map((source, i) => {
         let value: unknown;
         if (source.kind === 'param') value = argOf(source.paramName);
@@ -15930,9 +15936,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
         if (value === undefined) throw new Error(`vmap upsert loop ${info.collection}: cannot resolve fixed key ${i}`);
-        return encKey(value, keyTypes[i] ?? collection.keyType);
+        return encKey(value, keyTypes[fixedKeyIndices[i] ?? i] ?? collection.keyType);
       });
-      const varyType = keyTypes[fixedSources.length] ?? collection.keyType;
+      const varyType = keyTypes[varyingKeyIndices[0]] ?? collection.keyType;
+      const keyBinsFor = (key: unknown): Uint8Array[] => {
+        let fixedIndex = 0;
+        return keyTypes.map((keyType, index) => varyingKeyIndexSet.has(index)
+          ? encKey(key, keyType)
+          : fixedBins[fixedIndex++]);
+      };
+      const slotForKey = (key: unknown): Uint8Array => keyToSlotMulti(keyBinsFor(key));
       let keysArr = argOf(info.varyingArrayParam) as unknown[];
       const runtimeFiltered = info.keyDecodeTupleIndex !== undefined || info.predicateArrayParam !== undefined;
       if (runtimeFiltered) {
@@ -15970,6 +15983,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ));
         }
         keysArr = selected;
+      }
+      if (Array.isArray(keysArr) && info.varyingArrayParam.startsWith(VMAP_COUNTER_PERM_PREFIX)) {
+        keysArr = [...keysArr].sort((left, right) => {
+          const leftSlot = bytesToSlotValue(slotForKey(left));
+          const rightSlot = bytesToSlotValue(slotForKey(right));
+          return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1 : 0;
+        });
+        const varyingIndex = loopAbiFunction.inputs.findIndex((input) => input.name === info.varyingArrayParam);
+        if (varyingIndex >= 0) replaceLoopArgument(varyingIndex, keysArr as FunctionArgument);
       }
       const isDelete = info.op === 'delete';
       // A loop-INVARIANT value (fixed-amount airdrop `+= amount` / batch-set-const `= 100`): the same amount for every
@@ -16016,7 +16038,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`vmap runtime expression loop ${info.collection}: missing old-value witness ABI input`);
         }
         const oldValues = keysArr.map((key) => {
-          const slot = keyToSlotMulti([...fixedBins, encKey(key, varyType)]);
+          const slot = slotForKey(key);
           const entry = list.find(slot);
           return entry
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint
@@ -16051,14 +16073,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // co-spent once and the scalar applied per occurrence), so it is NOT pre-merged here; a scalar `-=` duplicate
       // stays fail-closed (`-=` has no pending-defer).
       if (info.mutation && Array.isArray(keysArr) && keysArr.length > 1) {
-        const mutationSlots = keysArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
+        const mutationSlots = keysArr.map((key) => binToHex(slotForKey(key)));
         if (mutationSlots.some((h, i) => mutationSlots.indexOf(h) !== i)) {
           throw new Error(`vmap array mutation loop ${info.collection}: duplicate keys are ambiguous; combine them first`);
         }
       }
       if (!info.mutation && Array.isArray(keysArr) && keysArr.length > 1 && (isDelete || perKey || info.op === 'set')) {
         const kArr = keysArr as unknown[];
-        const slotHexes = kArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
+        const slotHexes = kArr.map((key) => binToHex(slotForKey(key)));
         if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
           const seen = new Set<string>();
           const order: number[] = [];
@@ -16087,7 +16109,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // the pending commitment in the loop below). Order-independent (accumulates); scalar `set` is deduped above.
       if ((info.op === '+' || info.op === '-') && !perKey && !isDelete && Array.isArray(keysArr) && keysArr.length > 1) {
         const kArr = keysArr as unknown[];
-        const slotHexes = kArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
+        const slotHexes = kArr.map((key) => binToHex(slotForKey(key)));
         if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
           const groups = new Map<string, number[]>();
           const firstOrder: string[] = [];
@@ -16113,7 +16135,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const kArr = keysArr as unknown[];
           const keepIdx: number[] = [];
           kArr.forEach((k, i) => {
-            if (binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])) !== senderSlotHex) keepIdx.push(i);
+            if (binToHex(slotForKey(k)) !== senderSlotHex) keepIdx.push(i);
           });
           if (keepIdx.length < kArr.length) {
             keysArr = keepIdx.map((i) => kArr[i]);
@@ -16137,7 +16159,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // so the encoded tx argument matches the commitment order the covenant verifies.
       if (foldActive && Array.isArray(keysArr) && keysArr.length > 1) {
         const kArr = keysArr as unknown[];
-        const slotsB = kArr.map((k) => keyToSlotMulti([...fixedBins, encKey(k, varyType)]));
+        const slotsB = kArr.map((key) => slotForKey(key));
         const isUpd = slotsB.map((s) => !!list.find(s));
         const updBySlot = new Map<string, number>();
         slotsB.forEach((s, i) => { if (isUpd[i]) updBySlot.set(binToHex(s), i); });
@@ -16215,7 +16237,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
         );
         for (let i = 0; i < keysArr.length; i++) {
-          const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
+          const slot = slotForKey(keysArr[i]);
           const slotHex = binToHex(slot);
           if (runtimeSlots.has(slotHex)) {
             throw new Error(`vmap runtime struct loop ${info.collection}: duplicate keys require a journaled `
@@ -16294,7 +16316,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const oldWitnesses: Uint8Array[] = [];
         const mutated: StateValue[] = [];
         for (let i = 0; i < keysArr.length; i++) {
-          const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
+          const slot = slotForKey(keysArr[i]);
           const raw = await readRawValue(slot);
           oldWitnesses.push(raw);
           const decoded = decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value;
@@ -16360,7 +16382,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       };
       let lastDeferred: DeferredEntry | null = null;
       for (let i = 0; i < keysArr.length; i++) {
-        const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
+        const slot = slotForKey(keysArr[i]);
         const slotHex = binToHex(slot);
         const loopRawValue = collection.chunkableValue && info.op === 'set'
           ? rawValueBytes(perKeyRawbytes ? (valsArr as unknown[])[i] : rawScalar)

@@ -21277,10 +21277,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (computed) fixedKeySources = [{ kind: 'expression', canonical: computed }];
     }
     let varyingArrayParam: string | undefined;
-    for (const src of metadataKeySources) {
+    const varyingKeyIndices: number[] = [];
+    for (const [index, src] of metadataKeySources.entries()) {
       if (src.kind === 'param' && src.paramName) { fixedKeyParams.push(src.paramName); continue; }
       const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/);
-      if (m) varyingArrayParam = m[1];
+      if (m) {
+        if (varyingArrayParam === undefined) varyingArrayParam = m[1];
+        if (varyingArrayParam === m[1]) varyingKeyIndices.push(index);
+      }
     }
     const decodedKeyRecipe = this.runtimeDecodedLoopKeyRecipe(block, writeNode);
     if (!varyingArrayParam && decodedKeyRecipe?.varyingArrayParam) {
@@ -21384,6 +21388,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const iteration = this.currentFunction.runtimeCounterLoopIterationConditions?.get(varyingArrayParam);
       const iterationBound = this.currentFunction.runtimeCounterLoopBounds?.get(varyingArrayParam);
       infos.push({ collection: collection.name, fixedKeyParams, fixedKeySources, varyingArrayParam,
+        ...(varyingKeyIndices.length !== 1
+          || varyingKeyIndices[0] !== metadataKeySources.length - 1 ? { varyingKeyIndices } : {}),
         ...(decodedKeyRecipe && {
           ...(decodedKeyRecipe.keyDecodeTupleIndex !== undefined
             && { keyDecodeTupleIndex: decodedKeyRecipe.keyDecodeTupleIndex }),

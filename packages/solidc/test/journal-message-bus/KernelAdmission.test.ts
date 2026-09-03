@@ -248,6 +248,14 @@ describe('required kernel admission', () => {
     ['balanced nested conditionals', `OP_1 OP_IF
       OP_0 OP_NOTIF OP_4 OP_DROP OP_ELSE OP_5 OP_DROP OP_ENDIF
       OP_ELSE OP_6 OP_DROP OP_ENDIF`],
+    ['balanced countdown loop', `OP_3 OP_BEGIN
+      OP_1SUB OP_DUP OP_0 OP_NUMEQUAL OP_UNTIL OP_DROP`],
+    ['balanced loop with a conditional', `OP_2 OP_BEGIN
+      OP_1SUB OP_DUP OP_IF OP_7 OP_DROP OP_ELSE OP_8 OP_DROP OP_ENDIF
+      OP_DUP OP_0 OP_NUMEQUAL OP_UNTIL OP_DROP`],
+    ['balanced nested loops', `OP_2 OP_BEGIN
+      OP_2 OP_BEGIN OP_1SUB OP_DUP OP_0 OP_NUMEQUAL OP_UNTIL OP_DROP
+      OP_1SUB OP_DUP OP_0 OP_NUMEQUAL OP_UNTIL OP_DROP`],
   ])('admits isolated native assembly with %s', (_description, asm) => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract C() {
@@ -290,6 +298,7 @@ describe('required kernel admission', () => {
     ['locktime threshold borrowed from compiler stack', 'OP_CHECKLOCKTIMEVERIFY'],
     ['sequence threshold borrowed from compiler stack', 'OP_CHECKSEQUENCEVERIFY'],
     ['conditional borrowed from compiler stack', 'OP_IF OP_ENDIF'],
+    ['loop condition borrowed from compiler stack', 'OP_BEGIN OP_DUP OP_UNTIL OP_DROP'],
   ])('refuses native assembly with %s', (_description, asm) => {
     expect(denied(`pragma solidcash >=0.8.0;
       contract C() {
@@ -311,10 +320,22 @@ describe('required kernel admission', () => {
   });
 
   it.each([
+    ['main stack', 'OP_BEGIN OP_1 OP_1 OP_UNTIL'],
+    ['alt stack', 'OP_BEGIN OP_1 OP_TOALTSTACK OP_1 OP_UNTIL'],
+  ])('rejects a native loop with divergent %s height', (_description, asm) => {
+    expect(() => compileString(`contract C() {
+      function denied() public { assembly { ${asm} } require(true); }
+    }`, KERNEL)).toThrow(/assembly loop stack-height mismatch/);
+  });
+
+  it.each([
     ['unmatched else', 'OP_ELSE', /OP_ELSE has no matching/],
     ['unmatched endif', 'OP_ENDIF', /OP_ENDIF has no matching/],
     ['missing endif', 'OP_1 OP_IF', /missing OP_ENDIF/],
     ['second else', 'OP_1 OP_IF OP_ELSE OP_ELSE OP_ENDIF', /only one OP_ELSE/],
+    ['unmatched until', 'OP_1 OP_UNTIL', /OP_UNTIL has no matching/],
+    ['missing until', 'OP_BEGIN OP_1', /loop is missing OP_UNTIL/],
+    ['crossed loop and conditional', 'OP_BEGIN OP_1 OP_IF OP_UNTIL OP_ENDIF', /OP_UNTIL has no matching/],
   ])('rejects native assembly with %s', (_description, asm, diagnostic) => {
     expect(() => compileString(`contract C() {
       function denied() public { assembly { ${asm} } require(true); }
@@ -327,6 +348,15 @@ describe('required kernel admission', () => {
         assembly {
           OP_DUP OP_IF OP_2 OP_DROP OP_ELSE OP_3 OP_DROP OP_ENDIF
         }
+        require(value == value);
+      }
+    }`)).not.toThrow();
+  });
+
+  it('preserves an untouched caller stack value across a native loop', () => {
+    expect(() => compileString(`contract C() {
+      function direct(int value) public {
+        assembly { OP_BEGIN OP_1 OP_UNTIL }
         require(value == value);
       }
     }`)).not.toThrow();

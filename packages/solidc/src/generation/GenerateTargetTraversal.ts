@@ -8025,9 +8025,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Mirror each element's stack effect onto the tracker so later variable refs resolve correctly. A raw
     // conditional snapshots the post-condition stack, visits each arm independently, then joins equal-height
-    // arms. Values which retain the same symbolic identity on both arms stay addressable; differing values join
-    // as anonymous assembly results. TypeCheckTraversal has already rejected malformed or divergent branches.
-    const conditionals: Array<{ entry: string[]; thenStack?: string[] }> = [];
+    // arms. A raw loop similarly joins its post-condition stack back into its entry stack. Values which retain
+    // the same symbolic identity stay addressable; differing values join as anonymous assembly results.
+    type ControlFrame = { kind: 'conditional'; entry: string[]; thenStack?: string[] }
+    | { kind: 'loop'; entry: string[] };
+    const controls: ControlFrame[] = [];
     for (const element of script) {
       this.emit(element, locationData);
       if (typeof element !== 'number') {
@@ -8036,25 +8038,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (element === Op.OP_IF || element === Op.OP_NOTIF) {
         this.popFromStack();
-        conditionals.push({ entry: [...this.stack] });
+        controls.push({ kind: 'conditional', entry: [...this.stack] });
         continue;
       }
       if (element === Op.OP_ELSE) {
-        const conditional = conditionals.at(-1);
-        if (!conditional) throw new Error('Unmatched OP_ELSE in assembly block');
+        const conditional = controls.at(-1);
+        if (!conditional || conditional.kind !== 'conditional') {
+          throw new Error('Unmatched OP_ELSE in assembly block');
+        }
         conditional.thenStack = [...this.stack];
         this.stack = [...conditional.entry];
         continue;
       }
       if (element === Op.OP_ENDIF) {
-        const conditional = conditionals.pop();
-        if (!conditional) throw new Error('Unmatched OP_ENDIF in assembly block');
+        const conditional = controls.pop();
+        if (!conditional || conditional.kind !== 'conditional') {
+          throw new Error('Unmatched OP_ENDIF in assembly block');
+        }
         const thenStack = conditional.thenStack ?? [...this.stack];
         const elseStack = conditional.thenStack ? [...this.stack] : conditional.entry;
         if (thenStack.length !== elseStack.length) {
           throw new Error('Divergent assembly conditional stack heights reached code generation');
         }
         this.stack = thenStack.map((name, index) => name === elseStack[index] ? name : '(asm)');
+        continue;
+      }
+      if (element === Op.OP_BEGIN) {
+        controls.push({ kind: 'loop', entry: [...this.stack] });
+        continue;
+      }
+      if (element === Op.OP_UNTIL) {
+        this.popFromStack();
+        const loop = controls.pop();
+        if (!loop || loop.kind !== 'loop') throw new Error('Unmatched OP_UNTIL in assembly block');
+        if (loop.entry.length !== this.stack.length) {
+          throw new Error('Divergent assembly loop stack heights reached code generation');
+        }
+        this.stack = loop.entry.map((name, index) => name === this.stack[index] ? name : '(asm)');
         continue;
       }
       const effect = getStackEffect(element);

@@ -43,6 +43,18 @@ contract KernelCounterMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
+const COUNTER_MAPPING_RMW_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelCounterMappingRmw() {
+  mapping(int => int) m;
+  function credit(int n, int amount) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.m[i] = this.m[i] + amount;
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.m[key] == expected); }
+}`;
+
 const SOLE_FUNCTION_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelSoleFunction() {
   int x;
@@ -333,6 +345,30 @@ describe('kernel signature-array rows', () => {
 });
 
 describe('kernel counter-key mapping loop compose', () => {
+  it('settles an old-entry transition without a row-local fixed key witness', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(COUNTER_MAPPING_RMW_SOURCE, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'credit');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.batchKeyWitnesses).toBeUndefined();
+    expect(artifact.abi.find((candidate) => candidate.name === 'credit')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ op: '+', valueScalarParam: 'amount' })]);
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'credit', args: [3n, 7n] }]).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    for (let key = 0; key < 3; key += 1) {
+      await expect(
+        StatefulContract.withCategory(inner, categoryId).check(BigInt(key), 7n).send(),
+      ).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+  }, 180_000);
+
   it('finalizes and sends a counter-keyed mapping row with the authenticated permutation', async () => {
     const provider = createTestProvider();
     const artifact = compileString(COUNTER_MAPPING_SOURCE, KERNEL);

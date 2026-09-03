@@ -3019,6 +3019,10 @@ function synthesizeMessageBusRoute(
           if (consumed.has(node)) return;
           const flattened = includeBare && flattenBare ? bareEntryAccessOf(node, locallyBound) : undefined;
           for (const inner of flattened?.chain ?? []) consumed.add(inner);
+          // A compact counter-loop `m[key] +/- rhs` transition reads the old value from the same authenticated
+          // runtime journal entry that it writes. LowerVMapCounterLoops proves and marks that relationship before
+          // rewriting the logical key through its permutation. It is not a second, fixed route resource.
+          if (node instanceof ExpressionNode && node.messageBusRuntimeLoopTransitionRead === true) return;
           let access = node instanceof MappingAccessNode || node instanceof MappingAssignNode
             || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode
             ? { name: node.name, keys: node.keys as ExpressionNode[] }

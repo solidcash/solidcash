@@ -124,8 +124,8 @@ unsupported siblings remain published with a `KERNEL_*` refusal:
 - no frozen-forbidden construct (section 5).
 
 `messageBusKernel: false` keeps the **legacy** path as a temporary compatibility escape hatch:
-current clones, current unroll, and current `messageBusRejectionReason` strings. A
-Marketplace-shaped handler is kernel-eligible when its keys and calls have a loop representation.
+current clones, current unroll, and current `messageBusRejectionReason` strings. A handler is
+kernel-eligible when each of its resources, results, and effects has a sound row-loop representation.
 Under the kernel convention, an unsupported sibling is refused without demoting eligible siblings.
 
 The default kernel convention requires kernel admission. Ineligible handlers publish
@@ -283,7 +283,10 @@ Every mapping/array write in that loop must use the counter in exactly one key c
 writes must have the same complete key tuple (for example `a[k][i]` plus `b[k][i]`). Counter-dependent
 or loop-carried write guards, sibling reads of a mutated mapping, foreign counter-keyed reads, and
 write values derived through loop-local/loop-carried locals or scalar state mutated by the loop remain
-`KERNEL_UNBOUNDED_KEY`.
+`KERNEL_UNBOUNDED_KEY`. The compact old-entry transition recognizes only `m[i] + rhs` and `m[i] - rhs`;
+non-additive old-entry expressions such as `m[i] * 2` also remain frozen rather than being reinterpreted as an
+additive update. The old value in the admitted `+`/`-` form is supplied by the same authenticated runtime journal
+entry as the write; it is not published as a separate fixed-key route witness.
 
 Mixed typed external calls and genuinely invariant `if`/`switch` in the same counter loop stay on the
 row loop: only direct uses of the counter in mapping keys and mapping values are rewritten to `perm[i]`;

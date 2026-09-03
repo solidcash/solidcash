@@ -104,6 +104,44 @@ describe('required kernel admission', () => {
     }
   });
 
+  it('refuses a non-additive old-entry expression instead of reinterpreting it as addition', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function transform(int n) public {
+        for (int i = 0; i < n; i = i + 1) { slots[i] = slots[i] * 2; }
+        require(true);
+      }
+      function credit(int n, int amount) public {
+        for (int i = 0; i < n; i = i + 1) { slots[i] = slots[i] + amount; }
+        require(true);
+      }
+      function debit(int n, int amount) public {
+        for (int i = 0; i < n; i = i + 1) { slots[i] = slots[i] - amount; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'transform')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'credit')?.eligible).toBe(true);
+    expect(artifact.abi.find((handler) => handler.name === 'credit')?.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({ op: '+', valueScalarParam: 'amount' }),
+    ]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'credit')?.batchKeyWitnesses)
+      .toBeUndefined();
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'debit')?.eligible).toBe(true);
+    expect(artifact.abi.find((handler) => handler.name === 'debit')?.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({ op: '-', valueScalarParam: 'amount' }),
+    ]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'debit')?.batchKeyWitnesses)
+      .toBeUndefined();
+    expect(artifact.messageBus?.route.inputs.some((input) => input.name.startsWith('__message_bus_key_slots_')))
+      .toBe(false);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
   it('does not reorder an effectful helper used as a counter-loop mapping value', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

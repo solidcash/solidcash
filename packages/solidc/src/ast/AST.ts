@@ -1091,6 +1091,10 @@ export abstract class ExpressionNode extends Node {
   // returned expression. Try/catch validation still needs to distinguish this external self-call spelling
   // from an internal call after getter/helper inlining.
   fromExternalSelfCall?: boolean;
+  // The counter-loop lowering has proved this is the same-key old-value read of a compact `+`/`-` mapping
+  // transition. Its value comes from the authenticated runtime journal entry; route admission must not reserve
+  // an additional fixed-key witness for the loop-local identity.
+  messageBusRuntimeLoopTransitionRead?: boolean;
 }
 
 // `(x op= rhs)` used as an expression: performs the assignment to local `x` and yields its new value
@@ -2213,7 +2217,7 @@ export class ExternalFunctionCallNode extends ExpressionNode {
 
 export interface ExternalCallArgSource {
   kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'loopIndex'
-    | 'expression';
+  | 'expression';
   paramIndex?: number;
   indexParamIndex?: number;
   indexValue?: number;

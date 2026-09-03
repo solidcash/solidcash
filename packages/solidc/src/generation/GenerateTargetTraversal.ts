@@ -20792,7 +20792,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && this.isLoopStructRuntimeRmw(block, assign, expr.name)) {
         valueRuntimeLocal = expr.name;
       }
-      const isRmw = expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode;
+      // Only additive/subtractive old-entry forms have the compact RMW transition represented by `op` below.
+      // Other binary expressions (`m[k] * 2`, `/`, shifts, comparisons, ...) are absolute runtime expressions:
+      // treating every non-minus operator as `+` silently changes their semantics.
+      const isRmw = expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode
+        && (expr.operator === BinaryOperator.PLUS || expr.operator === BinaryOperator.MINUS);
       if (!valueRuntimeLocal) {
         op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
       }

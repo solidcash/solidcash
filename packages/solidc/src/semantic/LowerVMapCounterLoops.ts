@@ -410,6 +410,45 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      const collectionAccessOf = (x: Node): { name: string; keys: ExpressionNode[] } | undefined => {
+        if (x instanceof MappingAccessNode) return { name: x.name, keys: x.keys };
+        if (!(x instanceof ArrayAccessNode)) return undefined;
+        const keys: ExpressionNode[] = [];
+        let cursor: ExpressionNode = x;
+        while (cursor instanceof ArrayAccessNode) {
+          keys.unshift(cursor.index);
+          cursor = cursor.array;
+        }
+        return cursor instanceof IdentifierNode && this.collections.has(cursor.name)
+          ? { name: cursor.name, keys } : undefined;
+      };
+      const containsCollectionAccess = (x: Node): boolean => {
+        if (collectionAccessOf(x)) return true;
+        for (const key of Object.keys(x)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
+          const value = (x as unknown as Record<string, unknown>)[key];
+          if (value instanceof Node && containsCollectionAccess(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && containsCollectionAccess(item))) return true;
+        }
+        return false;
+      };
+      // The compact old-entry transition has exactly one supported shape: `m[key] +/- rhs`, with all mapping
+      // state confined to the left operand. Other operators need the old value in a general expression journal;
+      // rewriting them onto the permutation would otherwise let codegen mistake (for example) `* 2` for `+ 2`.
+      const hasUnsupportedOldEntryExpression = keyed.some((write) => {
+        const expression = write instanceof MappingAssignNode ? write.expression
+          : write instanceof ArrayAssignNode ? write.value : undefined;
+        if (!expression || !containsCollectionAccess(expression)) return false;
+        const left = expression instanceof BinaryOpNode ? collectionAccessOf(expression.left) : undefined;
+        if (!(expression instanceof BinaryOpNode)
+          || (expression.operator !== BinaryOperator.PLUS && expression.operator !== BinaryOperator.MINUS)
+          || !left
+          || left.name !== write.name
+          || left.keys.map(expressionShape).join('|') !== writeKeyShape(write)
+          || containsCollectionAccess(expression.right)) return true;
+        return false;
+      });
       // Do not silently turn a physical loop rank into a logical mapping value through an alias or loop-carried
       // scalar state. Direct uses of `i` inside a write are rewritten to perm[i]; values assigned earlier in the
       // loop are intentionally left in source order, so depending on them would change program semantics.
@@ -459,6 +498,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return false;
       };
       if (hasCounterDependentGuard(block) || hasSiblingMappingRead(block) || hasUnsafeRead(block)
+        || hasUnsupportedOldEntryExpression
         || hasLoopCarriedWriteGuard(block) || keyed.some(dependsOnLoopMutation)) return;
 
       loweredCounterLoop = true;
@@ -496,6 +536,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       for (const write of keyed) {
         const keyIndex = counterKeyIndex(write, logical);
+        const expression = write instanceof ArrayAssignNode ? write.value
+          : write instanceof MappingAssignNode ? write.expression : undefined;
+        if (expression instanceof BinaryOpNode
+          && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
+          && collectionAccessOf(expression.left) !== undefined) {
+          // Admission above proved this direct left operand is the same collection/key and that the right side
+          // contains no collection read. Preserve that ownership across the key/value permutation rewrite so the
+          // route census does not invent a fixed witness for a value supplied by the runtime journal entry.
+          expression.left.messageBusRuntimeLoopTransitionRead = true;
+        }
         if (write instanceof ArrayAssignNode) {
           write.index = permRead();
           write.value = replace(write.value) as ExpressionNode;

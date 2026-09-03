@@ -222,6 +222,14 @@ contract KernelSelectedCounterMapping() {
     }
     require(true);
   }
+  function writeReturn(int n, int stop) public returns (int) {
+    for (int i = 0; i < n; i = i + 1) {
+      this.m[i] = i + 70;
+      if (i == stop) return i;
+    }
+    require(true);
+    return n;
+  }
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
@@ -585,6 +593,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const oddsHandler = artifact.abi.find((candidate) => candidate.name === 'writeOdds')!;
     const untilHandler = artifact.abi.find((candidate) => candidate.name === 'writeUntil')!;
     const voidReturnHandler = artifact.abi.find((candidate) => candidate.name === 'writeVoidReturn')!;
+    const returnHandler = artifact.abi.find((candidate) => candidate.name === 'writeReturn')!;
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
       .toMatchObject({ eligible: true });
     expect(writeHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
@@ -597,6 +606,9 @@ describe('kernel counter-key mapping loop compose', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeVoidReturn'))
       .toMatchObject({ eligible: true });
     expect(voidReturnHandler.sortedUpsertLoopInfo?.[0].iterationBreakCondition).toBeDefined();
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeReturn'))
+      .toMatchObject({ eligible: true });
+    expect(returnHandler.sortedUpsertLoopInfo?.[0].iterationBreakCondition).toBeDefined();
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -746,6 +758,28 @@ describe('kernel counter-key mapping loop compose', () => {
       await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
+    const returned = StatefulContract.withCategory(inner, categoryId).call.writeReturn(7n, 2n);
+    const returnBuilder = await returned.build();
+    const returnInput = returnBuilder.inputs.find((candidate) =>
+      'abiFunction' in candidate.unlocker && candidate.unlocker.abiFunction.name === 'writeReturn');
+    if (!returnInput || !('params' in returnInput.unlocker)) {
+      throw new Error('direct writeReturn input is missing');
+    }
+    const returnPermutationIndex = returnHandler.inputs.findIndex((candidate) =>
+      candidate.name.startsWith('__internal__vmapCounterPerm_'));
+    expect([...(returnInput.unlocker.params[returnPermutationIndex] as bigint[])]
+      .sort((left, right) => Number(left - right))).toEqual([0n, 1n, 2n]);
+    await expect(returned.send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const [key, expected] of [[0n, 70n], [1n, 71n], [2n, 72n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    await expect(StatefulContract.withCategory(inner, categoryId).call.writeReturn(7n, 1n).emitReturn().send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeReturn', args: [7n, 1n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 
   it('settles conditionally reached counter loops and plans inactive rows as empty', async () => {

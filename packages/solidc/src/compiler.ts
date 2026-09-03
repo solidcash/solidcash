@@ -2472,7 +2472,7 @@ function synthesizeMessageBusRoute(
               const isParam = candidate.parameters.some((parameter) => parameter.name === key.name)
                 || source.parameters.some((parameter) => parameter.name === key.name);
               // Supported counter-keyed loops have already been rewritten to `m[perm[i]]`. A remaining
-              // loop-local identifier (`continue`/`break` in `for (i) m[i] = ...`) has no kernel representation.
+              // loop-local key means the loop shape or its dataflow was not representable by that lowering.
               if (!isParam) {
                 unsupported = true;
                 return;

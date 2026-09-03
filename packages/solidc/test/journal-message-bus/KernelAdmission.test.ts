@@ -672,7 +672,7 @@ describe('required kernel admission', () => {
     );
   });
 
-  it('refuses an early return from a counter-keyed mapping loop', () => {
+  it('admits a value-returning early exit as an exact terminated counter-loop domain', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function denied(int n) public returns (int) {
@@ -683,13 +683,11 @@ describe('required kernel admission', () => {
         require(true);
         return n;
       }
-      function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo?.[0]
+      .iterationBreakCondition).toMatchObject({ kind: 'binary', operator: '==' });
   });
 
   it('admits a void early return as an exact terminated counter-loop domain', () => {

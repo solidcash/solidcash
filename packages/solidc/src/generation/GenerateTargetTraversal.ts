@@ -26682,6 +26682,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     blockSize: number, locationData: SingleLocationData, trailingBase?: number, extraStackOffset = 0,
   ): void {
     this.emitTrailingBlockBase(blockSize, locationData, trailingBase, extraStackOffset);
+    // A compact direct-call layout reserves the returnEvent coordinate in blockSize, but a plain returning call
+    // (`__internal__returnOutputIdx < 0`) materializes no output there. Runtime mapping outputs therefore compact
+    // by one exactly like dynamic-state and mapping-value chunk outputs. Inputs do not compact: the builder keeps
+    // their block alignment with a non-token funding input, so this belongs only in the output-base helper.
+    const hasUnmaterializedReturnSlot = trailingBase === undefined
+      && this.currentFunction.blockLayout?.trailingBase === undefined
+      && (this.currentFunction.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent') ?? false);
+    if (hasUnmaterializedReturnSlot) {
+      const returnOutputIdx = this.getStackIndex('__internal__returnOutputIdx', true);
+      if (returnOutputIdx >= 0) {
+        this.emitPickCompilerRouteFrameValue(
+          '__internal__returnOutputIdx', locationData, 1 + extraStackOffset,
+        );
+        this.emit(encodeInt(0n), locationData);
+        this.emit(Op.OP_LESSTHAN, locationData);
+        this.emit(Op.OP_SUB, locationData);
+      }
+    }
     this.emitAddCollectionIterCounts(locationData, extraStackOffset);
     if (this.runtimeLoopEntryOutputCountActive) {
       this.emitPickCompilerRouteFrameValue(

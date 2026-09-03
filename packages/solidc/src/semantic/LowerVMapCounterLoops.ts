@@ -47,8 +47,8 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * `int i = 0; do { ...; i = i + 1; } while (i < publicBound)` lower. The latter authenticates
  * `max(publicBound, 1)` entries. Multiple unconditional source-order loops may lower together when their
  * runtime keys are disjoint; each loop receives its own authenticated trailing input/output segment.
- * Counter-dependent guards, sibling reads of the mutated mapping,
- * `continue`/`break`, and other domains need a separate logical-journal/physical-settlement phase.
+ * Loop-carried predicates/values, sibling reads of the mutated mapping, nested loops, and switch/try path
+ * control still need richer logical-journal or path metadata.
  *
  * The permutation is an untrusted unlocking witness. Generated checks prove it has exactly the canonical domain's
  * number of distinct elements in that domain, hence it is a complete permutation rather than an SDK convention.
@@ -292,16 +292,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return write.index instanceof IdentifierNode && write.index.name === logical ? 0 : -1;
       }
       return write.keys.findIndex((key) => key instanceof IdentifierNode && key.name === logical);
-    };
-    const hasUnsupportedJump = (x: Node): boolean => {
-      if (x instanceof ReturnNode) return node.returnTypes.length > 0;
-      for (const key of Object.keys(x)) {
-        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
-        const v = (x as unknown as Record<string, unknown>)[key];
-        if (v instanceof Node && hasUnsupportedJump(v)) return true;
-        if (Array.isArray(v) && v.some((e) => e instanceof Node && hasUnsupportedJump(e))) return true;
-      }
-      return false;
     };
     const hasObservableEffect = (x: Node): boolean => {
       if (x instanceof FunctionCallNode) {
@@ -634,7 +624,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ): void => {
         if (x instanceof WhileNode || x instanceof DoWhileNode) return;
         if (isWrite(x)) { writes.push(x); writePaths.set(x, condition); return; }
-        if (x instanceof BreakNode || (x instanceof ReturnNode && node.returnTypes.length === 0)) {
+        if (x instanceof BreakNode || x instanceof ReturnNode) {
           breakPaths.push(condition); return;
         }
         if (x instanceof BlockNode) {
@@ -790,7 +780,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return false;
       };
       if (keyed.length === 0 || keyed.length !== writes.length || !selectionConditionSupported
-        || hasUnsupportedJump(block) || keyed.some((write) => hasObservableEffect(write))
+        || keyed.some((write) => hasObservableEffect(write))
         || conditionalRuntimeEmit
         || hasUnjournalledRepeatedEffect(block, runtimeEmitSet, impureInlineResults)
         // The permutation proof relies on visiting every physical rank exactly once. Apart from the canonical
@@ -1312,7 +1302,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (!cursorAdvance) return;
         const statements: StatementNode[] = [];
         for (const statement of target.statements ?? []) {
-          if (statement instanceof BreakNode || (statement instanceof ReturnNode && node.returnTypes.length === 0)) {
+          if (statement instanceof BreakNode || statement instanceof ReturnNode) {
             statements.push(cloneNode(cursorAdvance), statement);
           } else {
             if (statement instanceof BranchNode) {
@@ -1334,7 +1324,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       const sourceStatements = breakPaths.length > 0 && cursorAdvance
         ? originalStatements.flatMap((statement) => statement instanceof BreakNode
-          || (statement instanceof ReturnNode && node.returnTypes.length === 0)
+          || statement instanceof ReturnNode
           ? [cloneNode(cursorAdvance), statement] : [statement])
         : originalStatements;
       const updateIndex = counterUpdate ? sourceStatements.indexOf(counterUpdate) : -1;

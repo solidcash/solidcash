@@ -4441,6 +4441,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const value = resolvedCallerInternalWitnesses[input.name];
         if (value !== undefined) return value;
         if (input.name === '__internal__activeVerifierIndex') return -1n;
+        // The aggregate route returns its concatenated result blob to graph consumers, but an ordinary local
+        // `.batch()` does not materialize that route-level value as a return-event NFT. Semantic injection still
+        // gives every returning entry point this compiler-owned coordinate, so use the same negative sentinel as
+        // standalone returning calls until an outer composer explicitly binds a concrete return output.
+        if (input.name === '__internal__returnOutputIdx') return -1n;
         // A negative value preserves the compiler's layout-relative continuation band. Builders that relocate
         // dynamic value chunks later replace this sentinel with the final absolute output coordinate.
         if (input.name === '__internal__valueChunkOutputBase') return -1n;

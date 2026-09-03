@@ -138,6 +138,21 @@ contract KernelCounterMappingEvent() {
   }
 }`;
 
+const CONDITIONAL_COUNTER_EVENT_SOURCE = `pragma solidcash ^0.13.0;
+event Hit(int i);
+contract KernelConditionalCounterEvent() {
+  mapping(int => int) m;
+  function write(int n, bool enabled, bool oddsOnly) public {
+    if (enabled) emit Hit(-1);
+    for (int i = 0; i < n; i = i + 1) {
+      this.m[i] = i + 10;
+      if (enabled && (!oddsOnly || i % 2 == 1)) emit Hit(i);
+    }
+    if (!enabled) emit Hit(-2);
+    require(true);
+  }
+}`;
+
 const INDEPENDENT_ROW_LOOP_SOURCE = `pragma solidcash ^0.13.0;
 event ABefore(int n);
 event AHit(int i);
@@ -937,6 +952,36 @@ describe('kernel composite counter-key settlement', () => {
       { function: 'write', args: [1n] },
       { function: 'write', args: [1n] },
     ]).build()).rejects.toThrow(/read-your-writes transition/);
+  }, 180_000);
+
+  it('plans conditional event paths for direct and routed counter rows', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(CONDITIONAL_COUNTER_EVENT_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(handler.runtimeLoopEvents).toHaveLength(3);
+    expect(handler.runtimeLoopEvents?.every((segment) => segment.conditions?.[0])).toBe(true);
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const direct = await contract.call.write(4n, true, true).send();
+    expect(direct.events?.map((event) => event.args.i)).toEqual([-1n, 1n, 3n]);
+
+    const routed = contract.batch([{ function: 'write', args: [2n, false, false] }]);
+    const builder = await routed.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    const receipt = await routed.send();
+    expect(receipt.events?.map((event) => event.args.i)).toEqual([-2n]);
   }, 180_000);
 
   it('settles independent mapping journals and event streams in physical row order', async () => {

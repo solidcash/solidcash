@@ -133,6 +133,8 @@ export interface RuntimeLoopEventAbi {
   permutationParam?: string;
   repeatCount?: number;
   eventSignatures: readonly string[];
+  /** Per-site runtime predicates, aligned with eventSignatures. Missing entries are unconditional. */
+  conditions?: readonly (ExternalCallExpression | null)[];
 }
 
 export interface TokenContainerAccessAbi {
@@ -571,7 +573,7 @@ export interface ExternalReadAbi {
 
 export interface ArgSource {
   kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'loopIndex'
-    | 'expression';
+  | 'expression';
   paramIndex?: number;     // for 'forward': index into the user-visible function args
   indexParamIndex?: number; // for 'arrayElement': optional function parameter containing the element index
   indexValue?: number;     // for 'arrayElement': fixed index (loop call sites commonly begin at zero)

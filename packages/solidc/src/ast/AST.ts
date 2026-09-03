@@ -2553,6 +2553,10 @@ export class EmitStatementNode extends StatementNode {
   emitIndex: number = 0;
   /** Runtime event site within a lowered counter-keyed mapping loop; excluded from fixed event slots. */
   runtimeLoopEvent?: { loopIndex: number; siteIndex: number };
+  /** Source predicate controlling this runtime event, evaluated by the SDK to plan the exact output stream. */
+  runtimeLoopEventCondition?: ExpressionNode;
+  /** Counter progression available to runtimeLoopEventCondition as a per-occurrence value. */
+  runtimeLoopEventCounter?: { name: string; initialValue: bigint; stepValue: bigint };
   fieldNames?: string[]; // set for named-arg emits emit E({a: x}); reordered against the event's params
 
   constructor(

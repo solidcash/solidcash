@@ -1254,7 +1254,7 @@ describe('required kernel admission', () => {
     expect(kernel.messageBus?.handlers.find((candidate) => candidate.name === 'write')?.eligible).toBe(true);
   });
 
-  it('refuses a conditionally repeated event whose runtime cardinality is not fixed by the loop', () => {
+  it('publishes a runtime predicate for a conditionally repeated event', () => {
     const artifact = compileString(`event Hit(int i);
       contract C() {
         mapping(int => int) m;
@@ -1268,19 +1268,104 @@ describe('required kernel admission', () => {
         function control() public { require(true); }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+      eligible: true,
+      runtimeLoopEvents: [{
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/),
+        eventSignatures: ['Hit(int256)'],
+        conditions: [{ kind: 'source', source: { kind: 'forward', paramIndex: 1 } }],
+      }],
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a conditional event outside the loop until the event stream has path metadata', () => {
+  it('publishes path metadata for a conditional event outside the loop', () => {
     const artifact = compileString(`event Hit(int i);
       contract C() {
         mapping(int => int) m;
         function denied(int n, bool enabled) public {
           if (enabled) emit Hit(-1);
           for (int i = 0; i < n; i = i + 1) { this.m[i] = 1; emit Hit(i); }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [
+        {
+          repeatCount: 1,
+          eventSignatures: ['Hit(int256)'],
+          conditions: [{ kind: 'source', source: { kind: 'forward', paramIndex: 1 } }],
+        },
+        {
+          permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/),
+          eventSignatures: ['Hit(int256)'],
+        },
+      ],
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('publishes a stable pre-state event predicate without contract-specific shape knowledge', () => {
+    const artifact = compileString(`event Hit(int i);
+      contract C() {
+        bool enabled;
+        mapping(int => int) m;
+        function write(int n) public {
+          for (int i = 0; i < n; i = i + 1) {
+            this.m[i] = i;
+            if (this.enabled) emit Hit(i);
+          }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')).toMatchObject({
+      eligible: true,
+      runtimeLoopEvents: [{
+        conditions: [{ kind: 'state', name: 'enabled' }],
+      }],
+    });
+  });
+
+  it('serializes array length and element access in a counter event predicate', () => {
+    const artifact = compileString(`event Hit(int i);
+      contract C() {
+        mapping(int => int) m;
+        function write(int n, bool[] enabled) public {
+          for (int i = 0; i < n; i = i + 1) {
+            this.m[i] = i;
+            if (i < enabled.length && enabled[i]) emit Hit(i);
+          }
+          require(true);
+        }
+      }`, KERNEL);
+    const condition = artifact.messageBus?.handlers.find((handler) => handler.name === 'write')
+      ?.runtimeLoopEvents?.[0].conditions?.[0];
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
+    expect(condition).toMatchObject({
+      kind: 'binary',
+      operator: '&&',
+      left: {
+        kind: 'binary',
+        operator: '<',
+        right: { kind: 'unary', operator: '.length' },
+      },
+      right: { kind: 'arrayAccess' },
+    });
+  });
+
+  it('refuses an event predicate derived from state mutated by the same handler', () => {
+    const artifact = compileString(`event Hit(int i);
+      contract C() {
+        bool enabled;
+        mapping(int => int) m;
+        function denied(int n, bool next) public {
+          this.enabled = next;
+          for (int i = 0; i < n; i = i + 1) {
+            this.m[i] = i;
+            if (this.enabled) emit Hit(i);
+          }
           require(true);
         }
         function control() public { require(true); }

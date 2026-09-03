@@ -1,8 +1,10 @@
 import {
   AddressSendExpressionNode, AddressTransferStatementNode, ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode,
-  AssignNode, BinaryOpNode, BlockNode, BranchNode, BreakNode, CollectionNode, ContinueNode, ContractNode, DoWhileNode,
+  AssignNode, BinaryOpNode, BlockNode, BranchNode, BreakNode, CastNode, CollectionNode, ContinueNode, ContractNode,
+  DoWhileNode,
   EmitStatementNode, ExpressionNode, ExternalFunctionCallNode, FunctionCallNode, FunctionCallStatementNode,
-  FunctionDefinitionNode, IdentifierNode, IntLiteralNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
+  FieldAccessNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, LiteralNode, MappingAccessNode,
+  MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, SourceFileNode,
   ReturnNode,
   StateAccessNode, StateArrayAssignNode, StateArrayDeleteNode, StateArrayPopNode, StateArrayPushNode,
@@ -34,10 +36,11 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
 /**
  * Lower a vmap counter loop `for (int i=0; i<n; i++) m[…][i] = f(i);` so logical indices execute through an
  * SDK-supplied slot-order permutation. Only mapping/array write keys and values are rewritten to perm[i].
- * Typed calls and other statements stay in source order. Unconditionally reached event sites are recorded in a
- * function-local runtime stream and settled after all mapping journals, so they repeat in logical source order
- * without sharing the route's fixed per-row event slots. Conditional/nested event reachability, BCH transfers,
- * and token-container transfers still need their own runtime effect records. The canonical pre-test domains
+ * Typed calls and other statements stay in source order. Event sites are recorded in a function-local runtime
+ * stream and settled after all mapping journals, so they repeat in logical source order without sharing the
+ * route's fixed per-row event slots. Nested if/else reachability is serialized when it depends only on SDK-visible
+ * inputs, immutable aliases, stable pre-state, and the source counter. Switch/try/nested-loop event reachability,
+ * BCH transfers, and token-container transfers still need richer runtime effect records. The canonical pre-test domains
  * `for (int i = constantStart; i < publicBound; i = i + positiveConstantStep)` and
  * `for (int i = constantStart; i > publicBound; i = i - positiveConstantStep)`, plus the post-test domain
  * `int i = 0; do { ...; i = i + 1; } while (i < publicBound)` lower. The latter authenticates
@@ -404,6 +407,93 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // loop cannot leak an unused compiler-owned permutation into an otherwise ordinary ABI.
     const counterWriteLoops = [...canonicalLoops].filter(([loop, canonical]) =>
       isCounterWriteLoop(loop, canonical.logical));
+    const visibleParameters = node.parameters.filter((parameter) =>
+      !parameter.name.startsWith('__internal__'));
+    const runtimePathMutatedState = new Set<string>();
+    const collectRuntimePathMutations = (candidate: Node): void => {
+      if (candidate instanceof StateAssignNode || candidate instanceof StateArrayAssignNode
+        || candidate instanceof StateArrayDeleteNode || candidate instanceof StateArrayPopNode
+        || candidate instanceof StateArrayPushNode || isWrite(candidate)) {
+        runtimePathMutatedState.add(candidate.name);
+      }
+      for (const [key, value] of Object.entries(candidate)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+          || key === 'resolvedFunction') continue;
+        if (value instanceof Node) collectRuntimePathMutations(value);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) collectRuntimePathMutations(item);
+        }
+      }
+    };
+    collectRuntimePathMutations(node.body);
+    const runtimePathExpressionSupported = (
+      expression: ExpressionNode,
+      counterName?: string,
+      resolving = new Set<string>(),
+    ): boolean => {
+      if (expression instanceof LiteralNode) return true;
+      if (expression instanceof StateAccessNode) return !runtimePathMutatedState.has(expression.name);
+      if (expression instanceof IdentifierNode) {
+        if (expression.name === counterName
+          || visibleParameters.some((parameter) => parameter.name === expression.name)) return true;
+        if (resolving.has(expression.name)) return false;
+        const definitions: VariableDefinitionNode[] = [];
+        let reassigned = false;
+        const find = (candidate: Node): void => {
+          if (candidate instanceof VariableDefinitionNode && candidate.name === expression.name) {
+            definitions.push(candidate);
+          } else if (candidate instanceof AssignNode && candidate.identifier.name === expression.name) {
+            reassigned = true;
+          }
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction') continue;
+            if (value instanceof Node) find(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) find(item);
+          }
+        };
+        find(node.body);
+        const initializer = definitions.length === 1 ? definitions[0].expression : undefined;
+        return !reassigned && initializer !== undefined
+          && runtimePathExpressionSupported(initializer, counterName, new Set(resolving).add(expression.name));
+      }
+      if (expression instanceof CastNode || expression instanceof UnaryOpNode
+        || expression instanceof FieldAccessNode) {
+        return runtimePathExpressionSupported(expression.expression, counterName, resolving);
+      }
+      if (expression instanceof BinaryOpNode) {
+        return runtimePathExpressionSupported(expression.left, counterName, resolving)
+          && runtimePathExpressionSupported(expression.right, counterName, resolving);
+      }
+      if (expression instanceof TernaryOpNode) {
+        return runtimePathExpressionSupported(expression.condition, counterName, resolving)
+          && runtimePathExpressionSupported(expression.ifTrue, counterName, resolving)
+          && runtimePathExpressionSupported(expression.ifFalse, counterName, resolving);
+      }
+      if (expression instanceof MappingAccessNode) {
+        return !runtimePathMutatedState.has(expression.name)
+          && expression.keys.every((key) => runtimePathExpressionSupported(key, counterName, resolving));
+      }
+      if (expression instanceof ArrayAccessNode) {
+        return runtimePathExpressionSupported(expression.array, counterName, resolving)
+          && runtimePathExpressionSupported(expression.index, counterName, resolving);
+      }
+      return false;
+    };
+    const runtimePathCondition = (
+      conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+    ): ExpressionNode | undefined => conditions.reduce<ExpressionNode | undefined>((combined, condition) => {
+      let next = cloneNode(condition.expression);
+      if (condition.negated) {
+        const negated = new UnaryOpNode(UnaryOperator.NOT, next);
+        negated.location = condition.expression.location;
+        next = negated;
+      }
+      if (!combined) return next;
+      const conjunction = new BinaryOpNode(combined, BinaryOperator.AND, next);
+      conjunction.location = condition.expression.location;
+      return conjunction;
+    }, undefined);
     const tryLower = (loop: WhileNode | DoWhileNode, apply: boolean): boolean => {
       const canonical = canonicalLoops.get(loop);
       if (!canonical) return false;
@@ -424,32 +514,54 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       collectWrites(block);
-      // Runtime event cardinality must be derivable before the first VM probe. For now that means the event is
-      // reached exactly once per loop iteration: transparent lexical blocks are fine, while a branch, switch,
-      // try/catch, or nested loop would make the output count path-dependent. This is a construct rule, not a
-      // contract/schema allow-list; every event definition and argument expression uses the same record format.
-      const runtimeEmits: EmitStatementNode[] = [];
+      // Runtime event cardinality must be derivable before the first VM probe. Nested if/else paths are safe when
+      // their predicate can be replayed from SDK-visible inputs and stable pre-state. Switch, try/catch, and nested
+      // loops still need richer path metadata. This is a construct rule, not a contract/schema allow-list; every
+      // event definition and argument expression uses the same record format.
+      const runtimeEmits: Array<{ emit: EmitStatementNode; condition?: ExpressionNode }> = [];
       let conditionalRuntimeEmit = false;
-      const collectRuntimeEmits = (x: Node, conditional: boolean): void => {
+      const collectRuntimeEmits = (
+        x: Node,
+        conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+      ): void => {
         if (x instanceof EmitStatementNode) {
-          if (conditional) conditionalRuntimeEmit = true;
-          else runtimeEmits.push(x);
+          const condition = runtimePathCondition(conditions);
+          if (condition && !runtimePathExpressionSupported(condition, logical)) conditionalRuntimeEmit = true;
+          else runtimeEmits.push({ emit: x, ...(condition && { condition }) });
           return;
         }
-        const childConditional = conditional || x instanceof BranchNode || x instanceof SwitchNode
-          || x instanceof TryCatchNode
-          || (x !== block && (x instanceof WhileNode || x instanceof DoWhileNode));
+        if (x instanceof BranchNode) {
+          collectRuntimeEmits(x.ifBlock, [...conditions, { expression: x.condition, negated: false }]);
+          if (x.elseBlock) {
+            collectRuntimeEmits(x.elseBlock, [...conditions, { expression: x.condition, negated: true }]);
+          }
+          return;
+        }
+        if (x instanceof SwitchNode || x instanceof TryCatchNode
+          || (x !== block && (x instanceof WhileNode || x instanceof DoWhileNode))) {
+          let containsEmit = false;
+          const findEmit = (candidate: Node): void => {
+            if (candidate instanceof EmitStatementNode) { containsEmit = true; return; }
+            for (const value of Object.values(candidate)) {
+              if (value instanceof Node) findEmit(value);
+              else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) findEmit(item);
+            }
+          };
+          findEmit(x);
+          conditionalRuntimeEmit ||= containsEmit;
+          return;
+        }
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
             || key === 'resolvedFunction') continue;
           const value = (x as unknown as Record<string, unknown>)[key];
-          if (value instanceof Node) collectRuntimeEmits(value, childConditional);
+          if (value instanceof Node) collectRuntimeEmits(value, conditions);
           else if (Array.isArray(value)) {
-            for (const item of value) if (item instanceof Node) collectRuntimeEmits(item, childConditional);
+            for (const item of value) if (item instanceof Node) collectRuntimeEmits(item, conditions);
           }
         }
       };
-      collectRuntimeEmits(block, false);
+      collectRuntimeEmits(block, []);
       const impureInlineResults = new Set<string>();
       const collectImpureInlineResults = (x: Node): void => {
         if (x instanceof VariableDefinitionNode && x.inlinedReturningHelperPure === false) {
@@ -466,7 +578,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       collectImpureInlineResults(block);
-      const runtimeEmitSet = new Set(runtimeEmits);
+      const runtimeEmitSet = new Set(runtimeEmits.map(({ emit }) => emit));
       const keyed = writes.filter((write) =>
         this.collections.has(write.name) && counterKeyIndex(write, logical) >= 0);
       const hasUnexpectedLoopControlMutation = (
@@ -888,8 +1000,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ...(node.runtimeLoopEvents ?? []),
           { loopIndex, permutationParam: hidden },
         ];
-        runtimeEmits.forEach((emit, siteIndex) => {
+        runtimeEmits.forEach(({ emit, condition }, siteIndex) => {
           emit.runtimeLoopEvent = { loopIndex, siteIndex };
+          emit.runtimeLoopEventCondition = condition;
+          emit.runtimeLoopEventCounter = { name: logical, initialValue: start, stepValue: step };
         });
       }
       // The balanced route reserves the worst-case output width of every admitted runtime counter loop. One
@@ -986,34 +1100,59 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       && counterWriteLoops.every(([, canonical]) => canonical.parent === node.body)
       && counterWriteLoops.every(([loop]) => tryLower(loop, false));
     // Events outside an admitted loop must join the same trailing stream or their fixed output family would move
-    // an `emit after` ahead of all repeated records. Only unconditionally reached source sites have an exact
-    // pre-probe count. Conditional/nested sites and eventful internal helpers therefore keep the whole lowering
-    // frozen until the runtime plan carries path/call context.
-    const outerEmits: EmitStatementNode[] = [];
+    // an `emit after` ahead of all repeated records. Serializable nested if/else predicates provide an exact
+    // pre-probe count. Switch/try/nested-loop sites and eventful internal helpers remain frozen until the runtime
+    // plan carries richer path/call context.
+    const outerEmits: Array<{ emit: EmitStatementNode; condition?: ExpressionNode }> = [];
     let unsupportedOuterEvent = false;
     let eventfulHelperCall = false;
-    const collectOuterEvents = (candidate: Node, conditional: boolean): void => {
+    const collectOuterEvents = (
+      candidate: Node,
+      conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+    ): void => {
       if (counterWriteLoopSet.has(candidate as WhileNode | DoWhileNode)) return;
       if (candidate instanceof EmitStatementNode) {
-        if (conditional) unsupportedOuterEvent = true;
-        else outerEmits.push(candidate);
+        const condition = runtimePathCondition(conditions);
+        if (condition && !runtimePathExpressionSupported(condition)) unsupportedOuterEvent = true;
+        else outerEmits.push({ emit: candidate, ...(condition && { condition }) });
         return;
       }
       if (candidate instanceof FunctionCallNode
         && this.eventfulFunctionNames.has(candidate.identifier.name)) eventfulHelperCall = true;
-      const childConditional = conditional || candidate instanceof BranchNode || candidate instanceof SwitchNode
-        || candidate instanceof TryCatchNode || candidate instanceof WhileNode || candidate instanceof DoWhileNode;
+      if (candidate instanceof BranchNode) {
+        collectOuterEvents(candidate.ifBlock, [...conditions, { expression: candidate.condition, negated: false }]);
+        if (candidate.elseBlock) {
+          collectOuterEvents(
+            candidate.elseBlock, [...conditions, { expression: candidate.condition, negated: true }],
+          );
+        }
+        return;
+      }
+      if (candidate instanceof SwitchNode || candidate instanceof TryCatchNode
+        || candidate instanceof WhileNode || candidate instanceof DoWhileNode) {
+        let containsEmit = false;
+        const findEmit = (nested: Node): void => {
+          if (nested instanceof EmitStatementNode) { containsEmit = true; return; }
+          for (const value of Object.values(nested)) {
+            if (value instanceof Node) findEmit(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) findEmit(item);
+          }
+        };
+        findEmit(candidate);
+        unsupportedOuterEvent ||= containsEmit;
+        return;
+      }
       for (const key of Object.keys(candidate)) {
         if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
           || key === 'resolvedFunction') continue;
         const value = (candidate as unknown as Record<string, unknown>)[key];
-        if (value instanceof Node) collectOuterEvents(value, childConditional);
+        if (value instanceof Node) collectOuterEvents(value, conditions);
         else if (Array.isArray(value)) {
-          for (const item of value) if (item instanceof Node) collectOuterEvents(item, childConditional);
+          for (const item of value) if (item instanceof Node) collectOuterEvents(item, conditions);
         }
       }
     };
-    collectOuterEvents(node.body, false);
+    collectOuterEvents(node.body, []);
     const planStatementIndices = (node.body.statements ?? []).flatMap((statement, index) => {
       if (counterWriteLoopSet.has(statement as WhileNode | DoWhileNode)) return [index];
       let hasOuterEmit = false;
@@ -1056,6 +1195,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
 
       const priorSegments = new Map((node.runtimeLoopEvents ?? [])
         .map((segment) => [segment.loopIndex, segment]));
+      const outerEventConditions = new Map(outerEmits.map(({ emit, condition }) => [emit, condition]));
       const orderedSegments: typeof node.runtimeLoopEvents = [];
       const appendLoop = (loop: WhileNode | DoWhileNode): void => {
         const emits: EmitStatementNode[] = [];
@@ -1083,6 +1223,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const appendOuter = (emit: EmitStatementNode): void => {
         const loopIndex = orderedSegments.length;
         emit.runtimeLoopEvent = { loopIndex, siteIndex: 0 };
+        emit.runtimeLoopEventCondition = outerEventConditions.get(emit);
         orderedSegments.push({ loopIndex, repeatCount: 1 });
       };
       const appendInSourceOrder = (candidate: Node): void => {

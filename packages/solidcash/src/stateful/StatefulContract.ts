@@ -23276,10 +23276,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string;
     }> = [];
     const runtimeLoopEventSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
-    const appendRuntimeEvents = (
+    const appendRuntimeEvents = async (
       source: AbiFunction,
+      functionArgs: FunctionArgument[],
+      sourceArtifact: Artifact,
       argumentFor: (name: string) => FunctionArgument | undefined,
-    ): void => {
+    ): Promise<void> => {
       for (const loop of source.runtimeLoopEvents ?? []) {
         const hasFixedRepeat = loop.repeatCount !== undefined;
         const hasPermutationRepeat = loop.permutationParam !== undefined;
@@ -23299,7 +23301,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           );
         }
         for (let iteration = 0; iteration < repeatCount; iteration += 1) {
-          for (const eventSignature of loop.eventSignatures) {
+          for (let siteIndex = 0; siteIndex < loop.eventSignatures.length; siteIndex += 1) {
+            const eventSignature = loop.eventSignatures[siteIndex];
+            const condition = loop.conditions?.[siteIndex];
+            if (condition) {
+              const active = this._evaluateExternalExpression(
+                condition,
+                functionArgs,
+                sourceArtifact,
+                onChainState.state,
+                visibleHandlerInputs(source.inputs),
+                undefined,
+                iteration,
+                false,
+                executionSelfAddress,
+              );
+              if (typeof active !== 'boolean') {
+                throw new Error(
+                  `Could not resolve runtime event predicate for '${eventSignature}' in '${source.name}'.`,
+                );
+              }
+              if (!active) continue;
+            }
             const lockingBytecode = runtimeEventNftLockingBytecodes.get(eventSignature);
             if (!lockingBytecode) {
               throw new Error(`No locking bytecode provided for runtime-loop event: ${eventSignature}`);
@@ -23312,7 +23335,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (selectedRuntimeEventRows.length > 0) {
       for (const row of selectedRuntimeEventRows) {
         const offset = runtimeLoopEventOutputs.length;
-        appendRuntimeEvents(row.handler, (name) => row.internalArgs?.[name]);
+        const rowArtifact = delegateRouteRows?.some((candidate) => candidate === row) && delegateRouteGroup
+          ? delegateRouteGroup.externalContract.inner.artifact : this.inner.artifact;
+        await appendRuntimeEvents(row.handler, [...row.args], rowArtifact, (name) => row.internalArgs?.[name]);
         const count = runtimeLoopEventOutputs.length - offset;
         if (count > 0) {
           const rowIndex = routeRowIndex(row);
@@ -23324,7 +23349,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const directRuntimeEventFunction = entryAbiFunction?.runtimeLoopEvents?.length
         ? entryAbiFunction : abiFunction;
       if (directRuntimeEventFunction?.runtimeLoopEvents?.length) {
-        appendRuntimeEvents(directRuntimeEventFunction, (name) => {
+        const directRuntimeArgs = visibleHandlerInputs(directRuntimeEventFunction.inputs).map((input) => {
+          const index = directRuntimeEventFunction.inputs.findIndex((candidate) => candidate.name === input.name);
+          return (directRuntimeEventFunction === entryAbiFunction ? entryArgs : args)[index];
+        }) as FunctionArgument[];
+        const directRuntimeArtifact = directRuntimeEventFunction === delegateRouteAbi && delegateRouteGroup
+          ? delegateRouteGroup.externalContract.inner.artifact : this.inner.artifact;
+        await appendRuntimeEvents(directRuntimeEventFunction, directRuntimeArgs, directRuntimeArtifact, (name) => {
           const index = directRuntimeEventFunction.inputs.findIndex((input) => input.name === name);
           return index < 0 ? undefined : (directRuntimeEventFunction === entryAbiFunction ? entryArgs : args)[index];
         });

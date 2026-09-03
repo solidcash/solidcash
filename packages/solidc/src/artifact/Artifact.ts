@@ -15,7 +15,7 @@ import {
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
-  EmitStatementNode,
+  EmitStatementNode, TernaryOpNode, UnaryOpNode,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
@@ -1018,11 +1018,114 @@ function buildFunctionAbiMetadata(
       }
     };
     walk(func.body);
-    return func.runtimeLoopEvents.map((loop) => ({
-      ...(loop.permutationParam !== undefined && { permutationParam: loop.permutationParam }),
-      ...(loop.repeatCount !== undefined && { repeatCount: loop.repeatCount }),
-      eventSignatures: (sites.get(loop.loopIndex) ?? []).map((emit) => emit.eventDefinition!.signature),
-    }));
+    const visibleParameters = func.parameters.filter((parameter) =>
+      !parameter.name.startsWith('__internal__'));
+    const localInitializers = new Map<string, ExpressionNode[]>();
+    const collectLocalInitializers = (candidate: Node): void => {
+      if (candidate instanceof VariableDefinitionNode && candidate.expression) {
+        const definitions = localInitializers.get(candidate.name) ?? [];
+        definitions.push(candidate.expression);
+        localInitializers.set(candidate.name, definitions);
+      }
+      for (const [key, value] of Object.entries(candidate)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'type', 'runtimeLoopEventCondition'].includes(key)) {
+          continue;
+        }
+        if (value instanceof Node) collectLocalInitializers(value);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) collectLocalInitializers(item);
+        }
+      }
+    };
+    collectLocalInitializers(func.body);
+    const serializeCondition = (
+      expression: ExpressionNode,
+      counter: EmitStatementNode['runtimeLoopEventCounter'],
+      resolving = new Set<string>(),
+    ): ExternalCallExpression | undefined => {
+      if (expression instanceof LiteralNode) {
+        const value = expression.value;
+        if (typeof value === 'bigint') return { kind: 'literal', type: 'bigint', value: value.toString() };
+        if (typeof value === 'boolean') return { kind: 'literal', type: 'bool', value };
+        if (typeof value === 'string') return { kind: 'literal', type: 'string', value };
+        if (value instanceof Uint8Array) {
+          return { kind: 'literal', type: `bytes${value.length}`, value: binToHex(value) };
+        }
+        return undefined;
+      }
+      if (expression instanceof IdentifierNode) {
+        if (counter?.name === expression.name) {
+          return {
+            kind: 'source',
+            source: {
+              kind: 'loopIndex',
+              initialValue: counter.initialValue.toString(),
+              stepValue: counter.stepValue.toString(),
+            },
+          };
+        }
+        const parameter = visibleParameters.findIndex((candidate) => candidate.name === expression.name);
+        if (parameter >= 0) return { kind: 'source', source: { kind: 'forward', paramIndex: parameter } };
+        if (resolving.has(expression.name)) return undefined;
+        const definitions = localInitializers.get(expression.name) ?? [];
+        return definitions.length === 1
+          ? serializeCondition(definitions[0], counter, new Set(resolving).add(expression.name))
+          : undefined;
+      }
+      if (expression instanceof StateAccessNode) return { kind: 'state', name: expression.name };
+      if (expression instanceof CastNode) {
+        const inner = serializeCondition(expression.expression, counter, resolving);
+        return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
+      }
+      if (expression instanceof UnaryOpNode) {
+        const inner = serializeCondition(expression.expression, counter, resolving);
+        return inner && { kind: 'unary', operator: expression.operator, expression: inner };
+      }
+      if (expression instanceof BinaryOpNode) {
+        const left = serializeCondition(expression.left, counter, resolving);
+        const right = serializeCondition(expression.right, counter, resolving);
+        return left && right && { kind: 'binary', operator: expression.operator, left, right };
+      }
+      if (expression instanceof TernaryOpNode) {
+        const condition = serializeCondition(expression.condition, counter, resolving);
+        const ifTrue = serializeCondition(expression.ifTrue, counter, resolving);
+        const ifFalse = serializeCondition(expression.ifFalse, counter, resolving);
+        return condition && ifTrue && ifFalse && { kind: 'ternary', condition, ifTrue, ifFalse };
+      }
+      if (expression instanceof FieldAccessNode) {
+        const inner = serializeCondition(expression.expression, counter, resolving);
+        return inner && (expression.name === 'length'
+          ? { kind: 'unary', operator: '.length', expression: inner }
+          : { kind: 'field', name: expression.name, expression: inner });
+      }
+      if (expression instanceof MappingAccessNode) {
+        const args = expression.keys.map((key) => serializeCondition(key, counter, resolving));
+        return args.every((arg): arg is ExternalCallExpression => arg !== undefined)
+          ? { kind: 'stateAccess', name: expression.name, args } : undefined;
+      }
+      if (expression instanceof ArrayAccessNode) {
+        const left = serializeCondition(expression.array, counter, resolving);
+        const right = serializeCondition(expression.index, counter, resolving);
+        return left && right && { kind: 'arrayAccess', left, right };
+      }
+      return undefined;
+    };
+    return func.runtimeLoopEvents.map((loop) => {
+      const eventSites = sites.get(loop.loopIndex) ?? [];
+      const conditions = eventSites.map((emit) => emit.runtimeLoopEventCondition
+        ? serializeCondition(emit.runtimeLoopEventCondition, emit.runtimeLoopEventCounter) ?? null
+        : null);
+      if (eventSites.some((emit, index) => emit.runtimeLoopEventCondition && conditions[index] === null)) {
+        throw new Error(`Runtime event condition in '${func.name}' cannot be represented in artifact metadata`);
+      }
+      return {
+        ...(loop.permutationParam !== undefined && { permutationParam: loop.permutationParam }),
+        ...(loop.repeatCount !== undefined && { repeatCount: loop.repeatCount }),
+        eventSignatures: eventSites.map((emit) => emit.eventDefinition!.signature),
+        ...(conditions.some((condition) => condition !== null) && { conditions }),
+      };
+    });
   })();
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),

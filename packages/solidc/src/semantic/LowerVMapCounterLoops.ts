@@ -1294,13 +1294,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         collectionWrites: typeof keyed;
         selectionCondition?: ExpressionNode;
       }>();
-      const selectionShapes = new Set<string>();
       for (const [collection, collectionWrites] of keyedByCollection) {
         let selectionCondition = uniqueDisjunction(collectionWrites.map((write) => writePaths.get(write)));
         // An otherwise-unconditional collection still needs a cursor when `break`/`return` can terminate the
         // domain: the cursor authenticates the consumed prefix and carries the shared break predicate metadata.
         if (breakPaths.length > 0 && !selectionCondition) selectionCondition = new BoolLiteralNode(true);
-        selectionShapes.add(selectionCondition ? expressionShape(selectionCondition) : 'always');
         const mergeKey = `${writeKeyShape(collectionWrites[0])}\0${selectionCondition
           ? expressionShape(selectionCondition) : 'always'}`;
         const existing = permutationGroups.get(mergeKey);
@@ -1313,10 +1311,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           });
         }
       }
-      // Distinct selected subsets need independent route-frame consumption in addition to independent
-      // permutations. Until that frame can retire every variable-length witness, admitting the shape leaves the
-      // later subset on the alt stack. Same-subset collections (including different composite prefixes) are sound.
-      if (selectionShapes.size > 1) return false;
       const groups = [...permutationGroups.values()].map((plan, index) => {
         const groupSerial = index === 0 ? serial : this.serial++;
         const { selectionCondition } = plan;

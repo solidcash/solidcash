@@ -327,8 +327,9 @@ derived from the earlier pending output.
 Every runtime-keyed mapping/array write in that loop must use the counter in exactly one key component. Collections
 with the same complete key expression and selected iteration set share one authenticated permutation; collections
 with different invariant components (for example `a[left][i]` plus `b[right][i]`) receive independent permutations
-so each follows its own full composite-key slot order. Two key shapes in the same physical collection, or different
-selected iteration subsets across collections, still need a wider route-frame journal and remain fenced. A scalar
+so each follows its own full composite-key slot order. Different selected iteration subsets across collections also
+receive independent permutations and cursors. Two key shapes in the same physical collection still need a wider
+route-frame journal and remain fenced. A scalar
 mapping
 scalar entry whose complete key tuple consists of stable public parameters, literals, `msg.sender`, `tx.origin`,
 or pure expressions over public arguments may coexist: it is read once,

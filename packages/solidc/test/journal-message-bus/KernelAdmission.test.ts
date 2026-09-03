@@ -910,7 +910,7 @@ describe('required kernel admission', () => {
       ?.map((info) => info.varyingArrayParam)).size).toBe(2);
   });
 
-  it('refuses different selected subsets across collections until every route witness is retired', () => {
+  it('publishes independent permutations for different selected subsets across collections', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) a;
       mapping(int => mapping(int => int)) b;
@@ -923,10 +923,14 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    const write = artifact.abi.find((handler) => handler.name === 'denied');
+    expect(write?.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
+    expect(new Set(write?.sortedUpsertLoopInfo?.map((info) => info.varyingArrayParam)).size).toBe(2);
+    const conditions = write?.sortedUpsertLoopInfo?.map((info) => info.iterationCondition);
+    expect(conditions).toHaveLength(2);
+    expect(conditions?.[0]).not.toEqual(conditions?.[1]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

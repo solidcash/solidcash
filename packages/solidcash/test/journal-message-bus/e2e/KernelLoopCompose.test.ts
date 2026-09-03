@@ -102,6 +102,19 @@ contract KernelNestedMultiMapping() {
   }
 }`;
 
+const SELECTED_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelSelectedMultiMapping() {
+  mapping(int => mapping(int => int)) a;
+  mapping(int => mapping(int => int)) b;
+  function write(int aPrefix, int bPrefix, int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      if (i % 2 == 0) this.a[aPrefix][i] = i + 10;
+      if (i % 2 != 0) this.b[bPrefix][i] = i + 20;
+    }
+    require(true);
+  }
+}`;
+
 const SEQUENTIAL_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelSequentialMultiMapping() {
   mapping(int => int) a;
@@ -1434,7 +1447,36 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-
+  it('settles independently selected subsets across collections', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SELECTED_MULTI_MAPPING_SOURCE, KERNEL);
+    const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    expect(write.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
+    expect(write.sortedUpsertLoopInfo).toHaveLength(2);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    for (let pass = 0; pass < 2; pass += 1) {
+      const call = contract.batch([{ function: 'write', args: [51n, 52n, 4n] }]);
+      const builder = await call.build();
+      const vm = createVirtualMachineBch2026ForProvider(provider);
+      const transaction = builder.buildLibauthTransaction();
+      const entryValues = transaction.outputs
+        .map((output) => output.token?.nft?.commitment)
+        .filter((commitment): commitment is Uint8Array => commitment?.length === 65)
+        .map((commitment) => commitment.at(-1))
+        .sort((a, b) => (a ?? 0) - (b ?? 0));
+      expect(entryValues).toEqual([10, 12, 21, 23]);
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+          `pass ${pass}, input ${inputIndex}`).toBe(true);
+      }
+      await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+  }, 180_000);
 
   it('settles repeated loop events in source order while mapping keys use the authenticated permutation', async () => {
     const provider = createTestProvider();

@@ -591,6 +591,24 @@ describe('required kernel admission', () => {
     );
   });
 
+  it('admits a descending constant-step counter domain over a public bound', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function fill(int n) public {
+        for (int i = 5; i > n; i = i - 2) { this.m[i] = i + 10; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill')?.eligible).toBe(true);
+    expect(artifact.abi.find((candidate) => candidate.name === 'fill')?.inputs).toContainEqual(
+      expect.objectContaining({
+        name: expect.stringMatching(/^__internal__vmapCounterPerm_n_\d+_from_p5_step_n2$/),
+        type: 'int256[]',
+      }),
+    );
+  });
+
   it('refuses an early return from a counter-keyed mapping loop', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
@@ -611,8 +629,21 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it('admits an immutable loop-local value alias by expanding it onto the logical permutation', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a;
+      function fill(int n) public {
+        for (int i = 0; i < n; i = i + 1) { int value = i + 10; this.a[i] = value; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill')?.eligible).toBe(true);
+    expect(artifact.abi.find((handler) => handler.name === 'fill')?.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+  });
+
   it.each([
-    ['a loop-local value alias', 'int value = i + 10; this.a[i] = value;'],
     ['a loop-carried local value', 'running = running + 1; this.a[i] = running;'],
     ['loop-carried scalar state', 'this.total = this.total + 1; this.a[i] = this.total;'],
     ['a counter-dependent read from another mapping', 'this.a[i] = this.b[i];'],
@@ -635,22 +666,21 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses two counter loops over the same collection without a read-your-writes journal', () => {
+  it('admits sequential counter loops over one collection and defers physical overlap to planning', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) a;
-      function denied(int n) public {
-        for (int i = 0; i < n; i = i + 1) { this.a[i] = 1; }
-        for (int j = 0; j < n; j = j + 1) { this.a[j] = 2; }
+      function writeBoth(int left, int right) public {
+        for (int i = 0; i < left; i = i + 1) { this.a[i] = 1; }
+        for (int j = 10; j < right; j = j + 1) { this.a[j] = 2; }
         require(true);
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
-    expect(artifact.abi.find((handler) => handler.name === 'denied')?.inputs.filter((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(0);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeBoth')?.eligible).toBe(true);
+    const inputs = artifact.abi.find((handler) => handler.name === 'writeBoth')!.inputs;
+    expect(inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
+    expect(inputs.filter((input) => input.name === '__internal__vmapRuntimeInputCount_a')).toHaveLength(1);
+    expect(inputs.filter((input) => input.name === '__internal__vmapRuntimeOutputCount_a')).toHaveLength(1);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

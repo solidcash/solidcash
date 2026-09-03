@@ -3795,7 +3795,7 @@ export default class AstBuilder
     whileNode.forLoopUpdateCount = updateNode ? 1 : 0;
     whileNode.location = Location.fromCtx(ctx);
 
-    // Retain the exact progression only for the canonical `for (T i = C; ...; i = i + D)` shape. External-call
+    // Retain the exact progression only for canonical constant-step `for` loops. External-call
     // metadata can then describe arguments which depend on the live iteration value without folding `i` back to
     // its initializer. Every other update shape remains intentionally unresolved.
     if (initNode instanceof VariableDefinitionNode
@@ -3803,12 +3803,14 @@ export default class AstBuilder
       && updateNode instanceof AssignNode
       && updateNode.identifier.name === initNode.name
       && updateNode.expression instanceof BinaryOpNode
-      && updateNode.expression.operator === BinaryOperator.PLUS
+      && (updateNode.expression.operator === BinaryOperator.PLUS
+        || updateNode.expression.operator === BinaryOperator.MINUS)
       && updateNode.expression.left instanceof IdentifierNode
       && updateNode.expression.left.name === initNode.name
       && updateNode.expression.right instanceof IntLiteralNode) {
       initNode.loopInitialValue = initNode.expression.value;
-      initNode.loopStepValue = updateNode.expression.right.value;
+      initNode.loopStepValue = updateNode.expression.operator === BinaryOperator.PLUS
+        ? updateNode.expression.right.value : -updateNode.expression.right.value;
     }
 
     // Wrap: { init; while (cond) { body; update; } } - init omitted for an empty `for (; ...)`.

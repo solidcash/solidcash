@@ -166,6 +166,27 @@ contract KernelDisjointSameCollectionRows() {
     for (int i = 0; i < n; i = i + 1) { this.values[2][i] = base; }
     require(true);
   }
+  function writeSequential(int left, int right) public {
+    for (int i = 0; i < left; i = i + 1) { this.values[3][i] = 30; }
+    for (int j = 10; j < right; j = j + 1) { this.values[3][j] = 31; }
+    require(true);
+  }
+  function writeOverlap(int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[4][i] = 40; }
+    for (int j = 0; j < n; j = j + 1) { this.values[4][j] = 41; }
+    require(true);
+  }
+  function writeDescending(int bound) public {
+    for (int i = 3; i > bound; i = i - 1) { this.values[5][i] = i + 50; }
+    require(true);
+  }
+  function writeAlias(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      int value = i + 60;
+      this.values[6][i] = value;
+    }
+    require(true);
+  }
   function check(int group, int key, int expected) public {
     require(this.values[group][key] == expected);
   }
@@ -919,8 +940,10 @@ describe('kernel composite counter-key settlement', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    for (const group of [1n, 2n]) {
-      for (let key = 0n; key < 2n; key += 1n) {
+    for (const group of [1n, 2n, 3n, 4n, 5n, 6n]) {
+      const keys = group === 3n ? [0n, 1n, 10n, 11n] : [0n, 1n];
+      if (group === 5n) keys.push(2n, 3n);
+      for (const key of keys) {
         await contract.call.seed(group, key, 1n).send();
       }
     }
@@ -934,6 +957,25 @@ describe('kernel composite counter-key settlement', () => {
     await expect(updated.call.check(2n, 1n, 20n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(updated.call.check(1n, 0n, 10n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.writeSequential(2n, 12n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(3n, 1n, 30n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(3n, 11n, 31n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.writeOverlap(2n).build()).rejects.toThrow(/read-your-writes transition/);
+    await expect(updated.call.writeDescending(-1n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(5n, 0n, 50n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(5n, 3n, 53n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.writeAlias(2n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(6n, 0n, 60n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(6n, 1n, 61n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 

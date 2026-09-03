@@ -146,7 +146,7 @@ every kernel toy.
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
 | `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob | Any finite `sig` array parameter (one aligned outer row dimension); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
-| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; counter loops that overlap one collection or do not have an unconditional top-level source-order journal plan; a path-dependent event in a counter-loop handler; or a counter loop that repeats a BCH/token-container transfer | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical counter-keyed `for (int i = S; i < n; i = i + D)` for constant `S` and positive constant `D` (also through an immutable bound-alias chain), or `int i = 0; do { ...; i = i + 1; } while (i < n)` over `m[i]` / nested `m[k][i]`, multiple unconditional sequential loops over disjoint collection sets, or those rewrites beside source-order typed external calls, unconditional event sites, or invariant `if`/`switch` |
+| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; counter loops that do not have an unconditional top-level source-order journal plan; a path-dependent event in a counter-loop handler; or a counter loop that repeats a BCH/token-container transfer | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical ascending `for (int i = S; i < n; i = i + D)` and descending `for (int i = S; i > n; i = i - D)` domains for positive constant `D` (also through an immutable bound-alias chain), or `int i = 0; do { ...; i = i + 1; } while (i < n)` over `m[i]` / nested `m[k][i]`, multiple unconditional sequential loops whose runtime keys are disjoint (including loops over one physical collection), or those rewrites beside source-order typed external calls, unconditional event sites, or invariant `if`/`switch` |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Native assembly which is not statically isolated and stack-neutral (including active-bytecode/signature context), unsupported Yul which cannot be lowered, or a low-level call the journal cannot summarize as a call/effect row | Isolated pure/read-only BCH assembly, including transaction inspection whose operands are block-local, balanced `OP_IF`/`OP_NOTIF` arms whose main and alt stacks converge, and `OP_BEGIN`/`OP_UNTIL` loops which restore both loop-entry stack heights after consuming their block-local condition; Yul translated to ordinary typed operations before admission; after Solidity-compat lowering to `call` plus returndata |
 | `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors (not child deploys) |
@@ -306,26 +306,28 @@ Solidity field tuple), and dynamic arrays of structs or enums returned through t
 (journal cache defaults are type-correct empty/`0` rather than `int` 0).
 Recursive mapping handlers and result types the wrapper cannot encode stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
-Counter-keyed mapping loops with `continue`/`break`/early `return`, non-positive or runtime-computed steps,
+Counter-keyed mapping loops with `continue`/`break`/early `return`, zero, direction-mismatched, or runtime-computed steps,
 computed or mutated bounds, or extra counter mutations stay `KERNEL_UNBOUNDED_KEY`. A constant-start,
-positive-constant-step domain is represented by the exact arithmetic progression, with a maximum of 64 iterations;
+constant-step domain is represented by the exact ascending or descending arithmetic progression, with a maximum of 64 iterations;
 the authenticated permutation is over those logical counter values rather than assuming `0..n-1`. The exact post-test form
 `int i = 0; do { ...; i = i + 1; } while (i < n)` is supported with an authenticated
 `max(n, 1)` permutation; an immutable local identifier-alias chain such as `requested = n; limit = requested`
 preserves the same authenticated domain, while computed and reassigned aliases remain refused. Other `do-while`
-domains remain refused. A handler may contain multiple unconditional top-level counter loops in source order when
-their collection sets are pairwise disjoint. The compiler threads exact accumulated input and output widths between
-those loops, and the SDK publishes their predecessor and commitment runs in the same order. Sequential loops which
-touch the same collection remain refused: the later loop would need a read-your-writes topology derived from the
-earlier loop's pending transition rather than independently querying pre-state.
+domains remain refused. A handler may contain multiple unconditional top-level counter loops in source order,
+including loops over the same physical collection. The compiler threads exact accumulated input and output widths
+between those loops, and the SDK publishes their predecessor and commitment runs in the same order. If their
+concrete runtime keys overlap, the SDK rejects the repeated predecessor as requiring a read-your-writes topology
+derived from the earlier pending output.
 Every mapping/array write in that loop must use the counter in exactly one key component, and multiple
 writes must have the same complete key tuple (for example `a[k][i]` plus `b[k][i]`). Counter-dependent
 or loop-carried write guards, sibling reads of a mutated mapping, foreign counter-keyed reads, and
-write values derived through loop-local/loop-carried locals or scalar state mutated by the loop remain
+write values derived through mutable/loop-carried locals or scalar state mutated by the loop remain
 `KERNEL_UNBOUNDED_KEY`. The compact old-entry transition recognizes only `m[i] + rhs` and `m[i] - rhs`;
 non-additive old-entry expressions such as `m[i] * 2` also remain frozen rather than being reinterpreted as an
 additive update. The old value in the admitted `+`/`-` form is supplied by the same authenticated runtime journal
 entry as the write; it is not published as a separate fixed-key route witness.
+An immutable, direct loop-local value definition is expanded into the mapping value before permutation, so
+`int value = i + 10; m[i] = value` has the same representation as the direct expression.
 
 Mixed typed external calls and genuinely invariant `if`/`switch` in the same counter loop stay on the
 row loop: only direct uses of the counter in mapping keys and mapping values are rewritten to `perm[i]`;
@@ -339,9 +341,9 @@ token-container effects remain supported before or after the loop.
 Nested counter keys `m[k][i]` permute the inner key only.
 At transaction construction time, selected rows with independent pre-state journals may share one envelope. The
 compiler threads predecessor and output cursors across physical rows, and the SDK emits each row's collection and
-event segments in the same order. Independence currently also requires distinct physical collections: even disjoint
-keys at one collection address participate in one transaction-wide cardinality covenant, which the first row cannot
-finalize before later rows execute. The SDK refuses that shape rather than weakening the covenant to a partial count.
+event segments in the same order. Disjoint keys may share one physical collection: the route authenticates its
+transaction-wide input/output cardinality, threads a mutable remainder through the selected handlers, and requires
+zero after the last row.
 If two rows require the same predecessor or existing-entry UTXO, construction
 fails closed: the later row needs a read-your-writes transition from the earlier row's pending output. This includes
 byte-identical absolute `set`/`delete` rows; executing both row segments cannot be represented by reusing one

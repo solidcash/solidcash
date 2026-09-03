@@ -10,6 +10,7 @@ import {
   TryCatchNode, UnaryOpNode, VariableDefinitionNode, WhileNode, FunctionModifier,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { cloneNode } from '../ast/clone.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { ArrayType, IntType } from '@solidcash/utils';
 
@@ -35,11 +36,12 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * Typed calls and other statements stay in source order. Unconditionally reached event sites are recorded in a
  * function-local runtime stream and settled after all mapping journals, so they repeat in logical source order
  * without sharing the route's fixed per-row event slots. Conditional/nested event reachability, BCH transfers,
- * and token-container transfers still need their own runtime effect records. The canonical pre-test domain
- * `for (int i = constantStart; i < publicBound; i = i + positiveConstantStep)` and post-test domain
+ * and token-container transfers still need their own runtime effect records. The canonical pre-test domains
+ * `for (int i = constantStart; i < publicBound; i = i + positiveConstantStep)` and
+ * `for (int i = constantStart; i > publicBound; i = i - positiveConstantStep)`, plus the post-test domain
  * `int i = 0; do { ...; i = i + 1; } while (i < publicBound)` lower. The latter authenticates
  * `max(publicBound, 1)` entries. Multiple unconditional source-order loops may lower together when their
- * collection sets are disjoint; each loop receives its own authenticated trailing input/output segment.
+ * runtime keys are disjoint; each loop receives its own authenticated trailing input/output segment.
  * Counter-dependent guards, sibling reads of the mutated mapping,
  * `continue`/`break`, and other domains need a separate logical-journal/physical-settlement phase.
  *
@@ -176,20 +178,25 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             ? resolveBound(bound.name, index - 1) : undefined;
           if (!(loop instanceof WhileNode || loop instanceof DoWhileNode)
             || !(variable instanceof VariableDefinitionNode)
-            || !(loop.condition instanceof BinaryOpNode) || loop.condition.operator !== BinaryOperator.LT
+            || !(loop.condition instanceof BinaryOpNode)
             || !(loop.condition.left instanceof IdentifierNode) || loop.condition.left.name !== variable.name
             || !(bound instanceof IdentifierNode) || boundResolution === undefined) continue;
           const update = loop.block.statements?.at(-1);
           const updateStep = update instanceof AssignNode && update.identifier.name === variable.name
-            && update.expression instanceof BinaryOpNode && update.expression.operator === BinaryOperator.PLUS
+            && update.expression instanceof BinaryOpNode
+            && (update.expression.operator === BinaryOperator.PLUS
+              || update.expression.operator === BinaryOperator.MINUS)
             && update.expression.left instanceof IdentifierNode
             && update.expression.left.name === variable.name
             && update.expression.right instanceof IntLiteralNode
-            ? update.expression.right.value : undefined;
+            ? (update.expression.operator === BinaryOperator.PLUS
+              ? update.expression.right.value : -update.expression.right.value) : undefined;
           const progressionUpdate = updateStep !== undefined && updateStep === variable.loopStepValue;
           const preTest = loop instanceof WhileNode && variable.isLoopVariable === true
             && variable.loopInitialValue !== undefined && variable.loopStepValue !== undefined
-            && variable.loopStepValue > 0n && loop.forLoopUpdateCount === 1 && progressionUpdate;
+            && variable.loopStepValue !== 0n && loop.forLoopUpdateCount === 1 && progressionUpdate
+            && ((variable.loopStepValue > 0n && loop.condition.operator === BinaryOperator.LT)
+              || (variable.loopStepValue < 0n && loop.condition.operator === BinaryOperator.GT));
           const postTest = loop instanceof DoWhileNode
             && variable.expression instanceof IntLiteralNode && variable.expression.value === 0n
             && updateStep === 1n;
@@ -373,7 +380,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // loop cannot leak an unused compiler-owned permutation into an otherwise ordinary ABI.
     const counterWriteLoops = [...canonicalLoops].filter(([loop, canonical]) =>
       isCounterWriteLoop(loop, canonical.logical));
-    const preflightCollections = new Map<WhileNode | DoWhileNode, Set<string>>();
     const tryLower = (loop: WhileNode | DoWhileNode, apply: boolean): boolean => {
       const canonical = canonicalLoops.get(loop);
       if (!canonical) return false;
@@ -603,11 +609,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // scalar state. Direct uses of `i` inside a write are rewritten to perm[i]; values assigned earlier in the
       // loop are intentionally left in source order, so depending on them would change program semantics.
       const loopAssignedLocals = new Set<string>();
+      const loopReassignedLocals = new Set<string>();
       const loopWrittenState = new Set<string>();
       const collectLoopMutations = (x: Node): void => {
         if (x !== block && (x instanceof WhileNode || x instanceof DoWhileNode)) return;
         if (x instanceof VariableDefinitionNode) loopAssignedLocals.add(x.name);
-        else if (x instanceof AssignNode) loopAssignedLocals.add(x.identifier.name);
+        else if (x instanceof AssignNode) {
+          loopAssignedLocals.add(x.identifier.name);
+          if (x !== counterUpdate) loopReassignedLocals.add(x.identifier.name);
+        }
         else if (x instanceof StateAssignNode || x instanceof StateArrayAssignNode
           || x instanceof StateArrayDeleteNode || x instanceof StateArrayPopNode
           || x instanceof StateArrayPushNode) loopWrittenState.add(x.name);
@@ -621,8 +631,47 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       collectLoopMutations(block);
-      const dependsOnLoopMutation = (x: Node): boolean => {
-        if (x instanceof IdentifierNode && x.name !== logical && loopAssignedLocals.has(x.name)) return true;
+      // Direct, immutable per-iteration definitions are SSA value aliases, not loop-carried state. Mapping values
+      // may inline them and then apply the same logical-value permutation as a direct expression. Definitions in
+      // branches or with effects/collection reads remain fenced because their reachability/value is not invariant.
+      const loopValueDefinitions = new Map<string, ExpressionNode>();
+      for (const statement of block.statements ?? []) {
+        if (statement instanceof VariableDefinitionNode && statement.expression
+          && statement.inlinedReturningHelperPure !== false
+          && !loopReassignedLocals.has(statement.name)
+          && !hasObservableEffect(statement.expression)
+          && !containsCollectionAccess(statement.expression)) {
+          loopValueDefinitions.set(statement.name, statement.expression);
+        }
+      }
+      const safeLoopValueAlias = (name: string, seen = new Set<string>()): boolean => {
+        const expression = loopValueDefinitions.get(name);
+        if (!expression || seen.has(name)) return false;
+        const next = new Set(seen).add(name);
+        let safe = true;
+        const walk = (candidate: Node): void => {
+          if (!safe) return;
+          if (candidate instanceof IdentifierNode && candidate.name !== logical
+            && loopAssignedLocals.has(candidate.name)
+            && !safeLoopValueAlias(candidate.name, next)) { safe = false; return; }
+          if (candidate instanceof StateAccessNode && loopWrittenState.has(candidate.name)) {
+            safe = false; return;
+          }
+          for (const key of Object.keys(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
+            const value = (candidate as unknown as Record<string, unknown>)[key];
+            if (value instanceof Node) walk(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+          }
+        };
+        walk(expression);
+        return safe;
+      };
+      const dependsOnLoopMutation = (x: Node, resolving = new Set<string>()): boolean => {
+        if (x instanceof IdentifierNode && x.name !== logical && loopAssignedLocals.has(x.name)) {
+          if (!safeLoopValueAlias(x.name, resolving)) return true;
+          return dependsOnLoopMutation(loopValueDefinitions.get(x.name)!, new Set(resolving).add(x.name));
+        }
         if (x instanceof StateAccessNode && loopWrittenState.has(x.name)) return true;
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
@@ -633,11 +682,30 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      const dependsOnPermutedLogical = (x: Node, resolving = new Set<string>()): boolean => {
+        if (x instanceof IdentifierNode) {
+          if (x.name === logical) return true;
+          if (loopValueDefinitions.has(x.name) && !resolving.has(x.name)) {
+            return dependsOnPermutedLogical(
+              loopValueDefinitions.get(x.name)!, new Set(resolving).add(x.name),
+            );
+          }
+        }
+        for (const key of Object.keys(x)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
+          const value = (x as unknown as Record<string, unknown>)[key];
+          if (value instanceof Node && dependsOnPermutedLogical(value, resolving)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node
+              && dependsOnPermutedLogical(item, resolving))) return true;
+        }
+        return false;
+      };
       const hasLoopCarriedWriteGuard = (x: Node): boolean => {
         if (x instanceof BranchNode && containsKeyedWrite(x)
-          && dependsOnLoopMutation(x.condition)) return true;
+          && (dependsOnLoopMutation(x.condition) || dependsOnPermutedLogical(x.condition))) return true;
         if (x instanceof SwitchNode && containsKeyedWrite(x)
-          && dependsOnLoopMutation(x.expression)) return true;
+          && (dependsOnLoopMutation(x.expression) || dependsOnPermutedLogical(x.expression))) return true;
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
           const value = (x as unknown as Record<string, unknown>)[key];
@@ -649,12 +717,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       if (hasCounterDependentGuard(block) || hasSiblingMappingRead(block) || hasUnsafeRead(block)
         || hasUnsupportedOldEntryExpression
-        || hasLoopCarriedWriteGuard(block) || keyed.some(dependsOnLoopMutation)) return false;
+        || hasLoopCarriedWriteGuard(block) || keyed.some((write) => dependsOnLoopMutation(write))) return false;
 
-      if (!apply) {
-        preflightCollections.set(loop, keyedCollections);
-        return true;
-      }
+      if (!apply) return true;
 
       const serial = this.serial++;
       const signedComponent = (value: bigint): string => value < 0n ? `n${-value}` : `p${value}`;
@@ -673,20 +738,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const binary = (left: ExpressionNode, operator: BinaryOperator, right: ExpressionNode): BinaryOpNode =>
         at(new BinaryOpNode(left, operator, right));
       const positiveIterationCount = (): ExpressionNode => binary(
-        binary(
-          binary(
-            binary(id(count), BinaryOperator.MINUS, lit(start)),
-            BinaryOperator.MINUS,
-            lit(1n),
-          ),
-          BinaryOperator.DIV,
-          lit(step),
-        ),
+        binary(binary(
+          step > 0n
+            ? binary(id(count), BinaryOperator.MINUS, lit(start))
+            : binary(lit(start), BinaryOperator.MINUS, id(count)),
+          BinaryOperator.MINUS, lit(1n)),
+        BinaryOperator.DIV, lit(step > 0n ? step : -step)),
         BinaryOperator.PLUS,
         lit(1n),
       );
       const derivedIterationCount = (): ExpressionNode => at(new TernaryOpNode(
-        binary(id(count), BinaryOperator.GT, lit(start)),
+        binary(id(count), step > 0n ? BinaryOperator.GT : BinaryOperator.LT, lit(start)),
         positiveIterationCount(),
         lit(postTest ? 1n : 0n),
       ));
@@ -713,6 +775,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       const replace = (x: Node): Node => {
         if (x instanceof IdentifierNode && x.name === logical) return id(logicalValue);
+        if (x instanceof IdentifierNode && safeLoopValueAlias(x.name)) {
+          return replace(cloneNode(loopValueDefinitions.get(x.name)!));
+        }
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
           const v = (x as unknown as Record<string, unknown>)[key];
@@ -798,7 +863,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         binary(id(logicalValue), BinaryOperator.LT, iterationCount()),
       ) : binary(
         binary(
-          binary(id(logicalValue), BinaryOperator.GE, lit(start)),
+          binary(id(logicalValue), step > 0n ? BinaryOperator.GE : BinaryOperator.LE, lit(start)),
           BinaryOperator.AND,
           binary(rank(), BinaryOperator.LT, iterationCount()),
         ),
@@ -838,13 +903,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // path. Keep the invariant uniform instead of special-casing the first loop.
       && counterWriteLoops.every(([, canonical]) => canonical.parent === node.body)
       && counterWriteLoops.every(([loop]) => tryLower(loop, false));
-    const seenCollections = new Set<string>();
-    const disjoint = allSafe && counterWriteLoops.every(([loop]) => {
-      const loopCollections = preflightCollections.get(loop)!;
-      if ([...loopCollections].some((collection) => seenCollections.has(collection))) return false;
-      for (const collection of loopCollections) seenCollections.add(collection);
-      return true;
-    });
     // Events outside an admitted loop must join the same trailing stream or their fixed output family would move
     // an `emit after` ahead of all repeated records. Only unconditionally reached source sites have an exact
     // pre-probe count. Conditional/nested sites and eventful internal helpers therefore keep the whole lowering
@@ -908,7 +966,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (containsReturn(node.body.statements![index])) returnBeforePlanEnd = true;
     }
     const orderedEventPlanSafe = !unsupportedOuterEvent && !eventfulHelperCall && !returnBeforePlanEnd;
-    if (disjoint && orderedEventPlanSafe) {
+    // Collection reuse is a runtime topology question, not an AST-shape restriction. The shared cardinality
+    // remainder composes disjoint runs over one physical collection; the SDK rejects an actual repeated
+    // predecessor as a read-your-writes transition until pending-output planning is available.
+    if (allSafe && orderedEventPlanSafe) {
       for (const [loop] of counterWriteLoops) tryLower(loop, true);
 
       const priorSegments = new Map((node.runtimeLoopEvents ?? [])

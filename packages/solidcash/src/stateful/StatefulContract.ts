@@ -216,16 +216,16 @@ function vmapCounterPermutationValues(
   bound: bigint,
   spec: VmapCounterPermutationSpec,
 ): bigint[] {
-  if (spec.step <= 0n) throw new Error('vmap counter loop step must be positive');
+  if (spec.step === 0n) throw new Error('vmap counter loop step must be non-zero');
   // Legacy unit-domain rows authenticate the public bound itself as the iteration count, including its
   // historical non-negative constraint. Ranged rows authenticate the derived progression length, so a bound
   // below their start is a valid zero-trip domain.
   if (!spec.postTest && spec.start === 0n && spec.step === 1n && bound < 0n) {
     throw new Error(`vmap counter loop bound '${spec.countName}' must be between 0 and 64`);
   }
-  const naturalCount = bound > spec.start
-    ? ((bound - spec.start - 1n) / spec.step) + 1n
-    : 0n;
+  const naturalCount = spec.step > 0n
+    ? (bound > spec.start ? ((bound - spec.start - 1n) / spec.step) + 1n : 0n)
+    : (bound < spec.start ? ((spec.start - bound - 1n) / -spec.step) + 1n : 0n);
   const iterationCount = spec.postTest && naturalCount === 0n ? 1n : naturalCount;
   if (iterationCount < 0n || iterationCount > 64n) {
     throw new Error(

@@ -1568,6 +1568,33 @@ describe('required kernel admission', () => {
       .iterationCondition).toMatchObject({ kind: 'binary', operator: '||' });
   });
 
+  it('routes the reachable try body around and inside counter loops', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface I { function ping(int value) external; }
+      contract C {
+        address peer;
+        mapping(int => int) m;
+        function around(int n) public {
+          try I(peer).ping(0) {
+            for (int i = 0; i < n; i = i + 1) { m[i] = i + 10; }
+          } catch { m[999] = 1; }
+          require(true);
+        }
+        function inside(int n) public {
+          for (int i = 0; i < n; i = i + 1) {
+            try I(peer).ping(i) { m[i] = i + 20; } catch { m[999] = 2; }
+          }
+          require(true);
+        }
+      }`, { ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'around'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'inside'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'around')?.sortedUpsertLoopInfo).toHaveLength(1);
+    expect(artifact.abi.find((handler) => handler.name === 'inside')?.sortedUpsertLoopInfo).toHaveLength(1);
+  });
+
   it('refuses a repeated BCH transfer inside a counter-keyed mapping loop', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;

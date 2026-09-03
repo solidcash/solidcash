@@ -335,7 +335,7 @@ contract KernelCounterCaller(address sink) {
   function invoke(int n) public {
     for (int i = 1; i < n; i = i + 2) {
       this.m[i] = i + 10;
-      IKernelCounterSink(sink).ping(i);
+      try IKernelCounterSink(sink).ping(i) { } catch { }
     }
     require(true);
   }

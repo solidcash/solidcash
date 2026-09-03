@@ -48,7 +48,7 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * `int i = 0; do { ...; i = i + 1; } while (i < publicBound)` lower. The latter authenticates
  * `max(publicBound, 1)` entries. Multiple unconditional source-order loops may lower together when their
  * runtime keys are disjoint; each loop receives its own authenticated trailing input/output segment.
- * Loop-carried predicates/values, sibling reads of the mutated mapping, nested loops, and try/catch path
+ * Loop-carried predicates/values, sibling reads of the mutated mapping, and nested loops
  * control still need richer logical-journal or path metadata.
  *
  * The permutation is an untrusted unlocking witness. Generated checks prove it has exactly the canonical domain's
@@ -197,6 +197,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return;
       }
+      if (x instanceof TryCatchNode) {
+        // BCH script failure aborts the transaction, so catch clauses are unreachable. Code generation emits
+        // only the successful try body; discover counter loops in that same reachable domain.
+        findCanonicalLoops(x.tryBlock, pathConditions, unsupportedControl);
+        return;
+      }
       if (x instanceof BlockNode) {
         const statements = x.statements ?? [];
         for (let index = 1; index < statements.length; index++) {
@@ -294,8 +300,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           });
         }
       }
-      const childUnsupported = unsupportedControl || x instanceof TryCatchNode
-        || x instanceof WhileNode || x instanceof DoWhileNode;
+      const childUnsupported = unsupportedControl || x instanceof WhileNode || x instanceof DoWhileNode;
       for (const key of Object.keys(x)) {
         if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
         const value = (x as unknown as Record<string, unknown>)[key];
@@ -355,9 +360,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       runtimeEmits: ReadonlySet<EmitStatementNode>,
       impureInlineResults: ReadonlySet<string>,
     ): boolean => {
+      if (x instanceof TryCatchNode) {
+        return hasUnjournalledRepeatedEffect(x.expression, runtimeEmits, impureInlineResults)
+          || hasUnjournalledRepeatedEffect(x.tryBlock, runtimeEmits, impureInlineResults);
+      }
       // The whole typed-call node, including its interface/address projection, is represented by the manifest.
       // Do not descend into that projection: it contains method-call-shaped syntax which is not a direct effect.
       if (x instanceof ExternalFunctionCallNode) return false;
+      if (x instanceof MethodCallNode && x.object instanceof FunctionCallNode
+        && this.externalTypeNames.has(x.object.identifier.name)) return false;
       if (x instanceof MethodCallStatementNode && (x.expression instanceof ExternalFunctionCallNode
         || (x.call.object instanceof FunctionCallNode
           && this.externalTypeNames.has(x.call.object.identifier.name)))) return false;
@@ -595,7 +606,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       | MappingFieldAssignNode> = [];
       const writePaths = new Map<Node, ExpressionNode | undefined>();
       const breakPaths: Array<ExpressionNode | undefined> = [];
-      let unsupportedWriteControl = false;
       // `undefined` represents logical true, keeping unconditional paths compact. These helpers also simplify
       // the false literals introduced by abrupt control flow so `if (skip) continue; write` publishes `!skip`.
       const isFalse = (expression: ExpressionNode | undefined): boolean =>
@@ -692,7 +702,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           return;
         }
         if (x instanceof TryCatchNode) {
-          unsupportedWriteControl = true;
+          // Catch clauses are dead on BCH; only writes reached after the successful call can execute.
+          collectWrites(x.tryBlock, condition, breakExitsLoop);
           return;
         }
         for (const key of Object.keys(x)) {
@@ -706,8 +717,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       collectWrites(block);
       // Runtime event cardinality must be derivable before the first VM probe. Nested if/else paths are safe when
-      // their predicate can be replayed from SDK-visible inputs and stable pre-state. Switch, try/catch, and nested
-      // loops still need richer path metadata. This is a construct rule, not a contract/schema allow-list; every
+      // their predicate can be replayed from SDK-visible inputs and stable pre-state. Switch arms and the reachable
+      // try body use those same paths; nested loops still need richer path metadata. This is a construct rule, not
+      // a contract/schema allow-list; every
       // event definition and argument expression uses the same record format.
       const runtimeEmits: Array<{ emit: EmitStatementNode; condition?: ExpressionNode }> = [];
       let conditionalRuntimeEmit = false;
@@ -754,8 +766,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           }
           return;
         }
-        if (x instanceof TryCatchNode
-          || (x !== block && (x instanceof WhileNode || x instanceof DoWhileNode))) {
+        if (x instanceof TryCatchNode) {
+          collectRuntimeEmits(x.tryBlock, condition);
+          return;
+        }
+        if (x !== block && (x instanceof WhileNode || x instanceof DoWhileNode)) {
           let containsEmit = false;
           const findEmit = (candidate: Node): void => {
             if (candidate instanceof EmitStatementNode) { containsEmit = true; return; }
@@ -821,8 +836,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (breakPaths.length > 0 && !writeSelectionCondition) {
         writeSelectionCondition = new BoolLiteralNode(true);
       }
-      const selectionConditionSupported = !unsupportedWriteControl
-        && keyedSelectionConditions.every((condition) => !condition
+      const selectionConditionSupported = keyedSelectionConditions.every((condition) => !condition
           || runtimePathExpressionSupported(condition, logical))
         && breakPaths.every((condition) => !condition
           || runtimePathExpressionSupported(condition, logical));
@@ -1490,8 +1504,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return;
       }
-      if (candidate instanceof TryCatchNode
-        || candidate instanceof WhileNode || candidate instanceof DoWhileNode) {
+      if (candidate instanceof TryCatchNode) {
+        collectOuterEvents(candidate.tryBlock, conditions);
+        return;
+      }
+      if (candidate instanceof WhileNode || candidate instanceof DoWhileNode) {
         let containsEmit = false;
         const findEmit = (nested: Node): void => {
           if (nested instanceof EmitStatementNode) { containsEmit = true; return; }

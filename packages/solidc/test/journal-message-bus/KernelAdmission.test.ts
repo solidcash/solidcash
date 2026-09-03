@@ -1232,6 +1232,26 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it.each([
+    ['ascending', '3', 'i + 2', '<', 'p3', 'p2'],
+    ['descending', '5', 'i - 2', '>', 'p5', 'n2'],
+  ])('admits a canonical %s ranged do-while mapping loop', (_label, start, update, comparison, encStart, encStep) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int bound) public {
+        int i = ${start};
+        do { this.m[i] = i + 10; i = ${update}; } while (i ${comparison} bound);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.inputs).toContainEqual(
+      expect.objectContaining({
+        name: expect.stringMatching(new RegExp(`_from_${encStart}_step_${encStep}_post$`)),
+      }),
+    );
+  });
+
   it('admits a do-while counter-keyed mapping loop beside a typed call', () => {
     const artifact = compileString(`interface I { function r(int i); }
       contract C() {

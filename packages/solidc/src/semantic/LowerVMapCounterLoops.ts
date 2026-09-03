@@ -371,8 +371,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && ((variable.loopStepValue > 0n && loop.condition.operator === BinaryOperator.LT)
               || (variable.loopStepValue < 0n && loop.condition.operator === BinaryOperator.GT));
           const postTest = loop instanceof DoWhileNode
-            && variable.expression instanceof IntLiteralNode && variable.expression.value === 0n
-            && updateStep === 1n;
+            && variable.expression instanceof IntLiteralNode
+            && updateStep !== undefined && updateStep !== 0n
+            && ((updateStep > 0n && loop.condition.operator === BinaryOperator.LT)
+              || (updateStep < 0n && loop.condition.operator === BinaryOperator.GT));
           if (!preTest && !postTest) continue;
           canonicalLoops.set(loop, {
             logical: variable.name,
@@ -385,8 +387,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             boundOffset: boundResolution.offset,
             ...(boundResolution.metadataExpression
               && { boundExpression: boundResolution.metadataExpression }),
-            start: preTest ? variable.loopInitialValue! : 0n,
-            step: preTest ? variable.loopStepValue! : 1n,
+            start: preTest ? variable.loopInitialValue! : (variable.expression as IntLiteralNode).value,
+            step: preTest ? variable.loopStepValue! : updateStep!,
             counterType: variable.type instanceof IntType ? variable.type : new IntType(true, 256),
             postTest,
             counterUpdate: update as AssignNode,

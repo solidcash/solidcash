@@ -314,12 +314,13 @@ mutated bounds, or extra counter mutations stay `KERNEL_UNBOUNDED_KEY`. Determin
 public arguments and immutable local aliases are serialized for SDK replay. A constant-start,
 constant-step domain is represented by the exact ascending or descending arithmetic progression, with a maximum of 64 iterations;
 the authenticated permutation is over those logical counter values rather than assuming `0..n-1`, and its ABI element type
-matches a signed or unsigned source counter. The exact post-test form
-`int i = 0; do { ...; i = i + 1; } while (i < n)` is supported with an authenticated
-`max(n, 1)` permutation; an immutable local affine-alias chain such as
+matches a signed or unsigned source counter. Canonical post-test domains support constant starts and non-zero
+constant steps in the comparison's direction, including `int i = 0; do { ...; i = i + 1; } while (i < n)` and
+descending/ranged forms. They authenticate the exact progression with at least the mandatory first iteration;
+an immutable local affine-alias chain such as
 `requested = n; limit = 1 + (requested - 2)` and nonlinear forms such as `limit = n * scale` preserve the exact
-authenticated domain, while reassigned aliases remain refused. Other `do-while`
-domains remain refused. A handler may contain multiple unconditional top-level counter loops in source order,
+authenticated domain, while reassigned aliases remain refused. Noncanonical `do-while` domains remain refused.
+A handler may contain multiple unconditional top-level counter loops in source order,
 including loops over the same physical collection. The compiler threads exact accumulated input and output widths
 between those loops, and the SDK publishes their predecessor and commitment runs in the same order. If their
 concrete runtime keys overlap, the SDK rejects the repeated predecessor as requiring a read-your-writes topology

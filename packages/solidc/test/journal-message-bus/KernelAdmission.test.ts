@@ -36,9 +36,22 @@ describe('required kernel admission', () => {
     }));
   });
 
-  it('refuses a transaction signature-array row as KERNEL_TX_SIGNATURE', () => {
+  it('binds a transaction signature-array as a row-aligned nested route witness', () => {
+    const artifact = compileString(`contract C() {
+      function signed(sig[] signatures) public { require(true); }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed')).toMatchObject({
+      eligible: true,
+    });
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_rows', type: 'sig[][]',
+    }));
+  });
+
+  it('refuses a nested transaction signature-array row as KERNEL_TX_SIGNATURE', () => {
     expect(denied(`contract C() {
-      function denied(sig[] signatures) public { require(true); }
+      function denied(sig[][] signatures) public { require(true); }
       function control() public { require(true); }
     }`, 'denied')).toMatchObject({
       eligible: false,

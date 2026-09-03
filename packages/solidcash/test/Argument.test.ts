@@ -1,10 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { encodeInt } from '@solidcash/utils';
-import { encodeFunctionArgument } from '../src/index.js';
+import { encodeFunctionArgument, SignatureTemplate } from '../src/index.js';
+import { alicePriv, bobPriv } from './fixture/vars.js';
 
 describe('encodeFunctionArgument: empty arrays', () => {
   it('preserves the zero count prefix through the outer unlocking-script push', () => {
     expect(encodeFunctionArgument([], 'address[]')).toEqual(Uint8Array.from([0x01, 0x00]));
+  });
+});
+
+describe('encodeFunctionArgument: deferred signature arrays', () => {
+  it('preserves a sig[] template vector until the transaction is final', () => {
+    const signatures = [new SignatureTemplate(alicePriv), new SignatureTemplate(bobPriv)];
+    expect(encodeFunctionArgument(signatures, 'sig[]')).toBe(signatures);
+  });
+
+  it('preserves a sig[][] template matrix until the transaction is final', () => {
+    const signatures = [[new SignatureTemplate(alicePriv)], [new SignatureTemplate(bobPriv)]];
+    expect(encodeFunctionArgument(signatures, 'sig[][]')).toBe(signatures);
   });
 });
 

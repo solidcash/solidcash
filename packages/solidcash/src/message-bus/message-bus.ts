@@ -286,15 +286,22 @@ export function encodeMessageBatch(
         rowEncoded.push(argument);
         return;
       }
-      if (capability.convention === 'kernel-row-loop'
-        && inputType === 'sig' && argument instanceof SignatureTemplate) {
+      if (capability.convention === 'kernel-row-loop' && signatureArgument) {
         const name = `__message_bus_sig_${handlerIndex}_${index}_rows`;
         const aligned = signatureWitnessValues.get(name);
-        const values = Array.isArray(aligned)
-          ? [...aligned] as SignatureTemplate[]
-          : new Array<SignatureTemplate>(invocations.length);
-        values[rowIndex] = argument;
-        signatureWitnessValues.set(name, values);
+        if (inputType === 'sig') {
+          const values = Array.isArray(aligned)
+            ? [...aligned] as SignatureTemplate[]
+            : new Array<SignatureTemplate>(invocations.length);
+          values[rowIndex] = argument as SignatureTemplate;
+          signatureWitnessValues.set(name, values);
+        } else {
+          const values = Array.isArray(aligned)
+            ? [...aligned] as SignatureTemplate[][]
+            : new Array<SignatureTemplate[]>(invocations.length);
+          values[rowIndex] = argument as SignatureTemplate[];
+          signatureWitnessValues.set(name, values);
+        }
       } else {
         signatureWitnessValues.set(`__message_bus_sig_${handlerIndex}_${index}_r${rowIndex}`, argument);
       }
@@ -442,6 +449,16 @@ export function encodeMessageBatch(
       if (witness) return witness.value;
       const signatureWitness = signatureWitnessValues.get(input.name);
       if (/^__message_bus_sig_\d+_\d+_rows$/.test(input.name)) {
+        if (input.type === 'sig[][]') {
+          if (!Array.isArray(signatureWitness) || signatureWitness.length === 0) {
+            return [[new Uint8Array()]];
+          }
+          const aligned = signatureWitness as SignatureTemplate[][];
+          const fallback = aligned.find((value) => isSignatureTemplateArray(value));
+          if (!fallback) return [[new Uint8Array()]];
+          return Array.from({ length: invocations.length }, (_unused, row) =>
+            isSignatureTemplateArray(aligned[row]) ? aligned[row] : fallback);
+        }
         if (!Array.isArray(signatureWitness) || signatureWitness.length === 0) {
           // The handler is not selected in this envelope, so the route never indexes this array. Supply one
           // already-encoded NULLFAIL signature value without requiring an unrelated signer.

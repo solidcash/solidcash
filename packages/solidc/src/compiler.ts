@@ -3448,6 +3448,12 @@ function synthesizeMessageBusRoute(
         });
       }
     }
+    const transactionSignatureParameterTypes = fn.parameters
+      .map((parameter) => parameter.type.toString())
+      .filter((type) => /^sig(?:\[\])*$/.test(type));
+    const kernelSignatureParametersRepresentable = compilerOptions.messageBusKernel === true
+      && transactionSignatureParameterTypes.length > 0
+      && transactionSignatureParameterTypes.every((type) => type === 'sig' || type === 'sig[]');
     const maximumInputBytes = compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
     if (!reason && minimumResultBytes > maximumInputBytes) {
       // The batch wrapper concatenates `abi.encode` of every return value into one result. Cap that static result
@@ -3534,15 +3540,11 @@ function synthesizeMessageBusRoute(
       reason = 'foreign-outstate-read-precedes-shared-call-settlement';
     // A transaction signature cannot be placed inside the message-bus envelope: the signature commits the
     // transaction containing the call manifest, while the call manifest would in turn commit the signature.
-    // The kernel can still bind one scalar `sig` per logical row as an aligned `sig[]` positional route witness;
-    // the original handler verifies the selected element against the final transaction. A source `sig[]` would
-    // require a row-indexed array-of-arrays signing template, which the SDK does not yet represent.
-    else if (!reason && (
-      (signatureCheck || fn.parameters.some((parameter) =>
-        ['sig', 'sig[]'].includes(parameter.type.toString())))
-    ) && !(compilerOptions.messageBusKernel === true
-      && fn.parameters.some((parameter) => parameter.type.toString() === 'sig')
-      && fn.parameters.every((parameter) => parameter.type.toString() !== 'sig[]'))) {
+    // The kernel binds scalar `sig` and `sig[]` values as aligned `sig[]` and `sig[][]` positional route
+    // witnesses; the original handler verifies the selected element against the final transaction. Deeper source
+    // dimensions still lack a finite route ABI representation and remain refused.
+    else if (!reason && (signatureCheck || transactionSignatureParameterTypes.length > 0)
+      && !kernelSignatureParametersRepresentable) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
       && !(!routeUsesOtherIntrospection
@@ -4083,8 +4085,7 @@ function synthesizeMessageBusRoute(
   const isTransactionSignatureType = (type: string): boolean => type === 'sig' || type === 'sig[]';
   const signatureMode = eligible.some((fn) =>
     fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
-  const kernelSignatureMode = compilerOptions.messageBusKernel === true && signatureMode
-    && eligible.every((fn) => fn.parameters.every((parameter) => parameter.type.toString() !== 'sig[]'));
+  const kernelSignatureMode = compilerOptions.messageBusKernel === true && signatureMode;
   // Kernel dispatch: one for-row loop, no AST unroll. Omitted/true selects it; false keeps today's clone/unroll.
   // Resource-shaped per-row frames stay on the legacy unroll. Scalar transaction signatures use aligned `sig[]`
   // route witnesses outside the committed row blob. Events, value, tokens,
@@ -5210,7 +5211,8 @@ function synthesizeMessageBusRoute(
     fn.parameters.flatMap((parameter, parameterIndex) => {
       if (!isTransactionSignatureType(parameter.type.toString())) return [];
       if (kernelSignatureMode) {
-        return [`sig[] ${kernelSignatureWitnessName(handlerIndex, parameterIndex)}`];
+        const witnessType = parameter.type.toString() === 'sig[]' ? 'sig[][]' : 'sig[]';
+        return [`${witnessType} ${kernelSignatureWitnessName(handlerIndex, parameterIndex)}`];
       }
       return Array.from({ length: routeMaximumRows }, (_unused, row) =>
         `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`);

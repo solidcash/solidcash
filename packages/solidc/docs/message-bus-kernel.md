@@ -77,8 +77,9 @@ per-row cloned bodies.
 
 Selector `53434231` (`SCB1`). Inputs remain `batchBlob` plus the existing compact-binder /
 graph / msg.sender-category parameters. Kernel routes **omit** compile-time `_r${row}` key and signature
-bands. Each scalar source `sig` parameter instead contributes one aligned `sig[] ..._rows` route witness;
-transaction signatures stay outside the committed row blob and the runtime loop selects element `row`.
+bands. Each scalar source `sig` parameter contributes one aligned `sig[] ..._rows` route witness, and each
+source `sig[]` contributes an aligned `sig[][] ..._rows` witness. Transaction signatures stay outside the
+committed row blob and the runtime loop selects element `row`.
 
 Execution order:
 
@@ -112,8 +113,8 @@ A contract with a message-bus route uses the kernel calling convention by defaul
 kernel-shaped handlers are dispatched by the row loop and
 unsupported siblings remain published with a `KERNEL_*` refusal:
 
-- a scalar `sig` parameter is an aligned positional route witness and is finalized against the selected
-  handler body; a source `sig[]` remains refused because it needs a row-indexed array-of-arrays witness;
+- scalar `sig` and one-dimensional `sig[]` parameters are aligned positional route witnesses and are finalized
+  against the selected handler body; deeper source signature-array dimensions remain refused;
 - no dedicated resource-shaped handler that owns a fixed per-row physical frame as route ABI
   (param-keyed `from`/`to` alternatives journal as two slots of the same row);
 - no `_r${row}` witnesses required for soundness (`msg.sender` is a shared published identity;
@@ -144,7 +145,7 @@ every kernel toy.
 | Code | Means | Not this |
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
-| `KERNEL_TX_SIGNATURE` | A transaction-signature shape that cannot be represented as one scalar `sig` per logical row (notably a source `sig[]`, or a signature check with no scalar signature parameter) | Scalar `sig` (one aligned `sig[] ..._rows` route witness); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
+| `KERNEL_TX_SIGNATURE` | A transaction-signature shape that cannot be represented by the aligned route witnesses (notably source `sig[][]` or deeper, or a signature check with no representable signature parameter) | Scalar `sig` (aligned `sig[] ..._rows`), source `sig[]` (aligned `sig[][] ..._rows`); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
 | `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; or a counter loop that repeats a fixed-slot effect (event, BCH transfer, or token-container transfer) | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical counter-keyed `for (int i = 0; i < n; i = i + 1)` (domain `n`) or `int i = 0; do { ...; i = i + 1; } while (i < n)` (domain `max(n, 1)`) over `m[i]` / nested `m[k][i]`, or those rewrites beside source-order typed external calls / invariant `if`/`switch` |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Inline assembly or a low-level call the journal cannot summarize as a call/effect row | After Solidity-compat lowering to `call` plus returndata |
@@ -200,8 +201,8 @@ Unchanged:
 - SDK-derived absolute indices; application source still supplies none.
 
 Kernel artifacts should not require `_r${row}` route inputs. Row arguments stay in the manifest
-`arguments` bytes; scalar transaction signatures are the deliberate exception and use one aligned `_rows`
-array per handler parameter because committing them into the manifest would be circular. Return `position` in
+`arguments` bytes; scalar and one-dimensional transaction-signature arrays are the deliberate exception and use
+one aligned `_rows` array per handler parameter because committing them into the manifest would be circular. Return `position` in
 the manifest remains the logical row index; only redeem bytecode becomes a loop.
 
 ---
@@ -215,8 +216,8 @@ Journal: existing `ScalarJournal.test.ts` and `CollectionJournal.test.ts` remain
 evidence; kernel work must not regress them.
 
 SDK: `packages/solidcash/test/journal-message-bus/e2e/KernelLoopCompose.test.ts` composes two logical
-calls through the existing envelope and `vm.evaluate`, including two selected scalar-signature rows and an
-unsigned sibling-only batch that must not request an unrelated signer.
+calls through the existing envelope and `vm.evaluate`, including two selected scalar-signature rows, two selected
+signature-array rows, and unsigned sibling-only batches that must not request an unrelated signer.
 
 The broad journal/message-bus suites remain the regression gate for the default convention. Tests that describe
 the historical wire implementation must opt into it with `messageBusKernel: false`.
@@ -235,8 +236,9 @@ Kernel toys now cover the designed eligibility class:
 - `delegate` implementation functions in this participant's owner frame.
 
 Compiler evidence: `KernelLoopRoute.test.ts`, `KernelCutoverRoute.test.ts`. SDK: `KernelLoopCompose.test.ts`,
-`KernelCutoverCompose.test.ts`. Scalar transaction `sig` rows use aligned route witnesses; source `sig[]`
-remains `KERNEL_TX_SIGNATURE`. Foreign `delegatecall` remains `KERNEL_FOREIGN_DELEGATE`. The legacy convention
+`KernelCutoverCompose.test.ts`. Scalar transaction `sig` and source `sig[]` rows use aligned route witnesses;
+source `sig[][]` and deeper remain `KERNEL_TX_SIGNATURE`. Foreign `delegatecall` remains
+`KERNEL_FOREIGN_DELEGATE`. The legacy convention
 retains its historical admission behavior and diagnostic names, but does not make these unsafe shapes admissible.
 Typed external calls, collection-plus-typed-call handlers (a mapping journal clone promoted
 onto the graph `OP_INVOKE` frame), interface-typed state receivers (`this.data.userRegistered(..)`),

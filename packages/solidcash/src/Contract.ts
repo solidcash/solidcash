@@ -12,7 +12,7 @@ import {
 } from '@solidcash/utils';
 import {
   ConstructorArgument, encodeFunctionArgument, encodeConstructorArguments, FunctionArgument,
-  isSignatureTemplateArray,
+  isDeferredSignatureArgument,
 } from './Argument.js';
 import {
   Unlocker, ContractOptions, GenerateUnlockingBytecodeOptions, Utxo, AddressType, ContractUnlocker, LibauthOutput,
@@ -538,7 +538,7 @@ export class Contract<
       // internal argument, so their unlocking bytecode is identical in every pass. Large delegate artifacts can
       // otherwise copy and serialize hundreds of kilobytes per input on every probe.
       const hasSignatures = encodedArgs.some(
-        (arg) => arg instanceof SignatureTemplate || isSignatureTemplateArray(arg),
+        (arg) => isDeferredSignatureArgument(arg),
       );
       const needsBlockhashIndex = !internalsProvided && abiFunction.inputs.some(
         (input) => input.name === '__internal__blockhashInputIndex',
@@ -551,7 +551,7 @@ export class Contract<
       ): Uint8Array => {
         if (cacheUnlockingBytecode && cachedUnlockingBytecode) return cachedUnlockingBytecode;
         const completeArgs = encodedArgs.map((arg, index) => {
-          if (!(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg)) return arg;
+          if (!isDeferredSignatureArgument(arg)) return arg;
 
           // Generate transaction signature from SignatureTemplate
           const coveredBytecode = signingBytecodeForArgument(argInputs[index].name);
@@ -560,8 +560,13 @@ export class Contract<
               transaction, sourceOutputs, inputIndex, coveredBytecode, template.getHashType(),
             ),
           ));
+          const finalize = (value: unknown): ConstructorArgument => {
+            if (value instanceof SignatureTemplate) return sign(value);
+            if (Array.isArray(value)) return value.map(finalize);
+            throw new Error(`Invalid deferred signature argument '${argInputs[index].name}'`);
+          };
           if (arg instanceof SignatureTemplate) return sign(arg);
-          return encodeFunctionArgument(arg.map(sign), argInputs[index].type, structs) as Uint8Array;
+          return encodeFunctionArgument(finalize(arg), argInputs[index].type, structs) as Uint8Array;
         });
 
         // Fill the synthesized blockhash co-spend index (locate the C_oracle UTXO among the spent inputs);

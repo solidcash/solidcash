@@ -22,7 +22,7 @@ import {
   StructDefinitionInfo,
 } from '@solidcash/utils';
 import {
-  EncodedConstructorArgument, EncodedFunctionArgument, encodeFunctionArguments, isSignatureTemplateArray,
+  EncodedConstructorArgument, EncodedFunctionArgument, encodeFunctionArguments, isDeferredSignatureArgument,
 } from '../Argument.js';
 import { Contract } from '../Contract.js';
 import { DebugResults, debugTemplate } from '../debugging.js';
@@ -78,7 +78,7 @@ const resolveArgsForOpInvoke = (
   const numArgs = abiFunction.inputs.length;
 
   return encodedArgs.map((arg, i) => {
-    if (!(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg)) return arg;
+    if (!isDeferredSignatureArgument(arg)) return arg;
     const instrIndex = numArgs - i;
     return instructions[instrIndex].data;
   });
@@ -655,7 +655,7 @@ const generateUnlockingScriptParams = (
     ) as AuthenticationInstructionPush[];
     const numArgs = abiFunction.inputs.length;
     encodedFunctionArgs = encodedFunctionArgs.map((arg, i) => {
-      if (!(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg)) return arg;
+      if (!isDeferredSignatureArgument(arg)) return arg;
       // Selector first: [selector, argN-1, argN-2, ..., arg1, arg0, redeemScript]
       // instrIndex = numArgs - i
       const instrIndex = numArgs - i;
@@ -688,7 +688,7 @@ const generateTemplateScenarioParametersValues = (
 
   const entries = typesAndArguments
     // SignatureTemplates are handled by the 'keys' object in the scenario
-    .filter(([, arg]) => !(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg))
+    .filter(([, arg]) => !isDeferredSignatureArgument(arg))
     .map(([input, arg]) => {
       const encodedArgumentHex = binToHex(arg as Uint8Array);
       const prefixedEncodedArgument = addHexPrefixExceptEmpty(encodedArgumentHex);

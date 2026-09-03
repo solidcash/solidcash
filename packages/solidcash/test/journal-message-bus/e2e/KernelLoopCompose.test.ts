@@ -2,12 +2,14 @@ import { hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, SignatureTemplate, StatefulContract, messageBus } from '../../../src/index.js';
+import {
+  Contract, SignatureAlgorithm, SignatureTemplate, StatefulContract, messageBus,
+} from '../../../src/index.js';
 import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos } from '../../test-util.js';
-import { alicePriv, alicePub } from '../../fixture/vars.js';
+import { alicePriv, alicePub, bobPriv, bobPub } from '../../fixture/vars.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
@@ -227,6 +229,66 @@ describe('kernel scalar-signature rows', () => {
     await expect(
       StatefulContract.withCategory(inner, categoryId).check(5n).send(),
     ).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 180_000);
+});
+
+describe('kernel signature-array rows', () => {
+  it('signs each row of a nested route witness against the invoked handler body', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelMultiSigned() {
+      int total;
+      function add(sig[] authorizations, pubkey[] owners, int amount) public {
+        require(checkMultiSig(authorizations, owners));
+        this.total = this.total + amount;
+        require(true);
+      }
+      function check(int expected) public { require(this.total == expected); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'add')?.eligible).toBe(true);
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_rows', type: 'sig[][]',
+    }));
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const signatures = (): SignatureTemplate[] => [
+      new SignatureTemplate(alicePriv, undefined, SignatureAlgorithm.ECDSA),
+      new SignatureTemplate(bobPriv, undefined, SignatureAlgorithm.ECDSA),
+    ];
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    expect(() => contract.batch([
+      { function: 'add', args: [[new Uint8Array(65)], [alicePub], 1n] },
+    ])).toThrow(/transaction signature argument 0 requires SignatureTemplate/);
+    const call = contract.batch([
+      { function: 'add', args: [signatures(), [alicePub, bobPub], 2n] },
+      { function: 'add', args: [signatures(), [alicePub, bobPub], 3n] },
+    ]);
+    const fee = await createBareP2pkhFeeFunder(provider);
+    call.addInput(fee.utxo, fee.unlocker);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+
+    const unsignedCall = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'check', args: [5n] },
+    ]);
+    const unsignedBuilder = await unsignedCall.build();
+    const unsignedTransaction = unsignedBuilder.buildLibauthTransaction();
+    const unsignedSourceOutputs = generateLibauthSourceOutputs(unsignedBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < unsignedTransaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs: unsignedSourceOutputs, transaction: unsignedTransaction,
+      })), `unsigned input ${inputIndex}`).toBe(true);
+    }
   }, 180_000);
 });
 

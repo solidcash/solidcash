@@ -27,7 +27,7 @@ export interface StructArgument { [field: string]: ConstructorArgument }
 // A `bigint[]`/`boolean[]`/nested array argument for an array-typed parameter (`uint[]`, `int[][]`, `T[]`), a
 // struct object, or a primitive.
 export type ConstructorArgument = bigint | boolean | string | Uint8Array | ConstructorArgument[] | StructArgument;
-export type FunctionArgument = ConstructorArgument | SignatureTemplate | SignatureTemplate[];
+export type FunctionArgument = ConstructorArgument | SignatureTemplate | SignatureTemplate[] | SignatureTemplate[][];
 
 /** Coerce ethers BigNumber, the testing shim, BN.js, and equivalent numeric objects to bigint. */
 function coerceNumericObject(value: object): bigint | undefined {
@@ -80,9 +80,14 @@ function coerceArrayElements(value: unknown): unknown {
 }
 
 export type EncodedConstructorArgument = Uint8Array;
-export type EncodedFunctionArgument = Uint8Array | SignatureTemplate | SignatureTemplate[];
+export type DeferredSignatureArgument = SignatureTemplate | SignatureTemplate[] | SignatureTemplate[][];
+export type EncodedFunctionArgument = Uint8Array | DeferredSignatureArgument;
 export const isSignatureTemplateArray = (value: unknown): value is SignatureTemplate[] =>
   Array.isArray(value) && value.every((element) => element instanceof SignatureTemplate);
+export const isSignatureTemplateMatrix = (value: unknown): value is SignatureTemplate[][] =>
+  Array.isArray(value) && value.every((element) => isSignatureTemplateArray(element));
+export const isDeferredSignatureArgument = (value: unknown): value is DeferredSignatureArgument =>
+  value instanceof SignatureTemplate || isSignatureTemplateArray(value) || isSignatureTemplateMatrix(value);
 
 export type EncodeFunction =
   (arg: FunctionArgument, typeStr: string, structs?: readonly StructDefinitionInfo[]) => EncodedFunctionArgument;
@@ -137,6 +142,9 @@ export function encodeFunctionArgument(
     const parsed = parseType(typeStr);
     if (parsed instanceof ArrayType && parsed.elementType === PrimitiveType.SIG
       && isSignatureTemplateArray(argument)) return argument;
+    if (parsed instanceof ArrayType && parsed.elementType instanceof ArrayType
+      && parsed.elementType.elementType === PrimitiveType.SIG
+      && isSignatureTemplateMatrix(argument)) return argument;
     // A CashAddress string inside an `address[]` (or nested) arg must become its locking bytecode BEFORE the
     // pushdata encoder runs - the scalar path below converts it, but the array path delegates straight to
     // encodePushdataValue, which would otherwise encode the raw address STRING (mismatching addressToLockScript

@@ -12503,9 +12503,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // covenants are fixed before the first probe; only source-evaluated commitments need convergence.
           const runtimeLoopEvents = stb.getRuntimeLoopEventOutputs();
           if (runtimeLoopEvents.length > 0) {
-            const runtimeEventBase = stb.getRuntimeLoopEventOutputBase();
             for (let eventIndex = 0; eventIndex < runtimeLoopEvents.length; eventIndex += 1) {
-              const outputIndex = runtimeEventBase + eventIndex;
+              const outputIndex = stb.getRuntimeLoopEventOutputIndex(eventIndex);
               const actual = probeBuilder2.outputs[outputIndex]?.token?.nft?.commitment ?? '';
               const commitmentMap = extractCommitmentMapFromTrace(
                 fullTrace2, { min: outputIndex, max: outputIndex + 1 }, true, false, true,
@@ -15167,6 +15166,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Fail closed (throw) when a key is already present (update-in-loop) or two keys share a predecessor (same-gap).
     const sortedLoopCommitments = new Map<string, string[]>();
     const insertLoopPredecessors: UnlockableUtxo[] = [];
+    const runtimeLoopEntrySegments: Array<{
+      rowIndex: number; collection: string; offset: number; count: number;
+    }> = [];
+    const runtimeJournalInputIds = new Set<string>();
+    const appendRuntimeJournalInput = (input: UnlockableUtxo, collection: string): void => {
+      const id = `${input.txid}:${input.vout}`;
+      if (runtimeJournalInputIds.has(id)) {
+        throw new Error(
+          `Message-bus runtime mapping rows overlap the '${collection}' pre-state journal at ${id}; `
+          + 'a read-your-writes transition is required.',
+        );
+      }
+      runtimeJournalInputIds.add(id);
+      insertLoopPredecessors.push(input);
+    };
     for (const info of entryAbiFunction?.sortedInsertLoopInfo ?? []) {
       const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
       if (!collection) continue;
@@ -15269,10 +15283,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const value = selectedRowArgument(row, info.varyingArrayParam);
       return !Array.isArray(value) || value.length > 0;
     }));
-    if (activeSelectedUpsertRows.length > 1) {
+    if (activeSelectedUpsertRows.length > 1 && activeSelectedUpsertRows.some((row) => (
+      row.handler.sortedUpsertLoopInfo ?? []
+    ).some((info) => info.valueRuntimeLocal || info.mutation !== undefined))) {
       throw new Error(
-        'A message-bus envelope with runtime mapping loops in multiple selected rows requires '
-        + 'journalled predecessor planning; split the rows into separate transactions.',
+        'A message-bus envelope with runtime-derived mapping values or mutations in multiple selected rows '
+        + 'requires journalled predecessor planning; split the rows into separate transactions.',
       );
     }
     const plannedUpsertRows = activeSelectedUpsertRows;
@@ -15692,7 +15708,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`vmap runtime struct loop ${info.collection}: missing old-value witness ABI input`);
         }
         replaceLoopArgument(witnessIndex, oldWitnesses);
-        insertLoopPredecessors.push(...runtimeInputs);
+        for (const input of runtimeInputs) appendRuntimeJournalInput(input, info.collection);
         runtimeLoopDerivedCounts.set(info.collection, keysArr.length);
         if (collection.chunkableValue) addComputedValueChunkRun(info.collection);
         continue;
@@ -15839,7 +15855,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint : 0n;
           const newVal: bigint | Uint8Array = isDelete ? 0n : info.op === 'set' ? amt
             : info.op === '-' ? oldVal - (amt as bigint) : oldVal + (amt as bigint);
-          insertLoopPredecessors.push({ ...entry.utxo, unlocker: wUnlocker });
+          appendRuntimeJournalInput({ ...entry.utxo, unlocker: wUnlocker }, info.collection);
           if (collection.chunkableValue) {
             const oldTail = entry.value;
             if (oldTail.length >= 36
@@ -15909,7 +15925,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               + 'same gap). Reorder so the predecessor is credited immediately before, or split into separate transactions.');
           }
           cospent.add(uidOf(pred.utxo));
-          insertLoopPredecessors.push({ ...pred.utxo, unlocker: wUnlocker });
+          appendRuntimeJournalInput({ ...pred.utxo, unlocker: wUnlocker }, info.collection);
           commitments.push(binToHex(encodeEntryCommitment(pred.slot, slot, pred.value)));           // P' (re-pointed)
           const uCommitIndex = commitments.length;
           commitments.push(binToHex(encodeEntryCommitment(slot, pred.nextKey, commitValue(amt)))); // NEW = 0 + amt
@@ -15921,6 +15937,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (commitments.length > 0) {
         const prior = sortedLoopCommitments.get(info.collection) ?? [];
         sortedLoopCommitments.set(info.collection, [...prior, ...commitments]);
+        if (upsertFrame.routed) {
+          const rowIndex = routeRowIndex(upsertFrame.row!);
+          if (rowIndex < 0) throw new Error('Message-bus runtime loop row is missing from its route frame');
+          runtimeLoopEntrySegments.push({
+            rowIndex, collection: info.collection, offset: prior.length, count: commitments.length,
+          });
+        }
       }
       }
     }
@@ -23097,22 +23120,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // preserve events around it. Repeat each resolved site list without inspecting mapping keys.
     const selectedRuntimeEventRows = (entryRouteRows?.some((row) =>
       (row.handler.runtimeLoopEvents?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
-    const activeRuntimeEventRows = selectedRuntimeEventRows.filter((row) =>
-      (row.handler.runtimeLoopEvents ?? []).some((loop) => {
-        if (loop.repeatCount !== undefined) return loop.repeatCount > 0;
-        if (loop.permutationParam === undefined) return false;
-        const permutation = row.internalArgs?.[loop.permutationParam];
-        return Array.isArray(permutation) && permutation.length > 0;
-      }));
-    if (activeRuntimeEventRows.length > 1) {
-      throw new Error(
-        'A message-bus envelope with runtime-loop events in multiple selected rows requires row-scoped '
-        + 'effect planning; split the rows into separate transactions.',
-      );
-    }
     const runtimeLoopEventOutputs: Array<{
       eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string;
     }> = [];
+    const runtimeLoopEventSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
     const appendRuntimeEvents = (
       source: AbiFunction,
       argumentFor: (name: string) => FunctionArgument | undefined,
@@ -23148,7 +23159,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     if (selectedRuntimeEventRows.length > 0) {
       for (const row of selectedRuntimeEventRows) {
+        const offset = runtimeLoopEventOutputs.length;
         appendRuntimeEvents(row.handler, (name) => row.internalArgs?.[name]);
+        const count = runtimeLoopEventOutputs.length - offset;
+        if (count > 0) {
+          const rowIndex = routeRowIndex(row);
+          if (rowIndex < 0) throw new Error('Message-bus runtime event row is missing from its route frame');
+          runtimeLoopEventSegments.push({ rowIndex, offset, count });
+        }
       }
     } else {
       const directRuntimeEventFunction = entryAbiFunction?.runtimeLoopEvents?.length
@@ -23158,6 +23176,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const index = directRuntimeEventFunction.inputs.findIndex((input) => input.name === name);
           return index < 0 ? undefined : (directRuntimeEventFunction === entryAbiFunction ? entryArgs : args)[index];
         });
+      }
+    }
+    const runtimeLoopTrailingSegments: Array<
+    | { kind: 'entries'; collection: string; offset: number; count: number }
+    | { kind: 'events'; offset: number; count: number }
+    > = [];
+    if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0) {
+      const rowIndices = new Set([
+        ...runtimeLoopEntrySegments.map((segment) => segment.rowIndex),
+        ...runtimeLoopEventSegments.map((segment) => segment.rowIndex),
+      ]);
+      for (const rowIndex of [...rowIndices].sort((left, right) => left - right)) {
+        for (const segment of runtimeLoopEntrySegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
+          runtimeLoopTrailingSegments.push({
+            kind: 'entries', collection: segment.collection,
+            offset: segment.offset, count: segment.count,
+          });
+        }
+        for (const segment of runtimeLoopEventSegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
+          runtimeLoopTrailingSegments.push({ kind: 'events', offset: segment.offset, count: segment.count });
+        }
       }
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -23295,6 +23334,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(trailingDisposalInputs.length > 0 && { trailingDisposalInputs }),
       ...(loopEntryVars.length > 0 && { loopEntryVars }),
       ...(runtimeLoopEventOutputs.length > 0 && { runtimeLoopEventOutputs }),
+      ...(runtimeLoopTrailingSegments.length > 0 && { runtimeLoopTrailingSegments }),
       tokenContainers,
       tokenContainerLockingBytecodes,
       ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),

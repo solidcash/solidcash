@@ -6742,12 +6742,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private computeRuntimeLoopEntryOutputCountFunctions(node: ContractNode): void {
     const functions = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions]
       .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
-    const multipleCounterLoopIds = new Set(functions
-      .filter((fn) => fn.functionId !== undefined && fn.parameters.filter(
+    const runtimeInputIds = new Set(functions
+      .filter((fn) => fn.functionId !== undefined && fn.parameters.some(
         (parameter) => parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX),
-      ).length > 1)
+      ))
       .map((fn) => fn.functionId!));
-    this.runtimeLoopEntryInputCountFunctionIds = multipleCounterLoopIds;
+    // A route may invoke a one-loop handler more than once. Promote the predecessor cursor through every caller,
+    // just like the output/event context, so each physical row starts after the inputs consumed by prior rows.
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const fn of functions) {
+        if (fn.functionId === undefined || runtimeInputIds.has(fn.functionId) || !fn.body) continue;
+        if ([...this.collectInvokedFunctionIds(fn.body)].some((id) => runtimeInputIds.has(id))) {
+          runtimeInputIds.add(fn.functionId);
+          changed = true;
+        }
+      }
+    }
+    this.runtimeLoopEntryInputCountFunctionIds = runtimeInputIds;
     const dynamicWriteLoopIds = functions
       .filter((fn) => fn.functionId !== undefined
         && this.journalWriterFunctionIds.has(fn.functionId)
@@ -6775,7 +6787,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.runtimeLoopEventContextFunctionIds = runtimeEventHolders;
     this.runtimeLoopEntryOutputCountFunctionIds = new Set([
       ...dynamicWriteLoopIds,
-      ...multipleCounterLoopIds,
+      ...runtimeInputIds,
       ...runtimeEventHolders,
     ]);
   }
@@ -21619,7 +21631,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * co-spend per recipient + the fixed debit) and the entry-OUTPUT count == outCounter + nFixed (updates mint 1,
    * inserts mint 2), so there are no orphan / extra entries. Then drop [outCounter, iterCounter, addr].
    */
-  private emitSortedUpsertLoopTeardown(loc: SingleLocationData): void {
+  private emitSortedUpsertLoopTeardown(
+    loc: SingleLocationData, accumulate = true, includeGroupedBase = false,
+  ): void {
     if (!this.sortedUpsertLoopActive) return;
     // CASE (b) FLUSH: the loop's last iteration DEFERS its update's mint into the pending registers; mint it now
     // (before the count pins, which read outCounter). No key follows, so it is always a normal (non-re-pointed) flush.
@@ -21654,8 +21668,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitVerifyAdjacentUtxoCount(this.sortedUpsertLoopCounterName, false, loc, nFixed);
       this.emitVerifyAdjacentUtxoCount(this.sortedUpsertLoopOutCounterName, true, loc, nFixed);
     }
-    this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertLoopCounterName, loc);
-    this.emitAccumulateRuntimeLoopEntryOutputs(this.sortedUpsertLoopOutCounterName, loc);
+    if (accumulate) {
+      this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertLoopCounterName, loc);
+      this.emitAccumulateRuntimeLoopEntryOutputs(this.sortedUpsertLoopOutCounterName, loc);
+      if (includeGroupedBase) {
+        this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertInputBaseName, loc);
+        this.emitAccumulateRuntimeLoopEntryOutputs(this.sortedUpsertOutputBaseName, loc);
+      }
+    }
 
     const dropNames = [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName,
       ...(!this.currentFunctionIsDelegate ? ['(ul_scan_addr)'] as const : []),
@@ -21679,9 +21699,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     // Flush/count-pin each collection independently. All flushes consume the shared global output position, so
     // their outputs remain contiguous even though their authenticated address counts are separate.
-    for (const context of contexts) {
+    for (let index = 0; index < contexts.length; index++) {
+      const context = contexts[index];
       this.activateSortedUpsertLoopContext(context);
-      this.emitSortedUpsertLoopTeardown(loc);
+      // A grouped loop already gives each collection a base relative to the start of this logical loop. Keep the
+      // caller's row cursor stable while every collection verifies that frame, then advance it once by the final
+      // base plus final width. Advancing after each collection would count prior groups twice.
+      const last = index === contexts.length - 1;
+      this.emitSortedUpsertLoopTeardown(loc, !context.grouped || last, context.grouped && last);
       context.pendActive = false;
     }
     this.sortedUpsertLoopActive = false;

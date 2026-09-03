@@ -203,8 +203,10 @@ a branch remains frozen until the plan has path reachability. Event arguments ma
 resource-free builtins, and explicitly `pure` helpers. Effectful returning helpers remain refused even after
 inlining (their result provenance is retained on the normalized AST). BCH and token-container transfers still
 have no sound repeated-output form.
-More than one selected message row with a non-empty runtime-event stream remains refused until settlement has a
-row-scoped effect cursor.
+
+Runtime mapping entries and runtime events are planned as row-scoped trailing segments. Independent selected rows
+therefore compose in physical message order, including rows which mix a mapping loop with fixed or repeated events.
+Each row retains its established within-row collection order; events follow that row's mapping-entry segments.
 
 The handler ABI keeps each permutation as `int[]`. The kernel route adds one outer row dimension (`int[][]`) and
 selects `permutation[row]` inside the physical row loop. Empty elements represent rows dispatched to other
@@ -335,12 +337,15 @@ Conditional events, BCH transfers, and token-container transfers inside the phys
 conditional outside event remains frozen in that mixed handler until the stream carries path metadata. BCH and
 token-container effects remain supported before or after the loop.
 Nested counter keys `m[k][i]` permute the inner key only.
-At transaction construction time, multiple selected rows with non-empty mapping loops remain rejected until the
-SDK/compiler protocol has row-scoped predecessor journals and cursors. This includes byte-identical absolute
-`set`/`delete` rows: the row loop executes both segments, so reusing one physical settlement would under-provision
-the second row even though the final value is idempotent. Each row already carries its own authenticated
-permutation witness in preparation for that protocol. Multiple collections in one admitted loop share the row's
-permutation; separate disjoint loops use separate permutations and separate accumulated physical segments.
+At transaction construction time, selected rows with independent pre-state journals may share one envelope. The
+compiler threads predecessor and output cursors across physical rows, and the SDK emits each row's collection and
+event segments in the same order. If two rows require the same predecessor or existing-entry UTXO, construction
+fails closed: the later row needs a read-your-writes transition from the earlier row's pending output. This includes
+byte-identical absolute `set`/`delete` rows; executing both row segments cannot be represented by reusing one
+physical settlement. Multiple rows with runtime-derived values or mutations remain fenced for the same reason
+until the planner can build a complete journal from pending row transitions. Multiple collections in one admitted
+loop share the row's permutation; separate disjoint loops use separate permutations and separate accumulated
+physical segments.
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay

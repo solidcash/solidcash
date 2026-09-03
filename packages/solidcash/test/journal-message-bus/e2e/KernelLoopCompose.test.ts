@@ -125,6 +125,32 @@ contract KernelCounterMappingEvent() {
   }
 }`;
 
+const INDEPENDENT_ROW_LOOP_SOURCE = `pragma solidcash ^0.13.0;
+event ABefore(int n);
+event AHit(int i);
+event AAfter(int n);
+event BBefore(int n);
+event BHit(int i);
+event BAfter(int n);
+contract KernelIndependentRows() {
+  mapping(int => int) a;
+  mapping(int => int) b;
+  function writeA(int n) public {
+    emit ABefore(n);
+    for (int i = 0; i < n; i = i + 1) { this.a[i] = i + 10; emit AHit(i); }
+    emit AAfter(n);
+    require(true);
+  }
+  function writeB(int n) public {
+    emit BBefore(n);
+    for (int i = 0; i < n; i = i + 1) { this.b[i] = i + 20; emit BHit(i); }
+    emit BAfter(n);
+    require(true);
+  }
+  function checkA(int key, int expected) public { require(this.a[key] == expected); }
+  function checkB(int key, int expected) public { require(this.b[key] == expected); }
+}`;
+
 const COUNTER_MAPPING_TYPED_CALLER_SOURCE = `pragma solidcash ^0.13.0;
 interface IKernelCounterSink { function ping(int value); }
 contract KernelCounterCaller(address sink) {
@@ -503,15 +529,15 @@ describe('kernel counter-key mapping loop compose', () => {
     await expect(contract.batch([
       { function: 'write', args: [2n, 10n] },
       { function: 'write', args: [3n, 10n] },
-    ]).build()).rejects.toThrow(/journalled predecessor planning/);
+    ]).build()).rejects.toThrow(/read-your-writes transition/);
     await expect(contract.batch([
       { function: 'write', args: [3n, 10n] },
       { function: 'write', args: [3n, 11n] },
-    ]).build()).rejects.toThrow(/journalled predecessor planning/);
+    ]).build()).rejects.toThrow(/read-your-writes transition/);
     await expect(contract.batch([
       { function: 'write', args: [3n, 10n] },
       { function: 'write', args: [3n, 10n] },
-    ]).build()).rejects.toThrow(/journalled predecessor planning/);
+    ]).build()).rejects.toThrow(/read-your-writes transition/);
 
     const zeroCall = contract.batch([{ function: 'write', args: [0n, 10n] }]);
     const zeroBuilder = await zeroCall.build();
@@ -595,7 +621,7 @@ describe('kernel counter-key mapping loop compose', () => {
       { function: 'clear', args: [3n] },
       { function: 'clear', args: [3n] },
     ]);
-    await expect(repeatedClear.build()).rejects.toThrow(/journalled predecessor planning/);
+    await expect(repeatedClear.build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 });
 
@@ -813,7 +839,41 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.batch([
       { function: 'write', args: [1n] },
       { function: 'write', args: [1n] },
-    ]).build()).rejects.toThrow(/journalled predecessor planning/);
+    ]).build()).rejects.toThrow(/read-your-writes transition/);
+  }, 180_000);
+
+  it('settles independent mapping journals and event streams in physical row order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(INDEPENDENT_ROW_LOOP_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.filter((handler) =>
+      handler.name === 'writeA' || handler.name === 'writeB'))
+      .toEqual([expect.objectContaining({ eligible: true }), expect.objectContaining({ eligible: true })]);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([
+      { function: 'writeB', args: [2n] },
+      { function: 'writeA', args: [3n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+        `independent-row input ${inputIndex}`).toBe(true);
+    }
+    const receipt = await call.send();
+    expect(receipt.events?.map((event) => [event.event, event.args.n ?? event.args.i])).toEqual([
+      ['BBefore', 2n], ['BHit', 0n], ['BHit', 1n], ['BAfter', 2n],
+      ['ABefore', 3n], ['AHit', 0n], ['AHit', 1n], ['AHit', 2n], ['AAfter', 3n],
+    ]);
+    await expect(StatefulContract.withCategory(inner, categoryId).call.checkB(1n, 21n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.checkA(2n, 12n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 
   it('settles source-order typed calls beside a permuted mapping loop', async () => {

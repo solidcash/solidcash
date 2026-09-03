@@ -4022,6 +4022,12 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   runtimeLoopEventOutputs?: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string;
   }>;
+  /** Physical row order for runtime mapping-entry and event segments. Entry offsets address the aggregate
+   * commitment list for their collection; event offsets address runtimeLoopEventOutputs. */
+  runtimeLoopTrailingSegments?: Array<
+  | { kind: 'entries'; collection: string; offset: number; count: number }
+  | { kind: 'events'; offset: number; count: number }
+  >;
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
   tokenContainers?: TokenContainerInfo[];
@@ -4273,6 +4279,7 @@ export class StatefulTransactionBuilder {
   private runtimeLoopEventOutputs: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
   }> = [];
+  private runtimeLoopTrailingSegments: NonNullable<StatefulTransactionOptions['runtimeLoopTrailingSegments']> = [];
 
   // P5b: collections whose loop-entry (NEW) commitment is known EXACTLY (a chunkable-value insert) and must NOT be
   // re-derived from the trace - the value-chunk pin adds OP_OUTPUTTOKENCOMMITMENT calls that the loop-entry
@@ -4375,6 +4382,7 @@ export class StatefulTransactionBuilder {
       ...output,
       commitment: '',
     }));
+    this.runtimeLoopTrailingSegments = options.runtimeLoopTrailingSegments?.map((segment) => ({ ...segment })) ?? [];
     this.eventDefinitions = options.eventDefinitions ?? [];
     this.eventNftLockingBytecodes = options.eventNftLockingBytecodes ?? new Map();
     this.tokenContainers = options.tokenContainers ?? [];
@@ -10058,7 +10066,26 @@ export class StatefulTransactionBuilder {
 
   /** First output occupied by the ordered runtime-loop event family. */
   getRuntimeLoopEventOutputBase(): number {
+    if (this.runtimeLoopTrailingSegments.length > 0 && this.runtimeLoopEventOutputs.length > 0) {
+      return this.getRuntimeLoopEventOutputIndex(0);
+    }
     return this.getChunkOutputBase() - this.runtimeLoopEventOutputs.length;
+  }
+
+  getRuntimeLoopEventOutputIndex(eventIndex: number): number {
+    if (this.runtimeLoopTrailingSegments.length === 0) {
+      return this.getChunkOutputBase() - this.runtimeLoopEventOutputs.length + eventIndex;
+    }
+    let physical = this.getChunkOutputBase()
+      - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length;
+    for (const segment of this.runtimeLoopTrailingSegments) {
+      if (segment.kind === 'events'
+        && eventIndex >= segment.offset && eventIndex < segment.offset + segment.count) {
+        return physical + eventIndex - segment.offset;
+      }
+      physical += segment.count;
+    }
+    throw new Error(`Runtime loop event ${eventIndex} is missing from the trailing segment plan`);
   }
 
   getRuntimeLoopEventOutputs(): ReadonlyArray<{
@@ -10175,6 +10202,10 @@ export class StatefulTransactionBuilder {
    */
   getLoopEntryOutputBase(): number {
     if (this.loopEntriesBeforeDynamicChunks) {
+      if (this.runtimeLoopTrailingSegments.length > 0) {
+        return this.getChunkOutputBase()
+          - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length;
+      }
       return this.getRuntimeLoopEventOutputBase() - this._trailingLoopEntryOutputCount();
     }
     if (this.delegateEntriesAfterLowLevel) {
@@ -12262,25 +12293,21 @@ export class StatefulTransactionBuilder {
       });
     }
 
-    if (this.loopEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel) {
-      for (const lv of this._trailingLoopEntryVars()) {
-        for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
-          const entryOutput = {
-            to: lv.lockingBytecode, amount: 1200n,
-            token: { amount: 0n, category: lv.categoryId ?? this.categoryId,
-              nft: { capability: 'mutable' as const, commitment } },
-          };
-          entryOutput.amount = this._loopEntryTransitionSatoshis(lv, commitment)
-            ?? BigInt(Math.max(1200, calculateDust(entryOutput)));
-          builder.addOutput(entryOutput);
-        }
-      }
-    }
-
-    // Runtime-loop events and their fixed peers are source-ordered records, independent of the permutation used
-    // to settle mapping keys. Their exact count is known from the event plan, while commitments are learned
-    // progressively from the covenant trace.
-    for (const event of this.runtimeLoopEventOutputs) {
+    const appendLoopEntry = (
+      lv: (typeof this.loopEntryVars)[number], commitment: string,
+    ): void => {
+      const entryOutput = {
+        to: lv.lockingBytecode, amount: 1200n,
+        token: { amount: 0n, category: lv.categoryId ?? this.categoryId,
+          nft: { capability: 'mutable' as const, commitment } },
+      };
+      entryOutput.amount = this._loopEntryTransitionSatoshis(lv, commitment)
+        ?? BigInt(Math.max(1200, calculateDust(entryOutput)));
+      builder.addOutput(entryOutput);
+    };
+    const appendRuntimeLoopEvent = (eventIndex: number): void => {
+      const event = this.runtimeLoopEventOutputs[eventIndex];
+      if (!event) throw new Error(`Runtime loop event segment references missing event ${eventIndex}`);
       builder.addOutput({
         to: event.lockingBytecode,
         amount: 1200n,
@@ -12290,6 +12317,42 @@ export class StatefulTransactionBuilder {
           nft: { capability: 'none', commitment: event.commitment },
         },
       });
+    };
+    if (this.runtimeLoopTrailingSegments.length > 0) {
+      const variables = new Map(this._trailingLoopEntryVars().map((variable) => [variable.collection, variable]));
+      for (const segment of this.runtimeLoopTrailingSegments) {
+        if (segment.kind === 'events') {
+          for (let index = 0; index < segment.count; index++) {
+            appendRuntimeLoopEvent(segment.offset + index);
+          }
+          continue;
+        }
+        const variable = variables.get(segment.collection);
+        if (!variable) throw new Error(`Runtime loop segment references unknown collection '${segment.collection}'`);
+        const commitments = this.loopEntryCommitments.get(segment.collection) ?? [];
+        for (let index = 0; index < segment.count; index++) {
+          const commitment = commitments[segment.offset + index];
+          if (commitment === undefined) {
+            throw new Error(`Runtime loop segment for '${segment.collection}' exceeds its commitment plan`);
+          }
+          appendLoopEntry(variable, commitment);
+        }
+      }
+    } else {
+      if (this.loopEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel) {
+        for (const lv of this._trailingLoopEntryVars()) {
+          for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
+            appendLoopEntry(lv, commitment);
+          }
+        }
+      }
+
+      // Runtime-loop events and their fixed peers are source-ordered records, independent of the permutation used
+      // to settle mapping keys. Their exact count is known from the event plan, while commitments are learned
+      // progressively from the covenant trace.
+      for (let eventIndex = 0; eventIndex < this.runtimeLoopEventOutputs.length; eventIndex++) {
+        appendRuntimeLoopEvent(eventIndex);
+      }
     }
 
     const appendValueChunks = (): void => {

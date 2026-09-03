@@ -203,9 +203,11 @@ export function isFunctionEntryInvariantMappingKey(
 }
 
 type EntryInfo = {
-  mapping: string; key: KeyKind; count: number; inLoop: boolean; bad: boolean;
+  mapping: string; keys: KeyKind[]; count: number; inLoop: boolean; bad: boolean;
   written: boolean; readAfterWrite: boolean; fromModifier?: string;
 };
+
+type ScalarMappingInfo = { valueType: Type; depth: number };
 
 /**
  * A vmap (sorted) mapping ARRAY value cannot be written more than once to the SAME entry in one call: each write is its
@@ -229,11 +231,11 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // that co-spends the entry NFT + emits one output, so a second one double-spends the (already-spent) input and
   // reverts. Read-once/mutate-local/write-once (a single upsert) fixes it. Gated on `sorted` (the default entry
   // model has its own write-in-loop handling); depth 1 only.
-  private scalarMappings: Map<string, Type> = new Map();
+  private scalarMappings: Map<string, ScalarMappingInfo> = new Map();
   private structMappings: Map<string, StructType> = new Map();
   private counter = 0;
 
-  constructor(private computedKeysOnly = false) { super(); }
+  constructor(private routeSnapshotKeysOnly = false) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -245,11 +247,15 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     this.scalarMappings = new Map();
     this.structMappings = new Map();
     for (const col of node.collections) {
-      if (col.type instanceof MappingType && col.depth === 1) {
-        if (col.innermostValueType instanceof ArrayType) this.arrayMappings.set(col.name, col.innermostValueType);
-        else if (col.sorted && col.innermostValueType instanceof StructType) {
+      if (col.type instanceof MappingType) {
+        if (col.depth === 1 && col.innermostValueType instanceof ArrayType) {
+          this.arrayMappings.set(col.name, col.innermostValueType);
+        } else if (col.depth === 1 && col.sorted && col.innermostValueType instanceof StructType) {
           this.structMappings.set(col.name, col.innermostValueType);
-        } else if (col.sorted) this.scalarMappings.set(col.name, col.innermostValueType);
+        } else if (col.sorted && !(col.innermostValueType instanceof ArrayType)
+          && !(col.innermostValueType instanceof StructType)) {
+          this.scalarMappings.set(col.name, { valueType: col.innermostValueType, depth: col.depth });
+        }
       }
     }
     if (this.arrayMappings.size === 0 && this.scalarMappings.size === 0 && this.structMappings.size === 0) return node;
@@ -265,11 +271,15 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 
   private transformFunction(fn: FunctionDefinitionNode): void {
     for (const e of this.collectCacheableEntries(fn.body)) {
-      if (this.computedKeysOnly && e.key.kind !== 'expression') continue;
+      if (this.routeSnapshotKeysOnly && e.keys.length === 1
+        && !e.keys.some((key) => key.kind === 'expression')) continue;
       const local = `${PREFIX}${e.mapping}_${this.counter++}`;
       const dirty = `${local}_dirty`;
-      new EntryRedirect(e.mapping, e.key, local, dirty, e.valueType).visit(fn.body);
-      const cacheRead = new MappingAccessNode(e.mapping, [buildKeyNode(e.key, fn.body.location)]); // T[] local = m[k];
+      new EntryRedirect(e.mapping, e.keys, local, dirty, e.valueType).visit(fn.body);
+      const cacheRead = new MappingAccessNode(
+        e.mapping,
+        e.keys.map((key) => buildKeyNode(key, fn.body.location) as ExpressionNode),
+      ); // T local = m[k1][k2];
       cacheRead.fromModifier = e.fromModifier;
       cacheRead.location = fn.body.location;
       const cache = new VariableDefinitionNode(e.valueType, [], local, cacheRead);
@@ -278,9 +288,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       dirtyInit.location = fn.body.location;
       const dirtyLocal = new VariableDefinitionNode(PrimitiveType.BOOL, [], dirty, dirtyInit);
       dirtyLocal.location = fn.body.location;
-      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], e.mapping, e.key, local, dirty);
+      let stmts = this.insertFlushesBeforeReturns(fn.body.statements ?? [], e.mapping, e.keys, local, dirty);
       if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
-        stmts = [...stmts, this.makeFlush(e.mapping, e.key, local, dirty, fn.body.location, e.fromModifier)];
+        stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier)];
       }
       fn.body.statements = [cache, dirtyLocal, ...stmts];
     }
@@ -291,16 +301,19 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // read-once/mutate-local/write-once.
   private collectCacheableEntries(
     body: Node,
-  ): Array<{ mapping: string; key: KeyKind; valueType: Type; fromModifier?: string }> {
+  ): Array<{ mapping: string; keys: KeyKind[]; valueType: Type; fromModifier?: string }> {
     const info = new Map<string, EntryInfo>();
-    const get = (mapping: string, k: Node, allowLiteral = false): EntryInfo | null => {
-      const ck = canonKeyOf(k, allowLiteral);
-      if (!ck) return null;
-      const ek = `${mapping}|${ck.canon}`;
+    const get = (mapping: string, rawKeys: Node | Node[], allowExpression = false): EntryInfo | null => {
+      const keys = Array.isArray(rawKeys) ? rawKeys : [rawKeys];
+      const canonical = keys.map((key) => canonKeyOf(key, allowExpression));
+      if (canonical.some((key) => key === null)) return null;
+      const resolved = canonical as { canon: string; key: KeyKind }[];
+      const ek = `${mapping}|${resolved.map((key) => key.canon).join('|')}`;
       let e = info.get(ek);
       if (!e) {
         e = {
-          mapping, key: ck.key, count: 0, inLoop: false, bad: false, written: false, readAfterWrite: false,
+          mapping, keys: resolved.map((key) => key.key), count: 0, inLoop: false, bad: false,
+          written: false, readAfterWrite: false,
         };
         info.set(ek, e);
       }
@@ -328,8 +341,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // not an ArrayAccessNode. Without this arm the two spellings of one read-modify-write lowered differently -
       // the bare one read-once/mutate-local/write-once, the dotted one in place - and published different
       // bytecode and a different entry-access order for byte-identical source intent.
-      if (n instanceof MappingAccessNode && this.scalarMappings.has(n.name) && n.keys.length === 1) {
-        const e = get(n.name, n.keys[0], true);
+      if (n instanceof MappingAccessNode && this.scalarMappings.has(n.name)
+        && n.keys.length === this.scalarMappings.get(n.name)!.depth) {
+        const e = get(n.name, n.keys, true);
         if (e?.written) e.readAfterWrite = true;
       }
       if (n instanceof MappingAssignNode && this.arrayMappings.has(n.name)) {
@@ -358,7 +372,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // delete marks it bad (needs nullify, not a plain reassign). Any array-op on a scalar mapping should not occur;
       // if it does, mark bad (be safe).
       if (n instanceof MappingAssignNode && this.scalarMappings.has(n.name)) {
-        const e = get(n.name, n.keys[0], true);
+        const mapping = this.scalarMappings.get(n.name)!;
+        const e = n.keys.length === mapping.depth ? get(n.name, n.keys, true) : null;
         if (e) {
           e.fromModifier ??= n.fromModifier;
           if (n.arrayIndex === undefined && !n.arrayPush && !n.arrayPop) {
@@ -371,7 +386,9 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         }
       }
       if (n instanceof MappingDeleteNode && this.scalarMappings.has(n.name)) {
-        const e = get(n.name, n.keys[0], true); if (e) e.bad = true;
+        const mapping = this.scalarMappings.get(n.name)!;
+        const e = n.keys.length === mapping.depth ? get(n.name, n.keys, true) : null;
+        if (e) e.bad = true;
       }
       if (n instanceof MappingFieldAssignNode && this.structMappings.has(n.name)) {
         const e = get(n.name, n.keys[0]);
@@ -397,7 +414,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
     };
     scan(body, false);
-    const out: Array<{ mapping: string; key: KeyKind; valueType: Type; fromModifier?: string }> = [];
+    const out: Array<{ mapping: string; keys: KeyKind[]; valueType: Type; fromModifier?: string }> = [];
     for (const e of info.values()) {
       // A struct entry needs the local rebuild path for even one field write, but a read-only struct access must
       // stay read-only. Treating every struct entry as cacheable synthesized an unconditional whole-entry flush
@@ -405,10 +422,13 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       if (e.bad || !(e.inLoop || e.count >= 2 || e.readAfterWrite
         || (e.written && this.structMappings.has(e.mapping)))) continue;
       // key must be invariant across the function: an identifier must not be reassigned; nullary keys always are.
-      if (e.key.kind === 'id'
-        && (this.assignsName(body, e.key.name) || this.declaresNameInsideLoop(body, e.key.name))) continue;
-      if (e.key.kind === 'expression') {
-        const dependencies = expressionParameterDependencies(e.key.node);
+      if (e.keys.some((key) => key.kind === 'id'
+        && (this.assignsName(body, key.name) || this.declaresNameInsideLoop(body, key.name)))) continue;
+      const expressionKeys = e.keys.filter((key): key is Extract<KeyKind, { kind: 'expression' }> =>
+        key.kind === 'expression');
+      if (expressionKeys.length > 0) {
+        const dependencies = new Set(expressionKeys.flatMap((key) =>
+          [...expressionParameterDependencies(key.node)]));
         // Expression keys are hoisted to the function entry, so every runtime dependency must already be in
         // scope there and remain immutable for the complete invocation. In practice these are public arguments;
         // local aliases can be supported later by moving this cache to the loop boundary rather than pretending
@@ -416,8 +436,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         if (mutatesExpressionDependency(body, dependencies)) continue;
       }
       out.push({
-        mapping: e.mapping, key: e.key,
-        valueType: (this.arrayMappings.get(e.mapping) ?? this.scalarMappings.get(e.mapping)
+        mapping: e.mapping, keys: e.keys,
+        valueType: (this.arrayMappings.get(e.mapping) ?? this.scalarMappings.get(e.mapping)?.valueType
           ?? this.structMappings.get(e.mapping))!,
         fromModifier: e.fromModifier,
       });
@@ -454,12 +474,12 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   }
 
   private makeFlush(
-    mapping: string, key: KeyKind, local: string, dirty: string, loc: Node['location'], fromModifier?: string,
+    mapping: string, keys: KeyKind[], local: string, dirty: string, loc: Node['location'], fromModifier?: string,
   ): BranchNode {
     const rhs = new IdentifierNode(local);
     rhs.location = loc;
-    const keyNode = buildKeyNode(key, loc);
-    const flush = new MappingAssignNode(mapping, [keyNode], rhs); // m[k] = local
+    const keyNodes = keys.map((key) => buildKeyNode(key, loc) as ExpressionNode);
+    const flush = new MappingAssignNode(mapping, keyNodes, rhs); // m[k1][k2] = local
     flush.fromModifier = fromModifier;
     flush.location = loc;
     const flushBlock = new BlockNode([flush]);
@@ -477,14 +497,14 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   // Insert a `m[k] = local` flush before every return (recursing into if/switch/try/blocks, NOT loops - in-loop
   // returns were already rewritten to flag+break by DesugarReturnInLoop). Mirrors CacheDynamicArrayInLoop.
   private insertFlushesBeforeReturns(
-    stmts: StatementNode[], mapping: string, key: KeyKind, local: string, dirty: string,
+    stmts: StatementNode[], mapping: string, keys: KeyKind[], local: string, dirty: string,
   ): StatementNode[] {
     const rec = (s: StatementNode[]): StatementNode[] =>
-      this.insertFlushesBeforeReturns(s ?? [], mapping, key, local, dirty);
+      this.insertFlushesBeforeReturns(s ?? [], mapping, keys, local, dirty);
     const out: StatementNode[] = [];
     for (const stmt of stmts) {
       if (stmt instanceof ReturnNode) {
-        out.push(this.makeFlush(mapping, key, local, dirty, stmt.location));
+        out.push(this.makeFlush(mapping, keys, local, dirty, stmt.location));
         out.push(stmt);
         continue;
       }
@@ -532,7 +552,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
 // (bottoming out at IdentifierNode(m)) -> local / local[j].
 class EntryRedirect extends AstTraversal {
   constructor(
-    private mapping: string, private key: KeyKind, private local: string, private dirty: string,
+    private mapping: string, private keys: KeyKind[], private local: string, private dirty: string,
     private valueType: Type,
   ) { super(); }
 
@@ -550,21 +570,22 @@ class EntryRedirect extends AstTraversal {
 
   private entryIndex(node: MappingAccessNode | MappingAssignNode): Node | undefined {
     if (node.arrayIndex) return node.arrayIndex;
-    if (node.keys.length === 2) return node.keys[1];
+    if (node.keys.length > this.keys.length) return node.keys[this.keys.length];
     return undefined;
   }
 
   private matches(name: string, keys: Node[]): boolean {
-    return name === this.mapping && keys.length >= 1 && keyNodeMatches(keys[0], this.key);
+    return name === this.mapping && keys.length >= this.keys.length
+      && this.keys.every((key, index) => keyNodeMatches(keys[index], key));
   }
 
   // A READ `m[k]` is ArrayAccessNode(IdentifierNode(m), <key>); `m[k][j]` nests it. Recurse first (inner
   // m[k] -> local), then collapse m[k] to `local`; the outer m[k][j] falls out as a local element read local[j].
   visitArrayAccess(node: ArrayAccessNode): Node {
     const visited = super.visitArrayAccess(node) as ArrayAccessNode;
-    if (visited instanceof ArrayAccessNode
+    if (this.keys.length === 1 && visited instanceof ArrayAccessNode
       && visited.array instanceof IdentifierNode && (visited.array as IdentifierNode).name === this.mapping
-      && keyNodeMatches(visited.index, this.key)) {
+      && keyNodeMatches(visited.index, this.keys[0])) {
       const id = new IdentifierNode(this.local);
       id.location = visited.location;
       return id;
@@ -631,7 +652,8 @@ class EntryRedirect extends AstTraversal {
 
   visitArrayAssign(node: ArrayAssignNode): Node {
     const visited = super.visitArrayAssign(node) as ArrayAssignNode;
-    if (visited instanceof ArrayAssignNode && visited.name === this.mapping && keyNodeMatches(visited.index, this.key)) {
+    if (this.keys.length === 1 && visited instanceof ArrayAssignNode
+      && visited.name === this.mapping && keyNodeMatches(visited.index, this.keys[0])) {
       const id = new IdentifierNode(this.local); id.location = visited.location;
       const asgn = new AssignNode(id, visited.value);
       asgn.location = visited.location;

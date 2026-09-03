@@ -873,6 +873,26 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it('journals a nested invariant entry beside a counter-keyed physical loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) keyed;
+      mapping(int => mapping(bytes32 => int)) totals;
+      function write(int n, int group, bytes owner) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.keyed[i] = i;
+          this.totals[group][sha256(owner)] = i;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.entryAccesses)
+      .toContainEqual(expect.objectContaining({
+        collection: 'totals', operations: ['read', 'write'],
+      }));
+  });
+
   it('refuses one permutation for mapping writes with different composite key tuples', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) a;

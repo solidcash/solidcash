@@ -1021,18 +1021,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return assigned;
       };
       const invariantWriteCacheable = (write: Node): boolean => {
-        if (!(write instanceof MappingAssignNode) || write.keys.length !== 1
+        if (!(write instanceof MappingAssignNode)
           || write.arrayIndex !== undefined || write.arrayPush || write.arrayPop) return false;
         const collection = this.collectionsByName.get(write.name);
-        if (!collection?.sorted || collection.depth !== 1
+        if (!collection?.sorted || write.keys.length !== collection.depth
           || collection.innermostValueType instanceof ArrayType
           || collection.innermostValueType instanceof StructType) return false;
-        const key = write.keys[0];
-        return isFunctionEntryInvariantMappingKey(
-          key,
-          node.body,
-          new Set(visibleParameters.map((parameter) => parameter.name)),
-        ) && (!(key instanceof IdentifierNode) || !assignedInFunction(key.name));
+        const publicParameterNames = new Set(visibleParameters.map((parameter) => parameter.name));
+        return write.keys.every((key) => isFunctionEntryInvariantMappingKey(
+          key, node.body, publicParameterNames,
+        ) && (!(key instanceof IdentifierNode) || !assignedInFunction(key.name)));
       };
       if (invariantWrites.some((write) => !invariantWriteCacheable(write))) return false;
       const containsKeyedWrite = (x: Node): boolean => {

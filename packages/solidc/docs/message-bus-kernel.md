@@ -326,10 +326,10 @@ concrete runtime keys overlap, the SDK rejects the repeated predecessor as requi
 derived from the earlier pending output.
 Every runtime-keyed mapping/array write in that loop must use the counter in exactly one key component, and those
 writes must have the same complete key tuple (for example `a[k][i]` plus `b[k][i]`). A depth-one scalar mapping
-entry whose key is a stable public parameter, literal, `msg.sender`, `tx.origin`, or a pure expression over public
-arguments may coexist: it is read once,
+scalar entry whose complete key tuple consists of stable public parameters, literals, `msg.sender`, `tx.origin`,
+or pure expressions over public arguments may coexist: it is read once,
 mutated as a local in source order, and flushed through one authenticated fixed-entry transition after the loop.
-Nested invariant keys still need the corresponding cache representation. A stable,
+A stable,
 serializable per-iteration write guard (including an immutable loop-local alias) publishes the exact selected
 logical subset: the SDK sorts only selected keys, while the covenant proves range, uniqueness, predicate
 completeness, and source-order cursor consumption. Multiple `if`/`else` write paths are combined as their

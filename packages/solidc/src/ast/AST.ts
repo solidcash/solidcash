@@ -398,8 +398,12 @@ export class FunctionDefinitionNode extends Node implements Named {
     mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;
     mutationIndexArrayParam?: string; mutationIndexScalarParam?: string; mutationIndexConst?: string;
     oldValuesWitnessParam?: string;
+    /** Source-path predicate for a conditionally reached runtime loop. */
+    condition?: ExpressionNode;
     op: '+' | '-' | 'set' | 'delete';
   }>;
+  /** Source-path predicate keyed by the compiler-owned counter permutation parameter. */
+  runtimeCounterLoopConditions?: Map<string, ExpressionNode>;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[]; linear?: boolean }>;

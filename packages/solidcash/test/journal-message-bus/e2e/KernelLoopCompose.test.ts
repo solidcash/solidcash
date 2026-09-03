@@ -153,6 +153,36 @@ contract KernelConditionalCounterEvent() {
   }
 }`;
 
+const CONDITIONAL_COUNTER_LOOP_SOURCE = `pragma solidcash ^0.13.0;
+event Hit(int i);
+contract KernelConditionalCounterLoop() {
+  bool gate;
+  mapping(int => int) m;
+  mapping(int => bool) scopedGate;
+  mapping(int => int) scoped;
+  function write(int n, bool enabled) public {
+    if (enabled && this.gate) {
+      for (int i = 0; i < n; i = i + 1) {
+        this.m[i] = i + 10;
+        emit Hit(i);
+      }
+    }
+    require(true);
+  }
+  function setScopedGate(int scope, bool enabled) public {
+    this.scopedGate[scope] = enabled;
+    require(true);
+  }
+  function writeScoped(int n, int scope, bool enabled) public {
+    if (enabled && this.scopedGate[scope]) {
+      for (int i = 0; i < n; i = i + 1) { this.scoped[i] = scope + i; }
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.m[key] == expected); }
+  function checkScoped(int key, int expected) public { require(this.scoped[key] == expected); }
+}`;
+
 const INDEPENDENT_ROW_LOOP_SOURCE = `pragma solidcash ^0.13.0;
 event ABefore(int n);
 event AHit(int i);
@@ -504,6 +534,116 @@ describe('kernel signature-array rows', () => {
 });
 
 describe('kernel counter-key mapping loop compose', () => {
+  it('settles conditionally reached counter loops and plans inactive rows as empty', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(CONDITIONAL_COUNTER_LOOP_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    const handler = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    const permutation = handler.inputs.find((input) => input.name.startsWith('__internal__vmapCounterPerm_'))!;
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(handler.sortedUpsertLoopInfo?.[0].condition).toEqual({
+      kind: 'binary', operator: '&&',
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      right: { kind: 'state', name: 'gate' },
+    });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { gate: true }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+
+    // The inactive path accepts a source bound above the active loop ceiling because its authenticated domain is
+    // exactly empty. This catches unconditional off-chain permutation planning and unconditional on-chain bounds.
+    const inactive = contract.call.write(100n, false);
+    const inactiveBuilder = await inactive.build();
+    const inactiveInput = inactiveBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === 'write');
+    if (!inactiveInput || !('params' in inactiveInput.unlocker)) throw new Error('direct write input is missing');
+    const directPermutationIndex = handler.inputs.findIndex((input) => input.name === permutation.name);
+    expect(inactiveInput.unlocker.params[directPermutationIndex]).toEqual([]);
+    const inactiveVm = createVirtualMachineBch2026ForProvider(provider);
+    const inactiveTransaction = inactiveBuilder.buildLibauthTransaction();
+    const inactiveSources = generateLibauthSourceOutputs(inactiveBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < inactiveTransaction.inputs.length; inputIndex += 1) {
+      expect(inactiveVm.stateSuccess(inactiveVm.evaluate({
+        inputIndex, sourceOutputs: inactiveSources, transaction: inactiveTransaction,
+      })), `inactive input ${inputIndex}`).toBe(true);
+    }
+    await expect(contract.call.write(100n, false).send()).resolves.toMatchObject({ events: [] });
+
+    const routed = contract.batch([
+      { function: 'write', args: [100n, false] },
+      { function: 'write', args: [3n, true] },
+    ]);
+    const routedBuilder = await routed.build();
+    const routeInput = routedBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    if (!routeInput || !('params' in routeInput.unlocker)) throw new Error('message-bus route input is missing');
+    const routePermutation = artifact.messageBus!.route.inputs.findIndex((input) => input.name === permutation.name);
+    const routedPermutation = routeInput.unlocker.params[routePermutation] as bigint[][];
+    expect(routedPermutation[0]).toEqual([]);
+    expect([...routedPermutation[1]].sort((left, right) => Number(left - right))).toEqual([0n, 1n, 2n]);
+    const receipt = await routed.send();
+    expect(receipt.events?.map((event) => event.args.i)).toEqual([0n, 1n, 2n]);
+    for (const key of [0n, 1n, 2n]) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, key + 10n).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+
+    const scopedHandler = artifact.abi.find((candidate) => candidate.name === 'writeScoped')!;
+    expect(scopedHandler.entryAccesses).toContainEqual(expect.objectContaining({
+      collection: 'scopedGate', slotIndex: 1, operations: ['read'],
+    }));
+    expect(scopedHandler.sortedUpsertLoopInfo?.[0].condition).toMatchObject({
+      kind: 'binary',
+      operator: '&&',
+      right: {
+        kind: 'stateAccess',
+        name: 'scopedGate',
+        args: [{ kind: 'source', source: { kind: 'forward', paramIndex: 1 } }],
+      },
+    });
+    const missingGate = StatefulContract.withCategory(inner, categoryId).call.writeScoped(100n, 9n, true);
+    const missingBuilder = await missingGate.build();
+    const missingInput = missingBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === 'writeScoped');
+    if (!missingInput || !('params' in missingInput.unlocker)) {
+      throw new Error('direct writeScoped input is missing');
+    }
+    const scopedPermutation = scopedHandler.inputs.findIndex((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'));
+    expect(missingInput.unlocker.params[scopedPermutation]).toEqual([]);
+    await expect(missingGate.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+
+    await expect(StatefulContract.withCategory(inner, categoryId).call.setScopedGate(7n, true).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const mappedRoute = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'writeScoped', args: [100n, 7n, false] },
+      { function: 'writeScoped', args: [2n, 7n, true] },
+    ]);
+    const mappedBuilder = await mappedRoute.build();
+    const mappedRouteInput = mappedBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    if (!mappedRouteInput || !('params' in mappedRouteInput.unlocker)) {
+      throw new Error('mapped message-bus route input is missing');
+    }
+    const scopedPermutationName = scopedHandler.inputs[scopedPermutation].name;
+    const scopedRoutePermutation = artifact.messageBus!.route.inputs.findIndex(
+      (input) => input.name === scopedPermutationName,
+    );
+    expect(mappedRouteInput.unlocker.params[scopedRoutePermutation]).toEqual([
+      [], expect.arrayContaining([0n, 1n]),
+    ]);
+    await expect(mappedRoute.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.checkScoped(0n, 7n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.checkScoped(1n, 8n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 180_000);
+
   it('derives immutable affine loop bounds for direct and routed calls', async () => {
     const provider = createTestProvider();
     const artifact = compileString(AFFINE_COUNTER_MAPPING_SOURCE, KERNEL);

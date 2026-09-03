@@ -533,6 +533,8 @@ export interface SortedUpsertLoopAbi {
   mutationIndexScalarParam?: string;
   mutationIndexConst?: string;
   oldValuesWitnessParam?: string;
+  /** Runtime predicate controlling whether this loop contributes any journal entries. */
+  condition?: ExternalCallExpression;
   op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default
 }
 
@@ -548,6 +550,8 @@ export interface KeySourceAbi {
 }
 
 export interface EntryAccessAbi {
+  /** Physical entry-slot ordinal. Differs from this array's index when runtime-loop entries were filtered out. */
+  slotIndex?: number;
   collection: string;
   keyParams: string[];
   keySources?: readonly KeySourceAbi[];  // optional for backward compat with old artifacts

@@ -6034,7 +6034,8 @@ export class StatefulTransactionBuilder {
         .filter((candidate) => functionNames.has(candidate.name))),
     ].filter((candidate): candidate is AbiFunction => candidate !== undefined);
     const entryAccess = abiFunctions
-      .map((candidate) => candidate.entryAccesses?.[slot.slotIndex ?? 0])
+      .map((candidate) => candidate.entryAccesses?.find((access, denseIndex) =>
+        (access.slotIndex ?? denseIndex) === (slot.slotIndex ?? 0)))
       .find((candidate) => candidate !== undefined);
     const collections = [group.stateLayout, ...artifacts.map((artifact) => artifact.stateLayout)]
       .flatMap((layout) => layout?.collections ?? [])

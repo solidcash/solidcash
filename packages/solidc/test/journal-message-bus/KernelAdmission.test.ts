@@ -1402,7 +1402,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a conditionally reached counter loop until the journal has path metadata', () => {
+  it('publishes path metadata for a conditionally reached counter loop', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function denied(int n, bool enabled) public {
@@ -1414,10 +1414,94 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: true,
+    });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({
+        varyingArrayParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/),
+        condition: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      }),
+    ]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('expands an immutable local path alias for a conditionally reached counter loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, bool enabled) public {
+        bool active = enabled;
+        if (active) {
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0].condition)
+      .toEqual({ kind: 'source', source: { kind: 'forward', paramIndex: 1 } });
+  });
+
+  it('publishes complementary predicates for counter loops in if/else arms', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a;
+      mapping(int => int) b;
+      function write(int n, bool left) public {
+        if (left) {
+          for (int i = 0; i < n; i = i + 1) { this.a[i] = i; }
+        } else {
+          for (int j = 0; j < n; j = j + 1) { this.b[j] = j; }
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
+    const conditions = artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo
+      ?.map((info) => info.condition);
+    expect(conditions).toEqual([
+      { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      {
+        kind: 'unary', operator: '!',
+        expression: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      },
+    ]);
+  });
+
+  it('refuses a conditional loop predicate derived from state mutated by the same handler', () => {
+    const artifact = compileString(`contract C() {
+      bool enabled;
+      mapping(int => int) m;
+      function denied(int n, bool next) public {
+        this.enabled = next;
+        if (this.enabled) {
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('keeps a counter loop beneath switch frozen until switch path metadata is available', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n, int choice) public {
+        switch (choice) {
+          case 1: for (int i = 0; i < n; i = i + 1) { this.m[i] = i; } break;
+          default: break;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
   });
 
   it('refuses a repeated BCH transfer inside a counter-keyed mapping loop', () => {

@@ -1540,8 +1540,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private getBlockSlotOffset(kind: BlockSlotKind, slotIndex?: number): number {
     const layout = this.currentFunction.blockLayout;
     if (!layout) throw new BlockLayoutUnavailableError(this.currentFunction.name);
+    const physicalSlotIndex = kind === 'entry' && slotIndex !== undefined
+      ? this.messageBusPhysicalEntrySlot(slotIndex) : slotIndex;
     const slot = layout.slots.find(
-      (s) => s.kind === kind && (slotIndex === undefined || s.slotIndex === slotIndex),
+      (s) => s.kind === kind && (physicalSlotIndex === undefined || s.slotIndex === physicalSlotIndex),
     );
     if (!slot) throw new Error(`Block slot not found: ${kind}${slotIndex !== undefined ? `[${slotIndex}]` : ''}`
       + ` while compiling '${this.currentFunction.name}'`
@@ -1549,6 +1551,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ? ` (${this.entrySlots[slotIndex].collection}; operations=${this.entrySlots[slotIndex].operations.join(',')}; `
           + `inLoop=${this.entrySlots[slotIndex].inLoop === true})` : ''));
     return slot.offset;
+  }
+
+  /**
+   * Translate a handler's compiler-owned entry slot to the aggregate route slot. The projection is dense over
+   * fixed entries, while local slot identities are not: removing a runtime-loop access can leave the first fixed
+   * access at slot 1 (or later). Indexing the projection by the local slot therefore selects the wrong route
+   * witness, or no witness at all.
+   */
+  private messageBusPhysicalEntrySlot(localSlot: number): number {
+    const projection = this.currentFunction.messageBusPhysicalEntrySlots;
+    // Source ABI metadata carries the projection so the SDK can compose the same function through the route, but
+    // a direct invocation still owns its source block layout. Only compiler handlers execute inside the aggregate
+    // participant block and must translate their local sparse slot identities.
+    if (!projection || !this.ownsMessageBusParticipantBlock()) return localSlot;
+    const fixedEntryIndex = this.currentFunction.entryAccesses
+      ?.filter((entry) => !entry.inLoop)
+      .findIndex((entry) => entry.slotIndex === localSlot) ?? -1;
+    return fixedEntryIndex >= 0 ? projection[fixedEntryIndex] ?? localSlot : localSlot;
   }
 
   /**
@@ -1562,7 +1582,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (slot === undefined || slot.inLoop === true) return false;
     if (this.currentFunction.name.startsWith('__message_bus_')
       && this.currentFunction.messageBusPhysicalEntrySlots !== undefined) {
-      return this.currentFunction.messageBusPhysicalEntrySlots.includes(slotIndex);
+      return this.currentFunction.entryAccesses
+        ?.some((entry) => entry.slotIndex === slotIndex && entry.inLoop !== true) ?? false;
     }
     return true;
   }
@@ -17186,7 +17207,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitSortedKeyHash(
     node: MappingAccessNode | MappingAssignNode | MappingDeleteNode, slotIndex: number, loc: SingleLocationData,
   ): void {
-    const physicalSlotIndex = this.currentFunction.messageBusPhysicalEntrySlots?.[slotIndex] ?? slotIndex;
+    const physicalSlotIndex = this.messageBusPhysicalEntrySlot(slotIndex);
     const localEntrySlot = this.entrySlots[slotIndex];
     const numKeys = node.keys.length;
     // Accumulate H(k0)++H(k1)++... on the stack. The running accumulator is kept TRACKED as '(__skh_acc)' during
@@ -18410,7 +18431,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         line: node.location.start.line,
         collection: collection.name,
         slotIndex,
-        physicalSlotIndex: this.currentFunction.messageBusPhysicalEntrySlots?.[slotIndex],
+        physicalSlotIndex: this.messageBusPhysicalEntrySlot(slotIndex),
         sortedRmw,
         arrayPush: node.arrayPush === true,
         arrayPop: node.arrayPop === true,
@@ -21359,6 +21380,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       existingInfo.fixedKeySources = fixedKeySources;
     }
     if (!existingInfo) {
+      const condition = this.currentFunction.runtimeCounterLoopConditions?.get(varyingArrayParam);
       infos.push({ collection: collection.name, fixedKeyParams, fixedKeySources, varyingArrayParam,
         ...(decodedKeyRecipe && {
           ...(decodedKeyRecipe.keyDecodeTupleIndex !== undefined
@@ -21377,6 +21399,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeOldValueWitness
           && writeNode.messageBusRuntimeOldValueWitness.array instanceof IdentifierNode
           && { oldValuesWitnessParam: writeNode.messageBusRuntimeOldValueWitness.array.name }), op });
+      if (condition) infos.at(-1)!.condition = condition;
     }
     this.sortedWrittenCollections.add(collection.name);
 
@@ -26517,7 +26540,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
-    if (this.usesMessageBusOwnerBlockBase()) {
+    if (this.usesMessageBusOwnerBlockBase() && !this.usesProxyStateBlockBase()) {
+      // A non-delegate handler executes inside its participant's route input, so OP_INPUTINDEX is already the
+      // authenticated owner. Using the threaded copy here is both redundant and fragile: a row-loop invocation
+      // can carry cache/journal operands above the declared frame, and a stale top-relative depth then selects a
+      // dummy entry slot whose empty token category fails at OP_SPLIT. Delegates still require the explicit proxy
+      // owner below because their executor and state owner are distinct inputs.
+      this.emit(Op.OP_INPUTINDEX, locationData);
+    } else if (this.usesMessageBusOwnerBlockBase()) {
       // Every generated route handler receives its physical participant owner as an explicit compiler argument.
       // Use that one authority for both direct routes (where the caller supplied OP_INPUTINDEX) and delegated
       // routes (where the caller supplied its authenticated proxy witness). Deciding again from transient clone

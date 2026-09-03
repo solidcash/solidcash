@@ -3600,6 +3600,11 @@ export function visibleHandlerInputs<T extends { name: string }>(inputs: readonl
   return inputs.filter((input) => !input.name.startsWith('__internal__'));
 }
 
+/** Resolve a fixed entry access by its compiler-owned physical slot, including pre-slotIndex artifacts. */
+function entryAccessAt(fn: Pick<AbiFunction, 'entryAccesses'> | undefined, slotIndex: number): EntryAccessAbi | undefined {
+  return fn?.entryAccesses?.find((access, denseIndex) => (access.slotIndex ?? denseIndex) === slotIndex);
+}
+
 /**
  * Repeating an identical absolute counter-loop write is observationally idempotent: every row proves the same
  * old-to-new entry transition, so the rows may share one physical journal settlement. Relative updates (`+`/`-`),
@@ -4349,10 +4354,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (countValue === undefined) {
           throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
         }
-        const permutation = vmapCounterPermutationValues(
-          BigInt(countValue as bigint | number | string),
-          permutationSpec,
-        );
+        const loopInfo = row.handler.sortedUpsertLoopInfo
+          ?.find((info) => info.varyingArrayParam === input.name);
+        const active = loopInfo?.condition ? this._evaluateExternalExpression(
+          loopInfo.condition,
+          [...row.args],
+          executionArtifact,
+          undefined,
+          visible,
+        ) : true;
+        // State-derived predicates are intentionally unresolved here: _batchRaw is synchronous and performs no
+        // chain reads. Publish an empty placeholder; _createBuilder recomputes the exact permutation after loading
+        // authenticated state. Parameter-only false paths can avoid even validating an unreachable large bound.
+        const permutation = active === true
+          ? vmapCounterPermutationValues(BigInt(countValue as bigint | number | string), permutationSpec)
+          : [];
         (row.internalArgs as Record<string, FunctionArgument>)[input.name] = permutation;
         rowPermutations[rowIndex] = permutation;
       }
@@ -4452,10 +4468,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const bare = name.startsWith('id:') ? name.slice(3) : name;
       return bare.startsWith('__message_bus_ek_') ? bare.slice('__message_bus_ek_'.length) : bare;
     };
-    const inactiveRouteEntrySlots = (capability.route.entryAccesses ?? []).flatMap((access, slotIndex) => {
+    const inactiveRouteEntrySlots = (capability.route.entryAccesses ?? []).flatMap((access, denseIndex) => {
       const keys = access.keyParams.map(routeKeyName);
       return keys.length > 0 && keys.every((key) => key.startsWith('__message_bus_key_'))
-        && !keys.every((key) => activeRouteEntryKeys.has(key)) ? [slotIndex] : [];
+        && !keys.every((key) => activeRouteEntryKeys.has(key)) ? [access.slotIndex ?? denseIndex] : [];
     });
     // `route.entryAccesses` is the union of every admitted handler. Narrow each selected row back to the
     // operations of its direct handler using the compiler-published physical-slot correspondence. Per-row route
@@ -4467,15 +4483,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         candidate.selector === handler.selector || candidate.name === handler.name);
       handler.physicalEntrySlots?.forEach((physicalSlot, directIndex) => {
         const directAccess = selected?.entryAccesses?.[directIndex];
-        const canonicalAccess = capability.route.entryAccesses?.[physicalSlot];
+        const canonicalAccess = entryAccessAt(capability.route, physicalSlot);
         if (!directAccess || !canonicalAccess) return;
         const selectedKeys = canonicalAccess.keyParams.map((key) =>
           routeKeyName(key).replace(/_r\d+$/, `_r${rowIndex}`));
-        const selectedSlot = capability.route.entryAccesses?.findIndex((candidate) =>
+        const selectedAccess = capability.route.entryAccesses?.find((candidate) =>
           candidate.collection === directAccess.collection
           && candidate.keyParams.length === selectedKeys.length
           && candidate.keyParams.every((key, keyIndex) => routeKeyName(key) === selectedKeys[keyIndex]));
-        if (selectedSlot === undefined || selectedSlot < 0) return;
+        if (!selectedAccess) return;
+        const selectedSlot = selectedAccess.slotIndex
+          ?? capability.route.entryAccesses!.indexOf(selectedAccess);
         const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
         activeRouteEntryOperations.set(
           selectedSlot,
@@ -4489,8 +4507,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         handlers: reachedHandlers.map((handler) => handler.name),
         entries: [...activeRouteEntryOperations.entries()].map(([slotIndex, operations]) => ({
           slotIndex,
-          collection: capability.route.entryAccesses?.[slotIndex]?.collection,
-          keys: capability.route.entryAccesses?.[slotIndex]?.keyParams.map(routeKeyName),
+          collection: entryAccessAt(capability.route, slotIndex)?.collection,
+          keys: entryAccessAt(capability.route, slotIndex)?.keyParams.map(routeKeyName),
           operations,
         })),
         inactiveRouteEntrySlots,
@@ -8859,6 +8877,114 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return entries;
   }
 
+  /**
+   * Materialize mapping reads used by a compiler-published runtime predicate into the expression evaluator's
+   * state namespace. Scalar state already arrives through `getFullState()`, but mappings live at their own
+   * collection covenant addresses and deliberately do not appear in that record. Planning a conditional event
+   * or counter loop from scalar state alone would therefore either fail to resolve or, worse, guess the path.
+   *
+   * `getEntries()` authenticates the collection address and reconstructs inline and chunked values. A sorted
+   * mapping commitment publishes only its slot hash, so match the evaluated source keys against that slot rather
+   * than pretending the original keys can be decoded from the commitment. Missing keys receive the language
+   * default, exactly like the on-chain mapping read.
+   */
+  private async _hydrateExternalPredicateState(
+    expressions: readonly (ExternalCallExpression | undefined)[],
+    functionArgs: FunctionArgument[],
+    artifact: Artifact,
+    state: Record<string, unknown>,
+    callerInputs?: readonly { type: string }[],
+    executionSelfAddress?: FunctionArgument,
+  ): Promise<Record<string, unknown>> {
+    const collections = artifact.stateLayout?.collections ?? [];
+    const mappingByName = new Map(collections
+      .filter((collection) => collection.kind === 'mapping')
+      .map((collection) => [collection.name, collection] as const));
+    if (mappingByName.size === 0) return state;
+
+    const accesses: ExternalCallExpression[] = [];
+    const seen = new Set<object>();
+    const visit = (candidate: ExternalCallExpression | undefined): void => {
+      if (!candidate || typeof candidate !== 'object' || seen.has(candidate)) return;
+      seen.add(candidate);
+      for (const child of Object.values(candidate)) {
+        if (Array.isArray(child)) {
+          for (const item of child) visit(item as ExternalCallExpression);
+        } else visit(child as ExternalCallExpression);
+      }
+      if (candidate.kind === 'stateAccess' && candidate.name && mappingByName.has(candidate.name)) {
+        accesses.push(candidate);
+      }
+    };
+    for (const expression of expressions) visit(expression);
+    if (accesses.length === 0) return state;
+
+    const hydrated: Record<string, unknown> = { ...state };
+    const entriesBySignature = new Map<string, Awaited<ReturnType<typeof this.getEntries>>>();
+    const pending = new Set(accesses);
+    // Accesses were collected child-first, but iterate to a fixed point as a guard for shared/nested expression
+    // objects. A mapping key may itself contain another stable mapping read.
+    for (let pass = 0; pass <= accesses.length && pending.size > 0; pass += 1) {
+      let progressed = false;
+      for (const access of [...pending]) {
+        const collection = mappingByName.get(access.name!);
+        if (!collection) continue;
+        const keys = (access.args ?? []).map((keyExpression) => this._evaluateExternalExpression(
+          keyExpression,
+          functionArgs,
+          artifact,
+          hydrated,
+          callerInputs,
+          undefined,
+          0,
+          false,
+          executionSelfAddress,
+        ));
+        if (keys.some((key) => key === undefined)) continue;
+        const supportedKeys = keys.every((key) => typeof key === 'bigint' || typeof key === 'boolean'
+          || typeof key === 'string' || key instanceof Uint8Array);
+        if (!supportedKeys) continue;
+        let entries = entriesBySignature.get(collection.signature);
+        if (!entries) {
+          entries = await this.getEntries(collection.signature);
+          entriesBySignature.set(collection.signature, entries);
+        }
+        const typedKeys = keys as Array<bigint | boolean | Uint8Array | string>;
+        const entry = entries.find((candidate) => StatefulContract._entryMatchesKeys(
+          candidate,
+          typedKeys,
+          collection.keyTypes ?? [collection.keyType],
+        ));
+        const value = entry?.value ?? getDefaultStateValue(
+          collection.valueType,
+          artifact.stateLayout?.structs,
+        );
+        let namespace = hydrated[access.name!] as Record<string, unknown> | undefined;
+        if (!namespace || typeof namespace !== 'object' || Array.isArray(namespace)
+          || namespace instanceof Uint8Array) {
+          namespace = {};
+          hydrated[access.name!] = namespace;
+        }
+        let target = namespace;
+        for (let index = 0; index < typedKeys.length; index += 1) {
+          const property = String(typedKeys[index]);
+          if (index === typedKeys.length - 1) target[property] = value;
+          else {
+            const next = target[property];
+            if (!next || typeof next !== 'object' || Array.isArray(next) || next instanceof Uint8Array) {
+              target[property] = {};
+            }
+            target = target[property] as Record<string, unknown>;
+          }
+        }
+        pending.delete(access);
+        progressed = true;
+      }
+      if (!progressed) break;
+    }
+    return hydrated;
+  }
+
   // n for a PARAM blockhash read = the matching call arg (a direct-identifier n). Computed reads
   // (<computed:i> keys) are NOT resolved here - they come from the probe trace. Returns null on a non-bigint.
   private paramBlockhashN(readKey: string, args: any[], abiFunction: AbiFunction): bigint | null {
@@ -10105,7 +10231,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const slot = group.blockLayout.slots[slotIndex];
             const input = group.blockInputs[slotIndex];
             if (slot?.kind !== 'entry' || !input?.token?.nft) continue;
-            const access = abiFunction?.entryAccesses?.[slot.slotIndex ?? 0];
+            const access = entryAccessAt(abiFunction, slot.slotIndex ?? 0);
             if (!access) continue;
             input.unlocker = createEntryNftUnlocker(
               entryContract.inner, entryMasterIdx, group.categoryId, access.collection,
@@ -10344,7 +10470,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const witnessInputs = delegateFn?.inputs.filter((input: { name: string }) =>
               /^__internal__valueWitness_\d+$/.test(input.name)) ?? [];
             const witnessCollection = witnessInputs.length === 1
-              ? delegateFn?.entryAccesses?.[Number(witnessInputs[0].name.match(/\d+$/)?.[0] ?? -1)]?.collection
+              ? entryAccessAt(delegateFn, Number(witnessInputs[0].name.match(/\d+$/)?.[0] ?? -1))?.collection
               : undefined;
             const witnessLayout = delegateGroup?.stateLayout
               ?? delegateGroup?.externalContract.inner.stateLayout;
@@ -10588,7 +10714,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const witnessInput = delegateFn?.inputs.find((input: { name: string }) =>
                 /^__internal__valueWitness_\d+$/.test(input.name));
               const witnessSlot = Number(witnessInput?.name.match(/\d+$/)?.[0] ?? -1);
-              const witnessCollection = delegateFn?.entryAccesses?.[witnessSlot]?.collection;
+              const witnessCollection = entryAccessAt(delegateFn, witnessSlot)?.collection;
               const witnessLayout = delegateGroup?.stateLayout
                 ?? delegateGroup?.externalContract.inner.stateLayout;
               const witnessValueType = witnessLayout?.collections?.find((collection) =>
@@ -12154,7 +12280,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // unrelated empty/default comparisons at the same output index and otherwise oscillate a valid
               // derived target back to the legacy empty commitment.
               const slotCollection = slot === undefined ? undefined
-                : stateLayout.collections?.find((c) => c.name === entryAccesses?.[slot]?.collection);
+                : stateLayout.collections?.find((c) => c.name === entryAccessAt({ entryAccesses }, slot)?.collection);
               const structurallyValid = slotCollection?.sorted ? commit.length >= 128 : true;
               if (slot !== undefined && structurallyValid && !stb.isEntrySlotPinned(slot)) {
                 stb.setEntryRawCommitment(slot, commit); orderedCommits.push(commit);
@@ -13785,6 +13911,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Canonical vmap counter loops are lowered to read their logical key from a hidden permutation array. Build that
     // witness from the public bound: [0..n) sorted by the same full-width slot hash used by the covenant. The lowered
     // body uses perm[physical_i] everywhere the source used logical i, so key and derived value stay paired.
+    let directPredicateState: Record<string, unknown> = onChainState.state;
     for (const input of abiFunction?.inputs ?? []) {
       const permutationSpec = vmapCounterPermutationSpec(input.name);
       if (!permutationSpec) continue;
@@ -13797,7 +13924,39 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (countIdx < 0) {
         throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
       }
-      const perm = vmapCounterPermutationValues(BigInt(args[countIdx]), permutationSpec);
+      const loopInfo = abiFunction?.sortedUpsertLoopInfo?.find((info) => info.varyingArrayParam === input.name);
+      const visibleInputs = visibleHandlerInputs(abiFunction!.inputs);
+      const visibleArgs = visibleInputs.map((visibleInput) => {
+        const index = abiFunction!.inputs.findIndex((candidate) => candidate.name === visibleInput.name);
+        return args[index];
+      }) as FunctionArgument[];
+      if (loopInfo?.condition) {
+        directPredicateState = await this._hydrateExternalPredicateState(
+          [loopInfo.condition],
+          visibleArgs,
+          this.inner.artifact,
+          directPredicateState,
+          visibleInputs,
+          executionSelfAddress,
+        );
+      }
+      const active = loopInfo?.condition ? this._evaluateExternalExpression(
+        loopInfo.condition,
+        visibleArgs,
+        this.inner.artifact,
+        directPredicateState,
+        visibleInputs,
+        undefined,
+        0,
+        false,
+        executionSelfAddress,
+      ) : true;
+      if (typeof active !== 'boolean') {
+        throw new Error(`Could not resolve runtime loop predicate for '${abiFunction!.name}'.`);
+      }
+      const perm = active
+        ? vmapCounterPermutationValues(BigInt(args[countIdx]), permutationSpec)
+        : [];
       perm.sort((a, b) => {
         const av = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(a)]));
         const bv = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(b)]));
@@ -13882,6 +14041,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Handle entry NFT accesses
     let entryAccesses = abiFunction?.entryAccesses;
     let entryAbiFunction = abiFunction;
+    let entryArtifact: Artifact = this.inner.artifact;
     let entryArgs = args;
     let entryCompilerRoute: NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined;
     // A delegatecall'd impl that writes a mapping does so against the PROXY's grafted collections (this.categoryId).
@@ -13908,6 +14068,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           || (implFn.dynamicWrites?.length ?? 0) > 0)) {
           entryAccesses = implFn.entryAccesses;
           entryAbiFunction = implFn;
+          entryArtifact = ci.contract.inner.artifact;
           entryCompilerRoute = ci.compilerRoute;
           if (entryCompilerRoute) {
             // Compiler routes retain a compact visible-only argument frame. Entry planning indexes arguments by
@@ -13984,8 +14145,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ?.messageBusActiveWriteCollections;
     const activeMessageBusEntryOperations = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
       ?.messageBusActiveEntryOperations;
+    const entryAccessForSlot = (slotIndex: number): EntryAccessAbi | undefined =>
+      entryAccessAt(entryAbiFunction, slotIndex);
     const entryOperations = (slotIndex: number): readonly string[] =>
-      activeMessageBusEntryOperations?.get(slotIndex) ?? entryAccesses?.[slotIndex]?.operations ?? [];
+      activeMessageBusEntryOperations?.get(slotIndex) ?? entryAccessForSlot(slotIndex)?.operations ?? [];
 
     if (entryAccesses && entryAccesses.length > 0 && stateLayout.collections) {
       // Entries of DIFFERENT collections share the master's category and are indistinguishable by commitment
@@ -14029,8 +14192,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // an explicit empty witness; omitting them shifts every later active value onto the wrong ABI parameter.
       const chunkableValueWitnesses: Array<Uint8Array | Uint8Array[]> = [];
 
-      for (let slotIndex = 0; slotIndex < entryAccesses.length; slotIndex++) {
-        const access = entryAccesses[slotIndex];
+      for (let accessIndex = 0; accessIndex < entryAccesses.length; accessIndex++) {
+        const access = entryAccesses[accessIndex];
+        const slotIndex = access.slotIndex ?? accessIndex;
         const collection = stateLayout.collections.find((c) => c.name === access.collection);
         if (!collection) {
           throw new Error(`Unknown collection: ${access.collection}`);
@@ -14150,7 +14314,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const m = keyType.match(/^bytes(\d+)$/);
               return m ? new Uint8Array(parseInt(m[1], 10)) : new Uint8Array(0);
             }
-            const idx = entryAbiFunction!.inputs.findIndex((inp) => inp.name === paramName);
+            // Route entry helpers wrap their public key input in a local `__message_bus_ek_` alias. Artifact
+            // entry metadata preserves that helper-local spelling, while the ABI and `entryArgs` carry the
+            // underlying route input. Resolve either spelling; treating the alias as an ABI name produces an
+            // undefined key whenever a runtime-loop slot precedes this fixed mapping access.
+            const abiParamName = paramName.startsWith('__message_bus_ek_')
+              ? paramName.slice('__message_bus_ek_'.length) : paramName;
+            const idx = entryAbiFunction!.inputs.findIndex((inp) =>
+              inp.name === paramName || inp.name === abiParamName);
             const v = entryArgs[idx] as bigint | boolean | Uint8Array | string;
             // An address key is hashed as its locking bytecode (matching the covenant's on-stack address and the
             // default entry model). Bytes keys arrive as Uint8Array (raw); ints as their VM number.
@@ -14176,7 +14347,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           };
           const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
           batchTargetSlots.set(slotIndex, slot);
-          const kvIdx = entryAbiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
+          const firstKeyParam = keyNames[0].startsWith('__message_bus_ek_')
+            ? keyNames[0].slice('__message_bus_ek_'.length) : keyNames[0];
+          const kvIdx = entryAbiFunction!.inputs.findIndex((inp) =>
+            inp.name === keyNames[0] || inp.name === firstKeyParam);
           const stateArrayKeyValues = access.keySources?.[0]?.kind === 'stateArrayLast'
             ? onChainState.state[access.keySources[0].stateArrayName ?? ''] as unknown[] : undefined;
           const kv = access.keySources?.[0]?.kind === 'constant'
@@ -14625,9 +14799,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (const entry of entryNfts) {
         const entrySlot = batchTargetSlots.get(entry.slotIndex);
         const candidates = [
-          ...(entryAccesses[entry.slotIndex]?.aliasCondDeleteSlot === undefined
-            ? [] : [entryAccesses[entry.slotIndex].aliasCondDeleteSlot!]),
-          ...(entryAccesses[entry.slotIndex]?.runtimeAliasPriorSlots ?? []),
+          ...(entryAccessForSlot(entry.slotIndex)?.aliasCondDeleteSlot === undefined
+            ? [] : [entryAccessForSlot(entry.slotIndex)!.aliasCondDeleteSlot!]),
+          ...(entryAccessForSlot(entry.slotIndex)?.runtimeAliasPriorSlots ?? []),
         ];
         for (const ownerSlot of candidates) {
           const owner = entryNfts.find((candidate) => candidate.slotIndex === ownerSlot);
@@ -14660,7 +14834,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         console.error('message-bus-route-entry-plan', entryNfts.map((entry) => ({
           slotIndex: entry.slotIndex,
           collection: entry.collection,
-          keys: entryAccesses?.[entry.slotIndex]?.keyParams,
+          keys: entryAccessForSlot(entry.slotIndex)?.keyParams,
           operations: entryOperations(entry.slotIndex),
           inactive: inactiveMessageBusEntrySlots.has(entry.slotIndex),
           targetSlot: batchTargetSlots.has(entry.slotIndex)
@@ -14825,7 +14999,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // derivation probe replaces the empty value with the covenant-computed value. Without this seed, a fresh
           // target falls through StatefulTransactionBuilder's generic default encoder, which is intentionally the
           // old key/value commitment format and cannot encode a 32-byte hashed slot as an int/address key.
-          const batchAccess = entryAccesses[slotIndex];
+          const batchAccess = entryAccessForSlot(slotIndex);
+          if (!batchAccess) throw new Error(`vmap batch slot has no entry access ${slotIndex}`);
           const entryDelta = batchAccess.valueSource?.match(
             /^binop:([+-])\(entry,(?:lit:(-?[0-9]+)|id:([A-Za-z_][\w]*))\)$/,
           );
@@ -15055,7 +15230,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           e.utxo = undefined;
           continue;
         }
-        const aliasSlot = entryAccesses[e.slotIndex]?.aliasCondDeleteSlot;
+        const aliasSlot = entryAccessForSlot(e.slotIndex)?.aliasCondDeleteSlot;
         if (aliasSlot === undefined) continue;
         const other = entryNfts.find((o) => o.slotIndex === aliasSlot);
         if (other && e.collection === other.collection
@@ -15075,16 +15250,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const entryDeleteSlots = new Set<number>(aliasSkipSlots);
     const condSoftDeleteSlots = new Set<number>();
     if (entryAccesses) {
-      for (let i = 0; i < entryAccesses.length; i++) {
+      for (let accessIndex = 0; accessIndex < entryAccesses.length; accessIndex++) {
+        const access = entryAccesses[accessIndex];
+        const slotIndex = access.slotIndex ?? accessIndex;
         const softDelete = abiFunction?.blockLayout?.slots.some(
-          (s) => s.kind === 'entry' && s.slotIndex === i && s.softDelete,
+          (s) => s.kind === 'entry' && s.slotIndex === slotIndex && s.softDelete,
         );
         if (softDelete) {
-          condSoftDeleteSlots.add(i);
-        } else if (entryOperations(i).includes('delete')
+          condSoftDeleteSlots.add(slotIndex);
+        } else if (entryOperations(slotIndex).includes('delete')
           && !stateLayout.collections?.find((collection) =>
-            collection.name === entryAccesses![i].collection)?.sorted) {
-          entryDeleteSlots.add(i);
+            collection.name === access.collection)?.sorted) {
+          entryDeleteSlots.add(slotIndex);
         }
       }
     }
@@ -15425,6 +15602,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         loopArgs[index] = value;
         finalArgs[index] = value;
       };
+      let loopPredicateState: Record<string, unknown> = onChainState.state;
       for (const info of loopAbiFunction.sortedUpsertLoopInfo ?? []) {
       const runtimeInputStart = insertLoopPredecessors.length;
       const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
@@ -15441,6 +15619,63 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const i = loopAbiFunction.inputs.findIndex((p) => p.name === name);
         return i >= 0 ? loopArgs[i] : undefined;
       };
+      if (info.condition) {
+        const visibleInputs = visibleHandlerInputs(loopAbiFunction.inputs);
+        const conditionArgs = upsertFrame.routed
+          ? [...upsertFrame.row!.args]
+          : visibleInputs.map((input) => {
+            const index = loopAbiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
+            return loopArgs[index];
+          }) as FunctionArgument[];
+        loopPredicateState = await this._hydrateExternalPredicateState(
+          [info.condition],
+          conditionArgs,
+          entryArtifact,
+          loopPredicateState,
+          visibleInputs,
+          executionSelfAddress,
+        );
+        const active = this._evaluateExternalExpression(
+          info.condition,
+          conditionArgs,
+          entryArtifact,
+          loopPredicateState,
+          visibleInputs,
+          undefined,
+          0,
+          false,
+          executionSelfAddress,
+        );
+        if (typeof active !== 'boolean') {
+          throw new Error(`Could not resolve runtime loop predicate for '${loopAbiFunction.name}'.`);
+        }
+        const varyingIndex = loopAbiFunction.inputs.findIndex(
+          (input) => input.name === info.varyingArrayParam,
+        );
+        if (varyingIndex < 0) throw new Error(
+          `Runtime loop in '${loopAbiFunction.name}' is missing '${info.varyingArrayParam}'.`,
+        );
+        if (!active) {
+          replaceLoopArgument(varyingIndex, []);
+        } else {
+          const permutationSpec = vmapCounterPermutationSpec(info.varyingArrayParam);
+          if (permutationSpec) {
+            const countValue = argOf(permutationSpec.countName);
+            if (countValue === undefined) throw new Error(
+              `vmap counter loop bound '${permutationSpec.countName}' must be a public argument`,
+            );
+            const permutation = vmapCounterPermutationValues(
+              BigInt(countValue as bigint | number | string), permutationSpec,
+            );
+            permutation.sort((left, right) => {
+              const leftSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(left)]));
+              const rightSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(right)]));
+              return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1 : 0;
+            });
+            replaceLoopArgument(varyingIndex, permutation);
+          }
+        }
+      }
       const keyTypes = collection.keyTypes ?? [collection.keyType];
       const encKey = (v: unknown, keyType: string): Uint8Array => (
         keyType === 'address' && typeof v === 'string' && v.includes(':') ? addressToLockScript(v)
@@ -19009,7 +19244,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         softDelete: slot.softDelete,
                       });
                     }
-                    const access = selectedFn?.entryAccesses?.[slot.slotIndex ?? 0];
+                    const access = entryAccessAt(selectedFn, slot.slotIndex ?? 0);
                     const collection = childLayout.collections?.find(
                       (candidate) => candidate.name === access?.collection
                         || candidate.signature === access?.collection,
@@ -19744,7 +19979,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       : childCompilerInternalArgs[`__internal__vmapBatchPredOut_${routeSlot}`];
                     // predOut=-2 is a true same-target runtime alias and deliberately has no target output.
                     if (predOut !== -2n && routeSlot !== undefined) {
-                      const access = selectedFn?.entryAccesses?.[routeSlot];
+                      const access = entryAccessAt(selectedFn, routeSlot);
                       if (access) {
                         childBatchEntryLockingBytecodes.set(
                           layoutSlot.offset,
@@ -19770,7 +20005,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     .map((layoutSlot) => ({
                       slotIndex: layoutSlot.slotIndex,
                       offset: layoutSlot.offset,
-                      collection: selectedFn?.entryAccesses?.[layoutSlot.slotIndex ?? -1]?.collection,
+                      collection: entryAccessAt(selectedFn, layoutSlot.slotIndex ?? -1)?.collection,
                       outpoint: childBlockInputs![layoutSlot.offset]
                         ? `${childBlockInputs![layoutSlot.offset].txid}:${childBlockInputs![layoutSlot.offset].vout}`
                         : 'NONE',
@@ -20652,7 +20887,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
                 if (slot.kind === 'entry') {
                   const routeSlot = slot.slotIndex ?? 0;
-                  const access = selectedFn.entryAccesses?.[routeSlot];
+                  const access = entryAccessAt(selectedFn, routeSlot);
                   const collection = callee.inner.stateLayout?.collections?.find((candidate) => (
                     candidate.name === access?.collection || candidate.signature === access?.collection
                   ));
@@ -23282,6 +23517,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       sourceArtifact: Artifact,
       argumentFor: (name: string) => FunctionArgument | undefined,
     ): Promise<void> => {
+      const runtimePredicateState = await this._hydrateExternalPredicateState(
+        (source.runtimeLoopEvents ?? []).flatMap((loop) => loop.conditions ?? [])
+          .filter((condition): condition is ExternalCallExpression => condition !== null),
+        functionArgs,
+        sourceArtifact,
+        onChainState.state,
+        visibleHandlerInputs(source.inputs),
+        executionSelfAddress,
+      );
       for (const loop of source.runtimeLoopEvents ?? []) {
         const hasFixedRepeat = loop.repeatCount !== undefined;
         const hasPermutationRepeat = loop.permutationParam !== undefined;
@@ -23309,7 +23553,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 condition,
                 functionArgs,
                 sourceArtifact,
-                onChainState.state,
+                runtimePredicateState,
                 visibleHandlerInputs(source.inputs),
                 undefined,
                 iteration,

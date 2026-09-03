@@ -84,8 +84,14 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill')).toMatchObject({
       eligible: true,
     });
-    expect(artifact.messageBus?.route.inputs.some((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+    const handler = artifact.abi.find((candidate) => candidate.name === 'fill')!;
+    const permutation = handler.inputs.find((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))!;
+    expect(permutation.type).toBe('int256[]');
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: permutation.name,
+      type: 'int256[][]',
+    }));
   });
 
   it('permutes counter uses inside pure helper and builtin mapping values', () => {

@@ -206,6 +206,11 @@ have no sound repeated-output form.
 More than one selected message row with a non-empty runtime-event stream remains refused until settlement has a
 row-scoped effect cursor.
 
+The handler ABI keeps each permutation as `int[]`. The kernel route adds one outer row dimension (`int[][]`) and
+selects `permutation[row]` inside the physical row loop. Empty elements represent rows dispatched to other
+handlers. This prevents two occurrences of one handler from silently sharing a bound or topology witness while
+the settlement planner is still deciding whether their physical journal segments can coexist.
+
 ---
 
 ## 7. Wire and artifact compatibility
@@ -330,13 +335,12 @@ Conditional events, BCH transfers, and token-container transfers inside the phys
 conditional outside event remains frozen in that mixed handler until the stream carries path metadata. BCH and
 token-container effects remain supported before or after the loop.
 Nested counter keys `m[k][i]` permute the inner key only.
-At transaction construction time, multiple byte-identical rows may share one physical counter-loop settlement
-only when every mutation is a compiler-described absolute parameter/array/constant `set` or `delete`, the handler
-has no other owner-local state or entry access, and the encoded visible arguments match. This is idempotent replay:
-each logical row proves the same old-to-new transition. Differing rows, arbitrary runtime `set` expressions, and
-relative `+`/`-` updates remain rejected until the SDK/compiler protocol has row-scoped predecessor journals and
-cursors. Multiple collections in one admitted loop share its authenticated permutation; separate disjoint loops
-use separate permutations and separate accumulated physical segments.
+At transaction construction time, multiple selected rows with non-empty mapping loops remain rejected until the
+SDK/compiler protocol has row-scoped predecessor journals and cursors. This includes byte-identical absolute
+`set`/`delete` rows: the row loop executes both segments, so reusing one physical settlement would under-provision
+the second row even though the final value is idempotent. Each row already carries its own authenticated
+permutation witness in preparation for that protocol. Multiple collections in one admitted loop share the row's
+permutation; separate disjoint loops use separate permutations and separate accumulated physical segments.
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay

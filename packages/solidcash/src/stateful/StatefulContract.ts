@@ -4302,7 +4302,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const input of capability.route.inputs) {
       const permutationSpec = vmapCounterPermutationSpec(input.name);
       if (!permutationSpec || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
-      const rows = effectiveRowArguments?.filter((row) =>
+      const rows = effectiveRowArguments?.map((row, rowIndex) => ({ row, rowIndex })).filter(({ row }) =>
         row.handler.inputs.some((candidate) => candidate.name === input.name)) ?? [];
       // The published route owns the union of every admitted handler's hidden loop witnesses. A witness with no
       // selected source row belongs only to an inactive dispatch arm, so its canonical empty value is sufficient.
@@ -4310,32 +4310,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         resolvedCallerInternalWitnesses[input.name] = [];
         continue;
       }
-      const shareSettlement = canShareIdempotentCounterLoopSettlement({
-        rows,
-        structs: executionArtifact.structs,
-        dataNftCount: executionArtifact.stateLayout?.dataNftCount ?? 0,
-      });
-      if (rows.length !== 1 && !shareSettlement) {
-        throw new Error(
-          'A message-bus envelope with counter-keyed mapping loops in multiple selected rows requires '
-          + 'row-scoped journal settlement; split the rows into separate transactions.',
-        );
-      }
-      const row = rows[0];
-      const visible = visibleHandlerInputs(row.handler.inputs);
-      const countIndex = visible.findIndex((candidate) => candidate.name === permutationSpec.countName);
-      const countValue = countIndex < 0 ? undefined : row.args[countIndex];
-      if (countValue === undefined) {
-        throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
-      }
-      const permutation = vmapCounterPermutationValues(
-        BigInt(countValue as bigint | number | string),
-        permutationSpec,
+      // Route witnesses add one outer dimension so each physical row owns its permutation.
+      const rowPermutations: bigint[][] = Array.from(
+        { length: effectiveRowArguments?.length ?? 0 }, () => [],
       );
-      for (const selectedRow of rows) {
-        (selectedRow.internalArgs as Record<string, FunctionArgument>)[input.name] = permutation;
+      for (const { row, rowIndex } of rows) {
+        const visible = visibleHandlerInputs(row.handler.inputs);
+        const countIndex = visible.findIndex((candidate) => candidate.name === permutationSpec.countName);
+        const countValue = countIndex < 0 ? undefined : row.args[countIndex];
+        if (countValue === undefined) {
+          throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
+        }
+        const permutation = vmapCounterPermutationValues(
+          BigInt(countValue as bigint | number | string),
+          permutationSpec,
+        );
+        (row.internalArgs as Record<string, FunctionArgument>)[input.name] = permutation;
+        rowPermutations[rowIndex] = permutation;
       }
-      resolvedCallerInternalWitnesses[input.name] = permutation;
+      resolvedCallerInternalWitnesses[input.name] = rowPermutations;
     }
     const expectedWitnesses = capability.route.inputs
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__')).length;
@@ -15258,6 +15251,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ?? entryCompilerRoute?.rowArguments
       ?? []
     ).filter((row) => (row.handler.sortedUpsertLoopInfo?.length ?? 0) > 0);
+    const routeRowIndex = (row: RouteExpressionKeyRow): number => {
+      const rows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments
+        ?? entryCompilerRoute?.rowArguments
+        ?? [];
+      return rows.findIndex((candidate) => candidate === row);
+    };
     const selectedRowArgument = (row: RouteExpressionKeyRow, name: string): unknown => {
       if (name.startsWith('__internal__')) return row.internalArgs?.[name];
       const inputs = visibleHandlerInputs(row.handler.inputs);
@@ -15270,19 +15269,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const value = selectedRowArgument(row, info.varyingArrayParam);
       return !Array.isArray(value) || value.length > 0;
     }));
-    const sharesIdempotentSettlement = canShareIdempotentCounterLoopSettlement({
-      rows: activeSelectedUpsertRows,
-      structs: stateLayout.structs,
-      dataNftCount: stateLayout.dataNftCount,
-    });
-    if (activeSelectedUpsertRows.length > 1 && !sharesIdempotentSettlement) {
+    if (activeSelectedUpsertRows.length > 1) {
       throw new Error(
         'A message-bus envelope with runtime mapping loops in multiple selected rows requires '
         + 'journalled predecessor planning; split the rows into separate transactions.',
       );
     }
-    const plannedUpsertRows = sharesIdempotentSettlement
-      ? activeSelectedUpsertRows.slice(0, 1) : activeSelectedUpsertRows;
+    const plannedUpsertRows = activeSelectedUpsertRows;
     const upsertPlanningFrames = selectedUpsertRows.length > 0
       ? plannedUpsertRows.map((row) => ({
         abiFunction: row.handler,
@@ -15311,12 +15304,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (routeIndex < 0) {
             throw new Error(`Message-bus route is missing compiler-owned loop argument '${input.name}'`);
           }
-          entryArgs[routeIndex] = value;
+          const rowIndex = routeRowIndex(upsertFrame.row!);
+          if (rowIndex < 0) throw new Error('Message-bus runtime loop row is missing from its route frame');
+          const current = entryArgs[routeIndex];
+          const routeValue = Array.isArray(current) ? [...current] : [];
+          while (routeValue.length <= rowIndex) routeValue.push([]);
+          routeValue[rowIndex] = value;
+          entryArgs[routeIndex] = routeValue;
           if (entryCompilerRoute) {
-            entryCompilerRoute.internalArgs = { ...entryCompilerRoute.internalArgs, [input.name]: value };
+            entryCompilerRoute.internalArgs = {
+              ...entryCompilerRoute.internalArgs,
+              [input.name]: routeValue,
+            };
           } else {
-            args[routeIndex] = value;
-            finalArgs[routeIndex] = value;
+            args[routeIndex] = routeValue;
+            finalArgs[routeIndex] = routeValue;
           }
           return;
         }

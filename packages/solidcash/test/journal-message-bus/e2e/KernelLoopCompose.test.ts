@@ -433,7 +433,11 @@ describe('kernel counter-key mapping loop compose', () => {
     const routePermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
       input.name === permutationInput.name);
     expect(routePermutationIndex).toBeGreaterThanOrEqual(0);
-    const originalPermutation = routeUnlocker.params[routePermutationIndex];
+    const rowPermutations = routeUnlocker.params[routePermutationIndex];
+    if (!Array.isArray(rowPermutations) || !Array.isArray(rowPermutations[0])) {
+      throw new Error('expected row-indexed compiler-derived ranged permutations');
+    }
+    const originalPermutation = rowPermutations[0];
     if (!Array.isArray(originalPermutation) || originalPermutation.length !== 4) {
       throw new Error('expected a four-element compiler-derived ranged permutation');
     }
@@ -457,7 +461,7 @@ describe('kernel counter-key mapping loop compose', () => {
       [...originalPermutation.slice(0, -1), 9n],
     ]) {
       const hostileRouteParams = [...routeUnlocker.params];
-      hostileRouteParams[routePermutationIndex] = hostilePermutation;
+      hostileRouteParams[routePermutationIndex] = [hostilePermutation];
       builder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileRouteParams);
       const transaction = builder.buildLibauthTransaction();
       const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
@@ -496,28 +500,18 @@ describe('kernel counter-key mapping loop compose', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    expect(() => contract.batch([
+    await expect(contract.batch([
       { function: 'write', args: [2n, 10n] },
       { function: 'write', args: [3n, 10n] },
-    ])).toThrow(/row-scoped journal settlement/);
-    expect(() => contract.batch([
+    ]).build()).rejects.toThrow(/journalled predecessor planning/);
+    await expect(contract.batch([
       { function: 'write', args: [3n, 10n] },
       { function: 'write', args: [3n, 11n] },
-    ])).toThrow(/row-scoped journal settlement/);
-    const repeatedCall = contract.batch([
+    ]).build()).rejects.toThrow(/journalled predecessor planning/);
+    await expect(contract.batch([
       { function: 'write', args: [3n, 10n] },
       { function: 'write', args: [3n, 10n] },
-    ]);
-    const repeatedBuilder = await repeatedCall.build();
-    const repeatedVm = createVirtualMachineBch2026ForProvider(provider);
-    const repeatedTransaction = repeatedBuilder.buildLibauthTransaction();
-    const repeatedSourceOutputs = generateLibauthSourceOutputs(repeatedBuilder.inputs);
-    for (let inputIndex = 0; inputIndex < repeatedTransaction.inputs.length; inputIndex += 1) {
-      expect(repeatedVm.stateSuccess(repeatedVm.evaluate({
-        inputIndex, sourceOutputs: repeatedSourceOutputs, transaction: repeatedTransaction,
-      })), `repeated-row input ${inputIndex}`).toBe(true);
-    }
-    await expect(repeatedCall.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    ]).build()).rejects.toThrow(/journalled predecessor planning/);
 
     const zeroCall = contract.batch([{ function: 'write', args: [0n, 10n] }]);
     const zeroBuilder = await zeroCall.build();
@@ -560,7 +554,11 @@ describe('kernel counter-key mapping loop compose', () => {
     const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
       routeUnlocker.abiFunction, hexToBin(routeSelector),
     );
-    const originalPermutation = routeUnlocker.params[routePermutationIndex];
+    const rowPermutations = routeUnlocker.params[routePermutationIndex];
+    if (!Array.isArray(rowPermutations) || !Array.isArray(rowPermutations[0])) {
+      throw new Error('expected row-indexed compiler-derived permutations');
+    }
+    const originalPermutation = rowPermutations[0];
     if (!Array.isArray(originalPermutation) || originalPermutation.length !== 3) {
       throw new Error('expected a three-element compiler-derived permutation');
     }
@@ -576,7 +574,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const hostileVm = createVirtualMachineBch2026ForProvider(provider);
     for (const hostilePermutation of hostilePermutations) {
       const hostileRouteParams = [...routeUnlocker.params];
-      hostileRouteParams[routePermutationIndex] = hostilePermutation;
+      hostileRouteParams[routePermutationIndex] = [hostilePermutation];
       hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileRouteParams);
       const transaction = hostileBuilder.buildLibauthTransaction();
       const sourceOutputs = generateLibauthSourceOutputs(hostileBuilder.inputs);
@@ -597,12 +595,7 @@ describe('kernel counter-key mapping loop compose', () => {
       { function: 'clear', args: [3n] },
       { function: 'clear', args: [3n] },
     ]);
-    await expect(repeatedClear.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    for (let key = 0; key < 3; key += 1) {
-      await expect(
-        StatefulContract.withCategory(inner, categoryId).check(BigInt(key), 0n).send(),
-      ).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    }
+    await expect(repeatedClear.build()).rejects.toThrow(/journalled predecessor planning/);
   }, 180_000);
 });
 
@@ -817,10 +810,10 @@ describe('kernel composite counter-key settlement', () => {
       transaction: hostileTransaction,
     }))).not.toBe(true);
 
-    expect(() => contract.batch([
+    await expect(contract.batch([
       { function: 'write', args: [1n] },
       { function: 'write', args: [1n] },
-    ])).toThrow(/row-scoped journal settlement/);
+    ]).build()).rejects.toThrow(/journalled predecessor planning/);
   }, 180_000);
 
   it('settles source-order typed calls beside a permuted mapping loop', async () => {

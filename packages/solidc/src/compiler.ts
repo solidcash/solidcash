@@ -5077,14 +5077,17 @@ function synthesizeMessageBusRoute(
                 return '__message_bus_graph_owner_input(__internal__graphSettlementTable, '
               + `${decodedName(targetIndex)})`;
               })()
-              : parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
-                || parameter.name.startsWith('__internal__collectionIter')
-                || parameter.name.startsWith('__internal__valueWitness_')
-                || parameter.name.startsWith('__internal__leadingPushValue_')
-                || parameter.name === '__internal__vmapBatchTrailingCount'
-                ? parameter.name
-                : (tokenCategoryInputByHandler.get(fn)?.get(i)
-                ?? witnessByInput.get(i) ?? decodedName(i))),
+              : (() => {
+                if (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)) {
+                  return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
+                }
+                if (parameter.name.startsWith('__internal__collectionIter')
+                  || parameter.name.startsWith('__internal__valueWitness_')
+                  || parameter.name.startsWith('__internal__leadingPushValue_')
+                  || parameter.name === '__internal__vmapBatchTrailingCount') return parameter.name;
+                return tokenCategoryInputByHandler.get(fn)?.get(i)
+                  ?? witnessByInput.get(i) ?? decodedName(i);
+              })()),
       ];
       const blockhashArgs = blockhashRowOffset
         ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [];
@@ -5240,7 +5243,11 @@ function synthesizeMessageBusRoute(
       if (declaredPermNames.has(parameter.name)) return false;
       declaredPermNames.add(parameter.name);
       return true;
-    }).map((parameter) => `${parameter.type.toString()} ${parameter.name}`));
+    }).map((parameter) => {
+      const type = parameter.type.toString();
+      return parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX) && kernelLoopDispatch
+        ? `${type}[] ${parameter.name}` : `${type} ${parameter.name}`;
+    }));
   const resourceVerificationMode = eligible.some((fn) => {
     const footprint = eligibleFootprint(fn);
     return footprint.reads.length > 0 || footprint.writes.length > 0;

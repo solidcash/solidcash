@@ -185,6 +185,7 @@ contract KernelConditionalCounterLoop() {
 
 const SELECTED_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
 event Selected(int i);
+event Visited(int i);
 contract KernelSelectedCounterMapping() {
   mapping(int => int) m;
   function write(int n, int ceiling) public {
@@ -199,6 +200,7 @@ contract KernelSelectedCounterMapping() {
   }
   function writeOdds(int n) public {
     for (int i = 0; i < n; i = i + 1) {
+      emit Visited(i + 100);
       if (i % 2 == 0) continue;
       this.m[i] = i + 30;
       emit Selected(i);
@@ -207,6 +209,7 @@ contract KernelSelectedCounterMapping() {
   }
   function writeUntil(int n, int stop) public {
     for (int i = 0; i < n; i = i + 1) {
+      emit Visited(i + 200);
       this.m[i] = i + 40;
       if (i == stop) break;
     }
@@ -657,7 +660,14 @@ describe('kernel counter-key mapping loop compose', () => {
     expect([...(continuedInput.unlocker.params[oddsPermutationIndex] as bigint[])]
       .sort((left, right) => Number(left - right))).toEqual([1n, 3n, 5n]);
     await expect(continued.send()).resolves.toMatchObject({
-      events: [{ args: { i: 1n } }, { args: { i: 3n } }, { args: { i: 5n } }],
+      events: [
+        { args: { i: 100n } },
+        { args: { i: 101n } }, { args: { i: 1n } },
+        { args: { i: 102n } },
+        { args: { i: 103n } }, { args: { i: 3n } },
+        { args: { i: 104n } },
+        { args: { i: 105n } }, { args: { i: 5n } },
+      ],
     });
     for (const [key, expected] of [[1n, 31n], [3n, 33n], [5n, 35n]] as const) {
       await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
@@ -697,7 +707,13 @@ describe('kernel counter-key mapping loop compose', () => {
       })), `hostile terminated-domain witness ${hostile.join(',')}`).not.toBe(true);
     }
     brokenBuilder.inputs[brokenInputIndex].unlocker = brokenRouteUnlocker;
-    await expect(broken.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(broken.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      events: [
+        { args: { i: 200n } }, { args: { i: 201n } },
+        { args: { i: 202n } }, { args: { i: 203n } },
+      ],
+    });
     for (const [key, expected] of [[0n, 40n], [1n, 41n], [2n, 42n], [3n, 43n]] as const) {
       await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });

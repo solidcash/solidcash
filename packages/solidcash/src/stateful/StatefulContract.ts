@@ -23644,8 +23644,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       argumentFor: (name: string) => FunctionArgument | undefined,
     ): Promise<void> => {
       const runtimePredicateState = await this._hydrateExternalPredicateState(
-        (source.runtimeLoopEvents ?? []).flatMap((loop) => loop.conditions ?? [])
-          .filter((condition): condition is ExternalCallExpression => condition !== null),
+        [
+          ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.conditions ?? [])
+            .filter((condition): condition is ExternalCallExpression => condition !== null),
+          ...(source.sortedUpsertLoopInfo ?? []).flatMap((info) => [
+            info.condition, info.iterationBreakCondition,
+          ]).filter((condition): condition is ExternalCallExpression => condition !== undefined),
+        ],
         functionArgs,
         sourceArtifact,
         onChainState.state,
@@ -23660,11 +23665,56 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             `Runtime-loop event metadata for '${source.name}' must have exactly one repeat source`,
           );
         }
-        const repeatCount = loop.repeatCount ?? (() => {
+        let repeatCount = loop.repeatCount ?? (() => {
           if (loop.permutationParam === undefined) return undefined;
           const permutation = argumentFor(loop.permutationParam);
           return Array.isArray(permutation) ? permutation.length : undefined;
         })();
+        const loopInfo = loop.permutationParam === undefined ? undefined
+          : source.sortedUpsertLoopInfo?.find((info) => info.varyingArrayParam === loop.permutationParam);
+        if (loopInfo && (loopInfo.iterationCondition || loopInfo.iterationBreakCondition)) {
+          const spec = vmapCounterPermutationSpec(loopInfo.varyingArrayParam);
+          const bound = spec && argumentFor(spec.countName);
+          if (!spec || bound === undefined) throw new Error(
+            `Runtime-loop event metadata for '${source.name}' has no source-domain bound`,
+          );
+          const active = loopInfo.condition ? this._evaluateExternalExpression(
+            loopInfo.condition,
+            functionArgs,
+            sourceArtifact,
+            runtimePredicateState,
+            visibleHandlerInputs(source.inputs),
+            undefined,
+            0,
+            false,
+            executionSelfAddress,
+          ) : true;
+          if (typeof active !== 'boolean') throw new Error(
+            `Could not resolve runtime loop predicate while planning events for '${source.name}'.`,
+          );
+          const sourceDomain = active
+            ? vmapCounterPermutationValues(BigInt(bound as bigint | number | string), spec) : [];
+          repeatCount = sourceDomain.length;
+          if (loopInfo.iterationBreakCondition) {
+            for (let iteration = 0; iteration < sourceDomain.length; iteration += 1) {
+              const breaking = this._evaluateExternalExpression(
+                loopInfo.iterationBreakCondition,
+                functionArgs,
+                sourceArtifact,
+                runtimePredicateState,
+                visibleHandlerInputs(source.inputs),
+                undefined,
+                iteration,
+                false,
+                executionSelfAddress,
+              );
+              if (typeof breaking !== 'boolean') throw new Error(
+                `Could not resolve runtime loop break predicate while planning events for '${source.name}'.`,
+              );
+              if (breaking) { repeatCount = iteration + 1; break; }
+            }
+          }
+        }
         if (!Number.isInteger(repeatCount) || repeatCount === undefined || repeatCount < 0) {
           throw new Error(
             `Runtime-loop event metadata for '${source.name}' has no valid repeat source`,
@@ -23707,7 +23757,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const offset = runtimeLoopEventOutputs.length;
         const rowArtifact = delegateRouteRows?.some((candidate) => candidate === row) && delegateRouteGroup
           ? delegateRouteGroup.externalContract.inner.artifact : this.inner.artifact;
-        await appendRuntimeEvents(row.handler, [...row.args], rowArtifact, (name) => row.internalArgs?.[name]);
+        await appendRuntimeEvents(row.handler, [...row.args], rowArtifact, (name) =>
+          row.internalArgs?.[name] ?? selectedRowArgument(row, name));
         const count = runtimeLoopEventOutputs.length - offset;
         if (count > 0) {
           const rowIndex = routeRowIndex(row);

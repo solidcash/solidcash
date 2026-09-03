@@ -670,18 +670,25 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       let conditionalRuntimeEmit = false;
       const collectRuntimeEmits = (
         x: Node,
-        conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+        condition?: ExpressionNode,
       ): void => {
         if (x instanceof EmitStatementNode) {
-          const condition = runtimePathCondition(conditions);
           if (condition && !runtimePathExpressionSupported(condition, logical)) conditionalRuntimeEmit = true;
           else runtimeEmits.push({ emit: x, ...(condition && { condition }) });
           return;
         }
+        if (x instanceof BlockNode) {
+          let active = condition;
+          for (const statement of x.statements ?? []) {
+            collectRuntimeEmits(statement, active);
+            active = pathAnd(active, fallthrough(statement));
+          }
+          return;
+        }
         if (x instanceof BranchNode) {
-          collectRuntimeEmits(x.ifBlock, [...conditions, { expression: x.condition, negated: false }]);
+          collectRuntimeEmits(x.ifBlock, pathAnd(condition, x.condition));
           if (x.elseBlock) {
-            collectRuntimeEmits(x.elseBlock, [...conditions, { expression: x.condition, negated: true }]);
+            collectRuntimeEmits(x.elseBlock, pathAnd(condition, pathNot(x.condition)));
           }
           return;
         }
@@ -703,13 +710,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
             || key === 'resolvedFunction') continue;
           const value = (x as unknown as Record<string, unknown>)[key];
-          if (value instanceof Node) collectRuntimeEmits(value, conditions);
+          if (value instanceof Node) collectRuntimeEmits(value, condition);
           else if (Array.isArray(value)) {
-            for (const item of value) if (item instanceof Node) collectRuntimeEmits(item, conditions);
+            for (const item of value) if (item instanceof Node) collectRuntimeEmits(item, condition);
           }
         }
       };
-      collectRuntimeEmits(block, []);
+      collectRuntimeEmits(block);
       const impureInlineResults = new Set<string>();
       const collectImpureInlineResults = (x: Node): void => {
         if (x instanceof VariableDefinitionNode && x.inlinedReturningHelperPure === false) {
@@ -782,7 +789,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       if (keyed.length === 0 || keyed.length !== writes.length || !selectionConditionSupported
         || hasUnsupportedJump(block) || keyed.some((write) => hasObservableEffect(write))
-        || conditionalRuntimeEmit || (breakPaths.length > 0 && runtimeEmits.length > 0)
+        || conditionalRuntimeEmit
         || hasUnjournalledRepeatedEffect(block, runtimeEmitSet, impureInlineResults)
         // The permutation proof relies on visiting every physical rank exactly once. Apart from the canonical
         // post-test tail update, mutating the counter can shorten, extend, or repeat the loop. Mutating the

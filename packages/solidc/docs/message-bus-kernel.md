@@ -328,8 +328,9 @@ logical subset: the SDK sorts only selected keys, while the covenant proves rang
 completeness, and source-order cursor consumption. Multiple `if`/`else` write paths are combined as their
 logical disjunction. `continue` contributes its exact fall-through predicate. A stable `break` predicate is
 published separately: SDK domain replay stops after the first taken iteration, and the covenant's final cursor
-equality binds that terminated domain. Repeated event sites in a break-controlled loop remain frozen until their
-cardinality replay consumes the same termination metadata. Loop-carried write guards, sibling reads of a mutated
+equality binds that terminated domain. Runtime event planning replays the full source domain rather than the
+selected mapping subset, applies each site's fall-through predicate, and stops at that same break condition.
+Loop-carried write guards, sibling reads of a mutated
 mapping, foreign counter-keyed reads, and
 write values derived through mutable/loop-carried locals or scalar state mutated by the loop remain
 `KERNEL_UNBOUNDED_KEY`. Integer same-entry expressions are supported generally: for example,

@@ -537,6 +537,8 @@ export interface SortedUpsertLoopAbi {
   condition?: ExternalCallExpression;
   /** Predicate selecting logical counter values which actually contribute journal entries. */
   iterationCondition?: ExternalCallExpression;
+  /** Predicate which terminates source-domain replay after the current iteration. */
+  iterationBreakCondition?: ExternalCallExpression;
   op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default
 }
 

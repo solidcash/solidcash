@@ -1,6 +1,7 @@
 import {
   AddressSendExpressionNode, AddressTransferStatementNode, ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode,
-  AssignNode, BinaryOpNode, BlockNode, BranchNode, BreakNode, CastNode, CollectionNode, ContinueNode, ContractNode,
+  AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode, CollectionNode, ContinueNode,
+  ContractNode,
   DoWhileNode,
   EmitStatementNode, ExpressionNode, ExternalFunctionCallNode, FunctionCallNode, FunctionCallStatementNode,
   FieldAccessNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, LiteralNode, MappingAccessNode,
@@ -292,13 +293,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       return write.keys.findIndex((key) => key instanceof IdentifierNode && key.name === logical);
     };
-    const hasJump = (x: Node): boolean => {
-      if (x instanceof ContinueNode || x instanceof BreakNode || x instanceof ReturnNode) return true;
+    const hasUnsupportedJump = (x: Node): boolean => {
+      if (x instanceof ReturnNode) return true;
       for (const key of Object.keys(x)) {
         if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
         const v = (x as unknown as Record<string, unknown>)[key];
-        if (v instanceof Node && hasJump(v)) return true;
-        if (Array.isArray(v) && v.some((e) => e instanceof Node && hasJump(e))) return true;
+        if (v instanceof Node && hasUnsupportedJump(v)) return true;
+        if (Array.isArray(v) && v.some((e) => e instanceof Node && hasUnsupportedJump(e))) return true;
       }
       return false;
     };
@@ -573,18 +574,79 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const { block, location } = loop;
       const writes: Array<ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
       | MappingFieldAssignNode> = [];
-      const writePaths = new Map<Node, Array<{ expression: ExpressionNode; negated: boolean }>>();
+      const writePaths = new Map<Node, ExpressionNode | undefined>();
+      const breakPaths: Array<ExpressionNode | undefined> = [];
       let unsupportedWriteControl = false;
+      // `undefined` represents logical true, keeping unconditional paths compact. These helpers also simplify
+      // the false literals introduced by abrupt control flow so `if (skip) continue; write` publishes `!skip`.
+      const isFalse = (expression: ExpressionNode | undefined): boolean =>
+        expression instanceof BoolLiteralNode && !expression.value;
+      const pathNot = (expression: ExpressionNode | undefined): ExpressionNode | undefined => {
+        if (!expression) return new BoolLiteralNode(false);
+        if (expression instanceof BoolLiteralNode) return expression.value ? new BoolLiteralNode(false) : undefined;
+        const result = new UnaryOpNode(UnaryOperator.NOT, cloneNode(expression));
+        result.location = expression.location;
+        return result;
+      };
+      const pathAnd = (
+        left: ExpressionNode | undefined,
+        right: ExpressionNode | undefined,
+      ): ExpressionNode | undefined => {
+        if (isFalse(left) || isFalse(right)) return new BoolLiteralNode(false);
+        if (!left) return right && cloneNode(right);
+        if (!right) return cloneNode(left);
+        const result = new BinaryOpNode(cloneNode(left), BinaryOperator.AND, cloneNode(right));
+        result.location = right.location;
+        return result;
+      };
+      const pathOr = (
+        left: ExpressionNode | undefined,
+        right: ExpressionNode | undefined,
+      ): ExpressionNode | undefined => {
+        if (!left || !right) return undefined;
+        if (isFalse(left)) return cloneNode(right);
+        if (isFalse(right)) return cloneNode(left);
+        const result = new BinaryOpNode(cloneNode(left), BinaryOperator.OR, cloneNode(right));
+        result.location = right.location;
+        return result;
+      };
+      const fallthrough = (x: Node): ExpressionNode | undefined => {
+        if (x instanceof ContinueNode || x instanceof BreakNode || x instanceof ReturnNode) {
+          return new BoolLiteralNode(false);
+        }
+        if (x instanceof WhileNode || x instanceof DoWhileNode) return undefined;
+        if (x instanceof BlockNode) {
+          let active: ExpressionNode | undefined;
+          for (const statement of x.statements ?? []) active = pathAnd(active, fallthrough(statement));
+          return active;
+        }
+        if (x instanceof BranchNode) {
+          const ifPath = pathAnd(x.condition, fallthrough(x.ifBlock));
+          const elsePath = pathAnd(pathNot(x.condition), x.elseBlock
+            ? fallthrough(x.elseBlock) : undefined);
+          return pathOr(ifPath, elsePath);
+        }
+        return undefined;
+      };
       const collectWrites = (
         x: Node,
-        conditions: Array<{ expression: ExpressionNode; negated: boolean }> = [],
+        condition?: ExpressionNode,
       ): void => {
         if (x instanceof WhileNode || x instanceof DoWhileNode) return;
-        if (isWrite(x)) { writes.push(x); writePaths.set(x, conditions); return; }
+        if (isWrite(x)) { writes.push(x); writePaths.set(x, condition); return; }
+        if (x instanceof BreakNode) { breakPaths.push(condition); return; }
+        if (x instanceof BlockNode) {
+          let active = condition;
+          for (const statement of x.statements ?? []) {
+            collectWrites(statement, active);
+            active = pathAnd(active, fallthrough(statement));
+          }
+          return;
+        }
         if (x instanceof BranchNode) {
-          collectWrites(x.ifBlock, [...conditions, { expression: x.condition, negated: false }]);
+          collectWrites(x.ifBlock, pathAnd(condition, x.condition));
           if (x.elseBlock) {
-            collectWrites(x.elseBlock, [...conditions, { expression: x.condition, negated: true }]);
+            collectWrites(x.elseBlock, pathAnd(condition, pathNot(x.condition)));
           }
           return;
         }
@@ -595,8 +657,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
           const v = (x as unknown as Record<string, unknown>)[key];
-          if (v instanceof Node) collectWrites(v, conditions);
-          else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) collectWrites(e, conditions);
+          if (v instanceof Node) collectWrites(v, condition);
+          else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) collectWrites(e, condition);
         }
       };
       collectWrites(block);
@@ -667,13 +729,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const runtimeEmitSet = new Set(runtimeEmits.map(({ emit }) => emit));
       const keyed = writes.filter((write) =>
         this.collections.has(write.name) && counterKeyIndex(write, logical) >= 0);
-      const keyedSelectionConditions = keyed.map((write) => runtimePathCondition(writePaths.get(write) ?? []));
-      // A row needs one settlement entry whenever any keyed write executes for the source iteration. Preserve that
-      // semantics as the disjunction of all write paths. An unconditional write makes the whole domain selected;
-      // duplicate paths are removed only to keep the published predicate compact.
-      const writeSelectionCondition = keyedSelectionConditions.some((condition) => !condition)
-        ? undefined
-        : [...new Map(keyedSelectionConditions.map((condition) => [
+      const keyedSelectionConditions = keyed.map((write) => writePaths.get(write));
+      const uniqueDisjunction = (
+        conditions: readonly (ExpressionNode | undefined)[],
+      ): ExpressionNode | undefined => {
+        if (conditions.some((condition) => !condition)) return undefined;
+        return [...new Map(conditions.map((condition) => [
           expressionShape(condition!), condition!,
         ])).values()].reduce<ExpressionNode | undefined>((combined, condition) => {
           if (!combined) return cloneNode(condition);
@@ -681,8 +742,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           disjunction.location = condition.location;
           return disjunction;
         }, undefined);
+      };
+      // A row needs one settlement entry whenever any keyed write executes for the source iteration. Preserve that
+      // semantics as the disjunction of all write paths. An unconditional write makes the whole domain selected;
+      // duplicate paths are removed only to keep the published predicate compact.
+      let writeSelectionCondition = uniqueDisjunction(keyedSelectionConditions);
+      const breakCondition = breakPaths.length > 0 ? uniqueDisjunction(breakPaths) : undefined;
+      // Even an unconditional write needs a selected-domain cursor when the loop can terminate early.
+      if (breakPaths.length > 0 && !writeSelectionCondition) {
+        writeSelectionCondition = new BoolLiteralNode(true);
+      }
       const selectionConditionSupported = !unsupportedWriteControl
         && keyedSelectionConditions.every((condition) => !condition
+          || runtimePathExpressionSupported(condition, logical))
+        && breakPaths.every((condition) => !condition
           || runtimePathExpressionSupported(condition, logical));
       const hasUnexpectedLoopControlMutation = (
         x: Node,
@@ -708,8 +781,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return false;
       };
       if (keyed.length === 0 || keyed.length !== writes.length || !selectionConditionSupported
-        || hasJump(block) || keyed.some((write) => hasObservableEffect(write))
-        || conditionalRuntimeEmit
+        || hasUnsupportedJump(block) || keyed.some((write) => hasObservableEffect(write))
+        || conditionalRuntimeEmit || (breakPaths.length > 0 && runtimeEmits.length > 0)
         || hasUnjournalledRepeatedEffect(block, runtimeEmitSet, impureInlineResults)
         // The permutation proof relies on visiting every physical rank exactly once. Apart from the canonical
         // post-test tail update, mutating the counter can shorten, extend, or repeat the loop. Mutating the
@@ -972,6 +1045,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const expandedWriteSelectionCondition = writeSelectionCondition
         && expandRuntimePathExpression(writeSelectionCondition, logical);
       if (writeSelectionCondition && !expandedWriteSelectionCondition) return false;
+      const expandedBreakCondition = breakPaths.length > 0 && (breakCondition
+        ? expandRuntimePathExpression(breakCondition, logical) : new BoolLiteralNode(true));
+      if (breakPaths.length > 0 && !expandedBreakCondition) return false;
       const serial = this.serial++;
       const signedComponent = (value: bigint): string => value < 0n ? `n${-value}` : `p${value}`;
       const rangeSuffix = start === 0n && step === 1n
@@ -984,6 +1060,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (expandedWriteSelectionCondition) {
         (node.runtimeCounterLoopIterationConditions ??= new Map()).set(hidden, {
           expression: cloneNode(expandedWriteSelectionCondition),
+          ...(expandedBreakCondition && { breakCondition: cloneNode(expandedBreakCondition) }),
           counter: { name: logical, initialValue: start, stepValue: step },
         });
       }
@@ -1213,7 +1290,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         ...(rankDefinition ? [rankDefinition] : []),
         logicalInRange, bitDefinition, unique, markSeen,
       ];
-      const originalStatements = block.statements ?? [];
       const cursorAdvance = expandedWriteSelectionCondition
         ? at(new BranchNode(
           cloneNode(expandedWriteSelectionCondition),
@@ -1222,18 +1298,49 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ))])),
         ))
         : undefined;
-      const updateIndex = counterUpdate ? originalStatements.indexOf(counterUpdate) : -1;
+      const originalStatements = block.statements ?? [];
+      const injectBreakAdvances = (target: BlockNode): void => {
+        if (!cursorAdvance) return;
+        const statements: StatementNode[] = [];
+        for (const statement of target.statements ?? []) {
+          if (statement instanceof BreakNode) {
+            statements.push(cloneNode(cursorAdvance), statement);
+          } else {
+            if (statement instanceof BranchNode) {
+              injectBreakAdvances(statement.ifBlock);
+              if (statement.elseBlock) injectBreakAdvances(statement.elseBlock);
+            } else if (statement instanceof BlockNode) injectBreakAdvances(statement);
+            statements.push(statement);
+          }
+        }
+        target.statements = statements;
+      };
+      if (breakPaths.length > 0) {
+        for (const statement of originalStatements) {
+          if (statement instanceof BranchNode) {
+            injectBreakAdvances(statement.ifBlock);
+            if (statement.elseBlock) injectBreakAdvances(statement.elseBlock);
+          } else if (statement instanceof BlockNode) injectBreakAdvances(statement);
+        }
+      }
+      const sourceStatements = breakPaths.length > 0 && cursorAdvance
+        ? originalStatements.flatMap((statement) => statement instanceof BreakNode
+          ? [cloneNode(cursorAdvance), statement] : [statement])
+        : originalStatements;
+      const updateIndex = counterUpdate ? sourceStatements.indexOf(counterUpdate) : -1;
       const bodyWithCursor = cursorAdvance && updateIndex >= 0
         ? [
-          ...originalStatements.slice(0, updateIndex), cursorAdvance,
-          ...originalStatements.slice(updateIndex),
+          ...sourceStatements.slice(0, updateIndex), cursorAdvance,
+          ...sourceStatements.slice(updateIndex),
         ]
-        : [...originalStatements, ...(cursorAdvance ? [cursorAdvance] : [])];
+        : [...sourceStatements, ...(cursorAdvance ? [cursorAdvance] : [])];
       block.statements = [
         logicalDefinition,
         ...(expandedWriteSelectionCondition ? [at(new BranchNode(
           cloneNode(expandedWriteSelectionCondition), at(new BlockNode(proofStatements)),
         ))] : proofStatements),
+        // BreakContinueTransformation runs after this pass and nests the tail (including this advance) under the
+        // fall-through arm of a source `continue`, so selected iterations consume exactly one physical rank.
         ...bodyWithCursor,
       ];
       if (expandedWriteSelectionCondition) {

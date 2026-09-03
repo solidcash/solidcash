@@ -21403,6 +21403,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (condition) infos.at(-1)!.condition = condition;
       if (iteration) {
         infos.at(-1)!.iterationCondition = iteration.expression;
+        infos.at(-1)!.iterationBreakCondition = iteration.breakCondition;
         infos.at(-1)!.iterationCounter = iteration.counter;
       }
     }

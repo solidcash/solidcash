@@ -509,26 +509,41 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('refuses a continue/break counter-keyed mapping loop as KERNEL_UNBOUNDED_KEY', () => {
+  it('admits a continue-selected counter-keyed mapping loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) { continue; }
+          this.m[i] = i;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationCondition).toBeDefined();
+  });
+
+  it('admits a break-controlled counter-keyed mapping loop with an exact terminated domain', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function denied(int n) public {
         for (int i = 0; i < n; i = i + 1) {
-          if (i == 0) { continue; }
           if (i == 3) { break; }
           this.m[i] = i;
         }
         require(true);
       }
-      function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')).toMatchObject({
-      eligible: true,
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({
+        iterationCondition: { kind: 'unary', operator: '!' },
+        iterationBreakCondition: { kind: 'binary', operator: '==' },
+      });
   });
 
   it.each([

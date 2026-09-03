@@ -402,6 +402,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     condition?: ExpressionNode;
     /** Per-source-iteration predicate selecting the exact logical mapping-write domain. */
     iterationCondition?: ExpressionNode;
+    /** Per-source-iteration predicate terminating the source loop after this iteration. */
+    iterationBreakCondition?: ExpressionNode;
     iterationCounter?: { name: string; initialValue: bigint; stepValue: bigint };
     op: '+' | '-' | 'set' | 'delete';
   }>;
@@ -409,7 +411,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   runtimeCounterLoopConditions?: Map<string, ExpressionNode>;
   /** Per-iteration selection predicate keyed by compiler-owned counter permutation parameter. */
   runtimeCounterLoopIterationConditions?: Map<string, {
-    expression: ExpressionNode; counter: { name: string; initialValue: bigint; stepValue: bigint };
+    expression: ExpressionNode;
+    breakCondition?: ExpressionNode;
+    counter: { name: string; initialValue: bigint; stepValue: bigint };
   }>;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.

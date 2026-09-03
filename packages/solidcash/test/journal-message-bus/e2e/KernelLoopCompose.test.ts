@@ -197,6 +197,21 @@ contract KernelSelectedCounterMapping() {
     }
     require(true);
   }
+  function writeOdds(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      if (i % 2 == 0) continue;
+      this.m[i] = i + 30;
+      emit Selected(i);
+    }
+    require(true);
+  }
+  function writeUntil(int n, int stop) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.m[i] = i + 40;
+      if (i == stop) break;
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
@@ -557,9 +572,17 @@ describe('kernel counter-key mapping loop compose', () => {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
     const writeHandler = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    const oddsHandler = artifact.abi.find((candidate) => candidate.name === 'writeOdds')!;
+    const untilHandler = artifact.abi.find((candidate) => candidate.name === 'writeUntil')!;
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
       .toMatchObject({ eligible: true });
     expect(writeHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeOdds'))
+      .toMatchObject({ eligible: true });
+    expect(oddsHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeUntil'))
+      .toMatchObject({ eligible: true });
+    expect(untilHandler.sortedUpsertLoopInfo?.[0].iterationBreakCondition).toBeDefined();
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -618,6 +641,64 @@ describe('kernel counter-key mapping loop compose', () => {
       events: [{ args: { i: 0n } }, { args: { i: 1n } }, { args: { i: 2n } }, { args: { i: 3n } }],
     });
     for (const [key, expected] of [[0n, 10n], [1n, 11n], [2n, 12n], [3n, 13n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+
+    const continued = StatefulContract.withCategory(inner, categoryId).call.writeOdds(6n);
+    const continuedBuilder = await continued.build();
+    const continuedInput = continuedBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === 'writeOdds');
+    if (!continuedInput || !('params' in continuedInput.unlocker)) {
+      throw new Error('direct writeOdds input is missing');
+    }
+    const oddsPermutationIndex = oddsHandler.inputs.findIndex((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'));
+    expect([...(continuedInput.unlocker.params[oddsPermutationIndex] as bigint[])]
+      .sort((left, right) => Number(left - right))).toEqual([1n, 3n, 5n]);
+    await expect(continued.send()).resolves.toMatchObject({
+      events: [{ args: { i: 1n } }, { args: { i: 3n } }, { args: { i: 5n } }],
+    });
+    for (const [key, expected] of [[1n, 31n], [3n, 33n], [5n, 35n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+
+    const broken = StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeUntil', args: [8n, 3n] }]);
+    const brokenBuilder = await broken.build();
+    const brokenInputIndex = brokenBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const brokenInput = brokenBuilder.inputs[brokenInputIndex];
+    if (!brokenInput || !('params' in brokenInput.unlocker)) {
+      throw new Error('routed writeUntil input is missing');
+    }
+    const untilPermutationName = untilHandler.inputs.find((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))!.name;
+    const untilPermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === untilPermutationName);
+    const terminatedPermutation = (brokenInput.unlocker.params[untilPermutationIndex] as bigint[][])[0];
+    expect([...terminatedPermutation]
+      .sort((left, right) => Number(left - right))).toEqual([0n, 1n, 2n, 3n]);
+    const brokenRouteUnlocker = brokenInput.unlocker;
+    const recreateBrokenUnlocker = brokenRouteUnlocker.contract.createCompilerRouteUnlocker(
+      brokenRouteUnlocker.abiFunction, hexToBin(artifact.messageBus!.route.selector!),
+    );
+    const brokenVm = createVirtualMachineBch2026ForProvider(provider);
+    for (const hostile of [terminatedPermutation.slice(1), [...terminatedPermutation, 4n]]) {
+      const hostileParams = [...brokenRouteUnlocker.params];
+      hostileParams[untilPermutationIndex] = [hostile];
+      brokenBuilder.inputs[brokenInputIndex].unlocker = recreateBrokenUnlocker(...hostileParams);
+      const transaction = brokenBuilder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(brokenBuilder.inputs);
+      expect(brokenVm.stateSuccess(brokenVm.evaluate({
+        inputIndex: brokenInputIndex, sourceOutputs, transaction,
+      })), `hostile terminated-domain witness ${hostile.join(',')}`).not.toBe(true);
+    }
+    brokenBuilder.inputs[brokenInputIndex].unlocker = brokenRouteUnlocker;
+    await expect(broken.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const [key, expected] of [[0n, 40n], [1n, 41n], [2n, 42n], [3n, 43n]] as const) {
       await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }

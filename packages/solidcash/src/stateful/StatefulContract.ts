@@ -4369,10 +4369,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const domain = active === true
           ? vmapCounterPermutationValues(BigInt(countValue as bigint | number | string), permutationSpec)
           : [];
-        const selectedDomain = loopInfo?.iterationCondition && active === true
-          ? domain.map((value, occurrenceIndex) => ({
-            value,
-            selected: this._evaluateExternalExpression(
+        const selectedDomain: bigint[] = [];
+        let selectedDomainResolved = active === true;
+        if (loopInfo?.iterationCondition && active === true) {
+          for (let occurrenceIndex = 0; occurrenceIndex < domain.length; occurrenceIndex += 1) {
+            const selected = this._evaluateExternalExpression(
               loopInfo.iterationCondition!,
               [...row.args],
               executionArtifact,
@@ -4380,12 +4381,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               visible,
               undefined,
               occurrenceIndex,
-            ),
-          })) : undefined;
+            );
+            const breaking = loopInfo.iterationBreakCondition ? this._evaluateExternalExpression(
+              loopInfo.iterationBreakCondition,
+              [...row.args],
+              executionArtifact,
+              undefined,
+              visible,
+              undefined,
+              occurrenceIndex,
+            ) : false;
+            if (typeof selected !== 'boolean' || typeof breaking !== 'boolean') {
+              selectedDomainResolved = false;
+              break;
+            }
+            if (selected) selectedDomain.push(domain[occurrenceIndex]);
+            if (breaking) break;
+          }
+        }
         // Authenticated state is loaded only by the asynchronous builder. If any per-iteration result is not yet
         // resolvable, retain an empty placeholder and replace it after hydration below.
-        const permutation = selectedDomain?.every(({ selected }) => typeof selected === 'boolean')
-          ? selectedDomain.filter(({ selected }) => selected).map(({ value }) => value)
+        const permutation = loopInfo?.iterationCondition && selectedDomainResolved
+          ? selectedDomain
           : loopInfo?.iterationCondition ? [] : domain;
         (row.internalArgs as Record<string, FunctionArgument>)[input.name] = permutation;
         rowPermutations[rowIndex] = permutation;
@@ -13981,7 +13998,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         : [];
       if (active && loopInfo?.iterationCondition) {
         directPredicateState = await this._hydrateExternalPredicateState(
-          [loopInfo.iterationCondition],
+          [loopInfo.iterationCondition, loopInfo.iterationBreakCondition],
           visibleArgs,
           this.inner.artifact,
           directPredicateState,
@@ -13990,9 +14007,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           candidateDomain.map((_value, index) => index),
         );
       }
-      const perm = active ? candidateDomain.filter((_value, occurrenceIndex) => {
-        if (!loopInfo?.iterationCondition) return true;
-        const selected = this._evaluateExternalExpression(
+      const perm: bigint[] = [];
+      if (active) for (let occurrenceIndex = 0; occurrenceIndex < candidateDomain.length; occurrenceIndex += 1) {
+        const selected = loopInfo?.iterationCondition ? this._evaluateExternalExpression(
           loopInfo.iterationCondition,
           visibleArgs,
           this.inner.artifact,
@@ -14002,12 +14019,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           occurrenceIndex,
           false,
           executionSelfAddress,
-        );
+        ) : true;
+        const breaking = loopInfo?.iterationBreakCondition ? this._evaluateExternalExpression(
+          loopInfo.iterationBreakCondition,
+          visibleArgs,
+          this.inner.artifact,
+          directPredicateState,
+          visibleInputs,
+          undefined,
+          occurrenceIndex,
+          false,
+          executionSelfAddress,
+        ) : false;
         if (typeof selected !== 'boolean') {
           throw new Error(`Could not resolve runtime loop iteration predicate for '${abiFunction!.name}'.`);
         }
-        return selected;
-      }) : [];
+        if (typeof breaking !== 'boolean') {
+          throw new Error(`Could not resolve runtime loop break predicate for '${abiFunction!.name}'.`);
+        }
+        if (selected) perm.push(candidateDomain[occurrenceIndex]);
+        if (breaking) break;
+      }
       perm.sort((a, b) => {
         const av = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(a)]));
         const bv = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(b)]));
@@ -15670,7 +15702,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const i = loopAbiFunction.inputs.findIndex((p) => p.name === name);
         return i >= 0 ? loopArgs[i] : undefined;
       };
-      if (info.condition || info.iterationCondition) {
+      if (info.condition || info.iterationCondition || info.iterationBreakCondition) {
         const visibleInputs = visibleHandlerInputs(loopAbiFunction.inputs);
         const conditionArgs = upsertFrame.routed
           ? [...upsertFrame.row!.args]
@@ -15721,7 +15753,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ) : [];
         if (active && info.iterationCondition) {
           loopPredicateState = await this._hydrateExternalPredicateState(
-            [info.iterationCondition],
+            [info.iterationCondition, info.iterationBreakCondition],
             conditionArgs,
             entryArtifact,
             loopPredicateState,
@@ -15730,9 +15762,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             domain.map((_value, occurrenceIndex) => occurrenceIndex),
           );
         }
-        const permutation = active ? domain.filter((_value, occurrenceIndex) => {
-          if (!info.iterationCondition) return true;
-          const selected = this._evaluateExternalExpression(
+        const permutation: bigint[] = [];
+        if (active) for (let occurrenceIndex = 0; occurrenceIndex < domain.length; occurrenceIndex += 1) {
+          const selected = info.iterationCondition ? this._evaluateExternalExpression(
             info.iterationCondition,
             conditionArgs,
             entryArtifact,
@@ -15742,12 +15774,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             occurrenceIndex,
             false,
             executionSelfAddress,
-          );
+          ) : true;
+          const breaking = info.iterationBreakCondition ? this._evaluateExternalExpression(
+            info.iterationBreakCondition,
+            conditionArgs,
+            entryArtifact,
+            loopPredicateState,
+            visibleInputs,
+            undefined,
+            occurrenceIndex,
+            false,
+            executionSelfAddress,
+          ) : false;
           if (typeof selected !== 'boolean') throw new Error(
             `Could not resolve runtime loop iteration predicate for '${loopAbiFunction.name}'.`,
           );
-          return selected;
-        }) : [];
+          if (typeof breaking !== 'boolean') throw new Error(
+            `Could not resolve runtime loop break predicate for '${loopAbiFunction.name}'.`,
+          );
+          if (selected) permutation.push(domain[occurrenceIndex]);
+          if (breaking) break;
+        }
         permutation.sort((left, right) => {
           const leftSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(left)]));
           const rightSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(right)]));

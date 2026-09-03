@@ -4927,6 +4927,11 @@ function synthesizeMessageBusRoute(
       new ParameterNode(PrimitiveType.BIGINT, MESSAGE_BUS_OWNER_INPUT), { location: handler.location },
     ));
   }
+  // `.value` is a dedicated lexer token for legacy call-option/member syntax. A generated state access named
+  // `value` therefore has to separate the dot from the identifier; without the space, the stand-alone route
+  // parser builds `FieldAccess(address(this), "value")` instead of a StateAccessNode. Keep this spelling helper
+  // route-wide so public getters and fixed-array identity pins round-trip through the same native parser.
+  const routeStateReference = (name: string): string => `this.${name === 'value' ? ' value' : name}`;
   const buildDecodeAndCall = (
     captureResults = false, rowIndex?: number, rowExpression = String(rowIndex ?? 0),
     markDispatch = false,
@@ -4950,11 +4955,12 @@ function synthesizeMessageBusRoute(
           // scalar getter assigns `S` to the first projected field type in the generated route.
           && !contract.flattenedPublicStructGetters.some((getter) => getter.name === fn.name);
         if (scalarGetter) {
-          if (!captureResults || fn.returnTypes.length === 0) return `this.${fn.name};`;
+          const stateReference = routeStateReference(fn.name);
+          if (!captureResults || fn.returnTypes.length === 0) return `${stateReference};`;
           const name = `__message_bus_value_${rowIndex}_${handlerIndex}_0`;
           const enumResult = fn.returnTypes[0] instanceof EnumType;
           const local = enumResult ? 'int' : fn.returnTypes[0].toString();
-          const rhs = enumResult ? `int(this.${fn.name})` : `this.${fn.name}`;
+          const rhs = enumResult ? `int(${stateReference})` : stateReference;
           return `${local} ${name}; ${name} = ${rhs}; `
             + `__message_bus_results = bytes.concat(__message_bus_results, abi.encode(${name}));`;
         }
@@ -6028,7 +6034,7 @@ function synthesizeMessageBusRoute(
     const collection = collectionByName.get(name)!;
     const bound = collection.type instanceof ArrayType ? collection.type.bound ?? 0 : 0;
     return Array.from({ length: bound }, (_unused, index) =>
-      `require(this.${name}[${index}] == this.${name}[${index}]);`);
+      `require(${routeStateReference(name)}[${index}] == ${routeStateReference(name)}[${index}]);`);
   }).join('\n');
   const routeStructs = [...ast.structDefinitions, ...contract.structDefinitions]
     .filter((definition, index, all) =>
@@ -7250,6 +7256,18 @@ function compileResolvedAst(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
     )) as Ast;
+  }
+
+  // Kernel admission must classify the program the compiler will actually execute. Supported Yul is already
+  // translated to ordinary typed AST later in this pipeline, but the early message-bus boundary used to snapshot
+  // the raw AssemblyStatement first and conservatively call every such handler KERNEL_OPAQUE_EFFECT. Apply the
+  // same lowering before that snapshot. Native `assembly { OP_* }` has no Yul tree and unsupported Yul remains an
+  // AssemblyStatement, so genuinely opaque effects still reach the existing fail-closed gate. The later pass is
+  // retained for blocks which only become lowerable after memory/function-pointer rewrites. A function which
+  // also contains native assembly is left entirely to that late pass so function-scoped lowering runs once.
+  if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true
+    && !(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
+    ast = ast.accept(new LowerInlineAssembly(true)) as Ast;
   }
 
   // The compiler-owned route must participate in the same helper/state

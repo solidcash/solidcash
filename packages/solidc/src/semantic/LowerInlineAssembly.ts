@@ -209,6 +209,23 @@ function bodyHasAssembly(node: Node | undefined): boolean {
   return false;
 }
 
+// Native BCH opcodes intentionally remain opaque to Yul lowering. Kernel admission can run this pass early,
+// but must leave a mixed Yul/native function untouched so the ordinary late pass sees it exactly once.
+function bodyHasNativeAssembly(node: Node | undefined): boolean {
+  if (!node) return false;
+  if (node instanceof AssemblyStatementNode) return node.yulBlock === undefined;
+  for (const key of Object.keys(node)) {
+    if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+    const value = (node as any)[key];
+    if (value instanceof Node) {
+      if (bodyHasNativeAssembly(value)) return true;
+    } else if (Array.isArray(value)) {
+      for (const item of value) if (item instanceof Node && bodyHasNativeAssembly(item)) return true;
+    }
+  }
+  return false;
+}
+
 // EVM storage layout of the enclosing contract: each state var packed into a 32-byte slot in declaration
 // order (Solidity rules), so sload/sstore on a slot can map to the var(s) at that slot. A single full-width
 // var (the common uint256 case) stays a plain read/write; a packed slot combines/decomposes its sub-word vars.
@@ -3254,6 +3271,10 @@ function lowerBlock(block: YulBlockNode): BlockNode {
 // existing codegen (stack model, control flow, type checking). Unsupported Yul is left untouched for the
 // inline-assembly diagnostic. Native BCH-ASM (no yulBlock) is unaffected. See docs/yul-inline-assembly.md.
 export default class LowerInlineAssembly extends AstTraversal {
+  constructor(private readonly skipFunctionsWithNativeAssembly = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     declaredLibraryNames = new Set(node.declaredLibraryNames);
     currentConstantTypes = new Map(node.constantDefinitions.map((constant) => [constant.name, constant.type]));
@@ -3319,6 +3340,7 @@ export default class LowerInlineAssembly extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const hasAssembly = bodyHasAssembly(node.body);
     if (!hasAssembly) return node;
+    if (this.skipFunctionsWithNativeAssembly && bodyHasNativeAssembly(node.body)) return node;
     const previousSourceFunction = currentSourceFunction;
     currentSourceFunction = node;
     const sourceStatements = node.body.statements ?? [];

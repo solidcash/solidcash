@@ -238,6 +238,57 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('admits lowerable Yul after translating it to ordinary kernel state operations', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract C {
+        uint256 value;
+        function set(uint256 next) public {
+          assembly { sstore(value.slot, add(next, 1)) }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set')).toMatchObject({
+      eligible: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('admits lowerable Yul memory and log operations as an ordinary event effect', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract C {
+        function fire() public {
+          assembly { mstore(0, 7) log0(0, 32) }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fire')).toMatchObject({
+      eligible: true,
+    });
+    expect(artifact.abi.find((handler) => handler.name === 'fire')?.emits).toContainEqual(expect.objectContaining({
+      eventName: '__YulLog',
+    }));
+  });
+
+  it('keeps a mixed lowerable/opaque assembly handler transactional at admission', () => {
+    const artifact = compileString(`contract C() {
+      struct S { int x; }
+      int value;
+      function denied(S calldata arg, int next) public {
+        assembly { sstore(value.slot, next) }
+        assembly { OP_1 OP_DROP }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_OPAQUE_EFFECT',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
   it('refuses a native low-level call as KERNEL_OPAQUE_EFFECT', () => {
     expect(denied(`contract C(address target) {
       function denied(bytes data) public {

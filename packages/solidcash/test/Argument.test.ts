@@ -19,6 +19,11 @@ describe('encodeFunctionArgument: deferred signature arrays', () => {
     const signatures = [[new SignatureTemplate(alicePriv)], [new SignatureTemplate(bobPriv)]];
     expect(encodeFunctionArgument(signatures, 'sig[][]')).toBe(signatures);
   });
+
+  it('preserves deeper signature arrays recursively', () => {
+    const signatures = [[[new SignatureTemplate(alicePriv)]], [[new SignatureTemplate(bobPriv)]]];
+    expect(encodeFunctionArgument(signatures, 'sig[][][]')).toBe(signatures);
+  });
 });
 
 // SDK encoding of enum-typed arguments. Enums are int-backed; an enum value (bigint) encodes as int

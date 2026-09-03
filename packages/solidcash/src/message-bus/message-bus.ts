@@ -4,9 +4,9 @@ import {
   type StructDefinitionInfo,
 } from '@solidcash/utils';
 import {
-  encodeFunctionArgument, isSignatureTemplateArray, type ConstructorArgument, type FunctionArgument,
+  encodeFunctionArgument, isSignatureTemplateArgumentForType, type ConstructorArgument, type FunctionArgument,
+  type SignatureTemplateArgument,
 } from '../Argument.js';
-import SignatureTemplate from '../SignatureTemplate.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
 
 export interface MessageBatchCall {
@@ -102,6 +102,14 @@ const signedValue = (value: bigint): Uint8Array => {
     throw new Error('message-bus batch logical msg.value exceeds the signed 64-bit satoshi envelope');
   }
   return concat(Uint8Array.of(value < 0n ? 1 : 0), uintLe(magnitude, 8));
+};
+
+const isTransactionSignatureType = (type: string): boolean => /^sig(?:\[\])*$/.test(type);
+
+const inactiveSignatureRouteWitness = (type: string): FunctionArgument => {
+  let value: ConstructorArgument = new Uint8Array();
+  for (let depth = (type.match(/\[\]/g) ?? []).length; depth > 0; depth -= 1) value = [value];
+  return value;
 };
 
 /** ABI-valid default for an inactive position in a bounded message-bus route. */
@@ -269,9 +277,9 @@ export function encodeMessageBatch(
     const rowEncoded: Uint8Array[] = [];
     encoded.forEach((argument, index) => {
       const inputType = handler.inputs[index].type;
-      const signatureArgument = (inputType === 'sig' && argument instanceof SignatureTemplate)
-        || (inputType === 'sig[]' && isSignatureTemplateArray(argument));
-      if (inputType === 'sig' || inputType === 'sig[]') {
+      const signatureArgument = isTransactionSignatureType(inputType)
+        && isSignatureTemplateArgumentForType(argument, inputType);
+      if (isTransactionSignatureType(inputType)) {
         // A transaction-bound batch signature cannot be committed inside rowArgs: doing so would make the
         // signature commit to a manifest which already commits to that signature. Keep it as a positional route
         // witness, and require a template so it can be finalized only after composition fixes the transaction.
@@ -289,19 +297,11 @@ export function encodeMessageBatch(
       if (capability.convention === 'kernel-row-loop' && signatureArgument) {
         const name = `__message_bus_sig_${handlerIndex}_${index}_rows`;
         const aligned = signatureWitnessValues.get(name);
-        if (inputType === 'sig') {
-          const values = Array.isArray(aligned)
-            ? [...aligned] as SignatureTemplate[]
-            : new Array<SignatureTemplate>(invocations.length);
-          values[rowIndex] = argument as SignatureTemplate;
-          signatureWitnessValues.set(name, values);
-        } else {
-          const values = Array.isArray(aligned)
-            ? [...aligned] as SignatureTemplate[][]
-            : new Array<SignatureTemplate[]>(invocations.length);
-          values[rowIndex] = argument as SignatureTemplate[];
-          signatureWitnessValues.set(name, values);
-        }
+        const values = Array.isArray(aligned)
+          ? [...aligned] as SignatureTemplateArgument[]
+          : new Array<SignatureTemplateArgument>(invocations.length);
+        values[rowIndex] = argument as SignatureTemplateArgument;
+        signatureWitnessValues.set(name, values);
       } else {
         signatureWitnessValues.set(`__message_bus_sig_${handlerIndex}_${index}_r${rowIndex}`, argument);
       }
@@ -383,7 +383,7 @@ export function encodeMessageBatch(
     }
     const argsBlob = encodeMessageBusArguments(
       rowEncoded,
-      handler.inputs.filter((input) => input.type !== 'sig' && input.type !== 'sig[]')
+      handler.inputs.filter((input) => !isTransactionSignatureType(input.type))
         .map((input) => input.type),
       structs,
     );
@@ -449,25 +449,17 @@ export function encodeMessageBatch(
       if (witness) return witness.value;
       const signatureWitness = signatureWitnessValues.get(input.name);
       if (/^__message_bus_sig_\d+_\d+_rows$/.test(input.name)) {
-        if (input.type === 'sig[][]') {
-          if (!Array.isArray(signatureWitness) || signatureWitness.length === 0) {
-            return [[new Uint8Array()]];
-          }
-          const aligned = signatureWitness as SignatureTemplate[][];
-          const fallback = aligned.find((value) => isSignatureTemplateArray(value));
-          if (!fallback) return [[new Uint8Array()]];
-          return Array.from({ length: invocations.length }, (_unused, row) =>
-            isSignatureTemplateArray(aligned[row]) ? aligned[row] : fallback);
-        }
         if (!Array.isArray(signatureWitness) || signatureWitness.length === 0) {
           // The handler is not selected in this envelope, so the route never indexes this array. Supply one
           // already-encoded NULLFAIL signature value without requiring an unrelated signer.
-          return [new Uint8Array()];
+          return inactiveSignatureRouteWitness(input.type);
         }
-        const fallback = signatureWitness.find((value) => value instanceof SignatureTemplate);
-        if (!fallback) return [new Uint8Array()];
+        const sourceType = input.type.slice(0, -2);
+        const aligned = signatureWitness as SignatureTemplateArgument[];
+        const fallback = aligned.find((value) => isSignatureTemplateArgumentForType(value, sourceType));
+        if (!fallback) return inactiveSignatureRouteWitness(input.type);
         return Array.from({ length: invocations.length }, (_unused, row) =>
-          signatureWitness[row] instanceof SignatureTemplate ? signatureWitness[row] : fallback);
+          isSignatureTemplateArgumentForType(aligned[row], sourceType) ? aligned[row] : fallback);
       }
       if (signatureWitness) return signatureWitness;
       // Signature slots are allocated for the route's full bounded row width.

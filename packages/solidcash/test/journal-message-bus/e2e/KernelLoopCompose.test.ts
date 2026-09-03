@@ -290,6 +290,41 @@ describe('kernel signature-array rows', () => {
       })), `unsigned input ${inputIndex}`).toBe(true);
     }
   }, 180_000);
+
+  it('recursively signs a deeper source array through one additional row dimension', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelNestedSigned(pubkey owner) {
+      int total;
+      function add(sig[][] authorizations, int amount) public {
+        require(checkSig(authorizations[0][0], owner));
+        this.total = this.total + amount;
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_rows', type: 'sig[][][]',
+    }));
+
+    const inner = new Contract(artifact, [alicePub], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'add', args: [[[new SignatureTemplate(alicePriv)]], 2n] },
+      { function: 'add', args: [[[new SignatureTemplate(alicePriv)]], 3n] },
+    ]);
+    const fee = await createBareP2pkhFeeFunder(provider);
+    call.addInput(fee.utxo, fee.unlocker);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 180_000);
 });
 
 describe('kernel counter-key mapping loop compose', () => {

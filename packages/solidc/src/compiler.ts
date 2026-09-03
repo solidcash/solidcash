@@ -3452,8 +3452,7 @@ function synthesizeMessageBusRoute(
       .map((parameter) => parameter.type.toString())
       .filter((type) => /^sig(?:\[\])*$/.test(type));
     const kernelSignatureParametersRepresentable = compilerOptions.messageBusKernel === true
-      && transactionSignatureParameterTypes.length > 0
-      && transactionSignatureParameterTypes.every((type) => type === 'sig' || type === 'sig[]');
+      && transactionSignatureParameterTypes.length > 0;
     const maximumInputBytes = compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
     if (!reason && minimumResultBytes > maximumInputBytes) {
       // The batch wrapper concatenates `abi.encode` of every return value into one result. Cap that static result
@@ -3540,9 +3539,8 @@ function synthesizeMessageBusRoute(
       reason = 'foreign-outstate-read-precedes-shared-call-settlement';
     // A transaction signature cannot be placed inside the message-bus envelope: the signature commits the
     // transaction containing the call manifest, while the call manifest would in turn commit the signature.
-    // The kernel binds scalar `sig` and `sig[]` values as aligned `sig[]` and `sig[][]` positional route
-    // witnesses; the original handler verifies the selected element against the final transaction. Deeper source
-    // dimensions still lack a finite route ABI representation and remain refused.
+    // The kernel binds every finite `sig` array shape as an aligned positional route witness with one additional
+    // array dimension; the original handler verifies the selected element against the final transaction.
     else if (!reason && (signatureCheck || transactionSignatureParameterTypes.length > 0)
       && !kernelSignatureParametersRepresentable) {
       reason = 'transaction-signature-route-binding-required';
@@ -4082,13 +4080,13 @@ function synthesizeMessageBusRoute(
   }
   const graphBlockhashReadWidth = Math.max(0,
     ...[...graphBlockhashReads.values()].map((reads) => reads.length));
-  const isTransactionSignatureType = (type: string): boolean => type === 'sig' || type === 'sig[]';
+  const isTransactionSignatureType = (type: string): boolean => /^sig(?:\[\])*$/.test(type);
   const signatureMode = eligible.some((fn) =>
     fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
   const kernelSignatureMode = compilerOptions.messageBusKernel === true && signatureMode;
   // Kernel dispatch: one for-row loop, no AST unroll. Omitted/true selects it; false keeps today's clone/unroll.
-  // Resource-shaped per-row frames stay on the legacy unroll. Scalar transaction signatures use aligned `sig[]`
-  // route witnesses outside the committed row blob. Events, value, tokens,
+  // Resource-shaped per-row frames stay on the legacy unroll. Transaction-signature parameters use aligned route
+  // witnesses with one extra array dimension outside the committed row blob. Events, value, tokens,
   // typed external calls (`__message_bus_handler_*` DEFINE, not `__message_bus_graph_*`), mapping
   // trailing upserts, and kernel-representable keys (shared msg.sender, row-decoded arguments /
   // expressions) use the loop. A `perRow` mark without one of those sources is the resource `_row`
@@ -5211,7 +5209,7 @@ function synthesizeMessageBusRoute(
     fn.parameters.flatMap((parameter, parameterIndex) => {
       if (!isTransactionSignatureType(parameter.type.toString())) return [];
       if (kernelSignatureMode) {
-        const witnessType = parameter.type.toString() === 'sig[]' ? 'sig[][]' : 'sig[]';
+        const witnessType = `${parameter.type.toString()}[]`;
         return [`${witnessType} ${kernelSignatureWitnessName(handlerIndex, parameterIndex)}`];
       }
       return Array.from({ length: routeMaximumRows }, (_unused, row) =>
@@ -8285,7 +8283,7 @@ function compileResolvedAst(
           type: parameter.type.toString().replace(/address payable/g, 'address'),
         })),
         ...(fn.parameters.some((parameter) =>
-          ['sig', 'sig[]'].includes(parameter.type.toString()))
+          /^sig(?:\[\])*$/.test(parameter.type.toString()))
           && fn.functionId !== undefined && fn.functionSelector !== undefined
           && traversal.invokedFunctionBytecodes.has(fn.functionId)
           && artifact.functionBodies?.[binToHex(fn.functionSelector)] !== undefined && {

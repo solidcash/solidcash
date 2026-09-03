@@ -45,8 +45,8 @@ describe('callManifest-v1 static refusal classes', () => {
 
   it('publishes the stable class and handler identity beside the detailed reason', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
-      contract SignatureRefusal() {
-        function signed(sig[][] signatures) public { require(true); }
+      contract SignatureRefusal(pubkey owner) {
+        function signed() public { require(checkSig(sig(hex"00"), owner)); }
         function open() public { require(true); }
       }`, { forceStateful: true, messageBus: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed')).toMatchObject({

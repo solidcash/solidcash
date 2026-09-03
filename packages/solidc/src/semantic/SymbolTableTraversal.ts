@@ -2466,6 +2466,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Propagate slot indices to individual mapping nodes (looks up the shared info by key)
         this.assignEntrySlotIndices(node.body, entryAccessMap);
+        // visitBranch/visitSwitch run while the body is first resolved, before the function-wide entry pre-scan
+        // above assigns physical slot indices. Refresh their restricted-operation summaries now; otherwise every
+        // conditional MappingAssign/Delete still appears as slot -1 and the SDK is told its entry is unconditional.
+        this.refreshConditionalEntryOps(node.body);
 
       }
     }
@@ -4940,6 +4944,54 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('defaultCase' in node && (node as any).defaultCase instanceof Node) {
       this.assignEntrySlotIndices((node as any).defaultCase, map);
     }
+  }
+
+  private refreshConditionalEntryOps(root: Node): void {
+    const seen = new Set<Node>();
+    const walk = (node: Node): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      for (const [key, value] of Object.entries(node)) {
+        if (RESOLVED_BACKREF_KEYS.has(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const child of value) if (child instanceof Node) walk(child);
+      }
+      if (node instanceof BranchNode) {
+        const ops = computeBranchOps(node.ifBlock, node.elseBlock);
+        if (ops) node.branchOps = ops;
+        else node.branchOps = undefined;
+      } else if (node instanceof SwitchNode) {
+        const counts = node.cases.map((candidate) => countBranchOps(candidate.body));
+        if (node.defaultCase) counts.push(countBranchOps(node.defaultCase));
+        const hasOps = counts.some((candidate) => candidate.transfers > 0 || candidate.emits > 0
+          || candidate.tokenContainerTransfers > 0 || candidate.stateWriteKeys.size > 0
+          || candidate.mappingWriteSlots.size > 0 || candidate.mappingDeleteSlots.size > 0);
+        if (!hasOps) {
+          node.switchOps = undefined;
+          return;
+        }
+        const stateWriteKeys = new Set<string>();
+        const mappingWriteSlots = new Set<number>();
+        const mappingDeleteSlots = new Set<number>();
+        for (const candidate of counts) {
+          candidate.stateWriteKeys.forEach((key) => stateWriteKeys.add(key));
+          candidate.mappingWriteSlots.forEach((slot) => mappingWriteSlots.add(slot));
+          candidate.mappingDeleteSlots.forEach((slot) => mappingDeleteSlots.add(slot));
+        }
+        node.switchOps = {
+          stateWriteKeys,
+          mappingWriteSlots,
+          mappingDeleteSlots,
+          transferCount: Math.max(...counts.map((candidate) => candidate.transfers)),
+          minTransferCount: Math.min(...counts.map((candidate) => candidate.transfers)),
+          emitCount: Math.max(...counts.map((candidate) => candidate.emits)),
+          minEmitCount: Math.min(...counts.map((candidate) => candidate.emits)),
+          tokenContainerTransferCount: Math.max(...counts.map((candidate) => candidate.tokenContainerTransfers)),
+          minTokenContainerTransferCount: Math.min(...counts.map((candidate) => candidate.tokenContainerTransfers)),
+        };
+      }
+    };
+    walk(root);
   }
 
   private isOwnCategoryKey(key: IdentifierNode): boolean {
@@ -13043,8 +13095,26 @@ export default class SymbolTableTraversal extends AstTraversal {
    * Kernel row-loop clones settle trailing vmap upserts (`m[xs[i]] = v`) inside OP_INVOKE. Those writes index
    * outputs from the route's `blockSize`, so the clone must share the route layout rather than the 1-slot
    * default an internal function would otherwise compile against. Source entry points keep their own layout
-   * for direct calls.
+   * for direct calls. Distinct key identities on one collection stay distinct physical slots.
    */
+  private sameMessageBusEntryAccess(left: EntryAccessInfo, right: EntryAccessInfo): boolean {
+    if (left.collection !== right.collection
+      || left.operations.join(',') !== right.operations.join(',')
+      || left.inLoop !== right.inLoop) {
+      return false;
+    }
+    const identity = (access: EntryAccessInfo): string => {
+      const params = (access.keyParams ?? []).map((key) => key.replace(/_r\d+$/, ''));
+      const usesRouteWitness = params.some((key) =>
+        key.includes('__message_bus_key_') || key.includes('__message_bus_ek_'));
+      const canonical = (access.keySources ?? []).map((source) => source.canonical)
+        .filter((value) => value !== undefined && value !== '');
+      const keys = !usesRouteWitness && canonical.length > 0 ? canonical : params;
+      return keys.join('\0');
+    };
+    return identity(left) === identity(right);
+  }
+
   private shareRouteLayoutWithLoopEntryHandlers(contract: ContractNode): void {
     const route = contract.functions.find((fn) => fn.messageBusRoute);
     if (!route?.blockLayout) return;
@@ -13053,13 +13123,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (fn === route || !fn.name.startsWith('__message_bus_')) continue;
       for (const access of fn.entryAccesses ?? []) {
         const already = (route.entryAccesses ?? []).some((existing) =>
-          existing.collection === access.collection
-          && existing.operations.join(',') === access.operations.join(',')
-          && existing.inLoop === access.inLoop);
+          this.sameMessageBusEntryAccess(existing, access));
         if (!already && !(extras ?? []).some((existing) =>
-          existing.collection === access.collection
-          && existing.operations.join(',') === access.operations.join(',')
-          && existing.inLoop === access.inLoop)) {
+          this.sameMessageBusEntryAccess(existing, access))) {
           extras.push({ ...access, slotIndex: (route.entryAccesses?.length ?? 0) + extras.length });
         }
       }

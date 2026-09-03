@@ -83,12 +83,13 @@ describe('inferred message-bus batching for repeated external callees', () => {
     expect(compact).toContain('OP_ENDIFOP_5OP_SPLITOP_SWAP0453434231OP_EQUALVERIFY');
   });
 
-  it('replaces rather than retains the previous runtime batch count', () => {
-    const compact = compileString(SOURCE).bytecode.replace(/\s+/g, '');
-    // Rewriting SCB1's count splits after the six immutable header bytes, removes the old one-byte count, then
-    // concatenates the replacement count with only the actual row payload. The optimizer outlines the shared
-    // tail beginning at OP_NIP, so each of the two append sites ends this prefix with the same OP_INVOKE.
-    expect(compact.match(/OP_SPLITOP_1OP_SPLITOP_5OP_INVOKE/g)).toHaveLength(2);
+  it('uses the kernel row route rather than legacy runtime-count patch sites', () => {
+    const artifact = compileString(SOURCE);
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.route.inputs.map((input) => input.name)).toContain('batchBlob');
+    expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
+    const compact = artifact.bytecode.replace(/\s+/g, '');
+    expect(compact).not.toMatch(/OP_SPLITOP_1OP_SPLITOP_5OP_INVOKE/);
   });
 
   it('publishes bounded pure-helper programs for external argument derivation', () => {

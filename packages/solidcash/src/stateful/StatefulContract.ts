@@ -177,6 +177,13 @@ import {
 
 const signerUtxoSnapshots = new WeakMap<object, Map<string, Map<string, Utxo>>>();
 
+function vmapCounterPermutationSpec(name: string): { countName: string; postTest: boolean } | undefined {
+  const postTest = name.match(/^__internal__vmapCounterPerm_(.+)_\d+_post$/);
+  if (postTest) return { countName: postTest[1], postTest: true };
+  const preTest = name.match(/^__internal__vmapCounterPerm_(.+)_\d+$/);
+  return preTest ? { countName: preTest[1], postTest: false } : undefined;
+}
+
 function signerSnapshotMap(signer: Signer): Map<string, Utxo> | undefined {
   return signerUtxoSnapshots.get(signer.provider as object)?.get(signer.getAddress());
 }
@@ -3429,6 +3436,8 @@ const ROW_ARGS_DECODE_LABEL = /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),sch
 
 export interface RouteExpressionKeyRow {
   args: readonly FunctionArgument[];
+  /** Compiler-owned row arguments which are not encoded as public handler inputs. */
+  internalArgs?: Readonly<Record<string, FunctionArgument>>;
   /** Source row template before runtime loop/conditional expansion. */
   sourceLogicalIndex?: number;
   /** Source loop occurrence represented by this physical route row. */
@@ -4188,6 +4197,36 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const executionArtifact = delegateExecution?.artifact ?? this.inner.artifact;
     const capability = executionArtifact.messageBus;
     if (!capability) throw new Error('This artifact does not advertise a message-bus route');
+    const effectiveRowArguments = rowArguments?.map((row) => ({
+      ...row,
+      args: [...row.args],
+      internalArgs: { ...(row.internalArgs ?? {}) },
+    }));
+    const resolvedCallerInternalWitnesses: Record<string, FunctionArgument> = { ...internalRouteWitnesses };
+    for (const input of capability.route.inputs) {
+      const permutationSpec = vmapCounterPermutationSpec(input.name);
+      if (!permutationSpec || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
+      const rows = effectiveRowArguments?.filter((row) =>
+        row.handler.inputs.some((candidate) => candidate.name === input.name)) ?? [];
+      if (rows.length !== 1) {
+        throw new Error(rows.length === 0
+          ? `message-bus counter permutation '${input.name}' has no selected source row`
+          : 'A message-bus envelope with counter-keyed mapping loops in multiple selected rows requires '
+            + 'row-scoped journal settlement; split the rows into separate transactions.');
+      }
+      const row = rows[0];
+      const visible = visibleHandlerInputs(row.handler.inputs);
+      const countIndex = visible.findIndex((candidate) => candidate.name === permutationSpec.countName);
+      const countValue = countIndex < 0 ? undefined : row.args[countIndex];
+      const count = countValue === undefined ? -1n : BigInt(countValue as bigint | number | string);
+      if (count < 0n || count > 64n) {
+        throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument between 0 and 64`);
+      }
+      const iterationCount = permutationSpec.postTest && count === 0n ? 1n : count;
+      const permutation = Array.from({ length: Number(iterationCount) }, (_unused, index) => BigInt(index));
+      (row.internalArgs as Record<string, FunctionArgument>)[input.name] = permutation;
+      resolvedCallerInternalWitnesses[input.name] = permutation;
+    }
     const expectedWitnesses = capability.route.inputs
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__')).length;
     if (routeWitnesses.length !== expectedWitnesses) {
@@ -4200,7 +4239,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const routeArgs = capability.route.inputs.map((input): FunctionArgument => {
       if (input.name === 'batchBlob') return blob;
       if (input.name.startsWith('__internal__')) {
-        const value = internalRouteWitnesses[input.name];
+        const value = resolvedCallerInternalWitnesses[input.name];
         if (value !== undefined) return value;
         if (input.name === '__internal__activeVerifierIndex') return -1n;
         // A negative value preserves the compiler's layout-relative continuation band. Builders that relocate
@@ -4232,7 +4271,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           name: input.name,
           value: routeArgs[index] instanceof Uint8Array ? binToHex(routeArgs[index] as Uint8Array) : String(routeArgs[index]),
         })),
-        internalRouteWitnesses: Object.fromEntries(Object.entries(internalRouteWitnesses)
+        internalRouteWitnesses: Object.fromEntries(Object.entries(resolvedCallerInternalWitnesses)
           .map(([name, value]) => [name, value instanceof Uint8Array ? binToHex(value) : String(value)])),
       }));
     }
@@ -4413,8 +4452,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       .messageBusActiveEntryOperations = activeRouteEntryOperations;
     (effectiveRoute as MessageBusRuntimeAbiFunction)
       .messageBusActiveWriteCollections = activeRouteWriteCollections;
-    if (rowArguments !== undefined) {
-      (effectiveRoute as MessageBusRuntimeAbiFunction).messageBusRowArguments = rowArguments;
+    if (effectiveRowArguments !== undefined) {
+      (effectiveRoute as MessageBusRuntimeAbiFunction).messageBusRowArguments = effectiveRowArguments;
     }
     const graphBlockhashSelections = selectGraphBlockhashReads(executionArtifact, blob);
     if (graphBlockhashSelections.length > 0) {
@@ -4441,11 +4480,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // first hidden graph input into the wrong ABI slot.
         args: [blob, ...routeWitnesses],
         logicalSelectors: reachedHandlers.map((handler) => handler.selector),
-        ...(rowArguments !== undefined && {
-          rowArguments: rowArguments.map((row, index) => ({
+        ...(effectiveRowArguments !== undefined && {
+          rowArguments: effectiveRowArguments.map((row, index) => ({
             ...row,
             selector: row.handler.selector ?? reachedHandlers[index]?.selector ?? '',
             args: [...row.args],
+            internalArgs: { ...(row.internalArgs ?? {}) },
           })),
         }),
         // Keep the compiler route's positional frame visible-only and carry every hidden ABI value by name.
@@ -13578,20 +13618,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // witness from the public bound: [0..n) sorted by the same full-width slot hash used by the covenant. The lowered
     // body uses perm[physical_i] everywhere the source used logical i, so key and derived value stay paired.
     for (const input of abiFunction?.inputs ?? []) {
-      const m = input.name.match(/^__internal__vmapCounterPerm_(.+)_(\d+)$/);
-      if (!m) continue;
-      const countIdx = abiFunction!.inputs.findIndex((p) => p.name === m[1]);
+      const permutationSpec = vmapCounterPermutationSpec(input.name);
+      if (!permutationSpec) continue;
+      const hiddenIdx = abiFunction!.inputs.findIndex((p) => p.name === input.name);
+      // A compiler route derives this row-owned witness before entering the ordinary builder. It is already in
+      // the complete route argument frame, so do not look for the source bound on the wrapper ABI (`n` lives in
+      // the authenticated row blob, not as a route parameter).
+      if (Array.isArray(args[hiddenIdx])) continue;
+      const countIdx = abiFunction!.inputs.findIndex((p) => p.name === permutationSpec.countName);
       const count = countIdx >= 0 ? BigInt(args[countIdx]) : -1n;
-      if (count < 0n || count > 10000n) {
-        throw new Error(`vmap counter loop bound '${m[1]}' must be between 0 and 10000`);
+      if (count < 0n || count > 64n) {
+        throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be between 0 and 64`);
       }
-      const perm = Array.from({ length: Number(count) }, (_, i) => BigInt(i));
+      const iterationCount = permutationSpec.postTest && count === 0n ? 1n : count;
+      const perm = Array.from({ length: Number(iterationCount) }, (_, i) => BigInt(i));
       perm.sort((a, b) => {
         const av = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(a)]));
         const bv = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(b)]));
         return av < bv ? -1 : av > bv ? 1 : 0;
       });
-      const hiddenIdx = abiFunction!.inputs.findIndex((p) => p.name === input.name);
       args[hiddenIdx] = perm;
       finalArgs = [...finalArgs, perm];
     }
@@ -15084,36 +15129,60 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ?? entryCompilerRoute?.rowArguments
       ?? []
     ).filter((row) => (row.handler.sortedUpsertLoopInfo?.length ?? 0) > 0);
+    const selectedRowArgument = (row: RouteExpressionKeyRow, name: string): unknown => {
+      if (name.startsWith('__internal__')) return row.internalArgs?.[name];
+      const inputs = visibleHandlerInputs(row.handler.inputs);
+      const index = inputs.findIndex((input) => input.name === name);
+      return index < 0 ? undefined : row.args[index];
+    };
     const activeSelectedUpsertRows = selectedUpsertRows.filter((row) => (
       row.handler.sortedUpsertLoopInfo ?? []
     ).some((info) => {
-      const inputIndex = row.handler.inputs.findIndex((input) => input.name === info.varyingArrayParam);
-      const value = inputIndex < 0 ? undefined : row.args[inputIndex];
+      const value = selectedRowArgument(row, info.varyingArrayParam);
       return !Array.isArray(value) || value.length > 0;
     }));
-    if ((entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) === 0
-      && activeSelectedUpsertRows.length > 1) {
+    if (activeSelectedUpsertRows.length > 1) {
       throw new Error(
         'A message-bus envelope with runtime mapping loops in multiple selected rows requires '
         + 'journalled predecessor planning; split the rows into separate transactions.',
       );
     }
-    const upsertPlanningFrames = (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
-      ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false }]
-      : activeSelectedUpsertRows.map((row) => ({
+    const upsertPlanningFrames = selectedUpsertRows.length > 0
+      ? activeSelectedUpsertRows.map((row) => ({
         abiFunction: row.handler,
         args: row.args as FunctionArgument[],
         routed: true,
-      }));
+        row,
+      }))
+      : (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
+        ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false, row: undefined }]
+        : [];
     for (const upsertFrame of upsertPlanningFrames) {
       const loopAbiFunction = upsertFrame.abiFunction;
       const loopArgs = upsertFrame.args;
       const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
         if (upsertFrame.routed) {
-          throw new Error(
-            `Message-bus runtime loop in '${loopAbiFunction.name}' requires argument reordering; `
-            + 'split this invocation into an order already accepted by the collection topology.',
-          );
+          const input = loopAbiFunction.inputs[index];
+          if (!input?.name.startsWith('__internal__')) {
+            throw new Error(
+              `Message-bus runtime loop in '${loopAbiFunction.name}' requires public argument reordering; `
+              + 'split this invocation into an order already accepted by the collection topology.',
+            );
+          }
+          const mutableInternal = upsertFrame.row!.internalArgs as Record<string, FunctionArgument>;
+          mutableInternal[input.name] = value;
+          const routeIndex = entryAbiFunction!.inputs.findIndex((candidate) => candidate.name === input.name);
+          if (routeIndex < 0) {
+            throw new Error(`Message-bus route is missing compiler-owned loop argument '${input.name}'`);
+          }
+          entryArgs[routeIndex] = value;
+          if (entryCompilerRoute) {
+            entryCompilerRoute.internalArgs = { ...entryCompilerRoute.internalArgs, [input.name]: value };
+          } else {
+            args[routeIndex] = value;
+            finalArgs[routeIndex] = value;
+          }
+          return;
         }
         loopArgs[index] = value;
         finalArgs[index] = value;
@@ -15129,6 +15198,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const list = SortedList.fromUtxos(entries);
       const argOf = (name: string | undefined): unknown => {
         if (!name) return undefined;
+        if (upsertFrame.routed) return selectedRowArgument(upsertFrame.row!, name);
         const i = loopAbiFunction.inputs.findIndex((p) => p.name === name);
         return i >= 0 ? loopArgs[i] : undefined;
       };
@@ -24137,6 +24207,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       && (entryAccesses?.length ?? 0) === 0
       && (entryAbiFunction?.entryLoopWrites?.length ?? 0) === 0
       && (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) === 0
+      // A kernel route owns no mapping metadata itself: selected row metadata materializes directly as physical
+      // loop-entry variables above. Those variables are the authoritative derivation plan even when every wrapper
+      // metadata list is empty; skipping here would publish link-only placeholder commitments for computed values.
+      && loopEntryVars.length === 0
       && emitInfos.length === 0
       && derivTransferCount === 0
       && (derivTokenOps?.length ?? 0) === 0

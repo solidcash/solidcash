@@ -198,7 +198,7 @@ describe('Release 1 scalar journal lowering', () => {
     ]));
     expect(artifact.invocationAnalysis?.functions).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        name: '__message_bus_graph_approve',
+        name: '__message_bus_entry_approve',
         effects: ['events'],
       }),
       expect.objectContaining({

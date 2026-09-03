@@ -105,9 +105,10 @@ export interface CompilerOptions {
   // Omitted preserves the compact local-caller route used by standalone batching.
   messageBusGraphContext?: boolean;
   /**
-   * Require the kernel calling convention (`packages/solidc/docs/message-bus-kernel.md`). Ineligible
-   * handlers publish `KERNEL_*` reasons instead of the legacy admission catalog. Omitted keeps today's
-   * clone/unroll path for contracts that are not kernel-shaped.
+   * Select the message-bus calling convention (`packages/solidc/docs/message-bus-kernel.md`).
+   * Omitted or `true` uses the kernel row loop. `false` is a temporary compatibility escape hatch for
+   * reproducing the historical clone/unroll route. Kernel-ineligible handlers publish `KERNEL_*` reasons;
+   * the resolved convention is published on `artifact.messageBus`.
    */
   messageBusKernel?: boolean;
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
@@ -882,6 +883,13 @@ export interface Artifact {
   messageBus?: {
     version: 1;
     selector: '53434231';
+    /**
+     * Resolved dispatch of the published route. `kernel-row-loop` only when compiled with
+     * `messageBusKernel: true` and every dispatched handler is kernel-shaped.
+     */
+    convention?: 'legacy-unroll' | 'kernel-row-loop';
+    /** False when every handler was refused and the published route is a non-executable stub. */
+    available?: boolean;
     minimumRows?: number;
     maximumRows: number;
     maximumBlobBytes: number;

@@ -9,6 +9,8 @@ import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { alicePkh } from '../../fixture/vars.js';
 import { createTestProvider, genesisFtContainer, setupStatefulUtxos } from '../../test-util.js';
 
+const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
+
 const SOURCE = `pragma solidcash ^0.13.0;
 contract KernelLedger() {
   mapping(bytes20 => int) balances;
@@ -27,7 +29,7 @@ contract KernelLedger() {
 describe('kernel cutover mapping compose', () => {
   it('evaluates two logical credit rows on the same mapping entry', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(SOURCE, { forceStateful: true, messageBus: true });
+    const artifact = compileString(SOURCE, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'credit')?.eligible).toBe(true);
     const routeBody = artifact.functionBodies?.['53434231'];
     expect(routeBody).toBeDefined();
@@ -58,7 +60,7 @@ describe('kernel cutover mapping compose', () => {
 
   it('fails closed for an unknown row selector and for too many rows', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(SOURCE, { forceStateful: true, messageBus: true });
+    const artifact = compileString(SOURCE, KERNEL);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -113,7 +115,7 @@ const aliceP2pkh = new Uint8Array([0x76, 0xa9, 0x14, ...alicePkh, 0x88, 0xac]);
 describe('kernel cutover token-container compose', () => {
   it('evaluates two logical FT send rows on a 1:1 kernel block', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(TOKEN_SOURCE, { forceStateful: true, messageBus: true });
+    const artifact = compileString(TOKEN_SOURCE, KERNEL);
     expect(artifact.messageBus?.version).toBe(1);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'send')?.eligible).toBe(true);
     const routeBody = artifact.functionBodies?.['53434231'];
@@ -180,7 +182,7 @@ describe('kernel cutover token-container compose', () => {
 
   it('fails closed for an unknown row selector and for too many rows', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(TOKEN_SOURCE, { forceStateful: true, messageBus: true });
+    const artifact = compileString(TOKEN_SOURCE, KERNEL);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },

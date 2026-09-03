@@ -310,7 +310,7 @@ contract C {
     expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
   });
 
-  it('refuses a counter-keyed mapping loop that also makes a typed call as KERNEL_UNBOUNDED_KEY', () => {
+  it('dispatches a counter-keyed mapping loop that also makes a typed call from the row loop', () => {
     const artifact = compileString(`
 pragma solidcash ^0.13.0;
 interface I { function r(int i); }
@@ -327,11 +327,11 @@ contract Slots() {
   function control() public { require(true); }
 }
 `, OPTIONS);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
   });
 
   it('dispatches using-for Address.sendValue from the runtime row loop', () => {
@@ -415,7 +415,7 @@ contract Slots() {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
-  it('journals a do-while counter-keyed mapping-only loop on the row loop', () => {
+  it('journals a do-while counter-keyed mapping loop on the row loop', () => {
     const artifact = assertKernelRoute(`
 pragma solidcash ^0.13.0;
 contract Slots() {
@@ -429,12 +429,12 @@ contract Slots() {
 }
 `, 'denied');
     expect(artifact.messageBus?.route.inputs.some((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+      input.name.startsWith('__internal__vmapCounterPerm_') && input.name.endsWith('_post'))).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a do-while counter-keyed mapping loop that also makes a typed call as KERNEL_UNBOUNDED_KEY',
-    () => {
-      const artifact = compileString(`
+  it('dispatches a do-while counter-keyed mapping loop with a typed call from the row loop', () => {
+    const artifact = assertKernelRoute(`
 pragma solidcash ^0.13.0;
 interface I { function r(int i); }
 contract Slots() {
@@ -447,13 +447,13 @@ contract Slots() {
   }
   function control() public { require(true); }
 }
-`, OPTIONS);
-      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-        eligible: false,
-        rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-      });
-      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
-    });
+`, 'denied');
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_') && input.name.endsWith('_post'))).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
 
   it('journals fallback that wraps a UDVT mapping key on the row loop', () => {
     const artifact = compileString(`
@@ -1217,7 +1217,36 @@ contract C {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
   });
 
-  it('keeps a public struct getter off the kernel route as KERNEL_LAYOUT', () => {
+  it('journals a nested counter-keyed mapping write on the row loop', () => {
+    assertKernelRoute(`
+pragma solidcash ^0.13.0;
+contract C() {
+  mapping(int => mapping(int => int)) m;
+  function denied(int k, int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.m[k][i] = 1; }
+    require(true);
+  }
+  function control() public { require(true); }
+}
+`, 'denied');
+  });
+
+  it('captures a returning enum encoded as int on the row loop', () => {
+    const artifact = compileString(`
+pragma solidcash ^0.13.0;
+enum Status { A, B }
+contract C() {
+  Status st;
+  function denied() public returns (Status) { return this.st; }
+  function control() public { require(true); }
+}
+`, OPTIONS);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
+  });
+
+  it('captures a public struct getter as its Solidity field tuple on the kernel route', () => {
     const artifact = compileString(`
 pragma solidity ^0.8.0;
 struct Rec { uint x; address y; }
@@ -1228,10 +1257,12 @@ contract C {
 }
 `, { ...OPTIONS, solidityImportCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'rec')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
+      outputs: [{ type: 'uint256' }, { type: 'address' }],
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(routeAsm(artifact)).toMatch(/OP_UNTIL|OP_BEGIN/);
   });
 
   it('journals a SolidCash dynamic-array element delete on the row loop', () => {

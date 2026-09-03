@@ -3861,7 +3861,12 @@ export interface ExternalCallUtxoGroup {
     /** Logical handler selectors already executed by this physical route owner. */
     logicalSelectors: string[];
     /** Decoded Solidity-visible arguments for each authenticated logical row. */
-    rowArguments?: Array<{ selector: string; args: any[]; handler: AbiFunction }>;
+    rowArguments?: Array<{
+      selector: string;
+      args: any[];
+      handler: AbiFunction;
+      internalArgs?: Readonly<Record<string, any>>;
+    }>;
     internalArgs?: Record<string, any>;
     eventSignaturesBySlot?: Array<string | undefined>;
   };
@@ -3880,7 +3885,12 @@ export interface ExternalCallUtxoGroup {
   refreshFunctionArgs?: (args: any[]) => void;
   /** Recompute hidden witnesses derived from a route's visible row arguments (for example, replayed array pushes). */
   refreshRouteDerivedArguments?: (
-    rowArguments: readonly { selector: string; args: any[]; handler: AbiFunction }[] | undefined,
+    rowArguments: readonly {
+      selector: string;
+      args: any[];
+      handler: AbiFunction;
+      internalArgs?: Readonly<Record<string, any>>;
+    }[] | undefined,
     finalVisibleArgs: readonly any[],
   ) => { internalArgs: Record<string, any>; payloadBytes: number };
   /** The carrier master unlocker changed during the current dependency-convergence pass. */
@@ -7110,7 +7120,8 @@ export class StatefulTransactionBuilder {
             nft: { capability: 'mutable' as const, commitment },
           },
         };
-        entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
+        entryOutput.amount = this._loopEntryTransitionSatoshis(lv, commitment)
+          ?? BigInt(Math.max(1200, calculateDust(entryOutput)));
         builder.outputs[outputIndex] = entryOutput;
         outputIndex += 1;
       }
@@ -10095,6 +10106,29 @@ export class StatefulTransactionBuilder {
   }
 
   /**
+   * A runtime mapping loop emits both recreations (an UPDATE or re-pointed predecessor P') and genuinely new
+   * entries through the same trailing commitment list. Match recreations by their authenticated entry slot and
+   * covenant address so they retain the consumed NFT's satoshis; only NEW entries should be funded at dust.
+   */
+  private _loopEntryTransitionSatoshis(
+    variable: (typeof this.loopEntryVars)[number], commitment: string,
+  ): bigint | undefined {
+    const outputCommitment = commitment.toLowerCase();
+    if (outputCommitment.length < 64) return undefined;
+    const categoryId = variable.categoryId ?? this.categoryId;
+    const lockingBytecode = binToHex(variable.lockingBytecode);
+    const input = this.insertLoopPredecessorInputs.find((candidate) => {
+      const inputCommitment = commitmentHexOf(candidate.token?.nft?.commitment).toLowerCase();
+      return candidate.token?.category === categoryId
+        && candidate.token.nft?.capability === 'mutable'
+        && inputCommitment.length >= 64
+        && inputCommitment.slice(0, 64) === outputCommitment.slice(0, 64)
+        && binToHex(candidate.unlocker.generateLockingBytecode()) === lockingBytecode;
+    });
+    return input?.satoshis;
+  }
+
+  /**
    * Output index where loop entry NFTs begin. They share the trailing region with dynamic chunks (mutually
    * exclusive in a given function by construction), placed after any chunk outputs. A compiler-routed delegate
    * executes against its authenticated participant owner, so its loop entries remain inside that owner's declared
@@ -11061,7 +11095,8 @@ export class StatefulTransactionBuilder {
               nft: { capability: 'mutable' as const, commitment },
             },
           };
-          entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
+          entryOutput.amount = this._loopEntryTransitionSatoshis(lv, commitment)
+            ?? BigInt(Math.max(1200, calculateDust(entryOutput)));
           // Earlier composed participant/identity outputs may already have been materialized. The implementation
           // covenant owns an absolute master-relative loop coordinate, so insert at that coordinate rather than
           // appending after whichever caller outputs happened to be built first.
@@ -12192,7 +12227,8 @@ export class StatefulTransactionBuilder {
             token: { amount: 0n, category: lv.categoryId ?? this.categoryId,
               nft: { capability: 'mutable' as const, commitment } },
           };
-          entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
+          entryOutput.amount = this._loopEntryTransitionSatoshis(lv, commitment)
+            ?? BigInt(Math.max(1200, calculateDust(entryOutput)));
           builder.addOutput(entryOutput);
         }
       }
@@ -12319,7 +12355,8 @@ export class StatefulTransactionBuilder {
             nft: { capability: 'mutable' as const, commitment },
           },
         };
-        entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
+        entryOutput.amount = this._loopEntryTransitionSatoshis(lv, commitment)
+          ?? BigInt(Math.max(1200, calculateDust(entryOutput)));
         builder.addOutput(entryOutput);
       }
     }
@@ -12415,7 +12452,8 @@ export class StatefulTransactionBuilder {
             nft: { capability: 'mutable' as const, commitment },
           },
         };
-        entryOutput.amount = BigInt(Math.max(1200, calculateDust(entryOutput)));
+        entryOutput.amount = this._loopEntryTransitionSatoshis(lv, commitment)
+          ?? BigInt(Math.max(1200, calculateDust(entryOutput)));
         builder.addOutput(entryOutput);
       }
     }

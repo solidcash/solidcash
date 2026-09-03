@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from '../../src/compiler.js';
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 
 const denied = (source: string, name: string): NonNullable<
-  ReturnType<typeof compileString>['messageBus']
+ReturnType<typeof compileString>['messageBus']
 >['handlers'][number] => {
   const artifact = compileString(source, KERNEL);
   const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
@@ -24,9 +25,20 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('refuses a transaction signature row as KERNEL_TX_SIGNATURE', () => {
+  it('binds a scalar transaction signature as a row-aligned route witness', () => {
+    const artifact = compileString(`contract C(pubkey owner) {
+      function signed(sig s) public { require(checkSig(s, owner)); }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed')?.eligible).toBe(true);
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_rows', type: 'sig[]',
+    }));
+  });
+
+  it('refuses a transaction signature-array row as KERNEL_TX_SIGNATURE', () => {
     expect(denied(`contract C() {
-      function denied(sig s) public { require(true); }
+      function denied(sig[] signatures) public { require(true); }
       function control() public { require(true); }
     }`, 'denied')).toMatchObject({
       eligible: false,
@@ -48,6 +60,43 @@ describe('required kernel admission', () => {
     });
     expect(artifact.messageBus?.route.inputs.some((input) =>
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+  });
+
+  it('permutes counter uses inside pure helper and builtin mapping values', () => {
+    for (const value of ['twice(i)', 'max(i, 10)']) {
+      const artifact = compileString(`contract C() {
+        mapping(int => int) slots;
+        function twice(int value) internal pure returns (int) { return value * 2; }
+        function fill(int n) public {
+          for (int i = 0; i < n; i = i + 1) { slots[i] = ${value}; }
+          require(true);
+        }
+      }`, KERNEL);
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill')?.eligible).toBe(true);
+      expect(artifact.messageBus?.route.inputs.some((input) =>
+        input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+    }
+  });
+
+  it('does not reorder an effectful helper used as a counter-loop mapping value', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      int calls;
+      function next(int value) internal returns (int) {
+        this.calls = this.calls + 1;
+        return value;
+      }
+      function denied(int n) public {
+        for (int i = 0; i < n; i = i + 1) { slots[i] = next(i); }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
   it('admits an expression-keyed mapping write', () => {
@@ -213,7 +262,167 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('refuses a public enum getter as KERNEL_LAYOUT and keeps siblings', () => {
+  it.each([
+    ['a nonzero counter start', 'for (int i = 1; i < n; i = i + 1) { this.m[i] = i; }'],
+    ['a non-unit counter step', 'for (int i = 0; i < n; i = i + 2) { this.m[i] = i; }'],
+    ['an extra post-test counter mutation', `int i = 0; do {
+      this.m[i] = i; i = n; i = i + 1;
+    } while (i < n);`],
+    ['a mutated public bound', `n = n - 1;
+      for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }`],
+    ['a local rather than public bound', 'int limit = n; for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }'],
+    ['a counter-dependent write guard', `for (int i = 0; i < n; i = i + 1) {
+      if (i < 2) this.m[i] = 1; else this.m[i] = 2;
+    }`],
+    ['a sibling read of the mutated mapping', `for (int i = 0; i < n; i = i + 1) {
+      int before = this.m[0]; this.m[i] = before + 1;
+    }`],
+  ])('refuses %s as KERNEL_UNBOUNDED_KEY and preserves an eligible sibling', (_label, loop) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n) public { ${loop} require(true); }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses an early return from a counter-keyed mapping loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n) public returns (int) {
+        for (int i = 0; i < n; i = i + 1) {
+          if (i == 2) return i;
+          this.m[i] = i;
+        }
+        require(true);
+        return n;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it.each([
+    ['a loop-local value alias', 'int value = i + 10; this.a[i] = value;'],
+    ['a loop-carried local value', 'running = running + 1; this.a[i] = running;'],
+    ['loop-carried scalar state', 'this.total = this.total + 1; this.a[i] = this.total;'],
+    ['a counter-dependent read from another mapping', 'this.a[i] = this.b[i];'],
+  ])('refuses a canonical counter loop with %s', (_label, statement) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a;
+      mapping(int => int) b;
+      int total;
+      function denied(int n) public {
+        int running = 0;
+        for (int i = 0; i < n; i = i + 1) { ${statement} }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses two independently settled counter loops in one handler', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a;
+      function denied(int n) public {
+        for (int i = 0; i < n; i = i + 1) { this.a[i] = 1; }
+        for (int j = 0; j < n; j = j + 1) { this.a[j] = 2; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.inputs.filter((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(0);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses an invariant mapping write beside a counter-keyed write in the physical loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) keyed;
+      mapping(int => int) invariant;
+      function denied(int n, int owner) public {
+        for (int i = 0; i < n; i = i + 1) { this.keyed[i] = i; this.invariant[owner] = i; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(false);
+  });
+
+  it('refuses one permutation for mapping writes with different composite key tuples', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) a;
+      mapping(int => mapping(int => int)) b;
+      function denied(int n, int left, int right) public {
+        for (int i = 0; i < n; i = i + 1) { this.a[left][i] = 1; this.b[right][i] = 2; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(false);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it.each([
+    ['a loop-carried local guard', `bool take = true;
+      for (int i = 0; i < n; i = i + 1) {
+        if (take) this.m[i] = i;
+        take = !take;
+      }`],
+    ['a loop-defined alias guard', `for (int i = 0; i < n; i = i + 1) {
+        bool take = i < 2;
+        if (take) this.m[i] = i;
+      }`],
+    ['the counter in two composite-key positions', `for (int i = 0; i < n; i = i + 1) {
+        this.nested[i][i] = 1;
+      }`],
+    ['the counter in an additional composite-key expression', `for (int i = 0; i < n; i = i + 1) {
+        this.nested[i + 1][i] = 1;
+      }`],
+  ])('refuses one physical permutation with %s', (_label, body) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      mapping(int => mapping(int => int)) nested;
+      function denied(int n) public { ${body} require(true); }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(false);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('admits a public enum getter encoded as int', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       enum Status { A, B }
       contract C {
@@ -221,15 +430,12 @@ describe('required kernel admission', () => {
         function denied() public { last = Status.B; require(true); }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'last')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'last')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a Rec[] result as KERNEL_LAYOUT and keeps siblings', () => {
+  it('captures a Rec[] result through the recursive ABI encoder', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Rec { uint x; }
       contract C {
@@ -237,10 +443,23 @@ describe('required kernel admission', () => {
         function denied() public view returns (Rec[] memory) { return jobs; }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('captures an enum[] result through unsigned ABI words', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      enum Status { A, B }
+      contract C {
+        function denied() public pure returns (Status[] memory) {
+          Status[] memory values = new Status[](2);
+          values[0] = Status.A;
+          values[1] = Status.B;
+          return values;
+        }
+        function control() public { require(true); }
+      }`, { ...KERNEL, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
@@ -328,7 +547,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
   });
 
-  it('refuses a counter-keyed mapping loop that also makes a typed call as KERNEL_UNBOUNDED_KEY', () => {
+  it('admits a counter-keyed mapping loop that also makes a typed call', () => {
     const artifact = compileString(`interface I { function r(int i); }
       contract C() {
         mapping(int => int) m;
@@ -339,10 +558,9 @@ describe('required kernel admission', () => {
         }
         function control() public { require(true); }
       }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
@@ -413,7 +631,7 @@ describe('required kernel admission', () => {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
-  it('admits a do-while counter-keyed mapping-only loop', () => {
+  it('admits a do-while counter-keyed mapping loop with a max(n, 1) permutation', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function denied(int n) public {
@@ -425,28 +643,27 @@ describe('required kernel admission', () => {
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.route.inputs.some((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+      input.name.startsWith('__internal__vmapCounterPerm_') && input.name.endsWith('_post'))).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a do-while counter-keyed mapping loop that also makes a typed call as KERNEL_UNBOUNDED_KEY',
-    () => {
-      const artifact = compileString(`interface I { function r(int i); }
-        contract C() {
-          mapping(int => int) m;
-          address dest;
-          function denied(int n) public {
-            int i = 0;
-            do { this.m[i] = 1; I(this.dest).r(i); i = i + 1; } while (i < n);
-            require(true);
-          }
-          function control() public { require(true); }
-        }`, KERNEL);
-      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-        eligible: false,
-        rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-      });
-      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
-    });
+  it('admits a do-while counter-keyed mapping loop beside a typed call', () => {
+    const artifact = compileString(`interface I { function r(int i); }
+      contract C() {
+        mapping(int => int) m;
+        address dest;
+        function denied(int n) public {
+          int i = 0;
+          do { this.m[i] = 1; I(this.dest).r(i); i = i + 1; } while (i < n);
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_') && input.name.endsWith('_post'))).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
 
   it('admits fallback that wraps a UDVT mapping key', () => {
     const artifact = compileString(`type TokenId is bytes32;
@@ -517,15 +734,205 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it('admits a nested counter-keyed mapping write m[k][i]', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) m;
+      function denied(int k, int n) public {
+        for (int i = 0; i < n; i = i + 1) { this.m[k][i] = 1; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.route.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+  });
+
+  it('admits a counter-keyed mapping write inside if/else', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n, bool yes) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (yes) this.m[i] = 1; else this.m[i] = 2;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+  });
+
+  it('refuses a repeated event inside a counter-keyed mapping loop', () => {
+    const artifact = compileString(`event Hit(int i);
+      contract C() {
+        mapping(int => int) m;
+        function denied(int n) public {
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = 1; emit Hit(i); }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses a repeated BCH transfer inside a counter-keyed mapping loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n, bytes to) public {
+        for (int i = 0; i < n; i = i + 1) { this.m[i] = 1; this.transfer(to, 1); }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses a repeated token transfer inside a counter-keyed mapping loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n, bytes32 category, bytes to) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.m[i] = 1;
+          this.tokens[category].transfer(to, 1);
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('admits a returning enum encoded as int', () => {
+    const artifact = compileString(`enum Status { A, B }
+      contract C() {
+        Status st;
+        function denied() public returns (Status) { return this.st; }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
   it('leaves legacy reasons on non-kernel compiles', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract C() {
         function opaque() public { assembly { OP_1 OP_DROP } require(true); }
         function control() public { require(true); }
-      }`, { forceStateful: true, messageBus: true });
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: false });
     expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'opaque')).toMatchObject({
       eligible: false,
       rejectionReason: 'opaque-assembly-effects-callManifest-ineligible',
     });
+    expect(artifact.messageBus?.convention).toBe('legacy-unroll');
+    expect(artifact.compiler.options?.messageBusKernel).toBe(false);
+  });
+
+  const RETURNING = `contract Acc() {
+    int x;
+    function add(int n) public {
+      this.x = this.x + n;
+      require(true);
+    }
+    function get() public returns (int) {
+      return this.x;
+    }
+  }`;
+
+  const selectorPushCount = (artifact: ReturnType<typeof compileString>, selectorHex: string): number => {
+    const body = artifact.functionBodies?.['53434231'];
+    expect(body).toBeDefined();
+    const haystack = bytecodeToAsm(Uint8Array.from(Buffer.from(body!, 'hex'))).replace(/\s+/g, '').toLowerCase();
+    const needle = selectorHex.toLowerCase();
+    let count = 0;
+    let from = 0;
+    while (from < haystack.length) {
+      const at = haystack.indexOf(needle, from);
+      if (at < 0) break;
+      count += 1;
+      from = at + needle.length;
+    }
+    return count;
+  };
+
+  it('dispatches returning handlers from the row loop when the kernel flag is omitted', () => {
+    const artifact = compileString(RETURNING, { forceStateful: true, messageBus: true });
+    const get = artifact.messageBus?.handlers.find((handler) => handler.name === 'get');
+    expect(get?.eligible).toBe(true);
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.compiler.options?.messageBusKernel).toBe(true);
+    expect(selectorPushCount(artifact, get!.selector)).toBe(1);
+  });
+
+  it('keeps returning handlers on the legacy unroll when the kernel flag is false', () => {
+    const artifact = compileString(RETURNING, {
+      forceStateful: true, messageBus: true, messageBusKernel: false,
+    });
+    const get = artifact.messageBus?.handlers.find((handler) => handler.name === 'get');
+    expect(get?.eligible).toBe(true);
+    expect(artifact.messageBus?.convention).toBe('legacy-unroll');
+    expect(artifact.compiler.options?.messageBusKernel).toBe(false);
+    expect(selectorPushCount(artifact, get!.selector)).toBe(0);
+  });
+
+  it('dispatches returning handlers from one row loop when the kernel flag is explicitly true', () => {
+    const artifact = compileString(RETURNING, KERNEL);
+    const get = artifact.messageBus?.handlers.find((handler) => handler.name === 'get');
+    expect(get?.eligible).toBe(true);
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.available).toBe(true);
+    expect(artifact.compiler.options?.messageBusKernel).toBe(true);
+    expect(selectorPushCount(artifact, get!.selector)).toBe(1);
+  });
+
+  it('rejects this.activeBytecode on the legacy path and admits it on the kernel path', () => {
+    const source = `contract C() {
+      function bound(bytes expected) public { require(this.activeBytecode == expected); }
+      function control() public { require(true); }
+    }`;
+    const legacy = compileString(source, {
+      forceStateful: true, messageBus: true, messageBusKernel: false,
+    });
+    expect(legacy.messageBus!.handlers.find((handler) => handler.name === 'bound')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'direct-versus-batch-introspection-divergence',
+    });
+    const kernel = compileString(source, KERNEL);
+    expect(kernel.messageBus!.handlers.find((handler) => handler.name === 'bound')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('keeps distinct parameter keys on one mapping as distinct physical slots', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function setBoth(int a, int b) public { this.m[a] = 1; this.m[b] = 2; require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const setBoth = artifact.messageBus?.handlers.find((handler) => handler.name === 'setBoth');
+    expect(setBoth?.eligible).toBe(true);
+    expect(setBoth?.physicalEntrySlots).toEqual([0, 1]);
+  });
+
+  it('publishes available:false when every kernel handler is refused', () => {
+    const artifact = compileString(`contract C() {
+      function denied() public { assembly { OP_1 OP_DROP } require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.available).toBe(false);
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.every((handler) => handler.eligible === false)).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.rejectionReason)
+      .toBe('KERNEL_OPAQUE_EFFECT');
   });
 });

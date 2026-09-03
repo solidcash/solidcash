@@ -454,6 +454,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   messageBusRoute?: boolean;
+  /** Resolved route dispatch. Stamped at synthesis; published as `artifact.messageBus.convention`. */
+  messageBusDispatch?: 'legacy-unroll' | 'kernel-row-loop';
   messageBusMaximumRows?: number;
   /** Compiler-owned message-bus batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
   messageBusBlockhashReadWidth?: number;

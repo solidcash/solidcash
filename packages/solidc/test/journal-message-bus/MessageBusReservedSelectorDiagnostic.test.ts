@@ -46,17 +46,17 @@ describe('callManifest-v1 static refusal classes', () => {
   it('publishes the stable class and handler identity beside the detailed reason', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract SignatureRefusal() {
-        function signed(sig s, pubkey pk) public { require(checkSig(s, pk)); }
+        function signed(sig[] signatures) public { require(true); }
         function open() public { require(true); }
       }`, { forceStateful: true, messageBus: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed')).toMatchObject({
       eligible: false,
-      rejectionReason: 'transaction-signature-route-binding-required',
-      rejectionCode: 'MESSAGE_BUS_EFFECT_UNSUMMARIZABLE',
+      rejectionReason: 'KERNEL_TX_SIGNATURE',
+      rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
       rejectionContext: {
         handlerId: expect.any(Number),
         functionName: 'signed',
-        reason: 'transaction-signature-route-binding-required',
+        reason: 'KERNEL_TX_SIGNATURE',
         sourceLocation: { line: 3, column: 8 },
         callChain: ['signed'],
       },

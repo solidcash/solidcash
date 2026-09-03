@@ -5,6 +5,7 @@ import {
   assertAbi, abiCase, selCase, sigCase, callCase, abiStructCase, abiStructMixedCase, abiNestedStructCase,
   assertEncodeConformant,
 } from './harness.js';
+import { ethersAbiEncode } from './evm.js';
 
 const MAX = (1n << 256n) - 1n;
 const INT_MIN = -(1n << 255n);
@@ -223,6 +224,69 @@ describe('abi.encode (evmCompat): fixed-width structs (ABI tuple, inline)', () =
     [{ type: 'bytes32', name: 'a' }, { type: 'bool', name: 'b' }], [hb(`0x${'ab'.repeat(32)}`), false]));
   it('struct {int256, int256} mixed sign', () => st(
     [{ type: 'int256', name: 'a' }, { type: 'int256', name: 'b' }], [-5n, 7n]));
+});
+
+describe('abi.encode (evmCompat): dynamic arrays of static structs', () => {
+  it('encodes each struct inline after the array length without element offsets', () => {
+    const expected = ethersAbiEncode(
+      ['tuple(uint256,bool)[]'],
+      [[[7n, true], [9n, false]]],
+    );
+    const solidity = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract C {
+  struct P { uint256 a; bool b; }
+  function f(uint256 x, uint256 y) public pure returns (bytes memory) {
+    P[] memory values = new P[](2);
+    values[0] = P(x, true);
+    values[1] = P(y, false);
+    return abi.encode(values);
+  }
+}`;
+    const scash = `contract Conf() {
+  struct P { uint256 a; bool b; }
+  function f(uint256 x, uint256 y) {
+    P[] values = new P[](2);
+    values[0] = P(x, true);
+    values[1] = P(y, false);
+    require(abi.encode(values) == ${expected});
+  }
+}`;
+    return assertEncodeConformant({
+      solidity, scash, evmFn: 'f', bchFn: 'f', args: [7n, 9n], evmCompat: true,
+      expectedConst: expected, label: 'abi.encode(tuple(uint256,bool)[])',
+    });
+  });
+});
+
+describe('abi.encode (evmCompat): enum arrays', () => {
+  it('encodes enum elements as unsigned ABI words', () => {
+    const expected = ethersAbiEncode(['uint8[]'], [[0n, 1n]]);
+    const solidity = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+contract C {
+  enum Status { A, B }
+  function f() public pure returns (bytes memory) {
+    Status[] memory values = new Status[](2);
+    values[0] = Status.A;
+    values[1] = Status.B;
+    return abi.encode(values);
+  }
+}`;
+    const scash = `contract Conf() {
+  enum Status { A, B }
+  function f() {
+    Status[] values = new Status[](2);
+    values[0] = Status.A;
+    values[1] = Status.B;
+    require(abi.encode(values) == ${expected});
+  }
+}`;
+    return assertEncodeConformant({
+      solidity, scash, evmFn: 'f', bchFn: 'f', args: [], evmCompat: true,
+      expectedConst: expected, label: 'abi.encode(enum[])',
+    });
+  });
 });
 
 describe('abi.encode (evmCompat): dynamic structs (tuple head/tail)', () => {

@@ -409,6 +409,9 @@ function isTerminatingStatement(statement: StatementNode, neverReturn: Set<strin
   if (statement instanceof UncheckedNode) {
     return allPathsTerminate(statement.block.statements ?? [], neverReturn);
   }
+  if (statement instanceof BlockNode) {
+    return allPathsTerminate(statement.statements ?? [], neverReturn);
+  }
   if (statement instanceof SwitchNode) {
     if (!statement.defaultCase) return false;
     return statement.cases.every((c) => allPathsTerminate(c.body.statements, neverReturn))
@@ -447,6 +450,14 @@ function allPathsReturn(
   const statementsWithoutLogs = statements.filter((s) => !(s instanceof ConsoleStatementNode));
   if (statementsWithoutLogs.length === 0) return false;
 
+  // Once a top-level statement terminates on every path, everything after it is unreachable and cannot turn a
+  // returning function into a fall-through function. In particular, journal lowering may insert flushes before
+  // `return` while leaving an author-written dead require after it for the later dead-code transform to remove.
+  // Validate the reachable prefix rather than choosing the syntactically final statement unconditionally.
+  const firstTerminal = statementsWithoutLogs.findIndex((statement) =>
+    isTerminatingStatement(statement, neverReturn));
+  if (firstTerminal >= 0 && firstTerminal < statementsWithoutLogs.length - 1) return true;
+
   const finalStatement = statementsWithoutLogs[statementsWithoutLogs.length - 1];
 
   if (finalStatement instanceof ReturnNode) return true;
@@ -469,6 +480,10 @@ function allPathsReturn(
 
   if (finalStatement instanceof UncheckedNode) {
     return allPathsReturn(finalStatement.block.statements ?? [], neverReturn);
+  }
+
+  if (finalStatement instanceof BlockNode) {
+    return allPathsReturn(finalStatement.statements ?? [], neverReturn);
   }
 
   if (finalStatement instanceof SwitchNode) {

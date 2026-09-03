@@ -376,6 +376,15 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // `token.method{value:}(..)` (interface-typed state var) or `IFoo(a).method(..)` (plain-`address` state var
   // behind an interface cast): rewrite the object to the synthesized __extaddr_ local.
   visitMethodCall(node: MethodCallNode): Node {
+    // Function-pointer array lowering deliberately leaves a broadcast receiver as `IFoo(table[0])` and stamps
+    // selectorArrayVar. It is not one fixed state-derived callee: SymbolTableTraversal uses that array access to
+    // publish the whole-table loop covenant. Hoisting it to one __extaddr_ local erases loopArrayVar and silently
+    // turns the broadcast into a single captured target. Its arguments can still contain ordinary expressions
+    // that this pass must visit, but the receiver itself must retain the compiler-authored array identity.
+    if (node.selectorArrayVar !== undefined) {
+      node.parameters = this.visitList(node.parameters) as ExpressionNode[];
+      return node;
+    }
     const directStateTarget = node.object instanceof IdentifierNode && this.stateVarIface.has(node.object.name)
       ? {
         name: node.object.name,

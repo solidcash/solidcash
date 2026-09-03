@@ -157,6 +157,9 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   commitmentLimit: 128,
   chunkedArrays: true,
   chainId: 0,
+  // The row-loop kernel is the production message-bus convention. An explicit false remains as a temporary
+  // compatibility escape hatch for artifacts which must reproduce the historical clone/unroll ABI.
+  messageBusKernel: true,
 };
 
 function scanSourceImports(code: string): string[] {
@@ -474,6 +477,8 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     // Auto starts enabled so semantic inference (e.g. repeated-owner batching) remains available. Once the AST
     // is parsed, compileWithExternalAdmissionFallback narrows graph-free contracts to direct-only compilation.
     messageBus: messageBusMode !== 'disabled',
+    // An explicitly present `undefined` must not turn a default-on convention back into the legacy path.
+    messageBusKernel: options.messageBusKernel ?? true,
     __messageBusMode: messageBusMode,
     __messageBusExplicitlyDisabled: false,
     // Compiler-owned route locals are generated source and never user-actionable warning locations.
@@ -1222,9 +1227,9 @@ function compileWithExternalAdmissionFallback(
 
 function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const {
-    errorListener, primaryContractName, suppressWarnings = false, compileDeclarations: _compileDeclarations,
-    ...artifactCompilerOptions
+    errorListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
   } = compilerOptions;
+  delete artifactCompilerOptions.compileDeclarations;
   const parsedAst = (compilerOptions as InternalCompilerOptions).__parsedAst;
   delete (artifactCompilerOptions as InternalCompilerOptions).__parsedAst;
   const cacheable = artifactCacheEnabled(artifactCompilerOptions, errorListener, suppressWarnings);
@@ -2350,8 +2355,6 @@ function synthesizeMessageBusRoute(
   const literalNewArraySize = (expression: ExpressionNode | undefined): bigint | undefined =>
     expression instanceof NewArrayNode && expression.size instanceof IntLiteralNode
       ? expression.size.value : undefined;
-  const isZeroLengthNewArray = (expression: ExpressionNode | undefined): boolean =>
-    literalNewArraySize(expression) === 0n;
   const expressionIdentifier = (expression: ExpressionNode): string | undefined => {
     if (expression instanceof IdentifierNode) return expression.name;
     if (expression instanceof CastNode) return expressionIdentifier(expression.expression);
@@ -2600,7 +2603,13 @@ function synthesizeMessageBusRoute(
               || node.operator === NullaryOperator.BYTECODE) {
               // `this.activeInputIndex` and `this.activeBytecode` name this participant's own executing
               // input. Kernel reconstructs neither from the row; the wrapper is the layout owner.
-              routeUsesStableOwnerIntrospection = true;
+              // Legacy batch still diverges from a direct spend, so omit/false stays on the matrix
+              // `direct-versus-batch-introspection-divergence` refusal.
+              if (compilerOptions.messageBusKernel === true) {
+                routeUsesStableOwnerIntrospection = true;
+              } else {
+                routeUsesOtherIntrospection = true;
+              }
             } else if (node.operator === NullaryOperator.TX_ORIGIN) routeUsesTxOrigin = true;
             else routeUsesOtherIntrospection = true;
           }
@@ -2800,6 +2809,8 @@ function synthesizeMessageBusRoute(
         const outgoing = new Set<string>();
         edges.set(name, outgoing);
         for (const candidate of byName.get(name) ?? []) {
+          // Synchronous traversal; `bounded` is the accumulator for this immediately enclosing closure scan.
+          // eslint-disable-next-line @typescript-eslint/no-loop-func
           walkInvocationAst(candidate.body, (node) => {
             const namedInternal = node instanceof FunctionCallNode && byName.has(node.identifier.name);
             if (namedInternal) outgoing.add(node.identifier.name);
@@ -3509,27 +3520,29 @@ function synthesizeMessageBusRoute(
     const visibilityRefusal = attributedRefusal
       ? (attribution?.reasons.get(externalHandlerKey(fn)) ?? 'handler-route-generation-unsupported')
       : fn.visibility !== 'public' && fn.visibility !== 'external'
-      ? 'initial-v1-route-requires-public-visibility'
-      : fn.visibility !== 'external'
-        ? undefined
-        : externalTokenContainer
-          ? 'external-token-container-handler-requires-public-visibility'
+        ? 'initial-v1-route-requires-public-visibility'
+        : fn.visibility !== 'external'
+          ? undefined
+          : externalTokenContainer
+            ? 'external-token-container-handler-requires-public-visibility'
           // X100. The refusal is per HANDLER, not per contract: `admitExternalHandlers` false is the shipped
           // whole-route give-up, and the `refused` set is the attributed form the fallback reaches first.
-          : admitExternalHandlers
-            ? undefined : 'external-handler-route-generation-unsupported';
+            : admitExternalHandlers
+              ? undefined : 'external-handler-route-generation-unsupported';
     if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
     else if (!reason && foreignOutStatePrecedesSharedCall(fn))
       reason = 'foreign-outstate-read-precedes-shared-call-settlement';
     // A transaction signature cannot be placed inside the message-bus envelope: the signature commits the
-    // transaction containing the call manifest, while the call manifest would in turn commit the signature. In
-    // authenticated graph mode `sig` and `sig[]` are instead
-    // positional, per-row route witnesses (generated below) and are verified
-    // by the original handler against the final transaction.
+    // transaction containing the call manifest, while the call manifest would in turn commit the signature.
+    // The kernel can still bind one scalar `sig` per logical row as an aligned `sig[]` positional route witness;
+    // the original handler verifies the selected element against the final transaction. A source `sig[]` would
+    // require a row-indexed array-of-arrays signing template, which the SDK does not yet represent.
     else if (!reason && (
       (signatureCheck || fn.parameters.some((parameter) =>
         ['sig', 'sig[]'].includes(parameter.type.toString())))
-    )) {
+    ) && !(compilerOptions.messageBusKernel === true
+      && fn.parameters.some((parameter) => parameter.type.toString() === 'sig')
+      && fn.parameters.every((parameter) => parameter.type.toString() !== 'sig[]'))) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
       && !(!routeUsesOtherIntrospection
@@ -3579,6 +3592,8 @@ function synthesizeMessageBusRoute(
       const lockingBytecode = new Set<string>(Object.values(Class));
       for (const name of collectNamedFunctionClosure(fn, byName)) {
         for (const candidate of byName.get(name) ?? []) {
+          // Synchronous traversal; `deploys` is the accumulator for this immediately enclosing handler scan.
+          // eslint-disable-next-line @typescript-eslint/no-loop-func
           walkInvocationAst(candidate.body, (node) => {
             // `new LockingBytecodeP2PKH(pkh)` is an InstantiationNode but not a child deploy; it is a
             // compile-time locking-bytecode constructor and does not need a handler-owned block layout.
@@ -3589,9 +3604,10 @@ function synthesizeMessageBusRoute(
         }
       }
       // Expression keys (including nested `if` / helper-inlined writes), parameter-array loops, literal
-      // `new T[](N)` locals (N<=64, unrolled to scalar writes), and counter-keyed `m[i]` loops (hidden
-      // `__internal__vmapCounterPerm_*` witness) journal as trailing upserts / published witnesses. Only an
-      // unbounded constructed key array still has no kernel representation.
+      // `new T[](N)` locals (N<=64, unrolled to scalar writes), and canonical counter-keyed `m[i]` / `m[k][i]`
+      // pre/post-test loops (hidden `__internal__vmapCounterPerm_*` on the counter key) journal as trailing
+      // upserts / published witnesses. Typed calls stay in source order. Unbounded constructed key arrays,
+      // non-canonical iteration domains, and repeated fixed-slot effects still have no kernel representation.
       if (hasUnsupportedSortedRuntimeLoopWrite(fn, 64n)) {
         reason = 'KERNEL_UNBOUNDED_KEY';
       } else if (deploys && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
@@ -3632,11 +3648,9 @@ function synthesizeMessageBusRoute(
     }
   }
 
-  // A public whole-struct state getter is represented by a compiler projection whose published return list is
-  // field-shaped, while both `this.s` and an internal `s()` expression retain the whole StructType until the
-  // getter lowering pass. A source-generated message-bus wrapper is parsed before that pass and cannot spell
-  // the projection soundly. Keep the ordinary getter route and exclude only this synthetic handler; the
-  // contract's real struct-reading/writing entry points remain batchable.
+  // Solidity public struct getters are already synthesized above as field-shaped return lists. The kernel can
+  // capture that tuple directly; only the legacy wrapper still depends on treating the same-name state value as
+  // one whole struct and therefore keeps its historical refusal.
   const routeStructNames = new Set([...ast.structDefinitions, ...contract.structDefinitions]
     .map((definition) => definition.name));
   const routeEnumNames = new Set([...ast.enumDefinitions, ...contract.enumDefinitions]
@@ -3650,11 +3664,10 @@ function synthesizeMessageBusRoute(
       if (named && (routeEnumNames.has(named) || routeStructNames.has(named))) return false;
       return true;
     }
-    if (type instanceof EnumType) return false;
+    if (type instanceof EnumType) return true;
     if (type instanceof ValueType) return kernelResultEncodable(type.underlyingType);
     if (type instanceof StructType) return type.fields.every((field) => kernelResultEncodable(field.type));
     if (type instanceof ArrayType) {
-      if (type.elementType instanceof StructType || type.elementType instanceof EnumType) return false;
       return kernelResultEncodable(type.elementType);
     }
     return false;
@@ -3670,17 +3683,15 @@ function synthesizeMessageBusRoute(
       // candidate during fallback selection; the ordinary getter and every real mutating handler are unchanged.
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'collection-state-getter-route-not-enabled';
-    } else if (fn.parameters.length === 0 && state
+    } else if (!kernelGetter && fn.parameters.length === 0 && state
       && (state.type instanceof StructType || routeStructNames.has(state.type.toString()))) {
-      // Kernel wrapper source is parsed before getter-projection lowering and cannot spell a
-      // field-shaped `rec()` return as a struct value. Keep the ordinary getter; mutating siblings stay eligible.
+      // The legacy wrapper cannot spell a field-shaped `rec()` projection as one whole struct value.
       fn.messageBusEligible = false;
-      fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
-        ? 'KERNEL_LAYOUT' : 'struct-state-getter-route-not-enabled';
+      fn.messageBusRejectionReason = 'struct-state-getter-route-not-enabled';
     } else if (compilerOptions.messageBusKernel === true
       && fn.returnTypes.some((type) => !kernelResultEncodable(type))) {
-      // Result concatenation uses `abi.encode` in the generated wrapper. Enum and dynamic-array-of-struct
-      // returns throw `evmCompat abi.encode: unsupported type` and would otherwise drop the whole bus.
+      // Result concatenation uses `abi.encode` in the generated wrapper. Keep only types for which that encoder
+      // has a complete runtime representation; scalar enums encode through the `int` locals below.
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
     }
@@ -4072,8 +4083,11 @@ function synthesizeMessageBusRoute(
   const isTransactionSignatureType = (type: string): boolean => type === 'sig' || type === 'sig[]';
   const signatureMode = eligible.some((fn) =>
     fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
-  // Kernel dispatch: one for-row loop, no AST unroll. Resource-shaped per-row frames, transaction
-  // signatures, and fixed-array identity sets stay on the legacy unroll. Events, value, tokens,
+  const kernelSignatureMode = compilerOptions.messageBusKernel === true && signatureMode
+    && eligible.every((fn) => fn.parameters.every((parameter) => parameter.type.toString() !== 'sig[]'));
+  // Kernel dispatch: one for-row loop, no AST unroll. Omitted/true selects it; false keeps today's clone/unroll.
+  // Resource-shaped per-row frames stay on the legacy unroll. Scalar transaction signatures use aligned `sig[]`
+  // route witnesses outside the committed row blob. Events, value, tokens,
   // typed external calls (`__message_bus_handler_*` DEFINE, not `__message_bus_graph_*`), mapping
   // trailing upserts, and kernel-representable keys (shared msg.sender, row-decoded arguments /
   // expressions) use the loop. A `perRow` mark without one of those sources is the resource `_row`
@@ -4083,17 +4097,27 @@ function synthesizeMessageBusRoute(
     binding: { perRow?: boolean; source?: 'argument' | 'msgSender' | 'expression' },
   ): boolean => !binding.perRow
     || binding.source === 'msgSender' || binding.source === 'argument' || binding.source === 'expression';
-  const kernelLoopDispatch = resourceShapedHandler === undefined
-    && !signatureMode
-    && (compilerOptions.messageBusKernel === true || !fixedArrayMode)
-    && (compilerOptions.messageBusKernel === true
-      ? eligible.every((fn) =>
-        (fn.messageBusKeyWitnesses ?? []).every((binding) => kernelRepresentablePerRow(binding)))
-      : eligible.every((fn) =>
-        !(fn.messageBusKeyWitnesses ?? []).some((binding) => binding.perRow)));
+  const kernelLoopDispatch = compilerOptions.messageBusKernel === true
+    && resourceShapedHandler === undefined
+    && (!signatureMode || kernelSignatureMode)
+    && eligible.every((fn) =>
+      (fn.messageBusKeyWitnesses ?? []).every((binding) => kernelRepresentablePerRow(binding)));
+  if (compilerOptions.messageBusKernel === true && !kernelLoopDispatch) {
+    // Kernel admission is per handler: an unsupported shape must have been refused before route synthesis. Never
+    // turn the default convention into an implicit legacy clone/unroll fallback, because that makes the artifact
+    // ABI depend on which edge case happened to survive the admission ladder. Reaching this branch is a compiler
+    // invariant violation, not a user-facing construct refusal.
+    const survivorNames = eligible.map((fn) => fn.name).join(', ');
+    throw new Error(
+      `Message-bus kernel admission retained a non-kernel route shape (${survivorNames || 'no named handlers'})`,
+    );
+  }
   const signatureWitnessName = (
     handlerIndex: number, parameterIndex: number, row: number,
   ): string => `__message_bus_sig_${handlerIndex}_${parameterIndex}_r${row}`;
+  const kernelSignatureWitnessName = (
+    handlerIndex: number, parameterIndex: number,
+  ): string => `__message_bus_sig_${handlerIndex}_${parameterIndex}_rows`;
   // X199. THE ROUTE'S ROW FORMAT IS DECIDED OVER THE HANDLERS THE ROUTE CAN DISPATCH.
   //
   // `graphMsgValueHandlers` is filled during the FIRST per-handler pass and never revised, while `eligible`
@@ -4911,8 +4935,13 @@ function synthesizeMessageBusRoute(
         : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
       const invoke = (args: string, selectedInvokeName = invokeName): string => {
+        const getterState = fn.parameters.length === 0
+          ? contract.stateVariables.find((state) => state.name === fn.name)
+          : undefined;
         const scalarGetter = fn.parameters.length === 0
-          && contract.stateVariables.some((state) => state.name === fn.name)
+          && getterState !== undefined
+          && !(getterState.type instanceof StructType)
+          && !routeStructNames.has(getterState.type.toString())
           // A flattened public struct getter has its own compiler-generated projection body. `this.s` is the
           // whole struct value, while the getter ABI returns only its projected field shape; treating it like a
           // scalar getter assigns `S` to the first projected field type in the generated route.
@@ -4920,7 +4949,10 @@ function synthesizeMessageBusRoute(
         if (scalarGetter) {
           if (!captureResults || fn.returnTypes.length === 0) return `this.${fn.name};`;
           const name = `__message_bus_value_${rowIndex}_${handlerIndex}_0`;
-          return `${fn.returnTypes[0].toString()} ${name}; ${name} = this.${fn.name}; `
+          const enumResult = fn.returnTypes[0] instanceof EnumType;
+          const local = enumResult ? 'int' : fn.returnTypes[0].toString();
+          const rhs = enumResult ? `int(this.${fn.name})` : `this.${fn.name}`;
+          return `${local} ${name}; ${name} = ${rhs}; `
             + `__message_bus_results = bytes.concat(__message_bus_results, abi.encode(${name}));`;
         }
         if (!captureResults || fn.returnTypes.length === 0) return `${selectedInvokeName}(${args});`;
@@ -4934,11 +4966,14 @@ function synthesizeMessageBusRoute(
         // distinct names because every `if (rowCount > i)` band shares the wrapper's function scope.
         const names = fn.returnTypes.map((_type, index) =>
           `__message_bus_value_${rowIndex === undefined ? 'i' : rowIndex}_${handlerIndex}_${index}`);
+        const localType = (type: Type): string =>
+          type instanceof EnumType ? 'int' : type.toString().replace(/address payable/g, 'address');
         const declarations = fn.returnTypes.map((type, index) =>
-          `${type.toString()} ${names[index]};`).join(' ');
+          `${localType(type)} ${names[index]};`).join(' ');
+        const invokeExpr = `${selectedInvokeName}(${args})`;
         const assignment = fn.returnTypes.length === 1
-          ? `${names[0]} = ${selectedInvokeName}(${args});`
-          : `(${names.join(', ')}) = ${selectedInvokeName}(${args});`;
+          ? `${names[0]} = ${fn.returnTypes[0] instanceof EnumType ? `int(${invokeExpr})` : invokeExpr};`
+          : `(${names.join(', ')}) = ${invokeExpr};`;
         return `${declarations} ${assignment} __message_bus_results = bytes.concat(
         __message_bus_results, abi.encode(${names.join(', ')})
       );`;
@@ -4966,7 +5001,7 @@ function synthesizeMessageBusRoute(
         const blockhashArgs = blockhashRowOffset
           ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [];
         const entryOnly = [...entryKeyArguments(fn), ...blockhashArgs, ...callerContextArgs,
-        ...ownerContextArgs];
+          ...ownerContextArgs];
         const senderChecks = (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source === 'msgSender')
           .map((binding) => `require(${witnessName(binding)} == ${logicalCaller});`).join(' ');
@@ -5018,7 +5053,9 @@ function synthesizeMessageBusRoute(
       const sourceCallArgs = [
         ...fn.parameters.map((parameter, i) =>
           isTransactionSignatureType(parameter.type.toString())
-            ? signatureWitnessName(handlerIndex, i, rowIndex ?? 0)
+            ? (kernelSignatureMode
+              ? `${kernelSignatureWitnessName(handlerIndex, i)}[${rowExpression}]`
+              : signatureWitnessName(handlerIndex, i, rowIndex ?? 0))
             : parameter.name === '__internal__externalOutStateInputBase'
               ? (() => {
                 const targetName = fn.externalOutStateReads?.find((read) => read.addressParam)?.addressParam;
@@ -5033,7 +5070,7 @@ function synthesizeMessageBusRoute(
                 || parameter.name.startsWith('__internal__leadingPushValue_')
                 || parameter.name === '__internal__vmapBatchTrailingCount'
                 ? parameter.name
-              : (tokenCategoryInputByHandler.get(fn)?.get(i)
+                : (tokenCategoryInputByHandler.get(fn)?.get(i)
                 ?? witnessByInput.get(i) ?? decodedName(i))),
       ];
       const blockhashArgs = blockhashRowOffset
@@ -5170,11 +5207,14 @@ function synthesizeMessageBusRoute(
         : [`${witness.type.toString()} ${witness.name}`];
     });
   const routeSignatureParameters = eligible.flatMap((fn, handlerIndex) =>
-    fn.parameters.flatMap((parameter, parameterIndex) =>
-      isTransactionSignatureType(parameter.type.toString())
-        ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
-          `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
-        : []));
+    fn.parameters.flatMap((parameter, parameterIndex) => {
+      if (!isTransactionSignatureType(parameter.type.toString())) return [];
+      if (kernelSignatureMode) {
+        return [`sig[] ${kernelSignatureWitnessName(handlerIndex, parameterIndex)}`];
+      }
+      return Array.from({ length: routeMaximumRows }, (_unused, row) =>
+        `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`);
+    }));
   const declaredPermNames = new Set<string>();
   const routeCounterPermParameters = eligible.flatMap((fn) =>
     fn.parameters.filter((parameter) => {
@@ -5282,11 +5322,11 @@ function synthesizeMessageBusRoute(
       ? `for (bigint __message_bus_row = 0; __message_bus_row < rowCount; __message_bus_row = __message_bus_row + 1) {
         ${parseOneRow('__message_bus_row', resultMode)}
       }`
-    : eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode || signatureMode
+      : eventMode || resultMode || valueEffectMode || nestedCollectionMode || fixedArrayMode || signatureMode
       || tokenContainerMode
-      ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
-        `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
-      : `for (bigint __message_bus_row = 0; __message_bus_row < rowCount; __message_bus_row = __message_bus_row + 1) {
+        ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
+          `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
+        : `for (bigint __message_bus_row = 0; __message_bus_row < rowCount; __message_bus_row = __message_bus_row + 1) {
         ${parseOneRow('__message_bus_row')}
       }`;
   const resultDeclarations = resultMode ? 'bytes __message_bus_results = hex\"\";' : '';
@@ -6278,6 +6318,7 @@ function synthesizeMessageBusRoute(
     );
   }
   route.messageBusRoute = true;
+  route.messageBusDispatch = kernelLoopDispatch ? 'kernel-row-loop' : 'legacy-unroll';
   // Late route synthesis runs after the final automatic delegate-marking pass. Propagate the admitted surface's
   // execution context here so SymbolTableTraversal injects the proxy-master witness used by the route prologue
   // and unlocking-frame validator. Early synthesis reaches the same state through the later marking pass.
@@ -7250,7 +7291,7 @@ function compileResolvedAst(
   // before kernel route admission clones the body. Otherwise clones snapshot the runtime loop, skip key
   // binding, and fail closed looking up entry[0] on a clone with no block descriptor. The graph path keeps
   // refusing that shape (`verified-mapping-runtime-loop-write-unsupported`) until its own clones unroll.
-  if (mergedCompilerOptions.messageBusKernel === true) {
+  if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true) {
     ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
     // Counter-keyed `m[i]` must expose `__internal__vmapCounterPerm_*` on the source handler before
     // admission clones it, so the route can pass that hidden witness into the DEFINE body.
@@ -7516,8 +7557,12 @@ function compileResolvedAst(
   // expose scalar state inside a previously context-only void wrapper (`_checkInitializing` after
   // `_isInitializing()` is reduced). Without a follow-up inline, that wrapper stays an OP_INVOKE
   // body and a delegate `initialize` re-reads the pre-tx NFT (or INPUTINDEX+1 on the impl).
-  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers)
-    && !(rootSourceCoversProgram(ast) && !code.includes('storage'))) {
+  // This pass originally handled only explicit `storage` parameters, so the source-text fast path below used
+  // to skip it when that word was absent. It now also keeps scalar helpers with transaction effects (typed/
+  // low-level calls, deploys, events and transfers) in the physical entry frame. Those shapes need no `storage`
+  // token in source, and skipping the pass leaves the effect behind OP_INVOKE without a block layout. Run it
+  // whenever an internal helper exists; the traversal's own eligibility checks retain the cheap no-op path.
+  if ((!mergedCompilerOptions.messageBus || inlineDelegateStateHelpers) && hasInternalHelpers) {
     ast = ast.accept(new InlineStoragePointerCalls(
       mergedCompilerOptions.solidityImportCompat ?? false,
       inlineDelegateStateHelpers,
@@ -7771,7 +7816,9 @@ function compileResolvedAst(
   // Semantic analysis
   const semanticStarted = Date.now();
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
-  if (mergedCompilerOptions.messageBusKernel === true) padMessageBusCloneCalls(ast);
+  if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true) {
+    padMessageBusCloneCalls(ast);
+  }
   profileLog('resolved:symbol', semanticStarted, { contract: contractName });
   // Bare msg.sender collection accesses are normalized to compiler-owned route parameters before semantic
   // analysis. Preserve their origin in the published entry metadata: treating that synthetic parameter as a
@@ -7823,10 +7870,14 @@ function compileResolvedAst(
       .filter((fn) => fn.graphEmissionHandler && fn.name.startsWith('__message_bus_graph_'))
       .map((fn) => [fn.name.slice('__message_bus_graph_'.length), fn] as const));
     for (const fn of ast.contract.functions) {
-      const routeClone = fn.graphEmissionHandler || fn.name.startsWith('__message_bus_array_')
-        || fn.name.startsWith('__message_bus_entry_');
+      const routeClone = fn.graphEmissionHandler
+        || MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => fn.name.startsWith(prefix));
       if (routeClone) {
         fn.blockLayout = messageBusRoute.blockLayout;
+        // An empty projection is meaningful: this clone owns no fixed entry in the route-wide union. Without
+        // it, runtime-loop setup sees a fixed entry used only by a sibling handler and treats that inactive slot
+        // as a same-collection debit/merge entry, shifting the loop's output schedule.
+        fn.messageBusPhysicalEntrySlots ??= [];
       }
       const fixedHandlerEntries = fn.entryAccesses?.filter((entry) => !entry.inLoop) ?? [];
       const directlyDispatchedSource = fn.messageBusEligible && !graphCloneBySource.has(fn.name);
@@ -8192,13 +8243,16 @@ function compileResolvedAst(
         }
       }
     }
-    const messageBusMaximumRows = ast.contract.functions.find((fn) =>
-      fn.messageBusRoute)?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
+    const messageBusRouteFn = ast.contract.functions.find((fn) => fn.messageBusRoute);
+    const messageBusMaximumRows = messageBusRouteFn?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
     const extractedVerifierProgram = singlePassVerifierProgram
       ?? extractMessageBusVerifierProgram(ast, traversal, optimisationResult.script);
     artifact.messageBus = {
       version: 1,
       selector: MESSAGE_BUS_SELECTOR_HEX,
+      convention: messageBusRouteFn?.messageBusDispatch === 'kernel-row-loop'
+        ? 'kernel-row-loop' : 'legacy-unroll',
+      available: true,
       ...(messageBusMaximumRows === RESOURCE_SHAPED_BATCH_ROWS
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
       maximumRows: messageBusMaximumRows,
@@ -8326,6 +8380,7 @@ function compileResolvedAst(
           && { physicalEntrySlots: fn.messageBusPhysicalEntrySlots }),
       })),
     };
+    artifact.messageBus.available = artifact.messageBus.handlers.some((handler) => handler.eligible);
     // An admitted runtime graph handler is also bounded by the compiler-owned atomic verifier: it accepts at
     // most ATOMIC_MESSAGE_BUS_MAX_ROWS total rows, while code generation consumes one authenticated emission row
     // at each reached typed callsite. Publish that route-only guard for typed loops which have no stronger source
@@ -8364,6 +8419,8 @@ function compileResolvedAst(
       artifact.messageBus = {
         version: 1,
         selector: MESSAGE_BUS_SELECTOR_HEX,
+        convention: 'kernel-row-loop',
+        available: false,
         maximumRows: MAX_MESSAGE_BUS_ROWS,
         maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
         atomicMessageBus: {
@@ -9931,6 +9988,7 @@ class PackedCharStream {
     if (this._index >= this._size) throw new Error('cannot consume EOF');
     this._index += 1;
   }
+
   LA(offset: number): number {
     if (offset === 0) return 0;
     if (offset < 0) offset += 1;
@@ -9938,12 +9996,14 @@ class PackedCharStream {
     if (i < 0 || i >= this._size) return -1;
     return this.strdata.charCodeAt(i);
   }
+
   LT(offset: number): number { return this.LA(offset); }
   mark(): number { return -1; }
   release(_marker: number): void { /* ANTLR CharStream marks are unused. */ }
   seek(index: number): void {
     this._index = index <= this._index ? index : Math.min(index, this._size);
   }
+
   getText(start: number | { start: number; stop: number }, stop?: number): string {
     if (typeof start === 'object') {
       stop = start.stop;
@@ -9954,6 +10014,7 @@ class PackedCharStream {
     if (start >= this._size) return '';
     return this.strdata.slice(start, stop + 1);
   }
+
   toString(): string { return this.strdata; }
 }
 
@@ -10064,7 +10125,9 @@ function skipBalanced(
   return start + 4096;
 }
 
-function predictExpressionPrefix(input: { LA(i: number): number; LT(i: number): { text?: string | undefined } }): number | undefined {
+function predictExpressionPrefix(
+  input: { LA(i: number): number; LT(i: number): { text?: string | undefined } },
+): number | undefined {
   const first = input.LA(1);
   const lparen = SolidCashParser.T__56;
   const lbrack = SolidCashParser.T__81;
@@ -10152,11 +10215,13 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
   const interp = parser._interp;
   const prefixState = interp.atn.decisionToState[EXPRESSION_PREFIX_DECISION] as { ruleIndex?: number } | undefined;
   const postfixState = interp.atn.decisionToState[EXPRESSION_POSTFIX_LOOP_DECISION] as { ruleIndex?: number } | undefined;
-  const postfixInnerState = interp.atn.decisionToState[EXPRESSION_POSTFIX_INNER_DECISION] as { ruleIndex?: number } | undefined;
+  const postfixInnerState = interp.atn.decisionToState[EXPRESSION_POSTFIX_INNER_DECISION] as
+    { ruleIndex?: number } | undefined;
   const statementState = interp.atn.decisionToState[STATEMENT_DECISION] as { ruleIndex?: number } | undefined;
   const yulBlockState = interp.atn.decisionToState[YUL_BLOCK_LOOP_DECISION] as { ruleIndex?: number } | undefined;
   const yulStatementState = interp.atn.decisionToState[YUL_STATEMENT_DECISION] as { ruleIndex?: number } | undefined;
-  const yulExpressionState = interp.atn.decisionToState[YUL_EXPRESSION_DECISION] as { ruleIndex?: number } | undefined;
+  const yulExpressionState = interp.atn.decisionToState[YUL_EXPRESSION_DECISION] as
+    { ruleIndex?: number } | undefined;
   const prefixOk = prefixState !== undefined && parser.ruleNames[prefixState.ruleIndex ?? -1] === 'expression';
   const postfixOk = postfixState !== undefined && parser.ruleNames[postfixState.ruleIndex ?? -1] === 'expression';
   const postfixInnerOk = postfixInnerState !== undefined && parser.ruleNames[postfixInnerState.ruleIndex ?? -1] === 'expression';

@@ -148,7 +148,14 @@ export class Contract<
     const soleFn = artifact.abi.length === 1 ? artifact.abi[0] : undefined;
     const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
       && (!artifact.isLibrary || artifact.delegateOnly === true);
-    if (soleFn && !soleFnIsProxyImpl) {
+    // A compiler-owned message-bus route is intentionally absent from the public ABI, but it is still a second
+    // executable selector in the redeem script. Treating the sole source function as selectorless then places its
+    // first argument in the dispatch-selector position and the covenant rejects before either function executes.
+    // `available` is additive metadata. Older artifacts with `messageBus` omitted the field but still contain the
+    // executable SCB1 selector, so only an explicit false means there is no hidden route in the redeem script.
+    const soleFnSharesCompilerRoute = artifact.messageBus !== undefined
+      && artifact.messageBus.available !== false;
+    if (soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute) {
       // @ts-ignore TODO: see if we can use generics to make TypeScript happy
       this.unlock[soleFn.name] = this.createUnlocker(soleFn);
     } else {
@@ -261,16 +268,16 @@ export class Contract<
         contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];
       }
 
-    // Category self-pin (stateful contracts): bake the category and verify the spent UTXO's category equals
-    // it, so the address commits to the category (address => genuine state). This reworks the former dead
-    // `<salt> OP_DROP` into a live check. It is the script prologue (runs before constructor args + dispatch),
-    // so it is one contract-level check covering every function, including selfdestruct/unsafe.
-    //
-    // A stateful contract's spent UTXO is always its master = the MINTING NFT (capability 0x02), and
-    // capabilities never change, so OP_UTXOTOKENCATEGORY returns `category(32) || 0x02`. We bake that exact
-    // 33-byte value (internal byte order + the 0x02 minting capability) and compare directly - no need to
-    // split off the capability byte. This also pins the capability, rejecting a same-category UTXO with the
-    // wrong capability. See docs/external-contract-calls.md.
+      // Category self-pin (stateful contracts): bake the category and verify the spent UTXO's category equals
+      // it, so the address commits to the category (address => genuine state). This reworks the former dead
+      // `<salt> OP_DROP` into a live check. It is the script prologue (runs before constructor args + dispatch),
+      // so it is one contract-level check covering every function, including selfdestruct/unsafe.
+      //
+      // A stateful contract's spent UTXO is always its master = the MINTING NFT (capability 0x02), and
+      // capabilities never change, so OP_UTXOTOKENCATEGORY returns `category(32) || 0x02`. We bake that exact
+      // 33-byte value (internal byte order + the 0x02 minting capability) and compare directly - no need to
+      // split off the capability byte. This also pins the capability, rejecting a same-category UTXO with the
+      // wrong capability. See docs/external-contract-calls.md.
       if (this.isStateful && this.category && this.category.length > 0) {
         const catWithCapability = Uint8Array.from([...this.category.slice().reverse(), 0x02]);
         contractBytecodeScript = [
@@ -279,8 +286,8 @@ export class Contract<
         ];
       }
 
-    // User CREATE2 salt (optional, any contract): a dead push baked into the script for deterministic /
-    // counterfactual address control. Separate, outermost segment (distinct from the category self-pin).
+      // User CREATE2 salt (optional, any contract): a dead push baked into the script for deterministic /
+      // counterfactual address control. Separate, outermost segment (distinct from the category self-pin).
       if (this.salt && this.salt.length > 0) {
         contractBytecodeScript = [this.salt, Op.OP_DROP, ...contractBytecodeScript];
       }
@@ -486,7 +493,7 @@ export class Contract<
         ? parsedFunctionBody(this.artifact.functionBodies[selectorHex])
         : bytecode;
       const signingBytecodeForArgument = (inputName: string): Uint8Array => {
-        const match = /^__message_bus_sig_(\d+)_\d+_r\d+$/.exec(inputName);
+        const match = /^__message_bus_sig_(\d+)_\d+(?:_r\d+|_rows)$/.exec(inputName);
         if (!match) return signingBytecode;
         const handler = this.artifact.messageBus?.handlers[Number(match[1])];
         const handlerBody = handler?.signatureBytecode;
@@ -634,7 +641,9 @@ export class Contract<
     const soleFn = this.artifact.abi.length === 1 ? this.artifact.abi[0] : undefined;
     const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
       && (!this.artifact.isLibrary || this.artifact.delegateOnly === true);
-    const selector = soleFn && !soleFnIsProxyImpl
+    const soleFnSharesCompilerRoute = this.artifact.messageBus !== undefined
+      && this.artifact.messageBus.available !== false;
+    const selector = soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute
       ? undefined
       : abiFunction.selector ? hexToBin(abiFunction.selector) : undefined;
     return this.createUnlocker(abiFunction, selector);

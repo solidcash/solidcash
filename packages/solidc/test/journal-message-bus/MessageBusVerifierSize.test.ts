@@ -19,12 +19,12 @@ describe('atomic verifier bytecode specialization', () => {
     expect(verifierProgram).toBeDefined();
     const sidecar = messageBusVerifierCovenantBytecode(verifierProgram!).length;
     // The integrated route also carries authenticated logical-caller and local effect-frame support. Those
-    // facilities moved the scalar participant from 1105 to 1346 bytes; the exact pair remains a drift tripwire,
+    // facilities produce the default kernel participant below; the exact pair remains a drift tripwire,
     // while the bounds retain deliberate headroom below BCH's deployment limit.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 120,
-      composed: 1346,
-      frameworkTax: 1226,
+      direct: 152,
+      composed: 1359,
+      frameworkTax: 1207,
     });
     expect(composed).toBeLessThanOrEqual(1400);
     expect(composed - direct).toBeLessThanOrEqual(1250);

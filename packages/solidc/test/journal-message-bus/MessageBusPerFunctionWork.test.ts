@@ -13,7 +13,7 @@ describe('message-bus heavy work is per function', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'kill')).toEqual(
       expect.objectContaining({
         eligible: false,
-        rejectionReason: 'lifecycle-or-unsafe-handler',
+        rejectionReason: 'KERNEL_LIFECYCLE',
       }),
     );
     const invokeNames = Object.values(artifact.debug?.invokeDebug ?? {}).map((debug) => debug.name);

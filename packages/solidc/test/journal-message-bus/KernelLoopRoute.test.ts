@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from '../../src/compiler.js';
 
-const OPTIONS = { messageBus: true as const, forceStateful: true };
+const OPTIONS = { messageBus: true as const, forceStateful: true, messageBusKernel: true };
 
 const VOID_SOURCE = `
 pragma solidcash ^0.13.0;
@@ -54,6 +54,9 @@ describe('message-bus kernel loop route', () => {
   it('dispatches a void handler from one row loop rather than unrolled rowCount bands', () => {
     const artifact = compileString(VOID_SOURCE, OPTIONS);
     expect(artifact.messageBus).toBeDefined();
+    expect(artifact.compiler.options?.messageBusKernel).toBe(true);
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.available).toBe(true);
     expect(artifact.messageBus?.maximumRows).toBeGreaterThanOrEqual(2);
     const add = artifact.messageBus?.handlers.find((handler) => handler.name === 'add');
     expect(add?.eligible).toBe(true);

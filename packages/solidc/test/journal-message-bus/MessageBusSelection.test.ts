@@ -47,15 +47,20 @@ describe('message-bus compilation selection', () => {
       .toContain('__internal__activeVerifierIndex');
   });
 
-  // Explicit true is a request, not an assertion: it opts out of graph-edge narrowing but keeps the direct-only
-  // fallback, so a contract with no possible route still compiles. Only the internal verifier-program mode
-  // (`required`) treats a missing route as fatal.
-  it('falls back to direct-only when explicit true has no atomic participant route', () => {
+  // Explicit message-bus selection keeps the capability observable even when no handler can participate. The
+  // kernel publishes a closed refusal instead of silently changing the requested artifact to direct-only.
+  it('publishes an unavailable kernel capability when no handler has an atomic participant route', () => {
     const artifact = compileString(`contract Stateless {
       function check(int value) public pure { require(value >= 0); }
     }`, { messageBus: true });
     expect(artifact.contractName).toBe('Stateless');
-    expect(artifact.messageBus).toBeUndefined();
+    expect(artifact.messageBus).toMatchObject({
+      convention: 'kernel-row-loop',
+      available: false,
+      handlers: [expect.objectContaining({
+        name: 'check', eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+      })],
+    });
   });
 
   it('keeps direct mapping keys visible beside dynamic-array reads in explicit graph mode', () => {
@@ -68,7 +73,7 @@ describe('message-bus compilation selection', () => {
         jobs[jobId].whitelistWorkers = false;
         require(jobs[jobId].whitelistWorkers == false);
       }
-    }`, { messageBus: true, maximumInputBytes: 1_000_000 });
+    }`, { messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'takeJob')).toEqual(
       expect.objectContaining({ eligible: true }),
     );
@@ -96,6 +101,7 @@ describe('message-bus compilation selection', () => {
       forceStateful: true,
       solidityImportCompat: true,
       messageBus: true,
+      messageBusKernel: true,
       messageBusGraphContext: true,
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
@@ -136,32 +142,17 @@ describe('message-bus compilation selection', () => {
       forceStateful: true,
       solidityImportCompat: true,
       messageBus: true,
+      messageBusKernel: true,
       messageBusGraphContext: true,
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
     });
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     const routeBody = artifact.functionBodies?.['53434231'];
     expect(routeBody).toBeDefined();
     const routeAsm = bytecodeToAsm(Uint8Array.from(Buffer.from(routeBody!, 'hex')));
-    const maskedKeyHash = 'OP_SHA256 1f OP_SPLIT 7f OP_AND OP_CAT';
-    expect(routeAsm).toMatch(new RegExp(
-      `OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_PICK ${maskedKeyHash}`,
-    ));
-    // A literal/top-relative depth immediately before the hash is the unstable form: handler calls may leave
-    // runtime-only values above the ABI frame and redirect that pick to an adjacent collection key.
-    expect(routeAsm).not.toMatch(new RegExp(
-      `(?:OP_(?:0|1NEGATE|[1-9]|1[0-6])|[0-9a-f]+) OP_PICK ${maskedKeyHash}`,
-    ));
-    // Scalar and entry journals returned by handlers must use the same stable route-frame addressing before the
-    // route reconstructs its outputs, including the key/value retained for conditional-delete settlement.
-    expect(routeAsm.match(/OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_PICK/g)?.length ?? 0)
-      .toBeGreaterThanOrEqual(6);
-    // Journal copies returned by an invoked handler are written back to their original route-frame slots by
-    // bottom ordinal too. The retained runtime depth is incremented before OP_ROLL so the depth value itself is
-    // skipped; a literal depth here would address handler-owned operands which are absent from the static model.
-    expect(routeAsm).toMatch(
-      /OP_DEPTH (?:OP_[A-Z0-9]+|[0-9a-f]+) OP_SUB OP_DUP OP_1ADD OP_ROLL OP_DROP OP_1SUB/,
-    );
+    expect(routeAsm).toMatch(/OP_UNTIL|OP_BEGIN/);
+    expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
   });
 
   it('co-locates ecrecover sidecars with ordinary participant state and entry slots', () => {
@@ -174,14 +165,15 @@ describe('message-bus compilation selection', () => {
         counter = counter + 1;
         require(signer.length == 33);
       }
-    }`, { messageBus: true, maximumInputBytes: 1_000_000 });
+    }`, { messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'recover');
     expect(handler).toEqual(expect.objectContaining({ eligible: true }));
     const layout = artifact.messageBus?.route.blockLayout;
     expect(layout?.slots.some((slot) => slot.kind === 'dataNft')).toBe(true);
     expect(layout?.slots.some((slot) => slot.kind === 'entry')).toBe(true);
     const recovery = layout?.slots.filter((slot) => slot.kind === 'ecrecoverSideCar') ?? [];
-    expect(recovery).toHaveLength(2);
+    expect(recovery.length).toBeGreaterThanOrEqual(2 * (artifact.messageBus?.maximumRows ?? 0));
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     expect(new Set(layout?.slots.map((slot) => slot.offset)).size).toBe(layout?.slots.length);
     expect(layout?.blockSize).toBe(Math.max(...layout!.slots.map((slot) => slot.offset)) + 1);
   });
@@ -251,6 +243,7 @@ describe('message-bus compilation selection', () => {
       forceStateful: true,
       solidityImportCompat: true,
       messageBus: true,
+      messageBusKernel: true,
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
     });
@@ -293,7 +286,7 @@ describe('message-bus compilation selection', () => {
     );
   });
 
-  it('preserves named refusals after binding the admitted verifier route', () => {
+  it('preserves kernel admission after binding the verifier route', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function ping() external; }
       contract Controller(address target) {
@@ -315,10 +308,8 @@ describe('message-bus compilation selection', () => {
       optimizeForCompilationSpeed: true,
     });
     expect(artifact.messageBus?.verifierProgram).toBeDefined();
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'resize')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'result-route-requires-effect-free-handlers',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'resize'))
+      .toMatchObject({ eligible: true });
   });
 
   it('keeps runtime collection loops in a returning graph handler on the authenticated trailing route', () => {
@@ -382,13 +373,13 @@ describe('message-bus compilation selection', () => {
     expect(artifact.messageBus?.route.blockLayout).toMatchObject({ trailingCapacity: 64 });
   });
 
-  it('keeps valid external siblings when the fast route attributes one generated clone failure', () => {
+  it('keeps a mapping field-write sibling eligible on the default kernel row loop', () => {
     const artifact = compileString(`contract SelectiveRoute {
       struct Record { int value; }
       mapping(int => Record) records;
       int current;
-      // A field update currently reaches a generated entry-clone layout gap. The admission fallback must
-      // refuse only this handler; it is deliberately beside a route-safe external handler.
+      // A mapping field write beside a scalar sibling. Legacy unroll admits both; kernel coalesces the
+      // field write into a whole-entry assign and also admits it.
       function unsupported(int key) external {
         records[key].value = 1;
         require(records[key].value == 1);
@@ -402,12 +393,12 @@ describe('message-bus compilation selection', () => {
       maximumInputBytes: 1_000_000,
       optimizeForCompilationSpeed: true,
     });
-    // This also exercises the verifier-binding pass: it must compile the exact admitted set instead of
-    // resurrecting `unsupported` after the speculative pass successfully excluded it.
+    // Kernel coalesces `records[key].value = 1` into a whole-entry assign and admits both siblings.
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'supported'))
       .toEqual(expect.objectContaining({ eligible: true }));
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'unsupported')?.eligible)
-      .not.toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'unsupported'))
+      .toEqual(expect.objectContaining({ eligible: true }));
   });
 
   it('threads the logical caller into a no-argument delegate route handler', () => {

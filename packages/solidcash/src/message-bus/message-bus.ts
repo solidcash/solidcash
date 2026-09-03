@@ -268,15 +268,36 @@ export function encodeMessageBatch(
       encodeFunctionArgument(arg, handler.inputs[index].type, structs));
     const rowEncoded: Uint8Array[] = [];
     encoded.forEach((argument, index) => {
-      if (argument instanceof Uint8Array) {
+      const inputType = handler.inputs[index].type;
+      const signatureArgument = (inputType === 'sig' && argument instanceof SignatureTemplate)
+        || (inputType === 'sig[]' && isSignatureTemplateArray(argument));
+      if (inputType === 'sig' || inputType === 'sig[]') {
+        // A transaction-bound batch signature cannot be committed inside rowArgs: doing so would make the
+        // signature commit to a manifest which already commits to that signature. Keep it as a positional route
+        // witness, and require a template so it can be finalized only after composition fixes the transaction.
+        if (!signatureArgument) {
+          throw new Error(
+            `Handler '${handler.name}' transaction signature argument ${index} requires SignatureTemplate`,
+          );
+        }
+      } else if (!(argument instanceof Uint8Array)) {
+        throw new Error(`Handler '${handler.name}' contains an unsupported signature-like argument`);
+      } else {
         rowEncoded.push(argument);
         return;
       }
-      if (!((handler.inputs[index].type === 'sig' && argument instanceof SignatureTemplate)
-        || (handler.inputs[index].type === 'sig[]' && isSignatureTemplateArray(argument)))) {
-        throw new Error(`Handler '${handler.name}' contains an unsupported signature-like argument`);
+      if (capability.convention === 'kernel-row-loop'
+        && inputType === 'sig' && argument instanceof SignatureTemplate) {
+        const name = `__message_bus_sig_${handlerIndex}_${index}_rows`;
+        const aligned = signatureWitnessValues.get(name);
+        const values = Array.isArray(aligned)
+          ? [...aligned] as SignatureTemplate[]
+          : new Array<SignatureTemplate>(invocations.length);
+        values[rowIndex] = argument;
+        signatureWitnessValues.set(name, values);
+      } else {
+        signatureWitnessValues.set(`__message_bus_sig_${handlerIndex}_${index}_r${rowIndex}`, argument);
       }
-      signatureWitnessValues.set(`__message_bus_sig_${handlerIndex}_${index}_r${rowIndex}`, argument);
     });
     for (const binding of handler.batchKeyWitnesses ?? []) {
       if (binding.swappable) {
@@ -355,7 +376,8 @@ export function encodeMessageBatch(
     }
     const argsBlob = encodeMessageBusArguments(
       rowEncoded,
-      handler.inputs.map((input) => input.type),
+      handler.inputs.filter((input) => input.type !== 'sig' && input.type !== 'sig[]')
+        .map((input) => input.type),
       structs,
     );
     if (argsBlob.length > 0xffff) {
@@ -419,6 +441,17 @@ export function encodeMessageBatch(
       const witness = keyWitnessValues.get(input.name);
       if (witness) return witness.value;
       const signatureWitness = signatureWitnessValues.get(input.name);
+      if (/^__message_bus_sig_\d+_\d+_rows$/.test(input.name)) {
+        if (!Array.isArray(signatureWitness) || signatureWitness.length === 0) {
+          // The handler is not selected in this envelope, so the route never indexes this array. Supply one
+          // already-encoded NULLFAIL signature value without requiring an unrelated signer.
+          return [new Uint8Array()];
+        }
+        const fallback = signatureWitness.find((value) => value instanceof SignatureTemplate);
+        if (!fallback) return [new Uint8Array()];
+        return Array.from({ length: invocations.length }, (_unused, row) =>
+          signatureWitness[row] instanceof SignatureTemplate ? signatureWitness[row] : fallback);
+      }
       if (signatureWitness) return signatureWitness;
       // Signature slots are allocated for the route's full bounded row width.
       // Unreached rows are never executed, but their ABI positions must still

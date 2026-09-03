@@ -1,14 +1,15 @@
 # Message-bus kernel (compiler calling convention)
 
-Status: normative for **kernel-shaped** contracts. The on-wire envelope remains
+Status: normative and default for message-bus contracts. The on-wire envelope remains
 [`atomic-message-bus-protocol.md`](./atomic-message-bus-protocol.md). Journal read/write/flush rules remain
 [`state-journal-protocol.md`](./state-journal-protocol.md). This document is the compiler convention that
 sits between those two: how a handler is an `OP_DEFINE` body, how the route wrapper is the only layout
 owner, and which shapes are refused with a closed reason set.
 
-Marketplace-scale and other contracts that do not yet match this convention keep the **legacy** path in
-`synthesizeMessageBusRoute` (handler clones, AST row unroll, existing `messageBusRejectionReason` strings).
-Legacy is not extended with new clone families or admission flags. Kernel work lands on toys first.
+Unsupported handlers are refused independently with the closed `KERNEL_*` catalog below; they do not move the
+whole artifact back to the historical implementation. `messageBusKernel: false` is the explicit compatibility
+escape hatch for reproducing the **legacy** clone/unroll convention and its old rejection strings. Legacy is not
+extended with new clone families or admission flags.
 
 Related: [`journal-and-message-bus.md`](./journal-and-message-bus.md),
 [`buffered-state-and-message-bus-research.md`](./buffered-state-and-message-bus-research.md),
@@ -31,8 +32,8 @@ The kernel is how the **compiler** expresses it:
 - `maximumRows` is a **runtime** bound (`require(rowCount <= maximumRows)`). It is not an AST unroll
   count.
 
-The interpreter to grow is the loop `assembleMessageBusRowStatements` already emits when a route is
-not in collection/array/signature/resource mode:
+The interpreter to grow is the loop `assembleMessageBusRowStatements` emits for every admitted kernel
+surface:
 
 ```text
 for (bigint row = 0; row < rowCount; row = row + 1) {
@@ -75,8 +76,9 @@ per-row cloned bodies.
 ## 3. Route wrapper (controller)
 
 Selector `53434231` (`SCB1`). Inputs remain `batchBlob` plus the existing compact-binder /
-graph / msg.sender-category parameters. Kernel routes **omit** per-row key and signature witness
-parameters.
+graph / msg.sender-category parameters. Kernel routes **omit** compile-time `_r${row}` key and signature
+bands. Each scalar source `sig` parameter instead contributes one aligned `sig[] ..._rows` route witness;
+transaction signatures stay outside the committed row blob and the runtime loop selects element `row`.
 
 Execution order:
 
@@ -105,9 +107,13 @@ loop variable), never a compile-time integer.
 
 ## 4. Eligibility
 
-A contract uses the kernel path when **every** handler the route would dispatch is kernel-shaped:
+A contract with a message-bus route uses the kernel calling convention by default. An explicit
+`messageBusKernel: true` selects the same behavior. Admission is decided **per handler**:
+kernel-shaped handlers are dispatched by the row loop and
+unsupported siblings remain published with a `KERNEL_*` refusal:
 
-- no `sig` / `sig[]` parameters (those cannot live in the envelope);
+- a scalar `sig` parameter is an aligned positional route witness and is finalized against the selected
+  handler body; a source `sig[]` remains refused because it needs a row-indexed array-of-arrays witness;
 - no dedicated resource-shaped handler that owns a fixed per-row physical frame as route ABI
   (param-keyed `from`/`to` alternatives journal as two slots of the same row);
 - no `_r${row}` witnesses required for soundness (`msg.sender` is a shared published identity;
@@ -116,13 +122,16 @@ A contract uses the kernel path when **every** handler the route would dispatch 
   the loop (concat / effect table / authenticated emission context on one `OP_INVOKE`);
 - no frozen-forbidden construct (section 5).
 
-Otherwise the contract stays on the **legacy** path: current clones, current unroll, current
-`messageBusRejectionReason` strings. A Marketplace-shaped handler is kernel-eligible when its keys
-and calls have a loop representation; the whole contract stays legacy only while some sibling still
-needs `_rN` witnesses or a frozen-forbidden construct.
+`messageBusKernel: false` keeps the **legacy** path as a temporary compatibility escape hatch:
+current clones, current unroll, and current `messageBusRejectionReason` strings. A
+Marketplace-shaped handler is kernel-eligible when its keys and calls have a loop representation.
+Under the kernel convention, an unsupported sibling is refused without demoting eligible siblings.
 
-An explicit compiler option `messageBusKernel: true` (when added) **requires** the kernel path and
-fails with a `KERNEL_*` reason instead of falling back to legacy.
+The default kernel convention requires kernel admission. Ineligible handlers publish
+`KERNEL_*` reasons instead of the legacy admission catalog. The resolved convention is published as
+`artifact.messageBus.convention` (`legacy-unroll` | `kernel-row-loop`) and
+`artifact.messageBus.available` (false when every handler is refused). `this.activeBytecode` /
+`this.activeInputIndex` are stable owner introspection on the kernel path only.
 
 ---
 
@@ -135,8 +144,8 @@ every kernel toy.
 | Code | Means | Not this |
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
-| `KERNEL_TX_SIGNATURE` | A transaction `sig` / `sig[]` in the row or envelope | `ecrecover` / ECDSA over **data** (existing compute sidecar) |
-| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64` | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), or counter-keyed `m[i]` (`i < n`, hidden `__internal__vmapCounterPerm_*` witness) |
+| `KERNEL_TX_SIGNATURE` | A transaction-signature shape that cannot be represented as one scalar `sig` per logical row (notably a source `sig[]`, or a signature check with no scalar signature parameter) | Scalar `sig` (one aligned `sig[] ..._rows` route witness); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
+| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; or a counter loop that repeats a fixed-slot effect (event, BCH transfer, or token-container transfer) | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical counter-keyed `for (int i = 0; i < n; i = i + 1)` (domain `n`) or `int i = 0; do { ...; i = i + 1; } while (i < n)` (domain `max(n, 1)`) over `m[i]` / nested `m[k][i]`, or those rewrites beside source-order typed external calls / invariant `if`/`switch` |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Inline assembly or a low-level call the journal cannot summarize as a call/effect row | After Solidity-compat lowering to `call` plus returndata |
 | `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors (not child deploys) |
@@ -144,6 +153,13 @@ every kernel toy.
 Legacy `messageBusRejectionReason` strings (`dynamic-and-collection-route-not-enabled`,
 `atomic-delegate-context-unpreservable`, …) remain on the legacy path only so existing diagnostics
 stay stable.
+
+The frozen catalog is not a list of features supplied by legacy. Legacy also refuses transaction-signature
+arrays, lifecycle/unsafe rows, opaque assembly, and foreign delegate execution (under its older diagnostic
+names). The compatibility escape exists for bytecode/ABI reproduction and for the small set of historically
+admitted clone-owned layouts; it is not a general fallback for a kernel refusal. In particular, default kernel
+compilation never silently emits the legacy unroll: if an admitted survivor cannot use the row loop, that is an
+internal compiler invariant violation.
 
 If a toy needs a capability that is not in this table, change **this spec** and the toys. Do not add
 `__message_bus_*` clone families or admission-ladder flags.
@@ -167,7 +183,9 @@ performs the authenticated read and the single write-back. A kernel handler must
 split diagnostic when dynamic storage and a collection do not share one exit.
 
 Effects (events, BCH, FT/NFT) stay **adjacent** to the journal, not journal values. The kernel
-appends them from the loop; it does not unroll one covenant site per compile-time row index.
+appends them from the outer message-row loop; it does not unroll one covenant site per compile-time row index.
+An effect site inside a counter-keyed inner loop is different: it can execute repeatedly within one row and
+remains refused until the effect frame has an inner-iteration dimension.
 
 ---
 
@@ -182,8 +200,9 @@ Unchanged:
 - SDK-derived absolute indices; application source still supplies none.
 
 Kernel artifacts should not require `_r${row}` route inputs. Row arguments stay in the manifest
-`arguments` bytes. Return `position` in the manifest remains the logical row index; only redeem
-bytecode becomes a loop.
+`arguments` bytes; scalar transaction signatures are the deliberate exception and use one aligned `_rows`
+array per handler parameter because committing them into the manifest would be circular. Return `position` in
+the manifest remains the logical row index; only redeem bytecode becomes a loop.
 
 ---
 
@@ -196,10 +215,11 @@ Journal: existing `ScalarJournal.test.ts` and `CollectionJournal.test.ts` remain
 evidence; kernel work must not regress them.
 
 SDK: `packages/solidcash/test/journal-message-bus/e2e/KernelLoopCompose.test.ts` composes two logical
-calls on a kernel toy through the existing envelope and `vm.evaluate`.
+calls through the existing envelope and `vm.evaluate`, including two selected scalar-signature rows and an
+unsigned sibling-only batch that must not request an unrelated signer.
 
-Marketplace owned-only compile is **not** a kernel gate. It may stay on the legacy unroll until a
-separate cutover.
+The broad journal/message-bus suites remain the regression gate for the default convention. Tests that describe
+the historical wire implementation must opt into it with `messageBusKernel: false`.
 
 ---
 
@@ -215,8 +235,10 @@ Kernel toys now cover the designed eligibility class:
 - `delegate` implementation functions in this participant's owner frame.
 
 Compiler evidence: `KernelLoopRoute.test.ts`, `KernelCutoverRoute.test.ts`. SDK: `KernelLoopCompose.test.ts`,
-`KernelCutoverCompose.test.ts`. Transaction `sig` rows and foreign `delegatecall` stay on the legacy
-unroll. Typed external calls, collection-plus-typed-call handlers (a mapping journal clone promoted
+`KernelCutoverCompose.test.ts`. Scalar transaction `sig` rows use aligned route witnesses; source `sig[]`
+remains `KERNEL_TX_SIGNATURE`. Foreign `delegatecall` remains `KERNEL_FOREIGN_DELEGATE`. The legacy convention
+retains its historical admission behavior and diagnostic names, but does not make these unsafe shapes admissible.
+Typed external calls, collection-plus-typed-call handlers (a mapping journal clone promoted
 onto the graph `OP_INVOKE` frame), interface-typed state receivers (`this.data.userRegistered(..)`),
 literal `new T[](N)` key arrays, counter-keyed `m[i]` loops,
 cross-handler `msg.sender` / argument keys, public mapping getters, expression-keyed second
@@ -242,16 +264,35 @@ library `Address.sendValue` (`to.transfer` inside a free/library helper, includi
 `using Address for address payable; to.sendValue(...)`),
 returning a user-defined value type (`returns (TokenId)`),
 counter-keyed `delete this.m[i]` (and two mapping writes in one counter loop),
-do-while counter-keyed mapping-only loops,
 `fallback` that wraps a UDVT mapping key,
 an invariant parameter key written inside `while (true) { ...; break; }`,
-mapping values of `pubkey` / `datasig` / `fixedMxN` / `ufixedMxN`
+mapping values of `pubkey` / `datasig` / `fixedMxN` / `ufixedMxN`, public whole-struct getters (captured as their
+Solidity field tuple), and dynamic arrays of structs or enums returned through the recursive EVM ABI encoder
 (journal cache defaults are type-correct empty/`0` rather than `int` 0).
-Public whole-struct getters, public enum getters, recursive mapping handlers, and result types
-the wrapper cannot `abi.encode` (enum, `Rec[]`) stay `KERNEL_LAYOUT`. Counter-keyed mapping
-loops with `continue`/`break`, or with mixed typed calls / transfers / events in the same body,
-stay `KERNEL_UNBOUNDED_KEY` (permuting those effects with hash-sorted keys would change source
-order).
+Recursive mapping handlers and result types the wrapper cannot encode stay `KERNEL_LAYOUT`. Enum scalar results
+and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
+Counter-keyed mapping loops with `continue`/`break`/early `return`, non-zero starts/steps, local or mutated
+bounds, or extra counter mutations stay `KERNEL_UNBOUNDED_KEY` (a permutation of `0..n-1` is neither a
+skip-set nor a witness for a different iteration domain). The exact post-test form
+`int i = 0; do { ...; i = i + 1; } while (i < n)` is supported with an authenticated
+`max(n, 1)` permutation; other `do-while` domains remain refused. A handler currently admits at most one
+counter-keyed physical loop.
+Every mapping/array write in that loop must use the counter in exactly one key component, and multiple
+writes must have the same complete key tuple (for example `a[k][i]` plus `b[k][i]`). Counter-dependent
+or loop-carried write guards, sibling reads of a mutated mapping, foreign counter-keyed reads, and
+write values derived through loop-local/loop-carried locals or scalar state mutated by the loop remain
+`KERNEL_UNBOUNDED_KEY`.
+
+Mixed typed external calls and genuinely invariant `if`/`switch` in the same counter loop stay on the
+row loop: only direct uses of the counter in mapping keys and mapping values are rewritten to `perm[i]`;
+this includes values computed by explicitly `pure` internal helpers and resource-free builtins such as
+`max`. Calls keep source order. Events, BCH transfers, and token-container transfers inside the physical
+counter loop stay `KERNEL_UNBOUNDED_KEY`: the current effect frame has one fixed window per message row,
+not one window per runtime inner iteration. Those effects remain supported before or after the loop.
+Nested counter keys `m[k][i]` permute the inner key only.
+At transaction construction time, one envelope may currently select only one non-empty counter-loop
+row. Multiple collections in that row share its authenticated permutation, but multiple selected loop
+rows are rejected until the SDK/compiler protocol has row-scoped predecessor journals and cursors.
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay

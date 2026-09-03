@@ -8023,13 +8023,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const script = asmToScript(node.assemblyBody);
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
-    // Mirror each element's stack effect onto the tracker so later variable refs resolve
-    // correctly. Data push = 1 slot; opcode effects from the table (untrackable ones are
-    // rejected in TypeCheckTraversal). Results are anonymous '(asm)' slots.
+    // Mirror each element's stack effect onto the tracker so later variable refs resolve correctly. A raw
+    // conditional snapshots the post-condition stack, visits each arm independently, then joins equal-height
+    // arms. Values which retain the same symbolic identity on both arms stay addressable; differing values join
+    // as anonymous assembly results. TypeCheckTraversal has already rejected malformed or divergent branches.
+    const conditionals: Array<{ entry: string[]; thenStack?: string[] }> = [];
     for (const element of script) {
       this.emit(element, locationData);
       if (typeof element !== 'number') {
         this.pushToStack('(asm)');
+        continue;
+      }
+      if (element === Op.OP_IF || element === Op.OP_NOTIF) {
+        this.popFromStack();
+        conditionals.push({ entry: [...this.stack] });
+        continue;
+      }
+      if (element === Op.OP_ELSE) {
+        const conditional = conditionals.at(-1);
+        if (!conditional) throw new Error('Unmatched OP_ELSE in assembly block');
+        conditional.thenStack = [...this.stack];
+        this.stack = [...conditional.entry];
+        continue;
+      }
+      if (element === Op.OP_ENDIF) {
+        const conditional = conditionals.pop();
+        if (!conditional) throw new Error('Unmatched OP_ENDIF in assembly block');
+        const thenStack = conditional.thenStack ?? [...this.stack];
+        const elseStack = conditional.thenStack ? [...this.stack] : conditional.entry;
+        if (thenStack.length !== elseStack.length) {
+          throw new Error('Divergent assembly conditional stack heights reached code generation');
+        }
+        this.stack = thenStack.map((name, index) => name === elseStack[index] ? name : '(asm)');
         continue;
       }
       const effect = getStackEffect(element);

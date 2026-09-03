@@ -11,7 +11,7 @@ const LOCAL_OPCODES = new Set<number>([
   Op.OP_1, Op.OP_2, Op.OP_3, Op.OP_4, Op.OP_5, Op.OP_6, Op.OP_7, Op.OP_8,
   Op.OP_9, Op.OP_10, Op.OP_11, Op.OP_12, Op.OP_13, Op.OP_14, Op.OP_15, Op.OP_16,
   Op.OP_NOP, Op.OP_NOP1, Op.OP_NOP4, Op.OP_NOP5, Op.OP_NOP6, Op.OP_NOP7, Op.OP_NOP8, Op.OP_NOP9, Op.OP_NOP10,
-  Op.OP_VERIFY,
+  Op.OP_VERIFY, Op.OP_IF, Op.OP_NOTIF, Op.OP_ELSE, Op.OP_ENDIF,
   Op.OP_TOALTSTACK, Op.OP_FROMALTSTACK,
   Op.OP_2DROP, Op.OP_2DUP, Op.OP_3DUP, Op.OP_2OVER, Op.OP_2ROT, Op.OP_2SWAP,
   Op.OP_DROP, Op.OP_DUP, Op.OP_NIP, Op.OP_OVER, Op.OP_PICK, Op.OP_ROT, Op.OP_SWAP, Op.OP_TUCK,
@@ -82,14 +82,56 @@ export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean
 
   // Values are tracked only where their exact script number is statically known. This is enough to prove a
   // local OP_PICK without interpreting arbitrary assembly computations or trusting a runtime-selected depth.
-  const main: Array<bigint | undefined> = [];
-  const alt: Array<bigint | undefined> = [];
+  type AbstractValue = bigint | undefined;
+  interface ConditionalFrame {
+    entryMain: AbstractValue[];
+    entryAlt: AbstractValue[];
+    thenMain?: AbstractValue[];
+    thenAlt?: AbstractValue[];
+  }
+  let main: AbstractValue[] = [];
+  let alt: AbstractValue[] = [];
+  const conditionals: ConditionalFrame[] = [];
+  const merge = (left: AbstractValue[], right: AbstractValue[]): AbstractValue[] | undefined => {
+    if (left.length !== right.length) return undefined;
+    return left.map((value, index) => value === right[index] ? value : undefined);
+  };
   for (const element of script) {
     if (element instanceof Uint8Array) {
       main.push(pushedScriptNumber(element));
       continue;
     }
     if (!LOCAL_OPCODES.has(element)) return false;
+    if (element === Op.OP_IF || element === Op.OP_NOTIF) {
+      // The condition itself must be produced by this block; both arms begin after BCH consumes it.
+      if (main.length === 0) return false;
+      main.pop();
+      conditionals.push({ entryMain: [...main], entryAlt: [...alt] });
+      continue;
+    }
+    if (element === Op.OP_ELSE) {
+      const conditional = conditionals.at(-1);
+      if (!conditional || conditional.thenMain !== undefined) return false;
+      conditional.thenMain = [...main];
+      conditional.thenAlt = [...alt];
+      main = [...conditional.entryMain];
+      alt = [...conditional.entryAlt];
+      continue;
+    }
+    if (element === Op.OP_ENDIF) {
+      const conditional = conditionals.pop();
+      if (!conditional) return false;
+      const thenMain = conditional.thenMain ?? main;
+      const thenAlt = conditional.thenAlt ?? alt;
+      const elseMain = conditional.thenMain === undefined ? conditional.entryMain : main;
+      const elseAlt = conditional.thenAlt === undefined ? conditional.entryAlt : alt;
+      const joinedMain = merge(thenMain, elseMain);
+      const joinedAlt = merge(thenAlt, elseAlt);
+      if (!joinedMain || !joinedAlt) return false;
+      main = joinedMain;
+      alt = joinedAlt;
+      continue;
+    }
     const effect = getStackEffect(element);
     if (!effect) return false;
 
@@ -121,5 +163,5 @@ export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean
     if (element === Op.OP_TOALTSTACK) alt.push(popped[0]);
   }
 
-  return main.length === 0 && alt.length === 0;
+  return conditionals.length === 0 && main.length === 0 && alt.length === 0;
 }

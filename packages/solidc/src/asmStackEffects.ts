@@ -2,13 +2,28 @@ import { Op } from '@solidcash/utils';
 
 /**
  * Net stack effect of an opcode, used to keep the assembly-block stack tracker in sync.
- * Opcodes with data-dependent (OP_ROLL, OP_IFDUP, OP_CHECKMULTISIG) or control-flow
- * (OP_IF family) effects are absent and rejected. Reordering opcodes pop their touched
- * slots and push the same count of anonymous slots (depth exact, names dropped).
+ * Opcodes with data-dependent effects (OP_ROLL, OP_IFDUP, OP_CHECKMULTISIG) are absent and rejected.
+ * The OP_IF family is analyzed structurally by analyzeAssemblyStack rather than listed here. Reordering opcodes
+ * pop their touched slots and push the same count of anonymous slots (depth exact, names dropped).
  */
 export interface StackEffect {
   pops: number;
   pushes: number;
+}
+
+export interface AssemblyStackAnalysis {
+  /** Minimum number of values which must already exist when the block begins. */
+  requiredDepth: number;
+  /** Net stack-height change on every successful path through the block. */
+  delta: number;
+  /** Minimum number of alt-stack values which must already exist when the block begins. */
+  requiredAltDepth: number;
+  /** Net alt-stack-height change on every successful path through the block. */
+  altDelta: number;
+}
+
+export interface AssemblyStackAnalysisError {
+  error: string;
 }
 
 const EFFECTS: Record<number, StackEffect> = {
@@ -150,4 +165,91 @@ const EFFECTS: Record<number, StackEffect> = {
 /** Static stack effect of an opcode, or undefined if it cannot be statically tracked. */
 export function getStackEffect(opcode: number): StackEffect | undefined {
   return EFFECTS[opcode];
+}
+
+interface ConditionalFrame {
+  entryState: AssemblyStackAnalysis;
+  thenState?: AssemblyStackAnalysis;
+}
+
+const isConditionalStart = (opcode: number): boolean => opcode === Op.OP_IF || opcode === Op.OP_NOTIF;
+
+/**
+ * Analyze a native assembly block without assuming a particular compiler-managed input stack.
+ *
+ * Raw IF/ELSE arms are safe for the surrounding compiler only when every arm converges to the same stack
+ * height. This analysis also computes the number of values the block borrows from its caller. It deliberately
+ * supports conditionals but not data-dependent loops: OP_BEGIN/OP_UNTIL would require a loop invariant rather
+ * than branch convergence.
+ */
+export function analyzeAssemblyStack(
+  script: readonly (number | Uint8Array)[],
+): AssemblyStackAnalysis | AssemblyStackAnalysisError {
+  let state: AssemblyStackAnalysis = {
+    requiredDepth: 0, delta: 0, requiredAltDepth: 0, altDelta: 0,
+  };
+  const frames: ConditionalFrame[] = [];
+
+  const apply = (effect: StackEffect): void => {
+    state.requiredDepth = Math.max(state.requiredDepth, effect.pops - state.delta);
+    state.delta += effect.pushes - effect.pops;
+  };
+  const applyAlt = (pops: number, pushes: number): void => {
+    state.requiredAltDepth = Math.max(state.requiredAltDepth, pops - state.altDelta);
+    state.altDelta += pushes - pops;
+  };
+
+  for (const element of script) {
+    if (element instanceof Uint8Array) {
+      state.delta += 1;
+      continue;
+    }
+    if (isConditionalStart(element)) {
+      apply({ pops: 1, pushes: 0 });
+      frames.push({ entryState: { ...state } });
+      continue;
+    }
+    if (element === Op.OP_ELSE) {
+      const frame = frames.at(-1);
+      if (!frame) return { error: 'OP_ELSE has no matching OP_IF/OP_NOTIF' };
+      if (frame.thenState) return { error: 'an assembly conditional may contain only one OP_ELSE' };
+      frame.thenState = { ...state };
+      state = { ...frame.entryState };
+      continue;
+    }
+    if (element === Op.OP_ENDIF) {
+      const frame = frames.pop();
+      if (!frame) return { error: 'OP_ENDIF has no matching OP_IF/OP_NOTIF' };
+      const thenState = frame.thenState ?? state;
+      const elseState = frame.thenState
+        ? state : frame.entryState;
+      if (thenState.delta !== elseState.delta || thenState.altDelta !== elseState.altDelta) {
+        return {
+          error: 'assembly conditional stack-height mismatch '
+            + `(main ${thenState.delta}/${elseState.delta}, alt ${thenState.altDelta}/${elseState.altDelta})`,
+        };
+      }
+      state = {
+        requiredDepth: Math.max(thenState.requiredDepth, elseState.requiredDepth),
+        delta: thenState.delta,
+        requiredAltDepth: Math.max(thenState.requiredAltDepth, elseState.requiredAltDepth),
+        altDelta: thenState.altDelta,
+      };
+      continue;
+    }
+    const effect = getStackEffect(element);
+    if (!effect) return { error: `opcode ${element} has no statically trackable stack effect` };
+    if (element === Op.OP_TOALTSTACK) {
+      apply(effect);
+      applyAlt(0, 1);
+    } else if (element === Op.OP_FROMALTSTACK) {
+      applyAlt(1, 0);
+      apply(effect);
+    } else {
+      apply(effect);
+    }
+  }
+
+  if (frames.length > 0) return { error: 'assembly conditional is missing OP_ENDIF' };
+  return state;
 }

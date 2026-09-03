@@ -20,6 +20,7 @@ import {
   MappingType,
   isFixedWidthType,
   Op,
+  asmToScript,
 } from '@solidcash/utils';
 import {
   AssignNode,
@@ -167,7 +168,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import { Symbol } from '../ast/SymbolTable.js';
 import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { isNumericType, resultingTypeForBinaryOp } from '../utils.js';
-import { getStackEffect } from '../asmStackEffects.js';
+import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
 import { generatedOriginOf } from '../ast/Location.js';
 
@@ -1447,6 +1448,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     ]);
 
     const tokens = node.assemblyBody.split(/\s+/).filter((t) => t.length > 0);
+    const conditionalOpcodes = new Set(['OP_IF', 'OP_NOTIF', 'OP_ELSE', 'OP_ENDIF']);
     for (const token of tokens) {
       if (token.startsWith('OP_')) {
         const opcode = Op[token as keyof typeof Op];
@@ -1459,7 +1461,7 @@ export default class TypeCheckTraversal extends AstTraversal {
             `opcode '${token}' is not allowed in assembly blocks as it can corrupt script execution`,
           );
         }
-        if (getStackEffect(opcode as number) === undefined) {
+        if (!conditionalOpcodes.has(token) && getStackEffect(opcode as number) === undefined) {
           throw new InvalidAssemblyError(
             node,
             `opcode '${token}' cannot be used in an assembly block: its stack effect is not `
@@ -1471,6 +1473,11 @@ export default class TypeCheckTraversal extends AstTraversal {
       } else {
         throw new InvalidAssemblyError(node, `invalid token '${token}'`);
       }
+    }
+
+    const analysis = analyzeAssemblyStack(asmToScript(node.assemblyBody));
+    if ('error' in analysis) {
+      throw new InvalidAssemblyError(node, analysis.error);
     }
 
     const loc = this.diagLine(node.location);

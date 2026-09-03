@@ -244,6 +244,10 @@ describe('required kernel admission', () => {
     ['pushed-depth local pick', '07 00 OP_PICK OP_NUMEQUALVERIFY'],
     ['balanced local alt-stack use', 'OP_1 OP_TOALTSTACK OP_FROMALTSTACK OP_DROP'],
     ['pure data hashing', 'OP_1 OP_SHA256 OP_DROP'],
+    ['balanced conditional', 'OP_1 OP_IF OP_2 OP_DROP OP_ELSE OP_3 OP_DROP OP_ENDIF'],
+    ['balanced nested conditionals', `OP_1 OP_IF
+      OP_0 OP_NOTIF OP_4 OP_DROP OP_ELSE OP_5 OP_DROP OP_ENDIF
+      OP_ELSE OP_6 OP_DROP OP_ENDIF`],
   ])('admits isolated native assembly with %s', (_description, asm) => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract C() {
@@ -285,6 +289,7 @@ describe('required kernel admission', () => {
     ['inspection index borrowed from compiler stack', 'OP_OUTPUTVALUE OP_DROP'],
     ['locktime threshold borrowed from compiler stack', 'OP_CHECKLOCKTIMEVERIFY'],
     ['sequence threshold borrowed from compiler stack', 'OP_CHECKSEQUENCEVERIFY'],
+    ['conditional borrowed from compiler stack', 'OP_IF OP_ENDIF'],
   ])('refuses native assembly with %s', (_description, asm) => {
     expect(denied(`pragma solidcash >=0.8.0;
       contract C() {
@@ -294,6 +299,37 @@ describe('required kernel admission', () => {
       eligible: false,
       rejectionReason: 'KERNEL_OPAQUE_EFFECT',
     });
+  });
+
+  it.each([
+    ['main stack', 'OP_1 OP_IF OP_2 OP_ENDIF'],
+    ['alt stack', 'OP_1 OP_IF OP_2 OP_TOALTSTACK OP_ENDIF'],
+  ])('rejects a native conditional with divergent %s height', (_description, asm) => {
+    expect(() => compileString(`contract C() {
+      function denied() public { assembly { ${asm} } require(true); }
+    }`, KERNEL)).toThrow(/assembly conditional stack-height mismatch/);
+  });
+
+  it.each([
+    ['unmatched else', 'OP_ELSE', /OP_ELSE has no matching/],
+    ['unmatched endif', 'OP_ENDIF', /OP_ENDIF has no matching/],
+    ['missing endif', 'OP_1 OP_IF', /missing OP_ENDIF/],
+    ['second else', 'OP_1 OP_IF OP_ELSE OP_ELSE OP_ENDIF', /only one OP_ELSE/],
+  ])('rejects native assembly with %s', (_description, asm, diagnostic) => {
+    expect(() => compileString(`contract C() {
+      function denied() public { assembly { ${asm} } require(true); }
+    }`, KERNEL)).toThrow(diagnostic);
+  });
+
+  it('preserves a caller stack value which has the same identity after both native conditional arms', () => {
+    expect(() => compileString(`contract C() {
+      function direct(int value) public {
+        assembly {
+          OP_DUP OP_IF OP_2 OP_DROP OP_ELSE OP_3 OP_DROP OP_ENDIF
+        }
+        require(value == value);
+      }
+    }`)).not.toThrow();
   });
 
   it('admits lowerable Yul after translating it to ordinary kernel state operations', () => {

@@ -29,6 +29,8 @@ contract KernelAcc() {
       OP_TXOUTPUTCOUNT OP_DROP
       OP_0 OP_UTXOVALUE OP_DROP
       OP_7 OP_0 OP_PICK OP_NUMEQUALVERIFY
+      OP_TXVERSION OP_2 OP_NUMEQUAL
+      OP_IF OP_9 OP_DROP OP_ELSE OP_10 OP_DROP OP_ENDIF
     }
     require(true);
   }

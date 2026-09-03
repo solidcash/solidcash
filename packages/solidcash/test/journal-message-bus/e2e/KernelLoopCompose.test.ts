@@ -28,10 +28,15 @@ contract KernelAcc() {
 const COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelCounterMapping() {
   mapping(int => int) m;
-  function valueFor(int i) internal pure returns (int) { return i + 10; }
-  function write(int n) public {
+  function write(int n, int value) public {
     for (int i = 0; i < n; i = i + 1) {
-      this.m[i] = valueFor(i);
+      this.m[i] = value;
+    }
+    require(true);
+  }
+  function clear(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      delete this.m[i];
     }
     require(true);
   }
@@ -342,11 +347,29 @@ describe('kernel counter-key mapping loop compose', () => {
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
     expect(() => contract.batch([
-      { function: 'write', args: [3n] },
-      { function: 'write', args: [3n] },
+      { function: 'write', args: [2n, 10n] },
+      { function: 'write', args: [3n, 10n] },
     ])).toThrow(/row-scoped journal settlement/);
+    expect(() => contract.batch([
+      { function: 'write', args: [3n, 10n] },
+      { function: 'write', args: [3n, 11n] },
+    ])).toThrow(/row-scoped journal settlement/);
+    const repeatedCall = contract.batch([
+      { function: 'write', args: [3n, 10n] },
+      { function: 'write', args: [3n, 10n] },
+    ]);
+    const repeatedBuilder = await repeatedCall.build();
+    const repeatedVm = createVirtualMachineBch2026ForProvider(provider);
+    const repeatedTransaction = repeatedBuilder.buildLibauthTransaction();
+    const repeatedSourceOutputs = generateLibauthSourceOutputs(repeatedBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < repeatedTransaction.inputs.length; inputIndex += 1) {
+      expect(repeatedVm.stateSuccess(repeatedVm.evaluate({
+        inputIndex, sourceOutputs: repeatedSourceOutputs, transaction: repeatedTransaction,
+      })), `repeated-row input ${inputIndex}`).toBe(true);
+    }
+    await expect(repeatedCall.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
 
-    const zeroCall = contract.batch([{ function: 'write', args: [0n] }]);
+    const zeroCall = contract.batch([{ function: 'write', args: [0n, 10n] }]);
     const zeroBuilder = await zeroCall.build();
     const zeroVm = createVirtualMachineBch2026ForProvider(provider);
     const zeroTransaction = zeroBuilder.buildLibauthTransaction();
@@ -358,7 +381,7 @@ describe('kernel counter-key mapping loop compose', () => {
     }
     await expect(zeroCall.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
 
-    const call = contract.batch([{ function: 'write', args: [3n] }]);
+    const call = contract.batch([{ function: 'write', args: [3n, 10n] }]);
 
     for (let build = 0; build < 2; build += 1) {
       const builder = await call.build();
@@ -416,7 +439,18 @@ describe('kernel counter-key mapping loop compose', () => {
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     for (let key = 0; key < 3; key += 1) {
       await expect(
-        StatefulContract.withCategory(inner, categoryId).check(BigInt(key), BigInt(key + 10)).send(),
+        StatefulContract.withCategory(inner, categoryId).check(BigInt(key), 10n).send(),
+      ).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+
+    const repeatedClear = contract.batch([
+      { function: 'clear', args: [3n] },
+      { function: 'clear', args: [3n] },
+    ]);
+    await expect(repeatedClear.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (let key = 0; key < 3; key += 1) {
+      await expect(
+        StatefulContract.withCategory(inner, categoryId).check(BigInt(key), 0n).send(),
       ).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
   }, 180_000);

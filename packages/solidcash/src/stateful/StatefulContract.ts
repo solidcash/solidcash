@@ -3526,6 +3526,55 @@ export function visibleHandlerInputs<T extends { name: string }>(inputs: readonl
 }
 
 /**
+ * Repeating an identical absolute counter-loop write is observationally idempotent: every row proves the same
+ * old-to-new entry transition, so the rows may share one physical journal settlement. Relative updates (`+`/`-`),
+ * differing arguments, and handlers with any other owner-local state remain row-scoped because replaying one
+ * transition would not represent their sequential semantics.
+ */
+export function canShareIdempotentCounterLoopSettlement(params: {
+  rows: readonly RouteExpressionKeyRow[];
+  structs: Artifact['structs'];
+  dataNftCount: number;
+}): boolean {
+  if (params.rows.length < 2) return false;
+  const identities = params.rows.map((row): string | undefined => {
+    const visible = visibleHandlerInputs(row.handler.inputs);
+    if (visible.length !== row.args.length) return undefined;
+    const encoded = visible.map((input, index) => (
+      encodeFunctionArgument(row.args[index], input.type, params.structs)
+    ));
+    if (encoded.some((value) => !(value instanceof Uint8Array))) return undefined;
+    return `${row.handler.selector ?? row.handler.name}:`
+      + encoded.map((value) => binToHex(value as Uint8Array)).join(':');
+  });
+  const identity = identities[0];
+  return identity !== undefined && identities.every((candidate) => candidate === identity)
+    && params.rows.every((row) => {
+      const loops = row.handler.sortedUpsertLoopInfo ?? [];
+      const requiredNfts = row.handler.requiredNftIndices
+        ?? Array.from({ length: params.dataNftCount }, (_unused, index) => index);
+      return loops.length > 0
+        && loops.every((loop) => (
+          (loop.op === 'delete' || (loop.op === 'set'
+            && loop.mutation === undefined
+            && loop.valueRuntimeExpression !== true
+            && loop.valueRuntimeLocal === undefined
+            && (loop.valueArrayParam !== undefined
+              || loop.valueScalarParam !== undefined
+              || loop.valueConst !== undefined)))
+          && loop.varyingArrayParam.startsWith('__internal__vmapCounterPerm_')
+        ))
+        && requiredNfts.length === 0
+        && (row.handler.entryAccesses?.length ?? 0) === 0
+        && (row.handler.dynamicWrites?.length ?? 0) === 0
+        && (row.handler.sortedInsertLoopInfo?.length ?? 0) === 0
+        && (row.handler.sortedInsertLoops?.length ?? 0) === 0
+        && (row.handler.entryLoopWrites?.length ?? 0) === 0
+        && row.handler.usesMsgSender !== true;
+    });
+}
+
+/**
  * Select the message-bus row that owns an expression-keyed entry slot.
  * Later rows decode the same `rowArgs` label shape; matching is by collection + handler arity,
  * then an optional `_rN` hint, then the handler's own expression label.
@@ -4208,11 +4257,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (!permutationSpec || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
       const rows = effectiveRowArguments?.filter((row) =>
         row.handler.inputs.some((candidate) => candidate.name === input.name)) ?? [];
-      if (rows.length !== 1) {
-        throw new Error(rows.length === 0
-          ? `message-bus counter permutation '${input.name}' has no selected source row`
-          : 'A message-bus envelope with counter-keyed mapping loops in multiple selected rows requires '
-            + 'row-scoped journal settlement; split the rows into separate transactions.');
+      // The published route owns the union of every admitted handler's hidden loop witnesses. A witness with no
+      // selected source row belongs only to an inactive dispatch arm, so its canonical empty value is sufficient.
+      if (rows.length === 0) {
+        resolvedCallerInternalWitnesses[input.name] = [];
+        continue;
+      }
+      const shareSettlement = canShareIdempotentCounterLoopSettlement({
+        rows,
+        structs: executionArtifact.structs,
+        dataNftCount: executionArtifact.stateLayout?.dataNftCount ?? 0,
+      });
+      if (rows.length !== 1 && !shareSettlement) {
+        throw new Error(
+          'A message-bus envelope with counter-keyed mapping loops in multiple selected rows requires '
+          + 'row-scoped journal settlement; split the rows into separate transactions.',
+        );
       }
       const row = rows[0];
       const visible = visibleHandlerInputs(row.handler.inputs);
@@ -4224,7 +4284,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const iterationCount = permutationSpec.postTest && count === 0n ? 1n : count;
       const permutation = Array.from({ length: Number(iterationCount) }, (_unused, index) => BigInt(index));
-      (row.internalArgs as Record<string, FunctionArgument>)[input.name] = permutation;
+      for (const selectedRow of rows) {
+        (selectedRow.internalArgs as Record<string, FunctionArgument>)[input.name] = permutation;
+      }
       resolvedCallerInternalWitnesses[input.name] = permutation;
     }
     const expectedWitnesses = capability.route.inputs
@@ -15141,14 +15203,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const value = selectedRowArgument(row, info.varyingArrayParam);
       return !Array.isArray(value) || value.length > 0;
     }));
-    if (activeSelectedUpsertRows.length > 1) {
+    const sharesIdempotentSettlement = canShareIdempotentCounterLoopSettlement({
+      rows: activeSelectedUpsertRows,
+      structs: stateLayout.structs,
+      dataNftCount: stateLayout.dataNftCount,
+    });
+    if (activeSelectedUpsertRows.length > 1 && !sharesIdempotentSettlement) {
       throw new Error(
         'A message-bus envelope with runtime mapping loops in multiple selected rows requires '
         + 'journalled predecessor planning; split the rows into separate transactions.',
       );
     }
+    const plannedUpsertRows = sharesIdempotentSettlement
+      ? activeSelectedUpsertRows.slice(0, 1) : activeSelectedUpsertRows;
     const upsertPlanningFrames = selectedUpsertRows.length > 0
-      ? activeSelectedUpsertRows.map((row) => ({
+      ? plannedUpsertRows.map((row) => ({
         abiFunction: row.handler,
         args: row.args as FunctionArgument[],
         routed: true,

@@ -292,9 +292,12 @@ this includes values computed by explicitly `pure` internal helpers and resource
 counter loop stay `KERNEL_UNBOUNDED_KEY`: the current effect frame has one fixed window per message row,
 not one window per runtime inner iteration. Those effects remain supported before or after the loop.
 Nested counter keys `m[k][i]` permute the inner key only.
-At transaction construction time, one envelope may currently select only one non-empty counter-loop
-row. Multiple collections in that row share its authenticated permutation, but multiple selected loop
-rows are rejected until the SDK/compiler protocol has row-scoped predecessor journals and cursors.
+At transaction construction time, multiple byte-identical rows may share one physical counter-loop settlement
+only when every mutation is a compiler-described absolute parameter/array/constant `set` or `delete`, the handler
+has no other owner-local state or entry access, and the encoded visible arguments match. This is idempotent replay:
+each logical row proves the same old-to-new transition. Differing rows, arbitrary runtime `set` expressions, and
+relative `+`/`-` updates remain rejected until the SDK/compiler protocol has row-scoped predecessor journals and
+cursors. Multiple collections in one admitted row share its authenticated permutation.
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay

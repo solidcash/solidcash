@@ -2,11 +2,40 @@ import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { encodeFunctionArgument } from '../../src/Argument.js';
 import {
+  canShareIdempotentCounterLoopSettlement,
   matchingRouteRowsForExpressionKey,
   parseRowArgsDecodeLabel,
   resolveRouteRowExpressionKey,
   type RouteExpressionKeyRow,
 } from '../../src/stateful/StatefulContract.js';
+
+function counterLoopRow(
+  args: bigint[],
+  op: 'set' | 'delete' | '+' = 'set',
+  valueRuntimeExpression = false,
+): RouteExpressionKeyRow {
+  return {
+    args,
+    handler: {
+      name: op === 'delete' ? 'clear' : 'write',
+      selector: op === 'delete' ? '22222222' : '11111111',
+      inputs: [
+        { name: 'n', type: 'int' },
+        ...(op === 'delete' ? [] : [{ name: 'value', type: 'int' }]),
+        { name: '__internal__vmapCounterPerm_n_0', type: 'int[]' },
+      ],
+      requiredNftIndices: [],
+      sortedUpsertLoopInfo: [{
+        collection: 'm',
+        fixedKeyParams: [],
+        varyingArrayParam: '__internal__vmapCounterPerm_n_0',
+        ...(op === 'set' && !valueRuntimeExpression && { valueScalarParam: 'value' }),
+        ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
+        op,
+      }],
+    },
+  };
+}
 
 function encodedUint(value: bigint): string {
   const encoded = encodeFunctionArgument(value, 'uint256');
@@ -42,6 +71,26 @@ describe('parseRowArgsDecodeLabel', () => {
     expect(parseRowArgsDecodeLabel(TWO_ARG_INDEX_1)).toEqual({ argumentIndex: 1, schemaArity: 2 });
     expect(parseRowArgsDecodeLabel('call:hash160(id:pk)')).toBeUndefined();
     expect(parseRowArgsDecodeLabel(undefined)).toBeUndefined();
+  });
+});
+
+describe('canShareIdempotentCounterLoopSettlement', () => {
+  const canShare = (rows: RouteExpressionKeyRow[]): boolean => (
+    canShareIdempotentCounterLoopSettlement({ rows, structs: undefined, dataNftCount: 0 })
+  );
+
+  it('accepts identical absolute sets and deletes', () => {
+    expect(canShare([counterLoopRow([3n, 10n]), counterLoopRow([3n, 10n])])).toBe(true);
+    expect(canShare([counterLoopRow([3n], 'delete'), counterLoopRow([3n], 'delete')])).toBe(true);
+  });
+
+  it('rejects differing rows, relative updates, and unproven runtime set expressions', () => {
+    expect(canShare([counterLoopRow([3n, 10n]), counterLoopRow([3n, 11n])])).toBe(false);
+    expect(canShare([counterLoopRow([3n, 1n], '+'), counterLoopRow([3n, 1n], '+')])).toBe(false);
+    expect(canShare([
+      counterLoopRow([3n, 10n], 'set', true),
+      counterLoopRow([3n, 10n], 'set', true),
+    ])).toBe(false);
   });
 });
 

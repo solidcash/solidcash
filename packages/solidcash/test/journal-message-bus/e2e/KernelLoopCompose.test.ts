@@ -22,6 +22,15 @@ contract KernelAcc() {
     bump(n);
     require(true);
   }
+  function inspect() public {
+    assembly {
+      OP_TXVERSION OP_2 OP_NUMEQUALVERIFY
+      OP_INPUTINDEX OP_DROP
+      OP_TXOUTPUTCOUNT OP_DROP
+      OP_0 OP_UTXOVALUE OP_DROP
+    }
+    require(true);
+  }
   function check(int expected) public { require(this.x == expected); }
 }`;
 
@@ -147,6 +156,26 @@ contract KernelDoCounterCaller(address sink) {
 }`;
 
 describe('kernel loop message-bus compose', () => {
+  it('executes isolated read-only transaction assembly inside a row handler', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'inspect')?.eligible).toBe(true);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { x: 0n }, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([{ function: 'inspect', args: [] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+        `input ${inputIndex}`).toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 180_000);
+
   it('evaluates two logical add rows on the kernel route', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, KERNEL);

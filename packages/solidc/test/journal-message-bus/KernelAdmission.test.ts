@@ -253,14 +253,21 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('refuses transaction-sensitive native assembly as KERNEL_OPAQUE_EFFECT', () => {
-    expect(denied(`pragma solidcash >=0.8.0;
+  it.each([
+    ['active input index', 'OP_INPUTINDEX OP_DROP'],
+    ['transaction header', 'OP_TXVERSION OP_DROP OP_TXINPUTCOUNT OP_DROP OP_TXOUTPUTCOUNT OP_DROP'],
+    ['indexed output inspection', 'OP_0 OP_OUTPUTVALUE OP_DROP'],
+    ['indexed token inspection', 'OP_0 OP_UTXOTOKENCATEGORY OP_DROP'],
+    ['absolute locktime constraint', 'OP_1 OP_CHECKLOCKTIMEVERIFY OP_DROP'],
+    ['relative locktime constraint', 'OP_1 OP_CHECKSEQUENCEVERIFY OP_DROP'],
+  ])('admits isolated native assembly with read-only %s', (_description, asm) => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
       contract C() {
-        function denied() public { assembly { OP_INPUTINDEX OP_DROP } require(true); }
+        function denied() public { assembly { ${asm} } require(true); }
         function control() public { require(true); }
-      }`, 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_OPAQUE_EFFECT',
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: true,
     });
   });
 
@@ -271,7 +278,10 @@ describe('required kernel admission', () => {
     ['unbalanced alt stack', 'OP_1 OP_TOALTSTACK'],
     ['dynamic stack reach', 'OP_1 OP_PICK OP_DROP'],
     ['transaction signature check', 'OP_0 OP_0 OP_CHECKSIG OP_DROP'],
-    ['locktime introspection', 'OP_1 OP_CHECKLOCKTIMEVERIFY OP_DROP'],
+    ['active-bytecode signature context', 'OP_ACTIVEBYTECODE OP_DROP'],
+    ['inspection index borrowed from compiler stack', 'OP_OUTPUTVALUE OP_DROP'],
+    ['locktime threshold borrowed from compiler stack', 'OP_CHECKLOCKTIMEVERIFY'],
+    ['sequence threshold borrowed from compiler stack', 'OP_CHECKSEQUENCEVERIFY'],
   ])('refuses native assembly with %s', (_description, asm) => {
     expect(denied(`pragma solidcash >=0.8.0;
       contract C() {
@@ -322,7 +332,7 @@ describe('required kernel admission', () => {
       int value;
       function denied(S calldata arg, int next) public {
         assembly { sstore(value.slot, next) }
-        assembly { OP_INPUTINDEX OP_DROP }
+        assembly { OP_ACTIVEBYTECODE OP_DROP }
         require(true);
       }
       function control() public { require(true); }
@@ -408,7 +418,7 @@ describe('required kernel admission', () => {
   it('publishes KERNEL_* handlers when every entry point is refused', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract C() {
-        function denied() public { assembly { OP_INPUTINDEX OP_DROP } require(true); }
+        function denied() public { assembly { OP_ACTIVEBYTECODE OP_DROP } require(true); }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
@@ -1339,7 +1349,7 @@ describe('required kernel admission', () => {
 
   it('publishes available:false when every kernel handler is refused', () => {
     const artifact = compileString(`contract C() {
-      function denied() public { assembly { OP_INPUTINDEX OP_DROP } require(true); }
+      function denied() public { assembly { OP_ACTIVEBYTECODE OP_DROP } require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.available).toBe(false);
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');

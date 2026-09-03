@@ -148,7 +148,7 @@ every kernel toy.
 | `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob | Any finite `sig` array parameter (one aligned outer row dimension); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
 | `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; counter loops that overlap one collection or do not have an unconditional top-level source-order journal plan; a path-dependent event in a counter-loop handler; or a counter loop that repeats a BCH/token-container transfer | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical counter-keyed `for (int i = S; i < n; i = i + D)` for constant `S` and positive constant `D` (also through an immutable bound-alias chain), or `int i = 0; do { ...; i = i + 1; } while (i < n)` over `m[i]` / nested `m[k][i]`, multiple unconditional sequential loops over disjoint collection sets, or those rewrites beside source-order typed external calls, unconditional event sites, or invariant `if`/`switch` |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
-| `KERNEL_OPAQUE_EFFECT` | Native assembly which is not statically isolated and stack-neutral (including transaction/signature introspection), unsupported Yul which cannot be lowered, or a low-level call the journal cannot summarize as a call/effect row | Isolated pure BCH assembly and Yul translated to ordinary typed operations before admission; after Solidity-compat lowering to `call` plus returndata |
+| `KERNEL_OPAQUE_EFFECT` | Native assembly which is not statically isolated and stack-neutral (including active-bytecode/signature context), unsupported Yul which cannot be lowered, or a low-level call the journal cannot summarize as a call/effect row | Isolated pure/read-only BCH assembly, including transaction inspection whose operands are block-local; Yul translated to ordinary typed operations before admission; after Solidity-compat lowering to `call` plus returndata |
 | `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors (not child deploys) |
 
 Legacy `messageBusRejectionReason` strings (`dynamic-and-collection-route-not-enabled`,
@@ -258,6 +258,11 @@ Compiler evidence: `KernelLoopRoute.test.ts`, `KernelCutoverRoute.test.ts`. SDK:
 unbound signature checks remain `KERNEL_TX_SIGNATURE`. Foreign `delegatecall` remains
 `KERNEL_FOREIGN_DELEGATE`. The legacy convention
 retains its historical admission behavior and diagnostic names, but does not make these unsafe shapes admissible.
+Native BCH assembly is admitted by opcode semantics rather than contract shape: a linear block may use values it
+pushes itself, balance both stacks, and perform pure operations or read-only transaction/token inspection. CLTV and
+CSV thresholds and indexed-inspection operands must also be block-local. `OP_ACTIVEBYTECODE`, transaction-signature
+checks, dynamic stack reach, underflow, and unknown opcodes remain `KERNEL_OPAQUE_EFFECT`; they either change with
+the invocation/signature context or cannot be proven isolated by the static stack walk.
 Typed external calls, collection-plus-typed-call handlers (a mapping journal clone promoted
 onto the graph `OP_INVOKE` frame), interface-typed state receivers (`this.data.userRegistered(..)`),
 literal `new T[](N)` key arrays, counter-keyed `m[i]` loops,

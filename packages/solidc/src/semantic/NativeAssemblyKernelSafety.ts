@@ -3,8 +3,9 @@ import { AssemblyStatementNode } from '../ast/AST.js';
 import { getStackEffect } from '../asmStackEffects.js';
 
 // Native assembly is safe to run inside a kernel handler only when it is a closed computation: it may use
-// literal data and pure BCH operators, but it may neither observe the transaction nor borrow values from the
-// compiler-managed main/alt stacks. Keep this an allow-list so newly activated opcodes fail closed.
+// literal data, pure BCH operators, and read-only transaction inspection, but it may not borrow values from the
+// compiler-managed main/alt stacks or change signature evaluation context. Keep this an allow-list so newly
+// activated opcodes fail closed.
 const LOCAL_OPCODES = new Set<number>([
   Op.OP_0, Op.OP_1NEGATE,
   Op.OP_1, Op.OP_2, Op.OP_3, Op.OP_4, Op.OP_5, Op.OP_6, Op.OP_7, Op.OP_8,
@@ -23,6 +24,16 @@ const LOCAL_OPCODES = new Set<number>([
   Op.OP_RIPEMD160, Op.OP_SHA1, Op.OP_SHA256, Op.OP_HASH160, Op.OP_HASH256,
   // Data signatures do not commit to this transaction, so a locally self-contained check is a pure computation.
   Op.OP_CHECKDATASIG, Op.OP_CHECKDATASIGVERIFY,
+  // These opcodes only constrain or inspect the transaction. Their operands (including inspection indices and
+  // locktime thresholds) must still be values produced inside this assembly block, as enforced below.
+  Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_CHECKSEQUENCEVERIFY,
+  Op.OP_INPUTINDEX,
+  Op.OP_TXVERSION, Op.OP_TXINPUTCOUNT, Op.OP_TXOUTPUTCOUNT, Op.OP_TXLOCKTIME,
+  Op.OP_UTXOVALUE, Op.OP_UTXOBYTECODE, Op.OP_OUTPOINTTXHASH, Op.OP_OUTPOINTINDEX,
+  Op.OP_INPUTBYTECODE, Op.OP_INPUTSEQUENCENUMBER,
+  Op.OP_OUTPUTVALUE, Op.OP_OUTPUTBYTECODE,
+  Op.OP_UTXOTOKENCATEGORY, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_UTXOTOKENAMOUNT,
+  Op.OP_OUTPUTTOKENCATEGORY, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTTOKENAMOUNT,
 ]);
 
 // The code generator's StackEffect describes the net tracker update. Duplicating/inspecting operators consume no
@@ -35,6 +46,9 @@ const MINIMUM_MAIN_DEPTH = new Map<number, number>([
   [Op.OP_DUP, 1],
   [Op.OP_OVER, 2],
   [Op.OP_SIZE, 1],
+  // CLTV/CSV inspect rather than pop their threshold, so their net stack effect alone cannot prove isolation.
+  [Op.OP_CHECKLOCKTIMEVERIFY, 1],
+  [Op.OP_CHECKSEQUENCEVERIFY, 1],
 ]);
 
 export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean {

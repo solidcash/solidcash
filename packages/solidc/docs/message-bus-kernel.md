@@ -324,8 +324,12 @@ including loops over the same physical collection. The compiler threads exact ac
 between those loops, and the SDK publishes their predecessor and commitment runs in the same order. If their
 concrete runtime keys overlap, the SDK rejects the repeated predecessor as requiring a read-your-writes topology
 derived from the earlier pending output.
-Every runtime-keyed mapping/array write in that loop must use the counter in exactly one key component, and those
-writes must have the same complete key tuple (for example `a[k][i]` plus `b[k][i]`). A depth-one scalar mapping
+Every runtime-keyed mapping/array write in that loop must use the counter in exactly one key component. Collections
+with the same complete key expression and selected iteration set share one authenticated permutation; collections
+with different invariant components (for example `a[left][i]` plus `b[right][i]`) receive independent permutations
+so each follows its own full composite-key slot order. Two key shapes in the same physical collection, or different
+selected iteration subsets across collections, still need a wider route-frame journal and remain fenced. A scalar
+mapping
 scalar entry whose complete key tuple consists of stable public parameters, literals, `msg.sender`, `tx.origin`,
 or pure expressions over public arguments may coexist: it is read once,
 mutated as a local in source order, and flushed through one authenticated fixed-entry transition after the loop.
@@ -370,8 +374,9 @@ fails closed: the later row needs a read-your-writes transition from the earlier
 byte-identical absolute `set`/`delete` rows; executing both row segments cannot be represented by reusing one
 physical settlement. Multiple rows with runtime-derived values or mutations remain fenced for the same reason
 until the planner can build a complete journal from pending row transitions. Multiple collections in one admitted
-loop share the row's permutation; separate disjoint loops use separate permutations and separate accumulated
-physical segments.
+loop share a permutation only when their complete key expression and selected domain are identical. Different key
+expressions over the same selected domain receive independent row-owned permutations. Separate disjoint loops use
+separate permutations and separate accumulated physical segments.
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay

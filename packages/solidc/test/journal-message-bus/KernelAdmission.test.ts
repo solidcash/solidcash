@@ -893,12 +893,32 @@ describe('required kernel admission', () => {
       }));
   });
 
-  it('refuses one permutation for mapping writes with different composite key tuples', () => {
+  it('publishes independent permutations across collections with different invariant key prefixes', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) a;
+      mapping(int => mapping(int => int)) b;
+      function write(int n, int left, int right) public {
+        for (int i = 0; i < n; i = i + 1) { this.a[left][i] = 1; this.b[right][i] = 2; }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.inputs.filter((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
+    expect(new Set(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo
+      ?.map((info) => info.varyingArrayParam)).size).toBe(2);
+  });
+
+  it('refuses different selected subsets across collections until every route witness is retired', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(int => int)) a;
       mapping(int => mapping(int => int)) b;
       function denied(int n, int left, int right) public {
-        for (int i = 0; i < n; i = i + 1) { this.a[left][i] = 1; this.b[right][i] = 2; }
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) this.a[left][i] = 1;
+          if (i % 2 != 0) this.b[right][i] = 2;
+        }
         require(true);
       }
       function control() public { require(true); }
@@ -907,8 +927,6 @@ describe('required kernel admission', () => {
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
-    expect(artifact.abi.find((handler) => handler.name === 'denied')?.inputs.some((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(false);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

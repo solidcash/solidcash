@@ -977,8 +977,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const at = counterKeyIndex(write, logical);
         return keys.some((key, index) => index !== at && containsIdentifier(key, logical));
       })) return false;
-      const firstKeyShape = writeKeyShape(keyed[0]);
-      if (keyed.some((write) => writeKeyShape(write) !== firstKeyShape)) return false;
+      // One collection currently owns one physical entry stream per iteration, but different collections need
+      // not share their invariant key components. `a[left][i]` and `b[right][i]` therefore receive independently
+      // sortable authenticated permutations below. Two distinct tuples in the SAME collection still need a wider
+      // per-iteration stream and remain fenced here.
+      const keyShapeByCollection = new Map<string, string>();
+      for (const write of keyed) {
+        const shape = writeKeyShape(write);
+        const prior = keyShapeByCollection.get(write.name);
+        if (prior !== undefined && prior !== shape) return false;
+        keyShapeByCollection.set(write.name, shape);
+      }
       const keyedSet = new Set<Node>(keyed);
       const invariantWrites = writes.filter((write) => !keyedSet.has(write));
       const keyedCollections = new Set(keyed.map((write) => write.name));
@@ -1264,9 +1273,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
 
       if (!apply) return true;
 
-      const expandedWriteSelectionCondition = writeSelectionCondition
-        && expandRuntimePathExpression(writeSelectionCondition, logical);
-      if (writeSelectionCondition && !expandedWriteSelectionCondition) return false;
       const expandedBreakCondition = breakPaths.length > 0 && (breakCondition
         ? expandRuntimePathExpression(breakCondition, logical) : new BoolLiteralNode(true));
       if (breakPaths.length > 0 && !expandedBreakCondition) return false;
@@ -1275,29 +1281,86 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const rangeSuffix = start === 0n && step === 1n
         ? '' : `_from_${signedComponent(start)}_step_${signedComponent(step)}`;
       const boundSuffix = boundOffset === 0n ? '' : `_bound_${signedComponent(boundOffset)}`;
-      const hidden = `${PREFIX}${count}_${serial}${boundSuffix}${rangeSuffix}${postTest ? '_post' : ''}`;
-      if (boundExpression) {
-        (node.runtimeCounterLoopBounds ??= new Map()).set(hidden, cloneNode(boundExpression));
+      const hiddenName = (groupSerial: number): string =>
+        `${PREFIX}${count}_${groupSerial}${boundSuffix}${rangeSuffix}${postTest ? '_post' : ''}`;
+      const keyedByCollection = new Map<string, typeof keyed>();
+      for (const write of keyed) {
+        const group = keyedByCollection.get(write.name) ?? [];
+        group.push(write);
+        keyedByCollection.set(write.name, group);
       }
-      if (pathCondition) {
-        (node.runtimeCounterLoopConditions ??= new Map()).set(hidden, cloneNode(pathCondition));
+      const permutationGroups = new Map<string, {
+        collections: string[];
+        collectionWrites: typeof keyed;
+        selectionCondition?: ExpressionNode;
+      }>();
+      const selectionShapes = new Set<string>();
+      for (const [collection, collectionWrites] of keyedByCollection) {
+        let selectionCondition = uniqueDisjunction(collectionWrites.map((write) => writePaths.get(write)));
+        // An otherwise-unconditional collection still needs a cursor when `break`/`return` can terminate the
+        // domain: the cursor authenticates the consumed prefix and carries the shared break predicate metadata.
+        if (breakPaths.length > 0 && !selectionCondition) selectionCondition = new BoolLiteralNode(true);
+        selectionShapes.add(selectionCondition ? expressionShape(selectionCondition) : 'always');
+        const mergeKey = `${writeKeyShape(collectionWrites[0])}\0${selectionCondition
+          ? expressionShape(selectionCondition) : 'always'}`;
+        const existing = permutationGroups.get(mergeKey);
+        if (existing) {
+          existing.collections.push(collection);
+          existing.collectionWrites.push(...collectionWrites);
+        } else {
+          permutationGroups.set(mergeKey, {
+            collections: [collection], collectionWrites: [...collectionWrites], selectionCondition,
+          });
+        }
       }
-      if (expandedWriteSelectionCondition) {
-        (node.runtimeCounterLoopIterationConditions ??= new Map()).set(hidden, {
-          expression: cloneNode(expandedWriteSelectionCondition),
-          ...(expandedBreakCondition && { breakCondition: cloneNode(expandedBreakCondition) }),
-          counter: { name: logical, initialValue: start, stepValue: step },
-        });
+      // Distinct selected subsets need independent route-frame consumption in addition to independent
+      // permutations. Until that frame can retire every variable-length witness, admitting the shape leaves the
+      // later subset on the alt stack. Same-subset collections (including different composite prefixes) are sound.
+      if (selectionShapes.size > 1) return false;
+      const groups = [...permutationGroups.values()].map((plan, index) => {
+        const groupSerial = index === 0 ? serial : this.serial++;
+        const { selectionCondition } = plan;
+        const expandedSelectionCondition = selectionCondition
+          && expandRuntimePathExpression(selectionCondition, logical);
+        return {
+          collections: plan.collections,
+          writes: new Set<Node>(plan.collectionWrites),
+          serial: groupSerial,
+          hidden: hiddenName(groupSerial),
+          selectionCondition,
+          expandedSelectionCondition,
+          logicalValue: `__internal__vmapCounterLogical_${groupSerial}`,
+          logicalRank: `__internal__vmapCounterRank_${groupSerial}`,
+          settlementCursor: `__internal__vmapCounterCursor_${groupSerial}`,
+          bit: `__internal__vmapCounterBit_${groupSerial}`,
+          mask: `__internal__vmapCounterMask_${groupSerial}`,
+        };
+      });
+      if (groups.some((group) => group.selectionCondition && !group.expandedSelectionCondition)) return false;
+      const groupByCollection = new Map(groups.flatMap((group) =>
+        group.collections.map((collection) => [collection, group] as const)));
+      const primaryGroup = groups[0];
+      for (const group of groups) {
+        if (boundExpression) {
+          (node.runtimeCounterLoopBounds ??= new Map()).set(group.hidden, cloneNode(boundExpression));
+        }
+        if (pathCondition) {
+          (node.runtimeCounterLoopConditions ??= new Map()).set(group.hidden, cloneNode(pathCondition));
+        }
+        if (group.expandedSelectionCondition) {
+          (node.runtimeCounterLoopIterationConditions ??= new Map()).set(group.hidden, {
+            expression: cloneNode(group.expandedSelectionCondition),
+            ...(expandedBreakCondition && { breakCondition: cloneNode(expandedBreakCondition) }),
+            counter: { name: logical, initialValue: start, stepValue: step },
+          });
+        }
       }
-      const oldValueHidden = (collection: string): string =>
-        `${VMAP_COUNTER_OLD_PREFIX}${count}_${serial}_${collection}`;
-      const logicalValue = `__internal__vmapCounterLogical_${serial}`;
-      const logicalRank = `__internal__vmapCounterRank_${serial}`;
-      const settlementCursor = `__internal__vmapCounterCursor_${serial}`;
+      const oldValueHidden = (collection: string): string => {
+        const group = groupByCollection.get(collection)!;
+        return `${VMAP_COUNTER_OLD_PREFIX}${count}_${group.serial}_${collection}`;
+      };
       const rangedIterationCount = `__internal__vmapCounterCount_${serial}`;
       const unitDomain = start === 0n && step === 1n;
-      const bit = `__internal__vmapCounterBit_${serial}`;
-      const mask = `__internal__vmapCounterMask_${serial}`;
       const at = <T extends Node>(value: T): T => { value.location = location; return value; };
       const id = (name: string): IdentifierNode => at(new IdentifierNode(name));
       const lit = (value: bigint): IntLiteralNode => at(new IntLiteralNode(value));
@@ -1340,33 +1403,35 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const iterationCount = (): ExpressionNode => pathCondition
         ? at(new TernaryOpNode(activePath(), rawIterationCount(), lit(0n)))
         : rawIterationCount();
-      const physical = (): ExpressionNode => {
+      const physical = (group: typeof groups[number]): ExpressionNode => {
         // The source counter remains on its original arithmetic progression so calls and other effects observe
         // source order. Only mapping work indexes the physical permutation, using the counter's zero-based rank.
-        if (expandedWriteSelectionCondition) return id(settlementCursor);
+        if (group.expandedSelectionCondition) return id(group.settlementCursor);
         if (unitDomain) return id(logical);
         return binary(binary(id(logical), BinaryOperator.MINUS, lit(start)), BinaryOperator.DIV, lit(step));
       };
-      const permRead = (): ArrayAccessNode => {
-        const a = new IdentifierNode(hidden); a.location = location;
-        const r = new ArrayAccessNode(a, physical()); r.location = location; return r;
+      const permRead = (group: typeof groups[number]): ArrayAccessNode => {
+        const a = new IdentifierNode(group.hidden); a.location = location;
+        const r = new ArrayAccessNode(a, physical(group)); r.location = location; return r;
       };
-      const replace = (x: Node): Node => {
-        if (x instanceof IdentifierNode && x.name === logical) return id(logicalValue);
+      const replace = (x: Node, group: typeof groups[number]): Node => {
+        if (x instanceof IdentifierNode && x.name === logical) return id(group.logicalValue);
         if (x instanceof IdentifierNode && safeLoopValueAlias(x.name)) {
-          return replace(cloneNode(loopValueDefinitions.get(x.name)!));
+          return replace(cloneNode(loopValueDefinitions.get(x.name)!), group);
         }
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
           const v = (x as unknown as Record<string, unknown>)[key];
-          if (v instanceof Node) (x as unknown as Record<string, unknown>)[key] = replace(v);
+          if (v instanceof Node) (x as unknown as Record<string, unknown>)[key] = replace(v, group);
           else if (Array.isArray(v)) {
-            (x as unknown as Record<string, unknown>)[key] = v.map((e) => e instanceof Node ? replace(e) : e);
+            (x as unknown as Record<string, unknown>)[key] = v.map((e) =>
+              e instanceof Node ? replace(e, group) : e);
           }
         }
         return x;
       };
       for (const write of keyed) {
+        const group = groupByCollection.get(write.name)!;
         const keyIndex = counterKeyIndex(write, logical);
         const expression = write instanceof ArrayAssignNode ? write.value
           : write instanceof MappingAssignNode ? write.expression : undefined;
@@ -1384,7 +1449,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const valueType = this.collectionsByName.get(mappingWrite.name)!.innermostValueType;
             const values = new IdentifierNode(oldValueHidden(mappingWrite.name)); values.location = location;
             values.type = new ArrayType(valueType);
-            const read = new ArrayAccessNode(values, physical()); read.location = location;
+            const read = new ArrayAccessNode(values, physical(group)); read.location = location;
             read.type = valueType;
             return read;
           };
@@ -1413,22 +1478,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           mappingWrite.messageBusRuntimeOldValueWitness = oldRead();
         }
         if (write instanceof ArrayAssignNode) {
-          write.index = permRead();
-          write.value = replace(write.value) as ExpressionNode;
+          write.index = permRead(group);
+          write.value = replace(write.value, group) as ExpressionNode;
         } else if (write instanceof ArrayDeleteNode) {
-          write.index = permRead();
+          write.index = permRead(group);
         } else if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) {
-          write.keys[keyIndex] = permRead();
-          write.expression = replace(write.expression) as ExpressionNode;
+          write.keys[keyIndex] = permRead(group);
+          write.expression = replace(write.expression, group) as ExpressionNode;
         } else {
-          write.keys[keyIndex] = permRead();
+          write.keys[keyIndex] = permRead(group);
         }
       }
       if (runtimeEmits.length > 0) {
         const loopIndex = node.runtimeLoopEvents?.length ?? 0;
         node.runtimeLoopEvents = [
           ...(node.runtimeLoopEvents ?? []),
-          { loopIndex, permutationParam: hidden },
+          { loopIndex, permutationParam: primaryGroup.hidden },
         ];
         runtimeEmits.forEach(({ emit, condition }, siteIndex) => {
           emit.runtimeLoopEvent = { loopIndex, siteIndex };
@@ -1461,81 +1526,96 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ? 'vmap counter loop bound must be between 0 and 64'
           : 'vmap counter loop iteration count must be between 0 and 64',
       )));
-      prelude.push(at(new RequireNode(binary(
-        at(new UnaryOpNode(UnaryOperator.SIZE, id(hidden))),
-        expandedWriteSelectionCondition ? BinaryOperator.LE : BinaryOperator.EQ,
-        iterationCount(),
-      ), 'vmap counter permutation length mismatch')));
-      prelude.push(at(new VariableDefinitionNode(new IntType(true, 256), [], mask, lit(0n))));
-      if (expandedWriteSelectionCondition) {
+      for (const group of groups) {
+        prelude.push(at(new RequireNode(binary(
+          at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+          group.expandedSelectionCondition ? BinaryOperator.LE : BinaryOperator.EQ,
+          iterationCount(),
+        ), 'vmap counter permutation length mismatch')));
         prelude.push(at(new VariableDefinitionNode(
-          new IntType(true, 256), [], settlementCursor, lit(0n),
+          new IntType(true, 256), [], group.mask, lit(0n),
         )));
+        if (group.expandedSelectionCondition) {
+          prelude.push(at(new VariableDefinitionNode(
+            new IntType(true, 256), [], group.settlementCursor, lit(0n),
+          )));
+        }
       }
 
-      const logicalDefinition = at(new VariableDefinitionNode(
-        counterType, [], logicalValue,
-        expandedWriteSelectionCondition
-          ? at(new TernaryOpNode(
-            cloneNode(expandedWriteSelectionCondition),
-            permRead(),
-            lit(0n),
-          ))
-          : permRead(),
-      ));
-      const logicalProofValue = (): ExpressionNode => asProofInt(id(logicalValue));
-      const rankDefinition = unitDomain ? undefined : at(new VariableDefinitionNode(
-        proofInt, [], logicalRank,
-        binary(binary(logicalProofValue(), BinaryOperator.MINUS, lit(start)), BinaryOperator.DIV, lit(step)),
-      ));
-      const rank = (): IdentifierNode => id(unitDomain ? logicalValue : logicalRank);
-      const logicalInRangeExpression = unitDomain ? binary(
-        binary(logicalProofValue(), BinaryOperator.GE, lit(0n)),
-        BinaryOperator.AND,
-        binary(logicalProofValue(), BinaryOperator.LT, iterationCount()),
-      ) : binary(
-        binary(
-          binary(logicalProofValue(), step > 0n ? BinaryOperator.GE : BinaryOperator.LE, lit(start)),
+      const logicalAndProofStatements: StatementNode[] = [];
+      for (const group of groups) {
+        logicalAndProofStatements.push(at(new VariableDefinitionNode(
+          counterType, [], group.logicalValue,
+          group.expandedSelectionCondition
+            ? at(new TernaryOpNode(
+              cloneNode(group.expandedSelectionCondition),
+              permRead(group),
+              lit(0n),
+            ))
+            : permRead(group),
+        )));
+        const logicalProofValue = (): ExpressionNode => asProofInt(id(group.logicalValue));
+        const rankDefinition = unitDomain ? undefined : at(new VariableDefinitionNode(
+          proofInt, [], group.logicalRank,
+          binary(binary(logicalProofValue(), BinaryOperator.MINUS, lit(start)), BinaryOperator.DIV, lit(step)),
+        ));
+        const rank = (): IdentifierNode => id(unitDomain ? group.logicalValue : group.logicalRank);
+        const logicalInRangeExpression = unitDomain ? binary(
+          binary(logicalProofValue(), BinaryOperator.GE, lit(0n)),
           BinaryOperator.AND,
-          binary(rank(), BinaryOperator.LT, iterationCount()),
-        ),
-        BinaryOperator.AND,
-        binary(
-          logicalProofValue(),
-          BinaryOperator.EQ,
-          binary(lit(start), BinaryOperator.PLUS, binary(rank(), BinaryOperator.MUL, lit(step))),
-        ),
-      );
-      const logicalInRange = at(new RequireNode(
-        logicalInRangeExpression, 'vmap counter permutation value out of range',
-      ));
-      const bitDefinition = at(new VariableDefinitionNode(
-        new IntType(true, 256), [], bit,
-        binary(lit(1n), BinaryOperator.SHIFT_LEFT, rank()),
-      ));
-      const unique = at(new RequireNode(binary(
-        binary(id(mask), BinaryOperator.BIT_AND, id(bit)), BinaryOperator.EQ, lit(0n),
-      ), 'vmap counter permutation contains a duplicate'));
-      const markSeen = at(new AssignNode(id(mask), binary(id(mask), BinaryOperator.BIT_OR, id(bit))));
-      const proofStatements: StatementNode[] = [
-        ...(rankDefinition ? [rankDefinition] : []),
-        logicalInRange, bitDefinition, unique, markSeen,
-      ];
-      const cursorAdvance = expandedWriteSelectionCondition
-        ? at(new BranchNode(
-          cloneNode(expandedWriteSelectionCondition),
-          at(new BlockNode([at(new AssignNode(
-            id(settlementCursor), binary(id(settlementCursor), BinaryOperator.PLUS, lit(1n)),
-          ))])),
-        ))
-        : undefined;
+          binary(logicalProofValue(), BinaryOperator.LT, iterationCount()),
+        ) : binary(
+          binary(
+            binary(logicalProofValue(), step > 0n ? BinaryOperator.GE : BinaryOperator.LE, lit(start)),
+            BinaryOperator.AND,
+            binary(rank(), BinaryOperator.LT, iterationCount()),
+          ),
+          BinaryOperator.AND,
+          binary(
+            logicalProofValue(),
+            BinaryOperator.EQ,
+            binary(lit(start), BinaryOperator.PLUS, binary(rank(), BinaryOperator.MUL, lit(step))),
+          ),
+        );
+        const proofStatements: StatementNode[] = [
+          ...(rankDefinition ? [rankDefinition] : []),
+          at(new RequireNode(
+            logicalInRangeExpression, 'vmap counter permutation value out of range',
+          )),
+          at(new VariableDefinitionNode(
+            new IntType(true, 256), [], group.bit,
+            binary(lit(1n), BinaryOperator.SHIFT_LEFT, rank()),
+          )),
+          at(new RequireNode(binary(
+            binary(id(group.mask), BinaryOperator.BIT_AND, id(group.bit)), BinaryOperator.EQ, lit(0n),
+          ), 'vmap counter permutation contains a duplicate')),
+          at(new AssignNode(
+            id(group.mask), binary(id(group.mask), BinaryOperator.BIT_OR, id(group.bit)),
+          )),
+        ];
+        logicalAndProofStatements.push(...(group.expandedSelectionCondition
+          ? [at(new BranchNode(
+            cloneNode(group.expandedSelectionCondition), at(new BlockNode(proofStatements)),
+          ))]
+          : proofStatements));
+      }
+      const cursorAdvances = groups.flatMap((group): StatementNode[] =>
+        group.expandedSelectionCondition
+          ? [at(new BranchNode(
+            cloneNode(group.expandedSelectionCondition),
+            at(new BlockNode([at(new AssignNode(
+              id(group.settlementCursor),
+              binary(id(group.settlementCursor), BinaryOperator.PLUS, lit(1n)),
+            ))])),
+          ))]
+          : []);
       const originalStatements = block.statements ?? [];
       const injectBreakAdvances = (target: BlockNode): void => {
-        if (!cursorAdvance) return;
+        if (cursorAdvances.length === 0) return;
         const statements: StatementNode[] = [];
         for (const statement of target.statements ?? []) {
           if (statement instanceof BreakNode || statement instanceof ReturnNode) {
-            statements.push(cloneNode(cursorAdvance), statement);
+            statements.push(...cursorAdvances.map((advance) => cloneNode(advance)), statement);
           } else {
             if (statement instanceof BranchNode) {
               injectBreakAdvances(statement.ifBlock);
@@ -1554,38 +1634,39 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           } else if (statement instanceof BlockNode) injectBreakAdvances(statement);
         }
       }
-      const sourceStatements = breakPaths.length > 0 && cursorAdvance
+      const sourceStatements = breakPaths.length > 0 && cursorAdvances.length > 0
         ? originalStatements.flatMap((statement) => statement instanceof BreakNode
           || statement instanceof ReturnNode
-          ? [cloneNode(cursorAdvance), statement] : [statement])
+          ? [...cursorAdvances.map((advance) => cloneNode(advance)), statement] : [statement])
         : originalStatements;
       const updateIndex = counterUpdate ? sourceStatements.indexOf(counterUpdate) : -1;
-      const bodyWithCursor = cursorAdvance && updateIndex >= 0
+      const bodyWithCursor = cursorAdvances.length > 0 && updateIndex >= 0
         ? [
-          ...sourceStatements.slice(0, updateIndex), cursorAdvance,
+          ...sourceStatements.slice(0, updateIndex), ...cursorAdvances,
           ...sourceStatements.slice(updateIndex),
         ]
-        : [...sourceStatements, ...(cursorAdvance ? [cursorAdvance] : [])];
+        : [...sourceStatements, ...cursorAdvances];
       block.statements = [
-        logicalDefinition,
-        ...(expandedWriteSelectionCondition ? [at(new BranchNode(
-          cloneNode(expandedWriteSelectionCondition), at(new BlockNode(proofStatements)),
-        ))] : proofStatements),
+        ...logicalAndProofStatements,
         // BreakContinueTransformation runs after this pass and nests the tail (including this advance) under the
         // fall-through arm of a source `continue`, so selected iterations consume exactly one physical rank.
         ...bodyWithCursor,
       ];
-      if (expandedWriteSelectionCondition) {
+      const selectedGroups = groups.filter((group) => group.expandedSelectionCondition);
+      if (selectedGroups.length > 0) {
         const loopIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
         if (loopIndex < 0) return false;
-        canonical.parent.statements!.splice(loopIndex + 1, 0, at(new RequireNode(binary(
-          id(settlementCursor), BinaryOperator.EQ,
-          at(new UnaryOpNode(UnaryOperator.SIZE, id(hidden))),
-        ), 'vmap counter selection length mismatch')));
+        canonical.parent.statements!.splice(loopIndex + 1, 0, ...selectedGroups.map((group) =>
+          at(new RequireNode(binary(
+            id(group.settlementCursor), BinaryOperator.EQ,
+            at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
+          ), 'vmap counter selection length mismatch'))));
       }
-      const p = new ParameterNode(new ArrayType(counterType), hidden);
-      p.location = node.location;
-      added.push(p);
+      for (const group of groups) {
+        const p = new ParameterNode(new ArrayType(counterType), group.hidden);
+        p.location = node.location;
+        added.push(p);
+      }
       if (generalOldEntryWrites.size > 0) {
         const seen = new Set<string>();
         for (const write of generalOldEntryWrites) {

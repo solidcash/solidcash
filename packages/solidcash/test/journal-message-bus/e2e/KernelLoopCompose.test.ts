@@ -93,10 +93,10 @@ const NESTED_MULTI_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelNestedMultiMapping() {
   mapping(int => mapping(int => int)) a;
   mapping(int => mapping(int => int)) b;
-  function write(int prefix, int n) public {
+  function write(int aPrefix, int bPrefix, int n) public {
     for (int i = 0; i < n; i = i + 1) {
-      this.a[prefix][i] = i + 10;
-      this.b[prefix][i] = i + 20;
+      this.a[aPrefix][i] = i + 10;
+      this.b[bPrefix][i] = i + 20;
     }
     require(true);
   }
@@ -1406,15 +1406,16 @@ describe('kernel composite counter-key settlement', () => {
     const provider = createTestProvider();
     const artifact = compileString(NESTED_MULTI_MAPPING_SOURCE, KERNEL);
     const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
-    expect(write.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(1);
+    expect(write.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
     expect(write.sortedUpsertLoopInfo).toHaveLength(2);
+    expect(new Set(write.sortedUpsertLoopInfo?.map((info) => info.varyingArrayParam)).size).toBe(2);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
     for (let pass = 0; pass < 2; pass += 1) {
-      const call = contract.batch([{ function: 'write', args: [41n, 3n] }]);
+      const call = contract.batch([{ function: 'write', args: [41n, 42n, 3n] }]);
       const builder = await call.build();
       const vm = createVirtualMachineBch2026ForProvider(provider);
       const transaction = builder.buildLibauthTransaction();
@@ -1432,6 +1433,8 @@ describe('kernel composite counter-key settlement', () => {
       await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
   }, 180_000);
+
+
 
   it('settles repeated loop events in source order while mapping keys use the authenticated permutation', async () => {
     const provider = createTestProvider();

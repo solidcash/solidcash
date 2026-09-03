@@ -35,6 +35,7 @@ import {
   memZeroBytes,
   memGrowTo,
 } from './YulMemPrimitives.js';
+import { isKernelSafeNativeAssembly } from './NativeAssemblyKernelSafety.js';
 
 // Thrown when a Yul construct is outside the supported codegen subset; the block is then left as-is for the
 // inline-assembly diagnostic (GTT) to report. Internal to this pass.
@@ -209,18 +210,20 @@ function bodyHasAssembly(node: Node | undefined): boolean {
   return false;
 }
 
-// Native BCH opcodes intentionally remain opaque to Yul lowering. Kernel admission can run this pass early,
-// but must leave a mixed Yul/native function untouched so the ordinary late pass sees it exactly once.
-function bodyHasNativeAssembly(node: Node | undefined): boolean {
+// Unsafe native BCH opcodes intentionally remain opaque to Yul lowering. Kernel admission can run this pass early,
+// but must leave a mixed Yul/unsafe-native function untouched so the ordinary late pass sees it exactly once.
+function bodyHasUnsafeNativeAssembly(node: Node | undefined): boolean {
   if (!node) return false;
-  if (node instanceof AssemblyStatementNode) return node.yulBlock === undefined;
+  if (node instanceof AssemblyStatementNode) {
+    return node.yulBlock === undefined && !isKernelSafeNativeAssembly(node);
+  }
   for (const key of Object.keys(node)) {
     if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
     const value = (node as any)[key];
     if (value instanceof Node) {
-      if (bodyHasNativeAssembly(value)) return true;
+      if (bodyHasUnsafeNativeAssembly(value)) return true;
     } else if (Array.isArray(value)) {
-      for (const item of value) if (item instanceof Node && bodyHasNativeAssembly(item)) return true;
+      for (const item of value) if (item instanceof Node && bodyHasUnsafeNativeAssembly(item)) return true;
     }
   }
   return false;
@@ -3340,7 +3343,7 @@ export default class LowerInlineAssembly extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const hasAssembly = bodyHasAssembly(node.body);
     if (!hasAssembly) return node;
-    if (this.skipFunctionsWithNativeAssembly && bodyHasNativeAssembly(node.body)) return node;
+    if (this.skipFunctionsWithNativeAssembly && bodyHasUnsafeNativeAssembly(node.body)) return node;
     const previousSourceFunction = currentSourceFunction;
     currentSourceFunction = node;
     const sourceStatements = node.body.statements ?? [];

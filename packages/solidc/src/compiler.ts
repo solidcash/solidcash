@@ -73,6 +73,7 @@ import LowerForeignFunctionPointerParams from './semantic/LowerForeignFunctionPo
 import LowerForeignFunctionPointerStorage from './semantic/LowerForeignFunctionPointerStorage.js';
 import LowerReceivedFnPtrArray from './semantic/LowerReceivedFnPtrArray.js';
 import LowerBlobFunctionPointers from './semantic/LowerBlobFunctionPointers.js';
+import { isKernelSafeNativeAssembly } from './semantic/NativeAssemblyKernelSafety.js';
 import LowerForeignFunctionPointerStructFields from './semantic/LowerForeignFunctionPointerStructFields.js';
 import LowerForeignFunctionPointerArrayElements from './semantic/LowerForeignFunctionPointerArrayElements.js';
 import PromoteConstructorExternalReads from './semantic/PromoteConstructorExternalReads.js';
@@ -2588,7 +2589,10 @@ function synthesizeMessageBusRoute(
             graphHasCallValue = true;
           }
           if (node instanceof TryCatchNode) routeUsesForeignTryCatch = true;
-          if (node instanceof AssemblyStatementNode) routeUsesOpaqueAssembly = true;
+          if (node instanceof AssemblyStatementNode
+            && (compilerOptions.messageBusKernel !== true || !isKernelSafeNativeAssembly(node))) {
+            routeUsesOpaqueAssembly = true;
+          }
           if (node instanceof NullaryOpNode && [
             NullaryOperator.INPUT_INDEX, NullaryOperator.BYTECODE,
             NullaryOperator.MSG_SENDER, NullaryOperator.TX_ORIGIN,

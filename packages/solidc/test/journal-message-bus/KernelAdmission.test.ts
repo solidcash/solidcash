@@ -1531,7 +1531,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('keeps a counter loop beneath switch frozen until switch path metadata is available', () => {
+  it('publishes exact path metadata for a counter loop beneath switch', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function denied(int n, int choice) public {
@@ -1543,10 +1543,29 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo?.[0].condition)
+      .toMatchObject({ kind: 'binary', operator: '==' });
+  });
+
+  it('publishes mutually exclusive write paths for switch inside a counter loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, int choice) public {
+        for (int i = 0; i < n; i = i + 1) {
+          switch (choice) {
+            case 1: this.m[i] = i; break;
+            default: this.m[i] = i + 10; break;
+          }
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationCondition).toMatchObject({ kind: 'binary', operator: '||' });
   });
 
   it('refuses a repeated BCH transfer inside a counter-keyed mapping loop', () => {

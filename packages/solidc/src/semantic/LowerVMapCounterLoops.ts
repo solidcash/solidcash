@@ -40,14 +40,15 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * Typed calls and other statements stay in source order. Event sites are recorded in a function-local runtime
  * stream and settled after all mapping journals, so they repeat in logical source order without sharing the
  * route's fixed per-row event slots. Nested if/else reachability is serialized when it depends only on SDK-visible
- * inputs, immutable aliases, stable pre-state, and the source counter. Switch/try/nested-loop event reachability,
- * BCH transfers, and token-container transfers still need richer runtime effect records. The canonical pre-test domains
+ * inputs, immutable aliases, stable pre-state, and the source counter. Stable switch arms use the same predicates.
+ * Try/catch and nested-loop event reachability, BCH transfers, and token-container transfers still need richer runtime
+ * effect records. The canonical pre-test domains
  * `for (int i = constantStart; i < publicBound; i = i + positiveConstantStep)` and
  * `for (int i = constantStart; i > publicBound; i = i - positiveConstantStep)`, plus the post-test domain
  * `int i = 0; do { ...; i = i + 1; } while (i < publicBound)` lower. The latter authenticates
  * `max(publicBound, 1)` entries. Multiple unconditional source-order loops may lower together when their
  * runtime keys are disjoint; each loop receives its own authenticated trailing input/output segment.
- * Loop-carried predicates/values, sibling reads of the mutated mapping, nested loops, and switch/try path
+ * Loop-carried predicates/values, sibling reads of the mutated mapping, nested loops, and try/catch path
  * control still need richer logical-journal or path metadata.
  *
  * The permutation is an untrusted unlocking witness. Generated checks prove it has exactly the canonical domain's
@@ -168,6 +169,34 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return;
       }
+      if (x instanceof SwitchNode) {
+        // A source switch is a finite set of mutually exclusive predicates. Preserve its control decision in
+        // the same replayable path metadata used for if/else: each explicit arm is `subject == value`, while
+        // the default is the conjunction of all non-matches. Unsupported or mutation-dependent subjects still
+        // fail closed later through runtimePathExpressionSupported/dependsOnLoopMutation.
+        const matches = x.cases.map((candidate) => {
+          const equality = new BinaryOpNode(
+            cloneNode(x.expression), BinaryOperator.EQ, cloneNode(candidate.value),
+          );
+          equality.location = candidate.value.location ?? x.location;
+          return equality;
+        });
+        for (let index = 0; index < x.cases.length; index += 1) {
+          findCanonicalLoops(
+            x.cases[index].body,
+            [...pathConditions, { expression: matches[index], negated: false }],
+            unsupportedControl,
+          );
+        }
+        if (x.defaultCase) {
+          findCanonicalLoops(
+            x.defaultCase,
+            [...pathConditions, ...matches.map((expression) => ({ expression, negated: true }))],
+            unsupportedControl,
+          );
+        }
+        return;
+      }
       if (x instanceof BlockNode) {
         const statements = x.statements ?? [];
         for (let index = 1; index < statements.length; index++) {
@@ -265,7 +294,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           });
         }
       }
-      const childUnsupported = unsupportedControl || x instanceof SwitchNode || x instanceof TryCatchNode
+      const childUnsupported = unsupportedControl || x instanceof TryCatchNode
         || x instanceof WhileNode || x instanceof DoWhileNode;
       for (const key of Object.keys(x)) {
         if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
@@ -621,36 +650,58 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const collectWrites = (
         x: Node,
         condition?: ExpressionNode,
+        breakExitsLoop = true,
       ): void => {
         if (x instanceof WhileNode || x instanceof DoWhileNode) return;
         if (isWrite(x)) { writes.push(x); writePaths.set(x, condition); return; }
-        if (x instanceof BreakNode || x instanceof ReturnNode) {
+        if ((x instanceof BreakNode && breakExitsLoop) || x instanceof ReturnNode) {
           breakPaths.push(condition); return;
         }
         if (x instanceof BlockNode) {
           let active = condition;
           for (const statement of x.statements ?? []) {
-            collectWrites(statement, active);
+            collectWrites(statement, active, breakExitsLoop);
             active = pathAnd(active, fallthrough(statement));
           }
           return;
         }
         if (x instanceof BranchNode) {
-          collectWrites(x.ifBlock, pathAnd(condition, x.condition));
+          collectWrites(x.ifBlock, pathAnd(condition, x.condition), breakExitsLoop);
           if (x.elseBlock) {
-            collectWrites(x.elseBlock, pathAnd(condition, pathNot(x.condition)));
+            collectWrites(x.elseBlock, pathAnd(condition, pathNot(x.condition)), breakExitsLoop);
           }
           return;
         }
-        if (x instanceof SwitchNode || x instanceof TryCatchNode) {
+        if (x instanceof SwitchNode) {
+          const matches = x.cases.map((candidate) => {
+            const equality = new BinaryOpNode(
+              cloneNode(x.expression), BinaryOperator.EQ, cloneNode(candidate.value),
+            );
+            equality.location = candidate.value.location ?? x.location;
+            return equality;
+          });
+          x.cases.forEach((candidate, index) => {
+            collectWrites(candidate.body, pathAnd(condition, matches[index]), false);
+          });
+          if (x.defaultCase) {
+            const defaultCondition = matches.reduce<ExpressionNode | undefined>(
+              (active, match) => pathAnd(active, pathNot(match)), condition,
+            );
+            collectWrites(x.defaultCase, defaultCondition, false);
+          }
+          return;
+        }
+        if (x instanceof TryCatchNode) {
           unsupportedWriteControl = true;
           return;
         }
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
           const v = (x as unknown as Record<string, unknown>)[key];
-          if (v instanceof Node) collectWrites(v, condition);
-          else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) collectWrites(e, condition);
+          if (v instanceof Node) collectWrites(v, condition, breakExitsLoop);
+          else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) {
+            collectWrites(e, condition, breakExitsLoop);
+          }
         }
       };
       collectWrites(block);
@@ -684,7 +735,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           }
           return;
         }
-        if (x instanceof SwitchNode || x instanceof TryCatchNode
+        if (x instanceof SwitchNode) {
+          const matches = x.cases.map((candidate) => {
+            const equality = new BinaryOpNode(
+              cloneNode(x.expression), BinaryOperator.EQ, cloneNode(candidate.value),
+            );
+            equality.location = candidate.value.location ?? x.location;
+            return equality;
+          });
+          x.cases.forEach((candidate, index) => {
+            collectRuntimeEmits(candidate.body, pathAnd(condition, matches[index]));
+          });
+          if (x.defaultCase) {
+            const defaultCondition = matches.reduce<ExpressionNode | undefined>(
+              (active, match) => pathAnd(active, pathNot(match)), condition,
+            );
+            collectRuntimeEmits(x.defaultCase, defaultCondition);
+          }
+          return;
+        }
+        if (x instanceof TryCatchNode
           || (x !== block && (x instanceof WhileNode || x instanceof DoWhileNode))) {
           let containsEmit = false;
           const findEmit = (candidate: Node): void => {
@@ -1374,8 +1444,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       && counterWriteLoops.every(([loop]) => tryLower(loop, false));
     // Events outside an admitted loop must join the same trailing stream or their fixed output family would move
     // an `emit after` ahead of all repeated records. Serializable nested if/else predicates provide an exact
-    // pre-probe count. Switch/try/nested-loop sites and eventful internal helpers remain frozen until the runtime
-    // plan carries richer path/call context.
+    // pre-probe count. Stable switch arms are the same finite predicate family. Try/catch, nested-loop sites, and
+    // eventful internal helpers remain frozen until the runtime plan carries richer path/call context.
     const outerEmits: Array<{ emit: EmitStatementNode; condition?: ExpressionNode }> = [];
     let unsupportedOuterEvent = false;
     let eventfulHelperCall = false;
@@ -1401,7 +1471,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return;
       }
-      if (candidate instanceof SwitchNode || candidate instanceof TryCatchNode
+      if (candidate instanceof SwitchNode) {
+        const matches = candidate.cases.map((arm) => {
+          const equality = new BinaryOpNode(
+            cloneNode(candidate.expression), BinaryOperator.EQ, cloneNode(arm.value),
+          );
+          equality.location = arm.value.location ?? candidate.location;
+          return equality;
+        });
+        candidate.cases.forEach((arm, index) => {
+          collectOuterEvents(arm.body, [...conditions, { expression: matches[index], negated: false }]);
+        });
+        if (candidate.defaultCase) {
+          collectOuterEvents(candidate.defaultCase, [
+            ...conditions,
+            ...matches.map((expression) => ({ expression, negated: true })),
+          ]);
+        }
+        return;
+      }
+      if (candidate instanceof TryCatchNode
         || candidate instanceof WhileNode || candidate instanceof DoWhileNode) {
         let containsEmit = false;
         const findEmit = (nested: Node): void => {

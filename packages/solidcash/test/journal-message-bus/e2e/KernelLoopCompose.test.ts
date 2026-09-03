@@ -230,6 +230,28 @@ contract KernelSelectedCounterMapping() {
     require(true);
     return n;
   }
+  function writeSwitch(int n, int choice) public {
+    switch (choice) {
+      case 1: {
+        for (int i = 0; i < n; i = i + 1) { this.m[i] = i + 80; }
+        break;
+      }
+      default: {
+        for (int j = 0; j < n; j = j + 1) { this.m[j] = j + 90; }
+        break;
+      }
+    }
+    require(true);
+  }
+  function writeInnerSwitch(int n, int choice) public {
+    for (int i = 0; i < n; i = i + 1) {
+      switch (choice) {
+        case 1: this.m[i] = i + 100; emit Visited(i + 300); break;
+        default: this.m[i] = i + 110; emit Visited(i + 400); break;
+      }
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
@@ -594,6 +616,8 @@ describe('kernel counter-key mapping loop compose', () => {
     const untilHandler = artifact.abi.find((candidate) => candidate.name === 'writeUntil')!;
     const voidReturnHandler = artifact.abi.find((candidate) => candidate.name === 'writeVoidReturn')!;
     const returnHandler = artifact.abi.find((candidate) => candidate.name === 'writeReturn')!;
+    const switchHandler = artifact.abi.find((candidate) => candidate.name === 'writeSwitch')!;
+    const innerSwitchHandler = artifact.abi.find((candidate) => candidate.name === 'writeInnerSwitch')!;
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
       .toMatchObject({ eligible: true });
     expect(writeHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
@@ -609,6 +633,16 @@ describe('kernel counter-key mapping loop compose', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeReturn'))
       .toMatchObject({ eligible: true });
     expect(returnHandler.sortedUpsertLoopInfo?.[0].iterationBreakCondition).toBeDefined();
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeSwitch'))
+      .toMatchObject({ eligible: true });
+    expect(switchHandler.sortedUpsertLoopInfo?.map((info) => info.condition)).toEqual([
+      expect.objectContaining({ kind: 'binary', operator: '==' }),
+      expect.objectContaining({ kind: 'unary', operator: '!' }),
+    ]);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeInnerSwitch'))
+      .toMatchObject({ eligible: true });
+    expect(innerSwitchHandler.sortedUpsertLoopInfo?.[0].iterationCondition)
+      .toMatchObject({ kind: 'binary', operator: '||' });
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -780,6 +814,38 @@ describe('kernel counter-key mapping loop compose', () => {
     await expect(StatefulContract.withCategory(inner, categoryId)
       .batch([{ function: 'writeReturn', args: [7n, 1n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.writeSwitch(3n, 1n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const [key, expected] of [[0n, 80n], [1n, 81n], [2n, 82n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    await expect(StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeSwitch', args: [3n, 2n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const [key, expected] of [[0n, 90n], [1n, 91n], [2n, 92n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    await expect(StatefulContract.withCategory(inner, categoryId).call.writeInnerSwitch(3n, 1n).send())
+      .resolves.toMatchObject({
+        txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+        events: [{ args: { i: 300n } }, { args: { i: 301n } }, { args: { i: 302n } }],
+      });
+    for (const [key, expected] of [[0n, 100n], [1n, 101n], [2n, 102n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    await expect(StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeInnerSwitch', args: [3n, 2n] }]).send())
+      .resolves.toMatchObject({
+        txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+        events: [{ args: { i: 400n } }, { args: { i: 401n } }, { args: { i: 402n } }],
+      });
+    for (const [key, expected] of [[0n, 110n], [1n, 111n], [2n, 112n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
   }, 180_000);
 
   it('settles conditionally reached counter loops and plans inactive rows as empty', async () => {

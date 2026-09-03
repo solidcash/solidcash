@@ -15296,11 +15296,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (entryAbiFunction === abiFunction) {
         const positions = abiFunction!.inputs.flatMap((input, index) =>
           input.name.startsWith('__internal__vmapBatch') ? [index] : []);
-        if (finalArgs.length === abiFunction!.inputs.length && positions.length >= batchWitnesses.length) {
-          batchWitnesses.forEach((witness, index) => { finalArgs[positions[index]] = witness; });
-        } else {
-          for (const witness of batchWitnesses) finalArgs = [...finalArgs, witness];
+        if (positions.length < batchWitnesses.length) {
+          throw new Error(
+            `Internal error: function '${abiFunction!.name}' publishes ${positions.length} vmap batch inputs `
+            + `for ${batchWitnesses.length} derived witnesses.`,
+          );
         }
+        // Hidden resource families do not necessarily form one contiguous suffix. In particular, a handler
+        // which combines a counter-keyed runtime journal with a fixed invariant entry publishes
+        //   permutation, runtime input/output counts, fixed-entry batch witnesses.
+        // Appending the batch vector here shifted its slot/proof values into the still-unresolved count inputs,
+        // then left `BatchNext` undefined. Materialize only through the last batch position with type-correct
+        // sentinels and place every witness by its published ABI index. Later runtime-loop planning replaces the
+        // intervening count sentinels in place; any resource family after this one can still append normally.
+        const lastPosition = positions[batchWitnesses.length - 1];
+        while (finalArgs.length <= lastPosition) {
+          const input = abiFunction!.inputs[finalArgs.length];
+          if (!input?.name.startsWith('__internal__')) {
+            throw new Error(
+              `Internal error: cannot place vmap batch witnesses before unresolved user argument `
+              + `'${input?.name ?? finalArgs.length}' in '${abiFunction!.name}'.`,
+            );
+          }
+          finalArgs.push(defaultInternalFunctionArg(input));
+        }
+        batchWitnesses.forEach((witness, index) => { finalArgs[positions[index]] = witness; });
       }
 
       // Append the P5b value witnesses in slotIndex order (SymbolTable injects them right after blockhash, before

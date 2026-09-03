@@ -26676,9 +26676,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Push the first runtime mapping-write OUTPUT index. Collection-iteration outputs precede this family, but old
-   * dynamic chunks exist only in the INPUT run. Newly written dynamic chunks follow runtime mapping entries, so
-   * neither old nor new dynamic widths shift this base.
+   * Push the first runtime mapping-write OUTPUT index. Collection-iteration outputs and rewritten predecessors
+   * from a fixed sorted batch precede this family, but old dynamic chunks exist only in the INPUT run. Newly
+   * written dynamic chunks follow runtime mapping entries, so neither old nor new dynamic widths shift this base.
    */
   private emitTrailingWriteOutputBase(
     blockSize: number, locationData: SingleLocationData, trailingBase?: number, extraStackOffset = 0,
@@ -26703,6 +26703,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.emitAddCollectionIterCounts(locationData, extraStackOffset);
+    // A fixed-entry batch may insert an invariant entry beside this runtime loop. Its target occupies the fixed
+    // entry slot, while each rewritten predecessor is emitted at the start of the trailing output band. The SDK
+    // publishes that exact width; skipping it made the runtime loop compare the predecessor's collection covenant
+    // against its own entry address at blockSize.
+    const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
+    if (batchCountIdx >= 0) {
+      this.emitPickCompilerRouteFrameValue(
+        '__internal__vmapBatchTrailingCount', locationData, 1 + extraStackOffset,
+      );
+      this.emit(Op.OP_ADD, locationData);
+    }
     if (this.runtimeLoopEntryOutputCountActive) {
       this.emitPickCompilerRouteFrameValue(
         GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT,

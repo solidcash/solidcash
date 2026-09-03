@@ -189,6 +189,7 @@ event Visited(int i);
 contract KernelSelectedCounterMapping() {
   mapping(int => int) m;
   mapping(uint => uint) u;
+  mapping(int => int) totals;
   function write(int n, int ceiling) public {
     for (int i = 0; i < n; i = i + 1) {
       bool selected = i < ceiling;
@@ -262,8 +263,16 @@ contract KernelSelectedCounterMapping() {
     for (int i = 0; i < limit; i = i + 1) { this.m[i] = i + 600; }
     require(true);
   }
+  function writeMixed(int n, int owner) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.m[i] = i + 700;
+      this.totals[owner] = i;
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.m[key] == expected); }
   function checkUnsigned(uint key, uint expected) public { require(this.u[key] == expected); }
+  function checkTotal(int key, int expected) public { require(this.totals[key] == expected); }
 }`;
 
 const INDEPENDENT_ROW_LOOP_SOURCE = `pragma solidcash ^0.13.0;
@@ -631,6 +640,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const innerSwitchHandler = artifact.abi.find((candidate) => candidate.name === 'writeInnerSwitch')!;
     const unsignedHandler = artifact.abi.find((candidate) => candidate.name === 'writeUnsigned')!;
     const computedHandler = artifact.abi.find((candidate) => candidate.name === 'writeComputed')!;
+    const mixedHandler = artifact.abi.find((candidate) => candidate.name === 'writeMixed')!;
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
       .toMatchObject({ eligible: true });
     expect(writeHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
@@ -665,6 +675,9 @@ describe('kernel counter-key mapping loop compose', () => {
       .toMatchObject({ eligible: true });
     expect(computedHandler.sortedUpsertLoopInfo?.[0].iterationBound)
       .toMatchObject({ kind: 'binary', operator: '*' });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeMixed'))
+      .toMatchObject({ eligible: true });
+    expect(mixedHandler.sortedUpsertLoopInfo).toHaveLength(1);
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -888,6 +901,15 @@ describe('kernel counter-key mapping loop compose', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(StatefulContract.withCategory(inner, categoryId).call.writeComputed(9n, 8n).build())
       .rejects.toThrow(/outside 0\.\.64/);
+    await expect(StatefulContract.withCategory(inner, categoryId).call.writeMixed(4n, 9n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.checkTotal(9n, 3n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeMixed', args: [3n, 9n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.checkTotal(9n, 2n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 
   it('settles conditionally reached counter loops and plans inactive rows as empty', async () => {

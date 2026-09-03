@@ -5,7 +5,7 @@ import {
   DoWhileNode,
   EmitStatementNode, ExpressionNode, ExternalFunctionCallNode, FunctionCallNode, FunctionCallStatementNode,
   FieldAccessNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, LiteralNode, MappingAccessNode,
-  MappingAssignNode, MappingDeleteNode,
+  MappingAssignNode, MappingDeleteNode, NullaryOpNode,
   MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, SourceFileNode,
   ReturnNode,
   StateAccessNode, StateArrayAssignNode, StateArrayDeleteNode, StateArrayPopNode, StateArrayPushNode,
@@ -14,8 +14,8 @@ import {
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
-import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
-import { ArrayType, IntType } from '@solidcash/utils';
+import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { ArrayType, IntType, StructType } from '@solidcash/utils';
 
 export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 export const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
@@ -959,7 +959,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
-      if (keyed.length === 0 || keyed.length !== writes.length || !selectionConditionSupported
+      if (keyed.length === 0 || !selectionConditionSupported
         || keyed.some((write) => hasObservableEffect(write))
         || conditionalRuntimeEmit
         || hasUnjournalledRepeatedEffect(block, runtimeEmitSet, impureInlineResults)
@@ -979,6 +979,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const firstKeyShape = writeKeyShape(keyed[0]);
       if (keyed.some((write) => writeKeyShape(write) !== firstKeyShape)) return false;
       const keyedSet = new Set<Node>(keyed);
+      const invariantWrites = writes.filter((write) => !keyedSet.has(write));
       const keyedCollections = new Set(keyed.map((write) => write.name));
       const containsLogical = (x: Node): boolean => {
         if (x instanceof IdentifierNode && x.name === logical) return true;
@@ -990,6 +991,51 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      // Writes whose complete key is independent of the counter keep their ordinary fixed authenticated journal
+      // slot and execute in logical source order. A non-direct counter expression (`m[i + 1]`) is not invariant
+      // and still needs its own physical permutation recipe.
+      if (invariantWrites.some((write) => keyExpressions(write).some(containsLogical))) return false;
+      // CacheMappingEntryInLoop turns a repeated invariant scalar entry into one authenticated read/local
+      // mutation/write-back. Admit exactly the stable key/value forms that pass can currently lower; merely being
+      // counter-independent is insufficient (for example, a nested or computed key would otherwise retain a raw
+      // mapping write in the physical loop). This is capability-based rather than tied to a source contract: any
+      // depth-one sorted scalar mapping keyed by a public parameter, literal, msg.sender, or tx.origin qualifies.
+      const assignedInFunction = (name: string): boolean => {
+        let assigned = false;
+        const walk = (candidate: Node): void => {
+          if (assigned) return;
+          if ((candidate instanceof AssignNode && candidate.identifier.name === name)
+            || (candidate instanceof VariableDefinitionNode && candidate.name === name)) {
+            assigned = true;
+            return;
+          }
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction') continue;
+            if (value instanceof Node) walk(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+          }
+        };
+        walk(node.body);
+        return assigned;
+      };
+      const invariantWriteCacheable = (write: Node): boolean => {
+        if (!(write instanceof MappingAssignNode) || write.keys.length !== 1
+          || write.arrayIndex !== undefined || write.arrayPush || write.arrayPop) return false;
+        const collection = this.collectionsByName.get(write.name);
+        if (!collection?.sorted || collection.depth !== 1
+          || collection.innermostValueType instanceof ArrayType
+          || collection.innermostValueType instanceof StructType) return false;
+        const key = write.keys[0];
+        if (key instanceof LiteralNode) return true;
+        if (key instanceof NullaryOpNode) {
+          return key.operator === NullaryOperator.MSG_SENDER || key.operator === NullaryOperator.TX_ORIGIN;
+        }
+        return key instanceof IdentifierNode
+          && visibleParameters.some((parameter) => parameter.name === key.name)
+          && !assignedInFunction(key.name);
+      };
+      if (invariantWrites.some((write) => !invariantWriteCacheable(write))) return false;
       const containsKeyedWrite = (x: Node): boolean => {
         if (keyedSet.has(x)) return true;
         for (const key of Object.keys(x)) {

@@ -188,7 +188,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // Before symbol resolution, source-level `m[k] = value` is still represented as ArrayAssignNode. Account for
       // that form here; the MappingAssignNode arm handles nodes synthesized by earlier lowering passes.
       if (n instanceof ArrayAssignNode && this.scalarMappings.has(n.name)) {
-        const e = get(n.name, n.index);
+        const e = get(n.name, n.index, true);
         if (e) {
           e.fromModifier ??= n.fromModifier;
           e.count += 1;
@@ -198,7 +198,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
       if (n instanceof ArrayAccessNode && n.array instanceof IdentifierNode
         && this.scalarMappings.has(n.array.name)) {
-        const e = get(n.array.name, n.index);
+        const e = get(n.array.name, n.index, true);
         if (e?.written) e.readAfterWrite = true;
       }
       // X19: the same read written `this.m[k]` (or produced by an earlier lowering pass) is a MappingAccessNode,
@@ -206,7 +206,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // the bare one read-once/mutate-local/write-once, the dotted one in place - and published different
       // bytecode and a different entry-access order for byte-identical source intent.
       if (n instanceof MappingAccessNode && this.scalarMappings.has(n.name) && n.keys.length === 1) {
-        const e = get(n.name, n.keys[0]);
+        const e = get(n.name, n.keys[0], true);
         if (e?.written) e.readAfterWrite = true;
       }
       if (n instanceof MappingAssignNode && this.arrayMappings.has(n.name)) {
@@ -235,7 +235,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       // delete marks it bad (needs nullify, not a plain reassign). Any array-op on a scalar mapping should not occur;
       // if it does, mark bad (be safe).
       if (n instanceof MappingAssignNode && this.scalarMappings.has(n.name)) {
-        const e = get(n.name, n.keys[0]);
+        const e = get(n.name, n.keys[0], true);
         if (e) {
           e.fromModifier ??= n.fromModifier;
           if (n.arrayIndex === undefined && !n.arrayPush && !n.arrayPop) {
@@ -248,7 +248,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         }
       }
       if (n instanceof MappingDeleteNode && this.scalarMappings.has(n.name)) {
-        const e = get(n.name, n.keys[0]); if (e) e.bad = true;
+        const e = get(n.name, n.keys[0], true); if (e) e.bad = true;
       }
       if (n instanceof MappingFieldAssignNode && this.structMappings.has(n.name)) {
         const e = get(n.name, n.keys[0]);

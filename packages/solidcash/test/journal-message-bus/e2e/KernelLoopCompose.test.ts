@@ -28,6 +28,7 @@ contract KernelAcc() {
       OP_INPUTINDEX OP_DROP
       OP_TXOUTPUTCOUNT OP_DROP
       OP_0 OP_UTXOVALUE OP_DROP
+      OP_7 OP_0 OP_PICK OP_NUMEQUALVERIFY
     }
     require(true);
   }

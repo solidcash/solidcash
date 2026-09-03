@@ -14,7 +14,7 @@ const LOCAL_OPCODES = new Set<number>([
   Op.OP_VERIFY,
   Op.OP_TOALTSTACK, Op.OP_FROMALTSTACK,
   Op.OP_2DROP, Op.OP_2DUP, Op.OP_3DUP, Op.OP_2OVER, Op.OP_2ROT, Op.OP_2SWAP,
-  Op.OP_DROP, Op.OP_DUP, Op.OP_NIP, Op.OP_OVER, Op.OP_ROT, Op.OP_SWAP, Op.OP_TUCK,
+  Op.OP_DROP, Op.OP_DUP, Op.OP_NIP, Op.OP_OVER, Op.OP_PICK, Op.OP_ROT, Op.OP_SWAP, Op.OP_TUCK,
   Op.OP_CAT, Op.OP_SPLIT, Op.OP_NUM2BIN, Op.OP_BIN2NUM, Op.OP_SIZE, Op.OP_REVERSEBYTES,
   Op.OP_AND, Op.OP_OR, Op.OP_XOR, Op.OP_EQUAL, Op.OP_EQUALVERIFY,
   Op.OP_1ADD, Op.OP_1SUB, Op.OP_NEGATE, Op.OP_ABS, Op.OP_NOT, Op.OP_0NOTEQUAL,
@@ -51,6 +51,25 @@ const MINIMUM_MAIN_DEPTH = new Map<number, number>([
   [Op.OP_CHECKSEQUENCEVERIFY, 1],
 ]);
 
+const SMALL_INTEGER_OPCODE_VALUES = new Map<number, bigint>([
+  [Op.OP_0, 0n], [Op.OP_1NEGATE, -1n],
+  [Op.OP_1, 1n], [Op.OP_2, 2n], [Op.OP_3, 3n], [Op.OP_4, 4n],
+  [Op.OP_5, 5n], [Op.OP_6, 6n], [Op.OP_7, 7n], [Op.OP_8, 8n],
+  [Op.OP_9, 9n], [Op.OP_10, 10n], [Op.OP_11, 11n], [Op.OP_12, 12n],
+  [Op.OP_13, 13n], [Op.OP_14, 14n], [Op.OP_15, 15n], [Op.OP_16, 16n],
+]);
+
+/** Decode a pushed byte vector as BCH's little-endian sign-magnitude script number. */
+const pushedScriptNumber = (bytes: Uint8Array): bigint => {
+  if (bytes.length === 0) return 0n;
+  let magnitude = 0n;
+  for (let index = 0; index < bytes.length; index += 1) {
+    const byte = index === bytes.length - 1 ? bytes[index] & 0x7f : bytes[index];
+    magnitude |= BigInt(byte) << BigInt(index * 8);
+  }
+  return (bytes[bytes.length - 1] & 0x80) === 0 ? magnitude : -magnitude;
+};
+
 export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean {
   if (node.yulBlock !== undefined) return false;
 
@@ -61,28 +80,46 @@ export function isKernelSafeNativeAssembly(node: AssemblyStatementNode): boolean
     return false;
   }
 
-  let mainDepth = 0;
-  let altDepth = 0;
+  // Values are tracked only where their exact script number is statically known. This is enough to prove a
+  // local OP_PICK without interpreting arbitrary assembly computations or trusting a runtime-selected depth.
+  const main: Array<bigint | undefined> = [];
+  const alt: Array<bigint | undefined> = [];
   for (const element of script) {
     if (element instanceof Uint8Array) {
-      mainDepth += 1;
+      main.push(pushedScriptNumber(element));
       continue;
     }
     if (!LOCAL_OPCODES.has(element)) return false;
     const effect = getStackEffect(element);
     if (!effect) return false;
 
-    if (element === Op.OP_FROMALTSTACK) {
-      if (altDepth === 0) return false;
-      altDepth -= 1;
+    const fromAlt = element === Op.OP_FROMALTSTACK ? alt.at(-1) : undefined;
+    if (element === Op.OP_FROMALTSTACK && alt.length === 0) return false;
+
+    let picked: bigint | undefined;
+    if (element === Op.OP_PICK) {
+      const depth = main.at(-1);
+      // After OP_PICK consumes its depth, every selectable item must still have been produced by this block.
+      if (depth === undefined || depth < 0n || depth >= BigInt(main.length - 1)) return false;
+      picked = main[main.length - 2 - Number(depth)];
     }
 
     const minimumDepth = MINIMUM_MAIN_DEPTH.get(element) ?? effect.pops;
-    if (mainDepth < minimumDepth) return false;
-    mainDepth += effect.pushes - effect.pops;
+    if (main.length < minimumDepth) return false;
+    const popped = effect.pops === 0 ? [] : main.splice(main.length - effect.pops, effect.pops);
+    const pushed = Array<bigint | undefined>(effect.pushes).fill(undefined);
+    if (effect.pushes === 1 && SMALL_INTEGER_OPCODE_VALUES.has(element)) {
+      pushed[0] = SMALL_INTEGER_OPCODE_VALUES.get(element);
+    } else if (element === Op.OP_FROMALTSTACK) {
+      alt.pop();
+      pushed[0] = fromAlt;
+    } else if (element === Op.OP_PICK) {
+      pushed[0] = picked;
+    }
+    main.push(...pushed);
 
-    if (element === Op.OP_TOALTSTACK) altDepth += 1;
+    if (element === Op.OP_TOALTSTACK) alt.push(popped[0]);
   }
 
-  return mainDepth === 0 && altDepth === 0;
+  return main.length === 0 && alt.length === 0;
 }

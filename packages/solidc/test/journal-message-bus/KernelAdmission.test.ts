@@ -240,6 +240,8 @@ describe('required kernel admission', () => {
 
   it.each([
     ['local duplication', 'OP_1 OP_DUP OP_DROP OP_DROP'],
+    ['literal-depth local pick', 'OP_7 OP_0 OP_PICK OP_NUMEQUALVERIFY'],
+    ['pushed-depth local pick', '07 00 OP_PICK OP_NUMEQUALVERIFY'],
     ['balanced local alt-stack use', 'OP_1 OP_TOALTSTACK OP_FROMALTSTACK OP_DROP'],
     ['pure data hashing', 'OP_1 OP_SHA256 OP_DROP'],
   ])('admits isolated native assembly with %s', (_description, asm) => {
@@ -277,6 +279,7 @@ describe('required kernel admission', () => {
     ['unbalanced main stack', 'OP_1'],
     ['unbalanced alt stack', 'OP_1 OP_TOALTSTACK'],
     ['dynamic stack reach', 'OP_1 OP_PICK OP_DROP'],
+    ['runtime-selected stack reach', 'OP_7 OP_TXVERSION OP_PICK OP_2DROP'],
     ['transaction signature check', 'OP_0 OP_0 OP_CHECKSIG OP_DROP'],
     ['active-bytecode signature context', 'OP_ACTIVEBYTECODE OP_DROP'],
     ['inspection index borrowed from compiler stack', 'OP_OUTPUTVALUE OP_DROP'],

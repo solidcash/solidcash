@@ -260,9 +260,10 @@ unbound signature checks remain `KERNEL_TX_SIGNATURE`. Foreign `delegatecall` re
 retains its historical admission behavior and diagnostic names, but does not make these unsafe shapes admissible.
 Native BCH assembly is admitted by opcode semantics rather than contract shape: a linear block may use values it
 pushes itself, balance both stacks, and perform pure operations or read-only transaction/token inspection. CLTV and
-CSV thresholds and indexed-inspection operands must also be block-local. `OP_ACTIVEBYTECODE`, transaction-signature
-checks, dynamic stack reach, underflow, and unknown opcodes remain `KERNEL_OPAQUE_EFFECT`; they either change with
-the invocation/signature context or cannot be proven isolated by the static stack walk.
+CSV thresholds and indexed-inspection operands must also be block-local. `OP_PICK` is admitted only when its exact
+depth is statically known and selects another block-local value. `OP_ACTIVEBYTECODE`, transaction-signature checks,
+dynamic stack reach, underflow, and unknown opcodes remain `KERNEL_OPAQUE_EFFECT`; they either change with the
+invocation/signature context or cannot be proven isolated by the static stack walk.
 Typed external calls, collection-plus-typed-call handlers (a mapping journal clone promoted
 onto the graph `OP_INVOKE` frame), interface-typed state receivers (`this.data.userRegistered(..)`),
 literal `new T[](N)` key arrays, counter-keyed `m[i]` loops,

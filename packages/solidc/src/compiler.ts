@@ -105,7 +105,11 @@ import {
 import {
   containsIndirectCall, PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
-import LowerVMapCounterLoops, { VMAP_COUNTER_PERM_PREFIX } from './semantic/LowerVMapCounterLoops.js';
+import LowerVMapCounterLoops, {
+  VMAP_COUNTER_PERM_PREFIX,
+  VMAP_RUNTIME_INPUT_COUNT_PREFIX,
+  VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
+} from './semantic/LowerVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
@@ -5081,6 +5085,8 @@ function synthesizeMessageBusRoute(
                 if (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)) {
                   return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
                 }
+                if (parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+                  || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)) return parameter.name;
                 if (parameter.name.startsWith('__internal__collectionIter')
                   || parameter.name.startsWith('__internal__valueWitness_')
                   || parameter.name.startsWith('__internal__leadingPushValue_')
@@ -5236,6 +5242,8 @@ function synthesizeMessageBusRoute(
   const routeCounterPermParameters = eligible.flatMap((fn) =>
     fn.parameters.filter((parameter) => {
       if (!parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
+        && !parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+        && !parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
         && !parameter.name.startsWith('__internal__collectionIter')
         && !parameter.name.startsWith('__internal__valueWitness_')
         && !parameter.name.startsWith('__internal__leadingPushValue_')

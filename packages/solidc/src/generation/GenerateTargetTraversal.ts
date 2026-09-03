@@ -76,7 +76,13 @@ import {
 } from './upsertKeySources.js';
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
 import { hasEffectiveCallValue } from '../semantic/branchOps.js';
-import { VMAP_COUNTER_PERM_PREFIX } from '../semantic/LowerVMapCounterLoops.js';
+import {
+  VMAP_COUNTER_PERM_PREFIX,
+  VMAP_RUNTIME_INPUT_COUNT_PREFIX,
+  VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
+  vmapRuntimeInputCountName,
+  vmapRuntimeOutputCountName,
+} from '../semantic/LowerVMapCounterLoops.js';
 import {
   ContractNode,
   ParameterNode,
@@ -5340,6 +5346,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.vmapWitnessSnapshotNames = null;
     this.vmapUpsertWitnessSnapshotNames = null;
     this.emitRuntimeAliasWitnessPreflight(node);
+    if (!this.isDefineSubTraversal) {
+      for (const collection of this.vmapRuntimeCollections(node)) {
+        for (const name of [
+          vmapRuntimeInputCountName(collection), vmapRuntimeOutputCountName(collection),
+        ]) {
+          const originalIndex = this.getStackIndex(name);
+          this.emit(encodeInt(BigInt(originalIndex)), { location: node.location, positionHint: PositionHint.START });
+          this.emit(Op.OP_PICK, { location: node.location, positionHint: PositionHint.START });
+          this.pushToStack(`(__vmap_cardinality_local_${name})`);
+          this.stack[originalIndex + 1] = `(__vmap_cardinality_witness_${name})`;
+          this.stack[0] = name;
+        }
+      }
+    }
 
     // Long sorted-mapping values and dynamic-state chunks share the trailing output region. The SDK emits all
     // mapping value chunks first, so remember their runtime total whenever this function can produce both kinds.
@@ -5534,6 +5554,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       const slots = node.functionId === undefined ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
       const journalNames = new Set(slots.flatMap((sv) => this.journalContextNames(sv)));
+      for (const parameter of node.parameters) {
+        if (parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+          || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)) {
+          journalNames.add(parameter.name);
+        }
+      }
       if (node.graphRuntimeEmissionHandler) journalNames.add('__internal__graphEmissions');
       if (runtimeLoopEntryInputCountRequired) {
         journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
@@ -9365,6 +9391,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const callerOwnsRuntimeLoopEventContext = this.stack.includes(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START,
     ) && this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END);
+    const targetRuntimeCardinalityNames = targetFunc.parameters
+      .map((parameter) => parameter.name)
+      .filter((name) => name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+        || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX));
     const targetJournalContextNames = [
       ...(targetFunc.graphRuntimeEmissionThreaded ? ['__internal__graphEmissions'] : []),
       ...(targetRuntimeLoopEntryInputCount
@@ -9376,6 +9406,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END,
       ] : []),
       ...targetJournalSlots.flatMap((sv) => this.journalContextNames(sv)),
+    ];
+    const targetReturnedContextNames = [
+      ...targetRuntimeCardinalityNames,
+      ...targetJournalContextNames,
     ];
     // Pass copies of the context rather than moving the caller's slots. A moved
     // slot returns at the top of the stack and changes its position relative to
@@ -9607,10 +9641,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const argument = this.bindMessageBusPhysicalEntryArgument(
         node.parameters[i], targetFunc.parameters[i], targetFunc,
       );
-      node.parameters[i] = this.visit(argument);
+      const targetParameterName = targetFunc.parameters[i]?.name;
+      if (argument instanceof IdentifierNode && (targetParameterName?.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+        || targetParameterName?.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX))) {
+        // These declared parameters are copy-in/copy-out route context. Never let ordinary final-use lowering
+        // OP_ROLL the caller's cell: the returned remainder must replace that same stable frame slot and a later
+        // row must receive the updated value.
+        this.emit(encodeInt(BigInt(this.getStackIndex(argument.name))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack(`(__vmap_cardinality_arg_${targetFunc.functionId}_${i})`);
+      } else {
+        node.parameters[i] = this.visit(argument);
+      }
       pushedArgs += 1;
     }
-
     // Emit: <function_id> OP_INVOKE
     const userCallDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
     const userCallDebugTarget = userCallDebugEnv?.SOLIDC_DEBUG_USER_FUNCTION_CALL_TARGET;
@@ -9640,6 +9684,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Update stack tracking: pop the pushed arguments, push return values
     this.popFromStack(pushedArgs + hiddenContextCount);
+    // Runtime cardinalities are declared arguments rather than hidden journal arguments, so the ordinary argument
+    // cleanup removes their call-site markers. The callee deliberately returns their updated cells above all other
+    // contexts; restore those markers before consuming the canonical returned-context sequence below.
+    for (let i = targetRuntimeCardinalityNames.length - 1; i >= 0; i--) {
+      this.pushToStack(`(__vmap_cardinality_return_${targetFunc.functionId}_${i})`);
+    }
     if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
       this.emit(Op.OP_0, locationData);
       this.emit(Op.OP_EQUALVERIFY, locationData);
@@ -9648,8 +9698,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The callee returns the journal copies in canonical order. Replace each
     // caller-owned slot at its original depth, consuming the returned copy and
     // leaving the surrounding frame byte-for-byte in its pre-call order.
-    for (let i = 0; i < targetJournalContextNames.length; i++) {
-      const originalName = targetJournalContextNames[i];
+    for (let i = 0; i < targetReturnedContextNames.length; i++) {
+      const originalName = targetReturnedContextNames[i];
       if ((originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT
           && !callerOwnsRuntimeLoopEntryInputCount)
         || (originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT
@@ -9841,10 +9891,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // only the declared return tuple to the source expression.
     const graphEmissionContext = this.currentFunction.graphRuntimeEmissionHandler
       && this.stack.includes('__internal__graphEmissions');
+    const runtimeCardinalityNames = this.currentFunction.parameters
+      .map((parameter) => parameter.name)
+      .filter((name) => name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+        || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX));
     if (this.isDefineSubTraversal && (this.activeJournalSlots.length > 0 || graphEmissionContext
       || this.runtimeLoopEntryInputCountActive || this.runtimeLoopEntryOutputCountActive
-      || this.runtimeLoopEventActive)) {
+      || this.runtimeLoopEventActive || runtimeCardinalityNames.length > 0)) {
       const journalNames = [
+        ...runtimeCardinalityNames,
         ...(graphEmissionContext ? ['__internal__graphEmissions'] : []),
         ...(this.functionNeedsRuntimeLoopEntryInputCount(this.currentFunction)
           ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT] : []),
@@ -19281,6 +19336,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (depth < 0) continue;
       this.emitDropTrackedFromBottom(name, loc);
     }
+    if ((this.vmapUpsertWitnessSnapshotNames?.length ?? 0) > 0) {
+      this.emitDropTrackedFromBottom(GenerateTargetTraversalWithLocation.VMAP_UPSERT_CAPSULE, loc);
+    }
   }
 
   /**
@@ -19301,11 +19359,68 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ]);
   }
 
+  /** Runtime-loop collections survive route synthesis as named hidden ABI scalars even when loop AST metadata
+   * remains only on the outlined handlers. Merge both representations so route-level settlement is structural. */
+  private vmapRuntimeCollections(node: FunctionDefinitionNode): string[] {
+    return [...new Set([
+      ...node.parameters.flatMap((parameter) => {
+        if (parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)) {
+          return [parameter.name.slice(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX.length)];
+        }
+        if (parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)) {
+          return [parameter.name.slice(VMAP_RUNTIME_INPUT_COUNT_PREFIX.length)];
+        }
+        return [];
+      }),
+    ])];
+  }
+
   private emitRuntimeAliasWitnessPreflight(node: FunctionDefinitionNode): void {
     const loc = { location: node.location, positionHint: PositionHint.START } as SingleLocationData;
     const copy = (name: string): void => {
       this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc); this.emit(Op.OP_PICK, loc);
     };
+    // Cardinality is a property of the authenticated physical collection, not of any particular source loop or
+    // message-bus row. Verify it once while the declared frame is still exact. This covers zero-trip loops and
+    // permits disjoint handlers to share a collection without depending on body-local stack residue.
+    if (!this.isDefineSubTraversal && !this.isCompilerMessageBusRoute(node)
+      && !this.currentFunctionIsDelegate) {
+      for (const collectionName of this.vmapRuntimeCollections(node)) {
+        const cardinalityProofStartIp = this.getMostRecentInstructionPointer() + 1;
+        const collectionSignature = this.entrySlots.find(
+          (slot) => slot.collection === collectionName,
+        )?.collectionSignature;
+        if (!collectionSignature) {
+          throw new Error(`Missing sorted-upsert collection signature for '${collectionName}'`);
+        }
+        this.emitMasterInputIndex(loc);
+        this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+        this.emitTakeFirst32(loc);
+        this.pushToStack(`(vmap_cardinality_addr_${collectionName})`);
+        this.emitSortedEntryAddress(computeCollectionHash(collectionSignature), loc);
+        this.stack[0] = `(vmap_cardinality_addr_${collectionName})`;
+        const fixedEntryCount = this.entrySlots.filter(
+          (slot, index) => slot.collection === collectionName && this.ownsFixedEntrySlot(index),
+        ).length;
+        for (const [countName, isOutput] of [
+          [vmapRuntimeOutputCountName(collectionName), true],
+          [vmapRuntimeInputCountName(collectionName), false],
+        ] as const) {
+          const index = this.getStackIndex(countName, true);
+          if (index < 0) throw new Error(`Missing runtime-loop cardinality ABI for '${collectionName}'`);
+          this.emit(encodeInt(BigInt(index)), loc); this.emit(Op.OP_PICK, loc);
+          this.emit(Op.OP_TOALTSTACK, loc);
+          this.emitVerifyAdjacentUtxoCount(isOutput, loc, fixedEntryCount);
+        }
+        const addressIndex = this.getStackIndex(`(vmap_cardinality_addr_${collectionName})`);
+        this.emit(encodeInt(BigInt(addressIndex)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+        this.removeFromStack(addressIndex);
+        const cardinalityProofEndIp = this.getMostRecentInstructionPointer();
+        for (let ip = cardinalityProofStartIp; ip <= cardinalityProofEndIp; ip += 1) {
+          this.requires.push({ ip, line: loc.location.start.line });
+        }
+      }
+    }
     for (const batch of node.sortedBatchInfo ?? []) {
       for (const slot of batch.slotIndices) {
         const priors = (this.entrySlots[slot]?.runtimeAliasPriorSlots ?? [])
@@ -19353,8 +19468,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // may legally reorder the original parameter cells while preserving stack depth; all post-body vmap work reads
     // these snapshots instead. Freeze the name list here - restore MUST pop the same sequence.
     const topologyNames = this.vmapBatchTopologyNames(node);
+    const runtimeCardinalityNames = this.isCompilerMessageBusRoute(node)
+      ? this.vmapRuntimeCollections(node).flatMap((collection) => [
+        vmapRuntimeInputCountName(collection), vmapRuntimeOutputCountName(collection),
+      ]) : [];
     const names = [
       ...topologyNames,
+      ...runtimeCardinalityNames,
       ...[...new Set((node.entryAccesses ?? []).flatMap((entry) => entry.keyParams))]
         .filter((candidate) => this.getStackIndex(candidate, true) >= 0),
     ];
@@ -19402,12 +19522,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...[...new Set((node.entryAccesses ?? []).flatMap((entry) => entry.keyParams))]
         .filter((candidate) => this.getStackIndex(candidate, true) >= 0),
     ];
-    if ((this.vmapUpsertWitnessSnapshotNames?.length ?? 0) > 0) {
-      this.emitDropTrackedFromBottom(GenerateTargetTraversalWithLocation.VMAP_UPSERT_CAPSULE, loc);
-    }
     for (const name of names.reverse()) {
       this.emit(Op.OP_FROMALTSTACK, loc);
-      this.pushToStack(topologyNames.includes(name) ? `__vmap_snapshot_${name}` : name);
+      this.pushToStack(topologyNames.includes(name) || name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+        || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX) ? `__vmap_snapshot_${name}` : name);
     }
     this.vmapWitnessSnapshotsRestored = true;
   }
@@ -19449,11 +19567,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // call-site remaps that argument to the handler's physical entry slot; reaching back through OP_INVOKE into the
     // caller's altstack capsule would both cross the return-address frame and reinterpret the local slot ordinal as
     // a route-global ordinal. The stable bottom-frame lookup is the established handler ABI convention.
-    if (this.isDefineSubTraversal && this.getStackIndex(name, true) >= 0) {
+    const names = this.vmapUpsertWitnessSnapshotNames;
+    const hasCapsule = names?.includes(name) === true
+      && this.getStackIndex(GenerateTargetTraversalWithLocation.VMAP_UPSERT_CAPSULE, true) >= 0;
+    if (!hasCapsule && this.isDefineSubTraversal && this.getStackIndex(name, true) >= 0) {
       this.emitPickTrackedFromBottom(name, loc);
       return;
     }
-    const names = this.vmapUpsertWitnessSnapshotNames;
     if (names === null) throw new Error(`Missing vmap upsert witness snapshot while reading '${name}'`);
     const index = names.indexOf(name);
     if (index < 0) throw new Error(`Vmap upsert witness snapshot does not contain '${name}'`);
@@ -19475,6 +19595,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Copy a batch-topology witness from the compiler-tracked top frame. */
   private emitPickVMapWitness(name: string, loc: SingleLocationData, extraStackOffset = 0): void {
     const resolved = this.vmapWitnessName(name);
+    if (this.isCompilerMessageBusRoute() && this.vmapUpsertWitnessSnapshotNames?.includes(name)) {
+      this.emitCopyUpsertVMapWitness(name, loc);
+      return;
+    }
     if (resolved.startsWith('__vmap_snapshot_') && this.isCompilerMessageBusRoute()) {
       // Restored snapshots are pushed only after every invoked handler has returned, so they sit above any
       // runtime-only handler residue in a compiler-owned route. Their top-relative depth is stable there; a bottom
@@ -19498,6 +19622,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {
     const loc = { location: node.location, positionHint: PositionHint.START };
+    const runtimeCollections = new Set(this.vmapRuntimeCollections(node));
+    const cardinalityScanned = new Set<string>();
     const arg = (name: string, extra = 0): void => {
       this.emitPickVMapWitness(name, loc, extra);
     };
@@ -19817,6 +19943,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // packed batch slot/next blob
       }
 
+      // Direct entry points already performed this combined fixed+runtime scan before executing the body. Routes
+      // must defer it until now because only their authenticated activity flags reveal which fixed rows exist.
+      if (!this.isCompilerMessageBusRoute(node) && runtimeCollections.has(batch.collection)) continue;
+
       // Exact collection-address output cardinality: every target is one node; each distinct nonnegative predOut
       // is one recreated non-target predecessor. Read-only accesses to this collection are preserved separately.
       const expected = `(__vmap_batch_expected_${batch.collection})`;
@@ -19837,6 +19967,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       this.pushToStack(expected);
+      if (this.isCompilerMessageBusRoute(node)
+        && runtimeCollections.has(batch.collection)) {
+        // The immutable snapshot is untracked; OP_ADD leaves the named expected accumulator in place.
+        this.emitPickVMapWitness(vmapRuntimeOutputCountName(batch.collection), loc);
+        this.emit(Op.OP_ADD, loc);
+      }
       for (let i = 0; i < targets.length; i++) {
         const slot = targets[i];
         arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP);
@@ -19859,17 +19995,96 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitReplace(this.getStackIndex(expected) + 1, node);
       }
 
+      const inputExpected = `(__vmap_batch_input_expected_${batch.collection})`;
+      this.emit(encodeInt(0n), loc);
+      this.pushToStack(inputExpected);
+      for (let i = 0; i < targets.length; i++) {
+        const slot = targets[i];
+        arg(`__internal__vmapBatchProof_${slot}`); bin(Op.OP_DUP);
+        bin(Op.OP_0); bin(Op.OP_GREATERTHAN); // [proof, include]
+        for (let j = 0; j < i; j++) {
+          bin(Op.OP_OVER);
+          arg(`__internal__vmapBatchProof_${targets[j]}`, 3);
+          bin(Op.OP_NUMNOTEQUAL); bin(Op.OP_BOOLAND);
+        }
+        bin(Op.OP_SWAP); bin(Op.OP_DROP);
+        arg(inputExpected, 1); bin(Op.OP_ADD);
+        this.emitReplace(this.getStackIndex(inputExpected) + 1, node);
+      }
+      for (let i = 0; i < this.entrySlots.length; i++) {
+        const info = this.entrySlots[i];
+        if (info.collection !== batch.collection || targets.includes(i)
+          || info.operations.includes('write') || info.operations.includes('delete')) continue;
+        this.emitSlotExistsCheck('entry', i, loc);
+        arg(inputExpected, 1); bin(Op.OP_ADD);
+        this.emitReplace(this.getStackIndex(inputExpected) + 1, node);
+      }
+      if (this.isCompilerMessageBusRoute(node) && runtimeCollections.has(batch.collection)) {
+        this.emitPickVMapWitness(vmapRuntimeInputCountName(batch.collection), loc);
+        this.emit(Op.OP_ADD, loc);
+        cardinalityScanned.add(batch.collection);
+      }
+
       const addr = `(__vmap_batch_addr_${batch.collection})`;
       this.emitMasterInputIndex(loc); bin(Op.OP_UTXOTOKENCATEGORY);
       this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
       this.pushToStack(addr);
       this.emitSortedEntryAddress(collectionHash, loc);
       this.stack[0] = addr;
+      this.emitVerifyChunkUtxoCount(inputExpected, false, loc, addr);
       this.emitVerifyChunkUtxoCount(expected, true, loc, addr);
-      for (const name of [addr, expected]) {
+      for (const name of [addr, inputExpected, expected]) {
         const depth = this.getStackIndex(name);
         this.emit(encodeInt(BigInt(depth)), loc); bin(Op.OP_ROLL); bin(Op.OP_DROP);
         this.removeFromStack(depth);
+      }
+    }
+
+    // A route containing only runtime rows has no fixed batch from which to anchor the combined scan. Bind both
+    // sides directly to the original collection claims; this is the common pure row-loop shape.
+    if (this.isCompilerMessageBusRoute(node)) {
+      for (const collection of runtimeCollections) {
+        if (cardinalityScanned.has(collection)) continue;
+        const collectionSignature = this.entrySlots.find(
+          (slot) => slot.collection === collection,
+        )?.collectionSignature;
+        if (!collectionSignature) throw new Error(`Missing sorted-upsert collection signature for '${collection}'`);
+        const addr = `(__vmap_runtime_addr_${collection})`;
+        this.emitMasterInputIndex(loc); bin(Op.OP_UTXOTOKENCATEGORY);
+        this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
+        this.pushToStack(addr);
+        this.emitSortedEntryAddress(computeCollectionHash(collectionSignature), loc);
+        this.stack[0] = addr;
+        for (const [name, output] of [
+          [vmapRuntimeInputCountName(collection), false],
+          [vmapRuntimeOutputCountName(collection), true],
+        ] as const) {
+          const expected = `(__vmap_runtime_expected_${output ? 'out' : 'in'}_${collection})`;
+          this.emitPickVMapWitness(name, loc);
+          this.pushToStack(expected);
+          this.emitVerifyChunkUtxoCount(expected, output, loc, addr);
+          const depth = this.getStackIndex(expected);
+          this.emit(encodeInt(BigInt(depth)), loc); bin(Op.OP_ROLL); bin(Op.OP_DROP);
+          this.removeFromStack(depth);
+        }
+        const depth = this.getStackIndex(addr);
+        this.emit(encodeInt(BigInt(depth)), loc); bin(Op.OP_ROLL); bin(Op.OP_DROP);
+        this.removeFromStack(depth);
+      }
+    }
+
+    // The route's physical scans proved these started at the complete authenticated widths. Every runtime loop
+    // subtracts its exact local width, including zero for an empty row, and outlined rows copy the remainder back
+    // into the wrapper frame. Requiring zero prevents inflated witnesses and keeps collections independent.
+    if (!this.isDefineSubTraversal) {
+      for (const collection of this.vmapRuntimeCollections(node)) {
+        for (const name of [
+          vmapRuntimeInputCountName(collection), vmapRuntimeOutputCountName(collection),
+        ]) {
+          this.emitPickCompilerRouteFrameValue(name, loc);
+          this.emit(Op.OP_0, loc);
+          this.emit(Op.OP_NUMEQUALVERIFY, loc);
+        }
       }
     }
   }
@@ -21268,9 +21483,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
     }
     this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
-    // mint [pu_slot | pu_next | pu_val] (identical bytes to the deferred UPDATE's commitment)
     this.emitVerifySortedValueOutput(loc, this.getStackIndex(this.sortedUpsertLoopAddrName) + 1,
-      this.getStackIndex(pSlot) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(pVal) + 1); // -> U=0
+      this.getStackIndex(pSlot) + 1, this.getStackIndex(pNext) + 1, this.getStackIndex(pVal) + 1);
     // outCounter += 1
     this.emit(encodeInt(BigInt(this.getStackIndex(outCtr))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_1ADD, loc);
     this.emitReplace(this.getStackIndex(outCtr) + 1, { location: loc.location } as unknown as Node);
@@ -21638,35 +21852,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // CASE (b) FLUSH: the loop's last iteration DEFERS its update's mint into the pending registers; mint it now
     // (before the count pins, which read outCounter). No key follows, so it is always a normal (non-re-pointed) flush.
     if (this.sortedUpsertPendActive) this.emitSortedFlushPendingNormal(loc);
-    // The entry NFT address ALSO hosts this collection's FIXED (non-loop) entries - e.g. a full multiTransfer's
-    // cached `bal[msg.sender] -= amounts[i]` debit is a fixed slot at the same address. Those are co-spent + minted
-    // (verified separately at their fixed positions), so the address's total count is counter + nFixed.
-    const nFixed = this.entrySlots.filter(
-      (s, index) => s.collection === this.sortedUpsertLoopCollection && this.ownsFixedEntrySlot(index),
-    ).length;
-    // Reconstruct the collection address for the count pin. Reading input[writeBase] is not valid for a zero-trip
-    // loop (there is no entry input), and for grouped collections it always names the first group's address rather
-    // than the active context. Re-derivation from the authenticated master category is independent of both cases.
-    // A delegate implementation's stack has untracked upsert working items under the
-    // setup address. The per-iteration body already EQUALVERIFYs each predecessor's
-    // locking bytecode; a full-tx count pin that PICKs the address by tracked depth
-    // reports 0 matches (Marketplace updateJobWhitelist). Skip the global pin in
-    // delegate functions until the scan can name that address without a deep PICK.
-    if (!this.currentFunctionIsDelegate) {
+    const collection = this.sortedUpsertLoopCollection;
+    if (collection === null) throw new Error('Missing runtime-loop collection while settling cardinality');
+    const hasThreadedCardinality = this.getStackIndex(vmapRuntimeInputCountName(collection), true) >= 0
+      && this.getStackIndex(vmapRuntimeOutputCountName(collection), true) >= 0;
+    let localScanAddress = false;
+    if (hasThreadedCardinality) {
+      this.emitConsumeVMapRuntimeCardinality(this.sortedUpsertLoopCounterName, false, loc);
+      this.emitConsumeVMapRuntimeCardinality(this.sortedUpsertLoopOutCounterName, true, loc);
+    } else if (!this.currentFunctionIsDelegate) {
+      // Non-counter runtime loop lowerings retain their established local count pin. They have no route-threaded
+      // cardinality ABI, so each direct invocation remains independently orphan-bound.
+      const nFixed = this.entrySlots.filter(
+        (slot, index) => slot.collection === collection && this.ownsFixedEntrySlot(index),
+      ).length;
       const collectionSignature = this.entrySlots.find(
-        (slot) => slot.collection === this.sortedUpsertLoopCollection,
+        (slot) => slot.collection === collection,
       )?.collectionSignature;
-      if (!collectionSignature) {
-        throw new Error(`Missing sorted-upsert collection signature for '${this.sortedUpsertLoopCollection}'`);
-      }
+      if (!collectionSignature) throw new Error(`Missing sorted-upsert collection signature for '${collection}'`);
       this.emitMasterInputIndex(loc);
       this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
       this.emitTakeFirst32(loc);
       this.pushToStack('(ul_scan_addr)');
       this.emitSortedEntryAddress(computeCollectionHash(collectionSignature), loc);
       this.stack[0] = '(ul_scan_addr)';
-      this.emitVerifyAdjacentUtxoCount(this.sortedUpsertLoopCounterName, false, loc, nFixed);
-      this.emitVerifyAdjacentUtxoCount(this.sortedUpsertLoopOutCounterName, true, loc, nFixed);
+      for (const [countName, output] of [
+        [this.sortedUpsertLoopCounterName, false], [this.sortedUpsertLoopOutCounterName, true],
+      ] as const) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(countName))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_TOALTSTACK, loc);
+        this.emitVerifyAdjacentUtxoCount(output, loc, nFixed);
+      }
+      localScanAddress = true;
     }
     if (accumulate) {
       this.emitAccumulateRuntimeLoopEntryInputs(this.sortedUpsertLoopCounterName, loc);
@@ -21678,8 +21896,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     const dropNames = [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName,
-      ...(!this.currentFunctionIsDelegate ? ['(ul_scan_addr)'] as const : []),
-      this.sortedUpsertLoopAddrName];
+      ...(localScanAddress ? ['(ul_scan_addr)'] : []), this.sortedUpsertLoopAddrName];
     if (this.sortedUpsertGrouped) dropNames.push(this.sortedUpsertOutputBaseName, this.sortedUpsertInputBaseName);
     if (this.sortedUpsertPendActive) {
       dropNames.unshift(this.sortedUpsertPendSlotName, this.sortedUpsertPendValName, this.sortedUpsertPendNextName);
@@ -21692,6 +21909,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertPendActive = false;
     this.sortedUpsertLoopActive = false;
     this.sortedUpsertLoopCollection = null;
+  }
+
+  /** Consume one loop's exact width from its physical collection's transaction-wide remainder. */
+  private emitConsumeVMapRuntimeCardinality(
+    sourceName: string, output: boolean, locationData: SingleLocationData,
+  ): void {
+    const collection = this.sortedUpsertLoopCollection;
+    if (collection === null) throw new Error('Missing runtime-loop collection while settling cardinality');
+    const remainderName = output
+      ? vmapRuntimeOutputCountName(collection) : vmapRuntimeInputCountName(collection);
+    if (this.getStackIndex(remainderName, true) < 0) {
+      throw new Error(`Missing runtime-loop cardinality remainder '${remainderName}'`);
+    }
+
+    // remainder' = remainder - locally proven width. Reject underflow immediately so no later row can cancel an
+    // over-consumption with malformed arithmetic; the wrapper epilogue separately requires the final value be zero.
+    this.emit(encodeInt(BigInt(this.getStackIndex(remainderName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(vmap_runtime_cardinality_prior)');
+    this.emit(encodeInt(BigInt(this.getStackIndex(sourceName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(vmap_runtime_cardinality_delta)');
+    this.emit(Op.OP_SUB, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(vmap_runtime_cardinality_remaining)');
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
+    this.emitReplace(this.getStackIndex(remainderName), this.currentFunction);
+    this.popFromStack();
   }
 
   private emitSortedUpsertLoopTeardowns(
@@ -22851,7 +23099,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Anchor the complete scan at its call site, as with the C2 absence proof above.
     const scanEndIp = this.getMostRecentInstructionPointer();
     for (let ip = scanStartIp; ip <= scanEndIp; ip += 1) {
-      this.requires.push({ ip, line: loc.location.start.line });
+      this.requires.push({ ip, line: loc.location?.start.line ?? this.currentFunction.location.start.line });
     }
   }
 
@@ -22861,8 +23109,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack in: [..., addr, expected]; working items sit on top of `addr`.
    */
   private emitVerifyAdjacentUtxoCount(
-    expectedCountName: string, isOutput: boolean, loc: SingleLocationData, nFixed = 0,
+    isOutput: boolean, loc: SingleLocationData, nFixed = 0,
   ): void {
+    const scanStartIp = this.getMostRecentInstructionPointer() + 1;
     const countOp = isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT;
     const bytecodeOp = isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE;
     this.emit(encodeInt(0n), loc);
@@ -22895,19 +23144,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, loc);
     this.popFromStack();
     this.scopeDepth -= 1;
-    // The actual count is an epilogue-local above any runtime-only handler residue, so its top-relative depth is
-    // exact. The expected counter was allocated before route handler invocation and must use its stable bottom
-    // ordinal on a compiler route; an ordinary function uses the known one-item offset for the actual-count copy.
-    this.emit(encodeInt(BigInt(this.getStackIndex('(adj_count)'))), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emitPickCompilerRouteFrameValue(expectedCountName, loc, 1);
+    // The caller parks the expected count on the altstack. Pulling it only after the raw scan avoids
+    // every deep-frame ambiguity: the comparison is always the two top items, independent of the caller frame.
+    this.emit(Op.OP_FROMALTSTACK, loc);
     if (nFixed > 0) { this.emit(encodeInt(BigInt(nFixed)), loc); this.emit(Op.OP_ADD, loc); }
     this.emit(Op.OP_EQUALVERIFY, loc);
-    const idx = this.getStackIndex('(adj_count)');
-    this.emit(encodeInt(BigInt(idx)), loc);
-    this.emit(Op.OP_ROLL, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.removeFromStack(idx);
+    // The scan's address/counters are a deliberately adjacent mixed frame. Generic repeated-span outlining cannot
+    // infer that raw index/bytecode values sit above the tracked locals; extracting a suffix can reinterpret the
+    // collection address as the expected count. Keep this proof at its call site, as for the raw vmap count pin.
+    const scanEndIp = this.getMostRecentInstructionPointer();
+    for (let ip = scanStartIp; ip <= scanEndIp; ip += 1) {
+      this.requires.push({ ip, line: loc.location?.start.line ?? this.currentFunction.location.start.line });
+    }
+    this.removeFromStack(this.getStackIndex('(adj_count)'));
   }
 
   /**
@@ -26122,7 +26371,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitReplace(this.getStackIndex(name) + ordinaryExtraStackOffset, node);
       return;
     }
-
     const locationData = { location: node.location, positionHint: PositionHint.END };
     const topIndex = this.getStackIndex(name);
     const bottomOrdinalPlusOne = this.stack.length - topIndex;
@@ -27671,6 +27919,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // An outlined message-bus handler owns the transition or preservation proof for this shared physical slot.
       // The aggregate route cannot repeat it: inactive runtime rows intentionally leave the capacity slot empty.
       if (node.messageBusHandlerManagedEntrySlots?.includes(i)) continue;
+      // A sorted-batch slot is settled by emitSortedBatchTransitionVerification. In a compiler route the slot is
+      // part of the union layout and may be inactive for the selected row (predOut=-2), so treating it as an
+      // ordinary read-only access would require an output that the authenticated inactive representation forbids.
+      if (node.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i))) continue;
       // Skip written or deleted entries (handled by emitEntryCovenantVerification)
       if (this.pendingEntryWrites.has(i) || this.pendingEntryDeletes.has(i)) continue;
       // Loop-write entries are NEW (no input to preserve) and have no fixed block slot.

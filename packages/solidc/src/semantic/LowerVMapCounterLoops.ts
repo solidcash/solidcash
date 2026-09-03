@@ -14,6 +14,12 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { ArrayType, IntType } from '@solidcash/utils';
 
 export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
+export const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
+export const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
+export const vmapRuntimeInputCountName = (collection: string): string =>
+  `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
+export const vmapRuntimeOutputCountName = (collection: string): string =>
+  `${VMAP_RUNTIME_OUTPUT_COUNT_PREFIX}${collection}`;
 const PREFIX = VMAP_COUNTER_PERM_PREFIX;
 const MAX_COUNTER_ITERATIONS = 64;
 const PURE_COUNTER_VALUE_BUILTINS = new Set([
@@ -112,6 +118,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const added: ParameterNode[] = [];
+    const runtimeCountCollections = new Set<string>();
     const prelude: StatementNode[] = [];
     // The compiler invokes this pass both before speculative admission and, when needed, before final codegen.
     // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
@@ -821,6 +828,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const p = new ParameterNode(new ArrayType(new IntType(true, 256)), hidden);
       p.location = node.location;
       added.push(p);
+      for (const collection of keyedCollections) runtimeCountCollections.add(collection);
       return true;
     };
     const counterWriteLoopSet = new Set(counterWriteLoops.map(([loop]) => loop));
@@ -954,8 +962,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       node.runtimeLoopEvents = orderedSegments;
       node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0) + outerEmits.length;
     }
+    for (const collection of runtimeCountCollections) {
+      const inputCount = new ParameterNode(
+        new IntType(true, 256), vmapRuntimeInputCountName(collection),
+      );
+      inputCount.location = node.location;
+      const outputCount = new ParameterNode(
+        new IntType(true, 256), vmapRuntimeOutputCountName(collection),
+      );
+      outputCount.location = node.location;
+      added.push(inputCount, outputCount);
+    }
     if (prelude.length > 0) node.body.statements = [...prelude, ...(node.body.statements ?? [])];
-    node.parameters.push(...added);
+    // Route synthesis appends the physical owner context after every source-derived handler argument. Generated
+    // loop witnesses must remain on the source-argument side of that boundary even when this lowering runs on a
+    // cloned handler after route ownership was attached; otherwise caller and callee disagree on the OP_INVOKE ABI.
+    const ownerIndex = node.parameters.findIndex(
+      (parameter) => parameter.name === '__internal__messageBusOwnerInput',
+    );
+    if (ownerIndex < 0) node.parameters.push(...added);
+    else node.parameters.splice(ownerIndex, 0, ...added);
     return node;
   }
 }

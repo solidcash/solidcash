@@ -1576,6 +1576,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitParameter(node: ParameterNode): Node {
     const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
+      || node.name.startsWith('__internal__vmapRuntimeInputCount_')
+      || node.name.startsWith('__internal__vmapRuntimeOutputCount_')
       || node.name.startsWith('__internal__valueWitness_')
       || node.name.startsWith('__internal__leadingPushValue_')
       || node.name.startsWith('__internal__collectionIter')
@@ -2158,6 +2160,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.parameters.some((parameter) => parameter.name === '__internal__messageBusOwnerInput')) {
       const owner = this.symbolTables[0].get('__internal__messageBusOwnerInput');
       if (owner) owner.references.push({ name: '__internal__messageBusOwnerInput' } as IdentifierNode);
+    }
+    for (const parameter of node.parameters.filter((candidate) =>
+      candidate.name.startsWith('__internal__vmapRuntimeInputCount_')
+      || candidate.name.startsWith('__internal__vmapRuntimeOutputCount_'))) {
+      const count = this.symbolTables[0].get(parameter.name);
+      if (count) count.references.push({ name: parameter.name } as IdentifierNode);
     }
     Object.defineProperty(node, 'hasStatefulOperation', {
       value: bodySurvey.hasStatefulOperation, writable: true, configurable: true,

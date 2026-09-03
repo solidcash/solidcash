@@ -184,6 +184,13 @@ interface VmapCounterPermutationSpec {
   step: bigint;
 }
 
+const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
+const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
+const vmapRuntimeInputCountName = (collection: string): string =>
+  `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
+const vmapRuntimeOutputCountName = (collection: string): string =>
+  `${VMAP_RUNTIME_OUTPUT_COUNT_PREFIX}${collection}`;
+
 function vmapCounterPermutationSpec(name: string): VmapCounterPermutationSpec | undefined {
   const decodeSigned = (component: string): bigint => (
     component.startsWith('n') ? -BigInt(component.slice(1)) : BigInt(component.slice(1))
@@ -4329,6 +4336,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         rowPermutations[rowIndex] = permutation;
       }
       resolvedCallerInternalWitnesses[input.name] = rowPermutations;
+    }
+    for (const input of capability.route.inputs) {
+      if ((!input.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
+        && !input.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX))
+        || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
+      resolvedCallerInternalWitnesses[input.name] = 0n;
     }
     const expectedWitnesses = capability.route.inputs
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__')).length;
@@ -15288,16 +15301,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const value = selectedRowArgument(row, info.varyingArrayParam);
       return !Array.isArray(value) || value.length > 0;
     }));
-    const selectedRowsByCollection = new Map<string, number[]>();
-    for (const row of activeSelectedUpsertRows) {
-      const rowIndex = routeRowIndex(row);
-      for (const collection of new Set((row.handler.sortedUpsertLoopInfo ?? []).map((info) => info.collection))) {
-        const rows = selectedRowsByCollection.get(collection) ?? [];
-        rows.push(rowIndex);
-        selectedRowsByCollection.set(collection, rows);
-      }
-    }
-    const repeatedCollection = [...selectedRowsByCollection].find(([, rows]) => rows.length > 1);
     if (activeSelectedUpsertRows.length > 1 && activeSelectedUpsertRows.some((row) => (
       row.handler.sortedUpsertLoopInfo ?? []
     ).some((info) => info.valueRuntimeLocal || info.mutation !== undefined))) {
@@ -15306,7 +15309,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + 'requires journalled predecessor planning; split the rows into separate transactions.',
       );
     }
-    const plannedUpsertRows = activeSelectedUpsertRows;
+    const plannedUpsertRows = selectedUpsertRows;
     const upsertPlanningFrames = selectedUpsertRows.length > 0
       ? plannedUpsertRows.map((row) => ({
         abiFunction: row.handler,
@@ -15317,6 +15320,40 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       : (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
         ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false, row: undefined }]
         : [];
+    const runtimeLoopsByCollection = new Map<string, Array<(typeof upsertPlanningFrames)[number]>>();
+    for (const frame of upsertPlanningFrames) {
+      for (const info of frame.abiFunction.sortedUpsertLoopInfo ?? []) {
+        const frames = runtimeLoopsByCollection.get(info.collection) ?? [];
+        frames.push(frame);
+        runtimeLoopsByCollection.set(info.collection, frames);
+      }
+    }
+    for (const [collection, frames] of runtimeLoopsByCollection) {
+      if (frames.length < 2) continue;
+      const inputName = vmapRuntimeInputCountName(collection);
+      const outputName = vmapRuntimeOutputCountName(collection);
+      const unthreaded = frames.some((frame) => (
+        !frame.abiFunction.inputs.some((input) => input.name === inputName)
+        || !frame.abiFunction.inputs.some((input) => input.name === outputName)
+      ));
+      if (!unthreaded) continue;
+      const rows = [...new Set(frames.flatMap((frame) => (
+        frame.row === undefined ? [] : [routeRowIndex(frame.row)]
+      )))];
+      const rowDescription = rows.length > 0 ? `Message-bus rows ${rows.join(', ')}` : 'Runtime loops';
+      throw new Error(
+        `${rowDescription} both mutate the '${collection}' runtime journal, but at least one loop form `
+        + 'does not support threaded collection cardinality; split the loops into separate transactions.',
+      );
+    }
+    const runtimeLoopCardinality = new Map<string, { inputs: number; outputs: number }>();
+    const addRuntimeLoopCardinality = (collection: string, inputs: number, outputs: number): void => {
+      const prior = runtimeLoopCardinality.get(collection) ?? { inputs: 0, outputs: 0 };
+      runtimeLoopCardinality.set(collection, {
+        inputs: prior.inputs + inputs,
+        outputs: prior.outputs + outputs,
+      });
+    };
     for (const upsertFrame of upsertPlanningFrames) {
       const loopAbiFunction = upsertFrame.abiFunction;
       const loopArgs = upsertFrame.args;
@@ -15357,6 +15394,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         finalArgs[index] = value;
       };
       for (const info of loopAbiFunction.sortedUpsertLoopInfo ?? []) {
+      const runtimeInputStart = insertLoopPredecessors.length;
       const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
       if (!collection) continue;
       const entryAddr = getEntryNftAddress(this.inner, this.categoryId, collection.signature);
@@ -15725,6 +15763,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         replaceLoopArgument(witnessIndex, oldWitnesses);
         for (const input of runtimeInputs) appendRuntimeJournalInput(input, info.collection);
         runtimeLoopDerivedCounts.set(info.collection, keysArr.length);
+        addRuntimeLoopCardinality(
+          info.collection, insertLoopPredecessors.length - runtimeInputStart, keysArr.length,
+        );
         if (collection.chunkableValue) addComputedValueChunkRun(info.collection);
         continue;
       }
@@ -15960,19 +16001,55 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           });
         }
       }
+      addRuntimeLoopCardinality(
+        info.collection, insertLoopPredecessors.length - runtimeInputStart, commitments.length,
+      );
       }
     }
 
-    // A physical overlap is diagnosed while planning the rows above because it specifically requires a
-    // read-your-writes transition. Disjoint rows still cannot share an address-count covenant: its first
-    // handler observes the later row's entries in the whole transaction and cannot soundly finalize early.
-    if (repeatedCollection) {
-      const [collection, rows] = repeatedCollection;
-      throw new Error(
-        `Message-bus rows ${rows.join(', ')} both mutate the '${collection}' runtime journal. `
-        + 'The collection-wide input/output cardinality covenant cannot finalize before its last row; '
-        + 'split these rows into separate transactions.',
-      );
+    // Every row which can touch a collection receives the same transaction-wide runtime cardinality. The route
+    // verifies that witness against the authenticated physical collection, then each selected handler subtracts
+    // its locally proven width. Empty rows receive the same initial total and subtract zero.
+    for (const upsertFrame of upsertPlanningFrames) {
+      for (const collection of new Set(
+        (upsertFrame.abiFunction.sortedUpsertLoopInfo ?? []).map((info) => info.collection),
+      )) {
+        const cardinality = runtimeLoopCardinality.get(collection) ?? { inputs: 0, outputs: 0 };
+        const inputIndex = upsertFrame.abiFunction.inputs.findIndex(
+          (input) => input.name === vmapRuntimeInputCountName(collection),
+        );
+        const outputIndex = upsertFrame.abiFunction.inputs.findIndex(
+          (input) => input.name === vmapRuntimeOutputCountName(collection),
+        );
+        if (inputIndex < 0 || outputIndex < 0) {
+          // Legacy loop forms retain their local cardinality covenant. The preflight above ensures such a
+          // loop never shares its physical collection with another runtime loop in the same transaction.
+          continue;
+        }
+        const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
+          if (!upsertFrame.routed) {
+            upsertFrame.args[index] = value;
+            finalArgs[index] = value;
+            return;
+          }
+          const input = upsertFrame.abiFunction.inputs[index];
+          const mutableInternal = upsertFrame.row!.internalArgs as Record<string, FunctionArgument>;
+          mutableInternal[input.name] = value;
+          const routeIndex = entryAbiFunction!.inputs.findIndex((candidate) => candidate.name === input.name);
+          if (routeIndex < 0) throw new Error(
+            `Message-bus route is missing compiler-owned loop argument '${input.name}'`,
+          );
+          entryArgs[routeIndex] = value;
+          if (entryCompilerRoute) {
+            entryCompilerRoute.internalArgs = { ...entryCompilerRoute.internalArgs, [input.name]: value };
+          } else {
+            args[routeIndex] = value;
+            finalArgs[routeIndex] = value;
+          }
+        };
+        replaceLoopArgument(inputIndex, BigInt(cardinality.inputs));
+        replaceLoopArgument(outputIndex, BigInt(cardinality.outputs));
+      }
     }
 
     // Handle external state reads (cross-contract reads via interfaces)

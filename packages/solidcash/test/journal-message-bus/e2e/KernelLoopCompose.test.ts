@@ -158,8 +158,12 @@ contract KernelDisjointSameCollectionRows() {
     this.values[group][key] = value;
     require(true);
   }
-  function write(int group, int n, int base) public {
-    for (int i = 0; i < n; i = i + 1) { this.values[group][i] = base; }
+  function writeA(int n, int base) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[1][i] = base; }
+    require(true);
+  }
+  function writeB(int n, int base) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[2][i] = base; }
     require(true);
   }
   function check(int group, int key, int expected) public {
@@ -892,11 +896,24 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 
-  it('refuses disjoint rows in one physical collection before an unsound partial count pin', async () => {
+  it('settles repeated and zero-trip rows in one physical collection with a shared cardinality witness', async () => {
     const provider = createTestProvider();
     const artifact = compileString(DISJOINT_SAME_COLLECTION_ROWS_SOURCE, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
-      .toEqual(expect.objectContaining({ eligible: true }));
+    expect(artifact.messageBus?.handlers.filter((handler) => handler.name === 'writeA' || handler.name === 'writeB'))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'writeA', eligible: true }),
+        expect.objectContaining({ name: 'writeB', eligible: true }),
+      ]));
+    const cardinalityInputs = [
+      '__internal__vmapRuntimeInputCount_values',
+      '__internal__vmapRuntimeOutputCount_values',
+    ];
+    for (const name of ['writeA', 'writeB']) {
+      const handler = artifact.abi.find((candidate) => candidate.name === name)!;
+      expect(handler.inputs.map((input) => input.name)).toEqual(expect.arrayContaining(cardinalityInputs));
+    }
+    expect(artifact.messageBus!.route.inputs.map((input) => input.name))
+      .toEqual(expect.arrayContaining(cardinalityInputs));
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -908,12 +925,16 @@ describe('kernel composite counter-key settlement', () => {
       }
     }
     const call = contract.batch([
-      { function: 'write', args: [2n, 2n, 20n] },
-      { function: 'write', args: [1n, 2n, 10n] },
+      { function: 'writeB', args: [2n, 20n] },
+      { function: 'writeA', args: [0n, 99n] },
+      { function: 'writeA', args: [2n, 10n] },
     ]);
-    await expect(call.build()).rejects.toThrow(
-      /rows 0, 1 both mutate the 'values' runtime journal.*split these rows into separate transactions/,
-    );
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const updated = StatefulContract.withCategory(inner, categoryId);
+    await expect(updated.call.check(2n, 1n, 20n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.check(1n, 0n, 10n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 
   it('settles source-order typed calls beside a permuted mapping loop', async () => {

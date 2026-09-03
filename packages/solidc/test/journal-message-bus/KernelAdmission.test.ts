@@ -327,8 +327,7 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['a nonzero counter start', 'for (int i = 1; i < n; i = i + 1) { this.m[i] = i; }'],
-    ['a non-unit counter step', 'for (int i = 0; i < n; i = i + 2) { this.m[i] = i; }'],
+    ['a zero counter step', 'for (int i = 0; i < n; i = i + 0) { this.m[i] = i; }'],
     ['an extra post-test counter mutation', `int i = 0; do {
       this.m[i] = i; i = n; i = i + 1;
     } while (i < n);`],
@@ -371,6 +370,27 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill')?.eligible).toBe(true);
     expect(artifact.abi.find((handler) => handler.name === 'fill')?.inputs).toContainEqual(
       expect.objectContaining({ name: expect.stringMatching(/^__internal__vmapCounterPerm_n_/), type: 'int256[]' }),
+    );
+  });
+
+  it.each([
+    ['positive', '3', 'p3'],
+    ['negative', '-3', 'n3'],
+  ])('admits a %s constant counter start and positive step over a public bound', (_label, start, encodedStart) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function fill(int n) public {
+        for (int i = ${start}; i < n; i = i + 2) { this.m[i] = i; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill')?.eligible).toBe(true);
+    expect(artifact.abi.find((handler) => handler.name === 'fill')?.inputs).toContainEqual(
+      expect.objectContaining({
+        name: expect.stringMatching(new RegExp(`^__internal__vmapCounterPerm_n_\\d+_from_${encodedStart}_step_p2$`)),
+        type: 'int256[]',
+      }),
     );
   });
 

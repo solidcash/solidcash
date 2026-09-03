@@ -49,7 +49,7 @@ contract KernelCounterMappingRmw() {
   function credit(int n, int amount) public {
     int requested = n;
     int limit = requested;
-    for (int i = 0; i < limit; i = i + 1) {
+    for (int i = 1; i < limit; i = i + 2) {
       this.m[i] = this.m[i] + amount;
     }
     require(true);
@@ -94,7 +94,7 @@ interface IKernelCounterSink { function ping(int value); }
 contract KernelCounterCaller(address sink) {
   mapping(int => int) m;
   function invoke(int n) public {
-    for (int i = 0; i < n; i = i + 1) {
+    for (int i = 1; i < n; i = i + 2) {
       this.m[i] = i + 10;
       IKernelCounterSink(sink).ping(i);
     }
@@ -361,14 +361,70 @@ describe('kernel counter-key mapping loop compose', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    await expect(contract.batch([{ function: 'credit', args: [3n, 7n] }]).send()).resolves.toMatchObject({
+    expect(() => contract.batch([{ function: 'credit', args: [130n, 7n] }]))
+      .toThrow(/iteration count outside 0\.\.64/);
+    const call = contract.batch([{ function: 'credit', args: [8n, 7n] }]);
+    const builder = await call.build();
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no contract parameters');
+    const permutationInput = artifact.abi.find((candidate) => candidate.name === 'credit')!.inputs.find((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))!;
+    expect(permutationInput.name).toMatch(/_from_p1_step_p2$/);
+    const routePermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === permutationInput.name);
+    expect(routePermutationIndex).toBeGreaterThanOrEqual(0);
+    const originalPermutation = routeUnlocker.params[routePermutationIndex];
+    if (!Array.isArray(originalPermutation) || originalPermutation.length !== 4) {
+      throw new Error('expected a four-element compiler-derived ranged permutation');
+    }
+    expect([...originalPermutation].sort((left, right) => Number(BigInt(left) - BigInt(right))))
+      .toEqual([1n, 3n, 5n, 7n]);
+
+    const routeSelector = artifact.messageBus!.route.selector;
+    if (!routeSelector) throw new Error('message-bus route has no selector');
+    const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
+      routeUnlocker.abiFunction, hexToBin(routeSelector),
+    );
+    const malformedProgression = [...originalPermutation];
+    malformedProgression[0] = 2n;
+    const duplicate = [...originalPermutation];
+    duplicate[0] = duplicate[1];
+    const hostileVm = createVirtualMachineBch2026ForProvider(provider);
+    for (const hostilePermutation of [
+      originalPermutation.slice(1),
+      malformedProgression,
+      duplicate,
+      [...originalPermutation.slice(0, -1), 9n],
+    ]) {
+      const hostileRouteParams = [...routeUnlocker.params];
+      hostileRouteParams[routePermutationIndex] = hostilePermutation;
+      builder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileRouteParams);
+      const transaction = builder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      expect(hostileVm.stateSuccess(hostileVm.evaluate({
+        inputIndex: routeInputIndex, sourceOutputs, transaction,
+      })), `hostile ranged permutation ${hostilePermutation.join(',')}`).not.toBe(true);
+    }
+    builder.inputs[routeInputIndex].unlocker = routeUnlocker;
+
+    await expect(call.send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    for (let key = 0; key < 3; key += 1) {
+    for (const key of [1n, 3n, 5n, 7n]) {
       await expect(
-        StatefulContract.withCategory(inner, categoryId).check(BigInt(key), 7n).send(),
+        StatefulContract.withCategory(inner, categoryId).check(key, 7n).send(),
       ).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
+    await expect(StatefulContract.withCategory(inner, categoryId).check(0n, 0n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.credit(10n, 2n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).check(9n, 2n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 
   it('finalizes and sends a counter-keyed mapping row with the authenticated permutation', async () => {
@@ -586,7 +642,7 @@ describe('kernel composite counter-key settlement', () => {
     );
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const composition = messageBus.compose({
-      calls: [caller.call.invoke(3n), sink.call.ping(0n), sink.call.ping(1n), sink.call.ping(2n)],
+      calls: [caller.call.invoke(6n), sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n)],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
@@ -598,7 +654,7 @@ describe('kernel composite counter-key settlement', () => {
       .filter((commitment): commitment is Uint8Array => commitment?.length === 65)
       .map((commitment) => commitment.at(-1))
       .sort((left, right) => (left ?? 0) - (right ?? 0));
-    expect(entryValues).toEqual([10, 11, 12]);
+    expect(entryValues).toEqual([11, 13, 15]);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
       expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
@@ -606,7 +662,7 @@ describe('kernel composite counter-key settlement', () => {
     }
 
     const wrongOrder = messageBus.compose({
-      calls: [caller.call.invoke(3n), sink.call.ping(1n), sink.call.ping(0n), sink.call.ping(2n)],
+      calls: [caller.call.invoke(6n), sink.call.ping(3n), sink.call.ping(1n), sink.call.ping(5n)],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
@@ -615,7 +671,7 @@ describe('kernel composite counter-key settlement', () => {
 
     const updateFee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const update = messageBus.compose({
-      calls: [caller.call.invoke(3n), sink.call.ping(0n), sink.call.ping(1n), sink.call.ping(2n)],
+      calls: [caller.call.invoke(6n), sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n)],
       funder: updateFee,
       changeAddress: updateFee.unlocker.generateLockingBytecode(),
     });

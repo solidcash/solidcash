@@ -177,11 +177,58 @@ import {
 
 const signerUtxoSnapshots = new WeakMap<object, Map<string, Map<string, Utxo>>>();
 
-function vmapCounterPermutationSpec(name: string): { countName: string; postTest: boolean } | undefined {
+interface VmapCounterPermutationSpec {
+  countName: string;
+  postTest: boolean;
+  start: bigint;
+  step: bigint;
+}
+
+function vmapCounterPermutationSpec(name: string): VmapCounterPermutationSpec | undefined {
+  const decodeSigned = (component: string): bigint => (
+    component.startsWith('n') ? -BigInt(component.slice(1)) : BigInt(component.slice(1))
+  );
+  const range = name.match(
+    /^__internal__vmapCounterPerm_(.+)_\d+_from_([pn]\d+)_step_([pn]\d+)(_post)?$/,
+  );
+  if (range) {
+    return {
+      countName: range[1],
+      start: decodeSigned(range[2]),
+      step: decodeSigned(range[3]),
+      postTest: range[4] !== undefined,
+    };
+  }
   const postTest = name.match(/^__internal__vmapCounterPerm_(.+)_\d+_post$/);
-  if (postTest) return { countName: postTest[1], postTest: true };
+  if (postTest) return { countName: postTest[1], postTest: true, start: 0n, step: 1n };
   const preTest = name.match(/^__internal__vmapCounterPerm_(.+)_\d+$/);
-  return preTest ? { countName: preTest[1], postTest: false } : undefined;
+  return preTest ? { countName: preTest[1], postTest: false, start: 0n, step: 1n } : undefined;
+}
+
+function vmapCounterPermutationValues(
+  bound: bigint,
+  spec: VmapCounterPermutationSpec,
+): bigint[] {
+  if (spec.step <= 0n) throw new Error('vmap counter loop step must be positive');
+  // Legacy unit-domain rows authenticate the public bound itself as the iteration count, including its
+  // historical non-negative constraint. Ranged rows authenticate the derived progression length, so a bound
+  // below their start is a valid zero-trip domain.
+  if (!spec.postTest && spec.start === 0n && spec.step === 1n && bound < 0n) {
+    throw new Error(`vmap counter loop bound '${spec.countName}' must be between 0 and 64`);
+  }
+  const naturalCount = bound > spec.start
+    ? ((bound - spec.start - 1n) / spec.step) + 1n
+    : 0n;
+  const iterationCount = spec.postTest && naturalCount === 0n ? 1n : naturalCount;
+  if (iterationCount < 0n || iterationCount > 64n) {
+    throw new Error(
+      `vmap counter loop bound '${spec.countName}' produces an iteration count outside 0..64`,
+    );
+  }
+  return Array.from(
+    { length: Number(iterationCount) },
+    (_unused, index) => spec.start + BigInt(index) * spec.step,
+  );
 }
 
 function signerSnapshotMap(signer: Signer): Map<string, Utxo> | undefined {
@@ -4278,12 +4325,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const visible = visibleHandlerInputs(row.handler.inputs);
       const countIndex = visible.findIndex((candidate) => candidate.name === permutationSpec.countName);
       const countValue = countIndex < 0 ? undefined : row.args[countIndex];
-      const count = countValue === undefined ? -1n : BigInt(countValue as bigint | number | string);
-      if (count < 0n || count > 64n) {
-        throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument between 0 and 64`);
+      if (countValue === undefined) {
+        throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
       }
-      const iterationCount = permutationSpec.postTest && count === 0n ? 1n : count;
-      const permutation = Array.from({ length: Number(iterationCount) }, (_unused, index) => BigInt(index));
+      const permutation = vmapCounterPermutationValues(
+        BigInt(countValue as bigint | number | string),
+        permutationSpec,
+      );
       for (const selectedRow of rows) {
         (selectedRow.internalArgs as Record<string, FunctionArgument>)[input.name] = permutation;
       }
@@ -13688,12 +13736,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // the authenticated row blob, not as a route parameter).
       if (Array.isArray(args[hiddenIdx])) continue;
       const countIdx = abiFunction!.inputs.findIndex((p) => p.name === permutationSpec.countName);
-      const count = countIdx >= 0 ? BigInt(args[countIdx]) : -1n;
-      if (count < 0n || count > 64n) {
-        throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be between 0 and 64`);
+      if (countIdx < 0) {
+        throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
       }
-      const iterationCount = permutationSpec.postTest && count === 0n ? 1n : count;
-      const perm = Array.from({ length: Number(iterationCount) }, (_, i) => BigInt(i));
+      const perm = vmapCounterPermutationValues(BigInt(args[countIdx]), permutationSpec);
       perm.sort((a, b) => {
         const av = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(a)]));
         const bv = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(b)]));

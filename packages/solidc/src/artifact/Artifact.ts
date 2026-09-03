@@ -1355,6 +1355,7 @@ function buildFunctionAbiMetadata(
           info.iterationBreakCondition,
           info.iterationCounter,
         );
+        const iterationBound = info.iterationBound && serializeCondition(info.iterationBound);
         if (info.condition && !condition) {
           throw new Error(`Runtime loop condition in '${func.name}' cannot be represented in artifact metadata`);
         }
@@ -1364,11 +1365,15 @@ function buildFunctionAbiMetadata(
         if (info.iterationBreakCondition && !iterationBreakCondition) {
           throw new Error(`Runtime loop break condition in '${func.name}' cannot be represented in artifact metadata`);
         }
+        if (info.iterationBound && !iterationBound) {
+          throw new Error(`Runtime loop bound in '${func.name}' cannot be represented in artifact metadata`);
+        }
         return {
           ...info,
           condition,
           iterationCondition,
           iterationBreakCondition,
+          iterationBound,
           iterationCounter: undefined,
           ...(info.fixedKeySources && { fixedKeySources: info.fixedKeySources.map((source) => ({
             kind: source.kind,

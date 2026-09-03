@@ -404,6 +404,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     iterationCondition?: ExpressionNode;
     /** Per-source-iteration predicate terminating the source loop after this iteration. */
     iterationBreakCondition?: ExpressionNode;
+    /** Expanded public-argument expression computing a non-affine loop bound. */
+    iterationBound?: ExpressionNode;
     iterationCounter?: { name: string; initialValue: bigint; stepValue: bigint };
     op: '+' | '-' | 'set' | 'delete';
   }>;
@@ -415,6 +417,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     breakCondition?: ExpressionNode;
     counter: { name: string; initialValue: bigint; stepValue: bigint };
   }>;
+  /** Expanded public-argument expression which computes a non-affine counter-loop bound. */
+  runtimeCounterLoopBounds?: Map<string, ExpressionNode>;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[]; linear?: boolean }>;

@@ -553,8 +553,6 @@ describe('required kernel admission', () => {
     } while (i < n);`],
     ['a mutated public bound', `n = n - 1;
       for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }`],
-    ['a non-affine computed local bound', `int limit = n * 2;
-      for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }`],
     ['a reassigned local bound', `int limit = n; limit = n - 1;
       for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }`],
     ['a sibling read of the mutated mapping', `for (int i = 0; i < n; i = i + 1) {
@@ -571,6 +569,21 @@ describe('required kernel admission', () => {
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('publishes a deterministic non-affine counter bound for SDK replay', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function fill(int n, int scale) public {
+        int limit = n * scale;
+        for (int i = 0; i < limit; i = i + 1) { this.m[i] = i + 10; }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'fill')?.sortedUpsertLoopInfo?.[0].iterationBound)
+      .toMatchObject({ kind: 'binary', operator: '*' });
   });
 
   it('admits an exact counter-selected mapping-write domain', () => {

@@ -309,14 +309,15 @@ Solidity field tuple), and dynamic arrays of structs or enums returned through t
 Recursive mapping handlers and result types the wrapper cannot encode stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
 Counter-keyed mapping loops with zero, direction-mismatched, or runtime-computed steps,
-non-affine or mutated bounds, or extra counter mutations stay `KERNEL_UNBOUNDED_KEY`. A constant-start,
+mutated bounds, or extra counter mutations stay `KERNEL_UNBOUNDED_KEY`. Deterministic bound expressions over
+public arguments and immutable local aliases are serialized for SDK replay. A constant-start,
 constant-step domain is represented by the exact ascending or descending arithmetic progression, with a maximum of 64 iterations;
 the authenticated permutation is over those logical counter values rather than assuming `0..n-1`, and its ABI element type
 matches a signed or unsigned source counter. The exact post-test form
 `int i = 0; do { ...; i = i + 1; } while (i < n)` is supported with an authenticated
 `max(n, 1)` permutation; an immutable local affine-alias chain such as
-`requested = n; limit = 1 + (requested - 2)` preserves the exact authenticated domain, while nonlinear and
-reassigned aliases remain refused. Other `do-while`
+`requested = n; limit = 1 + (requested - 2)` and nonlinear forms such as `limit = n * scale` preserve the exact
+authenticated domain, while reassigned aliases remain refused. Other `do-while`
 domains remain refused. A handler may contain multiple unconditional top-level counter loops in source order,
 including loops over the same physical collection. The compiler threads exact accumulated input and output widths
 between those loops, and the SDK publishes their predecessor and commitment runs in the same order. If their

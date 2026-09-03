@@ -140,6 +140,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       boundNames: string[];
       boundDefinitions: VariableDefinitionNode[];
       boundOffset: bigint;
+      boundExpression?: ExpressionNode;
       start: bigint;
       step: bigint;
       counterType: IntType;
@@ -215,11 +216,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const visibleCounts = new Set(node.parameters
             .filter((parameter) => !parameter.name.startsWith('__internal__'))
             .map((parameter) => parameter.name));
+          type BoundResolution = {
+            count: string;
+            countNames: string[];
+            definitions: VariableDefinitionNode[];
+            offset: bigint;
+            metadataExpression?: ExpressionNode;
+          };
           const resolveBound = (
             expression: ExpressionNode,
             before: number,
             seen = new Set<string>(),
-          ): { count: string; definitions: VariableDefinitionNode[]; offset: bigint } | undefined => {
+          ): BoundResolution | undefined => {
             if (expression instanceof BinaryOpNode
               && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
               && expression.right instanceof IntLiteralNode) {
@@ -240,7 +248,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             }
             if (!(expression instanceof IdentifierNode)) return undefined;
             const { name } = expression;
-            if (visibleCounts.has(name)) return { count: name, definitions: [], offset: 0n };
+            if (visibleCounts.has(name)) return {
+              count: name, countNames: [name], definitions: [], offset: 0n,
+            };
             if (seen.has(name)) return undefined;
             const definitions = statements.slice(0, before)
               .map((statement, position) => ({ statement, position }))
@@ -254,17 +264,95 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             );
             return parent && {
               count: parent.count,
+              countNames: parent.countNames,
               definitions: [...parent.definitions, definitions[0].statement],
               offset: parent.offset,
             };
           };
-          const boundResolution = bound instanceof IdentifierNode
+          const resolveGeneralBound = (
+            expression: ExpressionNode,
+            before: number,
+            seen = new Set<string>(),
+          ): { expression: ExpressionNode; counts: string[]; definitions: VariableDefinitionNode[] } | undefined => {
+            if (expression instanceof IdentifierNode) {
+              if (visibleCounts.has(expression.name)) return {
+                expression: cloneNode(expression), counts: [expression.name], definitions: [],
+              };
+              if (seen.has(expression.name)) return undefined;
+              const definitions = statements.slice(0, before)
+                .map((statement, position) => ({ statement, position }))
+                .filter((candidate): candidate is { statement: VariableDefinitionNode; position: number } =>
+                  candidate.statement instanceof VariableDefinitionNode
+                  && candidate.statement.name === expression.name);
+              if (definitions.length !== 1 || definitions[0].statement.expression === undefined) return undefined;
+              const resolved = resolveGeneralBound(
+                definitions[0].statement.expression,
+                definitions[0].position,
+                new Set(seen).add(expression.name),
+              );
+              return resolved && {
+                ...resolved, definitions: [...resolved.definitions, definitions[0].statement],
+              };
+            }
+            if (expression instanceof LiteralNode) return {
+              expression: cloneNode(expression), counts: [], definitions: [],
+            };
+            if (expression instanceof CastNode || expression instanceof UnaryOpNode) {
+              const resolved = resolveGeneralBound(expression.expression, before, seen);
+              if (!resolved) return undefined;
+              const expanded = cloneNode(expression);
+              expanded.expression = resolved.expression;
+              return { ...resolved, expression: expanded };
+            }
+            if (expression instanceof BinaryOpNode) {
+              const left = resolveGeneralBound(expression.left, before, seen);
+              const right = resolveGeneralBound(expression.right, before, seen);
+              if (!left || !right) return undefined;
+              const expanded = cloneNode(expression);
+              expanded.left = left.expression;
+              expanded.right = right.expression;
+              return {
+                expression: expanded,
+                counts: [...new Set([...left.counts, ...right.counts])],
+                definitions: [...new Set([...left.definitions, ...right.definitions])],
+              };
+            }
+            if (expression instanceof TernaryOpNode) {
+              const condition = resolveGeneralBound(expression.condition, before, seen);
+              const ifTrue = resolveGeneralBound(expression.ifTrue, before, seen);
+              const ifFalse = resolveGeneralBound(expression.ifFalse, before, seen);
+              if (!condition || !ifTrue || !ifFalse) return undefined;
+              const expanded = cloneNode(expression);
+              expanded.condition = condition.expression;
+              expanded.ifTrue = ifTrue.expression;
+              expanded.ifFalse = ifFalse.expression;
+              return {
+                expression: expanded,
+                counts: [...new Set([...condition.counts, ...ifTrue.counts, ...ifFalse.counts])],
+                definitions: [...new Set([
+                  ...condition.definitions, ...ifTrue.definitions, ...ifFalse.definitions,
+                ])],
+              };
+            }
+            return undefined;
+          };
+          let boundResolution = bound instanceof IdentifierNode
             ? resolveBound(bound, index - 1) : undefined;
+          if (!boundResolution && bound instanceof ExpressionNode) {
+            const general = resolveGeneralBound(bound, index - 1);
+            if (general && general.counts.length > 0) boundResolution = {
+              count: general.counts[0],
+              countNames: general.counts,
+              definitions: general.definitions,
+              offset: 0n,
+              metadataExpression: general.expression,
+            };
+          }
           if (!(loop instanceof WhileNode || loop instanceof DoWhileNode)
             || !(variable instanceof VariableDefinitionNode)
             || !(loop.condition instanceof BinaryOpNode)
             || !(loop.condition.left instanceof IdentifierNode) || loop.condition.left.name !== variable.name
-            || !(bound instanceof IdentifierNode) || boundResolution === undefined) continue;
+            || boundResolution === undefined) continue;
           const update = loop.block.statements?.at(-1);
           const updateStep = update instanceof AssignNode && update.identifier.name === variable.name
             && update.expression instanceof BinaryOpNode
@@ -288,9 +376,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           canonicalLoops.set(loop, {
             logical: variable.name,
             count: boundResolution.count,
-            boundNames: [boundResolution.count, ...boundResolution.definitions.map((definition) => definition.name)],
+            boundNames: [
+              ...boundResolution.countNames,
+              ...boundResolution.definitions.map((definition) => definition.name),
+            ],
             boundDefinitions: boundResolution.definitions,
             boundOffset: boundResolution.offset,
+            ...(boundResolution.metadataExpression
+              && { boundExpression: boundResolution.metadataExpression }),
             start: preTest ? variable.loopInitialValue! : 0n,
             step: preTest ? variable.loopStepValue! : 1n,
             counterType: variable.type instanceof IntType ? variable.type : new IntType(true, 256),
@@ -595,7 +688,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const canonical = canonicalLoops.get(loop);
       if (!canonical) return false;
       const {
-        logical, count, boundNames, boundDefinitions, boundOffset, start, step, counterType, postTest, counterUpdate,
+        logical, count, boundNames, boundDefinitions, boundOffset, boundExpression,
+        start, step, counterType, postTest, counterUpdate,
         pathConditions, pathSupported,
       } = canonical;
       const sourcePathCondition = runtimePathCondition(pathConditions);
@@ -1139,6 +1233,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         ? '' : `_from_${signedComponent(start)}_step_${signedComponent(step)}`;
       const boundSuffix = boundOffset === 0n ? '' : `_bound_${signedComponent(boundOffset)}`;
       const hidden = `${PREFIX}${count}_${serial}${boundSuffix}${rangeSuffix}${postTest ? '_post' : ''}`;
+      if (boundExpression) {
+        (node.runtimeCounterLoopBounds ??= new Map()).set(hidden, cloneNode(boundExpression));
+      }
       if (pathCondition) {
         (node.runtimeCounterLoopConditions ??= new Map()).set(hidden, cloneNode(pathCondition));
       }
@@ -1166,8 +1263,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const proofInt = new IntType(true, 256);
       const asProofInt = (expression: ExpressionNode): ExpressionNode => counterType.signed
         ? expression : at(new CastNode(proofInt, expression, false));
-      const sourceBoundValue = (): ExpressionNode => boundOffset === 0n
-        ? id(count) : binary(id(count), BinaryOperator.PLUS, lit(boundOffset));
+      const sourceBoundValue = (): ExpressionNode => boundExpression
+        ? cloneNode(boundExpression)
+        : boundOffset === 0n ? id(count) : binary(id(count), BinaryOperator.PLUS, lit(boundOffset));
       const boundValue = (): ExpressionNode => asProofInt(sourceBoundValue());
       const positiveIterationCount = (): ExpressionNode => binary(
         binary(binary(

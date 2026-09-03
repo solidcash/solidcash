@@ -8,6 +8,7 @@ import {
   ExternalCallExpression,
   ExternalCallStatement,
   ExternalCallAbi,
+  SortedUpsertLoopAbi,
   buildInitialStateCommitments,
   buildTokenContainerCovenantScript,
   buildSatoshiContainerCovenantScript,
@@ -4349,13 +4350,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
       for (const { row, rowIndex } of rows) {
         const visible = visibleHandlerInputs(row.handler.inputs);
-        const countIndex = visible.findIndex((candidate) => candidate.name === permutationSpec.countName);
-        const countValue = countIndex < 0 ? undefined : row.args[countIndex];
-        if (countValue === undefined) {
-          throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
-        }
         const loopInfo = row.handler.sortedUpsertLoopInfo
           ?.find((info) => info.varyingArrayParam === input.name);
+        const countIndex = visible.findIndex((candidate) => candidate.name === permutationSpec.countName);
+        const countValue = countIndex < 0 ? undefined : row.args[countIndex];
+        if (countValue === undefined && !loopInfo?.iterationBound) {
+          throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
+        }
         const active = loopInfo?.condition ? this._evaluateExternalExpression(
           loopInfo.condition,
           [...row.args],
@@ -4366,9 +4367,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // State-derived predicates are intentionally unresolved here: _batchRaw is synchronous and performs no
         // chain reads. Publish an empty placeholder; _createBuilder recomputes the exact permutation after loading
         // authenticated state. Parameter-only false paths can avoid even validating an unreachable large bound.
-        const domain = active === true
-          ? vmapCounterPermutationValues(BigInt(countValue as bigint | number | string), permutationSpec)
-          : [];
+        const resolvedDomain = active === true ? this._vmapCounterDomain(
+          loopInfo, permutationSpec, countValue, [...row.args], executionArtifact, visible,
+        ) : [];
+        const domain = resolvedDomain ?? [];
         const selectedDomain: bigint[] = [];
         let selectedDomainResolved = active === true;
         if (loopInfo?.iterationCondition && active === true) {
@@ -13964,11 +13966,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // the complete route argument frame, so do not look for the source bound on the wrapper ABI (`n` lives in
       // the authenticated row blob, not as a route parameter).
       if (Array.isArray(args[hiddenIdx])) continue;
+      const loopInfo = abiFunction?.sortedUpsertLoopInfo?.find((info) => info.varyingArrayParam === input.name);
       const countIdx = abiFunction!.inputs.findIndex((p) => p.name === permutationSpec.countName);
-      if (countIdx < 0) {
+      if (countIdx < 0 && !loopInfo?.iterationBound) {
         throw new Error(`vmap counter loop bound '${permutationSpec.countName}' must be a public argument`);
       }
-      const loopInfo = abiFunction?.sortedUpsertLoopInfo?.find((info) => info.varyingArrayParam === input.name);
       const visibleInputs = visibleHandlerInputs(abiFunction!.inputs);
       const visibleArgs = visibleInputs.map((visibleInput) => {
         const index = abiFunction!.inputs.findIndex((candidate) => candidate.name === visibleInput.name);
@@ -13998,9 +14000,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (typeof active !== 'boolean') {
         throw new Error(`Could not resolve runtime loop predicate for '${abiFunction!.name}'.`);
       }
-      const candidateDomain = active
-        ? vmapCounterPermutationValues(BigInt(args[countIdx]), permutationSpec)
-        : [];
+      const candidateDomain = active ? this._vmapCounterDomain(
+        loopInfo,
+        permutationSpec,
+        countIdx < 0 ? undefined : args[countIdx],
+        visibleArgs,
+        this.inner.artifact,
+        visibleInputs,
+        directPredicateState,
+        executionSelfAddress,
+      ) : [];
+      if (!candidateDomain) {
+        throw new Error(`Could not resolve runtime loop bound for '${abiFunction!.name}'.`);
+      }
       if (active && loopInfo?.iterationCondition) {
         directPredicateState = await this._hydrateExternalPredicateState(
           [loopInfo.iterationCondition, loopInfo.iterationBreakCondition],
@@ -15750,12 +15762,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           `Runtime loop in '${loopAbiFunction.name}' has an invalid permutation parameter.`,
         );
         const countValue = argOf(permutationSpec.countName);
-        if (countValue === undefined) throw new Error(
+        if (countValue === undefined && !info.iterationBound) throw new Error(
           `vmap counter loop bound '${permutationSpec.countName}' must be a public argument`,
         );
-        const domain = active ? vmapCounterPermutationValues(
-          BigInt(countValue as bigint | number | string), permutationSpec,
+        const resolvedDomain = active ? this._vmapCounterDomain(
+          info,
+          permutationSpec,
+          countValue,
+          conditionArgs,
+          entryArtifact,
+          visibleInputs,
+          loopPredicateState,
+          executionSelfAddress,
         ) : [];
+        if (!resolvedDomain) throw new Error(
+          `Could not resolve runtime loop bound for '${loopAbiFunction.name}'.`,
+        );
+        const domain = resolvedDomain;
         if (active && info.iterationCondition) {
           loopPredicateState = await this._hydrateExternalPredicateState(
             [info.iterationCondition, info.iterationBreakCondition],
@@ -23680,7 +23703,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (loopInfo && (loopInfo.iterationCondition || loopInfo.iterationBreakCondition)) {
           const spec = vmapCounterPermutationSpec(loopInfo.varyingArrayParam);
           const bound = spec && argumentFor(spec.countName);
-          if (!spec || bound === undefined) throw new Error(
+          if (!spec || (bound === undefined && !loopInfo.iterationBound)) throw new Error(
             `Runtime-loop event metadata for '${source.name}' has no source-domain bound`,
           );
           const active = loopInfo.condition ? this._evaluateExternalExpression(
@@ -23697,8 +23720,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (typeof active !== 'boolean') throw new Error(
             `Could not resolve runtime loop predicate while planning events for '${source.name}'.`,
           );
-          const sourceDomain = active
-            ? vmapCounterPermutationValues(BigInt(bound as bigint | number | string), spec) : [];
+          const resolvedSourceDomain = active ? this._vmapCounterDomain(
+            loopInfo,
+            spec,
+            bound,
+            functionArgs,
+            sourceArtifact,
+            visibleHandlerInputs(source.inputs),
+            runtimePredicateState,
+            executionSelfAddress,
+          ) : [];
+          if (!resolvedSourceDomain) throw new Error(
+            `Could not resolve runtime loop bound while planning events for '${source.name}'.`,
+          );
+          const sourceDomain = resolvedSourceDomain;
           repeatCount = sourceDomain.length;
           if (loopInfo.iterationBreakCondition) {
             for (let iteration = 0; iteration < sourceDomain.length; iteration += 1) {
@@ -26444,6 +26479,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
     return resolved;
+  }
+
+  private _vmapCounterDomain(
+    info: SortedUpsertLoopAbi | undefined,
+    spec: VmapCounterPermutationSpec,
+    legacyBound: unknown,
+    functionArgs: FunctionArgument[],
+    artifact: Artifact,
+    callerInputs: readonly { type: string }[],
+    state?: Record<string, unknown>,
+    executionSelfAddress?: FunctionArgument,
+  ): bigint[] | undefined {
+    const resolved = info?.iterationBound
+      ? this._evaluateExternalExpression(
+        info.iterationBound, functionArgs, artifact, state, callerInputs,
+        undefined, 0, false, executionSelfAddress,
+      )
+      : legacyBound;
+    if (typeof resolved !== 'bigint' && typeof resolved !== 'number' && typeof resolved !== 'string') {
+      return undefined;
+    }
+    return vmapCounterPermutationValues(BigInt(resolved), spec);
   }
 
   private _evaluateExternalExpression(

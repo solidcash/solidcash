@@ -257,6 +257,11 @@ contract KernelSelectedCounterMapping() {
     for (uint i = 0; i < n; i = i + 1) { this.u[i] = i + 500; }
     require(true);
   }
+  function writeComputed(int n, int scale) public {
+    int limit = n * scale;
+    for (int i = 0; i < limit; i = i + 1) { this.m[i] = i + 600; }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.m[key] == expected); }
   function checkUnsigned(uint key, uint expected) public { require(this.u[key] == expected); }
 }`;
@@ -625,6 +630,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const switchHandler = artifact.abi.find((candidate) => candidate.name === 'writeSwitch')!;
     const innerSwitchHandler = artifact.abi.find((candidate) => candidate.name === 'writeInnerSwitch')!;
     const unsignedHandler = artifact.abi.find((candidate) => candidate.name === 'writeUnsigned')!;
+    const computedHandler = artifact.abi.find((candidate) => candidate.name === 'writeComputed')!;
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
       .toMatchObject({ eligible: true });
     expect(writeHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
@@ -655,6 +661,10 @@ describe('kernel counter-key mapping loop compose', () => {
     expect(unsignedHandler.inputs).toContainEqual(expect.objectContaining({
       name: expect.stringMatching(/^__internal__vmapCounterPerm_/), type: 'uint256[]',
     }));
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeComputed'))
+      .toMatchObject({ eligible: true });
+    expect(computedHandler.sortedUpsertLoopInfo?.[0].iterationBound)
+      .toMatchObject({ kind: 'binary', operator: '*' });
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -867,6 +877,17 @@ describe('kernel counter-key mapping loop compose', () => {
     await expect(StatefulContract.withCategory(inner, categoryId)
       .batch([{ function: 'writeUnsigned', args: [3n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.writeComputed(2n, 2n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const [key, expected] of [[0n, 600n], [1n, 601n], [2n, 602n], [3n, 603n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    await expect(StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeComputed', args: [3n, 1n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.writeComputed(9n, 8n).build())
+      .rejects.toThrow(/outside 0\.\.64/);
   }, 180_000);
 
   it('settles conditionally reached counter loops and plans inactive rows as empty', async () => {

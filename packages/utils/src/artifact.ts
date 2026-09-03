@@ -539,6 +539,8 @@ export interface SortedUpsertLoopAbi {
   iterationCondition?: ExternalCallExpression;
   /** Predicate which terminates source-domain replay after the current iteration. */
   iterationBreakCondition?: ExternalCallExpression;
+  /** Public-argument expression computing a non-affine source-loop bound. */
+  iterationBound?: ExternalCallExpression;
   op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default
 }
 

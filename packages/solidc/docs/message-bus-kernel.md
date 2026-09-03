@@ -311,7 +311,8 @@ and public enum getters use `int` locals; enum arrays encode each element as an 
 Counter-keyed mapping loops with zero, direction-mismatched, or runtime-computed steps,
 non-affine or mutated bounds, or extra counter mutations stay `KERNEL_UNBOUNDED_KEY`. A constant-start,
 constant-step domain is represented by the exact ascending or descending arithmetic progression, with a maximum of 64 iterations;
-the authenticated permutation is over those logical counter values rather than assuming `0..n-1`. The exact post-test form
+the authenticated permutation is over those logical counter values rather than assuming `0..n-1`, and its ABI element type
+matches a signed or unsigned source counter. The exact post-test form
 `int i = 0; do { ...; i = i + 1; } while (i < n)` is supported with an authenticated
 `max(n, 1)` permutation; an immutable local affine-alias chain such as
 `requested = n; limit = 1 + (requested - 2)` preserves the exact authenticated domain, while nonlinear and

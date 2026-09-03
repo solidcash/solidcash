@@ -672,6 +672,21 @@ describe('required kernel admission', () => {
     );
   });
 
+  it('preserves an unsigned counter type in the permutation and proof', () => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => uint) m;
+      function fill(uint n) public {
+        for (uint i = 0; i < n; i = i + 1) { this.m[i] = i + 10; }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'fill')?.inputs).toContainEqual(
+      expect.objectContaining({ name: expect.stringMatching(/^__internal__vmapCounterPerm_/), type: 'uint256[]' }),
+    );
+  });
+
   it('admits a value-returning early exit as an exact terminated counter-loop domain', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;

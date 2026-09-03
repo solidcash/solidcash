@@ -294,7 +294,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       return write.keys.findIndex((key) => key instanceof IdentifierNode && key.name === logical);
     };
     const hasUnsupportedJump = (x: Node): boolean => {
-      if (x instanceof ReturnNode) return true;
+      if (x instanceof ReturnNode) return node.returnTypes.length > 0;
       for (const key of Object.keys(x)) {
         if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
         const v = (x as unknown as Record<string, unknown>)[key];
@@ -634,7 +634,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ): void => {
         if (x instanceof WhileNode || x instanceof DoWhileNode) return;
         if (isWrite(x)) { writes.push(x); writePaths.set(x, condition); return; }
-        if (x instanceof BreakNode) { breakPaths.push(condition); return; }
+        if (x instanceof BreakNode || (x instanceof ReturnNode && node.returnTypes.length === 0)) {
+          breakPaths.push(condition); return;
+        }
         if (x instanceof BlockNode) {
           let active = condition;
           for (const statement of x.statements ?? []) {
@@ -1310,7 +1312,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (!cursorAdvance) return;
         const statements: StatementNode[] = [];
         for (const statement of target.statements ?? []) {
-          if (statement instanceof BreakNode) {
+          if (statement instanceof BreakNode || (statement instanceof ReturnNode && node.returnTypes.length === 0)) {
             statements.push(cloneNode(cursorAdvance), statement);
           } else {
             if (statement instanceof BranchNode) {
@@ -1332,6 +1334,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       const sourceStatements = breakPaths.length > 0 && cursorAdvance
         ? originalStatements.flatMap((statement) => statement instanceof BreakNode
+          || (statement instanceof ReturnNode && node.returnTypes.length === 0)
           ? [cloneNode(cursorAdvance), statement] : [statement])
         : originalStatements;
       const updateIndex = counterUpdate ? sourceStatements.indexOf(counterUpdate) : -1;

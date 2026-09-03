@@ -47,7 +47,7 @@ export default class DesugarReturnInLoop extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
-    if (!node.body || node.returnTypes.length === 0) return node;
+    if (!node.body) return node;
     // Entry-points AND internal/private functions both need this: an in-loop raw return NIPs locals below the
     // value and corrupts the loop's balanced OP_BEGIN/OP_UNTIL stack. (The old entry-point "blob-stash" path was
     // broken - a public `for/while (..) { if (c) return X; }` crashed at runtime.) Desugaring to a flag + break +
@@ -55,7 +55,9 @@ export default class DesugarReturnInLoop extends AstTraversal {
     if (!this.hasReturnInLoop(node.body, false)) return node;
 
     this.retCount = node.returnTypes.length;
-    const decls: StatementNode[] = [new VariableDefinitionNode(PrimitiveType.BOOL, [], FLAG, new BoolLiteralNode(false))];
+    const decls: StatementNode[] = [new VariableDefinitionNode(
+      PrimitiveType.BOOL, [], FLAG, new BoolLiteralNode(false),
+    )];
     for (let k = 0; k < node.returnTypes.length; k++) {
       decls.push(new VariableDefinitionNode(node.returnTypes[k], [], VAL(k)));
     }

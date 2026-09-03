@@ -692,6 +692,23 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it('admits a void early return as an exact terminated counter-loop domain', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, int stop) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.m[i] = i;
+          if (i == stop) return;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationBreakCondition).toMatchObject({ kind: 'binary', operator: '==' });
+  });
+
   it('admits an immutable loop-local value alias by expanding it onto the logical permutation', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) a;

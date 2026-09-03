@@ -128,6 +128,13 @@ export interface EmitAbi {
   emitIndex: number;
 }
 
+/** One segment of the source-ordered runtime event plan. Exactly one repeat source is present. */
+export interface RuntimeLoopEventAbi {
+  permutationParam?: string;
+  repeatCount?: number;
+  eventSignatures: readonly string[];
+}
+
 export interface TokenContainerAccessAbi {
   keyParam: string;
   keySource?: 'param' | 'own';
@@ -281,6 +288,7 @@ export interface AbiFunction {
   }[];
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
+  runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
   transferCount?: number;
   transfers?: readonly {
     transferIndex: number;
@@ -920,6 +928,7 @@ export interface Artifact {
       outputs?: AbiOutput[];
       usesMsgValue?: boolean;
       emits?: readonly EmitAbi[];
+      runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
       tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
       /** Per selected handler call, the visible parameter feeding keccak256 or null for a computed preimage. */
       keccakPreimageParams?: readonly (string | null)[];

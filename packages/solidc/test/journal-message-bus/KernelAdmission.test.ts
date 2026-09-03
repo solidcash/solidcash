@@ -139,7 +139,7 @@ describe('required kernel admission', () => {
       .toBeUndefined();
     expect(artifact.messageBus?.route.inputs.some((input) => input.name.startsWith('__message_bus_key_slots_')))
       .toBe(false);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control')?.eligible).toBe(true);
   });
 
   it('does not reorder an effectful helper used as a counter-loop mapping value', () => {
@@ -997,16 +997,193 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
   });
 
-  it('refuses a repeated event inside a counter-keyed mapping loop', () => {
-    const artifact = compileString(`event Hit(int i);
+  it('admits one source-ordered event stream around a counter-keyed mapping loop', () => {
+    const artifact = compileString(`event Before(int i); event Hit(int i); event After(int i);
       contract C() {
         mapping(int => int) m;
         function denied(int n) public {
+          emit Before(n);
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = 1; emit Hit(i); }
+          emit After(n);
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    const deniedHandler = artifact.messageBus?.handlers.find((handler) => handler.name === 'denied');
+    expect(deniedHandler).toMatchObject({ eligible: true });
+    expect(deniedHandler?.emits).toBeUndefined();
+    expect(deniedHandler?.runtimeLoopEvents).toEqual([
+      { repeatCount: 1, eventSignatures: ['Before(int256)'] },
+      {
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/),
+        eventSignatures: ['Hit(int256)'],
+      },
+      { repeatCount: 1, eventSignatures: ['After(int256)'] },
+    ]);
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(130);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses an effectful helper used to compute a repeated event argument', () => {
+    const artifact = compileString(`event Hit(int i);
+      contract C() {
+        mapping(int => int) m;
+        int calls;
+        function next(int value) internal returns (int) {
+          this.calls = this.calls + 1;
+          return value;
+        }
+        function denied(int n) public {
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = 1; emit Hit(next(i)); }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('sizes sequential loops and multiple event sites from their construct widths', () => {
+    const artifact = compileString(`event A(int i); event B(int i);
+      contract C() {
+        mapping(int => int) a;
+        mapping(int => int) b;
+        function writeBoth(int left, int right) public {
+          for (int i = 0; i < left; i = i + 1) {
+            this.a[i] = i;
+            emit A(i);
+            emit B(i);
+          }
+          emit A(99);
+          for (int j = 0; j < right; j = j + 1) {
+            this.b[j] = j;
+            emit B(j);
+          }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeBoth');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.runtimeLoopEvents).toEqual([
+      {
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_left_/),
+        eventSignatures: ['A(int256)', 'B(int256)'],
+      },
+      { repeatCount: 1, eventSignatures: ['A(int256)'] },
+      {
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_right_/),
+        eventSignatures: ['B(int256)'],
+      },
+    ]);
+    // (one mapping + two events) + (one mapping + one event), each independently bounded to 64 iterations,
+    // plus the exact one-record segment between them.
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(5 * 64 + 1);
+  });
+
+  it('keeps loop events on direct calls while the legacy bus refuses the runtime row shape', () => {
+    const source = `event Hit(int i);
+      contract C() {
+        mapping(int => int) m;
+        function write(int n) public {
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = i; emit Hit(i); }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`;
+    const legacy = compileString(source, {
+      forceStateful: true, messageBus: true, messageBusKernel: false, maximumInputBytes: 1_000_000,
+    });
+    expect(legacy.messageBus?.convention).toBe('legacy-unroll');
+    expect(legacy.messageBus?.handlers.find((candidate) => candidate.name === 'write')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'handler-route-generation-unsupported',
+    });
+    expect(legacy.abi.find((candidate) => candidate.name === 'write')?.runtimeLoopEvents).toEqual([
+      expect.objectContaining({ eventSignatures: ['Hit(int256)'] }),
+    ]);
+
+    const kernel = compileString(source, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(kernel.messageBus?.convention).toBe('kernel-row-loop');
+    expect(kernel.messageBus?.handlers.find((candidate) => candidate.name === 'write')?.eligible).toBe(true);
+  });
+
+  it('refuses a conditionally repeated event whose runtime cardinality is not fixed by the loop', () => {
+    const artifact = compileString(`event Hit(int i);
+      contract C() {
+        mapping(int => int) m;
+        function denied(int n, bool enabled) public {
+          for (int i = 0; i < n; i = i + 1) {
+            this.m[i] = 1;
+            if (enabled) emit Hit(i);
+          }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses a conditional event outside the loop until the event stream has path metadata', () => {
+    const artifact = compileString(`event Hit(int i);
+      contract C() {
+        mapping(int => int) m;
+        function denied(int n, bool enabled) public {
+          if (enabled) emit Hit(-1);
           for (int i = 0; i < n; i = i + 1) { this.m[i] = 1; emit Hit(i); }
           require(true);
         }
         function control() public { require(true); }
       }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('orders an inlined internal-helper event with the runtime event stream', () => {
+    const artifact = compileString(`event Hit(int i);
+      contract C() {
+        mapping(int => int) m;
+        function announce(int value) internal { emit Hit(value); }
+        function denied(int n) public {
+          announce(-1);
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = 1; emit Hit(i); }
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'denied');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.emits).toBeUndefined();
+    expect(handler?.runtimeLoopEvents).toEqual([
+      { repeatCount: 1, eventSignatures: ['Hit(int256)'] },
+      {
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/),
+        eventSignatures: ['Hit(int256)'],
+      },
+    ]);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses a conditionally reached counter loop until the journal has path metadata', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n, bool enabled) public {
+        if (enabled) {
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = 1; }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',

@@ -3858,7 +3858,7 @@ function synthesizeMessageBusRoute(
         let directEmits = 0;
         let directTransfers = 0;
         walkInvocationAst(fn.body, (node) => {
-          if (node instanceof EmitStatementNode) directEmits += 1;
+          if (node instanceof EmitStatementNode && !node.runtimeLoopEvent) directEmits += 1;
           if (node instanceof TransferStatementNode) directTransfers += 1;
         });
         const effects = eligibleFootprint(fn).effects;
@@ -8328,6 +8328,8 @@ function compileResolvedAst(
             candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined));
           return {
             ...(sourceAbi?.emits?.length ? { emits: sourceAbi.emits } : {}),
+            ...(sourceAbi?.runtimeLoopEvents?.length
+              ? { runtimeLoopEvents: sourceAbi.runtimeLoopEvents } : {}),
             ...(sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {}),
             ...(sourceAbi?.tokenContainerAccesses?.length
               ? { tokenContainerAccesses: sourceAbi.tokenContainerAccesses } : {}),

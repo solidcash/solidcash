@@ -4017,6 +4017,11 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   loopEntryVars?: Array<{
     collection: string; lockingBytecode: Uint8Array; categoryId?: string; delegate?: boolean; chunkable?: boolean;
   }>;
+  /** Ordered event plan produced by a lowered counter-keyed mapping loop, including exact-count event peers
+   * before and after it. These live after runtime mapping entries and before dynamic-storage chunks. */
+  runtimeLoopEventOutputs?: Array<{
+    eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string;
+  }>;
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
   tokenContainers?: TokenContainerInfo[];
@@ -4264,6 +4269,11 @@ export class StatefulTransactionBuilder {
   // collection -> ordered loop entry commitments (hex) from auto-derivation; length = entry output count.
   private loopEntryCommitments: Map<string, string[]> = new Map();
   private requiredLoopEntryCounts: Map<string, number> = new Map();
+
+  private runtimeLoopEventOutputs: Array<{
+    eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
+  }> = [];
+
   // P5b: collections whose loop-entry (NEW) commitment is known EXACTLY (a chunkable-value insert) and must NOT be
   // re-derived from the trace - the value-chunk pin adds OP_OUTPUTTOKENCOMMITMENT calls that the loop-entry
   // extractor would otherwise read as NEW nodes. Pinned like pinEntrySlot pins a fixed entry slot.
@@ -4353,13 +4363,18 @@ export class StatefulTransactionBuilder {
     this.lowLevelCallInputBase = options.lowLevelCallInputBase;
     this.compilerRouteDelegateBlock = options.compilerRouteDelegateBlock ?? false;
     this.preserveBlockLayoutWidth = options.preserveBlockLayoutWidth ?? false;
-    this.loopEntriesBeforeDynamicChunks = options.loopEntriesBeforeDynamicChunks ?? false;
+    this.loopEntriesBeforeDynamicChunks = options.loopEntriesBeforeDynamicChunks === true
+      || (options.runtimeLoopEventOutputs?.length ?? 0) > 0;
     this.entryNfts = options.entryNfts ?? [];
     this.entryNftLockingBytecodes = options.entryNftLockingBytecodes ?? new Map();
     this.dynamicChunkVars = options.dynamicChunkVars ?? [];
     this.dynamicChunkInputs = options.dynamicChunkInputs ?? [];
     this.trailingDisposalInputs = options.trailingDisposalInputs ?? [];
     this.loopEntryVars = options.loopEntryVars ?? [];
+    this.runtimeLoopEventOutputs = (options.runtimeLoopEventOutputs ?? []).map((output) => ({
+      ...output,
+      commitment: '',
+    }));
     this.eventDefinitions = options.eventDefinitions ?? [];
     this.eventNftLockingBytecodes = options.eventNftLockingBytecodes ?? new Map();
     this.tokenContainers = options.tokenContainers ?? [];
@@ -10020,7 +10035,9 @@ export class StatefulTransactionBuilder {
       return trailingBase + this._trailingLoopEntryOutputCount() + this._valueChunkOutputCount()
         + this.pendingOutputs.length;
     }
-    return trailingBase + (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0);
+    return trailingBase
+      + (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0)
+      + this.runtimeLoopEventOutputs.length;
   }
 
   private _dynamicChunkOutputCount(): number {
@@ -10037,6 +10054,28 @@ export class StatefulTransactionBuilder {
   private _valueChunkOutputCount(): number {
     return this.valueChunkOutputs.length
       + [...this.valueChunkRawCommitments.values()].reduce((sum, commitments) => sum + commitments.length, 0);
+  }
+
+  /** First output occupied by the ordered runtime-loop event family. */
+  getRuntimeLoopEventOutputBase(): number {
+    return this.getChunkOutputBase() - this.runtimeLoopEventOutputs.length;
+  }
+
+  getRuntimeLoopEventOutputs(): ReadonlyArray<{
+    eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
+  }> {
+    return this.runtimeLoopEventOutputs;
+  }
+
+  setRuntimeLoopEventRawCommitment(index: number, commitment: string): this {
+    if (!Number.isInteger(index) || index < 0 || index >= this.runtimeLoopEventOutputs.length) {
+      throw new Error(`Invalid runtime loop event index ${index}`);
+    }
+    if (!/^([0-9a-f]{2})*$/i.test(commitment)) {
+      throw new Error(`Invalid hex string for runtime loop event ${index}`);
+    }
+    this.runtimeLoopEventOutputs[index].commitment = commitment;
+    return this;
   }
 
   getLoopEntryVars(): Array<{
@@ -10136,7 +10175,7 @@ export class StatefulTransactionBuilder {
    */
   getLoopEntryOutputBase(): number {
     if (this.loopEntriesBeforeDynamicChunks) {
-      return this.getChunkOutputBase() - this._trailingLoopEntryOutputCount();
+      return this.getRuntimeLoopEventOutputBase() - this._trailingLoopEntryOutputCount();
     }
     if (this.delegateEntriesAfterLowLevel) {
       return this.getChunkOutputBase() - this.pendingOutputs.length
@@ -12190,9 +12229,13 @@ export class StatefulTransactionBuilder {
       const resourceBases: number[] = [];
       if (this.iterationEntryInputs.length > 0 || this.dynamicChunkVars.length > 0) {
         resourceBases.push(this.getChunkOutputBase() - this.iterationEntryInputs.length
-          - (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0));
+          - (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0)
+          - this.runtimeLoopEventOutputs.length);
       }
       if (this._trailingLoopEntryVars().length > 0) resourceBases.push(this.getLoopEntryOutputBase());
+      if (this.runtimeLoopEventOutputs.length > 0) {
+        resourceBases.push(this.getRuntimeLoopEventOutputBase());
+      }
       if (this.valueChunkOutputs.length > 0 || this.valueChunkVars.size > 0) {
         resourceBases.push(this.getValueChunkOutputBase());
       }
@@ -12232,6 +12275,21 @@ export class StatefulTransactionBuilder {
           builder.addOutput(entryOutput);
         }
       }
+    }
+
+    // Runtime-loop events and their fixed peers are source-ordered records, independent of the permutation used
+    // to settle mapping keys. Their exact count is known from the event plan, while commitments are learned
+    // progressively from the covenant trace.
+    for (const event of this.runtimeLoopEventOutputs) {
+      builder.addOutput({
+        to: event.lockingBytecode,
+        amount: 1200n,
+        token: {
+          amount: 0n,
+          category: event.categoryId ?? this.categoryId,
+          nft: { capability: 'none', commitment: event.commitment },
+        },
+      });
     }
 
     const appendValueChunks = (): void => {
@@ -12373,6 +12431,7 @@ export class StatefulTransactionBuilder {
         iterationEntries: this.iterationEntryInputs.length,
         dynamicChunks: this._dynamicChunkOutputCount(),
         loopEntries: this._trailingLoopEntryOutputCount(),
+        runtimeLoopEvents: this.runtimeLoopEventOutputs.length,
         literalValueChunks: this.valueChunkOutputs.length,
         derivedValueChunks: [...this.getValueChunkVars()].reduce(
           (sum, value) => sum + (this.valueChunkRawCommitments.get(value.id) ?? []).length,
@@ -13838,6 +13897,7 @@ export class StatefulTransactionBuilder {
       + this.tailReturnEventOutputs().length
       + lowLevelCallOutputCount
       + this._dynamicChunkOutputCount()
+      + this.runtimeLoopEventOutputs.length
       + iterationEntryOutputCount
       + this.pendingOutputs.length
       + this.lateValueChunkOutputs.length
@@ -15729,9 +15789,13 @@ export class StatefulTransactionBuilder {
    * that event's ABI. Outputs are scanned in vout order, so `events[0]` is the first-emitted event.
    */
   private decodeEmittedEvents(outputs: readonly LibauthOutput[]): ReceiptEvent[] {
-    if (this.eventDefinitions.length === 0 || this.eventNftLockingBytecodes.size === 0) return [];
+    if (this.eventDefinitions.length === 0
+      || (this.eventNftLockingBytecodes.size === 0 && this.runtimeLoopEventOutputs.length === 0)) return [];
     const sigByLbc = new Map<string, string>();
     for (const [sig, lbc] of this.eventNftLockingBytecodes) sigByLbc.set(binToHex(lbc), sig);
+    for (const event of this.runtimeLoopEventOutputs) {
+      sigByLbc.set(binToHex(event.lockingBytecode), event.eventSignature);
+    }
     const structs = this.stateLayout.structs;
     const events: ReceiptEvent[] = [];
     for (const out of outputs) {

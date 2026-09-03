@@ -334,6 +334,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   externalCalls?: ExternalCallSlot[];
   externalOutStateReads?: ExternalOutStateSlot[];
   emitInfos?: EmitInfo[];
+  /** Ordered fixed/repeated event segments lowered into the runtime trailing stream by a counter loop. */
+  runtimeLoopEvents?: RuntimeLoopEventInfo[];
+  /** Worst-case trailing outputs across all lowered counter loops and their source-ordered fixed event peers.
+   * Internal layout metadata; each loop independently admits at most 64 iterations. */
+  runtimeCounterLoopOutputCapacity?: number;
   transferInfos?: TransferInfo[];
   deployTargets?: {
     contractName: string; dataNftCount: number;
@@ -770,6 +775,9 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // Original literal bytes when LowerMemoryModel rewrites a `bytes memory` declaration into a numeric pointer.
   // Yul create-address lowering still needs the compile-time blob after that representation change.
   memoryLiteralValue?: Uint8Array;
+  // Return temporary produced by InlineReturningStateHelpers. Counter-loop admission uses the callee's declared
+  // purity after the surface FunctionCallNode has been normalized into statements plus this SSA result.
+  inlinedReturningHelperPure?: boolean;
 
   constructor(
     public type: Type,
@@ -2507,6 +2515,15 @@ export interface EmitInfo {
   chunkCount: number;
 }
 
+export interface RuntimeLoopEventInfo {
+  /** Stable per-function segment ordinal assigned by LowerVMapCounterLoops. */
+  loopIndex: number;
+  /** Hidden authenticated permutation whose length is the exact trip count for a repeated segment. */
+  permutationParam?: string;
+  /** Exact repeat count for a source-ordered event outside the loop. */
+  repeatCount?: number;
+}
+
 export interface TransferInfo {
   transferIndex: number;
 }
@@ -2529,6 +2546,8 @@ export class EmitStatementNode extends StatementNode {
   eventCandidates?: EventDefinitionNode[];
   eventQualifier?: string;
   emitIndex: number = 0;
+  /** Runtime event site within a lowered counter-keyed mapping loop; excluded from fixed event slots. */
+  runtimeLoopEvent?: { loopIndex: number; siteIndex: number };
   fieldNames?: string[]; // set for named-arg emits emit E({a: x}); reordered against the event's params
 
   constructor(

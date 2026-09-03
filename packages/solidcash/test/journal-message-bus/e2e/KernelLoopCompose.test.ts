@@ -1,4 +1,4 @@
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
@@ -94,14 +94,20 @@ contract KernelSequentialMultiMapping() {
 }`;
 
 const COUNTER_MAPPING_EVENT_SOURCE = `pragma solidcash ^0.13.0;
+event Before(int i);
 event Hit(int i);
+event Echo(int i) anonymous;
+event After(int i);
 contract KernelCounterMappingEvent() {
   mapping(int => int) m;
   function write(int n) public {
+    emit Before(n);
     for (int i = 0; i < n; i = i + 1) {
       this.m[i] = i + 10;
       emit Hit(i);
+      emit Echo(i);
     }
+    emit After(n);
     require(true);
   }
 }`;
@@ -691,14 +697,98 @@ describe('kernel composite counter-key settlement', () => {
     }
   }, 180_000);
 
-  it('fails closed before composing a repeated event in a counter-keyed loop', () => {
+  it('settles repeated loop events in source order while mapping keys use the authenticated permutation', async () => {
+    const provider = createTestProvider();
     const artifact = compileString(COUNTER_MAPPING_EVENT_SOURCE, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
-    expect(artifact.messageBus?.available).toBe(false);
-  });
+    const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    expect(write.runtimeLoopEvents).toEqual([
+      { repeatCount: 1, eventSignatures: ['Before(int256)'] },
+      {
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/),
+        eventSignatures: ['Hit(int256)', 'Echo(int256)'],
+      },
+      { repeatCount: 1, eventSignatures: ['After(int256)'] },
+    ]);
+    expect(write.emits).toBeUndefined();
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(3 * 64 + 2);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')?.eligible).toBe(true);
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const eventCommitments = (
+      builder: Awaited<ReturnType<ReturnType<typeof contract.call.write>['build']>>,
+    ): string[] =>
+      builder.buildLibauthTransaction().outputs
+        .filter((output) => output.token?.nft?.capability === 'none')
+        .map((output) => binToHex(output.token!.nft!.commitment));
+    const assertEveryInput = (
+      builder: Awaited<ReturnType<ReturnType<typeof contract.call.write>['build']>>,
+    ): void => {
+      const vm = createVirtualMachineBch2026ForProvider(provider);
+      const transaction = builder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+          `input ${inputIndex}`).toBe(true);
+      }
+    };
+
+    // Sixteen iterations produce 32 records, which would exceed BCH's per-item size if the journal were one
+    // concatenated vector. Keeping records as individual alt-stack items proves the representation scales past
+    // that boundary.
+    const directCount = 16;
+    const direct = contract.call.write(BigInt(directCount));
+    const directBuilder = await direct.build();
+    expect(eventCommitments(directBuilder)).toHaveLength(directCount * 2 + 2);
+    assertEveryInput(directBuilder);
+    const directReceipt = await direct.send();
+    expect(directReceipt).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(directReceipt.events?.map((event) => [event.event, event.args.i])).toEqual([
+      ['Before', BigInt(directCount)],
+      ...Array.from({ length: directCount }, (_unused, index) => [
+        ['Hit', BigInt(index)], ['Echo', BigInt(index)],
+      ]).flat(),
+      ['After', BigInt(directCount)],
+    ]);
+
+    const zero = contract.batch([{ function: 'write', args: [0n] }]);
+    const zeroBuilder = await zero.build();
+    expect(eventCommitments(zeroBuilder)).toEqual(['00', '00']);
+    assertEveryInput(zeroBuilder);
+
+    const batch = contract.batch([{ function: 'write', args: [3n] }]);
+    const batchBuilder = await batch.build();
+    expect(eventCommitments(batchBuilder)).toEqual(['53', '00', '00', '51', '51', '52', '52', '53']);
+    assertEveryInput(batchBuilder);
+
+    const routeInputIndex = batchBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const hostileEvents = batchBuilder.outputs
+      .map((output, index) => ({ output, index }))
+      .filter(({ output }) => output.token?.nft?.capability === 'none');
+    expect(hostileEvents).toHaveLength(8);
+    [hostileEvents[1].output.token!.nft!.commitment, hostileEvents[3].output.token!.nft!.commitment] = [
+      hostileEvents[3].output.token!.nft!.commitment,
+      hostileEvents[1].output.token!.nft!.commitment,
+    ];
+    const hostileVm = createVirtualMachineBch2026ForProvider(provider);
+    const hostileTransaction = batchBuilder.buildLibauthTransaction();
+    const hostileSources = generateLibauthSourceOutputs(batchBuilder.inputs);
+    expect(hostileVm.stateSuccess(hostileVm.evaluate({
+      inputIndex: routeInputIndex,
+      sourceOutputs: hostileSources,
+      transaction: hostileTransaction,
+    }))).not.toBe(true);
+
+    expect(() => contract.batch([
+      { function: 'write', args: [1n] },
+      { function: 'write', args: [1n] },
+    ])).toThrow(/row-scoped journal settlement/);
+  }, 180_000);
 
   it('settles source-order typed calls beside a permuted mapping loop', async () => {
     const provider = createMessageBusCapstoneTestProvider();

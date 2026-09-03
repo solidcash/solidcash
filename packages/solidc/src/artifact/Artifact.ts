@@ -15,6 +15,7 @@ import {
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
+  EmitStatementNode,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
@@ -997,6 +998,32 @@ function buildFunctionAbiMetadata(
     // collection name is entryLoopWrites, so match that name rather than requiring the AST flag to survive.
     .filter((access) => routeEntryLoopWrites?.includes(access.collection))
     .map((access) => [access.collection, access.collectionSignature]));
+  const runtimeLoopEvents = (() => {
+    if (!func.runtimeLoopEvents?.length || !func.body) return [];
+    const sites = new Map<number, EmitStatementNode[]>();
+    const seen = new Set<Node>();
+    const walk = (node: Node): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof EmitStatementNode && node.runtimeLoopEvent) {
+        const group = sites.get(node.runtimeLoopEvent.loopIndex) ?? [];
+        group[node.runtimeLoopEvent.siteIndex] = node;
+        sites.set(node.runtimeLoopEvent.loopIndex, group);
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'type'].includes(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(func.body);
+    return func.runtimeLoopEvents.map((loop) => ({
+      ...(loop.permutationParam !== undefined && { permutationParam: loop.permutationParam }),
+      ...(loop.repeatCount !== undefined && { repeatCount: loop.repeatCount }),
+      eventSignatures: (sites.get(loop.loopIndex) ?? []).map((emit) => emit.eventDefinition!.signature),
+    }));
+  })();
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -1040,6 +1067,7 @@ function buildFunctionAbiMetadata(
         emitIndex: ei.emitIndex,
       })),
     }),
+    ...(runtimeLoopEvents.length > 0 && { runtimeLoopEvents }),
     ...(func.transferInfos && func.transferInfos.length > 0 && {
       transferCount: func.transferInfos.length,
       ...(contract && { transfers: transferEffects(func, contract) }),

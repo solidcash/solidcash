@@ -11459,6 +11459,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const configuredDebugIterations = Number((globalThis as { process?: { env?: Record<string, string> } })
           .process?.env?.SOLIDC_DEBUG_MAX_DERIVATION_ITERATIONS ?? 0);
         const hasLoopOrChunkVars = stb.getLoopEntryVars().length > 0
+          || stb.getRuntimeLoopEventOutputs().length > 0
           || stb.getValueChunkVars().length > 0
           || stb.getDynamicChunkVars().length > 0;
         const persistWidth = persistWidthAtEntry;
@@ -12505,6 +12506,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
 
           phaseCheckpoint('loop-entries');
+          // Runtime-loop event outputs immediately follow the mapping-entry family. Their count and event
+          // covenants are fixed before the first probe; only source-evaluated commitments need convergence.
+          const runtimeLoopEvents = stb.getRuntimeLoopEventOutputs();
+          if (runtimeLoopEvents.length > 0) {
+            const runtimeEventBase = stb.getRuntimeLoopEventOutputBase();
+            for (let eventIndex = 0; eventIndex < runtimeLoopEvents.length; eventIndex += 1) {
+              const outputIndex = runtimeEventBase + eventIndex;
+              const actual = probeBuilder2.outputs[outputIndex]?.token?.nft?.commitment ?? '';
+              const commitmentMap = extractCommitmentMapFromTrace(
+                fullTrace2, { min: outputIndex, max: outputIndex + 1 }, true, false, true,
+              );
+              const commitment = commitmentMap.get(outputIndex)
+                ?? extractExpectedOutputCommitmentFromTrace(fullTrace2, outputIndex, actual);
+              if (commitment === undefined || commitment === runtimeLoopEvents[eventIndex].commitment) continue;
+              stb.setRuntimeLoopEventRawCommitment(eventIndex, commitment);
+              commitmentProgress += 1;
+            }
+          }
+
+          phaseCheckpoint('runtime-loop-events');
           // P5b COMPUTED value chunks: the covenant PINS them (emitSortedValueChunkPin) but the SDK has no value
           // param to build them, so derive their commitments from the trace progressively (like loop entries). The
           // VM halts at the first placeholder mismatch, so each probe reveals one more chunk; grow the placeholder
@@ -22835,21 +22856,47 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (!eventDefs.some((e) => e.signature === ev.signature)) eventDefs.push(ev);
       }
     }
+    const runtimeEventMetadataSources = [
+      abiFunction,
+      entryAbiFunction,
+      ...(entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments
+        ?.map((row) => row.handler) ?? [],
+      ...lowLevelCallUtxoGroups.flatMap((group) => [
+        group.compilerRoute?.abiFunction,
+        ...(group.compilerRoute?.rowArguments ?? []).map((row) => row.handler),
+      ]),
+    ].filter((candidate): candidate is AbiFunction => candidate !== undefined);
+    const runtimeEventSignatures = new Set(runtimeEventMetadataSources.flatMap((source) =>
+      (source.runtimeLoopEvents ?? []).flatMap((loop) => loop.eventSignatures)));
     const eventNftLockingBytecodes = new Map<string, Uint8Array>();
-    if (emitInfos.length > 0) {
-      for (const emitInfo of emitInfos) {
-        const eventDef = eventDefs.find((e) => e.signature === emitInfo.eventSignature);
-        const isAnonymous = eventDef?.anonymous === true;
-        const covenantScript = isAnonymous
-          ? buildAnonymousEventNftCovenantScript(hexToBin(this.categoryId))
-          : buildEventNftCovenantScript(
-            hexToBin(this.categoryId), computeEventNameHash(emitInfo.eventSignature),
-          );
-        eventNftLockingBytecodes.set(
-          emitInfo.eventSignature,
-          scriptToLockingBytecode(covenantScript, this.inner.addressType),
+    for (const eventSignature of new Set(emitInfos.map((emitInfo) => emitInfo.eventSignature))) {
+      const eventDef = eventDefs.find((e) => e.signature === eventSignature);
+      const isAnonymous = eventDef?.anonymous === true;
+      const covenantScript = isAnonymous
+        ? buildAnonymousEventNftCovenantScript(hexToBin(this.categoryId))
+        : buildEventNftCovenantScript(
+          hexToBin(this.categoryId), computeEventNameHash(eventSignature),
         );
-      }
+      eventNftLockingBytecodes.set(
+        eventSignature,
+        scriptToLockingBytecode(covenantScript, this.inner.addressType),
+      );
+    }
+    // Runtime event locks are embedded in address-independent compiler bytecode, so this family deliberately
+    // uses P2SH32 even when ordinary fixed event slots follow the Contract instance's configured address type.
+    const runtimeEventNftLockingBytecodes = new Map<string, Uint8Array>();
+    for (const eventSignature of runtimeEventSignatures) {
+      const eventDef = eventDefs.find((e) => e.signature === eventSignature);
+      const isAnonymous = eventDef?.anonymous === true;
+      const covenantScript = isAnonymous
+        ? buildAnonymousEventNftCovenantScript(hexToBin(this.categoryId))
+        : buildEventNftCovenantScript(
+          hexToBin(this.categoryId), computeEventNameHash(eventSignature),
+        );
+      runtimeEventNftLockingBytecodes.set(
+        eventSignature,
+        scriptToLockingBytecode(covenantScript, 'p2sh32'),
+      );
     }
 
     // Dynamic-storage vars (string / unbounded bytes) WRITTEN by this function: chunk NFTs at a per-var
@@ -23043,6 +23090,74 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ?? getEntryNftLockingBytecode(this.inner, this.categoryId, signature ?? name),
       };
     });
+    // Runtime loop events and their fixed peers are planned from compiler metadata, never from a contract name
+    // or storage schema. A hidden permutation carries a loop segment's exact cardinality; exact-count segments
+    // preserve events around it. Repeat each resolved site list without inspecting mapping keys.
+    const selectedRuntimeEventRows = (entryRouteRows?.some((row) =>
+      (row.handler.runtimeLoopEvents?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
+    const activeRuntimeEventRows = selectedRuntimeEventRows.filter((row) =>
+      (row.handler.runtimeLoopEvents ?? []).some((loop) => {
+        if (loop.repeatCount !== undefined) return loop.repeatCount > 0;
+        if (loop.permutationParam === undefined) return false;
+        const permutation = row.internalArgs?.[loop.permutationParam];
+        return Array.isArray(permutation) && permutation.length > 0;
+      }));
+    if (activeRuntimeEventRows.length > 1) {
+      throw new Error(
+        'A message-bus envelope with runtime-loop events in multiple selected rows requires row-scoped '
+        + 'effect planning; split the rows into separate transactions.',
+      );
+    }
+    const runtimeLoopEventOutputs: Array<{
+      eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string;
+    }> = [];
+    const appendRuntimeEvents = (
+      source: AbiFunction,
+      argumentFor: (name: string) => FunctionArgument | undefined,
+    ): void => {
+      for (const loop of source.runtimeLoopEvents ?? []) {
+        const hasFixedRepeat = loop.repeatCount !== undefined;
+        const hasPermutationRepeat = loop.permutationParam !== undefined;
+        if (hasFixedRepeat === hasPermutationRepeat) {
+          throw new Error(
+            `Runtime-loop event metadata for '${source.name}' must have exactly one repeat source`,
+          );
+        }
+        const repeatCount = loop.repeatCount ?? (() => {
+          if (loop.permutationParam === undefined) return undefined;
+          const permutation = argumentFor(loop.permutationParam);
+          return Array.isArray(permutation) ? permutation.length : undefined;
+        })();
+        if (!Number.isInteger(repeatCount) || repeatCount === undefined || repeatCount < 0) {
+          throw new Error(
+            `Runtime-loop event metadata for '${source.name}' has no valid repeat source`,
+          );
+        }
+        for (let iteration = 0; iteration < repeatCount; iteration += 1) {
+          for (const eventSignature of loop.eventSignatures) {
+            const lockingBytecode = runtimeEventNftLockingBytecodes.get(eventSignature);
+            if (!lockingBytecode) {
+              throw new Error(`No locking bytecode provided for runtime-loop event: ${eventSignature}`);
+            }
+            runtimeLoopEventOutputs.push({ eventSignature, lockingBytecode });
+          }
+        }
+      }
+    };
+    if (selectedRuntimeEventRows.length > 0) {
+      for (const row of selectedRuntimeEventRows) {
+        appendRuntimeEvents(row.handler, (name) => row.internalArgs?.[name]);
+      }
+    } else {
+      const directRuntimeEventFunction = entryAbiFunction?.runtimeLoopEvents?.length
+        ? entryAbiFunction : abiFunction;
+      if (directRuntimeEventFunction?.runtimeLoopEvents?.length) {
+        appendRuntimeEvents(directRuntimeEventFunction, (name) => {
+          const index = directRuntimeEventFunction.inputs.findIndex((input) => input.name === name);
+          return index < 0 ? undefined : (directRuntimeEventFunction === entryAbiFunction ? entryArgs : args)[index];
+        });
+      }
+    }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_LOOP_ENTRIES === '1') {
       console.error('loop-entry-plan', {
@@ -23177,6 +23292,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(dynamicChunkInputs.length > 0 && { dynamicChunkInputs }),
       ...(trailingDisposalInputs.length > 0 && { trailingDisposalInputs }),
       ...(loopEntryVars.length > 0 && { loopEntryVars }),
+      ...(runtimeLoopEventOutputs.length > 0 && { runtimeLoopEventOutputs }),
       tokenContainers,
       tokenContainerLockingBytecodes,
       ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
@@ -23216,7 +23332,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && { lowLevelCallInputBase }),
       ...(compilerRouteDelegateLayout && { compilerRouteDelegateBlock: true }),
       ...(overrides?.omitLocalFeeTail && { preserveBlockLayoutWidth: true }),
-      ...((batchPredCommitments.size > 0 || sortedLoopCommitments.size > 0)
+      ...((batchPredCommitments.size > 0 || sortedLoopCommitments.size > 0
+        || runtimeLoopEventOutputs.length > 0)
         && { loopEntriesBeforeDynamicChunks: true }),
       ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
       ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
@@ -24326,6 +24443,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // loop-entry variables above. Those variables are the authoritative derivation plan even when every wrapper
       // metadata list is empty; skipping here would publish link-only placeholder commitments for computed values.
       && loopEntryVars.length === 0
+      && runtimeLoopEventOutputs.length === 0
       && emitInfos.length === 0
       && derivTransferCount === 0
       && (derivTokenOps?.length ?? 0) === 0

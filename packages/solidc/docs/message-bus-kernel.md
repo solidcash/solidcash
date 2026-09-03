@@ -146,7 +146,7 @@ every kernel toy.
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
 | `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob | Any finite `sig` array parameter (one aligned outer row dimension); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
-| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; multiple counter loops that overlap one collection or do not have an unconditional source-order journal plan; or a counter loop that repeats a fixed-slot effect (event, BCH transfer, or token-container transfer) | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical counter-keyed `for (int i = S; i < n; i = i + D)` for constant `S` and positive constant `D` (also through an immutable bound-alias chain), or `int i = 0; do { ...; i = i + 1; } while (i < n)` over `m[i]` / nested `m[k][i]`, multiple unconditional sequential loops over disjoint collection sets, or those rewrites beside source-order typed external calls / invariant `if`/`switch` |
+| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not a compile-time `N <= 64`; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; a counter loop with `continue`, `break`, early `return`, or mutation of its counter/public bound; counter loops that overlap one collection or do not have an unconditional top-level source-order journal plan; a path-dependent event in a counter-loop handler; or a counter loop that repeats a BCH/token-container transfer | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), literal `new T[](N)` local (unrolled to scalar writes), canonical counter-keyed `for (int i = S; i < n; i = i + D)` for constant `S` and positive constant `D` (also through an immutable bound-alias chain), or `int i = 0; do { ...; i = i + 1; } while (i < n)` over `m[i]` / nested `m[k][i]`, multiple unconditional sequential loops over disjoint collection sets, or those rewrites beside source-order typed external calls, unconditional event sites, or invariant `if`/`switch` |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Native assembly which is not statically isolated and stack-neutral (including transaction/signature introspection), unsupported Yul which cannot be lowered, or a low-level call the journal cannot summarize as a call/effect row | Isolated pure BCH assembly and Yul translated to ordinary typed operations before admission; after Solidity-compat lowering to `call` plus returndata |
 | `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors (not child deploys) |
@@ -185,8 +185,26 @@ split diagnostic when dynamic storage and a collection do not share one exit.
 
 Effects (events, BCH, FT/NFT) stay **adjacent** to the journal, not journal values. The kernel
 appends them from the outer message-row loop; it does not unroll one covenant site per compile-time row index.
-An effect site inside a counter-keyed inner loop is different: it can execute repeatedly within one row and
-remains refused until the effect frame has an inner-iteration dimension.
+An unconditional event site inside an admitted counter-keyed inner loop uses a separate bounded trailing stream.
+The hidden authenticated permutation gives the exact trip count, but it does not reorder the event: each source
+iteration pushes one bounded `commitment || event-locking-bytecode` record. Unconditional event sites before and
+after the loop join that same stream as exact one-repeat segments, so output/log order remains source order across
+the loop boundary. The handler epilogue binds the complete stream to a contiguous event-output family after the
+runtime mapping entries and before dynamic chunks. Static `emits` slots exclude every migrated site. The route
+threads the exact absolute half-open event span through invoked handlers so the own-category immutable-NFT census
+grants authority only to that family; the neutral zero-trip sentinel grants no range. Multiple sites and
+sequential loops reserve the sum of their mapping/event capacities, with each repeated part under the existing
+64-iteration proof and each fixed segment counted exactly once.
+
+The cardinality must be known before VM derivation: an event beneath `if`, `switch`, `try`/`catch`, or another
+loop remains `KERNEL_UNBOUNDED_KEY`, including a conditional event outside a handler whose counter-loop events
+need this ordered stream. Counter journals themselves must be unconditional top-level peers; even one nested under
+a branch remains frozen until the plan has path reachability. Event arguments may use ordinary expressions,
+resource-free builtins, and explicitly `pure` helpers. Effectful returning helpers remain refused even after
+inlining (their result provenance is retained on the normalized AST). BCH and token-container transfers still
+have no sound repeated-output form.
+More than one selected message row with a non-empty runtime-event stream remains refused until settlement has a
+row-scoped effect cursor.
 
 ---
 
@@ -297,9 +315,12 @@ entry as the write; it is not published as a separate fixed-key route witness.
 Mixed typed external calls and genuinely invariant `if`/`switch` in the same counter loop stay on the
 row loop: only direct uses of the counter in mapping keys and mapping values are rewritten to `perm[i]`;
 this includes values computed by explicitly `pure` internal helpers and resource-free builtins such as
-`max`. Calls keep source order. Events, BCH transfers, and token-container transfers inside the physical
-counter loop stay `KERNEL_UNBOUNDED_KEY`: the current effect frame has one fixed window per message row,
-not one window per runtime inner iteration. Those effects remain supported before or after the loop.
+`max`. Calls keep source order. Unconditional events also keep source order and use the bounded runtime-event
+stream described above; only mapping keys and direct counter uses inside mapping values follow the permutation.
+Conditional events, BCH transfers, and token-container transfers inside the physical counter loop stay
+`KERNEL_UNBOUNDED_KEY`. Unconditional events before or after the loop join the same ordered runtime stream; a
+conditional outside event remains frozen in that mixed handler until the stream carries path metadata. BCH and
+token-container effects remain supported before or after the loop.
 Nested counter keys `m[k][i]` permute the inner key only.
 At transaction construction time, multiple byte-identical rows may share one physical counter-loop settlement
 only when every mutation is a compiler-described absolute parameter/array/constant `set` or `delete`, the handler
@@ -312,3 +333,7 @@ Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay
 `KERNEL_UNBOUNDED_KEY` without aborting sibling handlers.
+
+The legacy convention is intentionally unchanged: it does not acquire this runtime event family and continues to
+refuse the corresponding bus handler with its historical route-generation diagnostic. The same function remains
+usable as a direct call, while the kernel convention publishes `runtimeLoopEvents` metadata and admits it as a row.

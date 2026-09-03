@@ -1192,6 +1192,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const retName = `${PREFIX}${n}__ret${k}`;
       const retDef = new VariableDefinitionNode(callee.returnTypes[k], [], retName, ret.expressions[k]);
       retDef.location = callee.location;
+      retDef.inlinedReturningHelperPure = callee.modifiers.includes(FunctionModifier.PURE);
       retDefs.push(retDef);
       const id = new IdentifierNode(retName);
       id.location = callee.location;

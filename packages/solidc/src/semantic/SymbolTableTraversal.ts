@@ -3661,6 +3661,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private collectEmitStatements(node: Node, emitInfos: EmitInfo[], emitIndex: number): number {
     if (node instanceof EmitStatementNode) {
+      // Counter-loop events use the bounded trailing runtime stream. Giving them a fixed emitIndex as well would
+      // reserve one row slot and then overwrite that same pending register on every inner iteration.
+      if (node.runtimeLoopEvent) return emitIndex;
       // One source emit is one event NFT. Event commitments are never split across outputs: the active
       // provider's commitment limit decides whether the encoded payload is admissible. Older layout planning
       // estimated a synthetic `chunkCount` from 128-byte pieces, but code generation and the SDK still emitted
@@ -13025,7 +13028,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const directEventCount = (fn: FunctionDefinitionNode): number => {
       let count = 0;
       walkInvocationAst(fn.body, (node) => {
-        if (node instanceof EmitStatementNode) count += 1;
+        if (node instanceof EmitStatementNode && !node.runtimeLoopEvent) count += 1;
       });
       return count;
     };
@@ -13422,7 +13425,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         const collection = contract.collections.find((candidate) => candidate.name === access.collection);
         return collection?.sorted === true && isChunkableValueType(collection.innermostValueType);
       });
-    const needsWideTrailingRegion = touchesDynamicState
+    const runtimeCounterOutputCapacity = node.name === '__message_bus1'
+      ? Math.max(0, ...contract.functions.map((fn) => (
+        fn.graphEmissionHandler ? fn.runtimeCounterLoopOutputCapacity ?? 0 : 0
+      ))) : 0;
+    const needsNonCounterWideTrailingRegion = touchesDynamicState
       || writesChunkableCollection
       || (node.dynamicReads?.length ?? 0) > 0
       || (node.dynamicWrites?.length ?? 0) > 0
@@ -13432,12 +13439,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.keccakInLoop === true
       || node.keccakLoopReads === true
       || node.ecrecoverLoopReads === true;
+    const needsWideTrailingRegion = needsNonCounterWideTrailingRegion
+      || runtimeCounterOutputCapacity > 0;
     const needsTrailingRegion = node.name === '__message_bus1'
       && (needsWideTrailingRegion || collectionRouteCapacity > 0);
     if (!needsTrailingRegion) return { blockSize: offset, slots };
 
     const trailingBase = offset;
-    const trailingCapacity = needsWideTrailingRegion ? BALANCED_TRAILING_CAPACITY : collectionRouteCapacity;
+    // Each counter loop has an independent 64-iteration proof, so reserve its complete resource capacity rather
+    // than assuming one mapping plus the widest event site. Lowering also includes exact-count events before or
+    // after the loop after moving them into the same source-ordered stream. Other runtime resources share this
+    // bounded trailing band and the builder refuses a concrete transaction that exceeds it.
+    const trailingCapacity = runtimeCounterOutputCapacity > 0
+      ? runtimeCounterOutputCapacity
+      : needsWideTrailingRegion ? BALANCED_TRAILING_CAPACITY : collectionRouteCapacity;
     for (let i = 0; i < trailingCapacity; i++) {
       slots.push({ kind: 'trailing', offset: offset++, slotIndex: i, conditional: true });
     }

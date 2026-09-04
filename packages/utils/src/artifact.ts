@@ -146,7 +146,7 @@ export interface RuntimeLoopTransferAbi {
   permutationParam: string;
   siteCount: number;
   /** Effect kind per source site. Omitted by older artifacts whose sites are all plain BCH transfers. */
-  siteKinds?: readonly ('bch' | 'token')[];
+  siteKinds?: readonly ('bch' | 'token' | 'nft')[];
   /** Token-container slot per source site; null for plain BCH sites. */
   tokenContainerSlots?: readonly (number | null)[];
   /** Per-site runtime predicates, aligned with the source transfer sites. */

@@ -2779,6 +2779,27 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it('admits a repeated NFT transfer inside a counter-keyed mapping loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n, bytes32 category, bytes to, bytes commitment, int capability) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.m[i] = 1;
+          this.tokens[category].transferNft(to, commitment, capability);
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.runtimeLoopTransfers)
+      .toEqual([expect.objectContaining({
+        siteCount: 1, siteKinds: ['nft'], tokenContainerSlots: [0],
+      })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
   it('admits a returning enum encoded as int', () => {
     const artifact = compileString(`enum Status { A, B }
       contract C() {

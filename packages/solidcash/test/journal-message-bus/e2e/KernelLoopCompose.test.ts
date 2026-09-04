@@ -9,7 +9,7 @@ import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { getSatoshiContainerAddress } from '../../../src/stateful/covenant-helpers.js';
+import { getSatoshiContainerAddress, getTokenContainerAddress } from '../../../src/stateful/covenant-helpers.js';
 import {
   createBareP2pkhFeeFunder, createTestProvider, genesisFtContainer, setupStatefulUtxos,
 } from '../../test-util.js';
@@ -345,6 +345,33 @@ contract KernelRuntimeTokenTransfer() {
     for (int i = 0; i < n; i = i + 1) {
       this.otherRows[i] = i + 1;
       this.tokens[category].transfer(recipient, 2 + i);
+    }
+    require(true);
+  }
+}`;
+
+const RUNTIME_NFT_TRANSFER_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelRuntimeNftTransfer() {
+  mapping(int => int) rows;
+  function send(int n, bytes32 category, bytes recipient, bytes commitment, int capability) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.rows[i] = i + 1;
+      this.tokens[category].transferNft(recipient, commitment, capability);
+    }
+    require(true);
+  }
+}`;
+
+const CONDITIONAL_RUNTIME_NFT_TRANSFER_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelConditionalRuntimeNftTransfer() {
+  mapping(int => int) rows;
+  function split(
+    int n, bytes32 evenCategory, bytes32 oddCategory, bytes evenRecipient, bytes oddRecipient, bytes commitment
+  ) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.rows[i] = i + 1;
+      if (i % 2 == 0) this.tokens[evenCategory].transferNft(evenRecipient, commitment, 0);
+      else this.tokens[oddCategory].transferNft(oddRecipient, commitment, 0);
     }
     require(true);
   }
@@ -2712,6 +2739,167 @@ describe('kernel composite counter-key settlement', () => {
     expect(vm.stateSuccess(vm.evaluate({
       inputIndex: routeInputIndex, sourceOutputs, transaction: hostileTransaction,
     }))).not.toBe(true);
+  }, 180_000);
+
+  it('settles repeated NFT transfers and preserves a zero-trip container NFT', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(
+      RUNTIME_NFT_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
+    );
+    expect(artifact.abi.find((candidate) => candidate.name === 'send')?.runtimeLoopTransfers)
+      .toEqual([expect.objectContaining({
+        siteCount: 1, siteKinds: ['nft'], tokenContainerSlots: [0],
+      })]);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const connectedInner = inner.withCategory(hexToBin(categoryId));
+    const seeded = await provider.addTokenUtxosDynamic((category) => [{
+      address: getTokenContainerAddress(connectedInner, categoryId, category),
+      satoshis: 1200n,
+      token: { amount: 0n, nft: { capability: 'minting', commitment: 'a1' } },
+    }]);
+    const contract = StatefulContract.withCategory(connectedInner, categoryId);
+    const recipientFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const recipient = recipientFunder.unlocker.generateLockingBytecode();
+    const category = hexToBin(seeded.categoryId);
+
+    const zeroBuilder = await contract.batch([{
+      function: 'send', args: [0n, category, recipient, hexToBin('c0ffee'), 0n],
+    }]).build();
+    const zeroTransaction = zeroBuilder.buildLibauthTransaction();
+    expect(zeroTransaction.outputs.some((output) => output.token
+      && binToHex(output.token.category) === seeded.categoryId
+      && output.token.nft?.capability === 'minting'
+      && binToHex(output.token.nft.commitment) === 'a1')).toBe(true);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const zeroSources = generateLibauthSourceOutputs(zeroBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < zeroTransaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs: zeroSources, transaction: zeroTransaction,
+      })), `zero NFT input ${inputIndex}`).toBe(true);
+    }
+    const hostileZero = zeroBuilder.buildLibauthTransaction();
+    const hostileZeroContainer = hostileZero.outputs.find((output) => output.token
+      && binToHex(output.token.category) === seeded.categoryId
+      && output.token.nft?.capability === 'minting');
+    expect(hostileZeroContainer).toBeDefined();
+    delete hostileZeroContainer!.token!.nft;
+    const zeroRouteInputIndex = zeroBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: zeroRouteInputIndex, sourceOutputs: zeroSources, transaction: hostileZero,
+    }))).not.toBe(true);
+
+    const builder = await contract.batch([{
+      function: 'send', args: [2n, category, recipient, hexToBin('c0ffee'), 0n],
+    }]).build();
+    const transaction = builder.buildLibauthTransaction();
+    const transfers = transaction.outputs.filter((output) => output.token
+      && binToHex(output.token.category) === seeded.categoryId
+      && output.token.nft && binToHex(output.token.nft.commitment) === 'c0ffee'
+      && binToHex(output.lockingBytecode) === binToHex(recipient));
+    expect(transfers).toHaveLength(2);
+    expect(transfers.every((output) => output.token?.nft?.capability === 'none')).toBe(true);
+    expect(transaction.outputs.some((output) => output.token
+      && binToHex(output.token.category) === seeded.categoryId
+      && output.token.nft?.capability === 'minting')).toBe(true);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs, transaction,
+      })), `NFT input ${inputIndex}`).toBe(true);
+    }
+
+    const hostile = builder.buildLibauthTransaction();
+    const hostileOutput = hostile.outputs.find((output) => output.token
+      && binToHex(output.token.category) === seeded.categoryId
+      && output.token.nft && binToHex(output.token.nft.commitment) === 'c0ffee');
+    expect(hostileOutput).toBeDefined();
+    hostileOutput!.token!.nft!.commitment = hexToBin('bad0');
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInputIndex, sourceOutputs, transaction: hostile,
+    }))).not.toBe(true);
+
+    const immutable = await provider.addTokenUtxosDynamic((immutableCategory) => [{
+      address: getTokenContainerAddress(connectedInner, categoryId, immutableCategory),
+      satoshis: 1200n,
+      token: { amount: 0n, nft: { capability: 'none', commitment: 'f1' } },
+    }]);
+    await expect(contract.batch([{
+      function: 'send',
+      args: [2n, hexToBin(immutable.categoryId), recipient, hexToBin('f2'), 0n],
+    }]).build()).rejects.toThrow(/non-minting container .* more than once/);
+  }, 180_000);
+
+  it('tracks conditional runtime NFT occurrence independently for each container', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(
+      CONDITIONAL_RUNTIME_NFT_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
+    );
+    const split = artifact.abi.find((candidate) => candidate.name === 'split')!;
+    expect(split.runtimeLoopTransfers).toEqual([expect.objectContaining({
+      siteCount: 2, siteKinds: ['nft', 'nft'], tokenContainerSlots: [0, 1],
+      conditions: [expect.anything(), expect.anything()],
+    })]);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const connectedInner = inner.withCategory(hexToBin(categoryId));
+    const even = await provider.addTokenUtxosDynamic((category) => [{
+      address: getTokenContainerAddress(connectedInner, categoryId, category),
+      satoshis: 1200n,
+      token: { amount: 0n, nft: { capability: 'minting', commitment: 'e0' } },
+    }]);
+    const odd = await provider.addTokenUtxosDynamic((category) => [{
+      address: getTokenContainerAddress(connectedInner, categoryId, category),
+      satoshis: 1200n,
+      token: { amount: 0n, nft: { capability: 'minting', commitment: '0d' } },
+    }]);
+    const contract = StatefulContract.withCategory(connectedInner, categoryId);
+    const evenFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const oddFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const evenRecipient = evenFunder.unlocker.generateLockingBytecode();
+    const oddRecipient = oddFunder.unlocker.generateLockingBytecode();
+    const builder = await contract.batch([{
+      function: 'split',
+      args: [
+        1n, hexToBin(even.categoryId), hexToBin(odd.categoryId),
+        evenRecipient, oddRecipient, hexToBin('cafe'),
+      ],
+    }]).build();
+    const transaction = builder.buildLibauthTransaction();
+    expect(transaction.outputs.filter((output) => output.token
+      && binToHex(output.token.category) === even.categoryId
+      && output.token.nft && binToHex(output.token.nft.commitment) === 'cafe'
+      && binToHex(output.lockingBytecode) === binToHex(evenRecipient))).toHaveLength(1);
+    expect(transaction.outputs.filter((output) => output.token
+      && binToHex(output.token.category) === odd.categoryId
+      && output.token.nft && binToHex(output.token.nft.commitment) === 'cafe'
+      && binToHex(output.lockingBytecode) === binToHex(oddRecipient))).toHaveLength(0);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `NFT input ${inputIndex}`)
+        .toBe(true);
+    }
+
+    // The odd branch was not reached. Removing that unrelated container's NFT must therefore remain invalid;
+    // a route-wide "some NFT site exists" flag would incorrectly authorize this burn.
+    const hostile = builder.buildLibauthTransaction();
+    const oddContainer = hostile.outputs.find((output) => output.token
+      && binToHex(output.token.category) === odd.categoryId
+      && output.token.nft?.capability === 'minting');
+    expect(oddContainer).toBeDefined();
+    delete oddContainer!.token!.nft;
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInputIndex, sourceOutputs, transaction: hostile })))
+      .not.toBe(true);
   }, 180_000);
 
   it('evaluates an effectful repeated-token amount once in logical source order', async () => {

@@ -11713,9 +11713,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const runtimeLoopTransferBytecodesDerived = Array.from(
           { length: stb.getRuntimeLoopTransferOutputs().length }, () => false,
         );
-        const runtimeLoopTransferAmountsDerived = Array.from(
-          { length: stb.getRuntimeLoopTransferOutputs().length }, () => false,
-        );
+        const runtimeLoopTransferAmountsDerived = stb.getRuntimeLoopTransferOutputs()
+          .map((output) => output.kind === 'nft');
+        const runtimeLoopTransferCommitmentsDerived = stb.getRuntimeLoopTransferOutputs()
+          .map((output) => output.kind !== 'nft');
+        const runtimeLoopTransferCapabilitiesDerived = stb.getRuntimeLoopTransferOutputs()
+          .map((output) => output.kind !== 'nft');
 
         // Phase 2: Derive A's state + entries + events (iterative)
         // The VM stops at the first OP_EQUALVERIFY failure. Each iteration captures
@@ -12853,25 +12856,53 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               fullTrace2, Op.OP_OUTPUTBYTECODE, { min: outputIndex, max: outputIndex + 1 },
               false, true, true,
             );
-            const values = extractVerifiedValuesFromTrace(
-              fullTrace2, current.kind === 'token' ? Op.OP_OUTPUTTOKENAMOUNT : Op.OP_OUTPUTVALUE,
-              { min: outputIndex, max: outputIndex + 1 },
-              false, true, true,
-            );
             const lockingBytecode = bytecodes[0] ?? current.lockingBytecode;
-            const amount = values[0] === undefined ? current.amount : decodeScriptNumber(values[0]);
             let changed = false;
             if (bytecodes[0] !== undefined) {
               runtimeLoopTransferBytecodesDerived[transferIndex] = true;
               if (binToHex(lockingBytecode) !== binToHex(current.lockingBytecode)) changed = true;
             }
-            if (values[0] !== undefined) {
-              runtimeLoopTransferAmountsDerived[transferIndex] = true;
-              if (amount !== current.amount) changed = true;
-            }
-            if (changed) {
-              stb.setRuntimeLoopTransferOutput(transferIndex, lockingBytecode, amount);
-              commitmentProgress += 1;
+            if (current.kind === 'nft') {
+              const commitments = extractVerifiedValuesFromTrace(
+                fullTrace2, Op.OP_OUTPUTTOKENCOMMITMENT, { min: outputIndex, max: outputIndex + 1 },
+                false, true, true,
+              );
+              const categories = extractVerifiedValuesFromTrace(
+                fullTrace2, Op.OP_OUTPUTTOKENCATEGORY, { min: outputIndex, max: outputIndex + 1 },
+                false, true, true,
+              );
+              const commitment = commitments[0] ?? current.commitment ?? new Uint8Array();
+              const capability = categories[0] === undefined
+                ? current.capability ?? 'none' : parseNftCapability(categories[0]);
+              if (commitments[0] !== undefined) {
+                runtimeLoopTransferCommitmentsDerived[transferIndex] = true;
+                if (binToHex(commitment) !== binToHex(current.commitment ?? new Uint8Array())) changed = true;
+              }
+              if (categories[0] !== undefined) {
+                runtimeLoopTransferCapabilitiesDerived[transferIndex] = true;
+                if (capability !== current.capability) changed = true;
+              }
+              if (changed) {
+                stb.setRuntimeLoopNftTransferOutput(
+                  transferIndex, lockingBytecode, commitment, capability,
+                );
+                commitmentProgress += 1;
+              }
+            } else {
+              const values = extractVerifiedValuesFromTrace(
+                fullTrace2, current.kind === 'token' ? Op.OP_OUTPUTTOKENAMOUNT : Op.OP_OUTPUTVALUE,
+                { min: outputIndex, max: outputIndex + 1 },
+                false, true, true,
+              );
+              const amount = values[0] === undefined ? current.amount : decodeScriptNumber(values[0]);
+              if (values[0] !== undefined) {
+                runtimeLoopTransferAmountsDerived[transferIndex] = true;
+                if (amount !== current.amount) changed = true;
+              }
+              if (changed) {
+                stb.setRuntimeLoopTransferOutput(transferIndex, lockingBytecode, amount);
+                commitmentProgress += 1;
+              }
             }
           }
 
@@ -13369,6 +13400,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             || stb.hasUnresolvedDeferredEcrecoverArguments()
             || runtimeLoopTransferBytecodesDerived.some((derived) => !derived)
             || runtimeLoopTransferAmountsDerived.some((derived) => !derived)
+            || runtimeLoopTransferCommitmentsDerived.some((derived) => !derived)
+            || runtimeLoopTransferCapabilitiesDerived.some((derived) => !derived)
             || stb.getValueChunkVars().length > 0
             || stb.getDynamicChunkVars().length > 0 || stb.getLoopEntryVars().length > 0;
           if (debugTargetsThisDerivation) console.error('derive-iteration-summary', JSON.stringify({
@@ -24264,18 +24297,41 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             const outputIndex = runtimeLoopTransferOutputs.length;
             const kind = loop.siteKinds?.[siteIndex] ?? 'bch';
-            if (kind === 'token') {
+            if (kind === 'token' || kind === 'nft') {
               const slot = loop.tokenContainerSlots?.[siteIndex];
-              const category = slot === null || slot === undefined ? undefined
-                : tokenContainers.find((container) => container.tokenContainerSlotIndex === slot)
-                  ?.tokenContainerCategoryId;
+              const container = slot === null || slot === undefined ? undefined
+                : tokenContainers.find((candidate) => candidate.tokenContainerSlotIndex === slot);
+              const category = container?.tokenContainerCategoryId;
               if (!category) throw new Error(
                 `Runtime-loop token transfer metadata for '${source.name}' has no resolved container`,
               );
-              runtimeLoopTransferOutputs.push({
-                kind, tokenContainerCategoryId: category,
-                lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 1n,
-              });
+              if (kind === 'nft') {
+                const nft = container?.utxo?.token?.nft;
+                if (!nft) throw new Error(
+                  `Runtime-loop NFT transfer in '${source.name}' requires an NFT-bearing token container`,
+                );
+                if (nft.capability !== 'minting' && runtimeLoopTransferOutputs.some((output) =>
+                  output.kind === 'nft' && output.tokenContainerCategoryId === category)) {
+                  throw new Error(
+                    `Runtime-loop NFT transfer in '${source.name}' reaches the non-minting container `
+                    + `${category} more than once`,
+                  );
+                }
+                runtimeLoopTransferOutputs.push({
+                  kind, tokenContainerCategoryId: category,
+                  lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 0n,
+                  commitment: hexToBin(nft.commitment),
+                  // A minting-capability placeholder would be removed by the builder's 1:1 minting guard before
+                  // the trace can derive this runtime output. An immutable placeholder is valid under the same
+                  // minting input and remains materialized until the source-selected capability replaces it.
+                  capability: nft.capability === 'minting' ? 'none' : nft.capability,
+                });
+              } else {
+                runtimeLoopTransferOutputs.push({
+                  kind, tokenContainerCategoryId: category,
+                  lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 1n,
+                });
+              }
             } else {
               runtimeLoopTransferOutputs.push({
                 kind, lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 1000n,

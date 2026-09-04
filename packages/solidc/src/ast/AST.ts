@@ -2599,7 +2599,7 @@ export interface RuntimeLoopTransferInfo {
   siteKinds?: RuntimeLoopTransferKind[];
 }
 
-export type RuntimeLoopTransferKind = 'bch' | 'token';
+export type RuntimeLoopTransferKind = 'bch' | 'token' | 'nft';
 
 export interface TransferInfo {
   transferIndex: number;

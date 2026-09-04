@@ -1171,7 +1171,8 @@ function buildFunctionAbiMetadata(
         siteCount: transferSites.length,
         ...(transferSites.some((transfer) => transfer instanceof TokenContainerMethodStatementNode) && {
           siteKinds: transferSites.map((transfer) => transfer instanceof TokenContainerMethodStatementNode
-            ? 'token' as const : 'bch' as const),
+            ? (transfer.methodName === 'transferNft' ? 'nft' as const : 'token' as const)
+            : 'bch' as const),
           tokenContainerSlots: transferSites.map((transfer) =>
             transfer instanceof TokenContainerMethodStatementNode ? transfer.tokenContainerSlotIndex : null),
         }),

@@ -3814,8 +3814,10 @@ export interface TokenContainerTransferNftData {
 export type RuntimeLoopTransferOutput = {
   lockingBytecode: Uint8Array;
   amount: bigint;
-  kind?: 'bch' | 'token';
+  kind?: 'bch' | 'token' | 'nft';
   tokenContainerCategoryId?: string;
+  commitment?: Uint8Array;
+  capability?: 'none' | 'mutable' | 'minting';
 };
 
 export interface ExternalCallUtxoGroup {
@@ -4396,6 +4398,7 @@ export class StatefulTransactionBuilder {
     }));
     this.runtimeLoopTransferOutputs = (options.runtimeLoopTransferOutputs ?? []).map((output) => ({
       ...output, lockingBytecode: Uint8Array.from(output.lockingBytecode), amount: output.amount,
+      ...(output.commitment && { commitment: Uint8Array.from(output.commitment) }),
     }));
     this.runtimeLoopTrailingSegments = options.runtimeLoopTrailingSegments?.map((segment) => ({ ...segment })) ?? [];
     this.eventDefinitions = options.eventDefinitions ?? [];
@@ -10152,6 +10155,28 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  setRuntimeLoopNftTransferOutput(
+    index: number,
+    lockingBytecode: Uint8Array,
+    commitment: Uint8Array,
+    capability: 'none' | 'mutable' | 'minting',
+  ): this {
+    if (!Number.isInteger(index) || index < 0 || index >= this.runtimeLoopTransferOutputs.length) {
+      throw new Error(`Invalid runtime loop NFT transfer index ${index}`);
+    }
+    if (this.runtimeLoopTransferOutputs[index].kind !== 'nft') {
+      throw new Error(`Runtime loop transfer ${index} is not an NFT transfer`);
+    }
+    this.runtimeLoopTransferOutputs[index] = {
+      ...this.runtimeLoopTransferOutputs[index],
+      lockingBytecode: Uint8Array.from(lockingBytecode),
+      commitment: Uint8Array.from(commitment),
+      capability,
+      amount: 0n,
+    };
+    return this;
+  }
+
   getRuntimeLoopEventOutputs(): ReadonlyArray<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
   }> {
@@ -12049,7 +12074,8 @@ export class StatefulTransactionBuilder {
       // Check if NFT was transferred out
       const nftWasTransferred = this.pendingTokenContainerTransferNfts.some(
         (s) => s.tokenContainerCategoryId === container.tokenContainerCategoryId,
-      );
+      ) || this.runtimeLoopTransferOutputs.some((transfer) => transfer.kind === 'nft'
+        && transfer.tokenContainerCategoryId === container.tokenContainerCategoryId);
 
       builder.addOutput({
         to: lockingBytecode,
@@ -12408,14 +12434,23 @@ export class StatefulTransactionBuilder {
     const appendRuntimeLoopTransfer = (transferIndex: number): void => {
       const transfer = this.runtimeLoopTransferOutputs[transferIndex];
       if (!transfer) throw new Error(`Runtime loop transfer segment references missing transfer ${transferIndex}`);
-      if (transfer.kind === 'token') {
+      if (transfer.kind === 'token' || transfer.kind === 'nft') {
         if (!transfer.tokenContainerCategoryId) {
           throw new Error(`Runtime loop token transfer ${transferIndex} has no token category`);
         }
         builder.addOutput({
           to: transfer.lockingBytecode,
           amount: 1200n,
-          token: { amount: transfer.amount, category: transfer.tokenContainerCategoryId },
+          token: {
+            amount: transfer.kind === 'nft' ? 0n : transfer.amount,
+            category: transfer.tokenContainerCategoryId,
+            ...(transfer.kind === 'nft' && {
+              nft: {
+                capability: transfer.capability ?? 'none',
+                commitment: binToHex(transfer.commitment ?? new Uint8Array()),
+              },
+            }),
+          },
         });
       } else {
         builder.addOutput({ to: transfer.lockingBytecode, amount: transfer.amount });
@@ -13743,7 +13778,9 @@ export class StatefulTransactionBuilder {
           && transfer.tokenContainerCategoryId === categoryId)
         .reduce((sum, transfer) => sum + transfer.amount, 0n);
     const nftTransferred = this.pendingTokenContainerTransferNfts
-      .some((t) => t.tokenContainerCategoryId === categoryId);
+      .some((t) => t.tokenContainerCategoryId === categoryId)
+      || this.runtimeLoopTransferOutputs.some((transfer) => transfer.kind === 'nft'
+        && transfer.tokenContainerCategoryId === categoryId);
     const inputFt = container.utxo.token?.amount ?? 0n;
     if (ftTransferred > inputFt) {
       throw new Error(

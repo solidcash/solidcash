@@ -51,8 +51,8 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * stream and settled after all mapping journals, so they repeat in logical source order without sharing the
  * route's fixed per-row event slots. Nested if/else reachability is serialized when it depends only on SDK-visible
  * inputs, immutable aliases, stable pre-state, and the source counter. Stable switch arms use the same predicates.
- * Try/catch and nested-loop effect reachability and token-container transfers still need richer runtime effect
- * records. Direct BCH transfers use a source-ordered trailing stream alongside events. The canonical pre-test domains
+ * Nested-loop effect reachability still needs richer runtime effect records. Direct BCH, fungible-token, and NFT
+ * transfers use a source-ordered trailing stream alongside events. The canonical pre-test domains
  * `for (int i = constantStart; i < publicBound; i = i + positiveConstantStep)` and
  * `for (int i = constantStart; i > publicBound; i = i - positiveConstantStep)`, plus equivalent post-test
  * domains with constant or replayable runtime steps, lower. A unit post-test domain authenticates
@@ -715,7 +715,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (x instanceof AddressTransferStatementNode || x instanceof AddressSendExpressionNode
         || x instanceof MethodCallNode || x instanceof MethodCallStatementNode) return true;
       if (x instanceof TokenContainerMethodStatementNode) {
-        if (!runtimeTransfers.has(x) || x.methodName !== 'transfer') return true;
+        if (!runtimeTransfers.has(x)
+          || (x.methodName !== 'transfer' && x.methodName !== 'transferNft')) return true;
         return x.args.some((arg) => hasObservableEffect(arg))
           || hasObservableEffect(x.tokenContainerKeyExpression);
       }
@@ -1659,8 +1660,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         x: Node,
         condition?: ExpressionNode,
       ): void => {
-        if (x instanceof TransferStatementNode
-          || (x instanceof TokenContainerMethodStatementNode && x.methodName === 'transfer')) {
+        if (x instanceof TransferStatementNode || x instanceof TokenContainerMethodStatementNode) {
           if (condition && !runtimePathExpressionSupported(
             condition, logical, new Set(), stateValues, loopCarriedLocalValues,
           )) conditionalRuntimeTransfer = true;
@@ -2823,7 +2823,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             loopIndex: transferLoopIndex,
             permutationParam: primaryGroup.hidden,
             siteKinds: runtimeTransfers.map(({ transfer }) =>
-              transfer instanceof TokenContainerMethodStatementNode ? 'token' : 'bch'),
+              transfer instanceof TokenContainerMethodStatementNode
+                ? (transfer.methodName === 'transferNft' ? 'nft' : 'token') : 'bch'),
           },
         ];
         runtimeTransfers.forEach(({ transfer, condition }, siteIndex) => {

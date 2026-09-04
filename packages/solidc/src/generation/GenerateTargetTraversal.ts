@@ -1175,7 +1175,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // but they share the mapping/event output cursor and settle the satoshi-container conservation equation.
   private runtimeLoopTransferActive = false;
   private runtimeLoopBchTransferActive = false;
+  private runtimeLoopNftTransferActive = false;
   private static readonly RUNTIME_LOOP_TRANSFER_COUNT = '__internal__runtimeLoopTransferCount';
+  private static readonly RUNTIME_LOOP_NFT_TRANSFER_COUNTS = '__internal__runtimeLoopNftTransferCounts';
   // Outlined functions return live runtime-loop offsets through the same copy-in/copy-out frame as scalar
   // journals. Output offsets also separate mapping entries from dynamic chunks; paired input/output offsets
   // separate sequential mapping journals. The sets are contract-wide because one OP_DEFINE body has one hidden
@@ -4851,6 +4853,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.runtimeLoopEventActive = false;
     this.runtimeLoopTransferActive = false;
     this.runtimeLoopBchTransferActive = false;
+    this.runtimeLoopNftTransferActive = false;
     this.coSpendPreservedDynValues = new Set();
     this.pendingTransfers = [];
     this.pendingEmits = [];
@@ -5438,6 +5441,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_TRANSFER_COUNT);
       this.runtimeLoopTransferActive = true;
       this.runtimeLoopBchTransferActive = this.functionContainsRuntimeLoopBchTransfer(node);
+      this.runtimeLoopNftTransferActive = this.functionContainsRuntimeLoopNftTransfer(node);
     }
     if ((node.dynamicWrites?.length ?? 0) > 0 || hasStaticDynamicWrite) {
       const seen = new WeakSet<Node>();
@@ -6956,19 +6960,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private functionContainsRuntimeLoopTokenTransfer(node: FunctionDefinitionNode): boolean {
-    if (node.runtimeLoopTransfers?.some((segment) => segment.siteKinds?.includes('token'))) return true;
+    if (node.runtimeLoopTransfers?.some((segment) =>
+      segment.siteKinds?.some((kind) => kind === 'token' || kind === 'nft'))) return true;
     // Synthetic message-bus routes copy the published runtime segments and token-container footprint, but may
     // not retain the concrete source TokenContainerMethodStatementNode. Treat their intersection as token-
     // capable. The preservation loop itself filters by exact output category, so a route which also contains
     // only BCH runtime sites merely executes an empty debit scan.
     if ((node.runtimeLoopTransfers?.length ?? 0) > 0
-      && node.tokenContainerAccesses?.some((access) => access.operations.includes('transfer'))) return true;
+      && node.tokenContainerAccesses?.some((access) =>
+        access.operations.some((operation) => operation === 'transfer' || operation === 'transferNft'))) return true;
     const seen = new Set<Node>();
     const walk = (candidate: Node | undefined): boolean => {
       if (!candidate || seen.has(candidate)) return false;
       seen.add(candidate);
       if (candidate instanceof TokenContainerMethodStatementNode
         && candidate.runtimeLoopTransfer !== undefined) return true;
+      for (const [key, value] of Object.entries(candidate)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'type'].includes(key)) continue;
+        if (value instanceof Node && walk(value)) return true;
+        if (Array.isArray(value) && value.some((item) => item instanceof Node && walk(item))) return true;
+      }
+      return false;
+    };
+    return walk(node.body);
+  }
+
+  private functionContainsRuntimeLoopNftTransfer(node: FunctionDefinitionNode): boolean {
+    if (node.runtimeLoopTransfers?.some((segment) => segment.siteKinds?.includes('nft'))) return true;
+    const seen = new Set<Node>();
+    const walk = (candidate: Node | undefined): boolean => {
+      if (!candidate || seen.has(candidate)) return false;
+      seen.add(candidate);
+      if (candidate instanceof TokenContainerMethodStatementNode
+        && candidate.methodName === 'transferNft' && candidate.runtimeLoopTransfer !== undefined) return true;
       for (const [key, value] of Object.entries(candidate)) {
         if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
           'referencedContract', 'stateVariable', 'collection', 'type'].includes(key)) continue;
@@ -13036,7 +13061,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitTokenContainerMethodStatement(node: TokenContainerMethodStatementNode): Node {
     this.emitGraphStaticDirty(node);
     if (node.runtimeLoopTransfer) {
-      if (node.methodName !== 'transfer' || !this.runtimeLoopTransferActive
+      if ((node.methodName !== 'transfer' && node.methodName !== 'transferNft')
+        || !this.runtimeLoopTransferActive
         || !this.stack.includes(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_TRANSFER_COUNT)) {
         throw new Error('Runtime counter-loop token transfer emitted without an active effect journal');
       }
@@ -13048,13 +13074,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
       this.pushToStack('(__runtime_loop_token_transfer_record)');
-      node.args[1] = this.visit(node.args[1]);
-      this.emit(encodeInt(8n), locationData);
-      this.emit(Op.OP_NUM2BIN, locationData);
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(__runtime_loop_token_transfer_record)');
-      this.emit(new Uint8Array([0x03]), locationData);
+      if (node.methodName === 'transfer') {
+        node.args[1] = this.visit(node.args[1]);
+        this.emit(encodeInt(8n), locationData);
+        this.emit(Op.OP_NUM2BIN, locationData);
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(__runtime_loop_token_transfer_record)');
+      } else {
+        // NFT record: pushdata(category) || pushdata(lockingBytecode) || pushdata(commitment)
+        //   || capabilityByte || tokenContainerSlotByte.
+        // The slot is compiler-owned metadata used only to remember which container's NFT was moved. Keeping it
+        // in the authenticated record makes a conditional or zero-trip loop preserve every untouched NFT.
+        node.args[1] = this.visit(node.args[1]);
+        this.emitStandardPushdataFrame(locationData);
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(__runtime_loop_token_transfer_record)');
+        node.args[2] = this.visit(node.args[2]);
+        this.emit(Op.OP_1, locationData);
+        this.emit(Op.OP_NUM2BIN, locationData);
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(__runtime_loop_token_transfer_record)');
+        this.emit(encodeInt(BigInt(node.tokenContainerSlotIndex)), locationData);
+        this.pushToStack('(__runtime_loop_token_transfer_slot)');
+        this.emit(Op.OP_1, locationData);
+        this.emit(Op.OP_NUM2BIN, locationData);
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(__runtime_loop_token_transfer_record)');
+      }
+      this.emit(new Uint8Array([node.methodName === 'transferNft' ? 0x04 : 0x03]), locationData);
       this.pushToStack('(__runtime_loop_token_transfer_tag)');
       this.emit(Op.OP_SWAP, locationData);
       this.emit(Op.OP_CAT, locationData);
@@ -24905,6 +24956,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const baseName = '__internal__runtimeLoopEffectOutputBase';
     const countName = '__internal__runtimeLoopEffectCount';
     const totalName = '__internal__runtimeLoopTransferTotal';
+    const nftCountsName = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_NFT_TRANSFER_COUNTS;
     const ownerCategoryName = '__internal__runtimeLoopEventOwnerCategory';
 
     this.emitTrailingBlockBase(node.blockLayout?.blockSize ?? 1, loc, node.blockLayout?.trailingBase);
@@ -25082,8 +25134,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, loc);
     this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_3, loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc); // fungible-token transfer tag
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); // fungible-token transfer tag
 
     // Token record: pushdata(display-order category) || pushdata(lockingBytecode) || uint64le(amount).
     this.emitConsumeFirstScriptPush(loc);
@@ -25132,6 +25187,105 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_VERIFY, loc);
     this.emit(Op.OP_2DROP, loc);
     this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_4, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc); // NFT transfer tag
+
+    // NFT record: pushdata(display-order category) || pushdata(lockingBytecode)
+    //   || pushdata(commitment) || capabilityByte || tokenContainerSlotByte.
+    this.emitConsumeFirstScriptPush(loc);
+    this.emitConsumeFirstScriptPush(loc);
+    this.emitConsumeFirstScriptPush(loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_SPLIT, loc);
+    // [base, remaining, composite, index, category, lockingBytecode, commitment, capability, slot]
+
+    // Verify the output recipient and commitment without consuming the record fields needed below.
+    this.emit(Op.OP_5, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(Op.OP_4, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+
+    this.emit(Op.OP_5, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_3, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+
+    // OUTPUTTOKENCATEGORY is internal-order base category plus an optional capability byte. Construct that exact
+    // representation from the source arguments; capability 0 means an immutable NFT and therefore has no suffix.
+    this.emit(Op.OP_5, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_5, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_REVERSEBYTES, loc);
+    this.emit(Op.OP_3, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_2, loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_NUM2BIN, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+
+    this.emit(Op.OP_5, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_5, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.emit(encodeInt(1200n), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+
+    // Pack a 16-bit occurrence counter for each token-container slot above the low 64-bit BCH-total lane.
+    // Transaction size bounds every lane far below 65536; using counts rather than a static site bit preserves
+    // NFTs correctly for zero-trip and conditional loops.
+    this.emit(Op.OP_BIN2NUM, loc); // slot
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(BigInt(this.tokenContainerSlots.length)), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(encodeInt(16n), loc);
+    this.emit(Op.OP_MUL, loc);
+    this.emit(encodeInt(64n), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_LSHIFTNUM, loc);
+    this.emit(Op.OP_6, loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
 
@@ -25146,10 +25300,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_UNTIL, loc);
 
+    // The raw loop leaves [base, composite]. Split the low BCH-total lane while retaining the high per-container
+    // NFT occurrence lanes until token-container preservation has made its transfer/preserve decision.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(1n << 64n), loc);
+    this.emit(Op.OP_MOD, loc);
     this.stack = baseline;
-    this.pushToStack(totalName);
     this.pushToStack(baseName);
-    [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+    this.pushToStack(nftCountsName);
+    this.pushToStack(totalName);
     if (this.runtimeLoopBchTransferActive) {
       this.emitSatoshiContainerIdentity(loc);
       this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
@@ -25163,7 +25322,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_VERIFY, loc);
     }
     this.emitAccumulateRuntimeLoopEntryOutputs(countName, loc);
-    for (const name of [totalName, baseName, baseName, countName,
+    for (const name of [totalName, ...(!this.runtimeLoopNftTransferActive ? [nftCountsName] : []),
+      baseName, baseName, countName,
       ...(this.runtimeLoopEventActive ? [eventCount] : []),
       ...(this.runtimeLoopTransferActive ? [transferCount] : []), ownerCategoryName]) {
       const index = this.getStackIndex(name);
@@ -30851,6 +31011,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitTokenContainerPreservation(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     const isSelfdestruct = node.modifiers.includes(FunctionModifier.SELFDESTRUCT);
+    const runtimeNftCountsName = GenerateTargetTraversalWithLocation.RUNTIME_LOOP_NFT_TRANSFER_COUNTS;
+    const hasRuntimeNftCounts = this.stack.includes(runtimeNftCountsName);
+    const emitRuntimeNftOccurrence = (slot: number, untrackedDepth: number): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(runtimeNftCountsName) + untrackedDepth)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(encodeInt(1n << BigInt(64 + 16 * slot)), locationData);
+      this.emit(Op.OP_DIV, locationData);
+      this.emit(encodeInt(1n << 16n), locationData);
+      this.emit(Op.OP_MOD, locationData);
+      this.emit(Op.OP_0NOTEQUAL, locationData);
+    };
 
     // SECURITY: For non-selfdestruct functions, verify that containers with inputs also have outputs
     // This prevents draining attacks. Uses introspection instead of bitmask comparison.
@@ -31006,6 +31177,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(32n), locationData);
         this.emit(Op.OP_SPLIT, locationData);
         this.emit(Op.OP_DROP, locationData);
+      } else if (hasRuntimeNftCounts) {
+        emitRuntimeNftOccurrence(i, 1);
+        this.emit(Op.OP_IF, locationData);
+        this.emit(encodeInt(32n), locationData);
+        this.emit(Op.OP_SPLIT, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.emit(Op.OP_ENDIF, locationData);
       }
       // 1 untracked
 
@@ -31015,6 +31193,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(32n), locationData);
         this.emit(Op.OP_SPLIT, locationData);
         this.emit(Op.OP_DROP, locationData);
+      } else if (hasRuntimeNftCounts) {
+        emitRuntimeNftOccurrence(i, 2);
+        this.emit(Op.OP_IF, locationData);
+        this.emit(encodeInt(32n), locationData);
+        this.emit(Op.OP_SPLIT, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.emit(Op.OP_ENDIF, locationData);
       }
       // 2 untracked
 
@@ -31022,6 +31207,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // 0 untracked
 
       this.emit(Op.OP_ENDIF, locationData);
+    }
+
+    if (hasRuntimeNftCounts) {
+      const index = this.getStackIndex(runtimeNftCountsName);
+      this.emit(encodeInt(BigInt(index)), locationData);
+      this.emit(Op.OP_ROLL, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.removeFromStack(index);
+      this.runtimeLoopNftTransferActive = false;
     }
 
     // All transfer verification and container accounting is complete; discard the compiler-owned witnesses.

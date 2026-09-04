@@ -642,6 +642,11 @@ contract KernelDisjointSameCollectionRows() {
     for (int i = 5; bound <= i; i = i - 2) { this.values[15][i] = base + i; }
     require(true);
   }
+  function writeWhile(int n, int stride, int base) public {
+    int i = 1;
+    while (n > i) { this.values[16][i] = base + i; i = stride + i; }
+    require(true);
+  }
   function check(int group, int key, int expected) public {
     require(this.values[group][key] == expected);
   }
@@ -2902,6 +2907,14 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     for (const key of [5n, 3n, 1n]) {
       await expect(updated.call.check(15n, key, 1_300n + key).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    await expect(updated.call.writeWhile(6n, 2n, 1_400n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.batch([{ function: 'writeWhile', args: [6n, 2n, 1_500n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const key of [1n, 3n, 5n]) {
+      await expect(updated.call.check(16n, key, 1_500n + key).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
 

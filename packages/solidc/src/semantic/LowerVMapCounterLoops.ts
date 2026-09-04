@@ -168,6 +168,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       stepAssignments: AssignNode[];
       counterType: IntType;
       postTest: boolean;
+      sourceWhile: boolean;
       counterUpdate?: AssignNode;
       parent: BlockNode;
       pathConditions: Array<{ expression: ExpressionNode; negated: boolean }>;
@@ -548,10 +549,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             || (directionalStep < 0n && (comparisonOperator === BinaryOperator.GT
               || comparisonOperator === BinaryOperator.GE))
           );
-          const preTest = loop instanceof WhileNode && variable.isLoopVariable === true
+          const sourceWhile = loop instanceof WhileNode && variable.isLoopVariable !== true
+            && loop.forLoopUpdateCount === 0;
+          const preTest = loop instanceof WhileNode
             && variable.expression instanceof IntLiteralNode
-            && directionalStep !== undefined && directionalStep !== 0n && loop.forLoopUpdateCount === 1
-            && (runtimeStep !== undefined || progressionUpdate) && comparisonAdvances;
+            && directionalStep !== undefined && directionalStep !== 0n
+            && ((variable.isLoopVariable === true && loop.forLoopUpdateCount === 1) || sourceWhile)
+            && (runtimeStep !== undefined || progressionUpdate || (sourceWhile && literalStep !== undefined))
+            && comparisonAdvances;
           const postTest = loop instanceof DoWhileNode
             && variable.expression instanceof IntLiteralNode
             && directionalStep !== undefined && directionalStep !== 0n && comparisonAdvances;
@@ -608,6 +613,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             stepAssignments: resolvedRuntimeStep?.assignments ?? [],
             counterType: variable.type instanceof IntType ? variable.type : new IntType(true, 256),
             postTest,
+            sourceWhile,
             counterUpdate: update as AssignNode,
             parent: x,
             pathConditions,
@@ -1165,7 +1171,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const {
         logical, count, boundNames, boundDefinitions, boundAssignments, boundOffset, boundExpression,
         start, step, stepExpression, stepNames, stepDefinitions, stepAssignments,
-        counterType, postTest, counterUpdate,
+        counterType, postTest, sourceWhile, counterUpdate,
         pathConditions, pathSupported,
       } = canonical;
       const serial = apply ? this.serial++ : this.serial;
@@ -1789,11 +1795,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      const hasSourceWhileContinue = (x: Node): boolean => {
+        if (x instanceof ContinueNode) return true;
+        if (x !== block && (x instanceof WhileNode || x instanceof DoWhileNode)) return false;
+        for (const [key, value] of Object.entries(x)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction') continue;
+          if (value instanceof Node && hasSourceWhileContinue(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && hasSourceWhileContinue(item))) return true;
+        }
+        return false;
+      };
       if (keyed.length === 0 || !selectionConditionSupported
         || keyed.some((write) => hasObservableEffect(write))
         || conditionalRuntimeEmit
         || conditionalRuntimeTransfer
         || hasUnjournalledRepeatedEffect(block, runtimeEmitSet, runtimeTransferSet)
+        // Unlike a desugared for-loop, `continue` in a source while skips its syntactic tail update. It can
+        // therefore repeat a logical counter value and is not this canonical progression.
+        || (sourceWhile && hasSourceWhileContinue(block))
         // The permutation proof relies on visiting every physical rank exactly once. Apart from the canonical
         // post-test tail update, mutating the counter can shorten, extend, or repeat the loop. Mutating the
         // public bound anywhere in the function similarly disconnects the SDK-derived witness length from the

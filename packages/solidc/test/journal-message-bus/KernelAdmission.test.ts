@@ -2010,6 +2010,45 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('admits a canonical source while loop with mapping and typed-call replay', () => {
+    const artifact = compileString(`interface I { function r(int i); }
+      contract C(address dest) {
+        mapping(int => int) m;
+        function write(int n, int stride) public {
+          int i = 1;
+          while (n > i) { this.m[i] = i; I(dest).r(i); i = stride + i; }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const handler = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    expect(handler.sortedUpsertLoopInfo?.[0]).toMatchObject({
+      varyingArrayParam: expect.stringMatching(/_from_p1_step_runtime_p$/),
+      iterationStep: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+    });
+    expect(handler.externalCalls?.[0].argSources?.[0]).toMatchObject({
+      kind: 'loopIndex', initialValue: '1', stepExpression: { kind: 'source' },
+    });
+  });
+
+  it('refuses a source while continue which skips the canonical tail update', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n) public {
+        int i = 0;
+        while (i < n) { if (i == 1) { continue; } this.m[i] = i; i = i + 1; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('admits fallback that wraps a UDVT mapping key', () => {
     const artifact = compileString(`type TokenId is bytes32;
       contract C() {

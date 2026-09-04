@@ -4253,7 +4253,11 @@ function synthesizeMessageBusRoute(
   // published handler instead would agree just as well, but it lets a handler route synthesis REFUSED size the
   // route that was admitted, and buys no admission - `buildDecodeAndCall` maps over `eligible` only.
   const logicalValueMode = eligible.some((fn) => graphMsgValueHandlers.has(fn));
-  const isDelegateRoute = eligible.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
+  // The lazy proxy implementation pass marks source handlers as delegate after route synthesis. Its compile mode
+  // is therefore part of the ownership proof here: waiting for the modifier alone makes the generated atomic
+  // binder hash the executor input while the verifier NFT and settlement transcript bind the proxy/state owner.
+  const isDelegateRoute = compilerOptions.autoDelegate === true
+    || eligible.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
   const routeOwnerInputExpression = isDelegateRoute
     ? '__internal__proxyMasterIndex'
     : 'this.activeInputIndex';
@@ -5129,10 +5133,13 @@ function synthesizeMessageBusRoute(
           : logicalMsgSenderHandlers.has(fn)
             && !graphTailHandlers.has(fn) && !localEffectFrameHandlers.has(fn)
             ? ['__internal__msgSenderCategory'] : [];
-        const blockhashArgs = blockhashRowOffset
-          ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [];
-        const entryOnly = [...entryKeyArguments(fn), ...blockhashArgs, ...callerContextArgs,
-          ...ownerContextArgs];
+        const blockhashRowArgs = blockhashRowOffset ? [blockhashRowOffset] : [];
+        // SymbolTableTraversal appends the physical oracle-base witness after every route-owned clone context.
+        // Keep that exact hidden ABI order: placing it before the owner operand swaps the two values and makes
+        // blockhash read the graph owner index as a transaction UTXO coordinate.
+        const blockhashBaseArgs = blockhashRowOffset ? ['__internal__blockhashInputIndex'] : [];
+        const entryOnly = [...entryKeyArguments(fn), ...blockhashRowArgs, ...callerContextArgs,
+          ...ownerContextArgs, ...blockhashBaseArgs];
         const senderChecks = (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source === 'msgSender')
           .map((binding) => `require(${witnessName(binding)} == ${logicalCaller});`).join(' ');
@@ -5233,8 +5240,8 @@ function synthesizeMessageBusRoute(
                   ?? witnessByInput.get(i) ?? decodedName(i);
               })()),
       ];
-      const blockhashArgs = blockhashRowOffset
-        ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [];
+      const blockhashRowArgs = blockhashRowOffset ? [blockhashRowOffset] : [];
+      const blockhashBaseArgs = blockhashRowOffset ? ['__internal__blockhashInputIndex'] : [];
       const physicalEntryArgs = entryKeyArguments(fn);
       const selectedIsClone = invokeName !== fn.name;
       const callerContextArgs = selectedIsClone
@@ -5261,7 +5268,8 @@ function synthesizeMessageBusRoute(
       // semantics. The distinct arm retains its own physical entry slot. Later semantic metadata gates that slot
       // off when one of these equality arms is taken.
       const dispatchFor = (entryArgs: string[]): string => {
-        const callArgs = [...sourceCallArgs, ...entryArgs, ...blockhashArgs, ...callerContextArgs, ...ownerContextArgs].join(', ');
+        const callArgs = [...sourceCallArgs, ...entryArgs, ...blockhashRowArgs, ...callerContextArgs,
+          ...ownerContextArgs, ...blockhashBaseArgs].join(', ');
         if (!(fn === resourceShapedHandler && rowIndex !== undefined
           && entryShape && varyingEntry
           && entryShape.filter((entry) => entry.perRow
@@ -8447,6 +8455,7 @@ function compileResolvedAst(
     artifact.messageBus = {
       version: 1,
       selector: MESSAGE_BUS_SELECTOR_HEX,
+      routeInBytecode: true,
       convention: messageBusRouteFn?.messageBusDispatch === 'kernel-row-loop'
         ? 'kernel-row-loop' : 'legacy-unroll',
       available: true,
@@ -8622,6 +8631,7 @@ function compileResolvedAst(
       artifact.messageBus = {
         version: 1,
         selector: MESSAGE_BUS_SELECTOR_HEX,
+        routeInBytecode: false,
         convention: 'kernel-row-loop',
         available: false,
         maximumRows: MAX_MESSAGE_BUS_ROWS,

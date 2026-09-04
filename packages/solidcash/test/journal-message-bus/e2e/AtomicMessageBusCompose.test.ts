@@ -60,9 +60,13 @@ const vmRejects = (candidate: TransactionBuilder): boolean => {
   const transaction = candidate.buildLibauthTransaction();
   const sourceOutputs = generateLibauthSourceOutputs(candidate.inputs);
   const vm = createVirtualMachineBch2026ForProvider(candidate.provider);
-  return transaction.inputs.some((_input, inputIndex) => (
-    vm.debug({ inputIndex, sourceOutputs, transaction }) as Array<{ error?: unknown }>
-  ).some((state) => state.error !== undefined));
+  // `debug` retains every intermediate VM state. Large kernel routes can execute enough instructions for that
+  // trace collector to exhaust the JavaScript call stack even though ordinary consensus evaluation succeeds.
+  // This helper only asks for the final accept/reject verdict, so use the same bounded evaluation path as
+  // preflight instead of turning route size into a test-harness failure.
+  return transaction.inputs.some((_input, inputIndex) => vm.stateSuccess(
+    vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+  ) !== true);
 };
 
 const uint16 = (value: number): Uint8Array => Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
@@ -1498,7 +1502,9 @@ describe('messageBus.compose atomic transaction', () => {
     const offsets = sinkArtifact.messageBus!.route.blockLayout!.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar')
       .map((slot) => sinkBaseOffset + slot.offset);
-    expect(offsets).toHaveLength(2);
+    // Each possible kernel row owns an independent A/B pair. Sharing one pair across repeated recovery rows
+    // would let distinct arguments alias one computed result; this one-row envelope activates the first pair.
+    expect(offsets).toHaveLength(sinkArtifact.messageBus!.maximumRows * 2);
     expect(vmRejects(canonical)).toBe(false);
     const wrongRecreation = await composition.build();
     wrongRecreation.outputs[offsets[1]] = {

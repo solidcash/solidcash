@@ -14081,8 +14081,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const stateLayout = this.inner.stateLayout!;
 
     // Move ABI lookup FIRST so we can determine if full state is needed
-    const abiFunction = overrides?.abiFunction
-      ?? this.inner.artifact.abi.find((f) => f.name === functionName);
+    const physicalAbiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
+    const abiFunction = overrides?.abiFunction ?? physicalAbiFunction;
     if (abiFunction) {
       const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
       const externalTargetParams = new Set((abiFunction.externalCalls ?? []).flatMap((call) => {
@@ -23656,10 +23656,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // the mapped name, fall back to the ABI name so receive/fallback-only contracts still dispatch.
     const unlockName = functionName === '__fallback' ? 'fallback'
       : functionName === '__receive' ? 'receive' : functionName;
-    const unlockFn = overrides?.compilerRouteSelector && abiFunction
-      ? this.inner.createCompilerRouteUnlocker(abiFunction, overrides.compilerRouteSelector)
-      : ((this.inner.unlock as any)[unlockName] ?? (this.inner.unlock as any)[functionName]);
-    const stateInputUnlocker = unlockFn(...finalArgs);
+    let buildStateInputUnlocker: () => Unlocker;
+    if (overrides?.compilerRouteSelector && abiFunction && physicalAbiFunction
+      && physicalAbiFunction !== abiFunction) {
+      // A compiler route executed through a proxy has two distinct ABIs: the route ABI determines the complete
+      // participant layout, while the physical proxy ABI determines the master input's unlocking stack. Encode
+      // the latter from its visible call arguments and resolve its hidden geometry witnesses by name. Feeding the
+      // route frame to the proxy places the proxy selector in the delegate-index slot and makes OP_UTXO interpret
+      // those four selector bytes as a (usually negative) transaction index.
+      let visibleIndex = 0;
+      const physicalArgs = physicalAbiFunction.inputs.map((input) => {
+        if (!input.name.startsWith('__internal__')) return args[visibleIndex++];
+        if (input.name === '__internal__delegateInputIndex') {
+          const delegateGroupIdx = lowLevelCallUtxoGroups.findIndex((group) => group.callMode === 'delegatecall');
+          const delegateAbsoluteBase = (overrides.blockBase ?? 0) + lowLevelCallInputBase;
+          return BigInt(delegateGroupIdx < 0 ? delegateAbsoluteBase
+            : delegateAbsoluteBase + lowLevelCallUtxoGroups.slice(0, delegateGroupIdx)
+              .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0));
+        }
+        throw new Error(
+          `Internal error: cannot resolve physical route witness '${input.name}' for function '${functionName}'.`,
+        );
+      });
+      const physicalUnlockFn = (this.inner.unlock as any)[unlockName]
+        ?? (this.inner.unlock as any)[functionName];
+      buildStateInputUnlocker = () => physicalUnlockFn(...physicalArgs);
+    } else {
+      const unlockFn = overrides?.compilerRouteSelector && abiFunction
+        ? this.inner.createCompilerRouteUnlocker(abiFunction, overrides.compilerRouteSelector)
+        : ((this.inner.unlock as any)[unlockName] ?? (this.inner.unlock as any)[functionName]);
+      buildStateInputUnlocker = () => unlockFn(...finalArgs);
+    }
+    let stateInputUnlocker = buildStateInputUnlocker();
     const blockBase = overrides?.blockBase ?? 0;
     const dataNftUnlockers = filteredDataNftUtxos.map(
       () => createDataNftUnlocker(this.inner, blockBase, this.categoryId),
@@ -25598,7 +25626,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         finalArgs[position.argIndex] = next;
         changed = true;
       }
-      if (changed) builder._setMasterUnlocker(unlockFn(...finalArgs));
+      if (changed) {
+        stateInputUnlocker = buildStateInputUnlocker();
+        builder._setMasterUnlocker(stateInputUnlocker);
+      }
       return changed;
     };
     refreshTopLevelIdentityAnchorWitnesses();
@@ -26022,6 +26053,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       setGraphValueChunkOutputBase(
         (overrides?.blockBase ?? 0) + builder.getValueChunkOutputBase(),
       );
+      if (graphOwnsValueChunkWitness && abiFunction) {
+        const topLevelValueChunkBase = abiFunction.inputs.findIndex(
+          (input) => input.name === '__internal__valueChunkOutputBase',
+        );
+        if (topLevelValueChunkBase >= 0) {
+          // During the isolated derivation probe, -1 deliberately selects the route-relative continuation band.
+          // Once the complete participant geometry is known, publish the absolute coordinate on the physical
+          // route input too. The atomic convergence pass discovers ownership from this compiler-declared witness;
+          // previously only nested external groups were refreshed, leaving a root route's computed chunks at an
+          // intermediate locking bytecode which its own final covenant rejected.
+          finalArgs[topLevelValueChunkBase] = BigInt(
+            (overrides?.blockBase ?? 0) + builder.getValueChunkOutputBase(),
+          );
+          stateInputUnlocker = buildStateInputUnlocker();
+          builder._setMasterUnlocker(stateInputUnlocker);
+        }
+      }
       timing('derivation-complete');
       // Tag the builder with derivation result and a re-derive callback.
       // The callback enables re-derivation after transfers/overrides are applied.

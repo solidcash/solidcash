@@ -625,7 +625,7 @@ function graftDefaultProxy(impl: Artifact): Artifact {
     // that verifier capability on the grafted deployment artifact so genesis mints a verifier branded to the
     // proxy category; the implementation's own verifier is branded to its executor category and cannot
     // authenticate a proxy-owned atomic participant.
-    ...(impl.messageBus && { messageBus: impl.messageBus }),
+    ...(impl.messageBus && { messageBus: { ...impl.messageBus, routeInBytecode: false } }),
   } as Artifact;
 }
 

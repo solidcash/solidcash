@@ -4,7 +4,7 @@ import type { FunctionArgument } from '../Argument.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { generateLibauthSourceOutputs } from '../utils.js';
+import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { preflightMessageBusBlockAssembly } from './preflight.js';
 
 export interface ComputedValueChunkConvergence {
@@ -89,8 +89,12 @@ export function convergeMessageBusComputedValueChunkOutputs(
         beforeOperation: (unknownState) => {
           const state = unknownState as AuthenticationProgramStateCommon;
           const opcode = state.instructions[state.ip]?.opcode;
+          const nextOpcode = state.instructions[state.ip + 1]?.opcode;
+          const tightEquality = nextOpcode === Op.OP_EQUALVERIFY
+            || (nextOpcode === Op.OP_EQUAL
+              && state.instructions[state.ip + 2]?.opcode === Op.OP_VERIFY);
           if ((opcode !== Op.OP_OUTPUTBYTECODE && opcode !== Op.OP_OUTPUTTOKENCOMMITMENT)
-            || state.instructions[state.ip + 1]?.opcode !== Op.OP_EQUALVERIFY
+            || !tightEquality
             || state.controlStack.some((frame) => frame === false)
             || state.stack.length < 2) return;
           let outputIndex: number;
@@ -118,7 +122,9 @@ export function convergeMessageBusComputedValueChunkOutputs(
     let changed = false;
     for (const [outputIndex, expected] of lockingBytecodeProposals) {
       const output = builder.outputs[outputIndex];
-      if (!output || !(output.to instanceof Uint8Array) || binToHex(output.to) === binToHex(expected)) continue;
+      if (!output) continue;
+      const current = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+      if (binToHex(current) === binToHex(expected)) continue;
       output.to = expected;
       changedOutputs.add(outputIndex);
       repairs += 1;

@@ -154,7 +154,8 @@ export class Contract<
     // `available` is additive metadata. Older artifacts with `messageBus` omitted the field but still contain the
     // executable SCB1 selector, so only an explicit false means there is no hidden route in the redeem script.
     const soleFnSharesCompilerRoute = artifact.messageBus !== undefined
-      && artifact.messageBus.available !== false;
+      && artifact.messageBus.available !== false
+      && artifact.messageBus.routeInBytecode !== false;
     if (soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute) {
       // @ts-ignore TODO: see if we can use generics to make TypeScript happy
       this.unlock[soleFn.name] = this.createUnlocker(soleFn);
@@ -648,7 +649,8 @@ export class Contract<
     const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
       && (!this.artifact.isLibrary || this.artifact.delegateOnly === true);
     const soleFnSharesCompilerRoute = this.artifact.messageBus !== undefined
-      && this.artifact.messageBus.available !== false;
+      && this.artifact.messageBus.available !== false
+      && this.artifact.messageBus.routeInBytecode !== false;
     const selector = soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute
       ? undefined
       : abiFunction.selector ? hexToBin(abiFunction.selector) : undefined;

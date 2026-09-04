@@ -947,6 +947,8 @@ export interface Artifact {
   messageBus?: {
     version: 1;
     selector: '53434231';
+    /** False when this artifact carries verifier capability metadata for another co-spent executable route. */
+    routeInBytecode?: boolean;
     /**
      * Resolved dispatch of the published route. `kernel-row-loop` only when compiled with
      * `messageBusKernel: true` and every dispatched handler is kernel-shaped.

@@ -1942,6 +1942,25 @@ describe('required kernel admission', () => {
     );
   });
 
+  it.each([
+    ['ascending for', 'for (int i = 1; i <= bound; i = i + 2) { this.m[i] = i; }', 'bound_p1'],
+    ['descending for', 'for (int i = 5; i >= bound; i = i - 2) { this.m[i] = i; }', 'bound_n1'],
+    ['ascending do-while', `int i = 1;
+      do { this.m[i] = i; i = i + 2; } while (i <= bound);`, 'bound_p1'],
+    ['descending do-while', `int i = 5;
+      do { this.m[i] = i; i = i - 2; } while (i >= bound);`, 'bound_n1'],
+  ])('admits an inclusive %s counter domain', (_label, loop, encodedBound) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int bound) public { ${loop} require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.inputs).toContainEqual(
+      expect.objectContaining({ name: expect.stringContaining(encodedBound) }),
+    );
+  });
+
   it('admits a do-while counter-keyed mapping loop beside a typed call', () => {
     const artifact = compileString(`interface I { function r(int i); }
       contract C() {

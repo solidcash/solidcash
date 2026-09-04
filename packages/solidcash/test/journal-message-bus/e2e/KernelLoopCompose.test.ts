@@ -634,6 +634,14 @@ contract KernelDisjointSameCollectionRows() {
     }
     require(true);
   }
+  function writeInclusive(int bound, int base) public {
+    for (int i = 1; i <= bound; i = i + 2) { this.values[14][i] = base + i; }
+    require(true);
+  }
+  function writeInclusiveDown(int bound, int base) public {
+    for (int i = 5; i >= bound; i = i - 2) { this.values[15][i] = base + i; }
+    require(true);
+  }
   function check(int group, int key, int expected) public {
     require(this.values[group][key] == expected);
   }
@@ -2877,6 +2885,23 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     for (const key of [9n, 6n, 3n]) {
       await expect(updated.call.check(13n, key, 900n + key).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+
+    await expect(updated.call.writeInclusive(5n, 1_000n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.batch([{ function: 'writeInclusive', args: [5n, 1_100n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const key of [1n, 3n, 5n]) {
+      await expect(updated.call.check(14n, key, 1_100n + key).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    await expect(updated.call.writeInclusiveDown(1n, 1_200n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.batch([{ function: 'writeInclusiveDown', args: [1n, 1_300n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const key of [5n, 3n, 1n]) {
+      await expect(updated.call.check(15n, key, 1_300n + key).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
 

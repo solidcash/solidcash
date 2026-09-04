@@ -524,18 +524,40 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const directionalStep = literalStep ?? (runtimeStep
             ? (updateOperator === BinaryOperator.PLUS ? 1n : -1n) : undefined);
           const progressionUpdate = literalStep !== undefined && literalStep === variable.loopStepValue;
+          const comparisonAdvances = directionalStep !== undefined && (
+            (directionalStep > 0n && (loop.condition.operator === BinaryOperator.LT
+              || loop.condition.operator === BinaryOperator.LE))
+            || (directionalStep < 0n && (loop.condition.operator === BinaryOperator.GT
+              || loop.condition.operator === BinaryOperator.GE))
+          );
           const preTest = loop instanceof WhileNode && variable.isLoopVariable === true
             && variable.expression instanceof IntLiteralNode
             && directionalStep !== undefined && directionalStep !== 0n && loop.forLoopUpdateCount === 1
-            && (runtimeStep !== undefined || progressionUpdate)
-            && ((directionalStep > 0n && loop.condition.operator === BinaryOperator.LT)
-              || (directionalStep < 0n && loop.condition.operator === BinaryOperator.GT));
+            && (runtimeStep !== undefined || progressionUpdate) && comparisonAdvances;
           const postTest = loop instanceof DoWhileNode
             && variable.expression instanceof IntLiteralNode
-            && directionalStep !== undefined && directionalStep !== 0n
-            && ((directionalStep > 0n && loop.condition.operator === BinaryOperator.LT)
-              || (directionalStep < 0n && loop.condition.operator === BinaryOperator.GT));
+            && directionalStep !== undefined && directionalStep !== 0n && comparisonAdvances;
           if (!preTest && !postTest) continue;
+          // The rest of the lowering proves an exclusive half-open progression. Integer `i <= bound` is exactly
+          // `i < bound + 1`, and descending `i >= bound` is `i > bound - 1`. Normalize the replayed bound once so
+          // the SDK, permutation proof, event worklist, and source loop all describe the same inclusive endpoint.
+          const inclusiveAdjustment = loop.condition.operator === BinaryOperator.LE ? 1n
+            : loop.condition.operator === BinaryOperator.GE ? -1n : 0n;
+          if (inclusiveAdjustment !== 0n) {
+            if (boundResolution.metadataExpression) {
+              const adjusted = new BinaryOpNode(
+                boundResolution.metadataExpression,
+                inclusiveAdjustment > 0n ? BinaryOperator.PLUS : BinaryOperator.MINUS,
+                new IntLiteralNode(1n),
+              );
+              adjusted.location = loop.condition.location;
+              boundResolution = { ...boundResolution, metadataExpression: adjusted };
+            } else {
+              boundResolution = {
+                ...boundResolution, offset: boundResolution.offset + inclusiveAdjustment,
+              };
+            }
+          }
           const assignedBoundNames = new Set(boundResolution.assignments.map((assignment) =>
             assignment.identifier.name));
           const boundDefinitions = [...new Set([

@@ -2126,7 +2126,9 @@ describe('kernel composite counter-key settlement', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.call.write(0n).send()).resolves.toBeDefined();
     await expect(contract.call.write(3n).send()).resolves.toBeDefined();
+    await expect(contract.call.write(0n).send()).resolves.toBeDefined();
     await expect(contract.call.check(1n).send()).resolves.toBeDefined();
   }, 180_000);
 });

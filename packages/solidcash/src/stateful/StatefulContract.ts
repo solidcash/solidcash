@@ -12370,6 +12370,31 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             commitmentProgress += orderedCommits.length;
             latestEntryCommits = orderedCommits;
+
+            // Cache lowering represents an invariant mapping entry as one conditional flush. The SDK must not
+            // manufacture an absent entry merely because it seeded that flush's candidate during a probe: when
+            // the dirty arm is not reached, the covenant never pins an entry commitment. Conversely, an existing
+            // input still needs its exact preservation output. Settle only after the trace reached this phase;
+            // pinned entries have compiler-proven values and deliberately bypass trace derivation.
+            const observedSlots = new Set([...commitMap.keys()].map((outIdx) =>
+              slotOrder[outIdx - entryOutputBase]));
+            const conditionalSlots = new Set(slotOrder.filter((slotIndex): slotIndex is number =>
+              slotIndex !== undefined && stb.isEntrySlotConditional(slotIndex)));
+            for (const slotIndex of conditionalSlots) {
+              if (observedSlots.has(slotIndex) || stb.isEntrySlotPinned(slotIndex)) continue;
+              const commitment = stb.getExistingEntryCommitment(slotIndex);
+              if (commitment) {
+                stb.setEntryRawCommitment(slotIndex, commitment);
+                stb.pinEntrySlot(slotIndex);
+              } else {
+                stb.deleteEntry(slotIndex);
+                const collection = entryAccessAt({ entryAccesses }, slotIndex)?.collection;
+                // An inactive INSERT has no rewritten predecessor either. The batch probe may have seeded that
+                // trailing predecessor solely to reach the conditional flush; once the flush proves absent, remove
+                // the seed so it cannot mint a phantom collection entry.
+                if (collection) stb.setLoopEntryCommitments(collection, []);
+              }
+            }
           }
 
           // Dynamic-storage chunk commitments. The data-NFT field holds uint32 A$len; from it we know
@@ -23770,7 +23795,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const addLoopCollection = (name: string): void => {
       if (!orderedLoopCollections.includes(name)) orderedLoopCollections.push(name);
     };
-    for (const batch of abiFunction?.sortedBatchInfo ?? []) addLoopCollection(batch.collection);
     for (const name of entryLoopWrites) addLoopCollection(name);
     for (const name of sortedLoopCommitments.keys()) addLoopCollection(name);
     for (const name of runtimeLoopDerivedCounts.keys()) addLoopCollection(name);
@@ -24213,9 +24237,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (!entry?.exists) builder.deleteEntry(slotIndex);
     }
 
+    const conditionalEntrySlots = new Set((entryAbiFunction?.blockLayout?.slots ?? [])
+      .filter((slot) => slot.kind === 'entry' && slot.conditional === true)
+      .map((slot) => slot.slotIndex)
+      .filter((slotIndex): slotIndex is number => slotIndex !== undefined));
     for (const [slotIndex, commitment] of batchTargetPlaceholders) {
       builder.setEntryRawCommitment(slotIndex, commitment);
-      if (exactBatchTargetSlots.has(slotIndex)) builder.pinEntrySlot(slotIndex);
+      // A cache flush's target is exact only on its dirty arm. Leave a conditional target probe-derivable so
+      // the no-op arm can be recognized by the absence of its covenant output pin.
+      if (exactBatchTargetSlots.has(slotIndex) && !conditionalEntrySlots.has(slotIndex)) {
+        builder.pinEntrySlot(slotIndex);
+      }
     }
 
     // A kernel route publishes the union of every handler's entry effects, while this concrete envelope has a

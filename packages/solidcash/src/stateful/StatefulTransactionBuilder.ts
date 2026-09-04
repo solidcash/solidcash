@@ -8488,6 +8488,12 @@ export class StatefulTransactionBuilder {
     ) ?? false;
   }
 
+  /** Exact pre-state commitment for an occupied entry slot, if this call co-spends one. */
+  getExistingEntryCommitment(slotIndex: number): string | undefined {
+    const entry = this.entryNfts.find((candidate) => candidate.slotIndex === slotIndex);
+    return entry?.exists ? entry.utxo?.token?.nft?.commitment : undefined;
+  }
+
   /**
    * Add a transfer output (plain BCH, no tokens).
    */

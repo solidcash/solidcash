@@ -493,9 +493,10 @@ export class Contract<
         ? parsedFunctionBody(this.artifact.functionBodies[selectorHex])
         : bytecode;
       const signingBytecodeForArgument = (inputName: string): Uint8Array => {
-        const match = /^__message_bus_sig_(\d+)_\d+(?:_r\d+|_rows)$/.exec(inputName);
+        const match = /^__message_bus_sig_(\d+)_\d+(?:_\d+)?(?:_r\d+|_rows)$/.exec(inputName);
         if (!match) return signingBytecode;
-        const handler = this.artifact.messageBus?.handlers[Number(match[1])];
+        // Witness handler ordinals index the route's eligible dispatch set, not the complete diagnostic list.
+        const handler = this.artifact.messageBus?.handlers.filter((candidate) => candidate.eligible)[Number(match[1])];
         const handlerBody = handler?.signatureBytecode;
         if (!handlerBody) {
           // A signature parameter may only be forwarded by this participant;

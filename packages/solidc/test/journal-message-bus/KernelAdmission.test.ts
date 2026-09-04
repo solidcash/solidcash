@@ -116,6 +116,51 @@ describe('required kernel admission', () => {
     }));
   });
 
+  it.each([
+    ['a struct', 'Auth auth', 'sig[]'],
+    ['an array of structs', 'Auth[] auth', 'sig[][]'],
+  ])('binds a transaction signature nested inside %s to a detached route witness', (_label, input, witnessType) => {
+    const artifact = compileString(`contract C() {
+      struct Auth { sig signature; pubkey key; }
+      function signed(${input}) public { require(true); }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed')).toMatchObject({
+      eligible: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_rows', type: witnessType,
+    }));
+  });
+
+  it('publishes one detached witness per nested signature field', () => {
+    const artifact = compileString(`contract C() {
+      struct Auth { sig first; sig second; pubkey key; }
+      function signed(Auth auth) public { require(true); }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.route.inputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: '__message_bus_sig_0_0_0_rows', type: 'sig[]' }),
+      expect.objectContaining({ name: '__message_bus_sig_0_0_1_rows', type: 'sig[]' }),
+    ]));
+  });
+
+  it('preserves fixed array dimensions in a nested signature witness', () => {
+    const artifact = compileString(`contract C() {
+      struct Auth { sig signature; pubkey key; }
+      function signed(Auth[2] auth) public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: '__message_bus_sig_0_0_rows', type: 'sig[2][]',
+    }));
+  });
+
   it('admits a transaction signature check with a code-local signature', () => {
     const artifact = compileString(`contract C(pubkey owner) {
       function denied() public { require(checkSig(sig(hex"00"), owner)); }
@@ -229,7 +274,7 @@ describe('required kernel admission', () => {
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control')?.eligible).toBe(true);
   });
 
   it('admits an expression-keyed mapping write', () => {
@@ -1919,7 +1964,7 @@ describe('required kernel admission', () => {
     expect(handler?.runtimeLoopEvents?.[0].conditions).toEqual([{
       kind: 'source', source: { kind: 'forward', paramIndex: 1 },
     }]);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control')?.eligible).toBe(true);
   });
 
   it('orders an inlined internal-helper event with the runtime event stream', () => {

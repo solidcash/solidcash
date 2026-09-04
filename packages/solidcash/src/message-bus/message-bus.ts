@@ -104,7 +104,108 @@ const signedValue = (value: bigint): Uint8Array => {
   return concat(Uint8Array.of(value < 0n ? 1 : 0), uintLe(magnitude, 8));
 };
 
-const isTransactionSignatureType = (type: string): boolean => /^sig(?:\[\])*$/.test(type);
+type TransactionSignaturePathSegment =
+  | { kind: 'field'; name: string; index: number }
+  | { kind: 'array'; bound?: number };
+
+interface TransactionSignatureLeaf {
+  path: readonly TransactionSignaturePathSegment[];
+  type: string;
+}
+
+const transactionSignatureLeaves = (
+  type: string,
+  structs: readonly StructDefinitionInfo[] | undefined,
+  path: readonly TransactionSignaturePathSegment[] = [],
+  activeStructs = new Set<string>(),
+): TransactionSignatureLeaf[] => {
+  if (type === 'sig') {
+    let witnessType = 'sig';
+    for (const segment of [...path].reverse()) {
+      if (segment.kind === 'array') witnessType += `[${segment.bound ?? ''}]`;
+    }
+    return [{ path, type: witnessType }];
+  }
+  const array = parseArrayTypeString(type);
+  if (array) {
+    return transactionSignatureLeaves(array.elementType, structs, [...path, {
+      kind: 'array', ...(array.bound !== undefined && { bound: array.bound }),
+    }], activeStructs);
+  }
+  const struct = structs?.find((candidate) => candidate.name === type);
+  if (!struct || activeStructs.has(type)) return [];
+  activeStructs.add(type);
+  const leaves = struct.fields.flatMap((field, index) => transactionSignatureLeaves(
+    field.type, structs, [...path, { kind: 'field', name: field.name, index }], activeStructs,
+  ));
+  activeStructs.delete(type);
+  return leaves;
+};
+
+const isEntireTransactionSignatureType = (type: string): boolean => {
+  if (type === 'sig') return true;
+  const array = parseArrayTypeString(type);
+  return array !== undefined && isEntireTransactionSignatureType(array.elementType);
+};
+
+const signatureLeafValue = (
+  value: FunctionArgument,
+  path: readonly TransactionSignaturePathSegment[],
+  depth = 0,
+): SignatureTemplateArgument => {
+  if (depth === path.length) {
+    if (!isSignatureTemplateArgumentForType(value, 'sig')) {
+      throw new Error('transaction signature leaf requires SignatureTemplate');
+    }
+    return value;
+  }
+  const segment = path[depth];
+  if (segment.kind === 'array') {
+    if (!Array.isArray(value)) throw new Error('transaction signature array path requires an array argument');
+    return value.map((element) => signatureLeafValue(element, path, depth + 1));
+  }
+  if (typeof value !== 'object' || value === null || value instanceof Uint8Array) {
+    throw new Error(`transaction signature field '${segment.name}' requires a struct argument`);
+  }
+  const nested = Array.isArray(value)
+    ? value[segment.index]
+    : (value as Record<string, FunctionArgument>)[segment.name];
+  if (nested === undefined) throw new Error(`transaction signature field '${segment.name}' is missing`);
+  return signatureLeafValue(nested, path, depth + 1);
+};
+
+const stripTransactionSignatures = (
+  value: FunctionArgument,
+  type: string,
+  structs: readonly StructDefinitionInfo[] | undefined,
+): FunctionArgument => {
+  if (type === 'sig') {
+    if (!isSignatureTemplateArgumentForType(value, type)) {
+      throw new Error('transaction signature leaf requires SignatureTemplate');
+    }
+    return new Uint8Array();
+  }
+  const array = parseArrayTypeString(type);
+  if (array) {
+    if (!Array.isArray(value)) throw new Error(`transaction signature composite '${type}' requires an array`);
+    return value.map((element) =>
+      stripTransactionSignatures(element, array.elementType, structs)) as ConstructorArgument[];
+  }
+  const struct = structs?.find((candidate) => candidate.name === type);
+  if (!struct) return value;
+  if (Array.isArray(value)) {
+    return value.map((field, index) =>
+      stripTransactionSignatures(field, struct.fields[index].type, structs)) as ConstructorArgument[];
+  }
+  if (typeof value !== 'object' || value === null || value instanceof Uint8Array) {
+    throw new Error(`transaction signature composite '${type}' requires a struct argument`);
+  }
+  return Object.fromEntries(struct.fields.map((field) => {
+    const fieldValue = (value as Record<string, FunctionArgument>)[field.name];
+    if (fieldValue === undefined) throw new Error(`struct field '${field.name}' is missing`);
+    return [field.name, stripTransactionSignatures(fieldValue, field.type, structs)];
+  }));
+};
 
 const inactiveSignatureRouteWitness = (type: string): FunctionArgument => {
   let value: ConstructorArgument = new Uint8Array();
@@ -315,22 +416,39 @@ export function encodeMessageBatch(
         `Incorrect number of arguments for batched '${handler.name}': expected ${handler.inputs.length}, got ${args.length}`,
       );
     }
-    const handlerIndex = capability.handlers.indexOf(handler);
-    const encoded = args.map((arg, index) =>
-      encodeFunctionArgument(arg, handler.inputs[index].type, structs));
+    // Compiler witness ordinals index only dispatchable handlers; refused diagnostic siblings are not branches
+    // in the generated route and therefore must not shift these names.
+    const handlerIndex = capability.handlers.filter((candidate) => candidate.eligible).indexOf(handler);
+    const signatureLeavesByInput = handler.inputs.map((input) =>
+      transactionSignatureLeaves(input.type, structs));
+    const encoded = args.map((arg, index) => {
+      const inputType = handler.inputs[index].type;
+      const leaves = signatureLeavesByInput[index];
+      if (leaves.length === 0 || isEntireTransactionSignatureType(inputType)) {
+        return encodeFunctionArgument(arg, inputType, structs);
+      }
+      try {
+        return encodeFunctionArgument(stripTransactionSignatures(arg, inputType, structs), inputType, structs);
+      } catch (error) {
+        throw new Error(
+          `Handler '${handler.name}' transaction signature argument ${index} requires SignatureTemplate: `
+          + `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    });
     const rowEncoded: Uint8Array[] = [];
     encoded.forEach((argument, index) => {
       const inputType = handler.inputs[index].type;
-      const signatureArgument = isTransactionSignatureType(inputType)
-        && isSignatureTemplateArgumentForType(argument, inputType);
-      if (isTransactionSignatureType(inputType)) {
+      const leaves = signatureLeavesByInput[index];
+      if (leaves.length > 0) {
         // A transaction-bound batch signature cannot be committed inside rowArgs: doing so would make the
-        // signature commit to a manifest which already commits to that signature. Keep it as a positional route
-        // witness, and require a template so it can be finalized only after composition fixes the transaction.
-        if (!signatureArgument) {
-          throw new Error(
-            `Handler '${handler.name}' transaction signature argument ${index} requires SignatureTemplate`,
-          );
+        // signature commit to a manifest which already commits to that signature. Composite arguments retain an
+        // ABI-valid copy with empty signature leaves; the real leaves are detached below and restored by the route.
+        if (!isEntireTransactionSignatureType(inputType)) {
+          if (!(argument instanceof Uint8Array)) {
+            throw new Error(`Handler '${handler.name}' contains an unsupported signature composite`);
+          }
+          rowEncoded.push(argument);
         }
       } else if (!(argument instanceof Uint8Array)) {
         throw new Error(`Handler '${handler.name}' contains an unsupported signature-like argument`);
@@ -338,17 +456,31 @@ export function encodeMessageBatch(
         rowEncoded.push(argument);
         return;
       }
-      if (capability.convention === 'kernel-row-loop' && signatureArgument) {
-        const name = `__message_bus_sig_${handlerIndex}_${index}_rows`;
-        const aligned = signatureWitnessValues.get(name);
-        const values = Array.isArray(aligned)
-          ? [...aligned] as SignatureTemplateArgument[]
-          : new Array<SignatureTemplateArgument>(invocations.length);
-        values[rowIndex] = argument as SignatureTemplateArgument;
-        signatureWitnessValues.set(name, values);
-      } else {
-        signatureWitnessValues.set(`__message_bus_sig_${handlerIndex}_${index}_r${rowIndex}`, argument);
-      }
+      leaves.forEach((leaf, leafIndex) => {
+        let signatureArgument: SignatureTemplateArgument;
+        try {
+          signatureArgument = signatureLeafValue(args[index], leaf.path);
+        } catch (error) {
+          throw new Error(
+            `Handler '${handler.name}' transaction signature argument ${index} requires SignatureTemplate: `
+            + `${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        if (capability.convention === 'kernel-row-loop') {
+          const name = `__message_bus_sig_${handlerIndex}_${index}`
+            + `${leaves.length > 1 ? `_${leafIndex}` : ''}_rows`;
+          const aligned = signatureWitnessValues.get(name);
+          const values = Array.isArray(aligned)
+            ? [...aligned] as SignatureTemplateArgument[]
+            : new Array<SignatureTemplateArgument>(invocations.length);
+          values[rowIndex] = signatureArgument;
+          signatureWitnessValues.set(name, values);
+        } else {
+          signatureWitnessValues.set(
+            `__message_bus_sig_${handlerIndex}_${index}_r${rowIndex}`, signatureArgument,
+          );
+        }
+      });
     });
     for (const binding of handler.batchKeyWitnesses ?? []) {
       if (binding.swappable) {
@@ -428,7 +560,7 @@ export function encodeMessageBatch(
     }
     const argsBlob = encodeMessageBusArguments(
       rowEncoded,
-      handler.inputs.filter((input) => !isTransactionSignatureType(input.type))
+      handler.inputs.filter((input) => !isEntireTransactionSignatureType(input.type))
         .map((input) => input.type),
       structs,
     );
@@ -493,7 +625,7 @@ export function encodeMessageBatch(
       const witness = keyWitnessValues.get(input.name);
       if (witness) return witness.value;
       const signatureWitness = signatureWitnessValues.get(input.name);
-      if (/^__message_bus_sig_\d+_\d+_rows$/.test(input.name)) {
+      if (/^__message_bus_sig_\d+_\d+(?:_\d+)?_rows$/.test(input.name)) {
         if (!Array.isArray(signatureWitness) || signatureWitness.length === 0) {
           // The handler is not selected in this envelope, so the route never indexes this array. Supply one
           // already-encoded NULLFAIL signature value without requiring an unrelated signer.

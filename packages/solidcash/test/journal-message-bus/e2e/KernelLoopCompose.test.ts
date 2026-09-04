@@ -852,6 +852,78 @@ describe('kernel scalar-signature rows', () => {
   }, 180_000);
 });
 
+describe('kernel composite-signature rows', () => {
+  it('detaches and reconstructs nested struct and struct-array signature leaves', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelCompositeSigned() {
+      struct Auth { sig signature; pubkey key; }
+      struct Pair { Auth first; Auth second; }
+      int total;
+      function kill() selfdestruct { require(true); }
+      function add(Pair authorization, Auth[] extras, int amount) public {
+        require(checkSig(authorization.first.signature, authorization.first.key));
+        require(checkSig(authorization.second.signature, authorization.second.key));
+        require(extras.length == 1);
+        require(checkSig(extras[0].signature, extras[0].key));
+        this.total = this.total + amount;
+        require(true);
+      }
+      function check(int expected) public { require(this.total == expected); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'kill'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'add'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.route.inputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: '__message_bus_sig_0_0_0_rows', type: 'sig[]' }),
+      expect.objectContaining({ name: '__message_bus_sig_0_0_1_rows', type: 'sig[]' }),
+      expect.objectContaining({ name: '__message_bus_sig_0_1_rows', type: 'sig[][]' }),
+    ]));
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const auth = (key: Uint8Array, privateKey: Uint8Array): {
+      signature: SignatureTemplate; key: Uint8Array;
+    } => ({
+      signature: new SignatureTemplate(privateKey), key,
+    });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    expect(() => contract.batch([{
+      function: 'add',
+      args: [{
+        first: { signature: new Uint8Array(65), key: alicePub },
+        second: auth(bobPub, bobPriv),
+      }, [auth(alicePub, alicePriv)], 1n],
+    }])).toThrow(/transaction signature argument 0 requires SignatureTemplate/);
+    const call = contract.batch([
+      {
+        function: 'add',
+        args: [{ first: auth(alicePub, alicePriv), second: auth(bobPub, bobPriv) }, [auth(alicePub, alicePriv)], 2n],
+      },
+      {
+        function: 'add',
+        args: [{ first: auth(alicePub, alicePriv), second: auth(bobPub, bobPriv) }, [auth(bobPub, bobPriv)], 3n],
+      },
+    ]);
+    const fee = await createBareP2pkhFeeFunder(provider);
+    call.addInput(fee.utxo, fee.unlocker);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).check(5n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 180_000);
+});
+
 describe('kernel signature-array rows', () => {
   it('signs each row of a nested route witness against the invoked handler body', async () => {
     const provider = createTestProvider();

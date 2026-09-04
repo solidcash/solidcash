@@ -1801,6 +1801,67 @@ export type MessageBusStaticRejectionCode = NonNullable<
 NonNullable<Artifact['messageBus']>['handlers'][number]['rejectionCode']
 >;
 
+type TransactionSignaturePathSegment =
+  | { kind: 'field'; name: string }
+  | { kind: 'array'; elementType: string; bound?: number };
+
+interface TransactionSignatureLeaf {
+  path: TransactionSignaturePathSegment[];
+  /** Per-invocation witness type. The route adds one dynamic row dimension. */
+  type: string;
+}
+
+/**
+ * Describe every transaction-signature leaf which can be detached from a value-copy argument.
+ *
+ * Struct fields and arrays have an assignable source representation, so the route can decode an ABI-valid
+ * signature-free copy and rebuild these leaves from witnesses. Tuples do not: tuple members are projections,
+ * not assignable lvalues, and therefore continue to fail closed if one ever reaches a public parameter.
+ */
+function transactionSignatureLeaves(
+  type: Type,
+  path: TransactionSignaturePathSegment[] = [],
+  activeStructs = new Set<StructType>(),
+): TransactionSignatureLeaf[] | undefined {
+  if (type === PrimitiveType.SIG) {
+    let witnessType = 'sig';
+    for (const segment of [...path].reverse()) {
+      if (segment.kind === 'array') witnessType += `[${segment.bound ?? ''}]`;
+    }
+    return [{ path, type: witnessType }];
+  }
+  if (type instanceof ArrayType) {
+    return transactionSignatureLeaves(type.elementType, [...path, {
+      kind: 'array', elementType: type.elementType.toString(),
+      ...(type.bound !== undefined && { bound: type.bound }),
+    }], activeStructs);
+  }
+  if (type instanceof StructType) {
+    if (activeStructs.has(type)) return undefined;
+    activeStructs.add(type);
+    const leaves: TransactionSignatureLeaf[] = [];
+    for (const field of type.fields) {
+      const nested = transactionSignatureLeaves(
+        field.type, [...path, { kind: 'field', name: field.name }], activeStructs,
+      );
+      if (nested === undefined) {
+        activeStructs.delete(type);
+        return undefined;
+      }
+      leaves.push(...nested);
+    }
+    activeStructs.delete(type);
+    return leaves;
+  }
+  if (type instanceof TupleType) {
+    return type.elements.some((element) => transactionSignatureLeaves(element)?.length) ? undefined : [];
+  }
+  return [];
+}
+
+const isEntireTransactionSignatureType = (type: Type): boolean => type === PrimitiveType.SIG
+  || (type instanceof ArrayType && isEntireTransactionSignatureType(type.elementType));
+
 /** Map a legacy admission reason onto the frozen kernel catalog. Unknown leftovers become KERNEL_LAYOUT. */
 function kernelAdmissionReason(reason: string): string {
   if (reason.startsWith('KERNEL_')) return reason;
@@ -3470,11 +3531,13 @@ function synthesizeMessageBusRoute(
         });
       }
     }
-    const transactionSignatureParameterTypes = fn.parameters
-      .map((parameter) => parameter.type.toString())
-      .filter((type) => /^sig(?:\[\])*$/.test(type));
+    const transactionSignatureParameters = fn.parameters.map((parameter) => ({
+      parameter,
+      leaves: transactionSignatureLeaves(parameter.type),
+    })).filter(({ leaves }) => leaves === undefined || leaves.length > 0);
     const kernelSignatureParametersRepresentable = compilerOptions.messageBusKernel === true
-      && transactionSignatureParameterTypes.length > 0;
+      && transactionSignatureParameters.length > 0
+      && transactionSignatureParameters.every(({ leaves }) => leaves !== undefined && leaves.length > 0);
     const maximumInputBytes = compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
     if (!reason && minimumResultBytes > maximumInputBytes) {
       // The batch wrapper concatenates `abi.encode` of every return value into one result. Cap that static result
@@ -3564,7 +3627,7 @@ function synthesizeMessageBusRoute(
     // binds finite sig-array parameter shapes as aligned route witnesses with one extra row dimension. A
     // literal or locally computed signature is already part of executable handler code, not the envelope, so
     // it has no circular dependency and its original checkSig remains authoritative.
-    else if (!reason && transactionSignatureParameterTypes.length > 0
+    else if (!reason && transactionSignatureParameters.length > 0
       && !kernelSignatureParametersRepresentable) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
@@ -4103,9 +4166,10 @@ function synthesizeMessageBusRoute(
   }
   const graphBlockhashReadWidth = Math.max(0,
     ...[...graphBlockhashReads.values()].map((reads) => reads.length));
-  const isTransactionSignatureType = (type: string): boolean => /^sig(?:\[\])*$/.test(type);
-  const signatureMode = eligible.some((fn) =>
-    fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
+  const signatureLeavesByHandler = new Map(eligible.map((fn) => [fn, fn.parameters.map((parameter) =>
+    transactionSignatureLeaves(parameter.type) ?? [])] as const));
+  const signatureMode = [...signatureLeavesByHandler.values()].some((parameters) =>
+    parameters.some((leaves) => leaves.length > 0));
   const kernelSignatureMode = compilerOptions.messageBusKernel === true && signatureMode;
   // Kernel dispatch: one for-row loop, no AST unroll. Omitted/true selects it; false keeps today's clone/unroll.
   // Resource-shaped per-row frames stay on the legacy unroll. Transaction-signature parameters use aligned route
@@ -4138,8 +4202,9 @@ function synthesizeMessageBusRoute(
     handlerIndex: number, parameterIndex: number, row: number,
   ): string => `__message_bus_sig_${handlerIndex}_${parameterIndex}_r${row}`;
   const kernelSignatureWitnessName = (
-    handlerIndex: number, parameterIndex: number,
-  ): string => `__message_bus_sig_${handlerIndex}_${parameterIndex}_rows`;
+    handlerIndex: number, parameterIndex: number, leafIndex = 0, leafCount = 1,
+  ): string => `__message_bus_sig_${handlerIndex}_${parameterIndex}`
+    + `${leafCount > 1 ? `_${leafIndex}` : ''}_rows`;
   // X199. THE ROUTE'S ROW FORMAT IS DECIDED OVER THE HANDLERS THE ROUTE CAN DISPATCH.
   //
   // `graphMsgValueHandlers` is filled during the FIRST per-handler pass and never revised, while `eligible`
@@ -4957,6 +5022,7 @@ function synthesizeMessageBusRoute(
   ): string =>
     eligible.map((fn, handlerIndex) => {
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
+      const parameterSignatureLeaves = signatureLeavesByHandler.get(fn)!;
       const invokeName = fn === resourceShapedHandler
         ? resourceHandlerInvokeName!
         : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
@@ -5038,7 +5104,7 @@ function synthesizeMessageBusRoute(
       }
       const decodedParameters = fn.parameters
         .map((parameter, index) => ({ parameter, index }))
-        .filter(({ parameter }) => !isTransactionSignatureType(parameter.type.toString())
+        .filter(({ parameter }) => !isEntireTransactionSignatureType(parameter.type)
         && !parameter.name.startsWith('__internal__'));
       const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
       const decodedExpression = (parameterIndex: number): string => {
@@ -5050,6 +5116,27 @@ function synthesizeMessageBusRoute(
         `__message_bus_arg_${handlerIndex}_${parameterIndex}`;
       const declarations = decodedParameters.map(({ parameter, index }) =>
         `${parameter.type.toString()} ${decodedName(index)} = ${decodedExpression(index)}`);
+      const signatureReconstruction = parameterSignatureLeaves.flatMap((leaves, parameterIndex) => {
+        if (isEntireTransactionSignatureType(fn.parameters[parameterIndex].type)) return [];
+        return leaves.flatMap((leaf, leafIndex) => {
+          const witness = kernelSignatureWitnessName(handlerIndex, parameterIndex, leafIndex, leaves.length);
+          let arrayDepth = 0;
+          const rebuild = (
+            pathIndex: number, lhs: string, rhs: string,
+          ): string => {
+            if (pathIndex === leaf.path.length) return `${lhs} = ${rhs};`;
+            const segment = leaf.path[pathIndex];
+            if (segment.kind === 'field') return rebuild(pathIndex + 1, `${lhs}.${segment.name}`, rhs);
+            const depth = arrayDepth++;
+            const index = `__message_bus_sig_index_${handlerIndex}_${parameterIndex}_${leafIndex}_${depth}`;
+            const element = `__message_bus_sig_element_${handlerIndex}_${parameterIndex}_${leafIndex}_${depth}`;
+            return `for (int ${index} = 0; ${index} < ${lhs}.length; ${index} = ${index} + 1) { `
+              + `${segment.elementType} ${element} = ${lhs}[${index}]; `
+              + `${rebuild(pathIndex + 1, element, `${rhs}[${index}]`)} ${lhs}[${index}] = ${element}; }`;
+          };
+          return rebuild(0, decodedName(parameterIndex), `${witness}[${rowExpression}]`);
+        });
+      });
       const logicalCaller = graphExecutionContext ? '__message_bus_graph_caller' : 'msg.sender';
       const swappableBindings = (fn.messageBusKeyWitnesses ?? []).filter((binding) => binding.swappable);
       const swappableShared = swappableBindings.find((binding) => !binding.perRow);
@@ -5080,9 +5167,9 @@ function synthesizeMessageBusRoute(
         : []);
       const sourceCallArgs = [
         ...fn.parameters.map((parameter, i) =>
-          isTransactionSignatureType(parameter.type.toString())
+          isEntireTransactionSignatureType(parameter.type)
             ? (kernelSignatureMode
-              ? `${kernelSignatureWitnessName(handlerIndex, i)}[${rowExpression}]`
+              ? `${kernelSignatureWitnessName(handlerIndex, i, 0, parameterSignatureLeaves[i].length)}[${rowExpression}]`
               : signatureWitnessName(handlerIndex, i, rowIndex ?? 0))
             : parameter.name === '__internal__externalOutStateInputBase'
               ? (() => {
@@ -5128,7 +5215,7 @@ function synthesizeMessageBusRoute(
       const outStateBoundaryChecks = '';
       const decode = declarations.length === 0
         ? 'require(rowArgs.length == 0);'
-        : `${declarations.join('; ')};`;
+        : `${declarations.join('; ')}; ${signatureReconstruction.join(' ')}`;
       // Canonicalize the measured two-row, one-shared/one-varying resource shape before the collection journal
       // sees the callsite. A varying key which aliases the shared key or an earlier row is passed as that earlier
       // IDENTIFIER, so LowerCollectionJournalHelpers uses one cache and preserves Solidity's sequential lvalue
@@ -5242,11 +5329,13 @@ function synthesizeMessageBusRoute(
     });
   const routeSignatureParameters = eligible.flatMap((fn, handlerIndex) =>
     fn.parameters.flatMap((parameter, parameterIndex) => {
-      if (!isTransactionSignatureType(parameter.type.toString())) return [];
+      const leaves = signatureLeavesByHandler.get(fn)![parameterIndex];
+      if (leaves.length === 0) return [];
       if (kernelSignatureMode) {
-        const witnessType = `${parameter.type.toString()}[]`;
-        return [`${witnessType} ${kernelSignatureWitnessName(handlerIndex, parameterIndex)}`];
+        return leaves.map((leaf, leafIndex) =>
+          `${leaf.type}[] ${kernelSignatureWitnessName(handlerIndex, parameterIndex, leafIndex, leaves.length)}`);
       }
+      if (!isEntireTransactionSignatureType(parameter.type)) return [];
       return Array.from({ length: routeMaximumRows }, (_unused, row) =>
         `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`);
     }));
@@ -8348,7 +8437,7 @@ function compileResolvedAst(
           type: parameter.type.toString().replace(/address payable/g, 'address'),
         })),
         ...(fn.parameters.some((parameter) =>
-          /^sig(?:\[\])*$/.test(parameter.type.toString()))
+          (transactionSignatureLeaves(parameter.type)?.length ?? 0) > 0)
           && fn.functionId !== undefined && fn.functionSelector !== undefined
           && traversal.invokedFunctionBytecodes.has(fn.functionId)
           && artifact.functionBodies?.[binToHex(fn.functionSelector)] !== undefined && {

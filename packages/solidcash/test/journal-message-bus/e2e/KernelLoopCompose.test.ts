@@ -464,6 +464,7 @@ contract KernelCounterStructRmw() {
     for (int i = 0; i < count; i = i + 1) {
       Pair pair = this.pairs[i];
       pair.left = pair.left + 1;
+      pair.right = pair.right + 2;
       this.pairs[i] = pair;
     }
     require(true);
@@ -2048,8 +2049,8 @@ describe('kernel composite counter-key settlement', () => {
       expect(vm.stateSuccess(state), `input ${inputIndex}`).toBe(true);
     }
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.check(0n, 11n, 20n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(1n, 31n, 40n).send()).resolves.toBeDefined();
-    await expect(contract.call.check(2n, 1n, 0n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 11n, 22n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 31n, 42n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(2n, 1n, 2n).send()).resolves.toBeDefined();
   }, 180_000);
 });

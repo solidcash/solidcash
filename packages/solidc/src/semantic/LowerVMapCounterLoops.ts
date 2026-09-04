@@ -2472,7 +2472,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || (write instanceof MappingAssignNode && (write.arrayIndex !== undefined
             || write.arrayPush || write.arrayPop)) || !collection
           || (!(valueType instanceof IntType) && !(valueType instanceof FixedType)
-            && valueType !== PrimitiveType.BOOL && !rawScalar)) return true;
+            && valueType !== PrimitiveType.BOOL && !(valueType instanceof StructType) && !rawScalar)) return true;
         generalOldEntryWrites.add(write);
         return false;
       });

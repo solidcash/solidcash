@@ -16309,7 +16309,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       let perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
       let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
       if (info.valueRuntimeExpression) {
-        valsArr = keysArr.map(() => 0n);
+        // The first VM probe only needs a correctly typed placeholder; trace derivation replaces its commitment
+        // with the value computed by the row. A numeric zero is not encodable as a struct/array and made direct
+        // structural RMWs fail before the verifier could derive their real outputs.
+        valsArr = keysArr.map(() => getDefaultStateValue(collection.valueType, stateLayout.structs));
         perKey = true;
         runtimeExpressionLoopCollections.add(info.collection);
       }
@@ -16323,19 +16326,46 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (witnessIndex < 0) {
           throw new Error(`vmap runtime expression loop ${info.collection}: missing old-value witness ABI input`);
         }
-        const oldValues = keysArr.map((key) => {
+        const oldValues = await Promise.all(keysArr.map(async (key) => {
           const slot = slotForKey(key);
           const entry = list.find(slot);
           if (collection.valueType === 'bool') return entry
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) !== 0n
             : false;
+          if (stateLayout.structs?.some((struct) => struct.name === collection.valueType)) {
+            if (!entry) return getDefaultStateValue(collection.valueType, stateLayout.structs);
+            const tail = entry.value;
+            if (tail.length < 4) {
+              throw new Error(`vmap runtime struct value for ${info.collection} has an invalid tail`);
+            }
+            const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
+            let raw: Uint8Array;
+            if (len <= 60) {
+              raw = tail.slice(4, 4 + len);
+            } else {
+              const root = tail.slice(4, 36);
+              const headData = tail.slice(36, 64);
+              const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
+              const chunks = (await this.inner.provider.getUtxos(chunkAddr))
+                .filter((utxo) => utxo.token?.category === this.categoryId
+                  && !!utxo.token?.nft?.commitment && utxo.token.nft.commitment.length > 0)
+                .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))
+                .sort((left, right) => left.chunkIndex - right.chunkIndex);
+              raw = joinValueChunks(headData, chunks, len);
+              if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
+                throw new Error('vmap runtime struct value chunks do not match the authenticated root');
+              }
+              valueChunkGc.push({ collection: info.collection, slotHex: binToHex(slot), oldDigestHex: binToHex(root) });
+            }
+            return decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value;
+          }
           if (!/^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)) {
             return entry?.value ?? getDefaultStateValue(collection.valueType, stateLayout.structs);
           }
           return entry
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint
             : 0n;
-        });
+        }));
         replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
       }
       // Per-key RAWBYTES value `m[k[i]] = vs[i]` (vs a bytes[]/array-of-array param): each vs[i] is committed as its own

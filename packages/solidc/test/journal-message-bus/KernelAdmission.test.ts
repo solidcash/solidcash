@@ -374,6 +374,28 @@ describe('required kernel admission', () => {
     },
   );
 
+  it('journals a direct structural same-entry expression', () => {
+    const artifact = compileString(`contract C() {
+      struct Pair { int left; int right; }
+      mapping(int => Pair) pairs;
+      function update(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.pairs[i] = Pair(this.pairs[i].left + 1, this.pairs[i].right + 2);
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'update');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'update')?.inputs).toContainEqual(
+      expect.objectContaining({ name: expect.stringMatching(/^__internal__vmapCounterOld_/), type: 'Pair[]' }),
+    );
+    expect(artifact.abi.find((candidate) => candidate.name === 'update')?.sortedUpsertLoopInfo).toContainEqual(
+      expect.objectContaining({ collection: 'pairs', valueRuntimeExpression: true }),
+    );
+  });
+
   it('does not reorder an effectful helper used as a counter-loop mapping value', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

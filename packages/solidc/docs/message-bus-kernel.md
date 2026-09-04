@@ -406,7 +406,10 @@ additional witness. Fixed-point witnesses carry their canonical scaled integer, 
 typed `bool[]` witness and the insertion default `false`. Raw scalar witnesses are compared byte-for-byte rather
 than normalized as Script numbers; fixed bytes and public keys use their fixed-width zero value, while addresses
 and data signatures use the empty-byte default.
-Structural mapping values and expressions that read another mapping entry remain frozen.
+Direct same-entry struct expressions are authenticated through a typed old-value vector, including the exact
+zero-valued struct for an absent key; the VM-derived output commitment therefore supports ordinary constructor and
+field expressions without requiring the source to spell a temporary read/rebuild/write sequence. Expressions that
+read another mapping entry remain frozen because they need an independent read-only runtime journal.
 An immutable, direct loop-local value definition is expanded into the mapping value before permutation, so
 `int value = i + 10; m[i] = value` has the same representation as the direct expression.
 

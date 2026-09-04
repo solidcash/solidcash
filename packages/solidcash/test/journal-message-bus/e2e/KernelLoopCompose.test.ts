@@ -790,6 +790,22 @@ contract KernelCounterStructRmw() {
   }
 }`;
 
+const COUNTER_DIRECT_STRUCT_RMW_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelCounterDirectStructRmw() {
+  struct Pair { int left; int right; }
+  mapping(int => Pair) pairs;
+  function seed(int key, int left, int right) public {
+    this.pairs[key] = Pair(left, right);
+    require(true);
+  }
+  function update(int count) public {
+    for (int i = 0; i < count; i = i + 1) {
+      this.pairs[i] = Pair(this.pairs[i].left + 1, this.pairs[i].right + 2);
+    }
+    require(true);
+  }
+}`;
+
 const COUNTER_FIXED_MAPPING_READ_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelCounterFixedMappingRead() {
   mapping(int => int) source;
@@ -3735,6 +3751,36 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(0n, 11n, 22n).send()).resolves.toBeDefined();
     await expect(contract.call.check(1n, 31n, 42n).send()).resolves.toBeDefined();
     await expect(contract.call.check(2n, 1n, 2n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('authenticates direct structural expressions for present and absent counter keys', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(COUNTER_DIRECT_STRUCT_RMW_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'update'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.call.seed(0n, 10n, 20n).send();
+
+    const call = contract.batch([{ function: 'update', args: [2n] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      const state = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+      expect(vm.stateSuccess(state), `input ${inputIndex}`).toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const entries = await contract.getEntries('pairs');
+    const valueAt = (key: bigint): unknown => entries.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+    expect(valueAt(0n)).toEqual({ left: 11n, right: 22n });
+    expect(valueAt(1n)).toEqual({ left: 1n, right: 2n });
   }, 180_000);
 
   it('keeps a fixed mapping read authenticated beside counter-keyed inserts', async () => {

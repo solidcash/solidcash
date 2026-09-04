@@ -916,6 +916,19 @@ contract KernelDominatingStatePredicate() {
     }
     require(true);
   }
+  function switchLocalWrite(int count, int base) public {
+    int next = 0;
+    bool take = false;
+    for (int i = 0; i < count; i = i + 1) {
+      switch (i % 3) {
+        case 0: next = base + i; take = true; break;
+        case 1: next = base + 10 + i; take = false; break;
+        default: next = base + 20 + i; take = true; break;
+      }
+      if (take) { this.values[i] = next; }
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.values[key] == expected); }
 }`;
 
@@ -3674,12 +3687,14 @@ describe('kernel composite counter-key settlement', () => {
     const provider = createTestProvider();
     const artifact = compileString(DOMINATING_STATE_PREDICATE_SOURCE, KERNEL);
     expect(artifact.messageBus?.handlers.filter((handler) =>
-      ['eventWrite', 'conditionalWrite', 'conditionalStateWrite', 'switchStateWrite'].includes(handler.name)))
+      ['eventWrite', 'conditionalWrite', 'conditionalStateWrite', 'switchStateWrite', 'switchLocalWrite']
+        .includes(handler.name)))
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ name: 'eventWrite', eligible: true }),
         expect.objectContaining({ name: 'conditionalWrite', eligible: true }),
         expect.objectContaining({ name: 'conditionalStateWrite', eligible: true }),
         expect.objectContaining({ name: 'switchStateWrite', eligible: true }),
+        expect.objectContaining({ name: 'switchLocalWrite', eligible: true }),
       ]));
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -3714,6 +3729,12 @@ describe('kernel composite counter-key settlement', () => {
     }]).send()).resolves.toBeDefined();
     await expect(contract.call.check(0n, 40n).send()).resolves.toBeDefined();
     await expect(contract.call.check(1n, 41n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{
+      function: 'switchLocalWrite', args: [3n, 50n],
+    }]).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 50n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 41n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(2n, 72n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles a toggled loop-carried write predicate in logical source order', async () => {

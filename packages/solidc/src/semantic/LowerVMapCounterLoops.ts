@@ -1546,24 +1546,77 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             result = ternary;
             continue;
           }
+          if (candidate instanceof SwitchNode && candidate.defaultCase) {
+            const defaultValue = joinedAssignmentValue(candidate.defaultCase, name);
+            if (!defaultValue) return undefined;
+            let merged: ExpressionNode = defaultValue;
+            for (const switchCase of [...candidate.cases].reverse()) {
+              const caseValue = joinedAssignmentValue(switchCase.body, name);
+              if (!caseValue) return undefined;
+              const condition = new BinaryOpNode(
+                cloneNode(candidate.expression), BinaryOperator.EQ, cloneNode(switchCase.value),
+              );
+              condition.location = switchCase.location ?? candidate.location;
+              const ternary = new TernaryOpNode(condition, caseValue, merged);
+              ternary.location = candidate.location;
+              ternary.type = caseValue.type ?? merged.type;
+              merged = ternary;
+            }
+            result = merged;
+            continue;
+          }
           return undefined;
         }
         return result;
       };
       for (const [index, statement] of (block.statements ?? []).entries()) {
-        if (!(statement instanceof BranchNode) || !statement.elseBlock) continue;
-        const ifNames = assignmentNamesIn(statement.ifBlock);
-        const elseNames = assignmentNamesIn(statement.elseBlock);
-        for (const name of ifNames) {
-          if (!elseNames.has(name)) continue;
-          const ifValue = joinedAssignmentValue(statement.ifBlock, name);
-          const elseValue = joinedAssignmentValue(statement.elseBlock, name);
-          if (!ifValue || !elseValue) continue;
-          const expression = new TernaryOpNode(
-            cloneNode(statement.condition), ifValue, elseValue,
-          );
-          expression.location = statement.location;
-          expression.type = ifValue.type ?? elseValue.type;
+        let names: Set<string>;
+        const valueForName = (name: string): ExpressionNode | undefined => {
+          if (statement instanceof BranchNode && statement.elseBlock) {
+            const ifValue = joinedAssignmentValue(statement.ifBlock, name);
+            const elseValue = joinedAssignmentValue(statement.elseBlock, name);
+            if (!ifValue || !elseValue) return undefined;
+            const expression = new TernaryOpNode(
+              cloneNode(statement.condition), ifValue, elseValue,
+            );
+            expression.location = statement.location;
+            expression.type = ifValue.type ?? elseValue.type;
+            return expression;
+          }
+          if (statement instanceof SwitchNode && statement.defaultCase) {
+            const defaultValue = joinedAssignmentValue(statement.defaultCase, name);
+            if (!defaultValue) return undefined;
+            let merged: ExpressionNode = defaultValue;
+            for (const switchCase of [...statement.cases].reverse()) {
+              const caseValue = joinedAssignmentValue(switchCase.body, name);
+              if (!caseValue) return undefined;
+              const condition = new BinaryOpNode(
+                cloneNode(statement.expression), BinaryOperator.EQ, cloneNode(switchCase.value),
+              );
+              condition.location = switchCase.location ?? statement.location;
+              const expression = new TernaryOpNode(condition, caseValue, merged);
+              expression.location = statement.location;
+              expression.type = caseValue.type ?? merged.type;
+              merged = expression;
+            }
+            return merged;
+          }
+          return undefined;
+        };
+        if (statement instanceof BranchNode && statement.elseBlock) {
+          names = assignmentNamesIn(statement.ifBlock);
+          const elseNames = assignmentNamesIn(statement.elseBlock);
+          names = new Set([...names].filter((name) => elseNames.has(name)));
+        } else if (statement instanceof SwitchNode && statement.defaultCase) {
+          names = assignmentNamesIn(statement.defaultCase);
+          for (const switchCase of statement.cases) {
+            const caseNames = assignmentNamesIn(switchCase.body);
+            names = new Set([...names].filter((name) => caseNames.has(name)));
+          }
+        } else continue;
+        for (const name of names) {
+          const expression = valueForName(name);
+          if (!expression) continue;
           const identifier = new IdentifierNode(name);
           identifier.location = statement.location;
           identifier.type = expression.type;

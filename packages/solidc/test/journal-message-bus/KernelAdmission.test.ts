@@ -1646,6 +1646,30 @@ describe('required kernel admission', () => {
     expect(info?.valueRuntimeExpression).toBe(true);
   });
 
+  it('replays exhaustive switch local assignments as mapping values and guards', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, int base) public {
+        int next = 0;
+        bool take = false;
+        for (int i = 0; i < n; i = i + 1) {
+          switch (i % 3) {
+            case 0: next = base + i; take = true; break;
+            case 1: next = base + 10 + i; take = false; break;
+            default: next = base + 20 + i; take = true; break;
+          }
+          if (take) this.m[i] = next;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const info = artifact.abi.find((candidate) => candidate.name === 'write')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.iterationCondition).toMatchObject({ kind: 'ternary' });
+    expect(info?.valueRuntimeExpression).toBe(true);
+  });
+
   it.each([
     ['an incomplete conditional local assignment', `
       if (i % 2 == 0) { next = base + i; }

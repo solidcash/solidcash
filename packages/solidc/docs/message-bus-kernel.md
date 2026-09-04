@@ -378,10 +378,10 @@ Loop-carried guards with straight-line, unconditional, replayable assignments ar
 when every observed use has the same source-order phase. For example, `if (take) m[i] = i; take = i % 3 == 0`
 publishes `take` as the initializer at rank zero and the previous counter's expression thereafter; a use between
 assignments publishes the latest expression evaluated at the current counter. An exhaustive top-level `if`/`else`
-assignment to the same local is collapsed to its exact ternary expression for subsequent guards and mapping values
-when both arms are independently replayable. Exhaustive nested branches are reduced recursively. Incomplete joins,
-self-dependent arms, recurrences other than the supported boolean toggle, and values observed at different phases
-remain fenced.
+or `switch` assignment to the same local is collapsed to its exact ternary expression for subsequent guards and
+mapping values when every arm is independently replayable. Exhaustive nested branches and switches are reduced
+recursively. Incomplete joins, self-dependent arms, recurrences other than the supported boolean toggle, and values
+observed at different phases remain fenced.
 Sibling reads of a mutated mapping, foreign counter-keyed reads, and
 write values derived through mutable/loop-carried locals or scalar state mutated by the loop remain
 `KERNEL_UNBOUNDED_KEY`. Integer same-entry expressions are supported generally: for example,

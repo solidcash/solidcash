@@ -336,11 +336,12 @@ with the same complete key expression and selected iteration set share one authe
 with different invariant components (for example `a[left][i]` plus `b[right][i]`) receive independent permutations
 so each follows its own full composite-key slot order. Different selected iteration subsets across collections also
 receive independent permutations and cursors. Two key shapes in the same physical collection still need a wider
-route-frame journal and remain fenced. A scalar
-mapping
-scalar entry whose complete key tuple consists of stable public parameters, literals, `msg.sender`, `tx.origin`,
+route-frame journal and remain fenced. A scalar mapping entry whose complete key tuple consists of stable public
+parameters, literals, `msg.sender`, `tx.origin`,
 or pure expressions over public arguments may coexist: it is read once,
 mutated as a local in source order, and flushed through one authenticated fixed-entry transition after the loop.
+Straight-line scalar assignments and finite `if`/`else` assignment joins before that loop are replayed as immutable
+snapshots, so the authenticated key is the value at the source write boundary rather than the function-entry value.
 A stable,
 serializable per-iteration write guard (including an immutable loop-local alias) publishes the exact selected
 logical subset: the SDK sorts only selected keys, while the covenant proves range, uniqueness, predicate
@@ -395,9 +396,10 @@ separate permutations and separate accumulated physical segments.
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays are admitted when their bounded
-length and every reached element write can be replayed from dominating public/local expressions. Conditional,
-partially initialized, dynamically resized, or otherwise non-replayable arrays stay `KERNEL_UNBOUNDED_KEY`
-without aborting sibling handlers.
+length and every reached element write can be replayed from dominating public/local expressions. Finite conditional
+element writes and conditional scalar dependencies become ternary recipes; unwritten elements retain their typed
+default. Dynamically resized or escaped arrays, nested-control assignments, and writes whose index/value cannot be
+replayed stay `KERNEL_UNBOUNDED_KEY` without aborting sibling handlers.
 
 The legacy convention is intentionally unchanged: it does not acquire this runtime event family and continues to
 refuse the corresponding bus handler with its historical route-generation diagnostic. The same function remains

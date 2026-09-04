@@ -690,7 +690,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('refuses a local key-array write after a non-dominating parameter reassignment', () => {
+  it('replays a local key-array write after a finite conditional parameter reassignment', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function denied(int n, int key, bool take) public {
@@ -702,10 +702,10 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo?.[0]
+      .varyingKeyExpressions).toEqual([expect.objectContaining({ kind: 'ternary' })]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
@@ -1201,6 +1201,25 @@ describe('required kernel admission', () => {
           this.keyed[i] = i;
           this.totals[owner] = i;
           this.totals[owner] = i + 100;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.entryAccesses
+      ?.filter((entry) => entry.collection === 'totals')).toHaveLength(1);
+  });
+
+  it('snapshots an invariant loop key after a finite conditional reassignment', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) keyed;
+      mapping(int => int) totals;
+      function write(int n, int owner, bool take) public {
+        if (take) { owner = owner + 5; } else { owner = owner - 2; }
+        for (int i = 0; i < n; i = i + 1) {
+          this.keyed[i] = i;
+          this.totals[owner] = i;
         }
         require(true);
       }

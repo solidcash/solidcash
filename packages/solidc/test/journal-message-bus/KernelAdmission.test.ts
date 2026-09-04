@@ -575,13 +575,37 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('keeps a loop-mutated local key array off the kernel route', () => {
+  it('derives a straight-line same-iteration local array key', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function denied(int n) public {
         int[] xs = new int[](n);
         for (int i = 0; i < n; i = i + 1) {
           xs[i] = i + 1;
+          this.slots[xs[i]] = 1;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({
+        collection: 'slots',
+        varyingKeyExpressions: [expect.objectContaining({ kind: 'ternary' })],
+      })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps a conditionally initialized same-iteration local array key off the kernel route', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function denied(int n, bool take) public {
+        int[] xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) {
+          if (take) { xs[i] = i + 1; }
           this.slots[xs[i]] = 1;
         }
         require(true);

@@ -144,7 +144,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
     // the generated proof statements on the second pass.
     if (node.parameters.some((parameter) => parameter.name.startsWith(PREFIX))) return node;
-    this.normalizeImmutableDefaultArrayKeys(node);
     type CanonicalLoop = {
       logical: string;
       count: string;
@@ -421,6 +420,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
     };
     findCanonicalLoops(node.body);
+    this.normalizeImmutableDefaultArrayKeys(
+      node,
+      new Set([...canonicalLoops.values()].map((loop) => loop.logical)),
+    );
     const isWrite = (s: Node): s is ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
     | MappingFieldAssignNode =>
       s instanceof ArrayAssignNode || s instanceof ArrayDeleteNode
@@ -903,7 +906,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         breakExitsLoop = true,
       ): void => {
         if (x instanceof WhileNode || x instanceof DoWhileNode) return;
-        if (isWrite(x)) { writes.push(x); writePaths.set(x, condition); return; }
+        if (isWrite(x)) {
+          // Local memory-array writes can feed a symbolic key recipe, but they do not own an authenticated
+          // collection journal. Only state collections participate in physical row settlement.
+          if (this.collections.has(x.name)) {
+            writes.push(x);
+            writePaths.set(x, condition);
+          }
+          return;
+        }
         if ((x instanceof BreakNode && breakExitsLoop) || x instanceof ReturnNode) {
           breakPaths.push(condition); return;
         }
@@ -2433,11 +2444,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
    * Represent a fresh local array at a mapping-key read as its default value plus the straight-line writes which
    * dominate that read. `new T[](n); xs[p] = v; m[xs[i]] = ...` becomes the replayable key
    * `i == p ? v : default(T)`. The original `xs[i]` read remains in a generated equality requirement, preserving
-   * bounds checks and authenticating the symbolic form against the source memory value. Writes inside a loop,
-   * writes crossing control-flow joins, and escaped arrays stay untouched and therefore fail closed at ordinary
+   * bounds checks and authenticating the symbolic form against the source memory value. Straight-line writes in
+   * a canonical loop are available to later statements in that same iteration; writes crossing control-flow
+   * joins, prior-iteration dependencies, and escaped arrays stay untouched and therefore fail closed at ordinary
    * runtime-key admission. This is type-generic and independent of any contract schema.
    */
-  private normalizeImmutableDefaultArrayKeys(node: FunctionDefinitionNode): void {
+  private normalizeImmutableDefaultArrayKeys(
+    node: FunctionDefinitionNode,
+    canonicalCounters: ReadonlySet<string> = new Set(),
+  ): void {
     if (!node.body) return;
     type ArrayWrite = { index: ExpressionNode; value: ExpressionNode };
     type ArrayPlan = { defaultValue: ExpressionNode; writes: ArrayWrite[] };
@@ -2478,7 +2493,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const containsReassignedName = (root: Node): boolean => {
       let found = false;
       walk(root, (candidate) => {
-        if (candidate instanceof IdentifierNode && reassignedNames.has(candidate.name)) found = true;
+        if (candidate instanceof IdentifierNode && reassignedNames.has(candidate.name)
+          && !canonicalCounters.has(candidate.name)) found = true;
       });
       return found;
     };
@@ -2572,7 +2588,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       for (const statement of block.statements ?? []) {
         if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
           const loopPlans = copyPlans(active);
-          for (const name of mutatedArrays(statement.block)) loopPlans.delete(name);
+          // A straight-line write followed by a key read in the same canonical iteration is replayable:
+          // `xs[i] = f(i); m[xs[i]] = v` becomes the symbolic `f(i)` key plus the ordinary on-chain equality
+          // check against `xs[i]`. Start the loop from the dominating pre-loop plan and let transformBlock add
+          // writes as it walks source order. Branches still receive isolated copies and invalidate the outer
+          // plan at their join, so a conditionally initialized or prior-iteration array value remains fenced.
           transformBlock(statement.block, loopPlans);
           transformed.push(statement);
           for (const name of mutatedArrays(statement)) active.delete(name);

@@ -549,6 +549,20 @@ contract KernelDominatingLocalKeyArray() {
   function check(int key, int expected) public { require(this.slots[key] == expected); }
 }`;
 
+const SAME_ITERATION_LOCAL_KEY_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelSameIterationLocalKeyArray() {
+  mapping(int => int) slots;
+  function write(int count, int offset) public {
+    int[] keys = new int[](count);
+    for (int i = 0; i < count; i = i + 1) {
+      keys[i] = offset + i;
+      this.slots[keys[i]] = i + 20;
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.slots[key] == expected); }
+}`;
+
 const DOMINATING_STATE_PREDICATE_SOURCE = `pragma solidcash ^0.13.0;
 event Hit(int value);
 contract KernelDominatingStatePredicate() {
@@ -2225,6 +2239,24 @@ describe('kernel composite counter-key settlement', () => {
     });
     await expect(contract.call.check(5n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.check(3n, 11n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('settles local array keys written earlier in the same logical iteration', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SAME_ITERATION_LOCAL_KEY_ARRAY_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.call.write(3n, 7n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    await expect(contract.call.check(7n, 20n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(8n, 21n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(9n, 22n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles loop and event predicates from dominating scalar-state assignments', async () => {

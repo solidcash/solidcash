@@ -4022,11 +4022,14 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   runtimeLoopEventOutputs?: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string;
   }>;
-  /** Physical row order for runtime mapping-entry and event segments. Entry offsets address the aggregate
-   * commitment list for their collection; event offsets address runtimeLoopEventOutputs. */
+  /** Plain-BCH outputs produced by lowered runtime counter loops. Recipient and amount begin as probe
+   * placeholders and are replaced from the covenant trace before the transaction is returned. */
+  runtimeLoopTransferOutputs?: Array<{ lockingBytecode: Uint8Array; amount: bigint }>;
+  /** Physical row order for runtime mapping-entry, event, and BCH-transfer segments. */
   runtimeLoopTrailingSegments?: Array<
   | { kind: 'entries'; collection: string; offset: number; count: number }
   | { kind: 'events'; offset: number; count: number }
+  | { kind: 'transfers'; offset: number; count: number }
   >;
   eventDefinitions?: readonly EventDefinitionAbi[];
   eventNftLockingBytecodes?: Map<string, Uint8Array>; // eventSignature -> locking bytecode
@@ -4279,6 +4282,7 @@ export class StatefulTransactionBuilder {
   private runtimeLoopEventOutputs: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
   }> = [];
+  private runtimeLoopTransferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }> = [];
   private runtimeLoopTrailingSegments: NonNullable<StatefulTransactionOptions['runtimeLoopTrailingSegments']> = [];
 
   // P5b: collections whose loop-entry (NEW) commitment is known EXACTLY (a chunkable-value insert) and must NOT be
@@ -4371,7 +4375,8 @@ export class StatefulTransactionBuilder {
     this.compilerRouteDelegateBlock = options.compilerRouteDelegateBlock ?? false;
     this.preserveBlockLayoutWidth = options.preserveBlockLayoutWidth ?? false;
     this.loopEntriesBeforeDynamicChunks = options.loopEntriesBeforeDynamicChunks === true
-      || (options.runtimeLoopEventOutputs?.length ?? 0) > 0;
+      || (options.runtimeLoopEventOutputs?.length ?? 0) > 0
+      || (options.runtimeLoopTransferOutputs?.length ?? 0) > 0;
     this.entryNfts = options.entryNfts ?? [];
     this.entryNftLockingBytecodes = options.entryNftLockingBytecodes ?? new Map();
     this.dynamicChunkVars = options.dynamicChunkVars ?? [];
@@ -4381,6 +4386,9 @@ export class StatefulTransactionBuilder {
     this.runtimeLoopEventOutputs = (options.runtimeLoopEventOutputs ?? []).map((output) => ({
       ...output,
       commitment: '',
+    }));
+    this.runtimeLoopTransferOutputs = (options.runtimeLoopTransferOutputs ?? []).map((output) => ({
+      lockingBytecode: Uint8Array.from(output.lockingBytecode), amount: output.amount,
     }));
     this.runtimeLoopTrailingSegments = options.runtimeLoopTrailingSegments?.map((segment) => ({ ...segment })) ?? [];
     this.eventDefinitions = options.eventDefinitions ?? [];
@@ -5301,6 +5309,12 @@ export class StatefulTransactionBuilder {
       for (const slot of fn?.blockLayout?.slots ?? []) {
         if (slot.kind === 'event') dests.push(impl + slot.offset);
       }
+    }
+    // Runtime-loop events live in the trailing journal rather than fixed `blockLayout` slots. They are still
+    // compiler-owned event destinations: leaving them out lets the generic empty-immutable repair relabel their
+    // probe commitments as `SCID`, preventing event derivation (and every interleaved effect after the event).
+    for (let index = 0; index < this.runtimeLoopEventOutputs.length; index += 1) {
+      dests.push(this.getRuntimeLoopEventOutputIndex(index));
     }
     return dests;
   }
@@ -10052,7 +10066,8 @@ export class StatefulTransactionBuilder {
     }
     return trailingBase
       + (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0)
-      + this.runtimeLoopEventOutputs.length;
+      + this.runtimeLoopEventOutputs.length
+      + this.runtimeLoopTransferOutputs.length;
   }
 
   private _dynamicChunkOutputCount(): number {
@@ -10076,15 +10091,18 @@ export class StatefulTransactionBuilder {
     if (this.runtimeLoopTrailingSegments.length > 0 && this.runtimeLoopEventOutputs.length > 0) {
       return this.getRuntimeLoopEventOutputIndex(0);
     }
-    return this.getChunkOutputBase() - this.runtimeLoopEventOutputs.length;
+    return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length
+      - this.runtimeLoopEventOutputs.length;
   }
 
   getRuntimeLoopEventOutputIndex(eventIndex: number): number {
     if (this.runtimeLoopTrailingSegments.length === 0) {
-      return this.getChunkOutputBase() - this.runtimeLoopEventOutputs.length + eventIndex;
+      return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length
+        - this.runtimeLoopEventOutputs.length + eventIndex;
     }
     let physical = this.getChunkOutputBase()
-      - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length;
+      - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
+      - this.runtimeLoopTransferOutputs.length;
     for (const segment of this.runtimeLoopTrailingSegments) {
       if (segment.kind === 'events'
         && eventIndex >= segment.offset && eventIndex < segment.offset + segment.count) {
@@ -10093,6 +10111,36 @@ export class StatefulTransactionBuilder {
       physical += segment.count;
     }
     throw new Error(`Runtime loop event ${eventIndex} is missing from the trailing segment plan`);
+  }
+
+  getRuntimeLoopTransferOutputIndex(transferIndex: number): number {
+    if (this.runtimeLoopTrailingSegments.length === 0) {
+      return this.getChunkOutputBase() - this.runtimeLoopTransferOutputs.length + transferIndex;
+    }
+    let physical = this.getChunkOutputBase()
+      - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
+      - this.runtimeLoopTransferOutputs.length;
+    for (const segment of this.runtimeLoopTrailingSegments) {
+      if (segment.kind === 'transfers'
+        && transferIndex >= segment.offset && transferIndex < segment.offset + segment.count) {
+        return physical + transferIndex - segment.offset;
+      }
+      physical += segment.count;
+    }
+    throw new Error(`Runtime loop transfer ${transferIndex} is missing from the trailing segment plan`);
+  }
+
+  getRuntimeLoopTransferOutputs(): ReadonlyArray<{ lockingBytecode: Uint8Array; amount: bigint }> {
+    return this.runtimeLoopTransferOutputs;
+  }
+
+  setRuntimeLoopTransferOutput(index: number, lockingBytecode: Uint8Array, amount: bigint): this {
+    if (!Number.isInteger(index) || index < 0 || index >= this.runtimeLoopTransferOutputs.length) {
+      throw new Error(`Invalid runtime loop transfer index ${index}`);
+    }
+    if (amount < 0n) throw new Error('Derived runtime loop transfer amount must not be negative');
+    this.runtimeLoopTransferOutputs[index] = { lockingBytecode: Uint8Array.from(lockingBytecode), amount };
+    return this;
   }
 
   getRuntimeLoopEventOutputs(): ReadonlyArray<{
@@ -10223,7 +10271,8 @@ export class StatefulTransactionBuilder {
     if (this.loopEntriesBeforeDynamicChunks) {
       if (this.runtimeLoopTrailingSegments.length > 0) {
         return this.getChunkOutputBase()
-          - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length;
+          - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
+          - this.runtimeLoopTransferOutputs.length;
       }
       return this.getRuntimeLoopEventOutputBase() - this._trailingLoopEntryOutputCount();
     }
@@ -12280,11 +12329,14 @@ export class StatefulTransactionBuilder {
       if (this.iterationEntryInputs.length > 0 || this.dynamicChunkVars.length > 0) {
         resourceBases.push(this.getChunkOutputBase() - this.iterationEntryInputs.length
           - (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0)
-          - this.runtimeLoopEventOutputs.length);
+          - this.runtimeLoopEventOutputs.length - this.runtimeLoopTransferOutputs.length);
       }
       if (this._trailingLoopEntryVars().length > 0) resourceBases.push(this.getLoopEntryOutputBase());
       if (this.runtimeLoopEventOutputs.length > 0) {
         resourceBases.push(this.getRuntimeLoopEventOutputBase());
+      }
+      if (this.runtimeLoopTransferOutputs.length > 0) {
+        resourceBases.push(this.getRuntimeLoopTransferOutputIndex(0));
       }
       if (this.valueChunkOutputs.length > 0 || this.valueChunkVars.size > 0) {
         resourceBases.push(this.getValueChunkOutputBase());
@@ -12337,12 +12389,23 @@ export class StatefulTransactionBuilder {
         },
       });
     };
+    const appendRuntimeLoopTransfer = (transferIndex: number): void => {
+      const transfer = this.runtimeLoopTransferOutputs[transferIndex];
+      if (!transfer) throw new Error(`Runtime loop transfer segment references missing transfer ${transferIndex}`);
+      builder.addOutput({ to: transfer.lockingBytecode, amount: transfer.amount });
+    };
     if (this.runtimeLoopTrailingSegments.length > 0) {
       const variables = new Map(this._trailingLoopEntryVars().map((variable) => [variable.collection, variable]));
       for (const segment of this.runtimeLoopTrailingSegments) {
         if (segment.kind === 'events') {
           for (let index = 0; index < segment.count; index++) {
             appendRuntimeLoopEvent(segment.offset + index);
+          }
+          continue;
+        }
+        if (segment.kind === 'transfers') {
+          for (let index = 0; index < segment.count; index++) {
+            appendRuntimeLoopTransfer(segment.offset + index);
           }
           continue;
         }
@@ -12375,6 +12438,9 @@ export class StatefulTransactionBuilder {
       // progressively from the covenant trace.
       for (let eventIndex = 0; eventIndex < this.runtimeLoopEventOutputs.length; eventIndex++) {
         appendRuntimeLoopEvent(eventIndex);
+      }
+      for (let transferIndex = 0; transferIndex < this.runtimeLoopTransferOutputs.length; transferIndex++) {
+        appendRuntimeLoopTransfer(transferIndex);
       }
     }
 
@@ -12518,6 +12584,7 @@ export class StatefulTransactionBuilder {
         dynamicChunks: this._dynamicChunkOutputCount(),
         loopEntries: this._trailingLoopEntryOutputCount(),
         runtimeLoopEvents: this.runtimeLoopEventOutputs.length,
+        runtimeLoopTransfers: this.runtimeLoopTransferOutputs.length,
         literalValueChunks: this.valueChunkOutputs.length,
         derivedValueChunks: [...this.getValueChunkVars()].reduce(
           (sum, value) => sum + (this.valueChunkRawCommitments.get(value.id) ?? []).length,
@@ -13984,6 +14051,7 @@ export class StatefulTransactionBuilder {
       + lowLevelCallOutputCount
       + this._dynamicChunkOutputCount()
       + this.runtimeLoopEventOutputs.length
+      + this.runtimeLoopTransferOutputs.length
       + iterationEntryOutputCount
       + this.pendingOutputs.length
       + this.lateValueChunkOutputs.length

@@ -2873,8 +2873,7 @@ function extractVerifiedValuesFromTrace(
 
     // Other verified introspection values are emitted adjacently. Locking-bytecode checks may be separated from
     // their equality by the token checks for the same output, but bound the search to the local covenant block.
-    if (sawTarget && instruction.opcode !== Op.OP_EQUALVERIFY
-      && (targetOpcode !== Op.OP_OUTPUTBYTECODE || i - targetStep > 16)) {
+    if (sawTarget && instruction.opcode !== Op.OP_EQUALVERIFY && i - targetStep > 16) {
       sawTarget = false;
       continue;
     }
@@ -3135,6 +3134,7 @@ function evaluateProbeTrace(
   provider: NetworkProvider,
   program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
   relaxOutputVerifications = false,
+  forceFullDebug = false,
 ): AuthenticationProgramStateCommon[] {
   const maxIn = provider.consensusLimits?.maximumInputBytes ?? 10_000;
   const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
@@ -3146,7 +3146,7 @@ function evaluateProbeTrace(
     || debugEnv?.SC_FORCE_FULL_PROBE_TRACE === '1'
     || debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
     || debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS === '1';
-  if (preferFullDebug && !relaxOutputVerifications) {
+  if ((preferFullDebug || forceFullDebug) && !relaxOutputVerifications) {
     try {
       const full = cachedDebugVm(provider)
         .debug(program) as AuthenticationProgramStateCommon[];
@@ -11681,6 +11681,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // (avoids false positives when real transfer amounts happen to match placeholder values)
         let satoshiAmountsFullyDerived = false;
         let ftAmountsFullyDerived = false;
+        const runtimeLoopTransferBytecodesDerived = Array.from(
+          { length: stb.getRuntimeLoopTransferOutputs().length }, () => false,
+        );
+        const runtimeLoopTransferAmountsDerived = Array.from(
+          { length: stb.getRuntimeLoopTransferOutputs().length }, () => false,
+        );
 
         // Phase 2: Derive A's state + entries + events (iterative)
         // The VM stops at the first OP_EQUALVERIFY failure. Each iteration captures
@@ -11706,6 +11712,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           .process?.env?.SOLIDC_DEBUG_MAX_DERIVATION_ITERATIONS ?? 0);
         const hasLoopOrChunkVars = stb.getLoopEntryVars().length > 0
           || stb.getRuntimeLoopEventOutputs().length > 0
+          || stb.getRuntimeLoopTransferOutputs().length > 0
           || stb.getValueChunkVars().length > 0
           || stb.getDynamicChunkVars().length > 0;
         const persistWidth = persistWidthAtEntry;
@@ -11870,9 +11877,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               collection.name === access.collection && collection.kind === 'mapping'
             ))
           )).length;
-          const relaxDiscovery = stateCount > 1 || (stateCount === 0 && mappingEntryCount > 1);
+          // The sparse observer cannot currently see introspection executed inside OP_INVOKE bodies. Runtime-loop
+          // transfer values are verified there, so use the faithful reduced debug trace until those outputs have
+          // converged. This remains bounded by the kernel's 64-iteration admission limit.
+          const hasRuntimeLoopTransfers = stb.getRuntimeLoopTransferOutputs().length > 0;
+          const relaxDiscovery = !hasRuntimeLoopTransfers
+            && (stateCount > 1 || (stateCount === 0 && mappingEntryCount > 1));
           const fullTrace2 = evaluateProbeTrace(
-            this.inner.provider, probeProgram, relaxDiscovery,
+            this.inner.provider, probeProgram, relaxDiscovery, hasRuntimeLoopTransfers,
           );
           const outputVerificationMismatchObserved = relaxDiscovery
             && cachedProbeVm(this.inner.provider, true).relaxationApplied;
@@ -12801,6 +12813,39 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
 
           phaseCheckpoint('runtime-loop-events');
+          // Runtime-loop BCH outputs are outside the fixed transfer block. Derive each coordinate directly from
+          // the same OUTPUTBYTECODE/OUTPUTVALUE checks which authenticate it on-chain. A failing placeholder may
+          // reveal only the bytecode in one probe and the amount in the next, so retain progress per field.
+          const runtimeLoopTransfers = stb.getRuntimeLoopTransferOutputs();
+          for (let transferIndex = 0; transferIndex < runtimeLoopTransfers.length; transferIndex += 1) {
+            const outputIndex = stb.getRuntimeLoopTransferOutputIndex(transferIndex);
+            const bytecodes = extractVerifiedValuesFromTrace(
+              fullTrace2, Op.OP_OUTPUTBYTECODE, { min: outputIndex, max: outputIndex + 1 },
+              false, true, true,
+            );
+            const values = extractVerifiedValuesFromTrace(
+              fullTrace2, Op.OP_OUTPUTVALUE, { min: outputIndex, max: outputIndex + 1 },
+              false, true, true,
+            );
+            const current = stb.getRuntimeLoopTransferOutputs()[transferIndex];
+            const lockingBytecode = bytecodes[0] ?? current.lockingBytecode;
+            const amount = values[0] === undefined ? current.amount : decodeScriptNumber(values[0]);
+            let changed = false;
+            if (bytecodes[0] !== undefined) {
+              runtimeLoopTransferBytecodesDerived[transferIndex] = true;
+              if (binToHex(lockingBytecode) !== binToHex(current.lockingBytecode)) changed = true;
+            }
+            if (values[0] !== undefined) {
+              runtimeLoopTransferAmountsDerived[transferIndex] = true;
+              if (amount !== current.amount) changed = true;
+            }
+            if (changed) {
+              stb.setRuntimeLoopTransferOutput(transferIndex, lockingBytecode, amount);
+              commitmentProgress += 1;
+            }
+          }
+
+          phaseCheckpoint('runtime-loop-transfers');
           // P5b COMPUTED value chunks: the covenant PINS them (emitSortedValueChunkPin) but the SDK has no value
           // param to build them, so derive their commitments from the trace progressively (like loop entries). The
           // VM halts at the first placeholder mismatch, so each probe reveals one more chunk; grow the placeholder
@@ -13292,6 +13337,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           const needsPassingProbe = nestedProbeHadError || stb.hasUnresolvedDeferredKeccakPreimages()
             || stb.hasUnresolvedDeferredEcrecoverArguments()
+            || runtimeLoopTransferBytecodesDerived.some((derived) => !derived)
+            || runtimeLoopTransferAmountsDerived.some((derived) => !derived)
             || stb.getValueChunkVars().length > 0
             || stb.getDynamicChunkVars().length > 0 || stb.getLoopEntryVars().length > 0;
           if (debugTargetsThisDerivation) console.error('derive-iteration-summary', JSON.stringify({
@@ -23854,11 +23901,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string;
     }> = [];
     const runtimeLoopEventSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
+    const runtimeLoopEffectOccurrences: Array<{
+      rowIndex: number; kind: 'events' | 'transfers'; outputIndex: number;
+      sequence: number; iteration: number; order: number;
+    }> = [];
     const appendRuntimeEvents = async (
       source: AbiFunction,
       functionArgs: FunctionArgument[],
       sourceArtifact: Artifact,
       argumentFor: (name: string) => FunctionArgument | undefined,
+      rowIndex: number,
     ): Promise<void> => {
       const runtimePredicateState = await this._hydrateExternalPredicateState(
         [
@@ -23976,7 +24028,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (!lockingBytecode) {
               throw new Error(`No locking bytecode provided for runtime-loop event: ${eventSignature}`);
             }
+            const outputIndex = runtimeLoopEventOutputs.length;
             runtimeLoopEventOutputs.push({ eventSignature, lockingBytecode });
+            if (loop.effectSequence !== undefined && loop.effectOrder?.[siteIndex] !== undefined) {
+              runtimeLoopEffectOccurrences.push({
+                rowIndex, kind: 'events', outputIndex,
+                sequence: loop.effectSequence, iteration, order: loop.effectOrder[siteIndex],
+              });
+            }
           }
         }
       }
@@ -23984,14 +24043,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (selectedRuntimeEventRows.length > 0) {
       for (const row of selectedRuntimeEventRows) {
         const offset = runtimeLoopEventOutputs.length;
+        const rowIndex = routeRowIndex(row);
+        if (rowIndex < 0) throw new Error('Message-bus runtime event row is missing from its route frame');
         const rowArtifact = delegateRouteRows?.some((candidate) => candidate === row) && delegateRouteGroup
           ? delegateRouteGroup.externalContract.inner.artifact : this.inner.artifact;
         await appendRuntimeEvents(row.handler, [...row.args], rowArtifact, (name) =>
-          row.internalArgs?.[name] ?? selectedRowArgument(row, name));
+          row.internalArgs?.[name] ?? selectedRowArgument(row, name), rowIndex);
         const count = runtimeLoopEventOutputs.length - offset;
         if (count > 0) {
-          const rowIndex = routeRowIndex(row);
-          if (rowIndex < 0) throw new Error('Message-bus runtime event row is missing from its route frame');
           runtimeLoopEventSegments.push({ rowIndex, offset, count });
         }
       }
@@ -24008,17 +24067,184 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         await appendRuntimeEvents(directRuntimeEventFunction, directRuntimeArgs, directRuntimeArtifact, (name) => {
           const index = directRuntimeEventFunction.inputs.findIndex((input) => input.name === name);
           return index < 0 ? undefined : (directRuntimeEventFunction === entryAbiFunction ? entryArgs : args)[index];
-        });
+        }, -1);
+      }
+    }
+    // Runtime BCH transfers use the same logical counter domain as runtime events, but their recipient and
+    // amount are covenant-derived later. Plan only the exact number and source-row ordering here; every output
+    // starts as a harmless probe placeholder which the faithful VM trace replaces before handoff.
+    const selectedRuntimeTransferRows = (entryRouteRows?.some((row) =>
+      (row.handler.runtimeLoopTransfers?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
+    const runtimeTransferPlaceholder = encodeLockingBytecodeP2pkh(new Uint8Array(20));
+    const runtimeLoopTransferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }> = [];
+    const runtimeLoopTransferSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
+    const appendRuntimeTransfers = async (
+      source: AbiFunction,
+      functionArgs: FunctionArgument[],
+      sourceArtifact: Artifact,
+      argumentFor: (name: string) => FunctionArgument | undefined,
+      rowIndex: number,
+    ): Promise<void> => {
+      const runtimePredicateState = await this._hydrateExternalPredicateState(
+        [
+          ...(source.runtimeLoopTransfers ?? []).flatMap((loop) => loop.conditions ?? [])
+            .filter((condition): condition is ExternalCallExpression => condition !== null),
+          ...(source.sortedUpsertLoopInfo ?? []).flatMap((info) => [
+            info.condition, info.iterationBreakCondition,
+          ]).filter((condition): condition is ExternalCallExpression => condition !== undefined),
+        ],
+        functionArgs,
+        sourceArtifact,
+        onChainState.state,
+        visibleHandlerInputs(source.inputs),
+        executionSelfAddress,
+      );
+      for (const loop of source.runtimeLoopTransfers ?? []) {
+        const permutation = argumentFor(loop.permutationParam);
+        let repeatCount = Array.isArray(permutation) ? permutation.length : undefined;
+        const loopInfo = source.sortedUpsertLoopInfo?.find(
+          (info) => info.varyingArrayParam === loop.permutationParam,
+        );
+        if (loopInfo && (loopInfo.iterationCondition || loopInfo.iterationBreakCondition)) {
+          const spec = vmapCounterPermutationSpec(loopInfo.varyingArrayParam);
+          const bound = spec && argumentFor(spec.countName);
+          if (!spec || (bound === undefined && !loopInfo.iterationBound)) throw new Error(
+            `Runtime-loop transfer metadata for '${source.name}' has no source-domain bound`,
+          );
+          const active = loopInfo.condition ? this._evaluateExternalExpression(
+            loopInfo.condition,
+            functionArgs,
+            sourceArtifact,
+            runtimePredicateState,
+            visibleHandlerInputs(source.inputs),
+            undefined,
+            0,
+            false,
+            executionSelfAddress,
+          ) : true;
+          if (typeof active !== 'boolean') throw new Error(
+            `Could not resolve runtime loop predicate while planning transfers for '${source.name}'.`,
+          );
+          const sourceDomain = active ? this._vmapCounterDomain(
+            loopInfo,
+            spec,
+            bound,
+            functionArgs,
+            sourceArtifact,
+            visibleHandlerInputs(source.inputs),
+            runtimePredicateState,
+            executionSelfAddress,
+          ) : [];
+          if (!sourceDomain) throw new Error(
+            `Could not resolve runtime loop bound while planning transfers for '${source.name}'.`,
+          );
+          repeatCount = sourceDomain.length;
+          if (loopInfo.iterationBreakCondition) {
+            for (let iteration = 0; iteration < sourceDomain.length; iteration += 1) {
+              const breaking = this._evaluateExternalExpression(
+                loopInfo.iterationBreakCondition,
+                functionArgs,
+                sourceArtifact,
+                runtimePredicateState,
+                visibleHandlerInputs(source.inputs),
+                undefined,
+                iteration,
+                false,
+                executionSelfAddress,
+              );
+              if (typeof breaking !== 'boolean') throw new Error(
+                `Could not resolve runtime loop break predicate while planning transfers for '${source.name}'.`,
+              );
+              if (breaking) { repeatCount = iteration + 1; break; }
+            }
+          }
+        }
+        if (!Number.isInteger(repeatCount) || repeatCount === undefined || repeatCount < 0) throw new Error(
+          `Runtime-loop transfer metadata for '${source.name}' has no valid repeat source`,
+        );
+        for (let iteration = 0; iteration < repeatCount; iteration += 1) {
+          for (let siteIndex = 0; siteIndex < loop.siteCount; siteIndex += 1) {
+            const condition = loop.conditions?.[siteIndex];
+            if (condition) {
+              const active = this._evaluateExternalExpression(
+                condition,
+                functionArgs,
+                sourceArtifact,
+                runtimePredicateState,
+                visibleHandlerInputs(source.inputs),
+                undefined,
+                iteration,
+                false,
+                executionSelfAddress,
+              );
+              if (typeof active !== 'boolean') throw new Error(
+                `Could not resolve runtime transfer predicate in '${source.name}'.`,
+              );
+              if (!active) continue;
+            }
+            const outputIndex = runtimeLoopTransferOutputs.length;
+            runtimeLoopTransferOutputs.push({
+              lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 1000n,
+            });
+            if (loop.effectSequence !== undefined && loop.effectOrder?.[siteIndex] !== undefined) {
+              runtimeLoopEffectOccurrences.push({
+                rowIndex, kind: 'transfers', outputIndex,
+                sequence: loop.effectSequence, iteration, order: loop.effectOrder[siteIndex],
+              });
+            }
+          }
+        }
+      }
+    };
+    if (selectedRuntimeTransferRows.length > 0) {
+      for (const row of selectedRuntimeTransferRows) {
+        const offset = runtimeLoopTransferOutputs.length;
+        const rowIndex = routeRowIndex(row);
+        if (rowIndex < 0) throw new Error('Message-bus runtime transfer row is missing from its route frame');
+        const rowArtifact = delegateRouteRows?.some((candidate) => candidate === row) && delegateRouteGroup
+          ? delegateRouteGroup.externalContract.inner.artifact : this.inner.artifact;
+        await appendRuntimeTransfers(row.handler, [...row.args], rowArtifact, (name) =>
+          row.internalArgs?.[name] ?? selectedRowArgument(row, name), rowIndex);
+        const count = runtimeLoopTransferOutputs.length - offset;
+        if (count > 0) {
+          runtimeLoopTransferSegments.push({ rowIndex, offset, count });
+        }
+      }
+    } else {
+      const directRuntimeTransferFunction = entryAbiFunction?.runtimeLoopTransfers?.length
+        ? entryAbiFunction : abiFunction;
+      if (directRuntimeTransferFunction?.runtimeLoopTransfers?.length) {
+        const directRuntimeArgs = visibleHandlerInputs(directRuntimeTransferFunction.inputs).map((input) => {
+          const index = directRuntimeTransferFunction.inputs.findIndex((candidate) => candidate.name === input.name);
+          return (directRuntimeTransferFunction === entryAbiFunction ? entryArgs : args)[index];
+        }) as FunctionArgument[];
+        const directRuntimeArtifact = directRuntimeTransferFunction === delegateRouteAbi && delegateRouteGroup
+          ? delegateRouteGroup.externalContract.inner.artifact : this.inner.artifact;
+        await appendRuntimeTransfers(
+          directRuntimeTransferFunction,
+          directRuntimeArgs,
+          directRuntimeArtifact,
+          (name) => {
+            const index = directRuntimeTransferFunction.inputs.findIndex((input) => input.name === name);
+            return index < 0
+              ? undefined : (directRuntimeTransferFunction === entryAbiFunction ? entryArgs : args)[index];
+          },
+          -1,
+        );
       }
     }
     const runtimeLoopTrailingSegments: Array<
     | { kind: 'entries'; collection: string; offset: number; count: number }
     | { kind: 'events'; offset: number; count: number }
+    | { kind: 'transfers'; offset: number; count: number }
     > = [];
-    if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0) {
+    if (runtimeLoopEntrySegments.length > 0 || runtimeLoopEventSegments.length > 0
+      || runtimeLoopTransferSegments.length > 0) {
       const rowIndices = new Set([
         ...runtimeLoopEntrySegments.map((segment) => segment.rowIndex),
         ...runtimeLoopEventSegments.map((segment) => segment.rowIndex),
+        ...runtimeLoopTransferSegments.map((segment) => segment.rowIndex),
+        ...runtimeLoopEffectOccurrences.map((occurrence) => occurrence.rowIndex),
       ]);
       for (const rowIndex of [...rowIndices].sort((left, right) => left - right)) {
         for (const segment of runtimeLoopEntrySegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
@@ -24027,8 +24253,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             offset: segment.offset, count: segment.count,
           });
         }
-        for (const segment of runtimeLoopEventSegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
-          runtimeLoopTrailingSegments.push({ kind: 'events', offset: segment.offset, count: segment.count });
+        const orderedEffects = runtimeLoopEffectOccurrences
+          .filter((occurrence) => occurrence.rowIndex === rowIndex)
+          .sort((left, right) => left.sequence - right.sequence
+            || left.iteration - right.iteration || left.order - right.order);
+        if (orderedEffects.length > 0) {
+          for (const effect of orderedEffects) {
+            const previous = runtimeLoopTrailingSegments[runtimeLoopTrailingSegments.length - 1];
+            if (previous?.kind === effect.kind
+              && previous.offset + previous.count === effect.outputIndex) previous.count += 1;
+            else runtimeLoopTrailingSegments.push({
+              kind: effect.kind, offset: effect.outputIndex, count: 1,
+            });
+          }
+        } else {
+          for (const segment of runtimeLoopEventSegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
+            runtimeLoopTrailingSegments.push({ kind: 'events', offset: segment.offset, count: segment.count });
+          }
+          for (const segment of runtimeLoopTransferSegments.filter((candidate) => candidate.rowIndex === rowIndex)) {
+            runtimeLoopTrailingSegments.push({ kind: 'transfers', offset: segment.offset, count: segment.count });
+          }
         }
       }
     }
@@ -24171,6 +24415,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(trailingDisposalInputs.length > 0 && { trailingDisposalInputs }),
       ...(loopEntryVars.length > 0 && { loopEntryVars }),
       ...(runtimeLoopEventOutputs.length > 0 && { runtimeLoopEventOutputs }),
+      ...(runtimeLoopTransferOutputs.length > 0 && { runtimeLoopTransferOutputs }),
       ...(runtimeLoopTrailingSegments.length > 0 && { runtimeLoopTrailingSegments }),
       tokenContainers,
       tokenContainerLockingBytecodes,
@@ -24212,7 +24457,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(compilerRouteDelegateLayout && { compilerRouteDelegateBlock: true }),
       ...(overrides?.omitLocalFeeTail && { preserveBlockLayoutWidth: true }),
       ...((batchPredCommitments.size > 0 || sortedLoopCommitments.size > 0
-        || runtimeLoopEventOutputs.length > 0)
+        || runtimeLoopEventOutputs.length > 0 || runtimeLoopTransferOutputs.length > 0)
         && { loopEntriesBeforeDynamicChunks: true }),
       ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
       ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
@@ -25344,6 +25589,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // metadata list is empty; skipping here would publish link-only placeholder commitments for computed values.
       && loopEntryVars.length === 0
       && runtimeLoopEventOutputs.length === 0
+      && runtimeLoopTransferOutputs.length === 0
       && emitInfos.length === 0
       && derivTransferCount === 0
       && (derivTokenOps?.length ?? 0) === 0

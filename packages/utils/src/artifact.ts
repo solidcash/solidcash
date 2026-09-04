@@ -135,6 +135,22 @@ export interface RuntimeLoopEventAbi {
   eventSignatures: readonly string[];
   /** Per-site runtime predicates, aligned with eventSignatures. Missing entries are unconditional. */
   conditions?: readonly (ExternalCallExpression | null)[];
+  /** Function-local execution segment, shared with transfers produced by the same loop. */
+  effectSequence?: number;
+  /** Per-site order among all event and transfer effects in this segment. */
+  effectOrder?: readonly number[];
+}
+
+/** One repeated BCH-transfer segment produced by a runtime counter loop. */
+export interface RuntimeLoopTransferAbi {
+  permutationParam: string;
+  siteCount: number;
+  /** Per-site runtime predicates, aligned with the source transfer sites. */
+  conditions?: readonly (ExternalCallExpression | null)[];
+  /** Function-local execution segment, shared with events produced by the same loop. */
+  effectSequence?: number;
+  /** Per-site order among all event and transfer effects in this segment. */
+  effectOrder?: readonly number[];
 }
 
 export interface TokenContainerAccessAbi {
@@ -291,6 +307,7 @@ export interface AbiFunction {
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
   runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
+  runtimeLoopTransfers?: readonly RuntimeLoopTransferAbi[];
   transferCount?: number;
   transfers?: readonly {
     transferIndex: number;
@@ -945,6 +962,7 @@ export interface Artifact {
       usesMsgValue?: boolean;
       emits?: readonly EmitAbi[];
       runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
+      runtimeLoopTransfers?: readonly RuntimeLoopTransferAbi[];
       tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
       /** Per selected handler call, the visible parameter feeding keccak256 or null for a computed preimage. */
       keccakPreimageParams?: readonly (string | null)[];

@@ -1124,6 +1124,50 @@ function buildFunctionAbiMetadata(
         ...(loop.repeatCount !== undefined && { repeatCount: loop.repeatCount }),
         eventSignatures: eventSites.map((emit) => emit.eventDefinition!.signature),
         ...(conditions.some((condition) => condition !== null) && { conditions }),
+        ...(loop.effectSequence !== undefined && { effectSequence: loop.effectSequence }),
+        ...(eventSites.some((emit) => emit.runtimeLoopEffectOrder !== undefined) && {
+          effectOrder: eventSites.map((emit, index) => emit.runtimeLoopEffectOrder ?? index),
+        }),
+      };
+    });
+  })();
+  const runtimeLoopTransfers = (() => {
+    if (!func.runtimeLoopTransfers?.length || !func.body) return [];
+    const sites = new Map<number, TransferStatementNode[]>();
+    const seen = new Set<Node>();
+    const walk = (node: Node): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof TransferStatementNode && node.runtimeLoopTransfer) {
+        const group = sites.get(node.runtimeLoopTransfer.loopIndex) ?? [];
+        group[node.runtimeLoopTransfer.siteIndex] = node;
+        sites.set(node.runtimeLoopTransfer.loopIndex, group);
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'type'].includes(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(func.body);
+    return func.runtimeLoopTransfers.map((loop) => {
+      const transferSites = sites.get(loop.loopIndex) ?? [];
+      const conditions = transferSites.map((transfer) => transfer.runtimeLoopTransferCondition
+        ? serializeCondition(transfer.runtimeLoopTransferCondition, transfer.runtimeLoopTransferCounter) ?? null
+        : null);
+      if (transferSites.some((transfer, index) =>
+        transfer.runtimeLoopTransferCondition && conditions[index] === null)) {
+        throw new Error(`Runtime transfer condition in '${func.name}' cannot be represented in artifact metadata`);
+      }
+      return {
+        permutationParam: loop.permutationParam,
+        siteCount: transferSites.length,
+        ...(conditions.some((condition) => condition !== null) && { conditions }),
+        ...(loop.effectSequence !== undefined && { effectSequence: loop.effectSequence }),
+        ...(transferSites.some((transfer) => transfer.runtimeLoopEffectOrder !== undefined) && {
+          effectOrder: transferSites.map((transfer, index) => transfer.runtimeLoopEffectOrder ?? index),
+        }),
       };
     });
   })();
@@ -1172,6 +1216,7 @@ function buildFunctionAbiMetadata(
       })),
     }),
     ...(runtimeLoopEvents.length > 0 && { runtimeLoopEvents }),
+    ...(runtimeLoopTransfers.length > 0 && { runtimeLoopTransfers }),
     ...(func.transferInfos && func.transferInfos.length > 0 && {
       transferCount: func.transferInfos.length,
       ...(contract && { transfers: transferEffects(func, contract) }),

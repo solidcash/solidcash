@@ -9,6 +9,7 @@ import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { getSatoshiContainerAddress } from '../../../src/stateful/covenant-helpers.js';
 import { createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 import { alicePriv, alicePub, bobPriv, bobPub } from '../../fixture/vars.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
@@ -215,6 +216,38 @@ contract KernelConditionalCounterEvent() {
       if (enabled && (!oddsOnly || i % 2 == 1)) emit Hit(i);
     }
     if (!enabled) emit Hit(-2);
+    require(true);
+  }
+}`;
+
+const COUNTER_MAPPING_TRANSFER_SOURCE = `pragma solidcash ^0.13.0;
+event Mark(int value);
+contract KernelCounterMappingTransfer() {
+  mapping(int => int) m;
+  mapping(int => int) conditional;
+  mapping(int => int) mixed;
+  function pay(int n, bytes recipient) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.m[i] = i + 10;
+      this.transfer(recipient, 2000 + i);
+    }
+    require(true);
+  }
+  function payPaths(int n, bytes recipient) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.conditional[i] = i + 20;
+      if (i % 2 == 1) this.transfer(recipient, 3000 + i);
+      this.transfer(recipient, 4000 + i);
+    }
+    require(true);
+  }
+  function payMixed(int n, bytes recipient) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.mixed[i] = i + 30;
+      emit Mark(100 + i);
+      this.transfer(recipient, 5000 + i);
+      emit Mark(200 + i);
+    }
     require(true);
   }
 }`;
@@ -1823,6 +1856,144 @@ describe('kernel composite counter-key settlement', () => {
       { function: 'write', args: [1n] },
       { function: 'write', args: [1n] },
     ]).build()).rejects.toThrow(/read-your-writes transition/);
+  }, 180_000);
+
+  it('settles repeated BCH transfers after the permuted mapping journal', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(COUNTER_MAPPING_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const pay = artifact.abi.find((candidate) => candidate.name === 'pay')!;
+    expect(pay.runtimeLoopTransfers).toEqual([
+      { permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/), siteCount: 1 },
+    ]);
+    const payPaths = artifact.abi.find((candidate) => candidate.name === 'payPaths')!;
+    expect(payPaths.runtimeLoopTransfers).toEqual([
+      expect.objectContaining({
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/),
+        siteCount: 2,
+        conditions: [expect.any(Object), null],
+      }),
+    ]);
+    const payMixed = artifact.abi.find((candidate) => candidate.name === 'payMixed')!;
+    expect(payMixed.runtimeLoopEvents).toEqual([
+      expect.objectContaining({ effectSequence: 0, effectOrder: [0, 2] }),
+    ]);
+    expect(payMixed.runtimeLoopTransfers).toEqual([
+      expect.objectContaining({ effectSequence: 0, effectOrder: [1] }),
+    ]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')?.eligible).toBe(true);
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const boundInner = inner.withCategory(hexToBin(categoryId));
+    await provider.addUtxo(getSatoshiContainerAddress(boundInner, categoryId), {
+      txid: 'bd'.repeat(32), vout: 1, satoshis: 50_000n,
+    });
+    const contract = StatefulContract.withCategory(boundInner, categoryId);
+    const recipientFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const recipient = recipientFunder.unlocker.generateLockingBytecode();
+
+    const zeroBuilder = await contract.batch([{ function: 'pay', args: [0n, recipient] }]).build();
+    const zeroTransaction = zeroBuilder.buildLibauthTransaction();
+    expect(zeroTransaction.outputs.some((output) =>
+      binToHex(output.lockingBytecode) === binToHex(recipient))).toBe(false);
+    const zeroVm = createVirtualMachineBch2026ForProvider(provider);
+    const zeroSources = generateLibauthSourceOutputs(zeroBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < zeroTransaction.inputs.length; inputIndex += 1) {
+      expect(zeroVm.stateSuccess(zeroVm.evaluate({
+        inputIndex, sourceOutputs: zeroSources, transaction: zeroTransaction,
+      })), `zero input ${inputIndex}`).toBe(true);
+    }
+
+    const call = contract.batch([{ function: 'pay', args: [3n, recipient] }]);
+    const builder = await call.build();
+    const transaction = builder.buildLibauthTransaction();
+    const payments = transaction.outputs.filter((output) =>
+      binToHex(output.lockingBytecode) === binToHex(recipient));
+    expect(payments.map((output) => output.valueSatoshis)).toEqual([2000n, 2001n, 2002n]);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+
+    const hostile = await contract.batch([{ function: 'pay', args: [3n, recipient] }]).build();
+    const hostileTransaction = hostile.buildLibauthTransaction();
+    const hostilePayment = hostileTransaction.outputs.find((output) =>
+      binToHex(output.lockingBytecode) === binToHex(recipient));
+    expect(hostilePayment).toBeDefined();
+    hostilePayment!.valueSatoshis += 1n;
+    const hostileSources = generateLibauthSourceOutputs(hostile.inputs);
+    const hostileRoute = hostile.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: hostileRoute, sourceOutputs: hostileSources, transaction: hostileTransaction,
+    }))).not.toBe(true);
+
+    const pathsBuilder = await contract.batch([{ function: 'payPaths', args: [3n, recipient] }]).build();
+    const pathsTransaction = pathsBuilder.buildLibauthTransaction();
+    const pathPayments = pathsTransaction.outputs.filter((output) =>
+      binToHex(output.lockingBytecode) === binToHex(recipient));
+    expect(pathPayments.map((output) => output.valueSatoshis)).toEqual([4000n, 3001n, 4001n, 4002n]);
+    const pathSources = generateLibauthSourceOutputs(pathsBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < pathsTransaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs: pathSources, transaction: pathsTransaction,
+      })), `paths input ${inputIndex}`).toBe(true);
+    }
+
+    const zeroMixedBuilder = await contract.batch([
+      { function: 'payMixed', args: [0n, recipient] },
+    ]).build();
+    const zeroMixedTransaction = zeroMixedBuilder.buildLibauthTransaction();
+    expect(zeroMixedTransaction.outputs.filter((output) =>
+      binToHex(output.lockingBytecode) === binToHex(recipient)
+      || output.token?.nft?.capability === 'none')).toHaveLength(0);
+    const zeroMixedSources = generateLibauthSourceOutputs(zeroMixedBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < zeroMixedTransaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs: zeroMixedSources, transaction: zeroMixedTransaction,
+      })), `zero mixed input ${inputIndex}`).toBe(true);
+    }
+
+    const mixedBuilder = await contract.batch([{ function: 'payMixed', args: [2n, recipient] }]).build();
+    const mixedTransaction = mixedBuilder.buildLibauthTransaction();
+    const mixedEffects = mixedTransaction.outputs.filter((output) =>
+      binToHex(output.lockingBytecode) === binToHex(recipient)
+      || output.token?.nft?.capability === 'none');
+    expect(mixedEffects.map((output) =>
+      binToHex(output.lockingBytecode) === binToHex(recipient)
+        ? `pay:${output.valueSatoshis}` : 'event')).toEqual([
+      'event', 'pay:5000', 'event', 'event', 'pay:5001', 'event',
+    ]);
+    const mixedSources = generateLibauthSourceOutputs(mixedBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < mixedTransaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs: mixedSources, transaction: mixedTransaction,
+      })), `mixed input ${inputIndex}`).toBe(true);
+    }
+
+    const hostileMixedTransaction = mixedBuilder.buildLibauthTransaction();
+    const hostileMixedIndices = hostileMixedTransaction.outputs
+      .map((output, index) => ({ output, index }))
+      .filter(({ output }) => binToHex(output.lockingBytecode) === binToHex(recipient)
+        || output.token?.nft?.capability === 'none')
+      .map(({ index }) => index);
+    expect(hostileMixedIndices).toHaveLength(6);
+    const [firstEventIndex, firstPaymentIndex] = hostileMixedIndices;
+    [hostileMixedTransaction.outputs[firstEventIndex], hostileMixedTransaction.outputs[firstPaymentIndex]] = [
+      hostileMixedTransaction.outputs[firstPaymentIndex], hostileMixedTransaction.outputs[firstEventIndex],
+    ];
+    const hostileMixedRoute = mixedBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: hostileMixedRoute, sourceOutputs: mixedSources, transaction: hostileMixedTransaction,
+    }))).not.toBe(true);
+
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 
   it('plans conditional event paths for direct and routed counter rows', async () => {

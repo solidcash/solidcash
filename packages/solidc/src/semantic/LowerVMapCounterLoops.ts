@@ -44,8 +44,8 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * stream and settled after all mapping journals, so they repeat in logical source order without sharing the
  * route's fixed per-row event slots. Nested if/else reachability is serialized when it depends only on SDK-visible
  * inputs, immutable aliases, stable pre-state, and the source counter. Stable switch arms use the same predicates.
- * Try/catch and nested-loop event reachability, BCH transfers, and token-container transfers still need richer runtime
- * effect records. The canonical pre-test domains
+ * Try/catch and nested-loop effect reachability and token-container transfers still need richer runtime effect
+ * records. Direct BCH transfers use a source-ordered trailing stream alongside events. The canonical pre-test domains
  * `for (int i = constantStart; i < publicBound; i = i + positiveConstantStep)` and
  * `for (int i = constantStart; i > publicBound; i = i - positiveConstantStep)`, plus the post-test domain
  * `int i = 0; do { ...; i = i + 1; } while (i < publicBound)` lower. The latter authenticates
@@ -473,11 +473,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const hasUnjournalledRepeatedEffect = (
       x: Node,
       runtimeEmits: ReadonlySet<EmitStatementNode>,
+      runtimeTransfers: ReadonlySet<TransferStatementNode>,
       impureInlineResults: ReadonlySet<string>,
     ): boolean => {
       if (x instanceof TryCatchNode) {
-        return hasUnjournalledRepeatedEffect(x.expression, runtimeEmits, impureInlineResults)
-          || hasUnjournalledRepeatedEffect(x.tryBlock, runtimeEmits, impureInlineResults);
+        return hasUnjournalledRepeatedEffect(x.expression, runtimeEmits, runtimeTransfers, impureInlineResults)
+          || hasUnjournalledRepeatedEffect(x.tryBlock, runtimeEmits, runtimeTransfers, impureInlineResults);
       }
       // The whole typed-call node, including its interface/address projection, is represented by the manifest.
       // Do not descend into that projection: it contains method-call-shaped syntax which is not a direct effect.
@@ -495,8 +496,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return x.args.some((arg) => hasObservableEffect(arg)
           || [...impureInlineResults].some((name) => containsIdentifier(arg, name)));
       }
-      if (x instanceof TransferStatementNode
-        || x instanceof AddressTransferStatementNode || x instanceof AddressSendExpressionNode
+      if (x instanceof TransferStatementNode) {
+        if (!runtimeTransfers.has(x)) return true;
+        return hasObservableEffect(x.lockingBytecode) || hasObservableEffect(x.amount)
+          || [...impureInlineResults].some((name) =>
+            containsIdentifier(x.lockingBytecode, name) || containsIdentifier(x.amount, name));
+      }
+      if (x instanceof AddressTransferStatementNode || x instanceof AddressSendExpressionNode
         || x instanceof TokenContainerMethodStatementNode
         || x instanceof MethodCallNode || x instanceof MethodCallStatementNode) return true;
       if (x instanceof FunctionCallNode) return hasObservableEffect(x);
@@ -506,10 +512,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || key === 'resolvedFunction') continue;
         const value = (x as unknown as Record<string, unknown>)[key];
         if (value instanceof Node
-          && hasUnjournalledRepeatedEffect(value, runtimeEmits, impureInlineResults)) return true;
+          && hasUnjournalledRepeatedEffect(value, runtimeEmits, runtimeTransfers, impureInlineResults)) return true;
         if (Array.isArray(value)
           && value.some((item) => item instanceof Node
-            && hasUnjournalledRepeatedEffect(item, runtimeEmits, impureInlineResults))) return true;
+            && hasUnjournalledRepeatedEffect(item, runtimeEmits, runtimeTransfers, impureInlineResults))) return true;
       }
       return false;
     };
@@ -893,9 +899,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           return active;
         }
         if (x instanceof BranchNode) {
-          const ifPath = pathAnd(x.condition, fallthrough(x.ifBlock));
-          const elsePath = pathAnd(pathNot(x.condition), x.elseBlock
-            ? fallthrough(x.elseBlock) : undefined);
+          const ifFallthrough = fallthrough(x.ifBlock);
+          const elseFallthrough = x.elseBlock ? fallthrough(x.elseBlock) : undefined;
+          // Both arms (including an absent else) reaching the next statement makes that statement
+          // unconditional. Preserve the compact `undefined === true` representation instead of publishing
+          // `p || !p`, which is logically true but forces the SDK to replay a spurious effect predicate.
+          if (!ifFallthrough && !elseFallthrough) return undefined;
+          const ifPath = pathAnd(x.condition, ifFallthrough);
+          const elsePath = pathAnd(pathNot(x.condition), elseFallthrough);
           return pathOr(ifPath, elsePath);
         }
         return undefined;
@@ -1123,6 +1134,87 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       collectRuntimeEmits(block);
+      const runtimeTransfers: Array<{ transfer: TransferStatementNode; condition?: ExpressionNode }> = [];
+      let conditionalRuntimeTransfer = false;
+      const collectRuntimeTransfers = (
+        x: Node,
+        condition?: ExpressionNode,
+      ): void => {
+        if (x instanceof TransferStatementNode) {
+          if (condition && !runtimePathExpressionSupported(
+            condition, logical, new Set(), stateValues, loopCarriedLocalValues,
+          )) conditionalRuntimeTransfer = true;
+          else {
+            const expanded = condition && expandRuntimePathExpression(
+              condition, logical, new Set(), stateValues, loopCarriedLocalValues,
+            );
+            if (condition && !expanded) conditionalRuntimeTransfer = true;
+            else runtimeTransfers.push({ transfer: x, ...(expanded && { condition: expanded }) });
+          }
+          return;
+        }
+        if (x instanceof BlockNode) {
+          let active = condition;
+          for (const statement of x.statements ?? []) {
+            collectRuntimeTransfers(statement, active);
+            active = pathAnd(active, fallthrough(statement));
+          }
+          return;
+        }
+        if (x instanceof BranchNode) {
+          collectRuntimeTransfers(x.ifBlock, pathAnd(condition, x.condition));
+          if (x.elseBlock) collectRuntimeTransfers(x.elseBlock, pathAnd(condition, pathNot(x.condition)));
+          return;
+        }
+        if (x instanceof SwitchNode) {
+          const matches = x.cases.map((candidate) => {
+            const equality = new BinaryOpNode(
+              cloneNode(x.expression), BinaryOperator.EQ, cloneNode(candidate.value),
+            );
+            equality.location = candidate.value.location ?? x.location;
+            return equality;
+          });
+          x.cases.forEach((candidate, index) => {
+            collectRuntimeTransfers(candidate.body, pathAnd(condition, matches[index]));
+          });
+          if (x.defaultCase) {
+            const defaultCondition = matches.reduce<ExpressionNode | undefined>(
+              (active, match) => pathAnd(active, pathNot(match)), condition,
+            );
+            collectRuntimeTransfers(x.defaultCase, defaultCondition);
+          }
+          return;
+        }
+        if (x instanceof TryCatchNode) {
+          collectRuntimeTransfers(x.tryBlock, condition);
+          return;
+        }
+        if (x !== block && (x instanceof WhileNode || x instanceof DoWhileNode)) {
+          let containsTransfer = false;
+          const findTransfer = (candidate: Node): void => {
+            if (candidate instanceof TransferStatementNode) { containsTransfer = true; return; }
+            for (const value of Object.values(candidate)) {
+              if (value instanceof Node) findTransfer(value);
+              else if (Array.isArray(value)) {
+                for (const item of value) if (item instanceof Node) findTransfer(item);
+              }
+            }
+          };
+          findTransfer(x);
+          conditionalRuntimeTransfer ||= containsTransfer;
+          return;
+        }
+        for (const key of Object.keys(x)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction') continue;
+          const value = (x as unknown as Record<string, unknown>)[key];
+          if (value instanceof Node) collectRuntimeTransfers(value, condition);
+          else if (Array.isArray(value)) {
+            for (const item of value) if (item instanceof Node) collectRuntimeTransfers(item, condition);
+          }
+        }
+      };
+      collectRuntimeTransfers(block);
       const impureInlineResults = new Set<string>();
       const collectImpureInlineResults = (x: Node): void => {
         if (x instanceof VariableDefinitionNode && x.inlinedReturningHelperPure === false) {
@@ -1140,6 +1232,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       collectImpureInlineResults(block);
       const runtimeEmitSet = new Set(runtimeEmits.map(({ emit }) => emit));
+      const runtimeTransferSet = new Set(runtimeTransfers.map(({ transfer }) => transfer));
       const keyedSelectionConditions = keyed.map((write) => writePaths.get(write));
       const uniqueDisjunction = (
         conditions: readonly (ExpressionNode | undefined)[],
@@ -1197,7 +1290,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (keyed.length === 0 || !selectionConditionSupported
         || keyed.some((write) => hasObservableEffect(write))
         || conditionalRuntimeEmit
-        || hasUnjournalledRepeatedEffect(block, runtimeEmitSet, impureInlineResults)
+        || conditionalRuntimeTransfer
+        || hasUnjournalledRepeatedEffect(block, runtimeEmitSet, runtimeTransferSet, impureInlineResults)
         // The permutation proof relies on visiting every physical rank exactly once. Apart from the canonical
         // post-test tail update, mutating the counter can shorten, extend, or repeat the loop. Mutating the
         // public bound anywhere in the function similarly disconnects the SDK-derived witness length from the
@@ -2064,12 +2158,27 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           emit.runtimeLoopEventCounter = { name: logical, initialValue: start, stepValue: step };
         });
       }
+      if (runtimeTransfers.length > 0) {
+        const loopIndex = node.runtimeLoopTransfers?.length ?? 0;
+        node.runtimeLoopTransfers = [
+          ...(node.runtimeLoopTransfers ?? []),
+          { loopIndex, permutationParam: primaryGroup.hidden },
+        ];
+        runtimeTransfers.forEach(({ transfer, condition }, siteIndex) => {
+          transfer.runtimeLoopTransfer = { loopIndex, siteIndex };
+          transfer.runtimeLoopTransferCondition = condition;
+          transfer.runtimeLoopTransferCounter = { name: logical, initialValue: start, stepValue: step };
+        });
+        // Admission can revisit an AST which already received fixed transfer ordinals in an earlier semantic
+        // rung. Force the later symbol pass to rebuild that frame, excluding the newly runtime-owned sites.
+        node.transferInfos = undefined;
+      }
       // The balanced route reserves the worst-case output width of every admitted runtime counter loop. One
       // iteration produces one mapping entry per distinct collection plus one record per unconditional event
       // site. Summing here handles sequential loops and multi-collection loops without recognizing a contract
       // schema later in layout planning.
       node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
-        + MAX_COUNTER_ITERATIONS * (keyedCollections.size + runtimeEmits.length);
+        + MAX_COUNTER_ITERATIONS * (keyedCollections.size + runtimeEmits.length + runtimeTransfers.length);
       if (!unitDomain) {
         prelude.push(at(new VariableDefinitionNode(
           new IntType(true, 256), [], rangedIterationCount,
@@ -2366,14 +2475,19 @@ export default class LowerVMapCounterLoops extends AstTraversal {
 
       const priorSegments = new Map((node.runtimeLoopEvents ?? [])
         .map((segment) => [segment.loopIndex, segment]));
+      const priorTransferSegments = new Map((node.runtimeLoopTransfers ?? [])
+        .map((segment) => [segment.loopIndex, segment]));
+      const publishEffectOrder = priorSegments.size > 0 && priorTransferSegments.size > 0;
       const outerEventConditions = new Map(outerEmits.map(({ emit, condition }) => [emit, condition]));
       const orderedSegments: typeof node.runtimeLoopEvents = [];
+      let effectSequence = 0;
       const appendLoop = (loop: WhileNode | DoWhileNode): void => {
-        const emits: EmitStatementNode[] = [];
+        const effects: Array<EmitStatementNode | TransferStatementNode> = [];
         const collect = (candidate: Node): void => {
           if (candidate !== loop && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
-          if (candidate instanceof EmitStatementNode && candidate.runtimeLoopEvent) {
-            emits.push(candidate);
+          if ((candidate instanceof EmitStatementNode && candidate.runtimeLoopEvent)
+            || (candidate instanceof TransferStatementNode && candidate.runtimeLoopTransfer)) {
+            effects.push(candidate);
             return;
           }
           for (const key of Object.keys(candidate)) {
@@ -2385,17 +2499,35 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           }
         };
         collect(loop.block);
-        if (emits.length === 0) return;
-        const prior = priorSegments.get(emits[0].runtimeLoopEvent!.loopIndex)!;
-        const loopIndex = orderedSegments.length;
-        emits.forEach((emit, siteIndex) => { emit.runtimeLoopEvent = { loopIndex, siteIndex }; });
-        orderedSegments.push({ loopIndex, permutationParam: prior.permutationParam });
+        if (effects.length === 0) return;
+        const sequence = effectSequence++;
+        if (publishEffectOrder) {
+          effects.forEach((effect, order) => { effect.runtimeLoopEffectOrder = order; });
+        }
+        const emits = effects.filter((effect): effect is EmitStatementNode =>
+          effect instanceof EmitStatementNode);
+        if (emits.length > 0) {
+          const prior = priorSegments.get(emits[0].runtimeLoopEvent!.loopIndex)!;
+          const loopIndex = orderedSegments.length;
+          emits.forEach((emit, siteIndex) => { emit.runtimeLoopEvent = { loopIndex, siteIndex }; });
+          orderedSegments.push({ loopIndex, permutationParam: prior.permutationParam,
+            ...(publishEffectOrder && { effectSequence: sequence }) });
+        }
+        const transfers = effects.filter((effect): effect is TransferStatementNode =>
+          effect instanceof TransferStatementNode);
+        if (transfers.length > 0) {
+          const prior = priorTransferSegments.get(transfers[0].runtimeLoopTransfer!.loopIndex);
+          if (prior && publishEffectOrder) prior.effectSequence = sequence;
+        }
       };
       const appendOuter = (emit: EmitStatementNode): void => {
         const loopIndex = orderedSegments.length;
         emit.runtimeLoopEvent = { loopIndex, siteIndex: 0 };
         emit.runtimeLoopEventCondition = outerEventConditions.get(emit);
-        orderedSegments.push({ loopIndex, repeatCount: 1 });
+        if (publishEffectOrder) emit.runtimeLoopEffectOrder = 0;
+        orderedSegments.push({ loopIndex, repeatCount: 1,
+          ...(publishEffectOrder && { effectSequence }) });
+        effectSequence += 1;
       };
       const appendInSourceOrder = (candidate: Node): void => {
         if (counterWriteLoopSet.has(candidate as WhileNode | DoWhileNode)) {

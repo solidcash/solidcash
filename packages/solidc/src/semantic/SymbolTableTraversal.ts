@@ -3202,11 +3202,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       const transferInfos: TransferInfo[] = [];
       this.collectTransferStatements(node.body, transferInfos);
 
+      node.transferInfos = transferInfos.length > 0 ? transferInfos : undefined;
       if (transferInfos.length > 0) {
         // Stateful: transfers occupy block-layout output slots (input-index relative). Stateless (no state):
         // no block, so transfer outputs are verified at absolute indices [0, N) and the value comes from the
         // input being spent (no satoshi container). Record them either way; the codegen branches on layout.
-        node.transferInfos = transferInfos;
       }
     }
 
@@ -3500,6 +3500,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (seen.has(node)) return;
     seen.add(node);
     if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode) {
+      if (node instanceof TransferStatementNode && node.runtimeLoopTransfer) return;
       const transferIndex = transferInfos.length;
       node.transferIndex = transferIndex;
       transferInfos.push({ transferIndex });
@@ -3616,6 +3617,38 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
     }
+  }
+
+  /**
+   * Runtime-loop transfer outputs are verified by the lowered handler, but their satoshi container belongs to
+   * the physical entry point which invokes it. Follow resolved internal calls so a message-bus route reserves
+   * that shared input/output slot even when the marked transfer lives in a compiler-owned handler clone.
+   */
+  private hasRuntimeLoopTransfer(
+    node: FunctionDefinitionNode,
+    seenFunctions: Set<FunctionDefinitionNode> = new Set(),
+  ): boolean {
+    if (seenFunctions.has(node)) return false;
+    seenFunctions.add(node);
+    if ((node.runtimeLoopTransfers?.length ?? 0) > 0) return true;
+    const seenNodes = new Set<Node>();
+    const walk = (candidate: Node | undefined): boolean => {
+      if (!candidate || seenNodes.has(candidate)) return false;
+      seenNodes.add(candidate);
+      if (candidate instanceof TransferStatementNode && candidate.runtimeLoopTransfer !== undefined) return true;
+      if (candidate instanceof FunctionCallNode && candidate.resolvedFunction
+        && this.hasRuntimeLoopTransfer(candidate.resolvedFunction, seenFunctions)) return true;
+      for (const [key, value] of Object.entries(candidate)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'symbolTable'
+          || key === 'type' || key === 'resolvedFunction' || key === 'functionReference'
+          || key === 'referencedContract' || key === 'collection' || key === 'stateVariable') continue;
+        if (value instanceof Node && walk(value)) return true;
+        if (Array.isArray(value)
+          && value.some((item) => item instanceof Node && walk(item))) return true;
+      }
+      return false;
+    };
+    return walk(node.body);
   }
 
   /**
@@ -13294,7 +13327,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // Satoshi container (if function has transfers - its own, or a graph handler's frames)
-    if ((node.transferInfos && node.transferInfos.length > 0) || graphTransfers > 0) {
+    if ((node.transferInfos && node.transferInfos.length > 0)
+      || this.hasRuntimeLoopTransfer(node) || graphTransfers > 0) {
       slots.push({ kind: 'satoshiContainer', offset: offset++ });
     }
 

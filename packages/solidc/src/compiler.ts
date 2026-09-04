@@ -8357,6 +8357,8 @@ function compileResolvedAst(
             ...(sourceAbi?.emits?.length ? { emits: sourceAbi.emits } : {}),
             ...(sourceAbi?.runtimeLoopEvents?.length
               ? { runtimeLoopEvents: sourceAbi.runtimeLoopEvents } : {}),
+            ...(sourceAbi?.runtimeLoopTransfers?.length
+              ? { runtimeLoopTransfers: sourceAbi.runtimeLoopTransfers } : {}),
             ...(sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {}),
             ...(sourceAbi?.tokenContainerAccesses?.length
               ? { tokenContainerAccesses: sourceAbi.tokenContainerAccesses } : {}),

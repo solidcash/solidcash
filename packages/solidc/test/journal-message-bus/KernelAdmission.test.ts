@@ -2071,7 +2071,7 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((handler) => handler.name === 'inside')?.sortedUpsertLoopInfo).toHaveLength(1);
   });
 
-  it('refuses a repeated BCH transfer inside a counter-keyed mapping loop', () => {
+  it('admits a repeated BCH transfer inside a counter-keyed mapping loop', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function denied(int n, bytes to) public {
@@ -2080,10 +2080,10 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.runtimeLoopTransfers)
+      .toEqual([expect.objectContaining({ siteCount: 1 })]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

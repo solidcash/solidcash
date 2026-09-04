@@ -336,6 +336,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   emitInfos?: EmitInfo[];
   /** Ordered fixed/repeated event segments lowered into the runtime trailing stream by a counter loop. */
   runtimeLoopEvents?: RuntimeLoopEventInfo[];
+  /** Repeated BCH-transfer segments lowered into the runtime trailing stream by a counter loop. */
+  runtimeLoopTransfers?: RuntimeLoopTransferInfo[];
   /** Worst-case trailing outputs across all lowered counter loops and their source-ordered fixed event peers.
    * Internal layout metadata; each loop independently admits at most 64 iterations. */
   runtimeCounterLoopOutputCapacity?: number;
@@ -2557,6 +2559,17 @@ export interface RuntimeLoopEventInfo {
   permutationParam?: string;
   /** Exact repeat count for a source-ordered event outside the loop. */
   repeatCount?: number;
+  /** Function-local execution segment shared by every runtime effect produced at this source position. */
+  effectSequence?: number;
+}
+
+export interface RuntimeLoopTransferInfo {
+  /** Stable per-function segment ordinal assigned by LowerVMapCounterLoops. */
+  loopIndex: number;
+  /** Hidden authenticated permutation whose length is the exact trip count for a repeated segment. */
+  permutationParam: string;
+  /** Function-local execution segment shared with runtime events in the same source loop. */
+  effectSequence?: number;
 }
 
 export interface TransferInfo {
@@ -2587,6 +2600,8 @@ export class EmitStatementNode extends StatementNode {
   runtimeLoopEventCondition?: ExpressionNode;
   /** Counter progression available to runtimeLoopEventCondition as a per-occurrence value. */
   runtimeLoopEventCounter?: { name: string; initialValue: bigint; stepValue: bigint };
+  /** Relative source order among all runtime effects in this repeated segment. */
+  runtimeLoopEffectOrder?: number;
   fieldNames?: string[]; // set for named-arg emits emit E({a: x}); reordered against the event's params
 
   constructor(
@@ -2603,6 +2618,14 @@ export class EmitStatementNode extends StatementNode {
 
 export class TransferStatementNode extends StatementNode {
   transferIndex: number = 0;
+  /** Runtime transfer site within a lowered counter-keyed mapping loop; excluded from fixed transfer slots. */
+  runtimeLoopTransfer?: { loopIndex: number; siteIndex: number };
+  /** Source predicate controlling this transfer, evaluated by the SDK to plan the exact output stream. */
+  runtimeLoopTransferCondition?: ExpressionNode;
+  /** Counter progression available to runtimeLoopTransferCondition as a per-occurrence value. */
+  runtimeLoopTransferCounter?: { name: string; initialValue: bigint; stepValue: bigint };
+  /** Relative source order among all runtime effects in this repeated segment. */
+  runtimeLoopEffectOrder?: number;
 
   constructor(
     public lockingBytecode: ExpressionNode,

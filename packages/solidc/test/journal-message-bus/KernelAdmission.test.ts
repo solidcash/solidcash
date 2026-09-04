@@ -854,6 +854,21 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('admits an immutable parameter as an affine scalar-state delta', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a; int total;
+      function write(int n, int amount) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.total = this.total + amount;
+          this.a[i] = this.total;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('refuses a canonical counter loop with a counter-dependent read from another mapping', () => {
     const statement = 'this.a[i] = this.b[i];';
     const artifact = compileString(`contract C() {

@@ -89,9 +89,9 @@ const AFFINE_COUNTER_STATE_VALUE_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelAffineCounterStateValue() {
   int total;
   mapping(int => int) m;
-  function write(int n) public {
+  function write(int n, int amount) public {
     for (int i = 0; i < n; i = i + 1) {
-      this.total = this.total + 1;
+      this.total = this.total + amount;
       this.m[i] = this.total;
     }
     require(true);
@@ -2192,12 +2192,12 @@ describe('kernel composite counter-key settlement', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    await expect(contract.call.write(3n).send()).resolves.toMatchObject({
+    await expect(contract.call.write(3n, 2n).send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    for (const [key, expected] of [[0n, 1n], [1n, 2n], [2n, 3n]] as const) {
+    for (const [key, expected] of [[0n, 2n], [1n, 4n], [2n, 6n]] as const) {
       await expect(contract.state.m(key)).resolves.toBe(expected);
     }
-    await expect(contract.getState()).resolves.toMatchObject({ total: 3n });
+    await expect(contract.getState()).resolves.toMatchObject({ total: 6n });
   }, 180_000);
 });

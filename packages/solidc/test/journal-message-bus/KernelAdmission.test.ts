@@ -599,23 +599,27 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('keeps a conditionally initialized same-iteration local array key off the kernel route', () => {
+  it('derives a conditionally initialized same-iteration local array key', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function denied(int n, bool take) public {
         int[] xs = new int[](n);
         for (int i = 0; i < n; i = i + 1) {
           if (take) { xs[i] = i + 1; }
+          else { xs[i] = n + i; }
           this.slots[xs[i]] = 1;
         }
         require(true);
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({
+        collection: 'slots',
+        varyingKeyExpressions: [expect.objectContaining({ kind: 'ternary' })],
+      })]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });

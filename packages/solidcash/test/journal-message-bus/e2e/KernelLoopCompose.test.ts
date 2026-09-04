@@ -560,6 +560,15 @@ contract KernelSameIterationLocalKeyArray() {
     }
     require(true);
   }
+  function writeConditional(int count, int offset, bool take) public {
+    int[] keys = new int[](count);
+    for (int i = 0; i < count; i = i + 1) {
+      if (take) { keys[i] = offset + i; }
+      else { keys[i] = offset + count + i; }
+      this.slots[keys[i]] = i + 30;
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.slots[key] == expected); }
 }`;
 
@@ -2257,6 +2266,14 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(7n, 20n).send()).resolves.toBeDefined();
     await expect(contract.call.check(8n, 21n).send()).resolves.toBeDefined();
     await expect(contract.call.check(9n, 22n).send()).resolves.toBeDefined();
+    await expect(contract.call.writeConditional(3n, 10n, true).send()).resolves.toBeDefined();
+    await expect(contract.call.check(10n, 30n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(11n, 31n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(12n, 32n).send()).resolves.toBeDefined();
+    await expect(contract.call.writeConditional(3n, 10n, false).send()).resolves.toBeDefined();
+    await expect(contract.call.check(13n, 30n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(14n, 31n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(15n, 32n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles loop and event predicates from dominating scalar-state assignments', async () => {

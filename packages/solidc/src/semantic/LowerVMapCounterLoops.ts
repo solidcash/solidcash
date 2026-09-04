@@ -2454,7 +2454,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     canonicalCounters: ReadonlySet<string> = new Set(),
   ): void {
     if (!node.body) return;
-    type ArrayWrite = { index: ExpressionNode; value: ExpressionNode };
+    type ArrayWrite = { index: ExpressionNode; value: ExpressionNode; condition?: ExpressionNode };
     type ArrayPlan = { defaultValue: ExpressionNode; writes: ArrayWrite[] };
     const plans = new Map<string, ArrayPlan>();
     const walk = (root: Node, visit: (candidate: Node) => void): void => {
@@ -2516,10 +2516,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const symbolicRead = (access: ArrayAccessNode, plan: ArrayPlan): ExpressionNode => {
       let value = cloneNode(plan.defaultValue) as ExpressionNode;
       for (const write of plan.writes) {
-        const matches = new BinaryOpNode(
+        let matches: ExpressionNode = new BinaryOpNode(
           cloneNode(access.index), BinaryOperator.EQ, cloneNode(write.index),
         );
         matches.location = access.location;
+        if (write.condition) {
+          const active = new BinaryOpNode(
+            cloneNode(matches), BinaryOperator.AND, cloneNode(write.condition),
+          );
+          active.location = access.location;
+          matches = active;
+        }
         const selected = new TernaryOpNode(matches, cloneNode(write.value), value);
         selected.location = access.location;
         selected.type = access.type;
@@ -2580,9 +2587,59 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         writes: plan.writes.map((write) => ({
           index: cloneNode(write.index) as ExpressionNode,
           value: cloneNode(write.value) as ExpressionNode,
+          ...(write.condition && { condition: cloneNode(write.condition) as ExpressionNode }),
         })),
       }]),
     );
+    const branchCondition = (
+      condition: ExpressionNode,
+      prior: ExpressionNode | undefined,
+      negated: boolean,
+    ): ExpressionNode => {
+      let branch: ExpressionNode = cloneNode(condition);
+      if (negated) {
+        const not = new UnaryOpNode(UnaryOperator.NOT, branch);
+        not.location = condition.location;
+        branch = not;
+      }
+      if (!prior) return branch;
+      const combined = new BinaryOpNode(cloneNode(prior), BinaryOperator.AND, branch);
+      combined.location = condition.location;
+      return combined;
+    };
+    const mergeBranchPlans = (
+      active: Map<string, ArrayPlan>,
+      before: ReadonlyMap<string, ArrayPlan>,
+      ifPlans: ReadonlyMap<string, ArrayPlan>,
+      elsePlans: ReadonlyMap<string, ArrayPlan>,
+      condition: ExpressionNode,
+    ): void => {
+      for (const [name, base] of before) {
+        const ifPlan = ifPlans.get(name);
+        const elsePlan = elsePlans.get(name);
+        if (!ifPlan || !elsePlan
+          || ifPlan.writes.length < base.writes.length || elsePlan.writes.length < base.writes.length) {
+          active.delete(name);
+          continue;
+        }
+        const merged = copyPlans(new Map([[name, base]])).get(name)!;
+        for (const write of ifPlan.writes.slice(base.writes.length)) {
+          merged.writes.push({
+            index: cloneNode(write.index) as ExpressionNode,
+            value: cloneNode(write.value) as ExpressionNode,
+            condition: branchCondition(condition, write.condition, false),
+          });
+        }
+        for (const write of elsePlan.writes.slice(base.writes.length)) {
+          merged.writes.push({
+            index: cloneNode(write.index) as ExpressionNode,
+            value: cloneNode(write.value) as ExpressionNode,
+            condition: branchCondition(condition, write.condition, true),
+          });
+        }
+        active.set(name, merged);
+      }
+    };
     const transformBlock = (block: BlockNode, active: Map<string, ArrayPlan>): void => {
       const transformed: StatementNode[] = [];
       for (const statement of block.statements ?? []) {
@@ -2599,10 +2656,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           continue;
         }
         if (statement instanceof BranchNode) {
-          transformBlock(statement.ifBlock, copyPlans(active));
-          if (statement.elseBlock) transformBlock(statement.elseBlock, copyPlans(active));
+          const before = copyPlans(active);
+          const ifPlans = copyPlans(active);
+          const elsePlans = copyPlans(active);
+          transformBlock(statement.ifBlock, ifPlans);
+          if (statement.elseBlock) transformBlock(statement.elseBlock, elsePlans);
           transformed.push(statement);
-          for (const name of mutatedArrays(statement)) active.delete(name);
+          mergeBranchPlans(active, before, ifPlans, elsePlans, statement.condition);
           continue;
         }
         if (statement instanceof SwitchNode) {

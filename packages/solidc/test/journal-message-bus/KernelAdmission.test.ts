@@ -1108,6 +1108,25 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it('refuses an unlowered compound counter key instead of publishing repeated effects as fixed slots', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) keyed;
+      function denied(int base, int n, bytes32 category, bytes recipient) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.keyed[base + i] = i;
+          this.tokens[category].transfer(recipient, i + 1);
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
   it('journals a nested invariant entry beside a counter-keyed physical loop', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) keyed;
@@ -2087,7 +2106,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a repeated token transfer inside a counter-keyed mapping loop', () => {
+  it('admits a repeated fungible-token transfer inside a counter-keyed mapping loop', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function denied(int n, bytes32 category, bytes to) public {
@@ -2099,10 +2118,12 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.runtimeLoopTransfers)
+      .toEqual([expect.objectContaining({
+        siteCount: 1, siteKinds: ['token'], tokenContainerSlots: [0],
+      })]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

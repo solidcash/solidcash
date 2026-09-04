@@ -3630,7 +3630,6 @@ export default class SymbolTableTraversal extends AstTraversal {
   ): boolean {
     if (seenFunctions.has(node)) return false;
     seenFunctions.add(node);
-    if ((node.runtimeLoopTransfers?.length ?? 0) > 0) return true;
     const seenNodes = new Set<Node>();
     const walk = (candidate: Node | undefined): boolean => {
       if (!candidate || seenNodes.has(candidate)) return false;
@@ -3814,6 +3813,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    */
   private collectTokenContainerTransferStatements(node: Node, state: { counter: number }): void {
     if (node instanceof TokenContainerMethodStatementNode) {
+      if (node.runtimeLoopTransfer) return;
       node.transferIndex = state.counter++;
       return;
     }
@@ -5099,16 +5099,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (keyExpr instanceof IdentifierNode) {
         const slotKey = keyExpr.name;
         const op = node.methodName as 'transfer' | 'transferNft';
+        const fixedEffect = node.runtimeLoopTransfer === undefined;
         const existing = map.get(slotKey);
         if (existing) {
           if (!existing.operations.includes(op)) existing.operations.push(op);
-          if (op === 'transfer') existing.transferCount++;
-          else if (op === 'transferNft') existing.transferNftCount++;
+          if (fixedEffect && op === 'transfer') existing.transferCount++;
+          else if (fixedEffect && op === 'transferNft') existing.transferNftCount++;
         } else {
           map.set(slotKey, {
             keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: [op], slotIndex: -1,
-            transferCount: op === 'transfer' ? 1 : 0,
-            transferNftCount: op === 'transferNft' ? 1 : 0,
+            transferCount: fixedEffect && op === 'transfer' ? 1 : 0,
+            transferNftCount: fixedEffect && op === 'transferNft' ? 1 : 0,
           });
         }
       }

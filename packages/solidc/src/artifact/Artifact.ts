@@ -15,7 +15,7 @@ import {
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
-  EmitStatementNode, TernaryOpNode, UnaryOpNode,
+  EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode, UnaryOpNode,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
@@ -1133,12 +1133,13 @@ function buildFunctionAbiMetadata(
   })();
   const runtimeLoopTransfers = (() => {
     if (!func.runtimeLoopTransfers?.length || !func.body) return [];
-    const sites = new Map<number, TransferStatementNode[]>();
+    const sites = new Map<number, Array<TransferStatementNode | TokenContainerMethodStatementNode>>();
     const seen = new Set<Node>();
     const walk = (node: Node): void => {
       if (seen.has(node)) return;
       seen.add(node);
-      if (node instanceof TransferStatementNode && node.runtimeLoopTransfer) {
+      if ((node instanceof TransferStatementNode || node instanceof TokenContainerMethodStatementNode)
+        && node.runtimeLoopTransfer) {
         const group = sites.get(node.runtimeLoopTransfer.loopIndex) ?? [];
         group[node.runtimeLoopTransfer.siteIndex] = node;
         sites.set(node.runtimeLoopTransfer.loopIndex, group);
@@ -1163,6 +1164,12 @@ function buildFunctionAbiMetadata(
       return {
         permutationParam: loop.permutationParam,
         siteCount: transferSites.length,
+        ...(transferSites.some((transfer) => transfer instanceof TokenContainerMethodStatementNode) && {
+          siteKinds: transferSites.map((transfer) => transfer instanceof TokenContainerMethodStatementNode
+            ? 'token' as const : 'bch' as const),
+          tokenContainerSlots: transferSites.map((transfer) =>
+            transfer instanceof TokenContainerMethodStatementNode ? transfer.tokenContainerSlotIndex : null),
+        }),
         ...(conditions.some((condition) => condition !== null) && { conditions }),
         ...(loop.effectSequence !== undefined && { effectSequence: loop.effectSequence }),
         ...(transferSites.some((transfer) => transfer.runtimeLoopEffectOrder !== undefined) && {
@@ -1320,8 +1327,14 @@ function buildFunctionAbiMetadata(
         keyParam: da.keyParam,
         ...(da.keySource && da.keySource !== 'param' && { keySource: da.keySource }),
         operations: da.operations,
-        ...(da.transferCount > 1 && { transferCount: da.transferCount }),
-        ...(da.transferNftCount > 1 && { transferNftCount: da.transferNftCount }),
+        // An omitted count is the pre-count-schema spelling for exactly one operation. Runtime-loop effects
+        // deliberately remain in `operations` (the container itself is still read/authenticated) while owning
+        // zero fixed output slots, so publish the explicit zero to keep old-artifact fallback from manufacturing
+        // one dummy transfer on a zero-trip loop.
+        ...((da.transferCount !== 1 || !da.operations.includes('transfer'))
+          && { transferCount: da.transferCount }),
+        ...((da.transferNftCount !== 1 || !da.operations.includes('transferNft'))
+          && { transferNftCount: da.transferNftCount }),
       })),
     }),
     ...(func.usesMsgSender && { usesMsgSender: true }),

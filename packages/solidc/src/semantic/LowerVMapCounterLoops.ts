@@ -473,7 +473,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const hasUnjournalledRepeatedEffect = (
       x: Node,
       runtimeEmits: ReadonlySet<EmitStatementNode>,
-      runtimeTransfers: ReadonlySet<TransferStatementNode>,
+      runtimeTransfers: ReadonlySet<Node>,
       impureInlineResults: ReadonlySet<string>,
     ): boolean => {
       if (x instanceof TryCatchNode) {
@@ -503,8 +503,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             containsIdentifier(x.lockingBytecode, name) || containsIdentifier(x.amount, name));
       }
       if (x instanceof AddressTransferStatementNode || x instanceof AddressSendExpressionNode
-        || x instanceof TokenContainerMethodStatementNode
         || x instanceof MethodCallNode || x instanceof MethodCallStatementNode) return true;
+      if (x instanceof TokenContainerMethodStatementNode) {
+        if (!runtimeTransfers.has(x) || x.methodName !== 'transfer') return true;
+        return x.args.some((arg) => hasObservableEffect(arg))
+          || hasObservableEffect(x.tokenContainerKeyExpression)
+          || [...impureInlineResults].some((name) => x.args.some((arg) => containsIdentifier(arg, name))
+            || containsIdentifier(x.tokenContainerKeyExpression, name));
+      }
       if (x instanceof FunctionCallNode) return hasObservableEffect(x);
       if (x instanceof FunctionCallStatementNode) return hasObservableEffect(x);
       for (const key of Object.keys(x)) {
@@ -1134,13 +1140,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       collectRuntimeEmits(block);
-      const runtimeTransfers: Array<{ transfer: TransferStatementNode; condition?: ExpressionNode }> = [];
+      const runtimeTransfers: Array<{
+        transfer: TransferStatementNode | TokenContainerMethodStatementNode; condition?: ExpressionNode;
+      }> = [];
       let conditionalRuntimeTransfer = false;
       const collectRuntimeTransfers = (
         x: Node,
         condition?: ExpressionNode,
       ): void => {
-        if (x instanceof TransferStatementNode) {
+        if (x instanceof TransferStatementNode
+          || (x instanceof TokenContainerMethodStatementNode && x.methodName === 'transfer')) {
           if (condition && !runtimePathExpressionSupported(
             condition, logical, new Set(), stateValues, loopCarriedLocalValues,
           )) conditionalRuntimeTransfer = true;
@@ -1192,7 +1201,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (x !== block && (x instanceof WhileNode || x instanceof DoWhileNode)) {
           let containsTransfer = false;
           const findTransfer = (candidate: Node): void => {
-            if (candidate instanceof TransferStatementNode) { containsTransfer = true; return; }
+            if (candidate instanceof TransferStatementNode
+              || candidate instanceof TokenContainerMethodStatementNode) { containsTransfer = true; return; }
             for (const value of Object.values(candidate)) {
               if (value instanceof Node) findTransfer(value);
               else if (Array.isArray(value)) {
@@ -1232,7 +1242,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       collectImpureInlineResults(block);
       const runtimeEmitSet = new Set(runtimeEmits.map(({ emit }) => emit));
-      const runtimeTransferSet = new Set(runtimeTransfers.map(({ transfer }) => transfer));
+      const runtimeTransferSet = new Set<Node>(runtimeTransfers.map(({ transfer }) => transfer));
       const keyedSelectionConditions = keyed.map((write) => writePaths.get(write));
       const uniqueDisjunction = (
         conditions: readonly (ExpressionNode | undefined)[],
@@ -2162,7 +2172,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const loopIndex = node.runtimeLoopTransfers?.length ?? 0;
         node.runtimeLoopTransfers = [
           ...(node.runtimeLoopTransfers ?? []),
-          { loopIndex, permutationParam: primaryGroup.hidden },
+          {
+            loopIndex,
+            permutationParam: primaryGroup.hidden,
+            siteKinds: runtimeTransfers.map(({ transfer }) =>
+              transfer instanceof TokenContainerMethodStatementNode ? 'token' : 'bch'),
+          },
         ];
         runtimeTransfers.forEach(({ transfer, condition }, siteIndex) => {
           transfer.runtimeLoopTransfer = { loopIndex, siteIndex };
@@ -2482,11 +2497,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const orderedSegments: typeof node.runtimeLoopEvents = [];
       let effectSequence = 0;
       const appendLoop = (loop: WhileNode | DoWhileNode): void => {
-        const effects: Array<EmitStatementNode | TransferStatementNode> = [];
+        const effects: Array<EmitStatementNode | TransferStatementNode | TokenContainerMethodStatementNode> = [];
         const collect = (candidate: Node): void => {
           if (candidate !== loop && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
           if ((candidate instanceof EmitStatementNode && candidate.runtimeLoopEvent)
-            || (candidate instanceof TransferStatementNode && candidate.runtimeLoopTransfer)) {
+            || ((candidate instanceof TransferStatementNode
+              || candidate instanceof TokenContainerMethodStatementNode) && candidate.runtimeLoopTransfer)) {
             effects.push(candidate);
             return;
           }
@@ -2513,8 +2529,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           orderedSegments.push({ loopIndex, permutationParam: prior.permutationParam,
             ...(publishEffectOrder && { effectSequence: sequence }) });
         }
-        const transfers = effects.filter((effect): effect is TransferStatementNode =>
-          effect instanceof TransferStatementNode);
+        const transfers = effects.filter((effect): effect is TransferStatementNode | TokenContainerMethodStatementNode =>
+          effect instanceof TransferStatementNode || effect instanceof TokenContainerMethodStatementNode);
         if (transfers.length > 0) {
           const prior = priorTransferSegments.get(transfers[0].runtimeLoopTransfer!.loopIndex);
           if (prior && publishEffectOrder) prior.effectSequence = sequence;

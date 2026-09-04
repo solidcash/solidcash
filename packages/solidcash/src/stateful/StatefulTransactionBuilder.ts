@@ -3811,6 +3811,13 @@ export interface TokenContainerTransferNftData {
   insertionOrder: number;
 }
 
+export type RuntimeLoopTransferOutput = {
+  lockingBytecode: Uint8Array;
+  amount: bigint;
+  kind?: 'bch' | 'token';
+  tokenContainerCategoryId?: string;
+};
+
 export interface ExternalCallUtxoGroup {
   categoryId: string;
   stateLayout: StateLayout;
@@ -4024,7 +4031,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   }>;
   /** Plain-BCH outputs produced by lowered runtime counter loops. Recipient and amount begin as probe
    * placeholders and are replaced from the covenant trace before the transaction is returned. */
-  runtimeLoopTransferOutputs?: Array<{ lockingBytecode: Uint8Array; amount: bigint }>;
+  runtimeLoopTransferOutputs?: RuntimeLoopTransferOutput[];
   /** Physical row order for runtime mapping-entry, event, and BCH-transfer segments. */
   runtimeLoopTrailingSegments?: Array<
   | { kind: 'entries'; collection: string; offset: number; count: number }
@@ -4282,7 +4289,7 @@ export class StatefulTransactionBuilder {
   private runtimeLoopEventOutputs: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
   }> = [];
-  private runtimeLoopTransferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }> = [];
+  private runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
   private runtimeLoopTrailingSegments: NonNullable<StatefulTransactionOptions['runtimeLoopTrailingSegments']> = [];
 
   // P5b: collections whose loop-entry (NEW) commitment is known EXACTLY (a chunkable-value insert) and must NOT be
@@ -4388,7 +4395,7 @@ export class StatefulTransactionBuilder {
       commitment: '',
     }));
     this.runtimeLoopTransferOutputs = (options.runtimeLoopTransferOutputs ?? []).map((output) => ({
-      lockingBytecode: Uint8Array.from(output.lockingBytecode), amount: output.amount,
+      ...output, lockingBytecode: Uint8Array.from(output.lockingBytecode), amount: output.amount,
     }));
     this.runtimeLoopTrailingSegments = options.runtimeLoopTrailingSegments?.map((segment) => ({ ...segment })) ?? [];
     this.eventDefinitions = options.eventDefinitions ?? [];
@@ -10130,7 +10137,7 @@ export class StatefulTransactionBuilder {
     throw new Error(`Runtime loop transfer ${transferIndex} is missing from the trailing segment plan`);
   }
 
-  getRuntimeLoopTransferOutputs(): ReadonlyArray<{ lockingBytecode: Uint8Array; amount: bigint }> {
+  getRuntimeLoopTransferOutputs(): ReadonlyArray<RuntimeLoopTransferOutput> {
     return this.runtimeLoopTransferOutputs;
   }
 
@@ -10139,7 +10146,9 @@ export class StatefulTransactionBuilder {
       throw new Error(`Invalid runtime loop transfer index ${index}`);
     }
     if (amount < 0n) throw new Error('Derived runtime loop transfer amount must not be negative');
-    this.runtimeLoopTransferOutputs[index] = { lockingBytecode: Uint8Array.from(lockingBytecode), amount };
+    this.runtimeLoopTransferOutputs[index] = {
+      ...this.runtimeLoopTransferOutputs[index], lockingBytecode: Uint8Array.from(lockingBytecode), amount,
+    };
     return this;
   }
 
@@ -11966,7 +11975,10 @@ export class StatefulTransactionBuilder {
     if (this.satoshiContainerUtxo) {
       const totalTransferAmount = this.pendingTransfers
         .filter((t) => t.lockingBytecode.length > 0)
-        .reduce((sum, t) => sum + t.amount, 0n);
+        .reduce((sum, t) => sum + t.amount, 0n)
+        + this.runtimeLoopTransferOutputs
+          .filter((transfer) => (transfer.kind ?? 'bch') === 'bch')
+          .reduce((sum, transfer) => sum + transfer.amount, 0n);
       if (totalTransferAmount > this.satoshiContainerUtxo.satoshis + this.containerDepositAmount) {
         throw new Error(
           `Total transfer amount (${totalTransferAmount}) exceeds satoshi container balance `
@@ -12017,7 +12029,11 @@ export class StatefulTransactionBuilder {
       // Compute remaining FT amount after transfers
       const transferredFtAmount = this.pendingTokenContainerTransfers
         .filter((s) => s.tokenContainerCategoryId === container.tokenContainerCategoryId)
-        .reduce((sum, s) => sum + s.amount, 0n);
+        .reduce((sum, s) => sum + s.amount, 0n)
+        + this.runtimeLoopTransferOutputs
+          .filter((transfer) => transfer.kind === 'token'
+            && transfer.tokenContainerCategoryId === container.tokenContainerCategoryId)
+          .reduce((sum, transfer) => sum + transfer.amount, 0n);
 
       const inputFtAmount = container.utxo.token?.amount ?? 0n;
       if (transferredFtAmount > inputFtAmount) {
@@ -12392,7 +12408,18 @@ export class StatefulTransactionBuilder {
     const appendRuntimeLoopTransfer = (transferIndex: number): void => {
       const transfer = this.runtimeLoopTransferOutputs[transferIndex];
       if (!transfer) throw new Error(`Runtime loop transfer segment references missing transfer ${transferIndex}`);
-      builder.addOutput({ to: transfer.lockingBytecode, amount: transfer.amount });
+      if (transfer.kind === 'token') {
+        if (!transfer.tokenContainerCategoryId) {
+          throw new Error(`Runtime loop token transfer ${transferIndex} has no token category`);
+        }
+        builder.addOutput({
+          to: transfer.lockingBytecode,
+          amount: 1200n,
+          token: { amount: transfer.amount, category: transfer.tokenContainerCategoryId },
+        });
+      } else {
+        builder.addOutput({ to: transfer.lockingBytecode, amount: transfer.amount });
+      }
     };
     if (this.runtimeLoopTrailingSegments.length > 0) {
       const variables = new Map(this._trailingLoopEntryVars().map((variable) => [variable.collection, variable]));
@@ -13681,7 +13708,10 @@ export class StatefulTransactionBuilder {
     if (!this.satoshiContainerUtxo) return false;
     const total = this.pendingTransfers
       .filter((t) => t.lockingBytecode.length > 0)
-      .reduce((sum, t) => sum + t.amount, 0n);
+      .reduce((sum, t) => sum + t.amount, 0n)
+      + this.runtimeLoopTransferOutputs
+        .filter((transfer) => (transfer.kind ?? 'bch') === 'bch')
+        .reduce((sum, transfer) => sum + transfer.amount, 0n);
     return total >= this.satoshiContainerUtxo.satoshis + this.containerDepositAmount;
   }
 
@@ -13693,7 +13723,11 @@ export class StatefulTransactionBuilder {
     if (!container?.exists || !container?.utxo) return false;
     const ftTransferred = this.pendingTokenContainerTransfers
       .filter((t) => t.tokenContainerCategoryId === categoryId)
-      .reduce((sum, t) => sum + t.amount, 0n);
+      .reduce((sum, t) => sum + t.amount, 0n)
+      + this.runtimeLoopTransferOutputs
+        .filter((transfer) => transfer.kind === 'token'
+          && transfer.tokenContainerCategoryId === categoryId)
+        .reduce((sum, transfer) => sum + transfer.amount, 0n);
     const nftTransferred = this.pendingTokenContainerTransferNfts
       .some((t) => t.tokenContainerCategoryId === categoryId);
     const inputFt = container.utxo.token?.amount ?? 0n;

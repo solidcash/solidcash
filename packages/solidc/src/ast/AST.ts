@@ -2570,7 +2570,12 @@ export interface RuntimeLoopTransferInfo {
   permutationParam: string;
   /** Function-local execution segment shared with runtime events in the same source loop. */
   effectSequence?: number;
+  /** Effect kind per source site. Stored on the segment because synthetic route bodies need not retain the
+   * concrete source statement nodes from which this information was first derived. */
+  siteKinds?: RuntimeLoopTransferKind[];
 }
+
+export type RuntimeLoopTransferKind = 'bch' | 'token';
 
 export interface TransferInfo {
   transferIndex: number;
@@ -2720,6 +2725,11 @@ export class TypeIntrospectionNode extends ExpressionNode {
 export class TokenContainerMethodStatementNode extends StatementNode {
   tokenContainerSlotIndex: number = 0;
   transferIndex: number = 0;
+  /** Runtime counter-loop effect stream ownership. Currently assigned to fungible-token transfer sites. */
+  runtimeLoopTransfer?: { loopIndex: number; siteIndex: number };
+  runtimeLoopTransferCondition?: ExpressionNode;
+  runtimeLoopTransferCounter?: { name: string; initialValue: bigint; stepValue: bigint };
+  runtimeLoopEffectOrder?: number;
 
   constructor(
     public tokenContainerKeyExpression: ExpressionNode,  // the category expression

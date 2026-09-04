@@ -2451,6 +2451,18 @@ function synthesizeMessageBusRoute(
         // eslint-disable-next-line @typescript-eslint/no-loop-func
         walkInvocationAst(candidate.body, (node) => {
           if (unsupported) return;
+          if (node instanceof TransferStatementNode || node instanceof TokenContainerMethodStatementNode) {
+            const effectOccurrence = occurrenceInfoOf(candidate, node);
+            if (effectOccurrence.occurrence !== 'loop'
+              || effectOccurrence.maximumOccurrences !== undefined
+              || node.runtimeLoopTransfer !== undefined) return;
+            // Fixed transfer slots represent one statically bounded occurrence. Counter-loop lowering marks
+            // every transfer which moved to the authenticated runtime effect stream. If an unbounded occurrence
+            // remains unmarked (for example beside an unsupported compound counter key), admitting it would
+            // silently publish one fixed output for an arbitrary number of source effects.
+            unsupported = true;
+            return;
+          }
           const bare = bareEntryAccessOf(node, bound);
           const access = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
             || node instanceof MappingDeleteNode

@@ -145,6 +145,10 @@ export interface RuntimeLoopEventAbi {
 export interface RuntimeLoopTransferAbi {
   permutationParam: string;
   siteCount: number;
+  /** Effect kind per source site. Omitted by older artifacts whose sites are all plain BCH transfers. */
+  siteKinds?: readonly ('bch' | 'token')[];
+  /** Token-container slot per source site; null for plain BCH sites. */
+  tokenContainerSlots?: readonly (number | null)[];
   /** Per-site runtime predicates, aligned with the source transfer sites. */
   conditions?: readonly (ExternalCallExpression | null)[];
   /** Function-local execution segment, shared with events produced by the same loop. */

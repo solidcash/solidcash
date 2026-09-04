@@ -7,10 +7,12 @@ import {
 } from '../../../src/index.js';
 import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { generateLibauthSourceOutputs } from '../../../src/utils.js';
+import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { getSatoshiContainerAddress } from '../../../src/stateful/covenant-helpers.js';
-import { createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import {
+  createBareP2pkhFeeFunder, createTestProvider, genesisFtContainer, setupStatefulUtxos,
+} from '../../test-util.js';
 import { alicePriv, alicePub, bobPriv, bobPub } from '../../fixture/vars.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
@@ -247,6 +249,42 @@ contract KernelCounterMappingTransfer() {
       emit Mark(100 + i);
       this.transfer(recipient, 5000 + i);
       emit Mark(200 + i);
+    }
+    require(true);
+  }
+}`;
+
+const RUNTIME_TOKEN_TRANSFER_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelRuntimeTokenTransfer() {
+  mapping(int => int) rows;
+  mapping(int => int) otherRows;
+  function pay(int n, bytes32 category, bytes recipient) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.rows[i] = i + 1;
+      this.tokens[category].transfer(recipient, 2 + i);
+    }
+    require(true);
+  }
+  function payOther(int n, bytes32 category, bytes recipient) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.otherRows[i] = i + 1;
+      this.tokens[category].transfer(recipient, 2 + i);
+    }
+    require(true);
+  }
+}`;
+
+const CONDITIONAL_RUNTIME_TOKEN_TRANSFER_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelConditionalRuntimeTokenTransfer() {
+  mapping(int => int) rows;
+  function split(int n, bytes32 evenCategory, bytes32 oddCategory, bytes evenRecipient, bytes oddRecipient) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.rows[i] = i + 1;
+      if (i % 2 == 0) {
+        this.tokens[evenCategory].transfer(evenRecipient, i + 1);
+      } else {
+        this.tokens[oddCategory].transfer(oddRecipient, i + 1);
+      }
     }
     require(true);
   }
@@ -1912,6 +1950,10 @@ describe('kernel composite counter-key settlement', () => {
     const payments = transaction.outputs.filter((output) =>
       binToHex(output.lockingBytecode) === binToHex(recipient));
     expect(payments.map((output) => output.valueSatoshis)).toEqual([2000n, 2001n, 2002n]);
+    expect(transaction.outputs.some((output) =>
+      binToHex(output.lockingBytecode)
+        === binToHex(addressToLockScript(getSatoshiContainerAddress(boundInner, categoryId)))
+      && output.valueSatoshis === 43_997n)).toBe(true);
 
     const vm = createVirtualMachineBch2026ForProvider(provider);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
@@ -1994,6 +2036,162 @@ describe('kernel composite counter-key settlement', () => {
     }))).not.toBe(true);
 
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 180_000);
+
+  it('settles repeated fungible-token transfers and container conservation', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(
+      RUNTIME_TOKEN_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
+    );
+    const pay = artifact.abi.find((candidate) => candidate.name === 'pay')!;
+    expect(pay.runtimeLoopTransfers).toEqual([expect.objectContaining({
+      siteCount: 1, siteKinds: ['token'], tokenContainerSlots: [0],
+    })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')?.eligible).toBe(true);
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const token = await genesisFtContainer(provider, inner, categoryId, [100n]);
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const recipientFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const recipient = recipientFunder.unlocker.generateLockingBytecode();
+
+    const zeroBuilder = await contract.batch([{
+      function: 'pay', args: [0n, hexToBin(token.category), recipient],
+    }]).build();
+    const zeroTransaction = zeroBuilder.buildLibauthTransaction();
+    expect(zeroTransaction.outputs.filter((output) => output.token
+      && binToHex(output.token.category) === token.category
+      && typeof output.lockingBytecode !== 'string'
+      && binToHex(output.lockingBytecode) === binToHex(recipient))).toHaveLength(0);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const zeroSources = generateLibauthSourceOutputs(zeroBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < zeroTransaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs: zeroSources, transaction: zeroTransaction,
+      })), `zero token input ${inputIndex}`).toBe(true);
+    }
+
+    const builder = await contract.batch([{
+      function: 'pay', args: [3n, hexToBin(token.category), recipient],
+    }]).build();
+    const transaction = builder.buildLibauthTransaction();
+    const transfers = transaction.outputs.filter((output) => output.token
+      && binToHex(output.token.category) === token.category
+      && binToHex(output.lockingBytecode) === binToHex(recipient));
+    expect(transfers.map((output) => output.token!.amount)).toEqual([2n, 3n, 4n]);
+    expect(transaction.outputs.some((output) => output.token
+      && binToHex(output.token.category) === token.category
+      && output.token.amount === 91n)).toBe(true);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `token input ${inputIndex}`)
+        .toBe(true);
+    }
+
+    const hostileTransaction = builder.buildLibauthTransaction();
+    const hostileTransfer = hostileTransaction.outputs.find((output) => output.token
+      && binToHex(output.token.category) === token.category
+      && binToHex(output.lockingBytecode) === binToHex(recipient));
+    expect(hostileTransfer).toBeDefined();
+    hostileTransfer!.token!.amount += 1n;
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInputIndex, sourceOutputs, transaction: hostileTransaction,
+    }))).not.toBe(true);
+  }, 180_000);
+
+  it('composes runtime token transfers from disjoint rows against one container remainder', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(
+      RUNTIME_TOKEN_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
+    );
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const token = await genesisFtContainer(provider, inner, categoryId, [100n]);
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const recipientFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const recipient = recipientFunder.unlocker.generateLockingBytecode();
+
+    const builder = await contract.batch([
+      { function: 'pay', args: [2n, hexToBin(token.category), recipient] },
+      { function: 'payOther', args: [2n, hexToBin(token.category), recipient] },
+    ]).build();
+    const transaction = builder.buildLibauthTransaction();
+    const transfers = transaction.outputs.filter((output) => output.token
+      && binToHex(output.token.category) === token.category
+      && binToHex(output.lockingBytecode) === binToHex(recipient));
+    expect(transfers.map((output) => output.token!.amount)).toEqual([2n, 3n, 2n, 3n]);
+    expect(transaction.outputs.some((output) => output.token
+      && binToHex(output.token.category) === token.category && output.token.amount === 90n)).toBe(true);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `token input ${inputIndex}`)
+        .toBe(true);
+    }
+  }, 180_000);
+
+  it('settles conditional runtime token sites across independent containers in source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(
+      CONDITIONAL_RUNTIME_TOKEN_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
+    );
+    const split = artifact.abi.find((candidate) => candidate.name === 'split')!;
+    expect(split.runtimeLoopTransfers).toEqual([expect.objectContaining({
+      siteCount: 2, siteKinds: ['token', 'token'], tokenContainerSlots: [0, 1],
+      conditions: [expect.anything(), expect.anything()],
+    })]);
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const evenToken = await genesisFtContainer(provider, inner, categoryId, [100n]);
+    const oddToken = await genesisFtContainer(provider, inner, categoryId, [100n]);
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const evenFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const oddFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const evenRecipient = evenFunder.unlocker.generateLockingBytecode();
+    const oddRecipient = oddFunder.unlocker.generateLockingBytecode();
+
+    const builder = await contract.batch([{
+      function: 'split',
+      args: [
+        4n, hexToBin(evenToken.category), hexToBin(oddToken.category), evenRecipient, oddRecipient,
+      ],
+    }]).build();
+    const transaction = builder.buildLibauthTransaction();
+    const runtimeTransfers = transaction.outputs.filter((output) => output.token
+      && ((binToHex(output.token.category) === evenToken.category
+          && binToHex(output.lockingBytecode) === binToHex(evenRecipient))
+        || (binToHex(output.token.category) === oddToken.category
+          && binToHex(output.lockingBytecode) === binToHex(oddRecipient))));
+    expect(runtimeTransfers.map((output) => ({
+      category: binToHex(output.token!.category), amount: output.token!.amount,
+    }))).toEqual([
+      { category: evenToken.category, amount: 1n },
+      { category: oddToken.category, amount: 2n },
+      { category: evenToken.category, amount: 3n },
+      { category: oddToken.category, amount: 4n },
+    ]);
+    expect(transaction.outputs.some((output) => output.token
+      && binToHex(output.token.category) === evenToken.category && output.token.amount === 96n)).toBe(true);
+    expect(transaction.outputs.some((output) => output.token
+      && binToHex(output.token.category) === oddToken.category && output.token.amount === 94n)).toBe(true);
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `token input ${inputIndex}`)
+        .toBe(true);
+    }
   }, 180_000);
 
   it('plans conditional event paths for direct and routed counter rows', async () => {

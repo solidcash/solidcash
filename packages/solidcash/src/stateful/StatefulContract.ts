@@ -117,7 +117,7 @@ import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { AddressType, ContractOptions, LibauthOutput, Output, TransactionDetails, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import {
-  StatefulTransactionBuilder, EntryNftInfo, TokenContainerInfo, ExternalCallUtxoGroup,
+  StatefulTransactionBuilder, EntryNftInfo, TokenContainerInfo, RuntimeLoopTransferOutput, ExternalCallUtxoGroup,
   groupOwnsInBlockReturnEvent, assignPhysicalReturnIndices, logicalReturnGroupIndex,
   groupLayoutTrailingBase,
   materializedPredOutBase,
@@ -12819,15 +12819,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const runtimeLoopTransfers = stb.getRuntimeLoopTransferOutputs();
           for (let transferIndex = 0; transferIndex < runtimeLoopTransfers.length; transferIndex += 1) {
             const outputIndex = stb.getRuntimeLoopTransferOutputIndex(transferIndex);
+            const current = runtimeLoopTransfers[transferIndex];
             const bytecodes = extractVerifiedValuesFromTrace(
               fullTrace2, Op.OP_OUTPUTBYTECODE, { min: outputIndex, max: outputIndex + 1 },
               false, true, true,
             );
             const values = extractVerifiedValuesFromTrace(
-              fullTrace2, Op.OP_OUTPUTVALUE, { min: outputIndex, max: outputIndex + 1 },
+              fullTrace2, current.kind === 'token' ? Op.OP_OUTPUTTOKENAMOUNT : Op.OP_OUTPUTVALUE,
+              { min: outputIndex, max: outputIndex + 1 },
               false, true, true,
             );
-            const current = stb.getRuntimeLoopTransferOutputs()[transferIndex];
             const lockingBytecode = bytecodes[0] ?? current.lockingBytecode;
             const amount = values[0] === undefined ? current.amount : decodeScriptNumber(values[0]);
             let changed = false;
@@ -24076,7 +24077,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const selectedRuntimeTransferRows = (entryRouteRows?.some((row) =>
       (row.handler.runtimeLoopTransfers?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
     const runtimeTransferPlaceholder = encodeLockingBytecodeP2pkh(new Uint8Array(20));
-    const runtimeLoopTransferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }> = [];
+    const runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
     const runtimeLoopTransferSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
     const appendRuntimeTransfers = async (
       source: AbiFunction,
@@ -24183,9 +24184,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (!active) continue;
             }
             const outputIndex = runtimeLoopTransferOutputs.length;
-            runtimeLoopTransferOutputs.push({
-              lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 1000n,
-            });
+            const kind = loop.siteKinds?.[siteIndex] ?? 'bch';
+            if (kind === 'token') {
+              const slot = loop.tokenContainerSlots?.[siteIndex];
+              const category = slot === null || slot === undefined ? undefined
+                : tokenContainers.find((container) => container.tokenContainerSlotIndex === slot)
+                  ?.tokenContainerCategoryId;
+              if (!category) throw new Error(
+                `Runtime-loop token transfer metadata for '${source.name}' has no resolved container`,
+              );
+              runtimeLoopTransferOutputs.push({
+                kind, tokenContainerCategoryId: category,
+                lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 1n,
+              });
+            } else {
+              runtimeLoopTransferOutputs.push({
+                kind, lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 1000n,
+              });
+            }
             if (loop.effectSequence !== undefined && loop.effectOrder?.[siteIndex] !== undefined) {
               runtimeLoopEffectOccurrences.push({
                 rowIndex, kind: 'transfers', outputIndex,

@@ -10122,6 +10122,12 @@ export class StatefulTransactionBuilder {
     return this.loopEntryCommitments.get(collection) ?? [];
   }
 
+  /** Whether the compiler published source-row ownership for this collection's runtime trailing outputs. */
+  hasRuntimeLoopEntrySegments(collection: string): boolean {
+    return this.runtimeLoopTrailingSegments.some((segment) =>
+      segment.kind === 'entries' && segment.collection === collection && segment.count > 0);
+  }
+
   setLoopEntryLockingBytecode(collection: string, lockingBytecode: Uint8Array): this {
     const variable = this.loopEntryVars.find((candidate) => candidate.collection === collection);
     if (!variable) throw new Error(`loop entry collection not registered: ${collection}`);
@@ -15242,7 +15248,10 @@ export class StatefulTransactionBuilder {
     const sidecarOutputOverhead = this.sidecarUtxo && this.lateValueChunkOutputs.length === 0 ? 50n : 0n;
     const totalEstimatedSize = covenantSize + BigInt(feeInputOverhead) + BigInt(changeOutputOverhead)
       + sidecarOutputOverhead;
-    const neededFee = this.computeMinFee(totalEstimatedSize);
+    // The first pass estimates P2PKH signatures before source outputs exist. DER lengths can grow when the final
+    // transaction is signed, so reserve a small byte margin rather than creating an exact-dust funder that cannot
+    // cover the final one-to-few-byte serialization delta.
+    const neededFee = this.computeMinFee(totalEstimatedSize + 32n);
     sendTiming('fee-measured');
 
     // Create a fee funder if the covenant transaction doesn't already cover
@@ -15527,7 +15536,8 @@ export class StatefulTransactionBuilder {
       .find(({ output }) => {
         const lock = output.to instanceof Uint8Array ? output.to : undefined;
         return !!lock && lock.length === 25 && lock[0] === 0x76 && lock[1] === 0xa9
-          && !output.token && (output.amount ?? 0n) > requiredReduction + 1000n;
+          && !output.token
+          && (output.amount ?? 0n) >= requiredReduction + BigInt(calculateDust(output));
       })?.index;
     const finalizeFeeBeforeValidation = (
       transaction: ReturnType<TransactionBuilder['buildLibauthTransaction']>,
@@ -15539,7 +15549,10 @@ export class StatefulTransactionBuilder {
       const minFee = this._checkMinRelayFee ? this.computeMinFee(txSize) : 0n;
       const requiredFee = minFee;
       if (fee >= requiredFee) return false;
-      const reduction = requiredFee - fee;
+      // Re-signing after a change-output adjustment can move a DER signature across a one-byte length boundary.
+      // When adjustment is necessary, take a small serialization margin; transactions already at
+      // the relay minimum remain untouched, including those whose only remaining change is protected dust.
+      const reduction = requiredFee - fee + (this._checkMinRelayFee ? 2n : 0n);
       const changeIndex = findChangeIndex(reduction);
       if (changeIndex === undefined) {
         if (fee < 0n) {

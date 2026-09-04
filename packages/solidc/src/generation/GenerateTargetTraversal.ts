@@ -20921,12 +20921,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
       'referencedContract', 'stateVariable', 'collection', 'type',
     ]);
+    const hasRuntimeVaryingKey = (write: MappingAssignNode | MappingDeleteNode): boolean => {
+      const slotSources = write.entrySlotIndex >= 0
+        ? this.entrySlots[write.entrySlotIndex]?.keySources : undefined;
+      const sources = [...(slotSources ?? []), ...(write.keySources ?? [])] as KeySourceInfo[];
+      if (sources.some((source) => /^arridx\(id:\w+,.+\)$/.test(source.canonical ?? ''))) return true;
+      const keys = write.keys;
+      const containsRuntimeArrayKey = (key: Node, visited = new WeakSet<object>()): boolean => {
+        if (visited.has(key)) return false;
+        visited.add(key);
+        if ((key as ExpressionNode).messageBusDeterministicArrayKey === true || key instanceof ArrayAccessNode) return true;
+        for (const [name, value] of Object.entries(key)) {
+          if (semanticBackReferences.has(name) || name === 'symbol') continue;
+          if (value instanceof Node && containsRuntimeArrayKey(value, visited)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && containsRuntimeArrayKey(item, visited))) return true;
+        }
+        return false;
+      };
+      return keys.some((key) => containsRuntimeArrayKey(key))
+        || this.runtimeDecodedLoopKeyRecipe(node, write)?.varyingArrayParam !== undefined;
+    };
     const walk = (n: Node): void => {
       if (found || !n || seen.has(n)) return;
       seen.add(n);
       if (n instanceof MappingAssignNode && n.collection?.sorted
         && !excludedCollections.has(n.collection.name)
-        && !n.arrayIndex && !n.arrayPush && !n.arrayPop) {
+        && !n.arrayIndex && !n.arrayPush && !n.arrayPop && hasRuntimeVaryingKey(n)) {
         const upsertVk = this.sortedValueKind(n.collection.innermostValueType);
         const e = n.expression;
         // Absolute set to a loop-invariant PARAM `m[k[i]] = v` (v a fn param). The ONE form valid for a rawbytes value
@@ -20952,7 +20973,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // (UPDATE-to-default; absent keys fail closed). The key varying-ness is validated in setup (varyingArrayParam).
       if (n instanceof MappingDeleteNode && n.collection?.sorted
         && !excludedCollections.has(n.collection.name)
-        && this.sortedValueKind(n.collection.innermostValueType) === 'int') {
+        && this.sortedValueKind(n.collection.innermostValueType) === 'int' && hasRuntimeVaryingKey(n)) {
         found = n; return;
       }
       for (const key of Object.keys(n)) {

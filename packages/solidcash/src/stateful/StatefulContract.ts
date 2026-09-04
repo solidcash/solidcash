@@ -12392,7 +12392,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 // An inactive INSERT has no rewritten predecessor either. The batch probe may have seeded that
                 // trailing predecessor solely to reach the conditional flush; once the flush proves absent, remove
                 // the seed so it cannot mint a phantom collection entry.
-                if (collection) stb.setLoopEntryCommitments(collection, []);
+                // This fixed conditional lane owns only its own speculative insert. A kernel route may also
+                // publish source-row runtime segments for the same collection; those commitments belong to the
+                // shared row journal and must survive an inactive/zero-trip sibling lane.
+                if (collection && !stb.hasRuntimeLoopEntrySegments(collection)) {
+                  stb.setLoopEntryCommitments(collection, []);
+                }
               }
             }
           }
@@ -23795,10 +23800,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const addLoopCollection = (name: string): void => {
       if (!orderedLoopCollections.includes(name)) orderedLoopCollections.push(name);
     };
-    for (const name of entryLoopWrites) addLoopCollection(name);
+    // Fixed-batch rewritten predecessors occupy the first write-path trailing coordinates. Runtime loop bodies
+    // call emitAddDynamicOutputsBeforeEntries before addressing their own collection rows, so their physical
+    // outputs must follow this fixed suffix even when source metadata lists the runtime collection first.
+    for (const name of batchPredCommitments.keys()) addLoopCollection(name);
     for (const name of sortedLoopCommitments.keys()) addLoopCollection(name);
     for (const name of runtimeLoopDerivedCounts.keys()) addLoopCollection(name);
-    for (const name of batchPredCommitments.keys()) addLoopCollection(name);
+    for (const name of entryLoopWrites) addLoopCollection(name);
     // Delegate entry metadata is grafted from the implementation after the proxy ABI has been selected, so the
     // proxy's entryLoopWrites cannot advertise a scalar vmap INSERT. The insertion plan itself is authoritative.
     for (const ins of sortedInserts) addLoopCollection(ins.collection);

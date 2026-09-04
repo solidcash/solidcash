@@ -24213,10 +24213,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (!entry?.exists) builder.deleteEntry(slotIndex);
     }
 
-
     for (const [slotIndex, commitment] of batchTargetPlaceholders) {
       builder.setEntryRawCommitment(slotIndex, commitment);
       if (exactBatchTargetSlots.has(slotIndex)) builder.pinEntrySlot(slotIndex);
+    }
+
+    // A kernel route publishes the union of every handler's entry effects, while this concrete envelope has a
+    // narrower per-slot operation set. A route-wide fixed-write placeholder can otherwise replace a selected
+    // read-only entry's exact input commitment during probe setup. Preserve the input commitment explicitly,
+    // after those placeholders have been installed, and keep it out of later trace derivation. The entry
+    // covenant verifies this equality directly. Selected writes/deletes remain unpinned for derivation.
+    for (const [slotIndex, operations] of activeMessageBusEntryOperations ?? []) {
+      if (!operations.includes('read') || operations.includes('write') || operations.includes('delete')) continue;
+      const entry = entryNfts.find((candidate) => candidate.slotIndex === slotIndex);
+      const commitment = entry?.exists ? entry.utxo?.token?.nft?.commitment : undefined;
+      if (!commitment) continue;
+      builder.setEntryRawCommitment(slotIndex, commitment);
+      builder.pinEntrySlot(slotIndex);
     }
 
     // vmap sorted-set insert: place P' (the predecessor's rewritten commitment at its entry slot) and NEW (the new

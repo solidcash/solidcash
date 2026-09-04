@@ -481,7 +481,7 @@ const COUNTER_FIXED_MAPPING_READ_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelCounterFixedMappingRead() {
   mapping(int => int) source;
   mapping(int => int) target;
-  function seed(int value) unsafe {
+  function seed(int value) public {
     this.source[0] = value;
     require(true);
   }
@@ -491,7 +491,7 @@ contract KernelCounterFixedMappingRead() {
     }
     require(true);
   }
-  function check(int key, int expected) unsafe {
+  function check(int key, int expected) public {
     require(this.target[key] == expected);
     require(true);
   }
@@ -2078,8 +2078,12 @@ describe('kernel composite counter-key settlement', () => {
   it('keeps a fixed mapping read authenticated beside counter-keyed inserts', async () => {
     const provider = createTestProvider();
     const artifact = compileString(COUNTER_FIXED_MAPPING_READ_SOURCE, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
-      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.filter((handler) => ['seed', 'fill', 'check'].includes(handler.name)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'seed', eligible: true }),
+        expect.objectContaining({ name: 'fill', eligible: true }),
+        expect.objectContaining({ name: 'check', eligible: true }),
+      ]));
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },

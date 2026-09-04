@@ -38,6 +38,19 @@ describe('required kernel admission', () => {
       name: expect.stringMatching(/^__internal__vmapCounterOld_/), type: 'Pair[][]',
     }));
   });
+  it('admits field-shaped struct getters and dynamic struct-array results', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract C() {
+      struct Rec { int value; }
+      Rec public current;
+      Rec[] records;
+      function all() public view returns (Rec[]) { return this.records; }
+    }`, { ...KERNEL, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'current'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'all'))
+      .toMatchObject({ eligible: true });
+  });
   it('refuses lifecycle handlers as KERNEL_LIFECYCLE', () => {
     expect(denied(`contract C() {
       int value;

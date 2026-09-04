@@ -34,6 +34,21 @@ describe('encodeExternalReturnValue', () => {
     expect(encoded[31]).toBe(2);
   });
 
+  it('encodes, validates, and decodes scaled fixed-point return words', () => {
+    const positive = encodeExternalReturnValue(1_500_000_000_000_000_000n, 'ufixed128x18', structs, true);
+    expect(isCanonicalEvmScalarReturnVector(positive, ['ufixed128x18'])).toBe(true);
+    expect(decodeEvmReturnValue(positive, 'ufixed128x18')).toBe(1_500_000_000_000_000_000n);
+
+    const negative = encodeExternalReturnValue(-250_000_000_000_000_000n, 'fixed128x18', structs, true);
+    expect(negative.slice(0, 16).every((byte) => byte === 0xff)).toBe(true);
+    expect(isCanonicalEvmScalarReturnVector(negative, ['fixed128x18'])).toBe(true);
+    expect(decodeEvmReturnValue(negative, 'fixed128x18')).toBe(-250_000_000_000_000_000n);
+
+    const nonCanonical = positive.slice();
+    nonCanonical[0] = 1;
+    expect(isCanonicalEvmScalarReturnVector(nonCanonical, ['ufixed128x18'])).toBe(false);
+  });
+
   it('rejects an unrelated multi-word stack item with a non-canonical boolean', () => {
     const vector = new Uint8Array(128);
     vector[31] = 1;

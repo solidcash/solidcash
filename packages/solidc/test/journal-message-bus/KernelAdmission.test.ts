@@ -1734,6 +1734,18 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it.each(['fixed128x18', 'ufixed128x18'])(
+    'captures a %s result through the recursive ABI encoder', (type) => {
+      const artifact = compileString(`pragma solidity ^0.8.0;
+        contract C {
+          function echo(${type} value) public pure returns (${type}) { return value; }
+          function control() public { require(true); }
+        }`, { ...KERNEL, solidityImportCompat: true });
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echo'))
+        .toMatchObject({ eligible: true });
+    },
+  );
+
   it('captures a Rec[] result through the recursive ABI encoder', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Rec { uint x; }

@@ -312,6 +312,8 @@ an invariant parameter key written inside `while (true) { ...; break; }`,
 mapping values of `pubkey` / `datasig` / `fixedMxN` / `ufixedMxN`, public whole-struct getters (captured as their
 Solidity field tuple), and dynamic arrays of structs or enums returned through the recursive EVM ABI encoder
 (journal cache defaults are type-correct empty/`0` rather than `int` 0).
+Fixed-point scalar, array, and struct-field results use their scaled signed/unsigned integer representation in that
+same recursive encoder.
 Recursive mapping handlers and result types the wrapper cannot encode stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
 Counter-keyed mapping loops with zero or direction-mismatched steps, mutated bounds, or extra counter mutations

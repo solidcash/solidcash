@@ -8,7 +8,7 @@ import {
 } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
 import {
-  Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions, IntType,
+  Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions, FixedType, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
@@ -3780,7 +3780,7 @@ function synthesizeMessageBusRoute(
   const kernelResultEncodable = (type: Type): boolean => {
     if (type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT || type === PrimitiveType.STRING
       || type === PrimitiveType.INT) return true;
-    if (type instanceof IntType || type instanceof BytesType) return true;
+    if (type instanceof IntType || type instanceof FixedType || type instanceof BytesType) return true;
     if (type instanceof AddressType) {
       const named = type.interfaceName;
       if (named && (routeEnumNames.has(named) || routeStructNames.has(named))) return false;

@@ -13792,8 +13792,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(0n), loc);
       this.emit(Op.OP_ENDIF, loc);
       this.emitEvmWordFromUint(loc);
-    } else if (type instanceof IntType || type instanceof EnumType || type === PrimitiveType.BIGINT) {
-      if (type instanceof IntType && type.signed) {
+    } else if (type instanceof IntType || type instanceof FixedType
+      || type instanceof EnumType || type === PrimitiveType.BIGINT) {
+      if ((type instanceof IntType || type instanceof FixedType) && type.signed) {
         // add 2^256 if negative -> the 256-bit two's-complement pattern
         this.emit(Op.OP_DUP, loc);
         this.emit(encodeInt(0n), loc);
@@ -14144,7 +14145,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Types represented by one EVM ABI word and supported by both word conversion helpers. */
   private isEvmAbiWordType(t: Type): boolean {
     return t === PrimitiveType.BOOL || t === PrimitiveType.BIGINT
-      || t instanceof IntType || t instanceof EnumType || t instanceof AddressType
+      || t instanceof IntType || t instanceof FixedType || t instanceof EnumType || t instanceof AddressType
       || (t instanceof BytesType && t.bound !== undefined && t.bound <= 32);
   }
 
@@ -14403,13 +14404,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       return;
     }
-    if (type instanceof IntType || type === PrimitiveType.BIGINT) {
+    if (type instanceof IntType || type instanceof FixedType || type === PrimitiveType.BIGINT) {
       // reverse to little-endian, force positive with a 0x00 sign byte, minimise -> unsigned value U
       this.emit(Op.OP_REVERSEBYTES, loc);
       this.emit(new Uint8Array([0]), loc);
       this.emit(Op.OP_CAT, loc);
       this.emit(Op.OP_BIN2NUM, loc);
-      if (type instanceof IntType && type.signed) {
+      if ((type instanceof IntType || type instanceof FixedType) && type.signed) {
         // two's-complement: a high-bit-set U is the negative value U - 2^256
         this.emit(Op.OP_DUP, loc);
         this.emit(encodeInt(1n << 255n), loc);

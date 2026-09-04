@@ -2070,11 +2070,13 @@ export function isCanonicalEvmScalarReturnVector(
     if (fixedBytes) {
       return word.slice(Number(fixedBytes[1])).every((byte) => byte === 0);
     }
-    const integer = /^(u?int)(\d+)$/.exec(type);
-    if (integer) {
-      const width = Number(integer[2]);
+    const numeric = /^(u?int)(\d+)$/.exec(type) ?? /^(u?fixed)(\d+)x\d+$/.exec(type);
+    if (numeric) {
+      const width = Number(numeric[2]);
       const payloadStart = 32 - width / 8;
-      if (integer[1] === 'uint') return word.slice(0, payloadStart).every((byte) => byte === 0);
+      if (numeric[1] === 'uint' || numeric[1] === 'ufixed') {
+        return word.slice(0, payloadStart).every((byte) => byte === 0);
+      }
       const extension = (word[payloadStart] & 0x80) === 0 ? 0x00 : 0xff;
       return word.slice(0, payloadStart).every((byte) => byte === extension);
     }
@@ -2251,6 +2253,7 @@ function extractEvmScalarReturnCommitment(
   if (expectedTypes.length === 0 || !expectedTypes.every((type) => (
     type === 'bool' || type === 'int' || type === 'uint' || type === 'bigint'
     || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
+    || /^u?fixed(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)x\d+$/.test(type)
     || type === 'address' || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type)
   ))) return undefined;
   const candidates: Uint8Array[] = [];
@@ -2270,7 +2273,8 @@ function encodeEvmScalarReturn(value: StateValue, type: string): Uint8Array | un
     out[31] = value === true || value === 1n ? 1 : 0;
     return out;
   }
-  if (type === 'int' || type === 'uint' || type === 'bigint' || /^u?int\d+$/.test(type)) {
+  if (type === 'int' || type === 'uint' || type === 'bigint'
+    || /^u?int\d+$/.test(type) || /^u?fixed\d+x\d+$/.test(type)) {
     if (typeof value !== 'bigint' && typeof value !== 'number') return undefined;
     let n = typeof value === 'bigint' ? value : BigInt(value);
     if (n < 0n) n = (1n << 256n) + n;
@@ -2342,10 +2346,12 @@ export function decodeEvmScalarReturn(value: Uint8Array, type: string): Function
     if (!value.slice(0, 31).every((byte) => byte === 0) || value[31] > 1) return undefined;
     return value[31] === 1;
   }
-  if (type !== 'int' && type !== 'uint' && type !== 'bigint' && !/^u?int\d+$/.test(type)) return undefined;
+  if (type !== 'int' && type !== 'uint' && type !== 'bigint'
+    && !/^u?int\d+$/.test(type) && !/^u?fixed\d+x\d+$/.test(type)) return undefined;
   let decoded = 0n;
   for (const byte of value) decoded = (decoded << 8n) | BigInt(byte);
-  if ((type === 'int' || /^int\d+$/.test(type)) && (value[0] & 0x80) !== 0) {
+  if ((type === 'int' || /^int\d+$/.test(type) || /^fixed\d+x\d+$/.test(type))
+    && (value[0] & 0x80) !== 0) {
     decoded -= 1n << 256n;
   }
   return decoded;

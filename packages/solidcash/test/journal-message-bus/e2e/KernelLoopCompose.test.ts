@@ -454,23 +454,24 @@ contract KernelRangedDoCounter() {
 
 const COUNTER_STRUCT_RMW_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelCounterStructRmw() {
-  struct Pair { int left; int right; }
+  struct Inner { int left; }
+  struct Pair { Inner inner; int right; }
   mapping(int => Pair) pairs;
   function seed(int key, int left, int right) public {
-    this.pairs[key] = Pair(left, right);
+    this.pairs[key] = Pair(Inner(left), right);
     require(true);
   }
   function update(int count) public {
     for (int i = 0; i < count; i = i + 1) {
       Pair pair = this.pairs[i];
-      pair.left = pair.left + 1;
+      pair.inner.left = pair.inner.left + 1;
       pair.right = pair.right + 2;
       this.pairs[i] = pair;
     }
     require(true);
   }
   function check(int key, int left, int right) public {
-    require(this.pairs[key].left == left);
+    require(this.pairs[key].inner.left == left);
     require(this.pairs[key].right == right);
     require(true);
   }

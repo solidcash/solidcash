@@ -70,6 +70,20 @@ contract KernelAffineCounterMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
+const AFFINE_COUNTER_VALUE_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelAffineCounterValue() {
+  mapping(int => int) m;
+  function write(int n) public {
+    int running = 0;
+    for (int i = 0; i < n; i = i + 1) {
+      running = running + 1;
+      this.m[i] = running;
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.m[key] == expected); }
+}`;
+
 const COUNTER_MAPPING_RMW_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelCounterMappingRmw() {
   mapping(int => int) m;
@@ -2130,5 +2144,25 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.write(3n).send()).resolves.toBeDefined();
     await expect(contract.call.write(0n).send()).resolves.toBeDefined();
     await expect(contract.call.check(1n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('settles affine loop-carried local mapping values in source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(AFFINE_COUNTER_VALUE_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.call.write(3n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    for (const [key, expected] of [[0n, 1n], [1n, 2n], [2n, 3n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toMatchObject({
+        txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+    }
   }, 180_000);
 });

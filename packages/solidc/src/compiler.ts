@@ -3780,6 +3780,12 @@ function synthesizeMessageBusRoute(
   const kernelResultEncodable = (type: Type): boolean => {
     if (type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT || type === PrimitiveType.STRING
       || type === PrimitiveType.INT) return true;
+    // Native SolidCash ABI framing can carry raw public keys and data signatures. Transaction signatures stay
+    // excluded: publishing one in the result output would change the transaction preimage it signs. Solidity ABI
+    // mode has no canonical pubkey/datasig word type, so it retains the conservative result fence.
+    if (type === PrimitiveType.PUBKEY || type === PrimitiveType.DATASIG) {
+      return !(compilerOptions.evmCompat || compilerOptions.solidityImportCompat);
+    }
     if (type instanceof IntType || type instanceof FixedType || type instanceof BytesType) return true;
     if (type instanceof AddressType) {
       const named = type.interfaceName;
@@ -3810,6 +3816,12 @@ function synthesizeMessageBusRoute(
       // The legacy wrapper cannot spell a field-shaped `rec()` projection as one whole struct value.
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'struct-state-getter-route-not-enabled';
+    } else if (compilerOptions.messageBusKernel === true
+      && fn.returnTypes.some((type) => (transactionSignatureLeaves(type)?.length ?? 0) > 0)) {
+      // Unlike an input witness, a returned transaction signature would be committed into an output of the
+      // transaction it signs. Classify that circular result as a signature fence, not a generic layout failure.
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
     } else if (compilerOptions.messageBusKernel === true
       && fn.returnTypes.some((type) => !kernelResultEncodable(type))) {
       // Result concatenation uses `abi.encode` in the generated wrapper. Keep only types for which that encoder

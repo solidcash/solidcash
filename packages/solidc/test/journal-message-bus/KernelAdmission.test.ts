@@ -1746,6 +1746,26 @@ describe('required kernel admission', () => {
     },
   );
 
+  it.each(['pubkey', 'datasig'])(
+    'captures a native %s result through compact ABI framing', (type) => {
+      const artifact = compileString(`contract C() {
+        function echo(${type} value) public pure returns (${type}) { return value; }
+        function control() public { require(true); }
+      }`, KERNEL);
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echo'))
+        .toMatchObject({ eligible: true });
+    },
+  );
+
+  it('keeps a transaction-signature result off the kernel route', () => {
+    const artifact = compileString(`contract C() {
+      function echo(sig value) public pure returns (sig) { return value; }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echo'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE' });
+  });
+
   it('captures a Rec[] result through the recursive ABI encoder', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Rec { uint x; }

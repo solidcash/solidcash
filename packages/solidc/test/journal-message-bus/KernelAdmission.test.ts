@@ -742,10 +742,11 @@ describe('required kernel admission', () => {
     ['an extra post-test counter mutation', `int i = 0; do {
       this.m[i] = i; i = n; i = i + 1;
     } while (i < n);`],
-    ['a mutated public bound', `n = n - 1;
+    ['a conditionally assigned public bound', `if (n > 0) { n = n - 1; }
       for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }`],
-    ['a reassigned local bound', `int limit = n; limit = n - 1;
-      for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }`],
+    ['a bound assigned inside its loop', `for (int i = 0; i < n; i = i + 1) {
+      n = n - 1; this.m[i] = i;
+    }`],
     ['a sibling read of the mutated mapping', `for (int i = 0; i < n; i = i + 1) {
       int before = this.m[0]; this.m[i] = before + 1;
     }`],
@@ -760,6 +761,22 @@ describe('required kernel admission', () => {
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it.each([
+    ['a reassigned public bound', `n = n - 1;
+      for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }`],
+    ['a reassigned local bound', `int limit = n; limit = n - 1;
+      for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }`],
+  ])('replays %s before deriving the counter permutation', (_label, loop) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n) public { ${loop} require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
   it('publishes a deterministic non-affine counter bound for SDK replay', () => {

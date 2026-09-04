@@ -6,8 +6,9 @@ import {
   DoWhileNode,
   EmitStatementNode, ExpressionNode, ExternalFunctionCallNode, FunctionCallNode, FunctionCallStatementNode,
   FieldAccessNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, LiteralNode, MappingAccessNode,
-  MappingAssignNode, MappingDeleteNode, NullaryOpNode,
-  MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, NewArrayNode, Node, ParameterNode, RequireNode, SourceFileNode,
+  MappingAssignNode, MappingDeleteNode,
+  MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, NewArrayNode, Node, ParameterNode, RequireNode,
+  SourceFileNode,
   ReturnNode,
   StateAccessNode, StateArrayAssignNode, StateArrayDeleteNode, StateArrayPopNode, StateArrayPushNode,
   StateAssignNode, StatementNode, SwitchNode, TernaryOpNode, TokenContainerMethodStatementNode, TransferStatementNode,
@@ -16,7 +17,7 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
-import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { ArrayType, IntType, StructType } from '@solidcash/utils';
 import { isFunctionEntryInvariantMappingKey } from './CacheMappingEntryInLoop.js';
 
@@ -149,6 +150,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       count: string;
       boundNames: string[];
       boundDefinitions: VariableDefinitionNode[];
+      boundAssignments: AssignNode[];
       boundOffset: bigint;
       boundExpression?: ExpressionNode;
       start: bigint;
@@ -230,6 +232,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             count: string;
             countNames: string[];
             definitions: VariableDefinitionNode[];
+            assignments: AssignNode[];
             offset: bigint;
             metadataExpression?: ExpressionNode;
           };
@@ -258,8 +261,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             }
             if (!(expression instanceof IdentifierNode)) return undefined;
             const { name } = expression;
+            const assignments = statements.slice(0, before)
+              .map((statement, position) => ({ statement, position }))
+              .filter((candidate): candidate is { statement: AssignNode; position: number } =>
+                candidate.statement instanceof AssignNode && candidate.statement.identifier.name === name);
+            const latestAssignment = assignments.at(-1);
+            if (latestAssignment) {
+              const parent = resolveBound(
+                latestAssignment.statement.expression, latestAssignment.position, seen,
+              );
+              return parent && {
+                ...parent,
+                assignments: [...parent.assignments, latestAssignment.statement],
+              };
+            }
             if (visibleCounts.has(name)) return {
-              count: name, countNames: [name], definitions: [], offset: 0n,
+              count: name, countNames: [name], definitions: [], assignments: [], offset: 0n,
             };
             if (seen.has(name)) return undefined;
             const definitions = statements.slice(0, before)
@@ -276,6 +293,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               count: parent.count,
               countNames: parent.countNames,
               definitions: [...parent.definitions, definitions[0].statement],
+              assignments: parent.assignments,
               offset: parent.offset,
             };
           };
@@ -283,10 +301,30 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             expression: ExpressionNode,
             before: number,
             seen = new Set<string>(),
-          ): { expression: ExpressionNode; counts: string[]; definitions: VariableDefinitionNode[] } | undefined => {
+          ): {
+            expression: ExpressionNode;
+            counts: string[];
+            definitions: VariableDefinitionNode[];
+            assignments: AssignNode[];
+          } | undefined => {
             if (expression instanceof IdentifierNode) {
+              const assignments = statements.slice(0, before)
+                .map((statement, position) => ({ statement, position }))
+                .filter((candidate): candidate is { statement: AssignNode; position: number } =>
+                  candidate.statement instanceof AssignNode
+                  && candidate.statement.identifier.name === expression.name);
+              const latestAssignment = assignments.at(-1);
+              if (latestAssignment) {
+                const resolved = resolveGeneralBound(
+                  latestAssignment.statement.expression, latestAssignment.position, seen,
+                );
+                return resolved && {
+                  ...resolved,
+                  assignments: [...resolved.assignments, latestAssignment.statement],
+                };
+              }
               if (visibleCounts.has(expression.name)) return {
-                expression: cloneNode(expression), counts: [expression.name], definitions: [],
+                expression: cloneNode(expression), counts: [expression.name], definitions: [], assignments: [],
               };
               if (seen.has(expression.name)) return undefined;
               const definitions = statements.slice(0, before)
@@ -305,7 +343,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               };
             }
             if (expression instanceof LiteralNode) return {
-              expression: cloneNode(expression), counts: [], definitions: [],
+              expression: cloneNode(expression), counts: [], definitions: [], assignments: [],
             };
             if (expression instanceof CastNode || expression instanceof UnaryOpNode) {
               const resolved = resolveGeneralBound(expression.expression, before, seen);
@@ -325,6 +363,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 expression: expanded,
                 counts: [...new Set([...left.counts, ...right.counts])],
                 definitions: [...new Set([...left.definitions, ...right.definitions])],
+                assignments: [...new Set([...left.assignments, ...right.assignments])],
               };
             }
             if (expression instanceof TernaryOpNode) {
@@ -342,6 +381,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 definitions: [...new Set([
                   ...condition.definitions, ...ifTrue.definitions, ...ifFalse.definitions,
                 ])],
+                assignments: [...new Set([
+                  ...condition.assignments, ...ifTrue.assignments, ...ifFalse.assignments,
+                ])],
               };
             }
             return undefined;
@@ -354,6 +396,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               count: general.counts[0],
               countNames: general.counts,
               definitions: general.definitions,
+              assignments: general.assignments,
               offset: 0n,
               metadataExpression: general.expression,
             };
@@ -385,14 +428,23 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && ((updateStep > 0n && loop.condition.operator === BinaryOperator.LT)
               || (updateStep < 0n && loop.condition.operator === BinaryOperator.GT));
           if (!preTest && !postTest) continue;
+          const assignedBoundNames = new Set(boundResolution.assignments.map((assignment) =>
+            assignment.identifier.name));
+          const boundDefinitions = [...new Set([
+            ...boundResolution.definitions,
+            ...statements.slice(0, index).filter((statement): statement is VariableDefinitionNode =>
+              statement instanceof VariableDefinitionNode && assignedBoundNames.has(statement.name)),
+          ])];
           canonicalLoops.set(loop, {
             logical: variable.name,
             count: boundResolution.count,
             boundNames: [
               ...boundResolution.countNames,
-              ...boundResolution.definitions.map((definition) => definition.name),
+              ...boundDefinitions.map((definition) => definition.name),
+              ...boundResolution.assignments.map((assignment) => assignment.identifier.name),
             ],
-            boundDefinitions: boundResolution.definitions,
+            boundDefinitions,
+            boundAssignments: boundResolution.assignments,
             boundOffset: boundResolution.offset,
             ...(boundResolution.metadataExpression
               && { boundExpression: boundResolution.metadataExpression }),
@@ -839,7 +891,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const canonical = canonicalLoops.get(loop);
       if (!canonical) return false;
       const {
-        logical, count, boundNames, boundDefinitions, boundOffset, boundExpression,
+        logical, count, boundNames, boundDefinitions, boundAssignments, boundOffset, boundExpression,
         start, step, counterType, postTest, counterUpdate,
         pathConditions, pathSupported,
       } = canonical;
@@ -1355,7 +1407,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ): boolean => {
         if (x instanceof AssignNode
           && ((inspectLogical && x.identifier.name === logical && x !== counterUpdate)
-            || (inspectBound && boundNames.includes(x.identifier.name)))) return true;
+            || (inspectBound && boundNames.includes(x.identifier.name) && !boundAssignments.includes(x)))) return true;
         if (x instanceof VariableDefinitionNode
           && ((inspectLogical && x.name === logical)
             || (inspectBound && boundNames.includes(x.name) && !boundDefinitions.includes(x)))) return true;
@@ -2043,12 +2095,23 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const sourceBoundValue = (): ExpressionNode => boundExpression
         ? cloneNode(boundExpression)
         : boundOffset === 0n ? id(count) : binary(id(count), BinaryOperator.PLUS, lit(boundOffset));
+      // A replayable straight-line assignment may mutate the parameter/local named by the source loop condition.
+      // The length check is in the function prelude, but range proofs also execute inside the source loop after
+      // those assignments. Snapshot the expanded pre-assignment recipe once so both sites authenticate one domain.
+      const boundSnapshot = boundAssignments.length > 0
+        ? `__internal__vmapCounterBound_${serial}` : undefined;
+      if (boundSnapshot) {
+        prelude.push(at(new VariableDefinitionNode(
+          proofInt, [], boundSnapshot, asProofInt(sourceBoundValue()),
+        )));
+      }
       for (const [snapshot, source] of affineStateSnapshots) {
         prelude.push(at(new VariableDefinitionNode(
           source.type ?? source.stateVariable?.type ?? new IntType(true, 256), [], snapshot, cloneNode(source),
         )));
       }
-      const boundValue = (): ExpressionNode => asProofInt(sourceBoundValue());
+      const boundValue = (): ExpressionNode => boundSnapshot
+        ? id(boundSnapshot) : asProofInt(sourceBoundValue());
       const positiveIterationCount = (): ExpressionNode => binary(
         binary(binary(
           step > 0n
@@ -2231,30 +2294,30 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       }
       if (runtimeEmits.length > 0) {
-        const loopIndex = node.runtimeLoopEvents?.length ?? 0;
+        const eventLoopIndex = node.runtimeLoopEvents?.length ?? 0;
         node.runtimeLoopEvents = [
           ...(node.runtimeLoopEvents ?? []),
-          { loopIndex, permutationParam: primaryGroup.hidden },
+          { loopIndex: eventLoopIndex, permutationParam: primaryGroup.hidden },
         ];
         runtimeEmits.forEach(({ emit, condition }, siteIndex) => {
-          emit.runtimeLoopEvent = { loopIndex, siteIndex };
+          emit.runtimeLoopEvent = { loopIndex: eventLoopIndex, siteIndex };
           emit.runtimeLoopEventCondition = condition;
           emit.runtimeLoopEventCounter = { name: logical, initialValue: start, stepValue: step };
         });
       }
       if (runtimeTransfers.length > 0) {
-        const loopIndex = node.runtimeLoopTransfers?.length ?? 0;
+        const transferLoopIndex = node.runtimeLoopTransfers?.length ?? 0;
         node.runtimeLoopTransfers = [
           ...(node.runtimeLoopTransfers ?? []),
           {
-            loopIndex,
+            loopIndex: transferLoopIndex,
             permutationParam: primaryGroup.hidden,
             siteKinds: runtimeTransfers.map(({ transfer }) =>
               transfer instanceof TokenContainerMethodStatementNode ? 'token' : 'bch'),
           },
         ];
         runtimeTransfers.forEach(({ transfer, condition }, siteIndex) => {
-          transfer.runtimeLoopTransfer = { loopIndex, siteIndex };
+          transfer.runtimeLoopTransfer = { loopIndex: transferLoopIndex, siteIndex };
           transfer.runtimeLoopTransferCondition = condition;
           transfer.runtimeLoopTransferCounter = { name: logical, initialValue: start, stepValue: step };
         });
@@ -2415,9 +2478,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ];
       const selectedGroups = groups.filter((group) => group.expandedSelectionCondition);
       if (selectedGroups.length > 0) {
-        const loopIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
-        if (loopIndex < 0) return false;
-        canonical.parent.statements!.splice(loopIndex + 1, 0, ...selectedGroups.map((group) =>
+        const insertionIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
+        if (insertionIndex < 0) return false;
+        canonical.parent.statements!.splice(insertionIndex + 1, 0, ...selectedGroups.map((group) =>
           at(new RequireNode(binary(
             id(group.settlementCursor), BinaryOperator.EQ,
             at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),

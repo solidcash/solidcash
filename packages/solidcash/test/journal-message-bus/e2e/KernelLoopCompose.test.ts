@@ -73,6 +73,23 @@ contract KernelAffineCounterMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
+const REASSIGNED_BOUND_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelReassignedBoundMapping() {
+  mapping(int => int) m;
+  function writeParam(int n, int value) public {
+    n = n - 1;
+    for (int i = 0; i < n; i = i + 1) { this.m[i] = value; }
+    require(true);
+  }
+  function writeLocal(int n, int value) public {
+    int limit = n;
+    limit = limit - 2;
+    for (int i = 0; i < limit; i = i + 1) { this.m[i] = value; }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.m[key] == expected); }
+}`;
+
 const AFFINE_COUNTER_VALUE_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelAffineCounterValue() {
   mapping(int => int) m;
@@ -1483,6 +1500,31 @@ describe('kernel counter-key mapping loop compose', () => {
       await expect(StatefulContract.withCategory(inner, categoryId).check(key, 20n).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
+  }, 180_000);
+
+  it('replays straight-line public and local bound assignments for routed calls', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(REASSIGNED_BOUND_MAPPING_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeParam'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeLocal'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'writeParam', args: [4n, 10n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.check(2n, 10n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeLocal', args: [4n, 20n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.check(1n, 20n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.check(2n, 10n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 
   it('settles an old-entry transition without a row-local fixed key witness', async () => {

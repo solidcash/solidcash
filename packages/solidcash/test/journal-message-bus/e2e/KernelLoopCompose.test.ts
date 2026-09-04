@@ -1042,6 +1042,37 @@ contract KernelRawScalarRmw() {
 }`;
 
 describe('kernel loop message-bus compose', () => {
+  it('executes a normalized tail-recursive state transition through one row', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelTailRecursion() {
+      int calls;
+      function countDown(int value) public returns (int result) {
+        this.calls = this.calls + 1;
+        if (value == 0) { result = this.calls; }
+        else { result = countDown(value - 1); }
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'countDown'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'countDown', args: [3n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 4n });
+  }, 180_000);
+
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, KERNEL);

@@ -137,6 +137,20 @@ describe('required kernel admission', () => {
     }));
   });
 
+  it('normalizes a conservative tail-recursive entry before kernel closure admission', () => {
+    const artifact = compileString(`contract C() {
+      function countDown(int value) public returns (int result) {
+        if (value == 0) { result = value; }
+        else { result = countDown(value - 1); }
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'countDown'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('binds a transaction signature-array as a row-aligned nested route witness', () => {
     const artifact = compileString(`contract C() {
       function signed(sig[] signatures) public { require(true); }

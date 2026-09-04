@@ -7408,10 +7408,11 @@ function compileResolvedAst(
     ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   }
 
-  // Message-bus admission snapshots every entry point which can execute through the row loop. Block-oracle
-  // synthesis appends `__updateBlockOracle`, so it belongs on this side of that snapshot just like public-getter
-  // synthesis above. Keeping it immediately after storage-slot shaping also matches `prepareSplitAst`: both
-  // passes append physical state, and every unsplit/root/facet build must agree on their relative layout.
+  // Message-bus admission snapshots every entry point and call closure which can execute through the row loop.
+  // Normalize conservative tail recursion before that snapshot, and append the block-oracle updater on this side
+  // of it just like public-getter synthesis above. Keeping oracle synthesis immediately after storage-slot shaping
+  // also matches `prepareSplitAst`: both passes append physical state, and every unsplit/root/facet build must
+  // agree on their relative layout.
   //
   // The ordinary late invocation remains intentionally idempotent. It covers block operations exposed by later
   // lowering (notably a Yul block which could not be translated at the early kernel boundary), while this early
@@ -7420,7 +7421,11 @@ function compileResolvedAst(
   // program. Apart from avoiding needless work, this matters for split candidates: their resolved symbol links
   // can still point into the complete prepared contract, so even a nominally no-op visitor must not walk a
   // block-free facet before its route-only parameter lowering has been isolated on the facet clone.
-  if (mergedCompilerOptions.messageBus && surveyOptionalLowerings(ast).needsBlockOracle) {
+  const earlyEntryFeatures = mergedCompilerOptions.messageBus ? surveyOptionalLowerings(ast) : undefined;
+  if (earlyEntryFeatures?.needsTailRecursion) {
+    ast = ast.accept(new LowerTailRecursion()) as Ast;
+  }
+  if (earlyEntryFeatures?.needsBlockOracle) {
     ast = ast.accept(new SynthesizeBlockOracle(
       mergedCompilerOptions.solidityImportCompat ?? false,
     )) as Ast;

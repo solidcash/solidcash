@@ -320,7 +320,10 @@ Compiler-owned public entry points are finalized before kernel admission. In par
 oracle-backed `block.*` register publishes `__updateBlockOracle` as an ordinary eligible row with its detached
 transaction-signature witness; it is not appended later as an unexamined ABI-only function. Public state getters
 follow the same synthesis boundary.
-Recursive mapping handlers and result types the wrapper cannot encode stay `KERNEL_LAYOUT`. Enum scalar results
+Conservative single-result tail recursion is normalized to its ordinary loop before closure admission, so the
+kernel executes the same finite source transition without cloning a recursive route frame. Non-tail recursion
+(including work performed after the recursive call), mutual recursion, and result types the wrapper cannot encode
+stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
 Counter-keyed mapping loops with zero or direction-mismatched steps, mutated bounds, or extra counter mutations
 stay `KERNEL_UNBOUNDED_KEY`. A runtime step may be any replayable expression over public arguments, immutable

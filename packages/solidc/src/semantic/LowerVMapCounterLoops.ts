@@ -18,7 +18,9 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
-import { ArrayType, IntType, StructType } from '@solidcash/utils';
+import {
+  ArrayType, IntType, StructType, Type,
+} from '@solidcash/utils';
 import { isFunctionEntryInvariantMappingKey } from './CacheMappingEntryInLoop.js';
 
 export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
@@ -2740,7 +2742,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
   ): void {
     if (!node.body) return;
     type ArrayWrite = { index: ExpressionNode; value: ExpressionNode; condition?: ExpressionNode };
-    type ArrayPlan = { defaultValue: ExpressionNode; writes: ArrayWrite[] };
+    type ArrayPlan = { elementType: Type; defaultValue: ExpressionNode; writes: ArrayWrite[] };
     const plans = new Map<string, ArrayPlan>();
     const walk = (root: Node, visit: (candidate: Node) => void): void => {
       visit(root);
@@ -2771,15 +2773,28 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       });
       return result;
     };
-    const reassignedNames = new Set<string>();
+    const allReassignedNames = new Set<string>();
     walk(node.body, (candidate) => {
-      if (candidate instanceof AssignNode) reassignedNames.add(candidate.identifier.name);
+      if (candidate instanceof AssignNode) allReassignedNames.add(candidate.identifier.name);
     });
+    // Track assignments in traversal order. A later reassignment cannot retroactively change a value already
+    // copied into a local array (`xs[0] = key; key = next`), while a write after that reassignment still needs a
+    // richer replay expression and remains fenced. Branch traversal is deliberately conservative: an assignment
+    // in either arm taints subsequent statements at the join.
+    const reassignedNames = new Set<string>();
     const containsReassignedName = (root: Node): boolean => {
       let found = false;
       walk(root, (candidate) => {
         if (candidate instanceof IdentifierNode && reassignedNames.has(candidate.name)
           && !canonicalCounters.has(candidate.name)) found = true;
+      });
+      return found;
+    };
+    const containsFutureReassignedName = (root: Node): boolean => {
+      let found = false;
+      walk(root, (candidate) => {
+        if (candidate instanceof IdentifierNode && allReassignedNames.has(candidate.name)
+          && !reassignedNames.has(candidate.name) && !canonicalCounters.has(candidate.name)) found = true;
       });
       return found;
     };
@@ -2868,6 +2883,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     };
     const copyPlans = (source: Map<string, ArrayPlan>): Map<string, ArrayPlan> => new Map(
       [...source].map(([name, plan]) => [name, {
+        elementType: plan.elementType,
         defaultValue: cloneNode(plan.defaultValue) as ExpressionNode,
         writes: plan.writes.map((write) => ({
           index: cloneNode(write.index) as ExpressionNode,
@@ -2965,10 +2981,28 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           continue;
         }
 
-        transformed.push(...rewriteMappingKeys(statement, active), statement);
+        const keySnapshot = statement instanceof ArrayAssignNode && active.has(statement.name)
+          && containsFutureReassignedName(statement.value)
+          ? (() => {
+            const name = `__internal__vmapKeySnapshot_${this.serial++}`;
+            const definition = new VariableDefinitionNode(
+              statement.value.type ?? active.get(statement.name)!.elementType,
+              [], name, cloneNode(statement.value),
+            );
+            definition.location = statement.location;
+            const identifier = new IdentifierNode(name);
+            identifier.location = statement.value.location;
+            identifier.type = definition.type;
+            return { definition, identifier };
+          })() : undefined;
+        transformed.push(
+          ...rewriteMappingKeys(statement, active),
+          ...(keySnapshot ? [keySnapshot.definition] : []), statement,
+        );
         const escaped = escapedPlanNames(statement, active);
         if (statement instanceof VariableDefinitionNode && statement.expression instanceof NewArrayNode) {
           active.set(statement.name, {
+            elementType: statement.expression.elementType,
             defaultValue: createDefaultValueExpression(
               statement.expression.elementType, statement.location,
             ),
@@ -2980,7 +3014,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           } else {
             active.get(statement.name)!.writes.push({
               index: cloneNode(statement.index) as ExpressionNode,
-              value: cloneNode(statement.value) as ExpressionNode,
+              value: keySnapshot?.identifier ?? cloneNode(statement.value) as ExpressionNode,
             });
           }
         } else if (statement instanceof ArrayDeleteNode && active.has(statement.name)) {
@@ -2991,6 +3025,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         } else if (statement instanceof ArrayPushNode || statement instanceof ArrayPopNode
           || statement instanceof AssignNode) {
           active.delete(statement instanceof AssignNode ? statement.identifier.name : statement.name);
+          if (statement instanceof AssignNode) reassignedNames.add(statement.identifier.name);
         }
         for (const name of escaped) active.delete(name);
       }

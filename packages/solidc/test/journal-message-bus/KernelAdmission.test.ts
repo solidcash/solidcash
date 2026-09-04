@@ -672,13 +672,31 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('keeps a captured reassigned parameter out of a local key recipe', () => {
+  it('keeps a local key-array snapshot stable across a later parameter reassignment', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function denied(int n, int key) public {
         int[] xs = new int[](n);
         xs[0] = key;
         key = key + 1;
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('refuses a local key-array write after its parameter dependency was reassigned', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function denied(int n, int key) public {
+        int[] xs = new int[](n);
+        key = key + 1;
+        xs[0] = key;
         for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
         require(true);
       }

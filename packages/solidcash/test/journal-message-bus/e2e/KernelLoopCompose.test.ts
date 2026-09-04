@@ -664,6 +664,13 @@ contract KernelSameIterationLocalKeyArray() {
     }
     require(true);
   }
+  function writeCaptured(int count, int key) public {
+    int[] keys = new int[](count);
+    keys[0] = key;
+    key = key + 100;
+    for (int i = 0; i < count; i = i + 1) { this.slots[keys[i]] = i + 40; }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.slots[key] == expected); }
 }`;
 
@@ -2781,6 +2788,8 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(13n, 30n).send()).resolves.toBeDefined();
     await expect(contract.call.check(14n, 31n).send()).resolves.toBeDefined();
     await expect(contract.call.check(15n, 32n).send()).resolves.toBeDefined();
+    await expect(contract.call.writeCaptured(1n, 50n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(50n, 40n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles loop and event predicates from dominating scalar-state assignments', async () => {

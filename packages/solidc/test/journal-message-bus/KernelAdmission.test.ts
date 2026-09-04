@@ -321,6 +321,27 @@ describe('required kernel admission', () => {
     },
   );
 
+  it.each(['bytes20', 'address', 'pubkey', 'datasig'])(
+    'journals a general %s same-entry expression', (type) => {
+      const artifact = compileString(`contract C() {
+        mapping(int => ${type}) values;
+        function replace(int n, ${type} expected, ${type} replacement) public {
+          for (int i = 0; i < n; i = i + 1) {
+            this.values[i] = this.values[i] == expected ? replacement : this.values[i];
+          }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+      const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'replace');
+      expect(handler).toMatchObject({ eligible: true });
+      expect(artifact.abi.find((candidate) => candidate.name === 'replace')?.inputs).toContainEqual(
+        expect.objectContaining({
+          name: expect.stringMatching(/^__internal__vmapCounterOld_/), type: `${type}[]`,
+        }),
+      );
+    },
+  );
+
   it('does not reorder an effectful helper used as a counter-loop mapping value', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

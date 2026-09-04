@@ -1029,6 +1029,18 @@ contract KernelFixedRmw() {
   function check(int key, fixed128x18 expected) public { require(this.values[key] == expected); }
 }`;
 
+const rawScalarRmwSource = (type: string): string => `pragma solidcash ^0.13.0;
+contract KernelRawScalarRmw() {
+  mapping(int => ${type}) values;
+  function replace(int count, ${type} expected, ${type} replacement, ${type} fallbackValue) public {
+    for (int i = 0; i < count; i = i + 1) {
+      this.values[i] = this.values[i] == expected ? replacement : fallbackValue;
+    }
+    require(true);
+  }
+  function check(int key, ${type} expected) public { require(this.values[key] == expected); }
+}`;
+
 describe('kernel loop message-bus compose', () => {
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
@@ -3920,6 +3932,47 @@ describe('kernel composite counter-key settlement', () => {
       await expect(contract.call.check(key, high).send()).resolves.toBeDefined();
     }
   }, 180_000);
+
+  it.each([
+    ['fixed bytes', 'bytes20', new Uint8Array(20).fill(0xaa),
+      new Uint8Array(20).fill(0xbb), new Uint8Array(20).fill(0xcc)],
+    ['address', 'address', hexToBin('51'), hexToBin('52'), hexToBin('53')],
+    ['public key', 'pubkey', alicePub, bobPub, new Uint8Array(33).fill(0x03)],
+    ['data signature', 'datasig', new Uint8Array(64).fill(0xaa),
+      new Uint8Array(64).fill(0xbb), new Uint8Array(64).fill(0xcc)],
+  ] as const)(
+    'settles %s same-entry expressions with raw old-value witnesses',
+    async (_label, type, firstValue, secondValue, unusedValue) => {
+      const provider = createTestProvider();
+      const artifact = compileString(rawScalarRmwSource(type), { ...KERNEL, maximumInputBytes: 1_000_000 });
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'replace'))
+        .toMatchObject({ eligible: true });
+      expect(artifact.abi.find((handler) => handler.name === 'replace')?.sortedUpsertLoopInfo?.[0])
+        .toMatchObject({ valueRuntimeExpression: true, op: 'set' });
+      const inner = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+      );
+      const contract = StatefulContract.withCategory(inner, categoryId);
+      // Absent entries authenticate the type-specific default before insertion.
+      await expect(contract.batch([{
+        function: 'replace', args: [2n, firstValue, secondValue, firstValue],
+      }]).send())
+        .resolves.toBeDefined();
+      // Existing entries authenticate their exact raw tail on both ternary paths.
+      await expect(contract.batch([{
+        function: 'replace', args: [2n, secondValue, unusedValue, firstValue],
+      }]).send())
+        .resolves.toBeDefined();
+      await expect(contract.batch([{
+        function: 'replace', args: [2n, firstValue, secondValue, unusedValue],
+      }]).send())
+        .resolves.toBeDefined();
+      for (let key = 0n; key < 2n; key += 1n) {
+        await expect(contract.call.check(key, secondValue).send()).resolves.toBeDefined();
+      }
+    }, 180_000,
+  );
 
   it('settles affine loop-carried scalar state values from a pre-loop snapshot', async () => {
     const provider = createTestProvider();

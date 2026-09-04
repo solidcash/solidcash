@@ -16329,6 +16329,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (collection.valueType === 'bool') return entry
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) !== 0n
             : false;
+          if (!/^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)) {
+            return entry?.value ?? getDefaultStateValue(collection.valueType, stateLayout.structs);
+          }
           return entry
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint
             : 0n;

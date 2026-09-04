@@ -19,7 +19,7 @@ import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
-  ArrayType, FixedType, IntType, PrimitiveType, StructType, Type,
+  AddressType, ArrayType, BytesType, FixedType, IntType, PrimitiveType, StructType, Type,
 } from '@solidcash/utils';
 import {
   isFunctionEntryInvariantMappingKey, VMAP_KEY_SNAPSHOT_PREFIX,
@@ -2464,12 +2464,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           && !containsCollectionAccess(expression.right);
         if (compact) return false;
         const collection = this.collectionsByName.get(write.name);
+        const valueType = collection?.innermostValueType;
+        const fixedBytes = valueType instanceof BytesType && valueType.bound !== undefined;
+        const rawScalar = fixedBytes || valueType instanceof AddressType
+          || valueType === PrimitiveType.PUBKEY || valueType === PrimitiveType.DATASIG;
         if (!(write instanceof MappingAssignNode || write instanceof ArrayAssignNode)
           || (write instanceof MappingAssignNode && (write.arrayIndex !== undefined
             || write.arrayPush || write.arrayPop)) || !collection
-          || (!(collection.innermostValueType instanceof IntType)
-            && !(collection.innermostValueType instanceof FixedType)
-            && collection.innermostValueType !== PrimitiveType.BOOL)) return true;
+          || (!(valueType instanceof IntType) && !(valueType instanceof FixedType)
+            && valueType !== PrimitiveType.BOOL && !rawScalar)) return true;
         generalOldEntryWrites.add(write);
         return false;
       });

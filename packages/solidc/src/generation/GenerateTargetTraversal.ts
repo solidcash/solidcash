@@ -21486,7 +21486,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           && e instanceof ArrayAccessNode && e.array instanceof IdentifierNode;
         // rawbytes (whole bytes/array) is inline-only in a loop (chunked-in-loop fails closed at runtime, see body):
         // invariant param `= a` OR per-key `= vs[i]`.
-        const rawbytesOk = upsertVk === 'rawbytes' && (isParamSet || isPerKeySet);
+        // General same-entry expressions are lowered to read their authenticated old value from a hidden
+        // per-iteration witness (`m[k] = f(m[k], ...)`). They are still absolute SET transitions: the complete
+        // expression is evaluated on-chain and becomes the new tail. Admit that compiler-owned witness form here
+        // as well as the two direct raw-byte sources above, otherwise admission accepts the row but codegen never
+        // creates its sorted-upsert context and the write falls into the generic runtime-loop failure trap.
+        const hasOldValueWitness = n.messageBusRuntimeOldValueWitness !== undefined;
+        const rawbytesOk = upsertVk === 'rawbytes' && (isParamSet || isPerKeySet || hasOldValueWitness);
         const isLoopCachedSet = n.entrySlotIndex >= 0 && this.entrySlots[n.entrySlotIndex]?.inLoop === true
           && e instanceof IdentifierNode;
         if (isLoopCachedSet || rawbytesOk || upsertVk === 'int') {
@@ -22395,6 +22401,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_ELSE, loc);
           this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
           this.emit(Op.OP_ENDIF, loc);
+        } else if (isRawbytes) {
+          // Fixed/small raw byte values are language values, not Script numbers. Numeric normalization would
+          // both collapse distinct encodings (for example empty vs bytes20(0)) and reject values wider than the
+          // VM numeric limit. Authenticate the witness byte-for-byte against the stored entry tail.
+          this.emit(Op.OP_DUP, loc);
+          this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 4)), loc);
+          this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
         } else {
           this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc);
           this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 4)), loc);
@@ -22434,7 +22447,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // An absent mapping entry reads as the value-type default. The witness cannot manufacture a non-zero base.
         this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 3)), loc);
         this.emit(Op.OP_PICK, loc);
-        if (isChunkableVal) {
+        if (isRawbytes) {
           this.emitDefaultValue(loc, collection.innermostValueType);
           this.emit(Op.OP_EQUALVERIFY, loc);
         } else {

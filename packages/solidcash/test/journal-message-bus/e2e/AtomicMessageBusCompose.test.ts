@@ -14,7 +14,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, Signer, StatefulContract, getContractFactory, messageBus, upgrades,
+  Contract, SignatureTemplate, Signer, StatefulContract, getContractFactory, messageBus, upgrades,
 } from '../../../src/index.js';
 import { decodeAtomicMessageEnvelope, encodeAtomicMessageEnvelope } from '../../../src/message-bus/atomic.js';
 import {
@@ -26,7 +26,7 @@ import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import {
   createBareP2pkhFeeFunder, genesisFtContainer, setupStatefulUtxos,
 } from '../../test-util.js';
-import { alicePkh, alicePriv } from '../../fixture/vars.js';
+import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { assertAuthenticatingVmEvidence } from '../vm-evidence.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
@@ -332,6 +332,55 @@ const mutateAuthenticatedFrame = (
 };
 
 describe('messageBus.compose atomic transaction', () => {
+  it('forwards detached signatures in composite arrays through a typed graph edge', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const calleeArtifact = compileString(`
+      struct Auth { sig signature; pubkey key; }
+      contract CompositeSignatureCallee() {
+        int stored;
+        function settle(Auth[] auth, int next) public {
+          require(auth.length == 1 && checkSig(auth[0].signature, auth[0].key));
+          this.stored = next;
+        }
+        function check(int expected) public { require(this.stored == expected); }
+      }
+    `, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeBase, calleeArtifact.stateLayout!, { stored: 0n }, { saltContract: true },
+    );
+    const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
+    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
+
+    const callerArtifact = compileString(`
+      struct Auth { sig signature; pubkey key; }
+      interface ICompositeSignatureCallee { function settle(Auth[] auth, int next); }
+      contract CompositeSignatureCaller(address callee) {
+        function forward(Auth[] auth, int next) public {
+          ICompositeSignatureCallee(callee).settle(auth, next);
+          require(true);
+        }
+      }
+    `, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const callerBase = new Contract(callerArtifact, [hexToBin(calleeInner.lockingBytecode)], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const auth = [{ signature: new SignatureTemplate(alicePriv), key: alicePub }];
+    const composition = messageBus.compose({
+      calls: [caller.call.forward(auth, 7n), callee.call.settle(auth, 7n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(calleeInner, calleeSetup.categoryId).call.check(7n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
   it('reconstructs and authenticates msg.sender, msg.sig, msg.data, and tx.origin', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeContextCallee() {

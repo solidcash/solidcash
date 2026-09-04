@@ -14665,6 +14665,98 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // === Pushdata encode helpers ===
 
+  private typeContainsTransactionSignature(type: Type, active = new Set<StructType>()): boolean {
+    if (type === PrimitiveType.SIG) return true;
+    if (type instanceof ArrayType) return this.typeContainsTransactionSignature(type.elementType, active);
+    if (!(type instanceof StructType) || active.has(type)) return false;
+    const nested = new Set(active);
+    nested.add(type);
+    return type.fields.some((field) => this.typeContainsTransactionSignature(field.type, nested));
+  }
+
+  /** Replace transaction-signature leaves with empty bytes while retaining canonical composite framing. */
+  private emitSanitizeTransactionSignatures(type: Type, locationData: SingleLocationData): void {
+    const tracked = [...this.stack];
+    this.emitSanitizeTransactionSignaturesRaw(type, locationData, new Set());
+    // The recursive implementation is a one-value-to-one-value transform. Its pushdata helpers adjust symbolic
+    // tracking internally but require no named depths, so restore the caller's identity for the sanitized value.
+    this.stack = tracked;
+  }
+
+  private emitSanitizeTransactionSignaturesRaw(
+    type: Type,
+    locationData: SingleLocationData,
+    active: Set<StructType>,
+  ): void {
+    if (type === PrimitiveType.SIG) {
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(new Uint8Array(), locationData);
+      return;
+    }
+    if (type instanceof StructType) {
+      if (active.has(type)) throw new RecursiveStructUnsupportedError(this.currentFunction);
+      const nested = new Set(active);
+      nested.add(type);
+      this.emit(new Uint8Array(), locationData);
+      this.emit(Op.OP_SWAP, locationData); // [acc, remaining fields]
+      for (const field of type.fields) {
+        this.emitPushdataDecode(field.type, locationData); // [acc, value, remaining]
+        this.emit(Op.OP_SWAP, locationData); // [acc, remaining, value]
+        if (this.typeContainsTransactionSignature(field.type)) {
+          this.emitSanitizeTransactionSignaturesRaw(field.type, locationData, nested);
+        }
+        this.emitPushdataEncode(field.type, locationData); // [acc, remaining, framed value]
+        this.emit(encodeInt(2n), locationData);
+        this.emit(Op.OP_ROLL, locationData); // [remaining, framed value, acc]
+        this.emit(Op.OP_SWAP, locationData);
+        this.emit(Op.OP_CAT, locationData); // [remaining, acc ++ framed value]
+        this.emit(Op.OP_SWAP, locationData); // [acc', remaining]
+      }
+      this.emit(Op.OP_DROP, locationData);
+      return;
+    }
+    if (type instanceof ArrayType) {
+      this.emitPushdataDecode(PrimitiveType.BIGINT, locationData); // [length, elements]
+      this.emit(Op.OP_SWAP, locationData); // [elements, length]
+      this.emit(Op.OP_DUP, locationData);
+      this.emitPushdataEncode(PrimitiveType.BIGINT, locationData); // [elements, count, framed length]
+      this.emit(Op.OP_ROT, locationData);
+      this.emit(Op.OP_SWAP, locationData); // [count, elements, acc]
+      this.emit(Op.OP_BEGIN, locationData);
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_0NOTEQUAL, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(Op.OP_SWAP, locationData); // [count, acc, elements]
+      this.emitPushdataDecode(type.elementType, locationData); // [count, acc, element, remaining]
+      this.emit(Op.OP_SWAP, locationData); // [count, acc, remaining, element]
+      if (this.typeContainsTransactionSignature(type.elementType)) {
+        this.emitSanitizeTransactionSignaturesRaw(type.elementType, locationData, active);
+      }
+      this.emitPushdataEncode(type.elementType, locationData);
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_ROLL, locationData); // [count, remaining, framed element, acc]
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData); // [count, remaining, acc']
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_ROLL, locationData); // [remaining, acc', count]
+      this.emit(Op.OP_1SUB, locationData);
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_ROLL, locationData);
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_ROLL, locationData); // [count-1, remaining, acc']
+      this.emit(encodeBool(false), locationData);
+      this.emit(Op.OP_ELSE, locationData);
+      this.emit(encodeBool(true), locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(Op.OP_UNTIL, locationData);
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_ROLL, locationData);
+      this.emit(Op.OP_DROP, locationData); // [remaining, acc]
+      this.emit(Op.OP_NIP, locationData); // [acc]
+    }
+  }
+
   /**
    * Emit minimal pushdata encoding for a value on the stack.
    * After execution: pops 1 value, pushes 1 encoded bytes value.
@@ -16456,8 +16548,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }));
     // Transaction signatures are positional message-bus batch route witnesses rather than
     // rooted invocation bytes (rooting them creates a signing fixed point).
-    // Both caller emission and callee row projection therefore omit the same
-    // typed fields while the callee's original checkSig remains authoritative.
+    // Both caller emission and callee row projection therefore omit the same typed leaves while the callee's
+    // original checkSig remains authoritative. A direct sig parameter is omitted wholesale; a composite retains
+    // its non-signature fields and is sanitized below after evaluation.
     const callManifestArgumentParameters = argumentParameters.filter((parameter) =>
       parameter.type !== PrimitiveType.SIG);
     if (rawCall && !canonicalRawParameters) {
@@ -16482,6 +16575,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(encodeInt(BigInt(this.getStackIndex((parameter as IdentifierNode).name))), locationData);
           this.emit(Op.OP_PICK, locationData);
           this.pushToStack('(__graph_arg_value)');
+        }
+        if (this.typeContainsTransactionSignature(parameter.type!)) {
+          this.emitSanitizeTransactionSignatures(parameter.type!, locationData);
         }
         if (evaluateArgument && (
           parameter.type === PrimitiveType.INT

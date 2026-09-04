@@ -534,11 +534,30 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('names KERNEL_UNBOUNDED_KEY for a runtime-constructed key array and still compiles siblings', () => {
+  it('journals an immutable runtime-constructed default key array as one fixed entry', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function denied(int n) public {
         int[] xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: true,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('keeps a mutated runtime-constructed key array off the kernel route', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function denied(int n) public {
+        int[] xs = new int[](n);
+        xs[0] = 1;
         for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
         require(true);
       }

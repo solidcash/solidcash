@@ -1,12 +1,13 @@
 import {
   AddressSendExpressionNode, AddressTransferStatementNode, ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode,
+  ArrayPopNode, ArrayPushNode,
   AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode, CollectionNode, ContinueNode,
   ContractNode,
   DoWhileNode,
   EmitStatementNode, ExpressionNode, ExternalFunctionCallNode, FunctionCallNode, FunctionCallStatementNode,
   FieldAccessNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, LiteralNode, MappingAccessNode,
   MappingAssignNode, MappingDeleteNode, NullaryOpNode,
-  MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, SourceFileNode,
+  MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, NewArrayNode, Node, ParameterNode, RequireNode, SourceFileNode,
   ReturnNode,
   StateAccessNode, StateArrayAssignNode, StateArrayDeleteNode, StateArrayPopNode, StateArrayPushNode,
   StateAssignNode, StatementNode, SwitchNode, TernaryOpNode, TokenContainerMethodStatementNode, TransferStatementNode,
@@ -14,6 +15,7 @@ import {
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { ArrayType, IntType, StructType } from '@solidcash/utils';
 import { isFunctionEntryInvariantMappingKey } from './CacheMappingEntryInLoop.js';
@@ -142,6 +144,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
     // the generated proof statements on the second pass.
     if (node.parameters.some((parameter) => parameter.name.startsWith(PREFIX))) return node;
+    this.normalizeImmutableDefaultArrayKeys(node);
     type CanonicalLoop = {
       logical: string;
       count: string;
@@ -1990,5 +1993,55 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     if (ownerIndex < 0) node.parameters.push(...added);
     else node.parameters.splice(ownerIndex, 0, ...added);
     return node;
+  }
+
+  /**
+   * A fresh `new T[](n)` local with no subsequent writes has the exact value
+   * `[default(T), ...]`, independently of its runtime length. Replacing an
+   * access used as a mapping key with that default turns repeated writes to
+   * the same entry into the ordinary fixed-entry journal; it does not infer
+   * anything about mutable local arrays. This is deliberately type-generic
+   * (ints, bytes, enums, structs, etc.) and works for every handler shape.
+   */
+  private normalizeImmutableDefaultArrayKeys(node: FunctionDefinitionNode): void {
+    if (!node.body) return;
+    const defaults = new Map<string, ExpressionNode>();
+    const mutated = new Set<string>();
+    const walk = (root: Node, visit: (candidate: Node) => void): void => {
+      visit(root);
+      for (const key of Object.keys(root)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+          || key === 'resolvedFunction') continue;
+        const value = (root as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value, visit);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item, visit);
+      }
+    };
+    walk(node.body, (candidate) => {
+      if (candidate instanceof VariableDefinitionNode && candidate.expression instanceof NewArrayNode) {
+        defaults.set(candidate.name, createDefaultValueExpression(
+          candidate.expression.elementType, candidate.location,
+        ));
+      }
+      if (candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode
+        || candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode) mutated.add(candidate.name);
+      if (candidate instanceof AssignNode) mutated.add(candidate.identifier.name);
+      if (candidate instanceof MethodCallNode && candidate.object instanceof IdentifierNode
+        && ['push', 'pop'].includes(candidate.methodName)) mutated.add(candidate.object.name);
+    });
+    for (const name of mutated) defaults.delete(name);
+    if (defaults.size === 0) return;
+    const replaceKey = (key: ExpressionNode): ExpressionNode => (
+      key instanceof ArrayAccessNode && key.array instanceof IdentifierNode && defaults.has(key.array.name)
+        ? cloneNode(defaults.get(key.array.name)!) as ExpressionNode : key
+    );
+    walk(node.body, (candidate) => {
+      if (candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode) {
+        candidate.index = replaceKey(candidate.index);
+      } else if (candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode
+        || candidate instanceof MappingDeleteNode) {
+        candidate.keys = candidate.keys.map(replaceKey);
+      }
+    });
   }
 }

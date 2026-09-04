@@ -497,6 +497,17 @@ contract KernelCounterFixedMappingRead() {
   }
 }`;
 
+const IMMUTABLE_DEFAULT_KEY_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelImmutableDefaultKeyArray() {
+  mapping(int => int) slots;
+  function write(int count) public {
+    int[] keys = new int[](count);
+    for (int i = 0; i < count; i = i + 1) { this.slots[keys[i]] = 1; }
+    require(true);
+  }
+  function check(int expected) unsafe { require(this.slots[0] == expected); }
+}`;
+
 describe('kernel loop message-bus compose', () => {
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
@@ -2103,5 +2114,19 @@ describe('kernel composite counter-key settlement', () => {
     for (const key of [0n, 1n, 2n]) {
       await expect(contract.call.check(key, 42n).send()).resolves.toBeDefined();
     }
+  }, 180_000);
+
+  it('coalesces immutable default-array keys into one authenticated entry update', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(IMMUTABLE_DEFAULT_KEY_ARRAY_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.call.write(3n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n).send()).resolves.toBeDefined();
   }, 180_000);
 });

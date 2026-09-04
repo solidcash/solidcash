@@ -333,11 +333,12 @@ an immutable local affine-alias chain such as
 authenticated domain. Straight-line dominating reassignments of public bounds and local aliases, plus finite
 `if`/`else` assignment joins, are replayed from their point-in-time value. Nested-control, loop-local, and otherwise
 non-dominating reassignments remain refused.
-Noncanonical `while` / `do-while` domains remain refused. A source `while` continuation is supported when the
-`continue` is immediately preceded by the same canonical counter step as the loop tail. The lowering removes that
-duplicate source step, executes the retained tail step on the continuation path, and advances any already-consumed
-selected settlement cursors before jumping. A `continue` which omits or changes the canonical step can repeat a
-logical value and remains refused. A desugared `for` already runs its update on `continue` and is supported.
+Noncanonical `while` / `do-while` domains remain refused. A source `while` or `do-while` continuation is supported
+when the `continue` is immediately preceded by the same canonical counter step as the loop tail. The lowering
+removes that duplicate source step, executes the retained tail step on the continuation path, and advances any
+already-consumed selected settlement cursors before jumping. A `continue` which omits or changes the canonical
+step can repeat a logical value and remains refused. A desugared `for` already runs its update on `continue` and
+is supported.
 A handler may contain multiple unconditional top-level counter loops in source order,
 including loops over the same physical collection. The compiler threads exact accumulated input and output widths
 between those loops, and the SDK publishes their predecessor and commitment runs in the same order. If their

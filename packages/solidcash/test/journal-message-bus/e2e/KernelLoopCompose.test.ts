@@ -451,6 +451,15 @@ contract KernelSelectedCounterMapping() {
     }
     require(true);
   }
+  function writeDoWhileSplit(int n) public {
+    int i = 0;
+    do {
+      if (i % 2 == 0) { this.m[i] = i + 330; i = i + 1; continue; }
+      this.whileRest[i] = i + 330;
+      i = i + 1;
+    } while (i < n);
+    require(true);
+  }
   function writeUntil(int n, int stop) public {
     for (int i = 0; i < n; i = i + 1) {
       emit Visited(i + 200);
@@ -1263,6 +1272,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const writeHandler = artifact.abi.find((candidate) => candidate.name === 'write')!;
     const oddsHandler = artifact.abi.find((candidate) => candidate.name === 'writeOdds')!;
     const whileSplitHandler = artifact.abi.find((candidate) => candidate.name === 'writeWhileSplit')!;
+    const doWhileSplitHandler = artifact.abi.find((candidate) => candidate.name === 'writeDoWhileSplit')!;
     const untilHandler = artifact.abi.find((candidate) => candidate.name === 'writeUntil')!;
     const voidReturnHandler = artifact.abi.find((candidate) => candidate.name === 'writeVoidReturn')!;
     const returnHandler = artifact.abi.find((candidate) => candidate.name === 'writeReturn')!;
@@ -1285,6 +1295,17 @@ describe('kernel counter-key mapping loop compose', () => {
     expect(whileSplitHandler.sortedUpsertLoopInfo).toEqual([
       expect.objectContaining({ collection: 'm', iterationCondition: expect.anything() }),
       expect.objectContaining({ collection: 'whileRest', iterationCondition: expect.anything() }),
+    ]);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeDoWhileSplit'))
+      .toMatchObject({ eligible: true });
+    expect(doWhileSplitHandler.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({
+        collection: 'm', iterationCondition: expect.anything(), varyingArrayParam: expect.stringMatching(/_post$/),
+      }),
+      expect.objectContaining({
+        collection: 'whileRest', iterationCondition: expect.anything(),
+        varyingArrayParam: expect.stringMatching(/_post$/),
+      }),
     ]);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeUntil'))
       .toMatchObject({ eligible: true });
@@ -1441,6 +1462,37 @@ describe('kernel counter-key mapping loop compose', () => {
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
     for (const [key, expected] of [[1n, 231n], [3n, 233n], [5n, 235n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.checkWhileRest(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+
+    const doWhileContinued = StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeDoWhileSplit', args: [4n] }]);
+    const doWhileBuilder = await doWhileContinued.build();
+    const doWhileInput = doWhileBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    if (!doWhileInput || !('params' in doWhileInput.unlocker)) {
+      throw new Error('message-bus writeDoWhileSplit input is missing');
+    }
+    const expectedDoWhileKeys = new Map([
+      ['m', [0n, 2n]],
+      ['whileRest', [1n, 3n]],
+    ]);
+    for (const info of doWhileSplitHandler.sortedUpsertLoopInfo ?? []) {
+      const permutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+        input.name === info.varyingArrayParam);
+      expect([...(doWhileInput.unlocker.params[permutationIndex] as bigint[][])[0]]
+        .sort((left, right) => Number(left - right))).toEqual(expectedDoWhileKeys.get(info.collection));
+    }
+    await expect(doWhileContinued.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    for (const [key, expected] of [[0n, 330n], [2n, 332n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    for (const [key, expected] of [[1n, 331n], [3n, 333n]] as const) {
       await expect(StatefulContract.withCategory(inner, categoryId).call.checkWhileRest(key, expected).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }

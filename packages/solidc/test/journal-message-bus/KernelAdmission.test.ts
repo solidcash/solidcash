@@ -2127,6 +2127,46 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('refuses a source do-while continue which skips the canonical tail update', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n) public {
+        int i = 0;
+        do { if (i == 1) { continue; } this.m[i] = i; i = i + 1; } while (i < n);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('normalizes a source do-while continue after a selected keyed write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      mapping(int => int) rest;
+      function write(int n) public {
+        int i = 0;
+        do {
+          if (i % 2 == 0) { this.m[i] = i; i = i + 1; continue; }
+          this.rest[i] = i;
+          i = i + 1;
+        } while (i < n);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual([
+        expect.objectContaining({ collection: 'm', iterationCondition: expect.anything() }),
+        expect.objectContaining({ collection: 'rest', iterationCondition: expect.anything() }),
+      ]);
+  });
+
   it('normalizes a source while continue after a selected keyed write', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;

@@ -1825,6 +1825,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (write instanceof ArrayAssignNode) write.value = expanded;
         else if (write instanceof MappingAssignNode) write.expression = expanded;
       }
+      const loopCarriedValuesAt = (candidate: Node): Map<string, ExpressionNode> => {
+        const position = (block.statements ?? []).findIndex((statement) => containsNode(statement, candidate));
+        const siteValues = loopCarriedLocalValuesByStatement.get(position);
+        return siteValues ? new Map([...loopCarriedLocalValues, ...siteValues]) : loopCarriedLocalValues;
+      };
       // Runtime event cardinality must be derivable before the first VM probe. Nested if/else paths are safe when
       // their predicate can be replayed from SDK-visible inputs and stable pre-state. Switch arms and the reachable
       // try body use those same paths; nested loops still need richer path metadata. This is a construct rule, not
@@ -1837,12 +1842,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         condition?: ExpressionNode,
       ): void => {
         if (x instanceof EmitStatementNode) {
+          const values = loopCarriedValuesAt(x);
           if (condition && !runtimePathExpressionSupported(
-            condition, logical, new Set(), stateValues, loopCarriedLocalValues,
+            condition, logical, new Set(), stateValues, values,
           )) conditionalRuntimeEmit = true;
           else {
             const expanded = condition && expandRuntimePathExpression(
-              condition, logical, new Set(), stateValues, loopCarriedLocalValues,
+              condition, logical, new Set(), stateValues, values,
             );
             if (condition && !expanded) conditionalRuntimeEmit = true;
             else runtimeEmits.push({ emit: x, ...(expanded && { condition: expanded }) });
@@ -1920,12 +1926,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         condition?: ExpressionNode,
       ): void => {
         if (x instanceof TransferStatementNode || x instanceof TokenContainerMethodStatementNode) {
+          const values = loopCarriedValuesAt(x);
           if (condition && !runtimePathExpressionSupported(
-            condition, logical, new Set(), stateValues, loopCarriedLocalValues,
+            condition, logical, new Set(), stateValues, values,
           )) conditionalRuntimeTransfer = true;
           else {
             const expanded = condition && expandRuntimePathExpression(
-              condition, logical, new Set(), stateValues, loopCarriedLocalValues,
+              condition, logical, new Set(), stateValues, values,
             );
             if (condition && !expanded) conditionalRuntimeTransfer = true;
             else runtimeTransfers.push({ transfer: x, ...(expanded && { condition: expanded }) });

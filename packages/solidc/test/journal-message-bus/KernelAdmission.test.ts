@@ -1743,6 +1743,51 @@ describe('required kernel admission', () => {
       .toHaveLength(2);
   });
 
+  it('replays site-specific event predicates observed on both sides of an assignment', () => {
+    const artifact = compileString(`event Phase(int value);
+      contract C() {
+        mapping(int => int) beforeValues;
+        mapping(int => int) afterValues;
+        function write(int n) public {
+          bool take = true;
+          for (int i = 0; i < n; i = i + 1) {
+            if (take) { this.beforeValues[i] = i; emit Phase(i); }
+            take = i % 3 == 0;
+            if (take) { this.afterValues[i] = i; emit Phase(i + 100); }
+          }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const conditions = artifact.messageBus?.handlers.find((handler) => handler.name === 'write')
+      ?.runtimeLoopEvents?.[0].conditions;
+    expect(conditions).toHaveLength(2);
+    expect(conditions?.[0]).not.toEqual(conditions?.[1]);
+  });
+
+  it('replays site-specific transfer predicates observed on both sides of an assignment', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) beforeValues;
+      mapping(int => int) afterValues;
+      function write(int n, bytes to) public {
+        bool take = true;
+        for (int i = 0; i < n; i = i + 1) {
+          if (take) { this.beforeValues[i] = i; this.transfer(to, 1); }
+          take = i % 3 == 0;
+          if (take) { this.afterValues[i] = i; this.transfer(to, 1); }
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const conditions = artifact.messageBus?.handlers.find((handler) => handler.name === 'write')
+      ?.runtimeLoopTransfers?.[0].conditions;
+    expect(conditions).toHaveLength(2);
+    expect(conditions?.[0]).not.toEqual(conditions?.[1]);
+  });
+
   it('admits a public enum getter encoded as int', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       enum Status { A, B }

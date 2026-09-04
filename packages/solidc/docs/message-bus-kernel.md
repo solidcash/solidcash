@@ -378,15 +378,15 @@ selected mapping subset, applies each site's fall-through predicate, and stops a
 Both void and value-returning `return` use the same terminated-domain representation after the compiler lowers
 the return to a stashed result/flag and break. The post-loop return is captured through the ordinary result channel,
 while the mapping cursor proves the exact terminated iteration domain.
-Loop-carried guards with straight-line, unconditional, replayable assignments are closed over the logical counter
-when every observed use has the same source-order phase. For example, `if (take) m[i] = i; take = i % 3 == 0`
-publishes `take` as the initializer at rank zero and the previous counter's expression thereafter; a use between
-assignments publishes the latest expression evaluated at the current counter. An exhaustive top-level `if`/`else`
+Loop-carried guards with straight-line, unconditional, replayable assignments are closed over the logical counter.
+For example, `if (take) m[i] = i; take = i % 3 == 0` publishes `take` as the initializer at rank zero and the
+previous counter's expression thereafter; a use between assignments publishes the latest expression evaluated at
+the current counter. An exhaustive top-level `if`/`else`
 or `switch` assignment to the same local is collapsed to its exact ternary expression for subsequent guards and
 mapping values when every arm is independently replayable. Exhaustive nested branches and switches are reduced
 recursively. Straight-line loop-carried values used before and after an assignment receive separate per-site
-recipes. Incomplete joins, self-dependent arms, and recurrences other than the supported boolean toggle remain
-fenced.
+recipes for mapping guards, mapping values, and runtime-effect predicates. Incomplete joins, self-dependent arms,
+and recurrences other than the supported boolean toggle remain fenced.
 Sibling reads of a mutated mapping, foreign counter-keyed reads, and
 write values derived through mutable/loop-carried locals or scalar state mutated by the loop remain
 `KERNEL_UNBOUNDED_KEY`. Integer same-entry expressions are supported generally: for example,

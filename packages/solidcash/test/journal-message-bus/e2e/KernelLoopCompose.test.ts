@@ -933,6 +933,7 @@ contract KernelDominatingStatePredicate() {
 }`;
 
 const LOOP_CARRIED_GUARD_SOURCE = `pragma solidcash ^0.13.0;
+event Phase(int value);
 contract KernelLoopCarriedGuard() {
   mapping(int => int) values;
   mapping(int => int) beforeValues;
@@ -967,9 +968,9 @@ contract KernelLoopCarriedGuard() {
   function writePhases(int count) public {
     bool take = true;
     for (int i = 0; i < count; i = i + 1) {
-      if (take) this.beforeValues[i] = i + 40;
+      if (take) { this.beforeValues[i] = i + 40; emit Phase(i); }
       take = i % 3 == 0;
-      if (take) this.afterValues[i] = i + 50;
+      if (take) { this.afterValues[i] = i + 50; emit Phase(i + 100); }
     }
     require(true);
   }

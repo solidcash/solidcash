@@ -763,8 +763,6 @@ describe('required kernel admission', () => {
     ['an extra post-test counter mutation', `int i = 0; do {
       this.m[i] = i; i = n; i = i + 1;
     } while (i < n);`],
-    ['a conditionally assigned public bound', `if (n > 0) { n = n - 1; }
-      for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }`],
     ['a bound assigned inside its loop', `for (int i = 0; i < n; i = i + 1) {
       n = n - 1; this.m[i] = i;
     }`],
@@ -782,6 +780,31 @@ describe('required kernel admission', () => {
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('replays a finite conditional public bound before deriving the counter permutation', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, bool trim) public {
+        if (trim) { n = n - 1; }
+        for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }
+        require(true);
+      }
+      function writeLocal(int n, bool trim) public {
+        int limit = n;
+        if (trim) { limit = limit - 2; } else { limit = limit - 1; }
+        for (int i = 0; i < limit; i = i + 1) { this.m[i] = i; }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationBound).toMatchObject({ kind: 'ternary' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeLocal'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'writeLocal')?.sortedUpsertLoopInfo?.[0]
+      .iterationBound).toMatchObject({ kind: 'ternary' });
   });
 
   it.each([

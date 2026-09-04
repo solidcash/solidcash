@@ -241,6 +241,41 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             offset: bigint;
             metadataExpression?: ExpressionNode;
           };
+          const mutatesLocalName = (candidate: Node, name: string): boolean => {
+            if (candidate instanceof AssignNode && candidate.identifier.name === name) return true;
+            for (const [key, value] of Object.entries(candidate)) {
+              if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+                || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+                || key === 'stateVariable') continue;
+              if (value instanceof Node && mutatesLocalName(value, name)) return true;
+              if (Array.isArray(value)
+                && value.some((item) => item instanceof Node && mutatesLocalName(item, name))) return true;
+            }
+            return false;
+          };
+          const substituteBoundName = (
+            expression: ExpressionNode,
+            name: string,
+            replacement: ExpressionNode,
+          ): ExpressionNode => {
+            if (expression instanceof IdentifierNode && expression.name === name) return cloneNode(replacement);
+            const expanded = cloneNode(expression) as ExpressionNode;
+            for (const key of Object.keys(expanded)) {
+              if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+                || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+                || key === 'stateVariable' || key === 'identifier') continue;
+              const value = (expanded as unknown as Record<string, unknown>)[key];
+              if (value instanceof ExpressionNode) {
+                (expanded as unknown as Record<string, unknown>)[key] = substituteBoundName(
+                  value, name, replacement,
+                );
+              } else if (Array.isArray(value)) {
+                (expanded as unknown as Record<string, unknown>)[key] = value.map((item) =>
+                  item instanceof ExpressionNode ? substituteBoundName(item, name, replacement) : item);
+              }
+            }
+            return expanded;
+          };
           const resolveBound = (
             expression: ExpressionNode,
             before: number,
@@ -280,6 +315,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 assignments: [...parent.assignments, latestAssignment.statement],
               };
             }
+            // A finite branch assignment needs the general expression resolver below so its post-join value is
+            // represented as a ternary. Treating the original public parameter as unchanged here would later be
+            // caught as a mutation, but would lose the branch expression required to make it admissible.
+            if (statements.slice(0, before).some((statement) =>
+              statement instanceof BranchNode && mutatesLocalName(statement, name))) return undefined;
             if (visibleCounts.has(name)) return {
               count: name, countNames: [name], definitions: [], assignments: [], offset: 0n,
             };
@@ -313,20 +353,62 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             assignments: AssignNode[];
           } | undefined => {
             if (expression instanceof IdentifierNode) {
-              const assignments = statements.slice(0, before)
-                .map((statement, position) => ({ statement, position }))
-                .filter((candidate): candidate is { statement: AssignNode; position: number } =>
-                  candidate.statement instanceof AssignNode
-                  && candidate.statement.identifier.name === expression.name);
-              const latestAssignment = assignments.at(-1);
-              if (latestAssignment) {
-                const resolved = resolveGeneralBound(
-                  latestAssignment.statement.expression, latestAssignment.position, seen,
-                );
-                return resolved && {
-                  ...resolved,
-                  assignments: [...resolved.assignments, latestAssignment.statement],
-                };
+              for (let position = before - 1; position >= 0; position -= 1) {
+                const prior = statements[position];
+                if (prior instanceof AssignNode && prior.identifier.name === expression.name) {
+                  const resolved = resolveGeneralBound(prior.expression, position, seen);
+                  return resolved && {
+                    ...resolved,
+                    assignments: [...resolved.assignments, prior],
+                  };
+                }
+                if (prior instanceof BranchNode && mutatesLocalName(prior, expression.name)) {
+                  const incoming = resolveGeneralBound(expression, position, seen);
+                  const condition = resolveGeneralBound(prior.condition, position, seen);
+                  if (!incoming || !condition) return undefined;
+                  const replayArm = (arm: BlockNode | undefined): typeof incoming | undefined => {
+                    let current = incoming;
+                    for (const armStatement of arm?.statements ?? []) {
+                      if (armStatement instanceof AssignNode
+                        && armStatement.identifier.name === expression.name) {
+                        const rhs = substituteBoundName(
+                          armStatement.expression, expression.name, current.expression,
+                        );
+                        const resolved = resolveGeneralBound(rhs, position, seen);
+                        if (!resolved) return undefined;
+                        current = {
+                          expression: resolved.expression,
+                          counts: [...new Set([...current.counts, ...resolved.counts])],
+                          definitions: [...new Set([...current.definitions, ...resolved.definitions])],
+                          assignments: [...new Set([
+                            ...current.assignments, ...resolved.assignments, armStatement,
+                          ])],
+                        };
+                      } else if (mutatesLocalName(armStatement, expression.name)) {
+                        return undefined;
+                      }
+                    }
+                    return current;
+                  };
+                  const ifValue = replayArm(prior.ifBlock);
+                  const elseValue = replayArm(prior.elseBlock);
+                  if (!ifValue || !elseValue) return undefined;
+                  const merged = new TernaryOpNode(
+                    condition.expression, ifValue.expression, elseValue.expression,
+                  );
+                  merged.location = prior.location;
+                  merged.type = expression.type ?? ifValue.expression.type ?? elseValue.expression.type;
+                  return {
+                    expression: merged,
+                    counts: [...new Set([...condition.counts, ...ifValue.counts, ...elseValue.counts])],
+                    definitions: [...new Set([
+                      ...condition.definitions, ...ifValue.definitions, ...elseValue.definitions,
+                    ])],
+                    assignments: [...new Set([
+                      ...condition.assignments, ...ifValue.assignments, ...elseValue.assignments,
+                    ])],
+                  };
+                }
               }
               if (visibleCounts.has(expression.name)) return {
                 expression: cloneNode(expression), counts: [expression.name], definitions: [], assignments: [],

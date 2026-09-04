@@ -87,6 +87,11 @@ contract KernelReassignedBoundMapping() {
     for (int i = 0; i < limit; i = i + 1) { this.m[i] = value; }
     require(true);
   }
+  function writeConditional(int n, int value, bool trim) public {
+    if (trim) { n = n - 1; }
+    for (int i = 0; i < n; i = i + 1) { this.m[i] = value; }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
@@ -1594,6 +1599,8 @@ describe('kernel counter-key mapping loop compose', () => {
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeLocal'))
       .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeConditional'))
+      .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -1610,6 +1617,12 @@ describe('kernel counter-key mapping loop compose', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(StatefulContract.withCategory(inner, categoryId).call.check(2n, 10n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.batch([{ function: 'writeConditional', args: [5n, 30n, true] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(3n, 30n).send()).resolves.toBeDefined();
+    await expect(contract.call.writeConditional(3n, 40n, false).send()).resolves.toBeDefined();
+    await expect(contract.call.check(2n, 40n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(3n, 30n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles an old-entry transition without a row-local fixed key witness', async () => {

@@ -838,10 +838,24 @@ describe('required kernel admission', () => {
       input.name.startsWith('__internal__vmapCounterOld_'))).toBe(false);
   });
 
-  it.each([
-    ['loop-carried scalar state', 'this.total = this.total + 1; this.a[i] = this.total;'],
-    ['a counter-dependent read from another mapping', 'this.a[i] = this.b[i];'],
-  ])('refuses a canonical counter loop with %s', (_label, statement) => {
+  it('admits an affine loop-carried scalar state mapping value', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a;
+      int total;
+      function write(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.total = this.total + 1;
+          this.a[i] = this.total;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('refuses a canonical counter loop with a counter-dependent read from another mapping', () => {
+    const statement = 'this.a[i] = this.b[i];';
     const artifact = compileString(`contract C() {
       mapping(int => int) a;
       mapping(int => int) b;

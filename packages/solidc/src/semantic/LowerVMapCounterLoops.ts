@@ -1281,6 +1281,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // may inline them and then apply the same logical-value permutation as a direct expression. Definitions in
       // branches or with effects/collection reads remain fenced because their reachability/value is not invariant.
       const loopValueDefinitions = new Map<string, ExpressionNode>();
+      // A scalar state recurrence must read its pre-loop value, not the value currently being updated by the
+      // physical entry order. These snapshots are materialized in the function prelude before the row loop.
+      const affineStateValues = new Map<string, ExpressionNode>();
+      const affineStateSnapshots = new Map<string, StateAccessNode>();
       for (const statement of block.statements ?? []) {
         if (statement instanceof VariableDefinitionNode && statement.expression
           && statement.inlinedReturningHelperPure !== false
@@ -1369,6 +1373,69 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         stampLocation(affine);
         loopValueDefinitions.set(name, affine);
       }
+      for (const name of loopWrittenState) {
+        const updates = (block.statements ?? []).flatMap((statement, index) => (
+          statement instanceof StateAssignNode && statement.name === name ? [{ statement, index }] : []
+        ));
+        if (updates.length === 0) continue;
+        let allAssignments = 0;
+        const countAssignments = (candidate: Node): void => {
+          if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
+          if (candidate instanceof StateAssignNode && candidate.name === name) allAssignments += 1;
+          for (const key of Object.keys(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
+            const value = (candidate as unknown as Record<string, unknown>)[key];
+            if (value instanceof Node) countAssignments(value);
+            else if (Array.isArray(value)) {
+              for (const item of value) if (item instanceof Node) countAssignments(item);
+            }
+          }
+        };
+        countAssignments(block);
+        if (allAssignments !== updates.length) continue;
+        let delta = 0n;
+        let source: StateAccessNode | undefined;
+        let valid = true;
+        for (const { statement } of updates) {
+          const recurrence = statement.expression;
+          if (!(recurrence instanceof BinaryOpNode)
+            || !(recurrence.operator === BinaryOperator.PLUS || recurrence.operator === BinaryOperator.MINUS)
+            || !(recurrence.left instanceof StateAccessNode)
+            || recurrence.left.name !== name
+            || !(recurrence.right instanceof IntLiteralNode)) {
+            valid = false;
+            break;
+          }
+          source ??= recurrence.left;
+          delta += recurrence.operator === BinaryOperator.PLUS
+            ? recurrence.right.value : -recurrence.right.value;
+        }
+        const lastUpdate = updates.at(-1)!;
+        const writesAfter = [...keyedStatementIndices.values()].every((writeIndex) => writeIndex > lastUpdate.index);
+        if (!valid || !source || !writesAfter) continue;
+        const snapshot = `__internal__vmapCounterStateBase_${this.serial}_${name}`;
+        affineStateSnapshots.set(snapshot, cloneNode(source));
+        const rank = step === 1n && start === 0n
+          ? new IdentifierNode(logical)
+          : new BinaryOpNode(
+            new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
+            BinaryOperator.DIV, new IntLiteralNode(step),
+          );
+        const occurrence = new BinaryOpNode(rank, BinaryOperator.PLUS, new IntLiteralNode(1n));
+        const scaled = new BinaryOpNode(occurrence, BinaryOperator.MUL, new IntLiteralNode(delta));
+        const affine = new BinaryOpNode(new IdentifierNode(snapshot), BinaryOperator.PLUS, scaled);
+        const stampLocation = (candidate: Node): void => {
+          candidate.location = lastUpdate.statement.location;
+          for (const key of Object.keys(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
+            const value = (candidate as unknown as Record<string, unknown>)[key];
+            if (value instanceof Node) stampLocation(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) stampLocation(item);
+          }
+        };
+        stampLocation(affine);
+        affineStateValues.set(name, affine);
+      }
       const safeLoopValueAlias = (name: string, seen = new Set<string>()): boolean => {
         const expression = loopValueDefinitions.get(name);
         if (!expression || seen.has(name)) return false;
@@ -1380,7 +1447,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && loopAssignedLocals.has(candidate.name)
             && !safeLoopValueAlias(candidate.name, next)) { safe = false; return; }
           if (candidate instanceof StateAccessNode && loopWrittenState.has(candidate.name)) {
-            safe = false; return;
+            if (!affineStateValues.has(candidate.name)) { safe = false; return; }
           }
           for (const key of Object.keys(candidate)) {
             if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
@@ -1392,18 +1459,25 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         walk(expression);
         return safe;
       };
-      const dependsOnLoopMutation = (x: Node, resolving = new Set<string>()): boolean => {
+      const dependsOnLoopMutation = (
+        x: Node, resolving = new Set<string>(), allowAffineStateValue = false,
+      ): boolean => {
         if (x instanceof IdentifierNode && x.name !== logical && loopAssignedLocals.has(x.name)) {
           if (!safeLoopValueAlias(x.name, resolving)) return true;
-          return dependsOnLoopMutation(loopValueDefinitions.get(x.name)!, new Set(resolving).add(x.name));
+          return dependsOnLoopMutation(
+            loopValueDefinitions.get(x.name)!, new Set(resolving).add(x.name), allowAffineStateValue,
+          );
         }
-        if (x instanceof StateAccessNode && loopWrittenState.has(x.name)) return true;
+        if (x instanceof StateAccessNode && loopWrittenState.has(x.name)) {
+          return !allowAffineStateValue || !affineStateValues.has(x.name);
+        }
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
           const value = (x as unknown as Record<string, unknown>)[key];
-          if (value instanceof Node && dependsOnLoopMutation(value)) return true;
+          if (value instanceof Node && dependsOnLoopMutation(value, resolving, allowAffineStateValue)) return true;
           if (Array.isArray(value)
-            && value.some((item) => item instanceof Node && dependsOnLoopMutation(item))) return true;
+            && value.some((item) => item instanceof Node
+              && dependsOnLoopMutation(item, resolving, allowAffineStateValue))) return true;
         }
         return false;
       };
@@ -1445,7 +1519,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         || hasUnsupportedOldEntryExpression
         || (!writeSelectionCondition && hasLoopCarriedWriteGuard(block))
         || keyed.some((write) => !structRuntimeRmws.has(write as ArrayAssignNode | MappingAssignNode)
-          && dependsOnLoopMutation(write))) return false;
+          && dependsOnLoopMutation(write, new Set(), true))) return false;
 
       if (!apply) return true;
 
@@ -1545,6 +1619,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const sourceBoundValue = (): ExpressionNode => boundExpression
         ? cloneNode(boundExpression)
         : boundOffset === 0n ? id(count) : binary(id(count), BinaryOperator.PLUS, lit(boundOffset));
+      for (const [snapshot, source] of affineStateSnapshots) {
+        prelude.push(at(new VariableDefinitionNode(
+          source.type ?? source.stateVariable?.type ?? new IntType(true, 256), [], snapshot, cloneNode(source),
+        )));
+      }
       const boundValue = (): ExpressionNode => asProofInt(sourceBoundValue());
       const positiveIterationCount = (): ExpressionNode => binary(
         binary(binary(
@@ -1596,6 +1675,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (x instanceof IdentifierNode && x.name === logical) return id(group.logicalValue);
         if (x instanceof IdentifierNode && safeLoopValueAlias(x.name)) {
           return replace(cloneNode(loopValueDefinitions.get(x.name)!), group);
+        }
+        if (x instanceof StateAccessNode && affineStateValues.has(x.name)) {
+          const rewriteLogical = (candidate: Node): Node => {
+            if (candidate instanceof IdentifierNode && candidate.name === logical) return id(group.logicalValue);
+            for (const key of Object.keys(candidate)) {
+              if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
+              const value = (candidate as unknown as Record<string, unknown>)[key];
+              if (value instanceof Node) (candidate as unknown as Record<string, unknown>)[key] = rewriteLogical(value);
+              else if (Array.isArray(value)) {
+                (candidate as unknown as Record<string, unknown>)[key] = value.map((item) =>
+                  item instanceof Node ? rewriteLogical(item) : item);
+              }
+            }
+            return candidate;
+          };
+          return rewriteLogical(cloneNode(affineStateValues.get(x.name)!));
         }
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;

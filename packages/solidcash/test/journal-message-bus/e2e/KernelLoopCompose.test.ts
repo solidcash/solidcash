@@ -1017,6 +1017,18 @@ contract KernelBoolRmw() {
   function check(int key, bool expected) public { require(this.flags[key] == expected); }
 }`;
 
+const FIXED_RMW_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelFixedRmw() {
+  mapping(int => fixed128x18) values;
+  function raise(int count, fixed128x18 floor) public {
+    for (int i = 0; i < count; i = i + 1) {
+      this.values[i] = this.values[i] > floor ? this.values[i] : floor;
+    }
+    require(true);
+  }
+  function check(int key, fixed128x18 expected) public { require(this.values[key] == expected); }
+}`;
+
 describe('kernel loop message-bus compose', () => {
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
@@ -3887,6 +3899,25 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.batch([{ function: 'flip', args: [3n] }]).send()).resolves.toBeDefined();
     for (let key = 0n; key < 3n; key += 1n) {
       await expect(contract.call.check(key, false).send()).resolves.toBeDefined();
+    }
+  }, 180_000);
+
+  it('settles fixed-point same-entry expressions with scaled old-value witnesses', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(FIXED_RMW_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'raise'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const high = 2n * 10n ** 18n;
+    const low = 1n * 10n ** 18n;
+    await expect(contract.batch([{ function: 'raise', args: [2n, high] }]).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'raise', args: [2n, low] }]).send()).resolves.toBeDefined();
+    for (let key = 0n; key < 2n; key += 1n) {
+      await expect(contract.call.check(key, high).send()).resolves.toBeDefined();
     }
   }, 180_000);
 

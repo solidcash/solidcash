@@ -1746,6 +1746,21 @@ describe('required kernel admission', () => {
     },
   );
 
+  it('captures fixed-point arrays and struct fields through the recursive ABI encoder', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract C {
+        struct Quote { fixed128x18 bid; ufixed128x18 ask; }
+        function echoArray(fixed128x18[] calldata values)
+          public pure returns (fixed128x18[] memory) { return values; }
+        function echoQuote(Quote calldata value) public pure returns (Quote memory) { return value; }
+        function control() public { require(true); }
+      }`, { ...KERNEL, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echoArray'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echoQuote'))
+      .toMatchObject({ eligible: true });
+  });
+
   it.each(['pubkey', 'datasig'])(
     'captures a native %s result through compact ABI framing', (type) => {
       const artifact = compileString(`contract C() {

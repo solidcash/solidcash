@@ -19,7 +19,7 @@ import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
-  ArrayType, IntType, StructType, Type,
+  ArrayType, IntType, PrimitiveType, StructType, Type,
 } from '@solidcash/utils';
 import {
   isFunctionEntryInvariantMappingKey, VMAP_KEY_SNAPSHOT_PREFIX,
@@ -2467,7 +2467,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (!(write instanceof MappingAssignNode || write instanceof ArrayAssignNode)
           || (write instanceof MappingAssignNode && (write.arrayIndex !== undefined
             || write.arrayPush || write.arrayPop)) || !collection
-          || !(collection.innermostValueType instanceof IntType)) return true;
+          || (!(collection.innermostValueType instanceof IntType)
+            && collection.innermostValueType !== PrimitiveType.BOOL)) return true;
         generalOldEntryWrites.add(write);
         return false;
       });

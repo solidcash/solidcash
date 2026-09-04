@@ -285,6 +285,21 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control')?.eligible).toBe(true);
   });
 
+  it('journals a general boolean same-entry expression', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => bool) flags;
+      function flip(int n) public {
+        for (int i = 0; i < n; i = i + 1) { this.flags[i] = !this.flags[i]; }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'flip');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'flip')?.inputs).toContainEqual(
+      expect.objectContaining({ name: expect.stringMatching(/^__internal__vmapCounterOld_/), type: 'bool[]' }),
+    );
+  });
+
   it('does not reorder an effectful helper used as a counter-loop mapping value', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

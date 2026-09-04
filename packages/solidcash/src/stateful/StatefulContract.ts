@@ -16326,6 +16326,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const oldValues = keysArr.map((key) => {
           const slot = slotForKey(key);
           const entry = list.find(slot);
+          if (collection.valueType === 'bool') return entry
+            ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) !== 0n
+            : false;
           return entry
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint
             : 0n;

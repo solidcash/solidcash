@@ -1007,6 +1007,16 @@ contract KernelLoopCarriedGuard() {
   function checkBreak(int key, int expected) public { require(this.breakValues[key] == expected); }
 }`;
 
+const BOOL_RMW_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelBoolRmw() {
+  mapping(int => bool) flags;
+  function flip(int count) public {
+    for (int i = 0; i < count; i = i + 1) { this.flags[i] = !this.flags[i]; }
+    require(true);
+  }
+  function check(int key, bool expected) public { require(this.flags[key] == expected); }
+}`;
+
 describe('kernel loop message-bus compose', () => {
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
@@ -3857,6 +3867,26 @@ describe('kernel composite counter-key settlement', () => {
       await expect(contract.call.check(key, expected).send()).resolves.toMatchObject({
         txid: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
+    }
+  }, 180_000);
+
+  it('settles boolean same-entry expressions with typed old-value witnesses', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(BOOL_RMW_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'flip'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'flip', args: [3n] }]).send()).resolves.toBeDefined();
+    for (let key = 0n; key < 3n; key += 1n) {
+      await expect(contract.call.check(key, true).send()).resolves.toBeDefined();
+    }
+    await expect(contract.batch([{ function: 'flip', args: [3n] }]).send()).resolves.toBeDefined();
+    for (let key = 0n; key < 3n; key += 1n) {
+      await expect(contract.call.check(key, false).send()).resolves.toBeDefined();
     }
   }, 180_000);
 

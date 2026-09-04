@@ -390,11 +390,12 @@ term is expanded at its own source statement before the terms are composed. Inco
 and recurrences other than the supported boolean toggle remain fenced.
 Sibling reads of a mutated mapping, foreign counter-keyed reads, and
 write values derived through mutable/loop-carried locals or scalar state mutated by the loop remain
-`KERNEL_UNBOUNDED_KEY`. Integer same-entry expressions are supported generally: for example,
+`KERNEL_UNBOUNDED_KEY`. Integer and boolean same-entry expressions are supported generally: for example,
 `m[i] = max(m[i] * 2, m[i] + i)` evaluates with an SDK-supplied old-value vector whose elements are verified
 against the authenticated entries (or against the integer default `0` for an insertion). The compact
 `m[i] + rhs` / `m[i] - rhs` forms continue to read the old value directly from the runtime journal and need no
-additional witness. Structural mapping values and expressions that read another mapping entry remain frozen.
+additional witness. Boolean expressions use a typed `bool[]` witness and the insertion default `false`.
+Structural mapping values and expressions that read another mapping entry remain frozen.
 An immutable, direct loop-local value definition is expanded into the mapping value before permutation, so
 `int value = i + 10; m[i] = value` has the same representation as the direct expression.
 

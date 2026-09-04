@@ -208,11 +208,17 @@ export function encodeMessageBatch(
     const access = direct?.entryAccesses?.find((candidate) => candidate.slotIndex === routeAccess.slotIndex);
     const match = binding.routeInput.match(/_(\d+)(?:_row)?$/);
     const source = match ? access?.keySources?.[Number(match[1])] : undefined;
-    if (source?.kind !== 'constant' || source.constantValue === undefined) return undefined;
+    const literal = source?.kind === 'constant' ? source.constantValue
+      : source?.kind === 'expression' && source.expressionLabel?.startsWith('lit:')
+        ? source.expressionLabel.slice(4) : undefined;
+    if (literal === undefined) return undefined;
     const type = capability.route.inputs.find((input) => input.name === binding.routeInput)?.type;
-    if (type === 'bool') return source.constantValue !== '0';
+    if (type === 'bool') return literal === 'true' || literal === '1';
     if (type === 'bigint' || type === 'int' || type === 'uint' || /^u?int\d+$/.test(type ?? '')) {
-      return BigInt(source.constantValue);
+      return BigInt(literal);
+    }
+    if (/^(?:bytes\d+|byte|address|pubkey)$/.test(type ?? '') && /^0x[0-9a-fA-F]*$/.test(literal)) {
+      return hexToBin(literal.slice(2));
     }
     return undefined;
   };

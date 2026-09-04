@@ -635,7 +635,7 @@ contract KernelDisjointSameCollectionRows() {
     require(true);
   }
   function writeInclusive(int bound, int base) public {
-    for (int i = 1; bound >= i; i = i + 2) { this.values[14][i] = base + i; }
+    for (int i = 1; bound >= i; i = 2 + i) { this.values[14][i] = base + i; }
     require(true);
   }
   function writeInclusiveDown(int bound, int base) public {
@@ -684,7 +684,7 @@ contract KernelDoCounterCaller(address sink) {
     do {
       this.m[i] = i + 10;
       IKernelCounterSink(sink).ping(i);
-      i = i + stride;
+      i = stride + i;
     } while (i < n);
     require(true);
   }

@@ -514,26 +514,30 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           } as Partial<Record<BinaryOperator, BinaryOperator>>)[loop.condition.operator];
           if (comparisonOperator === undefined) continue;
           const update = loop.block.statements?.at(-1);
-          const updateOperator = update instanceof AssignNode && update.identifier.name === variable.name
-            && update.expression instanceof BinaryOpNode
-            && (update.expression.operator === BinaryOperator.PLUS
-              || update.expression.operator === BinaryOperator.MINUS)
-            && update.expression.left instanceof IdentifierNode
-            && update.expression.left.name === variable.name
-            ? update.expression.operator : undefined;
-          const updateMagnitude = updateOperator !== undefined
-            ? (update as AssignNode).expression as BinaryOpNode : undefined;
-          const literalStep = updateMagnitude?.right instanceof IntLiteralNode
+          const updateExpression = update instanceof AssignNode && update.identifier.name === variable.name
+            && update.expression instanceof BinaryOpNode ? update.expression : undefined;
+          const updateCounterOnLeft = updateExpression?.left instanceof IdentifierNode
+            && updateExpression.left.name === variable.name;
+          const updateCounterOnRight = updateExpression?.operator === BinaryOperator.PLUS
+            && updateExpression.right instanceof IdentifierNode
+            && updateExpression.right.name === variable.name;
+          const updateOperator = updateExpression
+            && (updateExpression.operator === BinaryOperator.PLUS
+              || updateExpression.operator === BinaryOperator.MINUS)
+            && (updateCounterOnLeft || updateCounterOnRight) ? updateExpression.operator : undefined;
+          const updateMagnitude = updateOperator !== undefined && updateExpression
+            ? (updateCounterOnLeft ? updateExpression.right : updateExpression.left) : undefined;
+          const literalStep = updateMagnitude instanceof IntLiteralNode
             ? (updateOperator === BinaryOperator.PLUS
-              ? updateMagnitude.right.value : -updateMagnitude.right.value) : undefined;
-          const resolvedRuntimeStep = updateMagnitude && !(updateMagnitude.right instanceof IntLiteralNode)
-            ? resolveGeneralBound(updateMagnitude.right, index) : undefined;
+              ? updateMagnitude.value : -updateMagnitude.value) : undefined;
+          const resolvedRuntimeStep = updateMagnitude && !(updateMagnitude instanceof IntLiteralNode)
+            ? resolveGeneralBound(updateMagnitude, index) : undefined;
           const runtimeStep = resolvedRuntimeStep && updateOperator !== undefined
             ? (updateOperator === BinaryOperator.PLUS
               ? resolvedRuntimeStep.expression
               : Object.assign(new BinaryOpNode(
                 new IntLiteralNode(0n), BinaryOperator.MINUS, resolvedRuntimeStep.expression,
-              ), { location: updateMagnitude?.location }))
+              ), { location: updateExpression?.location }))
             : undefined;
           const directionalStep = literalStep ?? (runtimeStep
             ? (updateOperator === BinaryOperator.PLUS ? 1n : -1n) : undefined);

@@ -3804,19 +3804,25 @@ export default class AstBuilder
       && updateNode.identifier.name === initNode.name
       && updateNode.expression instanceof BinaryOpNode
       && (updateNode.expression.operator === BinaryOperator.PLUS
-        || updateNode.expression.operator === BinaryOperator.MINUS)
-      && updateNode.expression.left instanceof IdentifierNode
-      && updateNode.expression.left.name === initNode.name) {
-      initNode.loopInitialValue = initNode.expression.value;
-      if (updateNode.expression.right instanceof IntLiteralNode) {
-        initNode.loopStepValue = updateNode.expression.operator === BinaryOperator.PLUS
-          ? updateNode.expression.right.value : -updateNode.expression.right.value;
-      } else {
-        initNode.loopStepExpression = updateNode.expression.operator === BinaryOperator.PLUS
-          ? updateNode.expression.right
-          : Object.assign(new BinaryOpNode(
-            new IntLiteralNode(0n), BinaryOperator.MINUS, updateNode.expression.right,
-          ), { location: updateNode.expression.location });
+        || updateNode.expression.operator === BinaryOperator.MINUS)) {
+      const counterOnLeft = updateNode.expression.left instanceof IdentifierNode
+        && updateNode.expression.left.name === initNode.name;
+      const counterOnRight = updateNode.expression.operator === BinaryOperator.PLUS
+        && updateNode.expression.right instanceof IdentifierNode
+        && updateNode.expression.right.name === initNode.name;
+      if (counterOnLeft || counterOnRight) {
+        const magnitude = counterOnLeft ? updateNode.expression.right : updateNode.expression.left;
+        initNode.loopInitialValue = initNode.expression.value;
+        if (magnitude instanceof IntLiteralNode) {
+          initNode.loopStepValue = updateNode.expression.operator === BinaryOperator.PLUS
+            ? magnitude.value : -magnitude.value;
+        } else {
+          initNode.loopStepExpression = updateNode.expression.operator === BinaryOperator.PLUS
+            ? magnitude
+            : Object.assign(new BinaryOpNode(
+              new IntLiteralNode(0n), BinaryOperator.MINUS, magnitude,
+            ), { location: updateNode.expression.location });
+        }
       }
     }
 

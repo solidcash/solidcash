@@ -1955,6 +1955,7 @@ describe('required kernel admission', () => {
       do { this.m[i] = i; i = i + 2; } while (bound > i);`, 'step_p2_post'],
     ['reversed descending do-while', `int i = 5;
       do { this.m[i] = i; i = i - 2; } while (bound < i);`, 'step_n2_post'],
+    ['commuted additive update for', 'for (int i = 1; i < bound; i = 2 + i) { this.m[i] = i; }', 'step_p2'],
   ])('admits a %s counter domain', (_label, loop, encodedBound) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
@@ -1991,7 +1992,7 @@ describe('required kernel admission', () => {
         mapping(int => int) m;
         function write(int n, int stride) public {
           int i = 1;
-          do { this.m[i] = i; I(dest).r(i); i = i + stride; } while (i < n);
+          do { this.m[i] = i; I(dest).r(i); i = stride + i; } while (i < n);
           require(true);
         }
       }`, { ...KERNEL, maximumInputBytes: 1_000_000 });

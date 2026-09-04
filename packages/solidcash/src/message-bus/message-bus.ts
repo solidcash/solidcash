@@ -217,9 +217,10 @@ export function encodeMessageBatch(
     if (type === 'bigint' || type === 'int' || type === 'uint' || /^u?int\d+$/.test(type ?? '')) {
       return BigInt(literal);
     }
-    if (/^(?:bytes\d+|byte|address|pubkey)$/.test(type ?? '') && /^0x[0-9a-fA-F]*$/.test(literal)) {
+    if (/^(?:bytes\d*|byte|address|pubkey)$/.test(type ?? '') && /^0x[0-9a-fA-F]*$/.test(literal)) {
       return hexToBin(literal.slice(2));
     }
+    if (type === 'string') return literal;
     return undefined;
   };
   // X199. Over the handlers the route can DISPATCH, not every published one. A REFUSED handler still publishes

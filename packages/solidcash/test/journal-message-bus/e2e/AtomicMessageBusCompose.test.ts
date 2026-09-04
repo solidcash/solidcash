@@ -477,7 +477,7 @@ describe('messageBus.compose atomic transaction', () => {
       calls: [caller.call.invoke(7n), sink.call.ping(9n), sink.call.ping(7n)],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
-    }).build()).rejects.toThrow(/prepared call 1 arguments disagree/);
+    }).build()).rejects.toThrow(/prepared call 1 .*arguments disagree/);
     for (const mutation of [
       'messageEnvelope-invocation-swap', 'messageEnvelope-invocation-drop', 'messageEnvelope-invocation-duplicate',
     ] as const) {
@@ -1617,7 +1617,7 @@ describe('messageBus.compose atomic transaction', () => {
       calls: [caller.call.prepare(7n), callee.call.settle(8n)],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
-    }).build()).rejects.toThrow(/prepared call 1 arguments disagree/);
+    }).build()).rejects.toThrow(/prepared call 1 .*arguments disagree/);
     await expect(messageBus.compose({
       calls: [caller.call.prepare(7n), callee.call.settle(7n)],
       funder: {
@@ -2265,8 +2265,9 @@ describe('messageBus.compose atomic transaction', () => {
   it('authenticates repeated fungible-token calls against one container and recipient settlement', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeTokenCallee() {
-      function send(bytes32 category, bytes20 recipient, bigint amount) public {
+      function send(bytes32 category, bytes32 preservedCategory, bytes20 recipient, bigint amount) public {
         require(this.tokens[category].tokenAmount >= amount);
+        require(this.tokens[preservedCategory].tokenAmount >= 0);
         this.tokens[category].transfer(new LockingBytecodeP2PKH(recipient), amount);
         require(amount > 0);
       }
@@ -2278,12 +2279,15 @@ describe('messageBus.compose atomic transaction', () => {
     const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
     const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
     const token = await genesisFtContainer(provider, calleeInner, calleeSetup.categoryId, [100n]);
+    const preserved = await genesisFtContainer(provider, calleeInner, calleeSetup.categoryId, [100n]);
     const callerArtifact = compileString(`
-      interface IComposeTokenCallee { function send(bytes32 category, bytes20 recipient, bigint amount); }
+      interface IComposeTokenCallee {
+        function send(bytes32 category, bytes32 preservedCategory, bytes20 recipient, bigint amount);
+      }
       contract ComposeTokenCaller(address calleeAddress) {
-        function prepare(bytes32 category, bytes20 recipient, bigint amount) public {
-          IComposeTokenCallee(calleeAddress).send(category, recipient, amount);
-          IComposeTokenCallee(calleeAddress).send(category, recipient, amount);
+        function prepare(bytes32 category, bytes32 preservedCategory, bytes20 recipient, bigint amount) public {
+          IComposeTokenCallee(calleeAddress).send(category, preservedCategory, recipient, amount);
+          IComposeTokenCallee(calleeAddress).send(category, preservedCategory, recipient, amount);
           require(true);
         }
       }
@@ -2296,13 +2300,14 @@ describe('messageBus.compose atomic transaction', () => {
       callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
     );
     const category = hexToBin(token.category);
+    const preservedCategory = hexToBin(preserved.category);
     const amount = 25n;
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const composition = messageBus.compose({
       calls: [
-        caller.call.prepare(category, alicePkh, amount),
-        callee.call.send(category, alicePkh, amount),
-        callee.call.send(category, alicePkh, amount),
+        caller.call.prepare(category, preservedCategory, alicePkh, amount),
+        callee.call.send(category, preservedCategory, alicePkh, amount),
+        callee.call.send(category, preservedCategory, alicePkh, amount),
       ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
@@ -2314,7 +2319,7 @@ describe('messageBus.compose atomic transaction', () => {
       && typeof output.to !== 'string' && binToHex(output.to) === binToHex(
         new Uint8Array([0x76, 0xa9, 0x14, ...alicePkh, 0x88, 0xac]),
       ));
-    expect(tokenOutputs.map(({ index }) => index)).toEqual([3, 4]);
+    expect(tokenOutputs.map(({ index }) => index)).toEqual([4, 5]);
     const tokenOutput = tokenOutputs[0].index;
     if (!process.env.TESTS_USE_REGTEST) {
       for (const mutation of [
@@ -2327,6 +2332,13 @@ describe('messageBus.compose atomic transaction', () => {
       const hostileOutput = await composition.build();
       hostileOutput.outputs[tokenOutput].token!.amount += 1n;
       await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
+      const hostilePreserved = await composition.build();
+      const preservedOutput = hostilePreserved.outputs.find((output) =>
+        output.token?.category === preserved.category && !output.token.nft);
+      expect(preservedOutput).toBeDefined();
+      preservedOutput!.token!.amount -= amount * 2n;
+      hostilePreserved.options.allowImplicitFungibleTokenBurn = true;
+      await expect(provider.sendRawTransaction(raw(hostilePreserved))).rejects.toThrow();
     }
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
@@ -2334,12 +2346,21 @@ describe('messageBus.compose atomic transaction', () => {
   it('authenticates NFT capability, commitment, recipient, and mixed-container settlement', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeNftCallee() {
-      function send(bytes32 category, bytes20 recipient, bytes commitment, int capability) public {
-        require(this.tokens[category].tokenAmount >= 0);
-        this.tokens[category].transferNft(new LockingBytecodeP2PKH(recipient), commitment, capability);
+      function send(
+        bytes32 category, bytes32 preservedCategory, bytes20 recipient, bytes commitment, int capability,
+        bool usePreserved
+      ) public {
+        require(this.tokens[category].tokenAmount + this.tokens[preservedCategory].tokenAmount >= 0);
+        if (usePreserved) {
+          this.tokens[preservedCategory].transferNft(
+            new LockingBytecodeP2PKH(recipient), commitment, capability
+          );
+        } else {
+          this.tokens[category].transferNft(new LockingBytecodeP2PKH(recipient), commitment, capability);
+        }
         require(capability >= 0);
       }
-    }`, { forceStateful: true, messageBus: true });
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(
       provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
@@ -2353,17 +2374,30 @@ describe('messageBus.compose atomic transaction', () => {
       token: { amount: 50n, nft: { capability: 'none', commitment } },
     }]);
     const token = { category: seeded.categoryId };
+    const preserved = await provider.addTokenUtxosDynamic((category) => [{
+      address: getTokenContainerAddress(calleeInner, calleeSetup.categoryId, category),
+      satoshis: 1200n,
+      token: { amount: 1n, nft: { capability: 'minting', commitment: 'a1' } },
+    }]);
     const callerArtifact = compileString(`
       interface IComposeNftCallee {
-        function send(bytes32 category, bytes20 recipient, bytes commitment, int capability);
+        function send(
+          bytes32 category, bytes32 preservedCategory, bytes20 recipient, bytes commitment, int capability,
+          bool usePreserved
+        );
       }
       contract ComposeNftCaller(address calleeAddress) {
-        function prepare(bytes32 category, bytes20 recipient, bytes commitment, int capability) public {
-          IComposeNftCallee(calleeAddress).send(category, recipient, commitment, capability);
+        function prepare(
+          bytes32 category, bytes32 preservedCategory, bytes20 recipient, bytes commitment, int capability,
+          bool usePreserved
+        ) public {
+          IComposeNftCallee(calleeAddress).send(
+            category, preservedCategory, recipient, commitment, capability, usePreserved
+          );
           require(true);
         }
       }
-    `, { forceStateful: true, messageBus: true });
+    `, { forceStateful: true, messageBus: true, messageBusKernel: true });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -2372,16 +2406,31 @@ describe('messageBus.compose atomic transaction', () => {
       callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
     );
     const category = hexToBin(token.category);
+    const preservedCategory = hexToBin(preserved.categoryId);
     const commitmentBytes = hexToBin(commitment);
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const composition = messageBus.compose({
       calls: [
-        caller.call.prepare(category, alicePkh, commitmentBytes, 0n),
-        callee.call.send(category, alicePkh, commitmentBytes, 0n),
+        caller.call.prepare(category, preservedCategory, alicePkh, commitmentBytes, 0n, false),
+        callee.call.send(category, preservedCategory, alicePkh, commitmentBytes, 0n, false),
       ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
+    const otherCategory = messageBus.compose({
+      calls: [
+        caller.call.prepare(category, preservedCategory, alicePkh, commitmentBytes, 0n, true),
+        callee.call.send(category, preservedCategory, alicePkh, commitmentBytes, 0n, true),
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const otherBuilt = await otherCategory.build();
+    const inactiveCategoryOutput = otherBuilt.outputs.find((output) =>
+      output.token?.category === token.category && output.token.nft?.commitment === commitment);
+    expect(inactiveCategoryOutput).toBeDefined();
+    delete inactiveCategoryOutput!.token!.nft;
+    await expect(provider.sendRawTransaction(raw(otherBuilt))).rejects.toThrow();
 
     const built = await composition.build();
     const nftOutput = built.outputs.findIndex((output) =>
@@ -2397,6 +2446,12 @@ describe('messageBus.compose atomic transaction', () => {
     const hostileOutput = await composition.build();
     hostileOutput.outputs[nftOutput].token!.nft!.commitment = 'c0ffef';
     await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
+    const hostilePreserved = await composition.build();
+    const preservedOutput = hostilePreserved.outputs.find((output) =>
+      output.token?.category === preserved.categoryId && output.token.nft?.capability === 'minting');
+    expect(preservedOutput).toBeDefined();
+    delete preservedOutput!.token!.nft;
+    await expect(provider.sendRawTransaction(raw(hostilePreserved))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 });

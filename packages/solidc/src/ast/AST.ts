@@ -330,6 +330,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
   messageBusHandlerManagedEntrySlots?: number[];
   tokenContainerAccesses?: TokenContainerAccessInfo[];
+  /** Number of statically allocated token-transfer output coordinates after branch alternatives share indices. */
+  tokenContainerTransferSiteCount?: number;
   externalReads?: ExternalReadSlot[];
   externalCalls?: ExternalCallSlot[];
   externalOutStateReads?: ExternalOutStateSlot[];
@@ -2755,7 +2757,7 @@ export class TypeIntrospectionNode extends ExpressionNode {
 export class TokenContainerMethodStatementNode extends StatementNode {
   tokenContainerSlotIndex: number = 0;
   transferIndex: number = 0;
-  /** Runtime counter-loop effect stream ownership. Currently assigned to fungible-token transfer sites. */
+  /** Runtime counter-loop effect stream ownership for fungible-token or NFT transfer sites. */
   runtimeLoopTransfer?: { loopIndex: number; siteIndex: number };
   runtimeLoopTransferCondition?: ExpressionNode;
   runtimeLoopTransferCounter?: {

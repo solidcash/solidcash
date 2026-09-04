@@ -262,11 +262,19 @@ export function computeBranchOps(ifBlock: BlockNode, elseBlock?: BlockNode): Bra
 
   if (!hasOps) return undefined;
 
-  // Transfers use the min/max path model (mutually-exclusive branch arms don't sum), so nested/else-if value
-  // transfers pre-allocate the right slot count and mark conditional transfers correctly. Emits/token-container
-  // keep the existing per-arm count (their nested-branch handling is unchanged here).
+  // Every fixed effect family uses the min/max path model. Nested mutually-exclusive arms share physical slots;
+  // summing the raw recursive counts here would make an enclosing branch reserve phantom slots even though the
+  // individual effect nodes already carry shared indices.
   const ifT = countTransfersMinMax(ifBlock);
   const elseT = elseBlock ? countTransfersMinMax(elseBlock) : { min: 0, max: 0 };
+  const isEmit = (candidate: Node): boolean => candidate instanceof EmitStatementNode;
+  const isTokenContainerTransfer = (candidate: Node): boolean =>
+    candidate instanceof TokenContainerMethodStatementNode;
+  const ifE = countTransfersMinMax(ifBlock, isEmit);
+  const elseE = elseBlock ? countTransfersMinMax(elseBlock, isEmit) : { min: 0, max: 0 };
+  const ifTc = countTransfersMinMax(ifBlock, isTokenContainerTransfer);
+  const elseTc = elseBlock
+    ? countTransfersMinMax(elseBlock, isTokenContainerTransfer) : { min: 0, max: 0 };
   const ifTerminates = blockTerminates(ifBlock);
   const elseTerminates = blockTerminates(elseBlock);
   const reachableMin = (ifValue: number, elseValue: number): number => {
@@ -282,13 +290,11 @@ export function computeBranchOps(ifBlock: BlockNode, elseBlock?: BlockNode): Bra
     transferCount: Math.max(ifT.max, elseT.max),
     minTransferCount: reachableMin(ifT.min, elseT.min),
     ifTransferCount: ifT.max,
-    emitCount: Math.max(ifCounts.emits, elseCounts.emits),
-    minEmitCount: reachableMin(ifCounts.emits, elseCounts.emits),
-    ifEmitCount: ifCounts.emits,
-    tokenContainerTransferCount: Math.max(ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers),
-    minTokenContainerTransferCount: reachableMin(
-      ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers,
-    ),
-    ifTokenContainerTransferCount: ifCounts.tokenContainerTransfers,
+    emitCount: Math.max(ifE.max, elseE.max),
+    minEmitCount: reachableMin(ifE.min, elseE.min),
+    ifEmitCount: ifE.max,
+    tokenContainerTransferCount: Math.max(ifTc.max, elseTc.max),
+    minTokenContainerTransferCount: reachableMin(ifTc.min, elseTc.min),
+    ifTokenContainerTransferCount: ifTc.max,
   };
 }

@@ -8505,6 +8505,8 @@ function compileResolvedAst(
             ...(sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {}),
             ...(sourceAbi?.tokenContainerAccesses?.length
               ? { tokenContainerAccesses: sourceAbi.tokenContainerAccesses } : {}),
+            ...(sourceAbi?.tokenContainerTransferSites?.length
+              ? { tokenContainerTransferSites: sourceAbi.tokenContainerTransferSites } : {}),
             ...(sourceAbi?.keccakPreimageParams?.length
               ? { keccakPreimageParams: sourceAbi.keccakPreimageParams } : {}),
             // Publish handler-local recovery presence explicitly. A route reserves the union of every eligible

@@ -8,6 +8,7 @@ import {
   ExternalCallExpression,
   ExternalCallStatement,
   ExternalCallAbi,
+  TokenContainerTransferSiteAbi,
   SortedUpsertLoopAbi,
   buildInitialStateCommitments,
   buildTokenContainerCovenantScript,
@@ -390,6 +391,13 @@ type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusActiveWriteCollections?: readonly string[];
   /** Typed rows selected in this concrete envelope. Runtime-only; used for exact computed-value planning. */
   messageBusRowArguments?: readonly RouteExpressionKeyRow[];
+  /** Fixed token effects selected by a concrete envelope, retaining sparse graph-frame coordinates. */
+  messageBusTokenContainerTransferPlan?: readonly {
+    args: readonly FunctionArgument[];
+    handler: AbiFunction;
+    site: TokenContainerTransferSiteAbi;
+    outputSlot: number;
+  }[];
   /** The atomic composer owns this route's absolute input layout. Runtime-only; never serialized in artifacts. */
   messageBusGraphExecution?: true;
 };
@@ -4653,6 +4661,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       transferCount: index === 0 ? reachedFtTransfers : 0,
       transferNftCount: index === 0 ? reachedNftTransfers : 0,
     }));
+    const tokenFrame = capability.route.graphEffectFrame;
+    const selectedFixedTokenTransfers = reachedHandlers.flatMap((handler, rowIndex) => {
+      const row = effectiveRowArguments?.[rowIndex];
+      if (!row) return [];
+      return (handler.tokenContainerTransferSites ?? []).map((site) => ({
+        args: row.args,
+        handler: row.handler,
+        site,
+        outputSlot: (tokenFrame?.tokenTransferBase ?? 0)
+          + rowIndex * (tokenFrame?.tokenTransferWidth ?? 0) + site.transferIndex,
+      }));
+    });
     // The published route carries the union of handler compute slots, while its ABI arguments describe the
     // envelope rather than any selected row. Preserve the selected handlers' logical keccak call count and
     // defer every preimage to the complete authenticated graph trace: even a syntactically simple expression
@@ -4720,6 +4740,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     if (graphOwnedRoute) {
       (effectiveRoute as MessageBusRuntimeAbiFunction).messageBusGraphExecution = true;
+    }
+    if (selectedFixedTokenTransfers.length > 0) {
+      (effectiveRoute as MessageBusRuntimeAbiFunction).messageBusTokenContainerTransferPlan
+        = selectedFixedTokenTransfers;
     }
     (effectiveRoute as MessageBusRuntimeAbiFunction)
       .messageBusActiveEntryOperations = activeRouteEntryOperations;
@@ -10181,7 +10205,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     emitInfos?: readonly EmitAbi[],
     eventBlockLayout?: FunctionBlockLayout,
     transferCount?: number,
-    tokenContainerTransferOps?: Array<{ type: 'transfer' | 'transferNft'; categoryId: string }>,
+    tokenContainerTransferOps?: Array<{
+      type: 'transfer' | 'transferNft'; categoryId: string; outputSlot?: number;
+    }>,
     delegatecallInputIndex?: number,
     externalOutStateUtxoGroups?: ExternalCallUtxoGroup[],
     debugTargetDerivation = false,
@@ -11685,7 +11711,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const ftOps = tokenContainerTransferOps?.filter((o) => o.type === 'transfer') ?? [];
         const nftOps = tokenContainerTransferOps?.filter((o) => o.type === 'transferNft') ?? [];
-        for (const op of ftOps) stb.addTokenContainerTransfer(op.categoryId, dummyLbc, 1n);
+        for (const op of ftOps) {
+          stb.addTokenContainerTransfer(op.categoryId, dummyLbc, 1n, op.outputSlot);
+        }
         for (const op of nftOps) {
           // An immutable NFT is conserved by category + commitment. Seeding an empty placeholder commitment
           // makes token conservation fail before the VM can reveal the handler-authored transfer arguments.
@@ -11695,6 +11723,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             container.tokenContainerCategoryId === op.categoryId)?.utxo?.token?.nft;
           stb.addTokenContainerTransferNft(
             op.categoryId, dummyLbc, hexToBin(inputNft?.commitment ?? ''), inputNft?.capability ?? 'none',
+            op.outputSlot,
           );
         }
 
@@ -13237,23 +13266,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
             // FT token container transfers: bytecodes + token amounts (progressive)
             if (ftOps.length > 0) {
-              const ftBytecodes = extractVerifiedValuesFromTrace(
-                fullTrace2, Op.OP_OUTPUTBYTECODE,
-                { min: tcTransferOutputBase, max: tcTransferOutputBase + ftOps.length },
-              );
-              if (ftBytecodes.length > 0) {
-                const ftAmountValues = extractVerifiedValuesFromTrace(
-                  fullTrace2, Op.OP_OUTPUTTOKENAMOUNT,
-                  { min: tcTransferOutputBase, max: tcTransferOutputBase + ftOps.length },
-                );
-                if (ftAmountValues.length >= ftOps.length) ftAmountsFullyDerived = true;
+              const ftFields = ftOps.map((op, index) => {
+                const outputSlot = op.outputSlot ?? index;
+                const range = {
+                  min: tcTransferOutputBase + outputSlot,
+                  max: tcTransferOutputBase + outputSlot + 1,
+                };
+                return {
+                  outputSlot,
+                  bytecode: extractVerifiedValuesFromTrace(
+                    fullTrace2, Op.OP_OUTPUTBYTECODE, range,
+                  )[0],
+                  amount: extractVerifiedValuesFromTrace(
+                    fullTrace2, Op.OP_OUTPUTTOKENAMOUNT, range,
+                  )[0],
+                };
+              });
+              if (ftFields.some((field) => field.bytecode !== undefined)) {
+                if (ftFields.every((field) => field.amount !== undefined)) ftAmountsFullyDerived = true;
                 stb.clearTokenContainerTransfers();
                 derivedFtTransfers = [];
                 for (let i = 0; i < ftOps.length; i++) {
-                  const lbc = i < ftBytecodes.length ? ftBytecodes[i] : dummyLbc;
-                  const amt = i < ftAmountValues.length
-                    ? decodeScriptNumber(ftAmountValues[i]) : 1n;
-                  stb.addTokenContainerTransfer(ftOps[i].categoryId, lbc, amt);
+                  const lbc = ftFields[i].bytecode ?? dummyLbc;
+                  const amt = ftFields[i].amount === undefined
+                    ? 1n : decodeScriptNumber(ftFields[i].amount!);
+                  stb.addTokenContainerTransfer(
+                    ftOps[i].categoryId, lbc, amt, ftFields[i].outputSlot,
+                  );
                   derivedFtTransfers.push({
                     categoryId: ftOps[i].categoryId, lockingBytecode: lbc, amount: amt,
                   });
@@ -13262,33 +13301,37 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
 
             // NFT token container transfers: bytecodes + commitments from OP_OUTPUTTOKENCOMMITMENT
-            const nftTcBase = tcTransferOutputBase + ftOps.length;
             if (nftOps.length > 0) {
-              const nftBytecodes = extractVerifiedValuesFromTrace(
-                fullTrace2, Op.OP_OUTPUTBYTECODE,
-                { min: nftTcBase, max: nftTcBase + nftOps.length },
-              );
-              if (nftBytecodes.length > 0) {
+              const nftFields = nftOps.map((op, index) => {
+                const outputSlot = op.outputSlot ?? ftOps.length + index;
+                const range = {
+                  min: tcTransferOutputBase + outputSlot,
+                  max: tcTransferOutputBase + outputSlot + 1,
+                };
+                return {
+                  outputSlot,
+                  bytecode: extractVerifiedValuesFromTrace(
+                    fullTrace2, Op.OP_OUTPUTBYTECODE, range,
+                  )[0],
+                  commitment: extractVerifiedValuesFromTrace(
+                    fullTrace2, Op.OP_OUTPUTTOKENCOMMITMENT, range,
+                  )[0],
+                  category: extractVerifiedValuesFromTrace(
+                    fullTrace2, Op.OP_OUTPUTTOKENCATEGORY, range,
+                  )[0],
+                };
+              });
+              if (nftFields.some((field) => field.bytecode !== undefined)) {
                 derivedNftTransfers = [];
                 stb.clearTokenContainerTransferNfts();
-                // Extract NFT transfer commitments using output-index filtering
-                // instead of fragile positional arithmetic on nonStateCommits
-                const nftCommitments = extractVerifiedValuesFromTrace(
-                  fullTrace2, Op.OP_OUTPUTTOKENCOMMITMENT,
-                  { min: nftTcBase, max: nftTcBase + nftOps.length },
-                );
-                // Extract capabilities from OP_OUTPUTTOKENCATEGORY (33 bytes = 32 cat + 1 cap)
-                const nftCategories = extractVerifiedValuesFromTrace(
-                  fullTrace2, Op.OP_OUTPUTTOKENCATEGORY,
-                  { min: nftTcBase, max: nftTcBase + nftOps.length },
-                );
                 for (let i = 0; i < nftOps.length; i++) {
-                  const lbc = i < nftBytecodes.length ? nftBytecodes[i] : dummyLbc;
-                  const commitment = nftCommitments.length > i
-                    ? nftCommitments[i] : new Uint8Array(0);
-                  const capability = nftCategories.length > i
-                    ? parseNftCapability(nftCategories[i]) : 'none' as const;
-                  stb.addTokenContainerTransferNft(nftOps[i].categoryId, lbc, commitment, capability);
+                  const lbc = nftFields[i].bytecode ?? dummyLbc;
+                  const commitment = nftFields[i].commitment ?? new Uint8Array(0);
+                  const capability = nftFields[i].category === undefined
+                    ? 'none' as const : parseNftCapability(nftFields[i].category!);
+                  stb.addTokenContainerTransferNft(
+                    nftOps[i].categoryId, lbc, commitment, capability, nftFields[i].outputSlot,
+                  );
                   derivedNftTransfers.push({
                     categoryId: nftOps[i].categoryId, lockingBytecode: lbc,
                     commitment, capability,
@@ -13806,7 +13849,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             : false;
           if (derivedFtTransfers && (!ftAmountsFullyDerived || !ftBytecodesFull)) {
             stb.clearTokenContainerTransfers();
-            for (const op of ftOps) stb.addTokenContainerTransfer(op.categoryId, dummyLbc, 1n);
+            for (const op of ftOps) {
+              stb.addTokenContainerTransfer(op.categoryId, dummyLbc, 1n, op.outputSlot);
+            }
             derivedFtTransfers = undefined;
           }
           // NFT transfers: same placeholder cleanup as satoshi and FT transfers
@@ -13820,6 +13865,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 container.tokenContainerCategoryId === op.categoryId)?.utxo?.token?.nft;
               stb.addTokenContainerTransferNft(
                 op.categoryId, dummyLbc, hexToBin(inputNft?.commitment ?? ''), inputNft?.capability ?? 'none',
+                op.outputSlot,
               );
             }
             derivedNftTransfers = undefined;
@@ -25537,8 +25583,64 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Build token container transfer ops from ABI for auto-derivation.
     // Uses transferCount/transferNftCount when available (fan-out support),
     // falling back to the operations array for backward compatibility.
-    const tokenContainerTransferOps: Array<{ type: 'transfer' | 'transferNft'; categoryId: string }> = [];
-    if (tokenContainerAccesses) {
+    const tokenContainerTransferOps: Array<{
+      type: 'transfer' | 'transferNft'; categoryId: string; outputSlot?: number;
+    }> = [];
+    const runtimeTokenPlan = (abiFunction as MessageBusRuntimeAbiFunction | undefined)
+      ?.messageBusTokenContainerTransferPlan;
+    const directTokenPlan = runtimeTokenPlan === undefined
+      ? abiFunction?.tokenContainerTransferSites?.map((site) => ({
+        args: args as readonly FunctionArgument[], handler: abiFunction, site,
+        outputSlot: site.transferIndex,
+      })) : undefined;
+    const fixedTokenPlan = runtimeTokenPlan ?? directTokenPlan;
+    if (fixedTokenPlan !== undefined) {
+      const occupiedSlots = new Set<number>();
+      for (const planned of fixedTokenPlan) {
+        let active = true;
+        if (planned.site.condition) {
+          const visible = visibleHandlerInputs(planned.handler.inputs);
+          const predicateState = await this._hydrateExternalPredicateState(
+            [planned.site.condition], [...planned.args], this.inner.artifact,
+            onChainState.state, visible, executionSelfAddress,
+          );
+          const result = this._evaluateExternalExpression(
+            planned.site.condition, [...planned.args], this.inner.artifact,
+            predicateState, visible, undefined, 0, false, executionSelfAddress,
+          );
+          if (typeof result !== 'boolean') throw new Error(
+            `Could not resolve fixed token-transfer predicate in '${planned.handler.name}'.`,
+          );
+          active = result;
+        }
+        // A null condition records a conditional source expression which this artifact version could not
+        // serialize. Retain the historical active-site probe for that case; serializable false paths are exact.
+        if (!active) continue;
+        if (occupiedSlots.has(planned.outputSlot)) throw new Error(
+          `Multiple fixed token transfers selected physical slot ${planned.outputSlot}`,
+        );
+        occupiedSlots.add(planned.outputSlot);
+        const access = planned.handler.tokenContainerAccesses?.[planned.site.tokenContainerSlot];
+        if (!access) throw new Error(
+          `Fixed token-transfer site in '${planned.handler.name}' has no container slot `
+          + `${planned.site.tokenContainerSlot}`,
+        );
+        const visible = visibleHandlerInputs(planned.handler.inputs);
+        const categoryIndex = visible.findIndex((input) => input.name === access.keyParam);
+        const category = access.keySource === 'own'
+          ? this.categoryId : categoryIndex >= 0 ? planned.args[categoryIndex] : undefined;
+        if (category === undefined) throw new Error(
+          `Fixed token-transfer category '${access.keyParam}' is not available in '${planned.handler.name}'.`,
+        );
+        const categoryId = category instanceof Uint8Array ? binToHex(category) : String(category);
+        tokenContainerTransferOps.push({
+          type: planned.site.kind === 'nft' ? 'transferNft' : 'transfer',
+          categoryId,
+          outputSlot: planned.outputSlot,
+        });
+      }
+      tokenContainerTransferOps.sort((left, right) => (left.outputSlot ?? 0) - (right.outputSlot ?? 0));
+    } else if (tokenContainerAccesses) {
       for (const access of tokenContainerAccesses) {
         const catParamIdx = abiFunction!.inputs.findIndex((inp) => inp.name === access.keyParam);
         const catValue = access.keySource === 'own'

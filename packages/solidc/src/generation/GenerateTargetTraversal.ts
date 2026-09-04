@@ -245,6 +245,13 @@ const GRAPH_TRANSFER_REACHED = '__internal__graphTransferReached';
 // site's window is settled by the handler; the epilogue binds every other reserved ordinal to an empty
 // commitment, which needs to know WHICH window to leave alone.
 const GRAPH_EVENT_SITE = '__internal__graphEventSite';
+// SEC-16. Route-local reached-site mask for token-transfer graph frames. A reached handler binds every slot in
+// its own window (including inactive/suffix slots); the route uses this mask to bind every window no row reached.
+// The low 8 bits are the reached-site mask; higher 16-bit fields count NFT occurrences per physical container.
+// Capability preservation may be relaxed only when an NFT transfer for that exact container actually ran.
+const GRAPH_TOKEN_SITE = '__internal__graphTokenSite';
+/** Physical stack depth below an outlined graph handler's invocation frame. */
+const GRAPH_HANDLER_CALLER_DEPTH = '__internal__graphHandlerCallerDepth';
 
 // Locking bytecode template fragments - correspond to libauth's
 // encodeLockingBytecodeP2pkh / P2sh20 / P2sh32 but used as partial
@@ -1412,6 +1419,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private graphTransferFlagActive: boolean = false;
   // SEC-15: the route allocated GRAPH_EVENT_SITE for this function.
   private graphEventSiteActive: boolean = false;
+  // SEC-16: the route allocated GRAPH_TOKEN_SITE and per-container NFT occurrence counters.
+  private graphTokenSiteActive: boolean = false;
   // True while generating a branded delegate library: the delegate master-validation pins the co-spent proxy
   // master's category to the library's `__brand` ctor arg (docs/library-contracts.md 3b contention).
   private currentContractIsBrandedLibrary: boolean = false;
@@ -5226,6 +5235,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
+    if (this.isDefineSubTraversal && node.graphEmissionHandler) {
+      // The caller pushes this before every other hidden operand, so it is the deepest item in the local frame.
+      // It lets epilogue cleanup distinguish handler temporaries from the still-live route frame below them.
+      this.pushToStack(GRAPH_HANDLER_CALLER_DEPTH, true);
+    }
     // Only ABI entry frames contain attacker-supplied raw stack values. An OP_DEFINE subroutine is reachable
     // exclusively through compiler-emitted typed calls (including function-pointer dispatch), whose operands have
     // already been checked at their external boundary and after every bounded operation/cast. Rechecking every
@@ -5379,6 +5393,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.graphEventSiteActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GRAPH_EVENT_SITE);
+    }
+    this.graphTokenSiteActive = !this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
+      && (node.graphEffectFrame?.tokenTransferWidth ?? 0) > 0;
+    if (this.graphTokenSiteActive) {
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(GRAPH_TOKEN_SITE);
     }
 
     this.vmapWitnessSnapshotsRestored = false;
@@ -5758,7 +5778,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && this.condDeleteSlots.size > 0) {
         this.emitConditionalDeleteVerification(node);
       }
-      if (!this.functionHasDelegatecall && hasTransfers) {
+      // An invoked graph handler authenticates its occurrence-specific transfer window inside the subroutine.
+      // The route's synthetic transfer locals are only layout placeholders and remain empty on that path.
+      if (!this.functionHasDelegatecall && hasTransfers && !this.graphTransferFlagActive) {
         this.emitTransferCovenantVerification(node);
       }
       // Token container verification
@@ -5767,6 +5789,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (!this.functionHasDelegatecall && hasTokenContainerTransfers) {
         this.emitTokenContainerTransferCovenantVerification(node);
+      }
+      if (!this.functionHasDelegatecall && this.graphTokenSiteActive) {
+        this.emitGraphFrameTokenSlotBinding(node);
       }
       if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
         this.emitTokenContainerPreservation(node);
@@ -6485,19 +6510,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       // Token container transfers: push OP_0 dummies for category + args
-      const tcTransferStartIndex = this.pendingTokenContainerTransfers.length;
-      const runtimeTokenStream = this.functionContainsRuntimeLoopTokenTransfer(this.currentFunction);
       const fixedTokenIndices = new Set<number>();
-      if (runtimeTokenStream) {
-        this.collectTokenContainerTransferIndices(node.ifBlock, fixedTokenIndices);
-        if (node.elseBlock) this.collectTokenContainerTransferIndices(node.elseBlock, fixedTokenIndices);
-      }
-      // Like ordinary transfers, an enclosing branch already reserves the maximum-path slots for every nested
-      // arm. Reserving again in the selector-dispatch branch would create dummy slot N+1 while the operation
-      // itself is semantically numbered N, then discard the duplicate at OP_ENDIF and desynchronise later rows.
-      const tokenIndices = runtimeTokenStream
-        ? [...fixedTokenIndices].sort((left, right) => left - right)
-        : Array.from({ length: ops.tokenContainerTransferCount }, (_unused, index) => tcTransferStartIndex + index);
+      this.collectTokenContainerTransferIndices(node.ifBlock, fixedTokenIndices);
+      if (node.elseBlock) this.collectTokenContainerTransferIndices(node.elseBlock, fixedTokenIndices);
+      // Fixed token effects retain unique source-site identities. Enumerating their assigned indices here keeps
+      // nested branches, switch arms, distinct containers, and mixed FT/NFT alternatives lossless; untaken sites
+      // remain conditional neutral outputs in the sparse SDK plan.
+      const tokenIndices = [...fixedTokenIndices].sort((left, right) => left - right);
       for (let i = 0; this.transferPreallocDepth === 0 && i < tokenIndices.length; i++) {
         const globalIdx = tokenIndices[i];
         if (!this.preAllocatedTokenContainerTransfers.has(globalIdx)) {
@@ -6524,9 +6543,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           });
         }
         // Mark conditional indices
-        if (runtimeTokenStream || i >= ops.minTokenContainerTransferCount) {
-          this.conditionalTokenContainerTransferIndices.add(globalIdx);
-        }
+        this.conditionalTokenContainerTransferIndices.add(globalIdx);
       }
 
     }
@@ -9545,6 +9562,53 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
     }
     const locationData = { location: node.location, positionHint: PositionHint.END };
+    const targetTokenTransferCount = targetFunc.tokenContainerTransferSiteCount
+      ?? (targetFunc.tokenContainerAccesses ?? []).reduce(
+        (total, access) => total + access.transferCount + access.transferNftCount, 0,
+      );
+    const graphNftSites: Array<{ transferIndex: number; routeContainerSlot: number }> = [];
+    if (targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame?.tokenNftTransfers === true) {
+      const seen = new WeakSet<object>();
+      const collectNftSite = (candidate: unknown): void => {
+        if (Array.isArray(candidate)) {
+          for (const item of candidate) collectNftSite(item);
+          return;
+        }
+        if (!(candidate instanceof Node) || seen.has(candidate)) return;
+        seen.add(candidate);
+        if (!(candidate instanceof TokenContainerMethodStatementNode)
+          || candidate.methodName !== 'transferNft' || candidate.runtimeLoopTransfer) {
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'referencedContract' || key === 'definition' || key === 'resolvedFunction'
+              || key === 'functionReference' || key === 'symbolTable' || key === 'type'
+              || key === 'location') continue;
+            collectNftSite(value);
+          }
+          return;
+        }
+        const access = targetFunc.tokenContainerAccesses?.find((item) =>
+          item.slotIndex === candidate.tokenContainerSlotIndex);
+        if (!access) return;
+        let routeContainerSlot = -1;
+        if (access.keySource === 'own') {
+          routeContainerSlot = this.tokenContainerSlots.findIndex((item) => item.keySource === 'own');
+        } else {
+          const parameterIndex = targetFunc.parameters.findIndex((parameter) =>
+            parameter.name === access.keyParam);
+          const actual = parameterIndex < 0 ? undefined : node.parameters[parameterIndex];
+          if (actual instanceof IdentifierNode) {
+            routeContainerSlot = this.tokenContainerSlots.findIndex((item) => item.keyParam === actual.name);
+          }
+        }
+        if (routeContainerSlot < 0) {
+          throw new Error(
+            `Cannot bind NFT transfer container '${access.keyParam}' from '${targetFunc.name}' to the route`,
+          );
+        }
+        graphNftSites.push({ transferIndex: candidate.transferIndex, routeContainerSlot });
+      };
+      collectNftSite(targetFunc.body);
+    }
     const targetJournalSlots = targetFunc.functionId === undefined
       ? [] : (this.journalSlotsByFunctionId.get(targetFunc.functionId) ?? []);
     const targetRuntimeLoopEntryInputCount = this.functionNeedsRuntimeLoopEntryInputCount(targetFunc);
@@ -9579,6 +9643,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...targetRuntimeCardinalityNames,
       ...targetJournalContextNames,
     ];
+    let hiddenContextCount = 0;
+    if (targetFunc.graphEmissionHandler) {
+      // Capture the physical boundary before adding any invocation operands. Handler epilogues use it to avoid
+      // classifying the caller's live route frame as untracked temporary data.
+      this.emit(Op.OP_DEPTH, locationData);
+      this.pushToStack(`(__graph_handler_caller_depth_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
     // Pass copies of the context rather than moving the caller's slots. A moved
     // slot returns at the top of the stack and changes its position relative to
     // persistent loop variables, violating OP_BEGIN/OP_UNTIL's frame invariant.
@@ -9612,7 +9684,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack(`(__graph_emissions_arg_${targetFunc.functionId})`);
     }
-    let hiddenContextCount = 0;
     if (targetFunc.graphEmissionHandler && this.contractUsesMsgValue) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (!this.stack.includes('__message_bus_graph_msg_value')) {
@@ -9947,7 +10018,74 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitReplaceCompilerRouteFrameValue(GRAPH_EVENT_SITE, node);
       this.popFromStack();
     }
-
+    const graphTokenInvocation = this.graphTokenSiteActive && targetFunc.graphEmissionHandler
+      && targetFunc.graphEffectFrame && targetTokenTransferCount > 0
+      && this.stack.includes(GRAPH_TOKEN_SITE);
+    const nftOccurrenceDelta = '(__graph_token_occurrence_delta)';
+    if (graphTokenInvocation) {
+      if (node.graphEffectSiteFromRow) {
+        const rowIndex = this.getStackIndex('__message_bus_row');
+        if (rowIndex < 0) {
+          throw new Error(`Runtime token site missing loop variable '__message_bus_row' at a call to '${targetFunc.name}'`);
+        }
+        this.emit(encodeInt(1n), locationData);
+        // Only the `1` is temporarily above the tracked row here. (The event accumulator also has its old mask
+        // PICKed above the `1`, hence its separate `rowIndex + 2`.)
+        this.emit(encodeInt(BigInt(rowIndex + 1)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(Op.OP_LSHIFTNUM, locationData);
+      } else {
+        this.emit(encodeInt(1n << BigInt(node.graphEffectSite!)), locationData);
+      }
+      this.pushToStack(nftOccurrenceDelta);
+    }
+    for (const nftSite of graphNftSites) {
+      const frame = targetFunc.graphEffectFrame!;
+      if (node.graphEffectSiteFromRow) {
+        this.emitLoopRowEffectSlotIndex('tcTransfer', nftSite.transferIndex, frame, locationData);
+      } else {
+        const ordinal = node.graphEffectSite! * frame.tokenTransferWidth + nftSite.transferIndex;
+        this.emitBlockSlotIndex('tcTransfer', ordinal, locationData);
+      }
+      // A fixed source site has one declared container. Its handler covenant authenticates that category when
+      // reached, while inactive sites are independently bound tokenless, so presence alone is the exact
+      // per-container NFT occurrence signal here.
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
+      this.emit(Op.OP_LESSTHAN, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(Op.OP_0NOTEQUAL, locationData);
+      this.emit(Op.OP_ELSE, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(Op.OP_0, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(encodeInt(1n << BigInt(8 + 16 * nftSite.routeContainerSlot)), locationData);
+      this.emit(Op.OP_MUL, locationData);
+      // This accumulator is created after the invocation, so it is physically immediately below the weighted
+      // occurrence. Unlike route-frame values, it must be addressed from the top: bottom-relative lookup would
+      // mistake a handler argument left above the route frame for this local value.
+      this.emit(Op.OP_1, locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_ADD, locationData);
+      this.pushToStack('(graph_nft_occurrence_delta_new)');
+      // The accumulator is the tracked top item, immediately below its replacement; no runtime-depth rotation
+      // or alt-stack work is required here.
+      this.emitReplace(this.getStackIndex(nftOccurrenceDelta), node);
+      this.popFromStack();
+    }
+    if (graphTokenInvocation) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_TOKEN_SITE))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_ADD, locationData);
+      // OP_ADD consumed the local delta; reflect that before replacing the one packed route-frame value.
+      this.popFromStack();
+      this.pushToStack('(graph_nft_occurrence_new)');
+      this.emitReplaceCompilerRouteFrameValue(GRAPH_TOKEN_SITE, node);
+      this.popFromStack();
+    }
     return node;
   }
 
@@ -24906,6 +25044,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitDropUntrackedStackItems(loc: SingleLocationData): void {
     this.emit(Op.OP_DEPTH, loc);
+    if (this.isDefineSubTraversal && this.stack.includes(GRAPH_HANDLER_CALLER_DEPTH)) {
+      // OP_DEPTH includes the route frame below OP_INVOKE's local operands. Remove that stable baseline before
+      // comparing with the compiler's local stack model, otherwise effect settlement drops the entire caller.
+      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_HANDLER_CALLER_DEPTH) + 1)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_SUB, loc);
+    }
     this.emit(encodeInt(BigInt(this.stack.length)), loc);
     this.emit(Op.OP_SUB, loc);
     this.emit(Op.OP_DUP, loc);
@@ -25840,6 +25985,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * SEC-16. Bind an inactive or unowned graph token-transfer slot to a tokenless output (or no output).
+   * An unbound slot cannot be included in per-container conservation: otherwise a spender could place an
+   * arbitrary category there, use it as apparent conservation, and redirect tokens through a source path that
+   * never executed. The output value/bytecode are immaterial once the slot is proven tokenless.
+   */
+  private emitNotTakenTokenTransferSlotBinding(
+    transferIndex: number, locationData: SingleLocationData,
+  ): void {
+    this.emitBlockSlotIndex('tcTransfer', transferIndex, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
    * SEC-15. Open an `OP_IF` that runs only when reserved event ordinal `ordinal` is OUTSIDE the window owned by
    * the dispatch site this execution reached - i.e. exactly the slots no handler settled. The caller closes it.
    *
@@ -25884,6 +26053,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (covered.has(ordinal)) continue;
       this.emitGraphFrameSlotUnowned(ordinal, locationData);
       this.emitNotTakenEventSlotBinding(ordinal, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+    }
+  }
+
+  /** Bind every token-transfer frame window which no selected row invoked. Reached handlers bind their own
+   * active sites plus every inactive/suffix slot while their effect-site ordinal is live. */
+  private emitGraphFrameTokenSlotBinding(node: FunctionDefinitionNode): void {
+    const frame = node.graphEffectFrame;
+    if (!frame || frame.tokenTransferWidth === 0 || !this.stack.includes(GRAPH_TOKEN_SITE)) return;
+    const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    const covered = new Set(this.pendingTokenContainerTransfers.map((transfer) => transfer.transferIndex));
+    const siteIdx = this.getStackIndex(GRAPH_TOKEN_SITE);
+    for (let ordinal = 0; ordinal < frame.sites * frame.tokenTransferWidth; ordinal += 1) {
+      if (covered.has(ordinal)) continue;
+      const site = Math.floor(ordinal / frame.tokenTransferWidth);
+      this.emit(encodeInt(BigInt(siteIdx)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(encodeInt(1n << BigInt(site)), locationData);
+      this.emit(Op.OP_DIV, locationData);
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_MOD, locationData);
+      this.emit(Op.OP_NOT, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emitNotTakenTokenTransferSlotBinding(ordinal, locationData);
       this.emit(Op.OP_ENDIF, locationData);
     }
   }
@@ -27481,7 +27674,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const bottomOrdinalPlusOne = this.stack.length - topIndex;
 
     // Compute the old slot's current depth D, retain D while rolling out the old value, then rotate the returned
-    // replacement down D-1 positions. Retaining D shifts the old slot one position deeper for OP_ROLL.
+    // replacement down D-1 positions.
     this.emit(Op.OP_DEPTH, locationData);
     this.emit(encodeInt(BigInt(bottomOrdinalPlusOne)), locationData);
     this.emit(Op.OP_SUB, locationData);
@@ -30620,24 +30813,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     const isOutState = !!mappingAccess.isOutStateTokenContainerAccess;
 
-    // Visit inner MappingAccess (visits the key expression, keeps param on stack)
+    // Visit the key expression once. Treat the emitted category as a temporary while constructing the
+    // aggregate target; otherwise retaining it in the compiler stack and PICKing the parameter again leaves an
+    // extra category between adjacent reads (`tokens[a].tokenAmount + tokens[b].tokenAmount`).
     node.expression = this.visit(node.expression);
 
     if (node.name === 'tokenAmount' || node.name === 'nftCount') {
       // Aggregate mode: derive token container lbc, then loop
+      this.popFromStack();
 
-      // Get token container category from the key parameter
-      const keyParamName = this.tokenContainerSlots[slotIndex]?.keyParam;
-      if (keyParamName) {
-        const keyIdx = this.getStackIndex(keyParamName);
-        this.emit(encodeInt(BigInt(keyIdx)), locationData);
-        this.emit(Op.OP_PICK, locationData);
-        // untracked: tcCat
-      }
-
-      // Get master's 32-byte categoryId. The category pick above is untracked, so owner/master
+      // Get master's 32-byte categoryId. The visited category above is untracked, so owner/master
       // PICKs must skip it; otherwise a graph-emission handler reads `amount` as a UTXO index.
-      this.emitMasterInputIndex(locationData, keyParamName ? 1 : 0);
+      this.emitMasterInputIndex(locationData, 1);
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
       this.emit(encodeInt(32n), locationData);
       this.emit(Op.OP_SPLIT, locationData);
@@ -30672,6 +30859,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Single-UTXO read mode (tokenCategory, nftCommitment) - unchanged
     // These only apply to input-side access (not outState)
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
 
     // Check if TC exists via input introspection (funder has no tokens)
     this.emitBlockSlotIndex('tokenContainer', slotIndex, locationData);
@@ -30994,7 +31183,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       if (isConditionalTc) {
+        if (node.graphEmissionHandler && node.graphEffectFrame) {
+          this.emit(Op.OP_ELSE, locationData);
+          this.emitNotTakenTokenTransferSlotBinding(transferIndex, locationData);
+        }
         this.emit(Op.OP_ENDIF, locationData);
+      }
+    }
+
+    if (node.graphEmissionHandler && node.graphEffectFrame) {
+      const covered = new Set(this.pendingTokenContainerTransfers.map((transfer) => transfer.transferIndex));
+      for (let transferIndex = 0;
+        transferIndex < node.graphEffectFrame.tokenTransferWidth;
+        transferIndex += 1) {
+        if (!covered.has(transferIndex)) {
+          this.emitNotTakenTokenTransferSlotBinding(transferIndex, locationData);
+        }
       }
     }
 
@@ -31096,9 +31300,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         for (let transferIndex = 0;
           transferIndex < node.graphEffectFrame!.sites * node.graphEffectFrame!.tokenTransferWidth;
           transferIndex += 1) {
-          this.emitBlockSlotIndex('tcTransfer', transferIndex, locationData);
+          // Every inactive/unowned graph slot is tokenless (SEC-16), so a present category is an authenticated
+          // transfer. Debit it only from the container with the same base category; the former route-wide sum
+          // let a transfer from A relax B's conservation equation as well.
+          this.emitBlockSlotIndex('tcTransfer', transferIndex, locationData, 1);
+          this.emit(Op.OP_DUP, locationData);
+          this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
+          this.emit(Op.OP_LESSTHAN, locationData);
+          this.emit(Op.OP_IF, locationData);
+          this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+          this.emit(Op.OP_DUP, locationData);
+          this.emit(Op.OP_SIZE, locationData);
+          this.emit(Op.OP_NIP, locationData);
+          this.emit(encodeInt(32n), locationData);
+          this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+          this.emit(Op.OP_IF, locationData);
+          this.emit(encodeInt(32n), locationData);
+          this.emit(Op.OP_SPLIT, locationData);
+          this.emit(Op.OP_DROP, locationData);
+          this.emitTokenContainerInputIndex(i, locationData, 2);
+          this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+          this.emit(encodeInt(32n), locationData);
+          this.emit(Op.OP_SPLIT, locationData);
+          this.emit(Op.OP_DROP, locationData);
+          this.emit(Op.OP_EQUAL, locationData);
+          this.emit(Op.OP_ELSE, locationData);
+          this.emit(Op.OP_DROP, locationData);
+          this.emit(Op.OP_0, locationData);
+          this.emit(Op.OP_ENDIF, locationData);
+          this.emit(Op.OP_IF, locationData);
+          this.emitBlockSlotIndex('tcTransfer', transferIndex, locationData, 1);
           this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
           this.emit(Op.OP_SUB, locationData);
+          this.emit(Op.OP_ENDIF, locationData);
+          this.emit(Op.OP_ELSE, locationData);
+          this.emit(Op.OP_DROP, locationData);
+          this.emit(Op.OP_ENDIF, locationData);
         }
       }
       const hasRuntimeEffectSpan = this.stack.includes(
@@ -31168,17 +31405,53 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         (s) => s.tokenContainerSlotIndex === i && s.method === 'transferNft',
       );
 
+      const unconditionalNftTransfer = nftTransfersForSlot.some((transfer) =>
+        !this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex));
+      const conditionalNftTransfers = nftTransfersForSlot.filter((transfer) =>
+        this.conditionalTokenContainerTransferIndices.has(transfer.transferIndex));
+      const hasGraphNftOccurrence = this.isCompilerMessageBusRoute(node)
+        && this.stack.includes(GRAPH_TOKEN_SITE)
+        && node.graphEffectFrame?.tokenNftTransfers === true;
+      const hasConditionalNftOccurrence = conditionalNftTransfers.length > 0
+        || hasGraphNftOccurrence || hasRuntimeNftCounts;
+      const emitConditionalNftOccurrence = (untrackedDepth: number): void => {
+        let emitted = false;
+        for (const transfer of conditionalNftTransfers) {
+          this.emit(encodeInt(BigInt(
+            this.getStackIndex(transfer.argStackNames[0]) + untrackedDepth + (emitted ? 1 : 0),
+          )), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          this.emit(Op.OP_0NOTEQUAL, locationData);
+          if (emitted) this.emit(Op.OP_BOOLOR, locationData);
+          emitted = true;
+        }
+        if (hasGraphNftOccurrence) {
+          this.emitPickCompilerRouteFrameValue(
+            GRAPH_TOKEN_SITE, locationData, untrackedDepth + (emitted ? 1 : 0),
+          );
+          this.emit(encodeInt(1n << BigInt(8 + 16 * i)), locationData);
+          this.emit(Op.OP_DIV, locationData);
+          this.emit(encodeInt(1n << 16n), locationData);
+          this.emit(Op.OP_MOD, locationData);
+          this.emit(Op.OP_0NOTEQUAL, locationData);
+          if (emitted) this.emit(Op.OP_BOOLOR, locationData);
+          emitted = true;
+        }
+        if (hasRuntimeNftCounts) {
+          emitRuntimeNftOccurrence(i, untrackedDepth + (emitted ? 1 : 0));
+          if (emitted) this.emit(Op.OP_BOOLOR, locationData);
+        }
+      };
+
       this.emitTokenContainerInputIndex(i, locationData, 0);
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      const graphNftTransfers = this.isCompilerMessageBusRoute(node)
-        && node.graphEffectFrame?.tokenNftTransfers === true;
-      if (nftTransfersForSlot.length > 0 || graphNftTransfers) {
+      if (unconditionalNftTransfer) {
         // NFT was transferred out - compare only base 32-byte category
         this.emit(encodeInt(32n), locationData);
         this.emit(Op.OP_SPLIT, locationData);
         this.emit(Op.OP_DROP, locationData);
-      } else if (hasRuntimeNftCounts) {
-        emitRuntimeNftOccurrence(i, 1);
+      } else if (hasConditionalNftOccurrence) {
+        emitConditionalNftOccurrence(1);
         this.emit(Op.OP_IF, locationData);
         this.emit(encodeInt(32n), locationData);
         this.emit(Op.OP_SPLIT, locationData);
@@ -31189,12 +31462,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       this.emitTokenContainerOutputIndex(i, locationData, 1);
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-      if (nftTransfersForSlot.length > 0 || graphNftTransfers) {
+      if (unconditionalNftTransfer) {
         this.emit(encodeInt(32n), locationData);
         this.emit(Op.OP_SPLIT, locationData);
         this.emit(Op.OP_DROP, locationData);
-      } else if (hasRuntimeNftCounts) {
-        emitRuntimeNftOccurrence(i, 2);
+      } else if (hasConditionalNftOccurrence) {
+        emitConditionalNftOccurrence(2);
         this.emit(Op.OP_IF, locationData);
         this.emit(encodeInt(32n), locationData);
         this.emit(Op.OP_SPLIT, locationData);

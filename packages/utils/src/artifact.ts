@@ -165,6 +165,16 @@ export interface TokenContainerAccessAbi {
   transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)
 }
 
+/** One statically allocated token-container transfer alternative. Branch alternatives may share transferIndex;
+ * exactly one condition may be true for each physical slot in a concrete invocation. */
+export interface TokenContainerTransferSiteAbi {
+  transferIndex: number;
+  tokenContainerSlot: number;
+  kind: 'token' | 'nft';
+  /** Undefined is unconditional; null records a conditional predicate older tooling cannot evaluate. */
+  condition?: ExternalCallExpression | null;
+}
+
 // A positional argument to a delegate-library call (`L.f(...)`). Either a forwarded enclosing-function
 // parameter (resolved from the consumer call at spend time) or a compile-time literal encoded as a string with
 // its kind (the SDK reconstructs: int -> BigInt, bool -> ===\"true\", bytes -> hexToBin, string -> as-is).
@@ -333,6 +343,7 @@ export interface AbiFunction {
     hasFoldedChildCall?: boolean;
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+  tokenContainerTransferSites?: readonly TokenContainerTransferSiteAbi[];
   usesMsgSender?: boolean;
   /**
    * The signature check that authorizes this function, described by the key it is checked against.
@@ -976,6 +987,7 @@ export interface Artifact {
       runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
       runtimeLoopTransfers?: readonly RuntimeLoopTransferAbi[];
       tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+      tokenContainerTransferSites?: readonly TokenContainerTransferSiteAbi[];
       /** Per selected handler call, the visible parameter feeding keccak256 or null for a computed preimage. */
       keccakPreimageParams?: readonly (string | null)[];
       /** Explicit for every newly compiled handler, so an inactive recovery sibling is distinguishable from

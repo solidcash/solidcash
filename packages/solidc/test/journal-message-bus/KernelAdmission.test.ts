@@ -22,7 +22,7 @@ describe('required kernel admission', () => {
         for (int i=0; i<n; i=i+1) { Pair pair=pairs[i]; pair.left=pair.left+1; pairs[i]=pair; }
         require(true);
       }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'update'))
       .toMatchObject({ eligible: true });
     expect(artifact.abi.find((handler) => handler.name === 'update')?.sortedUpsertLoopInfo).toEqual([
@@ -83,7 +83,7 @@ describe('required kernel admission', () => {
     const artifact = compileString(`contract C(pubkey owner) {
       function signed(sig s) public { require(checkSig(s, owner)); }
       function control() public { require(true); }
-    }`, KERNEL);
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed')?.eligible).toBe(true);
     expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
       name: '__message_bus_sig_0_0_rows', type: 'sig[]',
@@ -2798,6 +2798,43 @@ describe('required kernel admission', () => {
         siteCount: 1, siteKinds: ['nft'], tokenContainerSlots: [0],
       })]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('publishes the exact predicate and physical site for a fixed conditional NFT transfer', () => {
+    const artifact = compileString(`contract C() {
+      function send(
+        bytes32 category, bytes32 other, bytes to, bytes commitment, int capability, bool take
+      ) public {
+        require(this.tokens[category].tokenAmount >= 0);
+        require(this.tokens[other].tokenAmount >= 0);
+        if (take) this.tokens[category].transferNft(to, commitment, capability);
+        else this.tokens[other].transferNft(to, commitment, capability);
+        require(capability >= 0);
+      }
+    }`, KERNEL);
+    const expected = [
+      {
+        transferIndex: 0,
+        tokenContainerSlot: 0,
+        kind: 'nft',
+        condition: { kind: 'source', source: { kind: 'forward', paramIndex: 5 } },
+      },
+      {
+        transferIndex: 1,
+        tokenContainerSlot: 1,
+        kind: 'nft',
+        condition: {
+          kind: 'unary', operator: '!',
+          expression: { kind: 'source', source: { kind: 'forward', paramIndex: 5 } },
+        },
+      },
+    ];
+    expect(artifact.abi.find((handler) => handler.name === 'send')?.tokenContainerTransferSites)
+      .toEqual(expected);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'send'))
+      .toMatchObject({ eligible: true, tokenContainerTransferSites: expected });
+    expect(artifact.abi.find((handler) => handler.name === 'send')?.blockLayout?.slots
+      .filter((slot) => slot.kind === 'tcTransfer')).toHaveLength(2);
   });
 
   it('admits a returning enum encoded as int', () => {

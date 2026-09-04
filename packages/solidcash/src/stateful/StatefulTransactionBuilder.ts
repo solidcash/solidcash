@@ -8541,14 +8541,20 @@ export class StatefulTransactionBuilder {
   /**
    * Add a token container transfer output (fungible tokens from a token container).
    */
-  addTokenContainerTransfer(tokenContainerCategoryId: string, lockingBytecode: Uint8Array, amount: bigint): this {
+  addTokenContainerTransfer(
+    tokenContainerCategoryId: string, lockingBytecode: Uint8Array, amount: bigint, outputSlot?: number,
+  ): this {
     if (amount <= 0n) {
       throw new Error('Token container transfer amount must be positive');
     }
+    const insertionOrder = outputSlot ?? this.tokenContainerTransferInsertionCounter;
     this.pendingTokenContainerTransfers.push({
       tokenContainerCategoryId, lockingBytecode, amount,
-      insertionOrder: this.tokenContainerTransferInsertionCounter++,
+      insertionOrder,
     });
+    this.tokenContainerTransferInsertionCounter = Math.max(
+      this.tokenContainerTransferInsertionCounter, insertionOrder + 1,
+    );
     return this;
   }
 
@@ -8572,11 +8578,16 @@ export class StatefulTransactionBuilder {
     lockingBytecode: Uint8Array,
     commitment: Uint8Array,
     capability: 'none' | 'mutable' | 'minting',
+    outputSlot?: number,
   ): this {
+    const insertionOrder = outputSlot ?? this.tokenContainerTransferInsertionCounter;
     this.pendingTokenContainerTransferNfts.push({
       tokenContainerCategoryId, lockingBytecode, commitment, capability,
-      insertionOrder: this.tokenContainerTransferInsertionCounter++,
+      insertionOrder,
     });
+    this.tokenContainerTransferInsertionCounter = Math.max(
+      this.tokenContainerTransferInsertionCounter, insertionOrder + 1,
+    );
     return this;
   }
 
@@ -8609,7 +8620,9 @@ export class StatefulTransactionBuilder {
    */
   clearTokenContainerTransfers(): this {
     this.pendingTokenContainerTransfers = [];
-    this.tokenContainerTransferInsertionCounter = this.pendingTokenContainerTransferNfts.length;
+    this.tokenContainerTransferInsertionCounter = this.pendingTokenContainerTransferNfts.reduce(
+      (next, transfer) => Math.max(next, transfer.insertionOrder + 1), 0,
+    );
     return this;
   }
 
@@ -8618,7 +8631,9 @@ export class StatefulTransactionBuilder {
    */
   clearTokenContainerTransferNfts(): this {
     this.pendingTokenContainerTransferNfts = [];
-    this.tokenContainerTransferInsertionCounter = this.pendingTokenContainerTransfers.length;
+    this.tokenContainerTransferInsertionCounter = this.pendingTokenContainerTransfers.reduce(
+      (next, transfer) => Math.max(next, transfer.insertionOrder + 1), 0,
+    );
     return this;
   }
 
@@ -12116,11 +12131,12 @@ export class StatefulTransactionBuilder {
       ...this.pendingTokenContainerTransferNfts.map((d) => ({ type: 'nft' as const, data: d })),
     ];
     allTcTransfers.sort((a, b) => a.data.insertionOrder - b.data.insertionOrder);
+    const tcTransferBySlot = new Map(allTcTransfers.map((entry) => [entry.data.insertionOrder, entry]));
 
     const reservedTokenTransferSlots = this.blockLayout?.slots.filter((slot) => slot.kind === 'tcTransfer').length
       ?? allTcTransfers.length;
     for (let transferSlot = 0; transferSlot < reservedTokenTransferSlots; transferSlot += 1) {
-      const entry = allTcTransfers[transferSlot];
+      const entry = tcTransferBySlot.get(transferSlot);
       if (!entry) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
         continue;

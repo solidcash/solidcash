@@ -300,7 +300,12 @@ const participantOf = (
   const effectiveArtifact = descriptor.executor
     ? delegateParticipantArtifact(descriptor.artifact, identityAnchorCount)
     : ownerParticipantArtifact(descriptor.artifact, identityAnchorCount);
-  const effectiveLayout = effectiveArtifact.messageBus!.route.blockLayout!;
+  const effectiveLayout = effectiveArtifact.messageBus?.route?.blockLayout;
+  if (!effectiveLayout) {
+    throw new Error(
+      `messageBus: participant '${descriptor.artifact.contractName}' function '${descriptor.functionName}' has no compiled route`,
+    );
+  }
   const executorOffset = descriptor.executor
     ? effectiveLayout.slots.find((slot) => slot.kind === 'lowLevelCall')?.offset
     : undefined;

@@ -146,7 +146,7 @@ every kernel toy.
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
 | `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob | Any finite `sig` array parameter (one aligned outer row dimension); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
-| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not derivable within the bounded replay model; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; mutation of its counter or a bound mutation which cannot be reduced to a finite source expression; nested-loop control flow or a predicate with unsupported/mutated provenance; or a counter loop that repeats an NFT transfer | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), bounded locally constructed arrays with replayable dominating writes, canonical ascending `for (int i = S; i < n; i = i + D)` / `i = D + i` / `i <= n` and descending `for (int i = S; i > n; i = i - D)` / `i >= n` domains for positive constant or replayable runtime `D`, plus `i != n` when the signed step reaches the endpoint exactly (also through replayable straight-line or finite conditional bound assignments, and with either comparison operand orientation), or equivalent canonical source `while` and `do-while` forms over `m[i]` / nested `m[k][i]`, multiple sequential loops whose runtime keys are disjoint (including loops over one physical collection), a stable depth-one scalar entry keyed by a public parameter/literal/`msg.sender`/`tx.origin` or a pure expression over public arguments beside those counter writes, or those rewrites beneath serializable outer and inner `if`/`else`/`switch`/`continue`/`break`/`return` paths and the reachable body of `try`/`catch`, beside source-order typed calls and path-predicated event, BCH-transfer, and fungible-token-transfer sites |
+| `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not derivable within the bounded replay model; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; mutation of its counter or a bound mutation which cannot be reduced to a finite source expression; nested-loop control flow or a predicate with unsupported/mutated provenance | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[jobs.length-1]`), parameter-array loop (`m[k][xs[i]]`), bounded locally constructed arrays with replayable dominating writes, canonical ascending `for (int i = S; i < n; i = i + D)` / `i = D + i` / `i <= n` and descending `for (int i = S; i > n; i = i - D)` / `i >= n` domains for positive constant or replayable runtime `D`, plus `i != n` when the signed step reaches the endpoint exactly (also through replayable straight-line or finite conditional bound assignments, and with either comparison operand orientation), or equivalent canonical source `while` and `do-while` forms over `m[i]` / nested `m[k][i]`, multiple sequential loops whose runtime keys are disjoint (including loops over one physical collection), a stable depth-one scalar entry keyed by a public parameter/literal/`msg.sender`/`tx.origin` or a pure expression over public arguments beside those counter writes, or those rewrites beneath serializable outer and inner `if`/`else`/`switch`/`continue`/`break`/`return` paths and the reachable body of `try`/`catch`, beside source-order typed calls and path-predicated event, BCH-transfer, fungible-token-transfer, and NFT-transfer sites |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Native assembly which is not statically isolated and stack-neutral (including active-bytecode/signature context), unsupported Yul which cannot be lowered, or a low-level call the journal cannot summarize as a call/effect row | Isolated pure/read-only BCH assembly, including transaction inspection whose operands are block-local, balanced `OP_IF`/`OP_NOTIF` arms whose main and alt stacks converge, and `OP_BEGIN`/`OP_UNTIL` loops which restore both loop-entry stack heights after consuming their block-local condition; Yul translated to ordinary typed operations before admission; after Solidity-compat lowering to `call` plus returndata |
 | `KERNEL_LAYOUT` | The handler would need its own block layout (for example a deploy inside the handler) | Journaled state accessed through the wrapper; `new LockingBytecodeP2PKH` / `P2SH20` / `P2SH32` / `NullData` constructors (not child deploys) |
@@ -207,9 +207,10 @@ returning helpers. After helper inlining, an effectful helper body and its resul
 the event in the source-order physical loop, so consuming that already-computed local neither duplicates nor
 permutes the helper effect. BCH and fungible-token transfer operands use the same rule and the same authenticated,
 source-ordered runtime effect span. An effectful helper result used as a mapping value remains refused because
-that value would follow the authenticated key permutation rather than source order. Repeated NFT transfer still
-has no sound general form:
-one NFT-bearing container input cannot authorize duplicating that NFT across an arbitrary number of loop outputs.
+that value would follow the authenticated key permutation rather than source order. Repeated NFT transfer uses
+the same authenticated stream. A minting-capability container may produce several NFT outputs; a non-minting
+container may reach at most one selected NFT site because one input NFT cannot authorize duplication. The SDK
+rejects a concrete non-minting plan which reaches more than one site.
 
 Runtime mapping entries and runtime events are planned as row-scoped trailing segments. Independent selected rows
 therefore compose in physical message order, including rows which mix a mapping loop with fixed or repeated events.
@@ -398,10 +399,12 @@ this includes values computed by explicitly `pure` internal helpers and resource
 use the bounded runtime-event stream described above; only mapping keys and direct counter uses inside mapping
 values follow the permutation. BCH and fungible-token transfers inside the physical counter loop join that same
 effect stream; their recipients and amounts remain in logical source order while only mapping keys are permuted.
-Conditional fungible-token sites and independent token categories are planned exactly, and each container
-conservation equation subtracts only matching authenticated outputs. Repeated NFT transfers remain
-`KERNEL_UNBOUNDED_KEY`. Events before or after the loop join the same ordered runtime stream, including supported
-conditional sites. Fixed BCH and token-container effects remain supported before or after the loop.
+Conditional fungible-token/NFT sites and independent token categories are planned exactly, and each container
+conservation equation subtracts only matching authenticated outputs. Graph-frame token slots use the same rule:
+inactive and unowned slots are tokenless, and NFT capability relaxation records the reached site per physical
+container rather than applying a route-wide flag. Events before or after the loop join the same ordered runtime
+stream, including supported conditional sites. Fixed BCH and token-container effects remain supported before or
+after the loop.
 Nested counter keys `m[k][i]` permute the inner key only.
 At transaction construction time, selected rows with independent pre-state journals may share one envelope. The
 compiler threads predecessor and output cursors across physical rows, and the SDK emits each row's collection and

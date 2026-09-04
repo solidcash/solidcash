@@ -15,9 +15,10 @@ import {
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
-  EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode, UnaryOpNode,
+  EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode, UnaryOpNode, BranchNode,
+  SwitchNode, TryCatchNode,
 } from '../ast/AST.js';
-import { BinaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
@@ -1001,12 +1002,14 @@ function buildFunctionAbiMetadata(
   const visibleParameters = func.parameters.filter((parameter) =>
     !parameter.name.startsWith('__internal__'));
   const localInitializers = new Map<string, ExpressionNode[]>();
+  const reassignedLocals = new Set<string>();
   const collectLocalInitializers = (candidate: Node): void => {
     if (candidate instanceof VariableDefinitionNode && candidate.expression) {
       const definitions = localInitializers.get(candidate.name) ?? [];
       definitions.push(candidate.expression);
       localInitializers.set(candidate.name, definitions);
     }
+    if (candidate instanceof AssignNode) reassignedLocals.add(candidate.identifier.name);
     for (const [key, value] of Object.entries(candidate)) {
       if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
         'referencedContract', 'stateVariable', 'collection', 'type', 'runtimeLoopEventCondition'].includes(key)) {
@@ -1184,6 +1187,90 @@ function buildFunctionAbiMetadata(
       };
     });
   })();
+  const tokenContainerTransferSites = (() => {
+    if (!func.body || !func.tokenContainerAccesses?.some((access) =>
+      access.transferCount > 0 || access.transferNftCount > 0)) return [];
+    const sites: Array<{
+      transferIndex: number;
+      tokenContainerSlot: number;
+      kind: 'token' | 'nft';
+      condition?: ExternalCallExpression | null;
+    }> = [];
+    const usesReassignedLocal = (root: ExpressionNode): boolean => {
+      let found = false;
+      const seen = new Set<Node>();
+      const scan = (candidate: Node): void => {
+        if (found || seen.has(candidate)) return;
+        seen.add(candidate);
+        if (candidate instanceof IdentifierNode && reassignedLocals.has(candidate.name)) {
+          found = true;
+          return;
+        }
+        for (const [key, value] of Object.entries(candidate)) {
+          if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+            'referencedContract', 'stateVariable', 'collection', 'type'].includes(key)) continue;
+          if (value instanceof Node) scan(value);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) scan(item);
+        }
+      };
+      scan(root);
+      return found;
+    };
+    const combine = (
+      outer: ExpressionNode | undefined, inner: ExpressionNode, negate: boolean,
+    ): ExpressionNode => {
+      const selected = negate ? new UnaryOpNode(UnaryOperator.NOT, inner) : inner;
+      if (!outer) return selected;
+      return new BinaryOpNode(outer, BinaryOperator.AND, selected);
+    };
+    const visit = (candidate: Node, condition?: ExpressionNode): void => {
+      if (candidate instanceof TokenContainerMethodStatementNode) {
+        if (!candidate.runtimeLoopTransfer) {
+          sites.push({
+            transferIndex: candidate.transferIndex,
+            tokenContainerSlot: candidate.tokenContainerSlotIndex,
+            kind: candidate.methodName === 'transferNft' ? 'nft' : 'token',
+            ...(condition !== undefined && {
+              condition: usesReassignedLocal(condition) ? null : serializeCondition(condition) ?? null,
+            }),
+          });
+        }
+        return;
+      }
+      if (candidate instanceof BranchNode) {
+        visit(candidate.ifBlock, combine(condition, candidate.condition, false));
+        if (candidate.elseBlock) visit(candidate.elseBlock, combine(condition, candidate.condition, true));
+        return;
+      }
+      if (candidate instanceof SwitchNode) {
+        let defaultCondition = condition;
+        for (const arm of candidate.cases) {
+          const matches = new BinaryOpNode(candidate.expression, BinaryOperator.EQ, arm.value);
+          visit(arm.body, combine(condition, matches, false));
+          const misses = new BinaryOpNode(candidate.expression, BinaryOperator.NE, arm.value);
+          defaultCondition = defaultCondition ? new BinaryOpNode(
+            defaultCondition, BinaryOperator.AND, misses,
+          ) : misses;
+        }
+        if (candidate.defaultCase) visit(candidate.defaultCase, defaultCondition);
+        return;
+      }
+      // Script failure is fatal, so catch bodies are unreachable in SolidCash.
+      if (candidate instanceof TryCatchNode) {
+        visit(candidate.tryBlock, condition);
+        return;
+      }
+      for (const [key, value] of Object.entries(candidate)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'type',
+          'runtimeLoopTransferCondition'].includes(key)) continue;
+        if (value instanceof Node) visit(value, condition);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) visit(item, condition);
+      }
+    };
+    visit(func.body);
+    return sites.sort((left, right) => left.transferIndex - right.transferIndex);
+  })();
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -1230,6 +1317,7 @@ function buildFunctionAbiMetadata(
     }),
     ...(runtimeLoopEvents.length > 0 && { runtimeLoopEvents }),
     ...(runtimeLoopTransfers.length > 0 && { runtimeLoopTransfers }),
+    ...(tokenContainerTransferSites.length > 0 && { tokenContainerTransferSites }),
     ...(func.transferInfos && func.transferInfos.length > 0 && {
       transferCount: func.transferInfos.length,
       ...(contract && { transfers: transferEffects(func, contract) }),

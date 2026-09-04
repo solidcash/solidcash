@@ -3216,7 +3216,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Token container transfer pre-scan: assign sequential transfer indices (handles branches)
     if (node.tokenContainerAccesses && node.tokenContainerAccesses.some((da) => da.operations.includes('transfer') || da.operations.includes('transferNft'))) {
-      this.collectTokenContainerTransferStatements(node.body, { counter: 0 });
+      const transferSites = { counter: 0 };
+      this.collectTokenContainerTransferStatements(node.body, transferSites);
+      node.tokenContainerTransferSiteCount = transferSites.counter > 0 ? transferSites.counter : undefined;
     }
 
 
@@ -3811,31 +3813,28 @@ export default class SymbolTableTraversal extends AstTraversal {
     return startIndex;
   }
 
-  /**
-   * Pre-assign sequential transfer indices to TokenContainerMethodStatementNode nodes.
-   * Handles branches by assigning the same indices to both arms.
-   */
+  /** Pre-assign one stable physical identity to every fixed token-container transfer source site. */
   private collectTokenContainerTransferStatements(node: Node, state: { counter: number }): void {
     if (node instanceof TokenContainerMethodStatementNode) {
       if (node.runtimeLoopTransfer) return;
       node.transferIndex = state.counter++;
       return;
     }
-    if (node instanceof BranchNode && node.branchOps && node.branchOps.tokenContainerTransferCount > 0) {
-      const startIndex = state.counter;
-      const ifIsLonger = node.branchOps.ifTokenContainerTransferCount
-        >= node.branchOps.tokenContainerTransferCount - node.branchOps.ifTokenContainerTransferCount;
-      if (ifIsLonger || !node.elseBlock) {
-        this.collectTokenContainerTransferStatements(node.ifBlock, state);
-        if (node.elseBlock) {
-          const elseState = { counter: startIndex };
-          this.collectTokenContainerTransferStatements(node.elseBlock, elseState);
-        }
-      } else {
-        this.collectTokenContainerTransferStatements(node.elseBlock!, state);
-        const ifState = { counter: startIndex };
-        this.collectTokenContainerTransferStatements(node.ifBlock, ifState);
+    if (node instanceof BranchNode) {
+      this.collectTokenContainerTransferStatements(node.ifBlock, state);
+      if (node.elseBlock) this.collectTokenContainerTransferStatements(node.elseBlock, state);
+      return;
+    }
+    if (node instanceof SwitchNode) {
+      for (const arm of node.cases) {
+        this.collectTokenContainerTransferStatements(arm.body, state);
       }
+      if (node.defaultCase) this.collectTokenContainerTransferStatements(node.defaultCase, state);
+      return;
+    }
+    if (node instanceof TryCatchNode) {
+      // Script failure is fatal, so catch bodies are not reachable in SolidCash. The try body alone owns sites.
+      this.collectTokenContainerTransferStatements(node.tryBlock, state);
       return;
     }
     if ('statements' in node && Array.isArray((node as any).statements)) {
@@ -13062,7 +13061,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const route = contract.functions.find((fn) => fn.messageBusRoute);
     if (!route?.body || !route.blockLayout) return;
     const tokenTransferCount = (fn: FunctionDefinitionNode): number =>
-      (fn.tokenContainerAccesses ?? []).reduce(
+      fn.tokenContainerTransferSiteCount ?? (fn.tokenContainerAccesses ?? []).reduce(
         (total, access) => total + access.transferCount + access.transferNftCount, 0,
       );
     const handlers = contract.functions.filter((fn) => fn.graphEmissionHandler
@@ -13391,11 +13390,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     // `[base + s * width, ...)`, matching satoshi `graphTransfers` padding.
     if (node.tokenContainerAccesses) {
       let tcTransferIdx = 0;
-      for (const tca of node.tokenContainerAccesses) {
-        const opCount = tca.transferCount + tca.transferNftCount;
-        for (let j = 0; j < opCount; j++) {
-          slots.push({ kind: 'tcTransfer', offset: offset++, slotIndex: tcTransferIdx++ });
-        }
+      const fixedSites = node.tokenContainerTransferSiteCount
+        ?? node.tokenContainerAccesses.reduce(
+          (total, access) => total + access.transferCount + access.transferNftCount, 0,
+        );
+      for (; tcTransferIdx < fixedSites; tcTransferIdx++) {
+        slots.push({ kind: 'tcTransfer', offset: offset++, slotIndex: tcTransferIdx });
       }
       for (let i = tcTransferIdx; i < graphTokenTransfers; i++) {
         slots.push({ kind: 'tcTransfer', offset: offset++, slotIndex: i, conditional: true });

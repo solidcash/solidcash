@@ -1036,12 +1036,17 @@ function buildFunctionAbiMetadata(
     }
     if (expression instanceof IdentifierNode) {
       if (counter?.name === expression.name) {
+        const stepExpression = counter.stepExpression
+          ? serializeCondition(counter.stepExpression, undefined, resolving) : undefined;
+        if (counter.stepExpression && !stepExpression) return undefined;
         return {
           kind: 'source',
           source: {
             kind: 'loopIndex',
             initialValue: counter.initialValue.toString(),
-            stepValue: counter.stepValue.toString(),
+            ...(stepExpression
+              ? { stepExpression }
+              : { stepValue: counter.stepValue.toString() }),
           },
         };
       }
@@ -1416,6 +1421,8 @@ function buildFunctionAbiMetadata(
           info.iterationCounter,
         );
         const iterationBound = info.iterationBound && serializeCondition(info.iterationBound);
+        const iterationStep = info.iterationCounter?.stepExpression
+          && serializeCondition(info.iterationCounter.stepExpression);
         if (info.condition && !condition) {
           throw new Error(`Runtime loop condition in '${func.name}' cannot be represented in artifact metadata`);
         }
@@ -1428,6 +1435,9 @@ function buildFunctionAbiMetadata(
         if (info.iterationBound && !iterationBound) {
           throw new Error(`Runtime loop bound in '${func.name}' cannot be represented in artifact metadata`);
         }
+        if (info.iterationCounter?.stepExpression && !iterationStep) {
+          throw new Error(`Runtime loop step in '${func.name}' cannot be represented in artifact metadata`);
+        }
         if (varyingKeyExpressions?.some((expression) => expression === undefined)) {
           throw new Error(`Runtime loop key in '${func.name}' cannot be represented in artifact metadata`);
         }
@@ -1438,6 +1448,7 @@ function buildFunctionAbiMetadata(
           iterationCondition,
           iterationBreakCondition,
           iterationBound,
+          iterationStep,
           iterationCounter: undefined,
           ...(info.fixedKeySources && { fixedKeySources: info.fixedKeySources.map((source) => ({
             kind: source.kind,

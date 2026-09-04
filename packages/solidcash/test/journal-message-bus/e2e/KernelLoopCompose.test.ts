@@ -552,6 +552,7 @@ contract KernelIndependentRows() {
 const DISJOINT_SAME_COLLECTION_ROWS_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelDisjointSameCollectionRows() {
   mapping(int => mapping(int => int)) values;
+  event StepHit(int value);
   function seed(int group, int key, int value) public {
     this.values[group][key] = value;
     require(true);
@@ -620,6 +621,19 @@ contract KernelDisjointSameCollectionRows() {
     }
     require(true);
   }
+  function writeRuntimeStep(int n, int stride, int base) public {
+    for (int i = 1; i < n; i = i + stride) {
+      if (i % 3 != 0) { this.values[12][i] = base + i; }
+      emit StepHit(i);
+    }
+    require(true);
+  }
+  function writeRuntimeStepDown(int n, int stride, int base) public {
+    for (int i = 9; i > n; i = i - (stride + 1)) {
+      this.values[13][i] = base + i;
+    }
+    require(true);
+  }
   function check(int group, int key, int expected) public {
     require(this.values[group][key] == expected);
   }
@@ -629,8 +643,8 @@ const COUNTER_MAPPING_TYPED_CALLER_SOURCE = `pragma solidcash ^0.13.0;
 interface IKernelCounterSink { function ping(int value); }
 contract KernelCounterCaller(address sink) {
   mapping(int => int) m;
-  function invoke(int n) public {
-    for (int i = 1; i < n; i = i + 2) {
+  function invoke(int n, int stride) public {
+    for (int i = 1; i < n; i = i + stride) {
       this.m[i] = i + 10;
       try IKernelCounterSink(sink).ping(i) { } catch { }
     }
@@ -2826,6 +2840,36 @@ describe('kernel composite counter-key settlement', () => {
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
 
+    const runtimeStep = artifact.abi.find((candidate) => candidate.name === 'writeRuntimeStep')!;
+    expect(runtimeStep.sortedUpsertLoopInfo?.[0]).toMatchObject({
+      iterationStep: { kind: 'source' }, iterationCondition: { kind: 'binary' },
+    });
+    await expect(updated.call.writeRuntimeStep(8n, 2n, 600n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.batch([{ function: 'writeRuntimeStep', args: [8n, 2n, 700n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const key of [1n, 5n, 7n]) {
+      await expect(updated.call.check(12n, key, 700n + key).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    await expect(updated.call.check(12n, 3n, 0n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.call.writeRuntimeStep(8n, 0n, 800n).send())
+      .rejects.toThrow(/runtime step must advance toward its bound/);
+
+    const runtimeStepDown = artifact.abi.find((candidate) => candidate.name === 'writeRuntimeStepDown')!;
+    expect(runtimeStepDown.sortedUpsertLoopInfo?.[0]).toMatchObject({
+      iterationStep: { kind: 'binary', operator: '-' },
+    });
+    await expect(updated.call.writeRuntimeStepDown(0n, 2n, 800n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.batch([{ function: 'writeRuntimeStepDown', args: [0n, 2n, 900n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const key of [9n, 6n, 3n]) {
+      await expect(updated.call.check(13n, key, 900n + key).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+
     const repeated = updated.batch([{ function: 'transform', args: [7n, 2n] }]);
     const hostileBuilder = await repeated.build();
     const routeInputIndex = hostileBuilder.inputs.findIndex((input) =>
@@ -2903,7 +2947,7 @@ describe('kernel composite counter-key settlement', () => {
     );
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const composition = messageBus.compose({
-      calls: [caller.call.invoke(6n), sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n)],
+      calls: [caller.call.invoke(6n, 2n), sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n)],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
@@ -2923,7 +2967,7 @@ describe('kernel composite counter-key settlement', () => {
     }
 
     const wrongOrder = messageBus.compose({
-      calls: [caller.call.invoke(6n), sink.call.ping(3n), sink.call.ping(1n), sink.call.ping(5n)],
+      calls: [caller.call.invoke(6n, 2n), sink.call.ping(3n), sink.call.ping(1n), sink.call.ping(5n)],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
@@ -2932,7 +2976,7 @@ describe('kernel composite counter-key settlement', () => {
 
     const updateFee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const update = messageBus.compose({
-      calls: [caller.call.invoke(6n), sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n)],
+      calls: [caller.call.invoke(6n, 2n), sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n)],
       funder: updateFee,
       changeAddress: updateFee.unlocker.generateLockingBytecode(),
     });

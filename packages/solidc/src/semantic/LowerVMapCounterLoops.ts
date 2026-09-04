@@ -162,6 +162,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       boundExpression?: ExpressionNode;
       start: bigint;
       step: bigint;
+      stepExpression?: ExpressionNode;
+      stepNames: string[];
+      stepDefinitions: VariableDefinitionNode[];
       counterType: IntType;
       postTest: boolean;
       counterUpdate?: AssignNode;
@@ -496,26 +499,41 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             || !(loop.condition.left instanceof IdentifierNode) || loop.condition.left.name !== variable.name
             || boundResolution === undefined) continue;
           const update = loop.block.statements?.at(-1);
-          const updateStep = update instanceof AssignNode && update.identifier.name === variable.name
+          const updateOperator = update instanceof AssignNode && update.identifier.name === variable.name
             && update.expression instanceof BinaryOpNode
             && (update.expression.operator === BinaryOperator.PLUS
               || update.expression.operator === BinaryOperator.MINUS)
             && update.expression.left instanceof IdentifierNode
             && update.expression.left.name === variable.name
-            && update.expression.right instanceof IntLiteralNode
-            ? (update.expression.operator === BinaryOperator.PLUS
-              ? update.expression.right.value : -update.expression.right.value) : undefined;
-          const progressionUpdate = updateStep !== undefined && updateStep === variable.loopStepValue;
+            ? update.expression.operator : undefined;
+          const updateMagnitude = updateOperator !== undefined
+            ? (update as AssignNode).expression as BinaryOpNode : undefined;
+          const literalStep = updateMagnitude?.right instanceof IntLiteralNode
+            ? (updateOperator === BinaryOperator.PLUS
+              ? updateMagnitude.right.value : -updateMagnitude.right.value) : undefined;
+          const resolvedRuntimeStep = updateMagnitude && !(updateMagnitude.right instanceof IntLiteralNode)
+            ? resolveGeneralBound(updateMagnitude.right, index) : undefined;
+          const runtimeStep = resolvedRuntimeStep && updateOperator !== undefined
+            ? (updateOperator === BinaryOperator.PLUS
+              ? resolvedRuntimeStep.expression
+              : Object.assign(new BinaryOpNode(
+                new IntLiteralNode(0n), BinaryOperator.MINUS, resolvedRuntimeStep.expression,
+              ), { location: updateMagnitude?.location }))
+            : undefined;
+          const directionalStep = literalStep ?? (runtimeStep
+            ? (updateOperator === BinaryOperator.PLUS ? 1n : -1n) : undefined);
+          const progressionUpdate = literalStep !== undefined && literalStep === variable.loopStepValue;
           const preTest = loop instanceof WhileNode && variable.isLoopVariable === true
-            && variable.loopInitialValue !== undefined && variable.loopStepValue !== undefined
-            && variable.loopStepValue !== 0n && loop.forLoopUpdateCount === 1 && progressionUpdate
-            && ((variable.loopStepValue > 0n && loop.condition.operator === BinaryOperator.LT)
-              || (variable.loopStepValue < 0n && loop.condition.operator === BinaryOperator.GT));
+            && variable.expression instanceof IntLiteralNode
+            && directionalStep !== undefined && directionalStep !== 0n && loop.forLoopUpdateCount === 1
+            && (runtimeStep !== undefined || progressionUpdate)
+            && ((directionalStep > 0n && loop.condition.operator === BinaryOperator.LT)
+              || (directionalStep < 0n && loop.condition.operator === BinaryOperator.GT));
           const postTest = loop instanceof DoWhileNode
             && variable.expression instanceof IntLiteralNode
-            && updateStep !== undefined && updateStep !== 0n
-            && ((updateStep > 0n && loop.condition.operator === BinaryOperator.LT)
-              || (updateStep < 0n && loop.condition.operator === BinaryOperator.GT));
+            && directionalStep !== undefined && directionalStep !== 0n
+            && ((directionalStep > 0n && loop.condition.operator === BinaryOperator.LT)
+              || (directionalStep < 0n && loop.condition.operator === BinaryOperator.GT));
           if (!preTest && !postTest) continue;
           const assignedBoundNames = new Set(boundResolution.assignments.map((assignment) =>
             assignment.identifier.name));
@@ -537,8 +555,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             boundOffset: boundResolution.offset,
             ...(boundResolution.metadataExpression
               && { boundExpression: boundResolution.metadataExpression }),
-            start: preTest ? variable.loopInitialValue! : (variable.expression as IntLiteralNode).value,
-            step: preTest ? variable.loopStepValue! : updateStep!,
+            start: (variable.expression as IntLiteralNode).value,
+            step: directionalStep,
+            ...(runtimeStep && { stepExpression: runtimeStep }),
+            stepNames: resolvedRuntimeStep ? [
+              ...resolvedRuntimeStep.counts,
+              ...resolvedRuntimeStep.definitions.map((definition) => definition.name),
+              ...resolvedRuntimeStep.assignments.map((assignment) => assignment.identifier.name),
+            ] : [],
+            stepDefinitions: resolvedRuntimeStep?.definitions ?? [],
             counterType: variable.type instanceof IntType ? variable.type : new IntType(true, 256),
             postTest,
             counterUpdate: update as AssignNode,
@@ -1097,7 +1122,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (!canonical) return false;
       const {
         logical, count, boundNames, boundDefinitions, boundAssignments, boundOffset, boundExpression,
-        start, step, counterType, postTest, counterUpdate,
+        start, step, stepExpression, stepNames, stepDefinitions,
+        counterType, postTest, counterUpdate,
         pathConditions, pathSupported,
       } = canonical;
       const stateValues = dominantStateValues(loop);
@@ -1111,6 +1137,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       );
       if (sourcePathCondition && !pathCondition) return false;
       const { block, location } = loop;
+      const stepValue = (): ExpressionNode => stepExpression
+        ? cloneNode(stepExpression) : new IntLiteralNode(step);
+      const unitDomain = !stepExpression && start === 0n && step === 1n;
       const writes: Array<ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
       | MappingFieldAssignNode> = [];
       const writePaths = new Map<Node, ExpressionNode | undefined>();
@@ -1378,11 +1407,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const writePositions = keyed.map((write) => (block.statements ?? [])
           .findIndex((statement) => containsNode(statement, write)));
         if (writePositions.some((index) => index < 0)) continue;
-        const rank = step === 1n && start === 0n
+        const rank = unitDomain
           ? new IdentifierNode(logical)
           : new BinaryOpNode(
             new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
-            BinaryOperator.DIV, new IntLiteralNode(step),
+            BinaryOperator.DIV, stepValue(),
           );
         const locateGenerated = (candidate: Node, seen = new Set<Node>()): void => {
           if (seen.has(candidate)) return;
@@ -1452,7 +1481,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const replaceCounter = (candidate: Node): Node => {
             if (candidate instanceof IdentifierNode && candidate.name === logical) {
               const prior = new BinaryOpNode(
-                new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(step),
+                new IdentifierNode(logical), BinaryOperator.MINUS, stepValue(),
               );
               prior.location = candidate.location;
               return prior;
@@ -1689,10 +1718,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ): boolean => {
         if (x instanceof AssignNode
           && ((inspectLogical && x.identifier.name === logical && x !== counterUpdate)
-            || (inspectBound && boundNames.includes(x.identifier.name) && !boundAssignments.includes(x)))) return true;
+            || (inspectBound && (
+              (boundNames.includes(x.identifier.name) && !boundAssignments.includes(x))
+              || stepNames.includes(x.identifier.name)
+            )))) return true;
         if (x instanceof VariableDefinitionNode
           && ((inspectLogical && x.name === logical)
-            || (inspectBound && boundNames.includes(x.name) && !boundDefinitions.includes(x)))) return true;
+            || (inspectBound && (
+              (boundNames.includes(x.name) && !boundDefinitions.includes(x))
+              || (stepNames.includes(x.name) && !stepDefinitions.includes(x))
+            )))) return true;
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
             || key === 'resolvedFunction') continue;
@@ -2083,11 +2118,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const lastUpdate = updates.at(-1)!;
         const writesAfter = [...keyedStatementIndices.values()].every((writeIndex) => writeIndex > lastUpdate.index);
         if (!valid || !writesAfter) continue;
-        const rank = step === 1n && start === 0n
+        const rank = unitDomain
           ? new IdentifierNode(logical)
           : new BinaryOpNode(
             new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
-            BinaryOperator.DIV, new IntLiteralNode(step),
+            BinaryOperator.DIV, stepValue(),
           );
         const occurrence = new BinaryOpNode(rank, BinaryOperator.PLUS, new IntLiteralNode(1n));
         const netDelta = deltaTerms.reduce((sum, term) => sum === undefined
@@ -2157,11 +2192,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (!valid || !source || !writesAfter) continue;
         const snapshot = `__internal__vmapCounterStateBase_${this.serial}_${name}`;
         affineStateSnapshots.set(snapshot, cloneNode(source));
-        const rank = step === 1n && start === 0n
+        const rank = unitDomain
           ? new IdentifierNode(logical)
           : new BinaryOpNode(
             new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
-            BinaryOperator.DIV, new IntLiteralNode(step),
+            BinaryOperator.DIV, stepValue(),
           );
         const occurrence = new BinaryOpNode(rank, BinaryOperator.PLUS, new IntLiteralNode(1n));
         const netDelta = deltaTerms.reduce((sum, term) => sum === undefined
@@ -2303,8 +2338,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (breakPaths.length > 0 && !expandedBreakCondition) return false;
       const serial = this.serial++;
       const signedComponent = (value: bigint): string => value < 0n ? `n${-value}` : `p${value}`;
-      const rangeSuffix = start === 0n && step === 1n
-        ? '' : `_from_${signedComponent(start)}_step_${signedComponent(step)}`;
+      const rangeSuffix = unitDomain
+        ? '' : `_from_${signedComponent(start)}_step_${stepExpression
+          ? `runtime_${step > 0n ? 'p' : 'n'}` : signedComponent(step)}`;
       const boundSuffix = boundOffset === 0n ? '' : `_bound_${signedComponent(boundOffset)}`;
       const hiddenName = (groupSerial: number): string =>
         `${PREFIX}${count}_${groupSerial}${boundSuffix}${rangeSuffix}${postTest ? '_post' : ''}`;
@@ -2378,6 +2414,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       for (const group of groups) {
         (node.runtimeCounterLoopCounters ??= new Map()).set(group.hidden, {
           name: logical, initialValue: start, stepValue: step,
+          ...(stepExpression && { stepExpression: cloneNode(stepExpression) }),
         });
         if (group.inputCount && group.outputCount) {
           (node.runtimeCounterLoopCardinalityParams ??= new Map()).set(group.hidden, {
@@ -2394,7 +2431,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           (node.runtimeCounterLoopIterationConditions ??= new Map()).set(group.hidden, {
             expression: cloneNode(group.expandedSelectionCondition),
             ...(expandedBreakCondition && { breakCondition: cloneNode(expandedBreakCondition) }),
-            counter: { name: logical, initialValue: start, stepValue: step },
+            counter: {
+              name: logical, initialValue: start, stepValue: step,
+              ...(stepExpression && { stepExpression: cloneNode(stepExpression) }),
+            },
           });
         }
       }
@@ -2403,7 +2443,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return `${VMAP_COUNTER_OLD_PREFIX}${count}_${group.serial}_${write.name}`;
       };
       const rangedIterationCount = `__internal__vmapCounterCount_${serial}`;
-      const unitDomain = start === 0n && step === 1n;
       const at = <T extends Node>(value: T): T => { value.location = location; return value; };
       const id = (name: string): IdentifierNode => at(new IdentifierNode(name));
       const lit = (value: bigint): IntLiteralNode => at(new IntLiteralNode(value));
@@ -2412,6 +2451,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const proofInt = new IntType(true, 256);
       const asProofInt = (expression: ExpressionNode): ExpressionNode => counterType.signed
         ? expression : at(new CastNode(proofInt, expression, false));
+      const proofStepValue = (): ExpressionNode => asProofInt(stepValue());
+      const stepMagnitude = (): ExpressionNode => step > 0n
+        ? proofStepValue() : binary(lit(0n), BinaryOperator.MINUS, proofStepValue());
       const sourceBoundValue = (): ExpressionNode => boundExpression
         ? cloneNode(boundExpression)
         : boundOffset === 0n ? id(count) : binary(id(count), BinaryOperator.PLUS, lit(boundOffset));
@@ -2438,7 +2480,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             ? binary(boundValue(), BinaryOperator.MINUS, lit(start))
             : binary(lit(start), BinaryOperator.MINUS, boundValue()),
           BinaryOperator.MINUS, lit(1n)),
-        BinaryOperator.DIV, lit(step > 0n ? step : -step)),
+        BinaryOperator.DIV, stepMagnitude()),
         BinaryOperator.PLUS,
         lit(1n),
       );
@@ -2467,7 +2509,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // source order. Only mapping work indexes the physical permutation, using the counter's zero-based rank.
         if (group.expandedSelectionCondition) return id(group.settlementCursor);
         if (unitDomain) return id(logical);
-        return binary(binary(id(logical), BinaryOperator.MINUS, lit(start)), BinaryOperator.DIV, lit(step));
+        return binary(binary(id(logical), BinaryOperator.MINUS, lit(start)), BinaryOperator.DIV, proofStepValue());
       };
       const permRead = (group: typeof groups[number]): ArrayAccessNode => {
         const a = new IdentifierNode(group.hidden); a.location = location;
@@ -2622,7 +2664,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         runtimeEmits.forEach(({ emit, condition }, siteIndex) => {
           emit.runtimeLoopEvent = { loopIndex: eventLoopIndex, siteIndex };
           emit.runtimeLoopEventCondition = condition;
-          emit.runtimeLoopEventCounter = { name: logical, initialValue: start, stepValue: step };
+          emit.runtimeLoopEventCounter = {
+            name: logical, initialValue: start, stepValue: step,
+            ...(stepExpression && { stepExpression: cloneNode(stepExpression) }),
+          };
         });
       }
       if (runtimeTransfers.length > 0) {
@@ -2639,7 +2684,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         runtimeTransfers.forEach(({ transfer, condition }, siteIndex) => {
           transfer.runtimeLoopTransfer = { loopIndex: transferLoopIndex, siteIndex };
           transfer.runtimeLoopTransferCondition = condition;
-          transfer.runtimeLoopTransferCounter = { name: logical, initialValue: start, stepValue: step };
+          transfer.runtimeLoopTransferCounter = {
+            name: logical, initialValue: start, stepValue: step,
+            ...(stepExpression && { stepExpression: cloneNode(stepExpression) }),
+          };
         });
         // Admission can revisit an AST which already received fixed transfer ordinals in an earlier semantic
         // rung. Force the later symbol pass to rebuild that frame, excluding the newly runtime-owned sites.
@@ -2651,6 +2699,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // schema later in layout planning.
       node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
         + MAX_COUNTER_ITERATIONS * (keyedByStream.size + runtimeEmits.length + runtimeTransfers.length);
+      if (stepExpression) {
+        prelude.push(at(new RequireNode(binary(
+          proofStepValue(), step > 0n ? BinaryOperator.GT : BinaryOperator.LT, lit(0n),
+        ), 'vmap counter loop runtime step must advance toward its bound')));
+      }
       if (!unitDomain) {
         prelude.push(at(new VariableDefinitionNode(
           new IntType(true, 256), [], rangedIterationCount,
@@ -2701,7 +2754,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const logicalProofValue = (): ExpressionNode => asProofInt(id(group.logicalValue));
         const rankDefinition = unitDomain ? undefined : at(new VariableDefinitionNode(
           proofInt, [], group.logicalRank,
-          binary(binary(logicalProofValue(), BinaryOperator.MINUS, lit(start)), BinaryOperator.DIV, lit(step)),
+          binary(binary(logicalProofValue(), BinaryOperator.MINUS, lit(start)),
+            BinaryOperator.DIV, proofStepValue()),
         ));
         const rank = (): IdentifierNode => id(unitDomain ? group.logicalValue : group.logicalRank);
         const logicalInRangeExpression = unitDomain ? binary(
@@ -2718,7 +2772,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           binary(
             logicalProofValue(),
             BinaryOperator.EQ,
-            binary(lit(start), BinaryOperator.PLUS, binary(rank(), BinaryOperator.MUL, lit(step))),
+            binary(lit(start), BinaryOperator.PLUS, binary(rank(), BinaryOperator.MUL, proofStepValue())),
           ),
         );
         const proofStatements: StatementNode[] = [

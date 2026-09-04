@@ -167,8 +167,21 @@ const resolveArguments = (
     return value;
   }
   if (source.kind === 'literal') return literal(source);
-  if (source.kind === 'loopIndex' && source.initialValue !== undefined && source.stepValue !== undefined) {
-    return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(occurrence);
+  if (source.kind === 'loopIndex' && source.initialValue !== undefined) {
+    if (source.stepValue !== undefined) {
+      return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(occurrence);
+    }
+    if (source.stepExpression) {
+      const value = expressionArgument?.({
+        participant: sourceParticipant,
+        function: functionName,
+        invocation,
+        callsiteId: call.callsiteId!,
+        argument,
+        occurrence,
+      });
+      if (value !== undefined) return value;
+    }
   }
   if (source.kind === 'selfAddress') {
     // `address(this)` is the exact OP_UTXOBYTECODE result for the input executing this handler. A direct owner

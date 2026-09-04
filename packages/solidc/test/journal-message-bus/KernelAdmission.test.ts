@@ -919,6 +919,107 @@ describe('required kernel admission', () => {
     );
   });
 
+  it.each([
+    ['ascending', '1', '<', '+', 'stride', 'source'],
+    ['descending', '9', '>', '-', 'stride + 1', 'binary'],
+  ])('admits a replayable runtime %s counter step', (_label, start, comparison, operator, stride, kind) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      event Hit(int value);
+      function write(int n, int stride) public {
+        for (int i = ${start}; i ${comparison} n; i = i ${operator} (${stride})) {
+          this.m[i] = i;
+          emit Hit(i);
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const info = artifact.abi.find((candidate) => candidate.name === 'write')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toMatch(/_step_runtime_[pn]$/);
+    expect(info?.iterationStep).toMatchObject({ kind });
+  });
+
+  it('publishes the runtime counter step for a typed-call argument', () => {
+    const artifact = compileString(`
+      interface I { function hit(int value); }
+      contract C(bytes32 dest) {
+        mapping(int => int) m;
+        function write(int n, int stride) public {
+          for (int i = 1; i < n; i = i + stride) {
+            this.m[i] = i;
+            I(dest).hit(i);
+          }
+          require(true);
+        }
+      }
+    `, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'write')?.externalCalls?.[0]
+      .argSources?.[0]).toMatchObject({
+      kind: 'loopIndex',
+      initialValue: '1',
+      stepExpression: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+    });
+  });
+
+  it('replays an immutable local runtime-step expression', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, int stride) public {
+        int delta = stride + 1;
+        for (int i = 0; i < n; i = i + delta) { this.m[i] = i; }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationStep).toMatchObject({ kind: 'binary', operator: '+' });
+  });
+
+  it('refuses a runtime step mutated inside its loop', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n, int stride) public {
+        for (int i = 0; i < n; i = i + stride) {
+          this.m[i] = i;
+          stride = stride + 1;
+        }
+        require(true);
+      }
+      function deniedLocal(int n, int stride) public {
+        int delta = stride;
+        for (int i = 0; i < n; i = i + delta) {
+          this.m[i] = i;
+          delta = delta + 1;
+        }
+        require(true);
+      }
+      function deniedReassigned(int n, int stride) public {
+        stride = stride + 1;
+        for (int i = 0; i < n; i = i + stride) { this.m[i] = i; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'deniedLocal')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'deniedReassigned')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
   it('admits a descending constant-step counter domain over a public bound', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;

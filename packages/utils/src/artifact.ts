@@ -569,6 +569,8 @@ export interface SortedUpsertLoopAbi {
   iterationBreakCondition?: ExternalCallExpression;
   /** Public-argument expression computing a non-affine source-loop bound. */
   iterationBound?: ExternalCallExpression;
+  /** Public-argument expression computing the signed source-loop step. */
+  iterationStep?: ExternalCallExpression;
   op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default
 }
 
@@ -617,6 +619,7 @@ export interface ArgSource {
   indexValue?: number;     // for 'arrayElement': fixed index (loop call sites commonly begin at zero)
   initialValue?: string;   // for 'loopIndex': value at occurrence zero
   stepValue?: string;      // for 'loopIndex': delta per reached occurrence
+  stepExpression?: ExternalCallExpression; // for 'loopIndex': runtime delta from public arguments
   paramName?: string;      // for 'constructorArg': name of the constructor parameter
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string

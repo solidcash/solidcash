@@ -199,13 +199,15 @@ const vmapRuntimeOutputCountName = (collection: string): string =>
 
 function vmapCounterPermutationSpec(name: string): VmapCounterPermutationSpec | undefined {
   const decodeSigned = (component: string): bigint => (
-    component.startsWith('n') ? -BigInt(component.slice(1)) : BigInt(component.slice(1))
+    component === 'runtime_p' ? 1n
+      : component === 'runtime_n' ? -1n
+        : component.startsWith('n') ? -BigInt(component.slice(1)) : BigInt(component.slice(1))
   );
   const range = name.match(
-    /^__internal__vmapCounterPerm_(.+)_\d+_from_([pn]\d+)_step_([pn]\d+)(_post)?$/,
+    /^__internal__vmapCounterPerm_(.+)_\d+_from_([pn]\d+)_step_([pn]\d+|runtime_[pn])(_post)?$/,
   );
   const affine = name.match(
-    /^__internal__vmapCounterPerm_(.+)_\d+_bound_([pn]\d+)(?:_from_([pn]\d+)_step_([pn]\d+))?(_post)?$/,
+    /^__internal__vmapCounterPerm_(.+)_\d+_bound_([pn]\d+)(?:_from_([pn]\d+)_step_([pn]\d+|runtime_[pn]))?(_post)?$/,
   );
   if (affine) {
     return {
@@ -16100,10 +16102,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         keysArr = selected;
       }
       const counterSpec = keyExpressions ? vmapCounterPermutationSpec(info.varyingArrayParam) : undefined;
+      const counterStep = counterSpec ? this._vmapCounterStep(
+        info,
+        counterSpec,
+        conditionArgs,
+        entryArtifact,
+        visibleInputs,
+        loopPredicateState,
+        executionSelfAddress,
+      ) : undefined;
       const occurrenceOf = (key: unknown): number => {
         if (!counterSpec) return 0;
+        if (counterStep === undefined || counterStep === 0n) {
+          throw new Error(`vmap upsert loop ${info.collection}: cannot resolve a non-zero counter step`);
+        }
         const value = typeof key === 'bigint' ? key : BigInt(key as number | string);
-        const rank = (value - counterSpec.start) / counterSpec.step;
+        const rank = (value - counterSpec.start) / counterStep;
         const occurrence = Number(rank);
         if (!Number.isSafeInteger(occurrence) || occurrence < 0) {
           throw new Error(`vmap upsert loop ${info.collection}: invalid counter-derived key rank ${rank}`);
@@ -26982,8 +26996,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           break;
         }
         case 'loopIndex': {
-          if (source.initialValue === undefined || source.stepValue === undefined) return undefined;
-          resolved.push(BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(occurrenceIndex));
+          if (source.initialValue === undefined) return undefined;
+          const runtimeStep = source.stepExpression && this._evaluateExternalExpression(
+            source.stepExpression, functionArgs, artifact, state, callerInputs, externalReturns,
+            occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
+          );
+          const step = runtimeStep ?? source.stepValue;
+          if (typeof step !== 'bigint' && typeof step !== 'number' && typeof step !== 'string') return undefined;
+          resolved.push(BigInt(source.initialValue) + BigInt(step) * BigInt(occurrenceIndex));
           break;
         }
         case 'expression':
@@ -27024,7 +27044,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (typeof resolved !== 'bigint' && typeof resolved !== 'number' && typeof resolved !== 'string') {
       return undefined;
     }
-    return vmapCounterPermutationValues(BigInt(resolved), spec);
+    const step = this._vmapCounterStep(
+      info, spec, functionArgs, artifact, callerInputs, state, executionSelfAddress,
+    );
+    return step === undefined
+      ? undefined : vmapCounterPermutationValues(BigInt(resolved), { ...spec, step });
+  }
+
+  private _vmapCounterStep(
+    info: SortedUpsertLoopAbi | undefined,
+    spec: VmapCounterPermutationSpec,
+    functionArgs: FunctionArgument[],
+    artifact: Artifact,
+    callerInputs: readonly { type: string }[],
+    state?: Record<string, unknown>,
+    executionSelfAddress?: FunctionArgument,
+  ): bigint | undefined {
+    if (!info?.iterationStep) return spec.step;
+    const resolved = this._evaluateExternalExpression(
+      info.iterationStep, functionArgs, artifact, state, callerInputs,
+      undefined, 0, false, executionSelfAddress,
+    );
+    if (typeof resolved !== 'bigint' && typeof resolved !== 'number' && typeof resolved !== 'string') {
+      return undefined;
+    }
+    const step = BigInt(resolved);
+    if (step === 0n || (spec.step > 0n) !== (step > 0n)) {
+      throw new Error('vmap counter loop runtime step must advance toward its bound');
+    }
+    return step;
   }
 
   private _evaluateExternalExpression(

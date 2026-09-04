@@ -3795,9 +3795,9 @@ export default class AstBuilder
     whileNode.forLoopUpdateCount = updateNode ? 1 : 0;
     whileNode.location = Location.fromCtx(ctx);
 
-    // Retain the exact progression only for canonical constant-step `for` loops. External-call
-    // metadata can then describe arguments which depend on the live iteration value without folding `i` back to
-    // its initializer. Every other update shape remains intentionally unresolved.
+    // Retain the exact progression for syntactically canonical `for` loops. External-call metadata can then
+    // describe arguments which depend on the live iteration value without folding `i` back to its initializer.
+    // Semantic replay later decides whether a non-literal step is stable enough for kernel admission.
     if (initNode instanceof VariableDefinitionNode
       && initNode.expression instanceof IntLiteralNode
       && updateNode instanceof AssignNode
@@ -3806,11 +3806,18 @@ export default class AstBuilder
       && (updateNode.expression.operator === BinaryOperator.PLUS
         || updateNode.expression.operator === BinaryOperator.MINUS)
       && updateNode.expression.left instanceof IdentifierNode
-      && updateNode.expression.left.name === initNode.name
-      && updateNode.expression.right instanceof IntLiteralNode) {
+      && updateNode.expression.left.name === initNode.name) {
       initNode.loopInitialValue = initNode.expression.value;
-      initNode.loopStepValue = updateNode.expression.operator === BinaryOperator.PLUS
-        ? updateNode.expression.right.value : -updateNode.expression.right.value;
+      if (updateNode.expression.right instanceof IntLiteralNode) {
+        initNode.loopStepValue = updateNode.expression.operator === BinaryOperator.PLUS
+          ? updateNode.expression.right.value : -updateNode.expression.right.value;
+      } else {
+        initNode.loopStepExpression = updateNode.expression.operator === BinaryOperator.PLUS
+          ? updateNode.expression.right
+          : Object.assign(new BinaryOpNode(
+            new IntLiteralNode(0n), BinaryOperator.MINUS, updateNode.expression.right,
+          ), { location: updateNode.expression.location });
+      }
     }
 
     // Wrap: { init; while (cond) { body; update; } } - init omitted for an empty `for (; ...)`.

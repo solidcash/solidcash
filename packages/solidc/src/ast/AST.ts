@@ -417,7 +417,9 @@ export class FunctionDefinitionNode extends Node implements Named {
     iterationBreakCondition?: ExpressionNode;
     /** Expanded public-argument expression computing a non-affine loop bound. */
     iterationBound?: ExpressionNode;
-    iterationCounter?: { name: string; initialValue: bigint; stepValue: bigint };
+    iterationCounter?: {
+      name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+    };
     op: '+' | '-' | 'set' | 'delete';
   }>;
 
@@ -427,7 +429,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   runtimeCounterLoopIterationConditions?: Map<string, {
     expression: ExpressionNode;
     breakCondition?: ExpressionNode;
-    counter: { name: string; initialValue: bigint; stepValue: bigint };
+    counter: { name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode };
   }>;
 
   /** Expanded public-argument expression which computes a non-affine counter-loop bound. */
@@ -435,7 +437,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Original key tuples keyed by `<permutation>\0<collection>`, before physical-loop rewriting. */
   runtimeCounterLoopKeyExpressions?: Map<string, ExpressionNode[]>;
   /** Source counter descriptor keyed by compiler-owned permutation parameter. */
-  runtimeCounterLoopCounters?: Map<string, { name: string; initialValue: bigint; stepValue: bigint }>;
+  runtimeCounterLoopCounters?: Map<string, {
+    name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+  }>;
 
   /** Physical stream widths keyed by the compiler-owned permutation parameter. */
   runtimeCounterLoopCardinalityParams?: Map<string, { input: string; output: string }>;
@@ -808,6 +812,8 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // updates, so metadata generation fails closed rather than guessing how a mutable local evolves.
   loopInitialValue?: bigint;
   loopStepValue?: bigint;
+  /** Signed runtime step expression when the canonical update is not a literal. */
+  loopStepExpression?: ExpressionNode;
   // Exact method carried by a statically known external-function-pointer value whose runtime expression is not
   // itself a direct function reference (for example `function() external f = callbacks[1]`).
   functionPointerMethodAlias?: string;
@@ -2281,6 +2287,7 @@ export interface ExternalCallArgSource {
   indexValue?: number;
   initialValue?: string;
   stepValue?: string;
+  stepExpression?: ExternalCallExpression;
   paramName?: string;
   value?: string;
   type?: string;
@@ -2617,7 +2624,10 @@ export class EmitStatementNode extends StatementNode {
   /** Source predicate controlling this runtime event, evaluated by the SDK to plan the exact output stream. */
   runtimeLoopEventCondition?: ExpressionNode;
   /** Counter progression available to runtimeLoopEventCondition as a per-occurrence value. */
-  runtimeLoopEventCounter?: { name: string; initialValue: bigint; stepValue: bigint };
+  runtimeLoopEventCounter?: {
+    name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+  };
+
   /** Relative source order among all runtime effects in this repeated segment. */
   runtimeLoopEffectOrder?: number;
   fieldNames?: string[]; // set for named-arg emits emit E({a: x}); reordered against the event's params
@@ -2641,7 +2651,10 @@ export class TransferStatementNode extends StatementNode {
   /** Source predicate controlling this transfer, evaluated by the SDK to plan the exact output stream. */
   runtimeLoopTransferCondition?: ExpressionNode;
   /** Counter progression available to runtimeLoopTransferCondition as a per-occurrence value. */
-  runtimeLoopTransferCounter?: { name: string; initialValue: bigint; stepValue: bigint };
+  runtimeLoopTransferCounter?: {
+    name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+  };
+
   /** Relative source order among all runtime effects in this repeated segment. */
   runtimeLoopEffectOrder?: number;
 
@@ -2741,7 +2754,10 @@ export class TokenContainerMethodStatementNode extends StatementNode {
   /** Runtime counter-loop effect stream ownership. Currently assigned to fungible-token transfer sites. */
   runtimeLoopTransfer?: { loopIndex: number; siteIndex: number };
   runtimeLoopTransferCondition?: ExpressionNode;
-  runtimeLoopTransferCounter?: { name: string; initialValue: bigint; stepValue: bigint };
+  runtimeLoopTransferCounter?: {
+    name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+  };
+
   runtimeLoopEffectOrder?: number;
 
   constructor(

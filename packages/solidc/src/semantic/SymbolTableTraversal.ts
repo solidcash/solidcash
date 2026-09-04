@@ -6296,6 +6296,10 @@ export default class SymbolTableTraversal extends AstTraversal {
             type: 'bigint',
           };
         }
+        if (expression instanceof IdentifierNode && !expression.definition) {
+          const funcIdx = userVisibleParams.findIndex((parameter) => parameter.name === expression.name);
+          if (funcIdx >= 0) return { kind: 'forward', paramIndex: funcIdx };
+        }
         if (expression instanceof IdentifierNode && expression.definition) {
           const defNode = expression.definition.definition;
           if (defNode instanceof ParameterNode) {
@@ -6307,11 +6311,13 @@ export default class SymbolTableTraversal extends AstTraversal {
             }
           }
           if (defNode instanceof VariableDefinitionNode && defNode.isLoopVariable
-            && defNode.loopInitialValue !== undefined && defNode.loopStepValue !== undefined) {
+            && defNode.loopInitialValue !== undefined
+            && (defNode.loopStepValue !== undefined || defNode.loopStepExpression !== undefined)) {
             return {
               kind: 'loopIndex',
               initialValue: defNode.loopInitialValue.toString(),
-              stepValue: defNode.loopStepValue.toString(),
+              ...(defNode.loopStepValue !== undefined
+                && { stepValue: defNode.loopStepValue.toString() }),
             };
           }
           // Inlined helpers bind their original parameters to synthesized locals.
@@ -6693,8 +6699,21 @@ export default class SymbolTableTraversal extends AstTraversal {
           ...(expression.type && { type: expression.type.toString() }),
         };
       };
+      for (let i = 0; i < argSources.length; i += 1) {
+        const source = argSources[i];
+        if (source.kind !== 'loopIndex' || source.stepValue !== undefined) continue;
+        const parameter = node.parameters[i];
+        const definition = parameter instanceof IdentifierNode
+          ? parameter.definition?.definition : undefined;
+        const step = definition instanceof VariableDefinitionNode
+          ? definition.loopStepExpression : undefined;
+        const stepExpression = step && serializeExpression(step);
+        argSources[i] = stepExpression
+          ? { ...source, stepExpression }
+          : { kind: 'expression', expression: { kind: 'missing', name: 'runtime loop step' } };
+      }
       for (let i = 0; i < argSources.length; i++) {
-        if (argSources[i].kind !== 'expression') continue;
+        if (argSources[i].kind !== 'expression' || argSources[i].expression !== undefined) continue;
         const expression = serializeExpression(node.parameters[i]);
         argSources[i] = {
           kind: 'expression',

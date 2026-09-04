@@ -1259,37 +1259,69 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return assignmentCount;
       };
+      const assignmentNamesIn = (root: Node, names = new Set<string>()): Set<string> => {
+        if (root !== block && (root instanceof WhileNode || root instanceof DoWhileNode)) return names;
+        if (root instanceof AssignNode) names.add(root.identifier.name);
+        for (const [key, value] of Object.entries(root)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node) assignmentNamesIn(value, names);
+          else if (Array.isArray(value)) {
+            for (const item of value) if (item instanceof Node) assignmentNamesIn(item, names);
+          }
+        }
+        return names;
+      };
+      const joinedAssignmentValue = (arm: BlockNode, name: string): ExpressionNode | undefined => {
+        let result: ExpressionNode | undefined;
+        for (const candidate of arm.statements ?? []) {
+          const assignments = countAssignmentsTo(candidate, name);
+          if (assignments === 0) continue;
+          if (result || candidate instanceof WhileNode || candidate instanceof DoWhileNode) return undefined;
+          if (candidate instanceof AssignNode && candidate.identifier.name === name && assignments === 1) {
+            if (containsIdentifier(candidate.expression, name)) return undefined;
+            result = cloneNode(candidate.expression);
+            continue;
+          }
+          if (candidate instanceof BranchNode && candidate.elseBlock) {
+            const ifValue = joinedAssignmentValue(candidate.ifBlock, name);
+            const elseValue = joinedAssignmentValue(candidate.elseBlock, name);
+            if (!ifValue || !elseValue) return undefined;
+            const ternary = new TernaryOpNode(cloneNode(candidate.condition), ifValue, elseValue);
+            ternary.location = candidate.location;
+            ternary.type = ifValue.type ?? elseValue.type;
+            result = ternary;
+            continue;
+          }
+          return undefined;
+        }
+        return result;
+      };
       for (const [index, statement] of (block.statements ?? []).entries()) {
         if (!(statement instanceof BranchNode) || !statement.elseBlock) continue;
-        const directByName = (arm: BlockNode): Map<string, AssignNode> => {
-          const result = new Map<string, AssignNode>();
-          const duplicates = new Set<string>();
-          for (const candidate of arm.statements ?? []) if (candidate instanceof AssignNode) {
-            if (result.has(candidate.identifier.name)) duplicates.add(candidate.identifier.name);
-            else result.set(candidate.identifier.name, candidate);
-          }
-          for (const name of duplicates) result.delete(name);
-          return result;
-        };
-        const ifAssignments = directByName(statement.ifBlock);
-        const elseAssignments = directByName(statement.elseBlock);
-        for (const [name, ifAssignment] of ifAssignments) {
-          const elseAssignment = elseAssignments.get(name);
-          if (!elseAssignment
-            || countAssignmentsTo(statement.ifBlock, name) !== 1
-            || countAssignmentsTo(statement.elseBlock, name) !== 1
-            || containsIdentifier(ifAssignment.expression, name)
-            || containsIdentifier(elseAssignment.expression, name)) continue;
+        const ifNames = assignmentNamesIn(statement.ifBlock);
+        const elseNames = assignmentNamesIn(statement.elseBlock);
+        for (const name of ifNames) {
+          if (!elseNames.has(name)) continue;
+          const ifValue = joinedAssignmentValue(statement.ifBlock, name);
+          const elseValue = joinedAssignmentValue(statement.elseBlock, name);
+          if (!ifValue || !elseValue) continue;
           const expression = new TernaryOpNode(
-            cloneNode(statement.condition), cloneNode(ifAssignment.expression), cloneNode(elseAssignment.expression),
+            cloneNode(statement.condition), ifValue, elseValue,
           );
           expression.location = statement.location;
-          expression.type = ifAssignment.expression.type ?? elseAssignment.expression.type;
-          const identifier = cloneNode(ifAssignment.identifier);
+          expression.type = ifValue.type ?? elseValue.type;
+          const identifier = new IdentifierNode(name);
+          identifier.location = statement.location;
+          identifier.type = expression.type;
           const collapsed = new AssignNode(identifier, expression);
           collapsed.location = statement.location;
           const joins = conditionalAssignmentJoins.get(name) ?? [];
-          joins.push({ statement: collapsed, index, actualAssignments: 2 });
+          joins.push({
+            statement: collapsed,
+            index,
+            actualAssignments: countAssignmentsTo(statement, name),
+          });
           conditionalAssignmentJoins.set(name, joins);
         }
       }

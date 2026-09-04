@@ -608,6 +608,18 @@ contract KernelDisjointSameCollectionRows() {
     }
     require(true);
   }
+  function writeNestedConditionalLocal(int n, int base) public {
+    int next = 0;
+    bool take = false;
+    for (int i = 0; i < n; i = i + 1) {
+      if (i % 2 == 0) {
+        if (i % 4 == 0) { next = base + i; take = true; }
+        else { next = base + 20 + i; take = false; }
+      } else { next = base + 10 + i; take = true; }
+      if (take) this.values[11][i] = next;
+    }
+    require(true);
+  }
   function check(int group, int key, int expected) public {
     require(this.values[group][key] == expected);
   }
@@ -2798,6 +2810,19 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     for (const key of [0n, 2n, 4n]) {
       await expect(updated.call.check(10n, key, 300n + key).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+
+    const nestedConditional = artifact.abi.find((candidate) => candidate.name === 'writeNestedConditionalLocal')!;
+    expect(nestedConditional.sortedUpsertLoopInfo?.[0]).toMatchObject({
+      iterationCondition: { kind: 'ternary' }, valueRuntimeExpression: true,
+    });
+    await expect(updated.call.writeNestedConditionalLocal(5n, 400n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.batch([{ function: 'writeNestedConditionalLocal', args: [5n, 500n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const [key, expected] of [[0n, 500n], [1n, 511n], [3n, 513n], [4n, 504n]]) {
+      await expect(updated.call.check(11n, key, expected).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
 

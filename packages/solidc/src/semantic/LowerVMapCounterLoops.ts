@@ -1632,6 +1632,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       }
       const loopCarriedLocalValues = new Map<string, ExpressionNode>();
+      const loopCarriedLocalValuesByStatement = new Map<number, Map<string, ExpressionNode>>();
       const predicateOuterIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
       const predicateOuterInitializers = new Map<string, ExpressionNode>();
       if (predicateOuterIndex >= 0) {
@@ -1727,8 +1728,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
 
         // Straight-line unconditional assignments which do not read themselves have an exact closed form at every
         // source-order phase. A use after assignment K observes fK(i); a use before the first assignment observes
-        // the initializer at rank zero and the final assignment evaluated at i-step thereafter. All uses must share
-        // one phase: one serialized expression cannot represent different values on opposite sides of an update.
+        // the initializer at rank zero and the final assignment evaluated at i-step thereafter. Preserve one value
+        // per statement site: distinct keyed writes may legitimately observe opposite sides of the same update.
         if (updates.some(({ statement }) => containsIdentifier(statement.expression, name))) continue;
         const statements = block.statements ?? [];
         const usePositions = statements.flatMap((statement, index) => (
@@ -1737,52 +1738,92 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (usePositions.length === 0) continue;
         const phases = new Set(usePositions.map((index) =>
           updates.filter((update) => update.index < index).length));
-        if (phases.size !== 1) continue;
-        const phase = [...phases][0];
-        const selectedUpdate = phase === 0 ? updates.at(-1)! : updates[phase - 1];
         if (!runtimePathExpressionSupported(
           initializer, logical, new Set(), stateValues, loopCarriedLocalValues,
-        ) || !runtimePathExpressionSupported(
-          selectedUpdate.statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
         )) continue;
         const expandedInitializer = expandRuntimePathExpression(
           initializer, logical, new Set(), stateValues, loopCarriedLocalValues,
         );
-        const expandedUpdate = expandRuntimePathExpression(
-          selectedUpdate.statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
-        );
-        if (!expandedInitializer || !expandedUpdate) continue;
-        let value: ExpressionNode = expandedUpdate;
-        if (phase === 0) {
-          const previous = cloneNode(expandedUpdate) as ExpressionNode;
-          const replaceCounter = (candidate: Node): Node => {
-            if (candidate instanceof IdentifierNode && candidate.name === logical) {
-              const prior = new BinaryOpNode(
-                new IdentifierNode(logical), BinaryOperator.MINUS, stepValue(),
-              );
-              prior.location = candidate.location;
-              return prior;
-            }
-            for (const [key, child] of Object.entries(candidate)) {
-              if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
-                || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
-              if (child instanceof Node) {
-                (candidate as unknown as Record<string, unknown>)[key] = replaceCounter(child);
-              } else if (Array.isArray(child)) {
-                (candidate as unknown as Record<string, unknown>)[key] = child.map((item) =>
-                  item instanceof Node ? replaceCounter(item) : item);
-              }
-            }
-            return candidate;
-          };
-          const first = new BinaryOpNode(cloneNode(rank), BinaryOperator.EQ, new IntLiteralNode(0n));
-          value = new TernaryOpNode(
-            first, expandedInitializer, replaceCounter(previous) as ExpressionNode,
+        if (!expandedInitializer) continue;
+        const phaseValues = new Map<number, ExpressionNode>();
+        let phasesSupported = true;
+        for (const phase of phases) {
+          const selectedUpdate = phase === 0 ? updates.at(-1)! : updates[phase - 1];
+          if (!runtimePathExpressionSupported(
+            selectedUpdate.statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
+          )) { phasesSupported = false; break; }
+          const expandedUpdate = expandRuntimePathExpression(
+            selectedUpdate.statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
           );
+          if (!expandedUpdate) { phasesSupported = false; break; }
+          let value: ExpressionNode = expandedUpdate;
+          if (phase === 0) {
+            const previous = cloneNode(expandedUpdate) as ExpressionNode;
+            const replaceCounter = (candidate: Node): Node => {
+              if (candidate instanceof IdentifierNode && candidate.name === logical) {
+                const prior = new BinaryOpNode(
+                  new IdentifierNode(logical), BinaryOperator.MINUS, stepValue(),
+                );
+                prior.location = candidate.location;
+                return prior;
+              }
+              for (const [key, child] of Object.entries(candidate)) {
+                if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+                  || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+                if (child instanceof Node) {
+                  (candidate as unknown as Record<string, unknown>)[key] = replaceCounter(child);
+                } else if (Array.isArray(child)) {
+                  (candidate as unknown as Record<string, unknown>)[key] = child.map((item) =>
+                    item instanceof Node ? replaceCounter(item) : item);
+                }
+              }
+              return candidate;
+            };
+            const first = new BinaryOpNode(cloneNode(rank), BinaryOperator.EQ, new IntLiteralNode(0n));
+            value = new TernaryOpNode(
+              first, cloneNode(expandedInitializer), replaceCounter(previous) as ExpressionNode,
+            );
+          }
+          value.location = updates[0].statement.location;
+          locateGenerated(value);
+          phaseValues.set(phase, value);
         }
-        value.location = updates[0].statement.location;
-        locateGenerated(value);
-        loopCarriedLocalValues.set(name, value);
+        if (!phasesSupported) continue;
+        for (const position of usePositions) {
+          const phase = updates.filter((update) => update.index < position).length;
+          const value = phaseValues.get(phase)!;
+          const siteValues = loopCarriedLocalValuesByStatement.get(position) ?? new Map();
+          siteValues.set(name, cloneNode(value));
+          loopCarriedLocalValuesByStatement.set(position, siteValues);
+        }
+        if (phaseValues.size === 1) {
+          loopCarriedLocalValues.set(name, cloneNode(phaseValues.values().next().value!));
+        }
+      }
+      // Conditions and mapping values are replayed at their own source statement. This permits a write before an
+      // assignment and another after it without conflating the two local values. Other effect families retain the
+      // conservative whole-loop map until they also publish site-specific value recipes.
+      for (const write of keyed) {
+        const position = (block.statements ?? []).findIndex((statement) => containsNode(statement, write));
+        const siteValues = loopCarriedLocalValuesByStatement.get(position);
+        if (!siteValues) continue;
+        const values = new Map([...loopCarriedLocalValues, ...siteValues]);
+        const condition = writePaths.get(write);
+        if (condition) {
+          const expanded = expandRuntimePathExpression(
+            condition, logical, new Set(), stateValues, values,
+          );
+          if (expanded) writePaths.set(write, expanded);
+        }
+        const expression = write instanceof ArrayAssignNode ? write.value
+          : write instanceof MappingAssignNode ? write.expression : undefined;
+        if (!expression || ![...siteValues.keys()].some((name) => containsIdentifier(expression, name))) continue;
+        const expanded = expandRuntimePathExpression(
+          expression, logical, new Set(), stateValues, values,
+        );
+        if (!expanded) continue;
+        if (write instanceof ArrayAssignNode) write.value = expanded;
+        else if (write instanceof MappingAssignNode) write.expression = expanded;
       }
       // Runtime event cardinality must be derivable before the first VM probe. Nested if/else paths are safe when
       // their predicate can be replayed from SDK-visible inputs and stable pre-state. Switch arms and the reachable

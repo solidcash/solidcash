@@ -935,6 +935,10 @@ contract KernelDominatingStatePredicate() {
 const LOOP_CARRIED_GUARD_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelLoopCarriedGuard() {
   mapping(int => int) values;
+  mapping(int => int) beforeValues;
+  mapping(int => int) afterValues;
+  mapping(int => int) beforeAssignedValues;
+  mapping(int => int) afterAssignedValues;
   function write(int count) public {
     bool take = true;
     for (int i = 0; i < count; i = i + 1) {
@@ -960,7 +964,33 @@ contract KernelLoopCarriedGuard() {
     }
     require(true);
   }
+  function writePhases(int count) public {
+    bool take = true;
+    for (int i = 0; i < count; i = i + 1) {
+      if (take) this.beforeValues[i] = i + 40;
+      take = i % 3 == 0;
+      if (take) this.afterValues[i] = i + 50;
+    }
+    require(true);
+  }
+  function writePhaseValues(int count) public {
+    int next = 5;
+    for (int i = 0; i < count; i = i + 1) {
+      this.beforeAssignedValues[i] = next;
+      next = i + 60;
+      this.afterAssignedValues[i] = next;
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.values[key] == expected); }
+  function checkBefore(int key, int expected) public { require(this.beforeValues[key] == expected); }
+  function checkAfter(int key, int expected) public { require(this.afterValues[key] == expected); }
+  function checkBeforeAssigned(int key, int expected) public {
+    require(this.beforeAssignedValues[key] == expected);
+  }
+  function checkAfterAssigned(int key, int expected) public {
+    require(this.afterAssignedValues[key] == expected);
+  }
 }`;
 
 describe('kernel loop message-bus compose', () => {
@@ -3769,6 +3799,24 @@ describe('kernel composite counter-key settlement', () => {
       [200n, 30n], [201n, 0n], [202n, 0n], [203n, 33n], [204n, 0n],
     ] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+
+    await expect(contract.batch([{ function: 'writePhases', args: [5n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, before, after] of [
+      [0n, 40n, 50n], [1n, 41n, 0n], [2n, 0n, 0n], [3n, 0n, 53n], [4n, 44n, 0n],
+    ] as const) {
+      await expect(contract.call.checkBefore(key, before).send()).resolves.toBeDefined();
+      await expect(contract.call.checkAfter(key, after).send()).resolves.toBeDefined();
+    }
+
+    await expect(contract.batch([{ function: 'writePhaseValues', args: [3n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, before, after] of [
+      [0n, 5n, 60n], [1n, 60n, 61n], [2n, 61n, 62n],
+    ] as const) {
+      await expect(contract.call.checkBeforeAssigned(key, before).send()).resolves.toBeDefined();
+      await expect(contract.call.checkAfterAssigned(key, after).send()).resolves.toBeDefined();
     }
   }, 180_000);
 

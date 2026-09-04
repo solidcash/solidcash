@@ -1698,7 +1698,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses one loop-carried local observed on both sides of its assignment', () => {
+  it('publishes site-specific loop-carried values observed on both sides of an assignment', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) left;
       mapping(int => int) right;
@@ -1713,12 +1713,34 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    const conditions = artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo
+      ?.map((info) => info.iterationCondition);
+    expect(conditions).toHaveLength(2);
+    expect(conditions?.[0]).not.toEqual(conditions?.[1]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')
       ?.eligible).toBe(true);
+  });
+
+  it('replays site-specific mapping values observed on both sides of an assignment', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) beforeValues;
+      mapping(int => int) afterValues;
+      function write(int n) public {
+        int next = 5;
+        for (int i = 0; i < n; i = i + 1) {
+          this.beforeValues[i] = next;
+          next = i + 60;
+          this.afterValues[i] = next;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toHaveLength(2);
   });
 
   it('admits a public enum getter encoded as int', () => {

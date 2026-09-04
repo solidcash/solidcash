@@ -617,41 +617,147 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       find(node.body);
       return !reassigned && definitions.length === 1 ? definitions[0].expression : undefined;
     };
+    const containsNode = (root: Node, target: Node): boolean => {
+      if (root === target) return true;
+      for (const [key, value] of Object.entries(root)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+          || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+        if (value instanceof Node && containsNode(value, target)) return true;
+        if (Array.isArray(value)
+          && value.some((item) => item instanceof Node && containsNode(item, target))) return true;
+      }
+      return false;
+    };
+    const dominantStateValues = (target: WhileNode | DoWhileNode): Map<string, ExpressionNode> => {
+      const composeStateReads = (
+        expression: ExpressionNode,
+        current: ReadonlyMap<string, ExpressionNode>,
+        resolving = new Set<string>(),
+      ): ExpressionNode => {
+        if (expression instanceof StateAccessNode && current.has(expression.name)
+          && !resolving.has(expression.name)) {
+          return composeStateReads(
+            cloneNode(current.get(expression.name)!) as ExpressionNode,
+            current,
+            new Set(resolving).add(expression.name),
+          );
+        }
+        const composed = cloneNode(expression) as ExpressionNode;
+        for (const [key, value] of Object.entries(composed)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof ExpressionNode) {
+            (composed as unknown as Record<string, unknown>)[key] = composeStateReads(
+              value, current, resolving,
+            );
+          } else if (Array.isArray(value)) {
+            (composed as unknown as Record<string, unknown>)[key] = value.map((item) =>
+              item instanceof ExpressionNode ? composeStateReads(item, current, resolving) : item);
+          }
+        }
+        return composed;
+      };
+      const search = (
+        root: Node,
+        incoming: Map<string, ExpressionNode>,
+      ): Map<string, ExpressionNode> | undefined => {
+        if (root === target) return new Map(incoming);
+        if (root instanceof BlockNode) {
+          const current = new Map(incoming);
+          for (const statement of root.statements ?? []) {
+            if (statement === target) return new Map(current);
+            if (containsNode(statement, target)) return search(statement, current);
+            if (statement instanceof StateAssignNode) {
+              current.set(statement.name, composeStateReads(statement.expression, current));
+            } else if (statement instanceof StateArrayAssignNode || statement instanceof StateArrayDeleteNode
+              || statement instanceof StateArrayPushNode || statement instanceof StateArrayPopNode) {
+              current.delete(statement.name);
+            } else if (statement instanceof BranchNode || statement instanceof SwitchNode
+              || statement instanceof TryCatchNode || statement instanceof WhileNode
+              || statement instanceof DoWhileNode) {
+              for (const name of runtimePathMutatedState) {
+                if (containsNode(statement, target)) break;
+                let mutates = false;
+                const findMutation = (candidate: Node): void => {
+                  if (candidate instanceof StateAssignNode && candidate.name === name) mutates = true;
+                  for (const [key, value] of Object.entries(candidate)) {
+                    if (mutates || key === 'location' || key === 'definition' || key === 'symbol'
+                      || key === 'type' || key === 'resolvedFunction' || key === 'collection'
+                      || key === 'stateVariable') continue;
+                    if (value instanceof Node) findMutation(value);
+                    else if (Array.isArray(value)) {
+                      for (const item of value) if (item instanceof Node) findMutation(item);
+                    }
+                  }
+                };
+                findMutation(statement);
+                if (mutates) current.delete(name);
+              }
+            }
+          }
+          return undefined;
+        }
+        for (const [key, value] of Object.entries(root)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && containsNode(value, target)) return search(value, new Map(incoming));
+          if (Array.isArray(value)) {
+            for (const item of value) if (item instanceof Node && containsNode(item, target)) {
+              return search(item, new Map(incoming));
+            }
+          }
+        }
+        return undefined;
+      };
+      return search(node.body, new Map()) ?? new Map();
+    };
     const runtimePathExpressionSupported = (
       expression: ExpressionNode,
       counterName?: string,
       resolving = new Set<string>(),
+      stateValues: ReadonlyMap<string, ExpressionNode> = new Map(),
     ): boolean => {
       if (expression instanceof LiteralNode) return true;
-      if (expression instanceof StateAccessNode) return !runtimePathMutatedState.has(expression.name);
+      if (expression instanceof StateAccessNode) {
+        if (!runtimePathMutatedState.has(expression.name)) return true;
+        if (resolving.has(`state:${expression.name}`)) return true;
+        const assigned = stateValues.get(expression.name);
+        return assigned !== undefined && runtimePathExpressionSupported(
+          assigned, counterName, new Set(resolving).add(`state:${expression.name}`), stateValues,
+        );
+      }
       if (expression instanceof IdentifierNode) {
         if (expression.name === counterName
           || visibleParameters.some((parameter) => parameter.name === expression.name)) return true;
         if (resolving.has(expression.name)) return false;
         const initializer = runtimePathLocalInitializer(expression.name);
         return initializer !== undefined
-          && runtimePathExpressionSupported(initializer, counterName, new Set(resolving).add(expression.name));
+          && runtimePathExpressionSupported(
+            initializer, counterName, new Set(resolving).add(expression.name), stateValues,
+          );
       }
       if (expression instanceof CastNode || expression instanceof UnaryOpNode
         || expression instanceof FieldAccessNode) {
-        return runtimePathExpressionSupported(expression.expression, counterName, resolving);
+        return runtimePathExpressionSupported(expression.expression, counterName, resolving, stateValues);
       }
       if (expression instanceof BinaryOpNode) {
-        return runtimePathExpressionSupported(expression.left, counterName, resolving)
-          && runtimePathExpressionSupported(expression.right, counterName, resolving);
+        return runtimePathExpressionSupported(expression.left, counterName, resolving, stateValues)
+          && runtimePathExpressionSupported(expression.right, counterName, resolving, stateValues);
       }
       if (expression instanceof TernaryOpNode) {
-        return runtimePathExpressionSupported(expression.condition, counterName, resolving)
-          && runtimePathExpressionSupported(expression.ifTrue, counterName, resolving)
-          && runtimePathExpressionSupported(expression.ifFalse, counterName, resolving);
+        return runtimePathExpressionSupported(expression.condition, counterName, resolving, stateValues)
+          && runtimePathExpressionSupported(expression.ifTrue, counterName, resolving, stateValues)
+          && runtimePathExpressionSupported(expression.ifFalse, counterName, resolving, stateValues);
       }
       if (expression instanceof MappingAccessNode) {
         return !runtimePathMutatedState.has(expression.name)
-          && expression.keys.every((key) => runtimePathExpressionSupported(key, counterName, resolving));
+          && expression.keys.every((key) => runtimePathExpressionSupported(
+            key, counterName, resolving, stateValues,
+          ));
       }
       if (expression instanceof ArrayAccessNode) {
-        return runtimePathExpressionSupported(expression.array, counterName, resolving)
-          && runtimePathExpressionSupported(expression.index, counterName, resolving);
+        return runtimePathExpressionSupported(expression.array, counterName, resolving, stateValues)
+          && runtimePathExpressionSupported(expression.index, counterName, resolving, stateValues);
       }
       return false;
     };
@@ -659,14 +765,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       expression: ExpressionNode,
       counterName?: string,
       resolving = new Set<string>(),
+      stateValues: ReadonlyMap<string, ExpressionNode> = new Map(),
     ): ExpressionNode | undefined => {
+      if (expression instanceof StateAccessNode && runtimePathMutatedState.has(expression.name)) {
+        if (resolving.has(`state:${expression.name}`)) return cloneNode(expression);
+        const assigned = stateValues.get(expression.name);
+        return assigned && expandRuntimePathExpression(
+          cloneNode(assigned), counterName, new Set(resolving).add(`state:${expression.name}`), stateValues,
+        );
+      }
       if (expression instanceof IdentifierNode
         && expression.name !== counterName
         && !visibleParameters.some((parameter) => parameter.name === expression.name)) {
         if (resolving.has(expression.name)) return undefined;
         const initializer = runtimePathLocalInitializer(expression.name);
         return initializer && expandRuntimePathExpression(
-          cloneNode(initializer), counterName, new Set(resolving).add(expression.name),
+          cloneNode(initializer), counterName, new Set(resolving).add(expression.name), stateValues,
         );
       }
       const expanded = cloneNode(expression);
@@ -675,12 +789,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
         const value = (expanded as unknown as Record<string, unknown>)[key];
         if (value instanceof ExpressionNode) {
-          const replacement = expandRuntimePathExpression(value, counterName, resolving);
+          const replacement = expandRuntimePathExpression(value, counterName, resolving, stateValues);
           if (!replacement) return undefined;
           (expanded as unknown as Record<string, unknown>)[key] = replacement;
         } else if (Array.isArray(value)) {
           const replacements = value.map((item) => item instanceof ExpressionNode
-            ? expandRuntimePathExpression(item, counterName, resolving) : item);
+            ? expandRuntimePathExpression(item, counterName, resolving, stateValues) : item);
           if (replacements.some((item) => item === undefined)) return undefined;
           (expanded as unknown as Record<string, unknown>)[key] = replacements;
         }
@@ -709,10 +823,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         start, step, counterType, postTest, counterUpdate,
         pathConditions, pathSupported,
       } = canonical;
+      const stateValues = dominantStateValues(loop);
       const sourcePathCondition = runtimePathCondition(pathConditions);
       if (!pathSupported
-        || (sourcePathCondition && !runtimePathExpressionSupported(sourcePathCondition))) return false;
-      const pathCondition = sourcePathCondition && expandRuntimePathExpression(sourcePathCondition);
+        || (sourcePathCondition && !runtimePathExpressionSupported(
+          sourcePathCondition, undefined, new Set(), stateValues,
+        ))) return false;
+      const pathCondition = sourcePathCondition && expandRuntimePathExpression(
+        sourcePathCondition, undefined, new Set(), stateValues,
+      );
       if (sourcePathCondition && !pathCondition) return false;
       const { block, location } = loop;
       const writes: Array<ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
@@ -841,8 +960,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         condition?: ExpressionNode,
       ): void => {
         if (x instanceof EmitStatementNode) {
-          if (condition && !runtimePathExpressionSupported(condition, logical)) conditionalRuntimeEmit = true;
-          else runtimeEmits.push({ emit: x, ...(condition && { condition }) });
+          if (condition && !runtimePathExpressionSupported(
+            condition, logical, new Set(), stateValues,
+          )) conditionalRuntimeEmit = true;
+          else {
+            const expanded = condition && expandRuntimePathExpression(
+              condition, logical, new Set(), stateValues,
+            );
+            if (condition && !expanded) conditionalRuntimeEmit = true;
+            else runtimeEmits.push({ emit: x, ...(expanded && { condition: expanded }) });
+          }
           return;
         }
         if (x instanceof BlockNode) {
@@ -950,9 +1077,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         writeSelectionCondition = new BoolLiteralNode(true);
       }
       const selectionConditionSupported = keyedSelectionConditions.every((condition) => !condition
-          || runtimePathExpressionSupported(condition, logical))
+          || runtimePathExpressionSupported(condition, logical, new Set(), stateValues))
         && breakPaths.every((condition) => !condition
-          || runtimePathExpressionSupported(condition, logical));
+          || runtimePathExpressionSupported(condition, logical, new Set(), stateValues));
       const hasUnexpectedLoopControlMutation = (
         x: Node,
         inspectLogical: boolean,
@@ -993,7 +1120,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const keys = keyExpressions(write);
         const at = counterKeyIndex(write, logical);
         return keys.some((key, index) => index !== at && containsIdentifier(key, logical)
-          && !runtimePathExpressionSupported(key, logical));
+          && !runtimePathExpressionSupported(key, logical, new Set(), stateValues));
       })) return false;
       // One collection currently owns one physical entry stream per iteration, but different collections need
       // not share their invariant key components. `a[left][i]` and `b[right][i]` therefore receive independently
@@ -1545,7 +1672,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (!apply) return true;
 
       const expandedBreakCondition = breakPaths.length > 0 && (breakCondition
-        ? expandRuntimePathExpression(breakCondition, logical) : new BoolLiteralNode(true));
+        ? expandRuntimePathExpression(breakCondition, logical, new Set(), stateValues)
+        : new BoolLiteralNode(true));
       if (breakPaths.length > 0 && !expandedBreakCondition) return false;
       const serial = this.serial++;
       const signedComponent = (value: bigint): string => value < 0n ? `n${-value}` : `p${value}`;
@@ -1586,7 +1714,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const groupSerial = index === 0 ? serial : this.serial++;
         const { selectionCondition } = plan;
         const expandedSelectionCondition = selectionCondition
-          && expandRuntimePathExpression(selectionCondition, logical);
+          && expandRuntimePathExpression(selectionCondition, logical, new Set(), stateValues);
         return {
           collections: plan.collections,
           writes: new Set<Node>(plan.collectionWrites),

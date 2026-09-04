@@ -549,6 +549,29 @@ contract KernelDominatingLocalKeyArray() {
   function check(int key, int expected) public { require(this.slots[key] == expected); }
 }`;
 
+const DOMINATING_STATE_PREDICATE_SOURCE = `pragma solidcash ^0.13.0;
+event Hit(int value);
+contract KernelDominatingStatePredicate() {
+  bool enabled;
+  mapping(int => int) values;
+  function eventWrite(int count, bool next) public {
+    this.enabled = next;
+    for (int i = 0; i < count; i = i + 1) {
+      this.values[i] = i + 10;
+      if (this.enabled) emit Hit(i);
+    }
+    require(true);
+  }
+  function conditionalWrite(int count, bool next) public {
+    this.enabled = next;
+    if (this.enabled) {
+      for (int i = 0; i < count; i = i + 1) { this.values[i] = i + 20; }
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.values[key] == expected); }
+}`;
+
 describe('kernel loop message-bus compose', () => {
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
@@ -2188,6 +2211,28 @@ describe('kernel composite counter-key settlement', () => {
     });
     await expect(contract.call.check(5n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.check(3n, 11n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('settles loop and event predicates from dominating scalar-state assignments', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(DOMINATING_STATE_PREDICATE_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.filter((handler) =>
+      ['eventWrite', 'conditionalWrite'].includes(handler.name)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'eventWrite', eligible: true }),
+        expect.objectContaining({ name: 'conditionalWrite', eligible: true }),
+      ]));
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { enabled: false }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.call.eventWrite(2n, false).send()).resolves.toBeDefined();
+    await expect(contract.call.eventWrite(2n, true).send()).resolves.toBeDefined();
+    await expect(contract.call.conditionalWrite(2n, false).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.conditionalWrite(2n, true).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 20n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles affine loop-carried local mapping values in source order', async () => {

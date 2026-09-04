@@ -1788,7 +1788,7 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('refuses an event predicate derived from state mutated by the same handler', () => {
+  it('publishes an event predicate from a dominating scalar-state assignment', () => {
     const artifact = compileString(`event Hit(int i);
       contract C() {
         bool enabled;
@@ -1803,10 +1803,11 @@ describe('required kernel admission', () => {
         }
         function control() public { require(true); }
       }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'denied');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.runtimeLoopEvents?.[0].conditions).toEqual([{
+      kind: 'source', source: { kind: 'forward', paramIndex: 1 },
+    }]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
@@ -1899,7 +1900,7 @@ describe('required kernel admission', () => {
     ]);
   });
 
-  it('refuses a conditional loop predicate derived from state mutated by the same handler', () => {
+  it('publishes a loop predicate from a dominating scalar-state assignment', () => {
     const artifact = compileString(`contract C() {
       bool enabled;
       mapping(int => int) m;
@@ -1912,11 +1913,53 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo?.[0].condition)
+      .toEqual({ kind: 'source', source: { kind: 'forward', paramIndex: 1 } });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses a loop predicate after a non-dominating scalar-state assignment', () => {
+    const artifact = compileString(`contract C() {
+      bool enabled;
+      mapping(int => int) m;
+      function denied(int n, bool next, bool take) public {
+        if (take) { this.enabled = next; }
+        if (this.enabled) {
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('composes sequential dominating scalar-state assignments in a loop predicate', () => {
+    const artifact = compileString(`contract C() {
+      bool enabled;
+      mapping(int => int) m;
+      function write(int n, bool next) public {
+        this.enabled = next;
+        this.enabled = !this.enabled;
+        if (this.enabled) {
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0].condition)
+      .toEqual({
+        kind: 'unary', operator: '!',
+        expression: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      });
   });
 
   it('publishes exact path metadata for a counter loop beneath switch', () => {

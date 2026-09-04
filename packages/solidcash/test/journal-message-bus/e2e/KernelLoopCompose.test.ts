@@ -74,9 +74,10 @@ const AFFINE_COUNTER_VALUE_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelAffineCounterValue() {
   mapping(int => int) m;
   function write(int n) public {
-    int running = 0;
+    int running = 4;
     for (int i = 0; i < n; i = i + 1) {
-      running = running + 1;
+      running = running + 3;
+      running = running - 1;
       this.m[i] = running;
     }
     require(true);
@@ -2159,7 +2160,7 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.write(3n).send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    for (const [key, expected] of [[0n, 1n], [1n, 2n], [2n, 3n]] as const) {
+    for (const [key, expected] of [[0n, 6n], [1n, 8n], [2n, 10n]] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toMatchObject({
         txid: expect.stringMatching(/^[0-9a-f]{64}$/),
       });

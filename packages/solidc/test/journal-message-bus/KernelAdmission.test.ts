@@ -873,6 +873,23 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('admits a straight-line affine local recurrence with several constant updates', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a;
+      function write(int n) public {
+        int running = 4;
+        for (int i = 0; i < n; i = i + 1) {
+          running = running + 3;
+          running = running - 1;
+          this.a[i] = running;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('admits sequential counter loops over one collection and defers physical overlap to planning', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) a;

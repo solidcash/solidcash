@@ -203,11 +203,24 @@ export function encodeMessageBatch(
     if (binding.source !== 'expression') return undefined;
     const routeAccess = capability.route.entryAccesses?.find((access) => access.keyParams.some((param) =>
       param.replace(/^__message_bus_ek_/, '') === binding.routeInput));
-    if (routeAccess?.slotIndex === undefined) return undefined;
     const direct = artifact.abi.find((candidate) => candidate.name === handlerName);
-    const access = direct?.entryAccesses?.find((candidate) => candidate.slotIndex === routeAccess.slotIndex);
     const match = binding.routeInput.match(/_(\d+)(?:_row)?$/);
-    const source = match ? access?.keySources?.[Number(match[1])] : undefined;
+    const keyIndex = match ? Number(match[1]) : undefined;
+    if (keyIndex === undefined) return undefined;
+    // The aggregate route deduplicates physical entries, while a handler's
+    // local slot numbering still includes its own unrelated accesses. Thus a
+    // shared literal reader need not have the route entry's slot index (a
+    // writer in another row may own that index). Resolve by collection and
+    // key position, retaining the slot match only as the preferred candidate.
+    const candidates = direct?.entryAccesses?.filter((candidate) =>
+      candidate.collection === routeAccess?.collection
+      && candidate.keySources?.[keyIndex] !== undefined) ?? [];
+    const access = routeAccess?.slotIndex === undefined ? undefined
+      : candidates.find((candidate) => candidate.slotIndex === routeAccess.slotIndex)
+        ?? candidates.find((candidate) => candidate.keySources?.[keyIndex]?.kind === 'constant'
+          || (candidate.keySources?.[keyIndex]?.kind === 'expression'
+            && candidate.keySources[keyIndex]?.expressionLabel?.startsWith('lit:')));
+    const source = access?.keySources?.[keyIndex];
     const literal = source?.kind === 'constant' ? source.constantValue
       : source?.kind === 'expression' && source.expressionLabel?.startsWith('lit:')
         ? source.expressionLabel.slice(4) : undefined;

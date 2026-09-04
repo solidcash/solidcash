@@ -38,6 +38,23 @@ describe('required kernel admission', () => {
       name: expect.stringMatching(/^__internal__vmapCounterOld_/), type: 'Pair[][]',
     }));
   });
+  it('shares a literal fixed-key entry between a row writer and a counter-loop reader', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) source;
+      mapping(int => int) target;
+      function seed(int value) public { this.source[0] = value; require(true); }
+      function fill(int count) public {
+        for (int i = 0; i < count; i = i + 1) this.target[i] = this.source[0];
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'seed'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
+      .toMatchObject({ eligible: true, physicalEntrySlots: [0] });
+    expect(artifact.messageBus?.route.entryAccesses?.find((entry) => entry.collection === 'source'))
+      .toMatchObject({ slotIndex: 0, operations: expect.arrayContaining(['read', 'write']) });
+  });
   it('admits field-shaped struct getters and dynamic struct-array results', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C() {

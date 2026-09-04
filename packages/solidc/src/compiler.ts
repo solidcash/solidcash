@@ -7953,7 +7953,12 @@ function compileResolvedAst(
                 ?.find((binding) => binding.source === 'msgSender'
                   && binding.routeInput.startsWith(witnessPrefix))?.routeInput;
             }
-            if (source.kind === 'expression' || source.kind === 'state') {
+            // A literal key has no source ABI parameter, but admission publishes its
+            // compiler-owned key witness exactly like an expression key.  In a
+            // multi-handler route this is also how `m[0]` in a reader resolves to
+            // the physical slot already claimed by a `m[0]` writer, rather than
+            // manufacturing a second synthetic-key slot for the reader.
+            if (source.kind === 'expression' || source.kind === 'state' || source.kind === 'constant') {
               return fn.messageBusKeyWitnesses
                 ?.find((binding) => binding.source === 'expression'
                   && (binding.routeInput === `${witnessPrefix}${keyIndex}`

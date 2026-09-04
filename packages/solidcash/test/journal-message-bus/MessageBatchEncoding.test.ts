@@ -43,6 +43,17 @@ contract RoutedCollectionEncoding() {
   }
 }`;
 
+const SHARED_LITERAL_COLLECTION_SOURCE = `pragma solidcash ^0.13.0;
+contract SharedLiteralCollectionEncoding() {
+  mapping(int => int) source;
+  mapping(int => int) target;
+  function seed(int value) public { this.source[0] = value; require(true); }
+  function fill(int count) public {
+    for (int i = 0; i < count; i = i + 1) this.target[i] = this.source[0];
+    require(true);
+  }
+}`;
+
 const artifact = compileString(SOURCE, {
   forceStateful: true,
   messageBus: true,
@@ -160,6 +171,19 @@ describe('messageBus.encodeMessageBatch', () => {
       messageBus.inactiveMessageBusRouteWitness('address'),
     );
     expect(witness('__message_bus_key_balances_0_row_r1')).toEqual(destination);
+  });
+
+  it('derives a literal witness when another handler owns the shared physical entry slot', () => {
+    const shared = compileString(SHARED_LITERAL_COLLECTION_SOURCE, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 1_000_000, suppressWarnings: true,
+    });
+    const encoded = messageBus.encodeMessageBatch(shared, [{ function: 'fill', args: [3n] }]);
+    const visibleRouteInputs = shared.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const sourceWitness = encoded.routeWitnesses[visibleRouteInputs
+      .findIndex((input) => input.name === '__message_bus_key_source_0')];
+    expect(sourceWitness).toBe(0n);
   });
 
   it('rejects non-advertised, ineligible, and malformed invocation plans', () => {

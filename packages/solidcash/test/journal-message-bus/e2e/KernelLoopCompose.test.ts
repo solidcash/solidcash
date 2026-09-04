@@ -229,6 +229,41 @@ contract KernelCounterMappingEvent() {
   }
 }`;
 
+const EFFECTFUL_EVENT_ARGUMENT_SOURCE = `pragma solidcash ^0.13.0;
+event Hit(int value);
+contract KernelEffectfulEventArgument() {
+  int calls;
+  mapping(int => int) values;
+  function next(int value) internal returns (int) {
+    this.calls = this.calls + 1;
+    return value * 10 + this.calls;
+  }
+  function write(int count) public {
+    for (int i = 0; i < count; i = i + 1) {
+      this.values[i] = i + 10;
+      emit Hit(next(i));
+    }
+    require(true);
+  }
+}`;
+
+const EFFECTFUL_TRANSFER_ARGUMENT_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelEffectfulTransferArgument() {
+  int calls;
+  mapping(int => int) values;
+  function nextAmount(int value) internal returns (int) {
+    this.calls = this.calls + 1;
+    return 2000 + value * 10 + this.calls;
+  }
+  function pay(int count, bytes recipient) public {
+    for (int i = 0; i < count; i = i + 1) {
+      this.values[i] = i + 10;
+      this.transfer(recipient, nextAmount(i));
+    }
+    require(true);
+  }
+}`;
+
 const CONDITIONAL_COUNTER_EVENT_SOURCE = `pragma solidcash ^0.13.0;
 event Hit(int i);
 contract KernelConditionalCounterEvent() {
@@ -298,6 +333,23 @@ contract KernelRuntimeTokenTransfer() {
     for (int i = 0; i < n; i = i + 1) {
       this.otherRows[i] = i + 1;
       this.tokens[category].transfer(recipient, 2 + i);
+    }
+    require(true);
+  }
+}`;
+
+const EFFECTFUL_TOKEN_TRANSFER_ARGUMENT_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelEffectfulTokenTransferArgument() {
+  int calls;
+  mapping(int => int) rows;
+  function nextAmount(int value) internal returns (int) {
+    this.calls = this.calls + 1;
+    return 2 + value + this.calls;
+  }
+  function pay(int count, bytes32 category, bytes recipient) public {
+    for (int i = 0; i < count; i = i + 1) {
+      this.rows[i] = i + 1;
+      this.tokens[category].transfer(recipient, nextAmount(i));
     }
     require(true);
   }
@@ -2132,6 +2184,77 @@ describe('kernel composite counter-key settlement', () => {
     ]).build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 
+  it('evaluates an effectful repeated-event argument once in logical source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(EFFECTFUL_EVENT_ARGUMENT_SOURCE, KERNEL);
+    const write = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    expect(write.runtimeLoopEvents).toEqual([
+      {
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_count_/),
+        eventSignatures: ['Hit(int256)'],
+      },
+    ]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+
+    const direct = await contract.call.write(3n).send();
+    expect(direct.events?.map((event) => [event.event, event.args.value])).toEqual([
+      ['Hit', 1n], ['Hit', 12n], ['Hit', 23n],
+    ]);
+    await expect(contract.getState()).resolves.toMatchObject({ calls: 3n });
+
+    const routed = await contract.batch([{ function: 'write', args: [2n] }]).send();
+    expect(routed.events?.map((event) => [event.event, event.args.value])).toEqual([
+      ['Hit', 4n], ['Hit', 15n],
+    ]);
+    await expect(contract.getState()).resolves.toMatchObject({ calls: 5n });
+  }, 180_000);
+
+  it('evaluates an effectful repeated-transfer argument once in logical source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(EFFECTFUL_TRANSFER_ARGUMENT_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.runtimeLoopTransfers)
+      .toEqual([expect.objectContaining({
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_count_/),
+        siteCount: 1,
+      })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay'))
+      .toMatchObject({ eligible: true });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const boundInner = inner.withCategory(hexToBin(categoryId));
+    await provider.addUtxo(getSatoshiContainerAddress(boundInner, categoryId), {
+      txid: 'bc'.repeat(32), vout: 1, satoshis: 50_000n,
+    });
+    const contract = StatefulContract.withCategory(boundInner, categoryId);
+    const recipientFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const recipient = recipientFunder.unlocker.generateLockingBytecode();
+    const paidAmounts = (builder: Awaited<ReturnType<ReturnType<typeof contract.call.pay>['build']>>): bigint[] =>
+      builder.buildLibauthTransaction().outputs.filter((output) =>
+        binToHex(output.lockingBytecode) === binToHex(recipient)).map((output) => output.valueSatoshis);
+
+    const direct = contract.call.pay(2n, recipient);
+    expect(paidAmounts(await direct.build())).toEqual([2001n, 2012n]);
+    await direct.send();
+    await expect(contract.getState()).resolves.toMatchObject({ calls: 2n });
+
+    const routed = contract.batch([{ function: 'pay', args: [2n, recipient] }]);
+    expect(paidAmounts(await routed.build())).toEqual([2003n, 2014n]);
+    await routed.send();
+    await expect(contract.getState()).resolves.toMatchObject({ calls: 4n });
+  }, 180_000);
+
   it('settles repeated BCH transfers after the permuted mapping journal', async () => {
     const provider = createTestProvider();
     const artifact = compileString(COUNTER_MAPPING_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
@@ -2338,6 +2461,42 @@ describe('kernel composite counter-key settlement', () => {
     expect(vm.stateSuccess(vm.evaluate({
       inputIndex: routeInputIndex, sourceOutputs, transaction: hostileTransaction,
     }))).not.toBe(true);
+  }, 180_000);
+
+  it('evaluates an effectful repeated-token amount once in logical source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(EFFECTFUL_TOKEN_TRANSFER_ARGUMENT_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.runtimeLoopTransfers)
+      .toEqual([expect.objectContaining({ siteCount: 1, siteKinds: ['token'] })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay'))
+      .toMatchObject({ eligible: true });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const token = await genesisFtContainer(provider, inner, categoryId, [100n]);
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const recipientFunder = await createBareP2pkhFeeFunder(provider, 100_000n);
+    const recipient = recipientFunder.unlocker.generateLockingBytecode();
+    const transferredAmounts = (
+      builder: Awaited<ReturnType<ReturnType<typeof contract.call.pay>['build']>>,
+    ): bigint[] => builder.buildLibauthTransaction().outputs.filter((output) => output.token
+      && binToHex(output.token.category) === token.category
+      && binToHex(output.lockingBytecode) === binToHex(recipient)).map((output) => output.token!.amount);
+    const args = [2n, hexToBin(token.category), recipient] as const;
+
+    const first = contract.batch([{ function: 'pay', args: [...args] }]);
+    expect(transferredAmounts(await first.build())).toEqual([3n, 5n]);
+    await first.send();
+    await expect(contract.getState()).resolves.toMatchObject({ calls: 2n });
+
+    const second = contract.batch([{ function: 'pay', args: [...args] }]);
+    expect(transferredAmounts(await second.build())).toEqual([5n, 7n]);
+    await second.send();
+    await expect(contract.getState()).resolves.toMatchObject({ calls: 4n });
   }, 180_000);
 
   it('composes a derived-key row and an independent row against one token-container remainder', async () => {

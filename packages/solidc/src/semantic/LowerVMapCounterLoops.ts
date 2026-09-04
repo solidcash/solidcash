@@ -610,11 +610,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       x: Node,
       runtimeEmits: ReadonlySet<EmitStatementNode>,
       runtimeTransfers: ReadonlySet<Node>,
-      impureInlineResults: ReadonlySet<string>,
     ): boolean => {
       if (x instanceof TryCatchNode) {
-        return hasUnjournalledRepeatedEffect(x.expression, runtimeEmits, runtimeTransfers, impureInlineResults)
-          || hasUnjournalledRepeatedEffect(x.tryBlock, runtimeEmits, runtimeTransfers, impureInlineResults);
+        return hasUnjournalledRepeatedEffect(x.expression, runtimeEmits, runtimeTransfers)
+          || hasUnjournalledRepeatedEffect(x.tryBlock, runtimeEmits, runtimeTransfers);
       }
       // The whole typed-call node, including its interface/address projection, is represented by the manifest.
       // Do not descend into that projection: it contains method-call-shaped syntax which is not a direct effect.
@@ -626,26 +625,21 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           && this.externalTypeNames.has(x.call.object.identifier.name)))) return false;
       if (x instanceof EmitStatementNode) {
         if (!runtimeEmits.has(x)) return true;
-        // The runtime event record journals the emit itself, not arbitrary effects used to compute its payload.
-        // Evaluate pure arguments in source order, but fail closed if an argument calls an effectful helper (or
-        // otherwise contains an observable operation) which would execute once per physical loop iteration.
-        return x.args.some((arg) => hasObservableEffect(arg)
-          || [...impureInlineResults].some((name) => containsIdentifier(arg, name)));
+        // Returning helpers are inlined before this pass: their effects and result definition remain immediately
+        // before the emit in the source-order physical loop. A surviving effectful call in the argument itself is
+        // still unsafe, but consuming the already-computed local does not duplicate or permute that effect.
+        return x.args.some((arg) => hasObservableEffect(arg));
       }
       if (x instanceof TransferStatementNode) {
         if (!runtimeTransfers.has(x)) return true;
-        return hasObservableEffect(x.lockingBytecode) || hasObservableEffect(x.amount)
-          || [...impureInlineResults].some((name) =>
-            containsIdentifier(x.lockingBytecode, name) || containsIdentifier(x.amount, name));
+        return hasObservableEffect(x.lockingBytecode) || hasObservableEffect(x.amount);
       }
       if (x instanceof AddressTransferStatementNode || x instanceof AddressSendExpressionNode
         || x instanceof MethodCallNode || x instanceof MethodCallStatementNode) return true;
       if (x instanceof TokenContainerMethodStatementNode) {
         if (!runtimeTransfers.has(x) || x.methodName !== 'transfer') return true;
         return x.args.some((arg) => hasObservableEffect(arg))
-          || hasObservableEffect(x.tokenContainerKeyExpression)
-          || [...impureInlineResults].some((name) => x.args.some((arg) => containsIdentifier(arg, name))
-            || containsIdentifier(x.tokenContainerKeyExpression, name));
+          || hasObservableEffect(x.tokenContainerKeyExpression);
       }
       if (x instanceof FunctionCallNode) return hasObservableEffect(x);
       if (x instanceof FunctionCallStatementNode) return hasObservableEffect(x);
@@ -654,10 +648,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || key === 'resolvedFunction') continue;
         const value = (x as unknown as Record<string, unknown>)[key];
         if (value instanceof Node
-          && hasUnjournalledRepeatedEffect(value, runtimeEmits, runtimeTransfers, impureInlineResults)) return true;
+          && hasUnjournalledRepeatedEffect(value, runtimeEmits, runtimeTransfers)) return true;
         if (Array.isArray(value)
           && value.some((item) => item instanceof Node
-            && hasUnjournalledRepeatedEffect(item, runtimeEmits, runtimeTransfers, impureInlineResults))) return true;
+            && hasUnjournalledRepeatedEffect(item, runtimeEmits, runtimeTransfers))) return true;
       }
       return false;
     };
@@ -1560,22 +1554,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       collectRuntimeTransfers(block);
-      const impureInlineResults = new Set<string>();
-      const collectImpureInlineResults = (x: Node): void => {
-        if (x instanceof VariableDefinitionNode && x.inlinedReturningHelperPure === false) {
-          impureInlineResults.add(x.name);
-        }
-        for (const key of Object.keys(x)) {
-          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
-            || key === 'resolvedFunction') continue;
-          const value = (x as unknown as Record<string, unknown>)[key];
-          if (value instanceof Node) collectImpureInlineResults(value);
-          else if (Array.isArray(value)) {
-            for (const item of value) if (item instanceof Node) collectImpureInlineResults(item);
-          }
-        }
-      };
-      collectImpureInlineResults(block);
       const runtimeEmitSet = new Set(runtimeEmits.map(({ emit }) => emit));
       const runtimeTransferSet = new Set<Node>(runtimeTransfers.map(({ transfer }) => transfer));
       const keyedSelectionConditions = keyed.map((write) => writePaths.get(write));
@@ -1636,7 +1614,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         || keyed.some((write) => hasObservableEffect(write))
         || conditionalRuntimeEmit
         || conditionalRuntimeTransfer
-        || hasUnjournalledRepeatedEffect(block, runtimeEmitSet, runtimeTransferSet, impureInlineResults)
+        || hasUnjournalledRepeatedEffect(block, runtimeEmitSet, runtimeTransferSet)
         // The permutation proof relies on visiting every physical rank exactly once. Apart from the canonical
         // post-test tail update, mutating the counter can shorten, extend, or repeat the loop. Mutating the
         // public bound anywhere in the function similarly disconnects the SDK-derived witness length from the

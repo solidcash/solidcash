@@ -202,10 +202,13 @@ counter, scalar state, and authenticated mapping entries which the handler does 
 direct or routed output/journal stream while the covenant independently counts and binds only sites actually
 reached. Sites beneath another runtime loop, an unreachable catch arm, or a predicate with unsupported/mutated
 provenance remain `KERNEL_UNBOUNDED_KEY`; stable `switch` paths and the reachable body of `try` use the same
-serialized path plan as `if`/`else`. Event arguments may use ordinary expressions,
-resource-free builtins, and explicitly `pure` helpers. Effectful returning helpers remain refused even after
-inlining (their result provenance is retained on the normalized AST). BCH and fungible-token transfers use the
-same authenticated, source-ordered runtime effect span. Repeated NFT transfer still has no sound general form:
+serialized path plan as `if`/`else`. Event arguments may use ordinary expressions, resource-free builtins, and
+returning helpers. After helper inlining, an effectful helper body and its result definition remain adjacent to
+the event in the source-order physical loop, so consuming that already-computed local neither duplicates nor
+permutes the helper effect. BCH and fungible-token transfer operands use the same rule and the same authenticated,
+source-ordered runtime effect span. An effectful helper result used as a mapping value remains refused because
+that value would follow the authenticated key permutation rather than source order. Repeated NFT transfer still
+has no sound general form:
 one NFT-bearing container input cannot authorize duplicating that NFT across an arbitrary number of loop outputs.
 
 Runtime mapping entries and runtime events are planned as row-scoped trailing segments. Independent selected rows

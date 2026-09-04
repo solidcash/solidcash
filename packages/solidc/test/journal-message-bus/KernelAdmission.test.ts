@@ -1872,7 +1872,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses an effectful helper used to compute a repeated event argument', () => {
+  it('keeps an inlined effectful helper result adjacent to a repeated event', () => {
     const artifact = compileString(`event Hit(int i);
       contract C() {
         mapping(int => int) m;
@@ -1887,10 +1887,13 @@ describe('required kernel admission', () => {
         }
         function control() public { require(true); }
       }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.runtimeLoopEvents)
+      .toEqual([expect.objectContaining({
+        permutationParam: expect.stringMatching(/^__internal__vmapCounterPerm_n_/),
+        eventSignatures: ['Hit(int256)'],
+      })]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

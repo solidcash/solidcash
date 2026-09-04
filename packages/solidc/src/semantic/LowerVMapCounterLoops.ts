@@ -21,7 +21,9 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import {
   ArrayType, IntType, StructType, Type,
 } from '@solidcash/utils';
-import { isFunctionEntryInvariantMappingKey } from './CacheMappingEntryInLoop.js';
+import {
+  isFunctionEntryInvariantMappingKey, VMAP_KEY_SNAPSHOT_PREFIX,
+} from './CacheMappingEntryInLoop.js';
 
 export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 export const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
@@ -143,6 +145,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     const added: ParameterNode[] = [];
     const runtimeCountCollections = new Set<string>();
     const prelude: StatementNode[] = [];
+    const keySnapshotPrelude: StatementNode[] = [];
     // The compiler invokes this pass both before speculative admission and, when needed, before final codegen.
     // Hidden parameters are the durable marker that this function was already lowered. Do not inspect or mutate
     // the generated proof statements on the second pass.
@@ -647,6 +650,65 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       isCounterWriteLoop(loop, canonical.logical));
     const visibleParameters = node.parameters.filter((parameter) =>
       !parameter.name.startsWith('__internal__'));
+    const publicParameterNames = new Set(visibleParameters.map((parameter) => parameter.name));
+    const emptyBody = new BlockNode([]);
+    /**
+     * Replay a pure expression at one straight-line block boundary in terms of function-entry arguments. The
+     * latest dominating assignment/definition wins, and its right-hand side is recursively evaluated at the
+     * earlier boundary where it appeared. This is deliberately block-local: crossing an if/switch/loop join
+     * needs phi/path metadata and remains fail-closed.
+     */
+    const entryExpressionAt = (
+      expression: ExpressionNode,
+      parent: BlockNode,
+      before: number,
+      resolving = new Set<string>(),
+    ): ExpressionNode | undefined => {
+      if (expression instanceof IdentifierNode) {
+        const statements = parent.statements ?? [];
+        for (let index = before - 1; index >= 0; index -= 1) {
+          const statement = statements[index];
+          const assigned = statement instanceof AssignNode && statement.identifier.name === expression.name
+            ? statement.expression
+            : statement instanceof VariableDefinitionNode && statement.name === expression.name
+              ? statement.expression : undefined;
+          if (!assigned) continue;
+          const marker = `${expression.name}@${index}`;
+          if (resolving.has(marker)) return undefined;
+          return entryExpressionAt(assigned, parent, index, new Set(resolving).add(marker));
+        }
+        return publicParameterNames.has(expression.name) ? cloneNode(expression) : undefined;
+      }
+      if (expression instanceof FunctionCallNode) {
+        const pure = PURE_COUNTER_VALUE_BUILTINS.has(expression.identifier.name)
+          || expression.resolvedFunction?.modifiers.includes(FunctionModifier.PURE) === true;
+        if (!pure) return undefined;
+        const parameters = expression.parameters.map((parameter) =>
+          entryExpressionAt(parameter, parent, before, resolving));
+        if (parameters.some((parameter) => parameter === undefined)) return undefined;
+        const expanded = cloneNode(expression);
+        expanded.parameters = parameters as ExpressionNode[];
+        return expanded;
+      }
+      const expanded = cloneNode(expression);
+      for (const key of Object.keys(expanded)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+          || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+          || key === 'stateVariable' || key === 'identifier') continue;
+        const value = (expanded as unknown as Record<string, unknown>)[key];
+        if (value instanceof ExpressionNode) {
+          const replacement = entryExpressionAt(value, parent, before, resolving);
+          if (!replacement) return undefined;
+          (expanded as unknown as Record<string, unknown>)[key] = replacement;
+        } else if (Array.isArray(value)) {
+          const replacements = value.map((item) => item instanceof ExpressionNode
+            ? entryExpressionAt(item, parent, before, resolving) : item);
+          if (replacements.some((item) => item === undefined)) return undefined;
+          (expanded as unknown as Record<string, unknown>)[key] = replacements;
+        }
+      }
+      return expanded;
+    };
     const runtimePathMutatedState = new Set<string>();
     const collectRuntimePathMutations = (candidate: Node): void => {
       if (candidate instanceof StateAssignNode || candidate instanceof StateArrayAssignNode
@@ -1480,25 +1542,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // counter-independent is insufficient (for example, a nested or computed key would otherwise retain a raw
       // mapping write in the physical loop). This is capability-based rather than tied to a source contract: any
       // depth-one sorted scalar mapping keyed by a public parameter, literal, msg.sender, or tx.origin qualifies.
-      const assignedInFunction = (name: string): boolean => {
-        let assigned = false;
-        const walk = (candidate: Node): void => {
-          if (assigned) return;
-          if ((candidate instanceof AssignNode && candidate.identifier.name === name)
-            || (candidate instanceof VariableDefinitionNode && candidate.name === name)) {
-            assigned = true;
-            return;
-          }
-          for (const [key, value] of Object.entries(candidate)) {
-            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
-              || key === 'resolvedFunction') continue;
-            if (value instanceof Node) walk(value);
-            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
-          }
-        };
-        walk(node.body);
-        return assigned;
-      };
+      const invariantKeyPlans = new Map<MappingAssignNode, ExpressionNode[]>();
       const invariantWriteCacheable = (write: Node): boolean => {
         if (!(write instanceof MappingAssignNode)
           || write.arrayIndex !== undefined || write.arrayPush || write.arrayPop) return false;
@@ -1506,10 +1550,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (!collection?.sorted || write.keys.length !== collection.depth
           || collection.innermostValueType instanceof ArrayType
           || collection.innermostValueType instanceof StructType) return false;
-        const publicParameterNames = new Set(visibleParameters.map((parameter) => parameter.name));
-        return write.keys.every((key) => isFunctionEntryInvariantMappingKey(
-          key, node.body, publicParameterNames,
-        ) && (!(key instanceof IdentifierNode) || !assignedInFunction(key.name)));
+        const loopIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
+        if (loopIndex < 0) return false;
+        const keys = write.keys.map((key) => {
+          if (isFunctionEntryInvariantMappingKey(key, node.body, publicParameterNames)) return cloneNode(key);
+          const expanded = entryExpressionAt(key, canonical.parent, loopIndex);
+          return expanded && isFunctionEntryInvariantMappingKey(expanded, emptyBody, publicParameterNames)
+            ? expanded : undefined;
+        });
+        if (keys.some((key) => key === undefined)) return false;
+        invariantKeyPlans.set(write, keys as ExpressionNode[]);
+        return true;
       };
       if (invariantWrites.some((write) => !invariantWriteCacheable(write))) return false;
       const containsKeyedWrite = (x: Node): boolean => {
@@ -1995,6 +2046,33 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           && dependsOnLoopMutation(write, new Set(), true))) return false;
 
       if (!apply) return true;
+
+      // Evaluate replayed invariant keys before any source assignments and use the immutable local for both the
+      // physical loop and its function-wide authenticated cache. This preserves `k = f(k); m[g(k)] = ...`
+      // without evaluating `f` twice or depending on the physical permutation order.
+      const keySnapshotsByShape = new Map<string, IdentifierNode>();
+      for (const [write, keys] of invariantKeyPlans) {
+        const collection = this.collectionsByName.get(write.name)!;
+        write.keys = write.keys.map((key, index) => {
+          const expanded = keys[index];
+          if (expressionShape(expanded) === expressionShape(key)) return key;
+          const type = expanded.type ?? key.type ?? collection.allKeyTypes[index];
+          const shape = `${type.toString()}\0${expressionShape(expanded)}`;
+          const existing = keySnapshotsByShape.get(shape);
+          if (existing) return cloneNode(existing);
+          const name = `${VMAP_KEY_SNAPSHOT_PREFIX}${this.serial++}`;
+          const definition = new VariableDefinitionNode(
+            type, [], name, cloneNode(expanded),
+          );
+          definition.location = key.location ?? write.location;
+          keySnapshotPrelude.push(definition);
+          const snapshot = new IdentifierNode(name);
+          snapshot.location = key.location ?? write.location;
+          snapshot.type = definition.type;
+          keySnapshotsByShape.set(shape, snapshot);
+          return snapshot;
+        });
+      }
 
       const expandedBreakCondition = breakPaths.length > 0 && (breakCondition
         ? expandRuntimePathExpression(
@@ -2715,7 +2793,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       outputCount.location = node.location;
       added.push(inputCount, outputCount);
     }
-    if (prelude.length > 0) node.body.statements = [...prelude, ...(node.body.statements ?? [])];
+    if (keySnapshotPrelude.length > 0 || prelude.length > 0) {
+      node.body.statements = [...keySnapshotPrelude, ...prelude, ...(node.body.statements ?? [])];
+    }
     // Route synthesis appends the physical owner context after every source-derived handler argument. Generated
     // loop witnesses must remain on the source-argument side of that boundary even when this lowering runs on a
     // cloned handler after route ownership was attached; otherwise caller and callee disagree on the OP_INVOKE ABI.
@@ -2754,13 +2834,51 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item, visit);
       }
     };
-    let hasLocalNewArray = false;
+    const localNewArrayNames = new Set<string>();
+    const localTypes = new Map(node.parameters.map((parameter) => [parameter.name, parameter.type]));
     walk(node.body, (candidate) => {
       if (candidate instanceof VariableDefinitionNode && candidate.expression instanceof NewArrayNode) {
-        hasLocalNewArray = true;
+        localNewArrayNames.add(candidate.name);
+      }
+      if (candidate instanceof VariableDefinitionNode) localTypes.set(candidate.name, candidate.type);
+    });
+    if (localNewArrayNames.size === 0) return;
+
+    // Snapshot only assignments which can reach a constructed-array write. Counter-loop lowering also creates
+    // temporary arrays, so snapshotting every assignment merely because one exists changes the physical stack
+    // frame of otherwise unrelated handlers. Close backwards through assignment RHSs to support chains such as
+    // `a = p + 1; b = a * 2; xs[0] = b` without retaining unrelated route counters or journal temporaries.
+    const snapshotDependencyNames = new Set<string>();
+    const addExpressionIdentifiers = (expression: ExpressionNode): boolean => {
+      let changed = false;
+      walk(expression, (candidate) => {
+        if (candidate instanceof IdentifierNode && !canonicalCounters.has(candidate.name)
+          && !snapshotDependencyNames.has(candidate.name)) {
+          snapshotDependencyNames.add(candidate.name);
+          changed = true;
+        }
+      });
+      return changed;
+    };
+    walk(node.body, (candidate) => {
+      if (candidate instanceof ArrayAssignNode && localNewArrayNames.has(candidate.name)) {
+        addExpressionIdentifiers(candidate.index);
+        addExpressionIdentifiers(candidate.value);
       }
     });
-    if (!hasLocalNewArray) return;
+    const dependencyAssignments: AssignNode[] = [];
+    walk(node.body, (candidate) => {
+      if (candidate instanceof AssignNode) dependencyAssignments.push(candidate);
+    });
+    let dependencyChanged = true;
+    while (dependencyChanged) {
+      dependencyChanged = false;
+      for (const assignment of dependencyAssignments) {
+        if (snapshotDependencyNames.has(assignment.identifier.name)) {
+          dependencyChanged = addExpressionIdentifiers(assignment.expression) || dependencyChanged;
+        }
+      }
+    }
 
     const mutatedArrays = (root: Node): Set<string> => {
       const result = new Set<string>();
@@ -2868,6 +2986,28 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       return replaced;
     };
+    const replaceSnapshots = (
+      expression: ExpressionNode,
+      snapshots: ReadonlyMap<string, IdentifierNode>,
+    ): ExpressionNode => {
+      if (expression instanceof IdentifierNode && snapshots.has(expression.name)) {
+        return cloneNode(snapshots.get(expression.name)!);
+      }
+      const replaced = cloneNode(expression) as ExpressionNode;
+      for (const key of Object.keys(replaced)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+          || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+          || key === 'stateVariable' || key === 'identifier') continue;
+        const value = (replaced as unknown as Record<string, unknown>)[key];
+        if (value instanceof ExpressionNode) {
+          (replaced as unknown as Record<string, unknown>)[key] = replaceSnapshots(value, snapshots);
+        } else if (Array.isArray(value)) {
+          (replaced as unknown as Record<string, unknown>)[key] = value.map((item) =>
+            item instanceof ExpressionNode ? replaceSnapshots(item, snapshots) : item);
+        }
+      }
+      return replaced;
+    };
     const rewriteMappingKeys = (
       statement: StatementNode,
       active: Map<string, ArrayPlan>,
@@ -2941,7 +3081,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         active.set(name, merged);
       }
     };
-    const transformBlock = (block: BlockNode, active: Map<string, ArrayPlan>): void => {
+    const transformBlock = (
+      block: BlockNode,
+      active: Map<string, ArrayPlan>,
+      snapshots = new Map<string, IdentifierNode>(),
+      snapshotAssignments = true,
+    ): void => {
       const transformed: StatementNode[] = [];
       for (const statement of block.statements ?? []) {
         if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
@@ -2951,7 +3096,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           // check against `xs[i]`. Start the loop from the dominating pre-loop plan and let transformBlock add
           // writes as it walks source order. Branches still receive isolated copies and invalidate the outer
           // plan at their join, so a conditionally initialized or prior-iteration array value remains fenced.
-          transformBlock(statement.block, loopPlans);
+          transformBlock(statement.block, loopPlans, new Map(snapshots), false);
           transformed.push(statement);
           for (const name of mutatedArrays(statement)) active.delete(name);
           continue;
@@ -2960,34 +3105,68 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const before = copyPlans(active);
           const ifPlans = copyPlans(active);
           const elsePlans = copyPlans(active);
-          transformBlock(statement.ifBlock, ifPlans);
-          if (statement.elseBlock) transformBlock(statement.elseBlock, elsePlans);
+          transformBlock(statement.ifBlock, ifPlans, new Map(snapshots), false);
+          if (statement.elseBlock) transformBlock(statement.elseBlock, elsePlans, new Map(snapshots), false);
           transformed.push(statement);
           mergeBranchPlans(active, before, ifPlans, elsePlans, statement.condition);
           continue;
         }
         if (statement instanceof SwitchNode) {
-          for (const candidate of statement.cases) transformBlock(candidate.body, copyPlans(active));
-          if (statement.defaultCase) transformBlock(statement.defaultCase, copyPlans(active));
+          for (const candidate of statement.cases) {
+            transformBlock(candidate.body, copyPlans(active), new Map(snapshots), false);
+          }
+          if (statement.defaultCase) {
+            transformBlock(statement.defaultCase, copyPlans(active), new Map(snapshots), false);
+          }
           transformed.push(statement);
           for (const name of mutatedArrays(statement)) active.delete(name);
           continue;
         }
         if (statement instanceof TryCatchNode) {
-          transformBlock(statement.tryBlock, copyPlans(active));
-          for (const candidate of statement.catchClauses) transformBlock(candidate.block, copyPlans(active));
+          transformBlock(statement.tryBlock, copyPlans(active), new Map(snapshots), false);
+          for (const candidate of statement.catchClauses) {
+            transformBlock(candidate.block, copyPlans(active), new Map(snapshots), false);
+          }
           transformed.push(statement);
           for (const name of mutatedArrays(statement)) active.delete(name);
           continue;
         }
 
+        // Preserve the value of a straight-line assignment in an immutable local. Rewriting the source
+        // assignment to that local evaluates its right-hand side exactly once, while later key-array writes can
+        // refer to a value whose SDK recipe is still expressed in entry arguments. Chained assignments compose
+        // by using the previous snapshot in the next initializer.
+        const assignmentSnapshot = snapshotAssignments && statement instanceof AssignNode
+          && snapshotDependencyNames.has(statement.identifier.name)
+          && !statement.identifier.name.startsWith('__internal__')
+          ? (() => {
+            const assignedType = statement.expression.type ?? statement.identifier.type
+              ?? localTypes.get(statement.identifier.name);
+            if (!assignedType) return undefined;
+            const name = `${VMAP_KEY_SNAPSHOT_PREFIX}${this.serial++}`;
+            const expression = replaceSnapshots(statement.expression, snapshots);
+            const definition = new VariableDefinitionNode(
+              assignedType, [], name, expression,
+            );
+            definition.location = statement.location;
+            const identifier = new IdentifierNode(name);
+            identifier.location = statement.expression.location;
+            identifier.type = definition.type;
+            statement.expression = cloneNode(identifier);
+            snapshots.set(statement.identifier.name, identifier);
+            return definition;
+          })() : undefined;
+        const replayedArrayValue = statement instanceof ArrayAssignNode
+          ? replaceSnapshots(statement.value, snapshots) : undefined;
+        const replayedArrayIndex = statement instanceof ArrayAssignNode
+          ? replaceSnapshots(statement.index, snapshots) : undefined;
         const keySnapshot = statement instanceof ArrayAssignNode && active.has(statement.name)
-          && containsFutureReassignedName(statement.value)
+          && replayedArrayValue !== undefined && containsFutureReassignedName(replayedArrayValue)
           ? (() => {
             const name = `__internal__vmapKeySnapshot_${this.serial++}`;
             const definition = new VariableDefinitionNode(
-              statement.value.type ?? active.get(statement.name)!.elementType,
-              [], name, cloneNode(statement.value),
+              replayedArrayValue.type ?? active.get(statement.name)!.elementType,
+              [], name, cloneNode(replayedArrayValue),
             );
             definition.location = statement.location;
             const identifier = new IdentifierNode(name);
@@ -2996,6 +3175,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             return { definition, identifier };
           })() : undefined;
         transformed.push(
+          ...(assignmentSnapshot ? [assignmentSnapshot] : []),
           ...rewriteMappingKeys(statement, active),
           ...(keySnapshot ? [keySnapshot.definition] : []), statement,
         );
@@ -3009,12 +3189,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             writes: [],
           });
         } else if (statement instanceof ArrayAssignNode && active.has(statement.name)) {
-          if (containsReassignedName(statement.index) || containsReassignedName(statement.value)) {
+          if (!replayedArrayIndex || !replayedArrayValue
+            || containsReassignedName(replayedArrayIndex) || containsReassignedName(replayedArrayValue)) {
             active.delete(statement.name);
           } else {
             active.get(statement.name)!.writes.push({
-              index: cloneNode(statement.index) as ExpressionNode,
-              value: keySnapshot?.identifier ?? cloneNode(statement.value) as ExpressionNode,
+              index: cloneNode(replayedArrayIndex) as ExpressionNode,
+              value: keySnapshot?.identifier ?? cloneNode(replayedArrayValue) as ExpressionNode,
             });
           }
         } else if (statement instanceof ArrayDeleteNode && active.has(statement.name)) {

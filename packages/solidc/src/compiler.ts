@@ -2227,6 +2227,9 @@ function padMessageBusCloneCalls(ast: Ast): void {
 }
 
 function injectChunkableEntryWitnesses(ast: Ast): void {
+  const sorted = new Set(
+    ast.contract.collections.filter((collection) => collection.sorted).map((collection) => collection.name),
+  );
   const chunkable = new Set(
     ast.contract.collections.filter((collection) => {
       let current: Type = collection.type;
@@ -2237,7 +2240,7 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
     }).map((collection) => collection.name),
   );
   const inject = (fn: FunctionDefinitionNode | undefined): void => {
-    if (!fn?.body || chunkable.size === 0) return;
+    if (!fn?.body) return;
     const written = new Set<string>();
     walkInvocationAst(fn.body, (node) => {
       if ((node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
@@ -2255,7 +2258,37 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
         fn.parameters.push(new ParameterNode(new BytesType(), leading));
       }
     });
-    if (written.size > 0
+    // Route source is synthesized before SymbolTableTraversal classifies fixed sorted writes into
+    // `sortedBatchInfo`. Make the shared trailing-width witness part of the source handler now, so a row route
+    // can forward it at the original parameter position. Appending it later cannot be repaired by arity padding:
+    // entry clones insert their physical key/owner arguments after the source parameters, so the newly inserted
+    // source argument is not a suffix of the already-generated call.
+    //
+    // Mirror the essential batch classification here: a fixed sorted write participates unless the same
+    // collection also owns a runtime-loop write. CacheMappingEntryInLoop deliberately flushes its invariant entry
+    // outside the loop, so mixed `fixed collection A + runtime collection B` is detected without knowing any
+    // contract-specific shape.
+    const fixedSortedWrites = new Set<string>();
+    const loopSortedWrites = new Set<string>();
+    const scanWrites = (node: Node, inLoop: boolean): void => {
+      const nowLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
+      const collection = node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+        || node instanceof MappingDeleteNode || node instanceof ArrayAssignNode ? node.name : undefined;
+      if (collection && sorted.has(collection)) {
+        (nowLoop ? loopSortedWrites : fixedSortedWrites).add(collection);
+      }
+      for (const [field, value] of Object.entries(node)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+          'stateVariable', 'type'].includes(field)) continue;
+        if (value instanceof Node) scanWrites(value, nowLoop);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) scanWrites(item, nowLoop);
+        }
+      }
+    };
+    if (sorted.size > 0) scanWrites(fn.body, false);
+    const hasFixedSortedBatch = [...fixedSortedWrites].some((collection) => !loopSortedWrites.has(collection));
+    if ((written.size > 0 || hasFixedSortedBatch)
       && !fn.parameters.some((parameter) => parameter.name === '__internal__vmapBatchTrailingCount')) {
       fn.parameters.push(new ParameterNode(PrimitiveType.BIGINT, '__internal__vmapBatchTrailingCount'));
     }

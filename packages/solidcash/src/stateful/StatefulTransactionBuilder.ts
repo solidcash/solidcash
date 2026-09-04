@@ -12423,6 +12423,20 @@ export class StatefulTransactionBuilder {
     };
     if (this.runtimeLoopTrailingSegments.length > 0) {
       const variables = new Map(this._trailingLoopEntryVars().map((variable) => [variable.collection, variable]));
+      // Fixed-batch predecessor rewrites occupy the leading trailing coordinates, before the source-ordered
+      // runtime row stream. They share `loopEntryCommitments` with runtime mapping outputs but deliberately have
+      // no runtime segment: a segment describes a source-row occurrence, while these outputs authenticate the
+      // fixed entry transition surrounding that row. Previously, entering segmented mode omitted every such
+      // collection and let the first runtime output occupy its advertised PredOut coordinate.
+      const segmentedCollections = new Set(this.runtimeLoopTrailingSegments.flatMap((segment) => (
+        segment.kind === 'entries' ? [segment.collection] : []
+      )));
+      for (const variable of this._trailingLoopEntryVars()) {
+        if (segmentedCollections.has(variable.collection)) continue;
+        for (const commitment of this.loopEntryCommitments.get(variable.collection) ?? []) {
+          appendLoopEntry(variable, commitment);
+        }
+      }
       for (const segment of this.runtimeLoopTrailingSegments) {
         if (segment.kind === 'events') {
           for (let index = 0; index < segment.count; index++) {

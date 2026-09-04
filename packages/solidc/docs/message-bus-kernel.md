@@ -320,7 +320,9 @@ constant steps in the comparison's direction, including `int i = 0; do { ...; i 
 descending/ranged forms. They authenticate the exact progression with at least the mandatory first iteration;
 an immutable local affine-alias chain such as
 `requested = n; limit = 1 + (requested - 2)` and nonlinear forms such as `limit = n * scale` preserve the exact
-authenticated domain, while reassigned aliases remain refused. Noncanonical `do-while` domains remain refused.
+authenticated domain. Straight-line dominating reassignments of public bounds and local aliases are replayed from
+their point-in-time value; conditional, loop-local, and otherwise non-dominating reassignments remain refused.
+Noncanonical `do-while` domains remain refused.
 A handler may contain multiple unconditional top-level counter loops in source order,
 including loops over the same physical collection. The compiler threads exact accumulated input and output widths
 between those loops, and the SDK publishes their predecessor and commitment runs in the same order. If their
@@ -392,8 +394,10 @@ expressions over the same selected domain receive independent row-owned permutat
 separate permutations and separate accumulated physical segments.
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
-`messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays stay
-`KERNEL_UNBOUNDED_KEY` without aborting sibling handlers.
+`messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays are admitted when their bounded
+length and every reached element write can be replayed from dominating public/local expressions. Conditional,
+partially initialized, dynamically resized, or otherwise non-replayable arrays stay `KERNEL_UNBOUNDED_KEY`
+without aborting sibling handlers.
 
 The legacy convention is intentionally unchanged: it does not acquire this runtime event family and continues to
 refuse the corresponding bus handler with its historical route-generation diagnostic. The same function remains

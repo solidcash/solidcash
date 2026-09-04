@@ -42,6 +42,8 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
 const PREFIX = '__vmapcache_';
+/** Compiler-owned immutable locals which preserve a mapping key's value at a source-order boundary. */
+export const VMAP_KEY_SNAPSHOT_PREFIX = '__internal__vmapKeySnapshot_';
 
 // A mapping key we can cache on. Only INVARIANT keys qualify: a simple identifier (invariance re-checked via
 // assignsName), or a nullary tx-derived address (msg.sender / tx.origin - inherently invariant; nothing reassigns
@@ -197,6 +199,11 @@ export function isFunctionEntryInvariantMappingKey(
 ): boolean {
   if (!canonKeyOf(key, true)) return false;
   if (key instanceof LiteralNode || key instanceof NullaryOpNode) return true;
+  // LowerVMapCounterLoops creates these locals at the very start of the function from a pure expression over
+  // public arguments. The declaration is the snapshot's initialization, not a later mutation. Treating it as
+  // an ordinary source identifier would make mutatesExpressionDependency reject the capability the snapshot
+  // exists to provide.
+  if (key instanceof IdentifierNode && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)) return true;
   const dependencies = expressionParameterDependencies(key);
   return [...dependencies].every((name) => publicParameterNames.has(name))
     && !mutatesExpressionDependency(body, dependencies);
@@ -272,7 +279,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
   private transformFunction(fn: FunctionDefinitionNode): void {
     for (const e of this.collectCacheableEntries(fn.body)) {
       if (this.routeSnapshotKeysOnly && e.keys.length === 1
-        && !e.keys.some((key) => key.kind === 'expression')) continue;
+        && !e.keys.some((key) => key.kind === 'expression'
+          || (key.kind === 'id' && key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)))) continue;
       const local = `${PREFIX}${e.mapping}_${this.counter++}`;
       const dirty = `${local}_dirty`;
       new EntryRedirect(e.mapping, e.keys, local, dirty, e.valueType).visit(fn.body);
@@ -292,7 +300,17 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       if (stmts.length === 0 || !(stmts[stmts.length - 1] instanceof ReturnNode)) {
         stmts = [...stmts, this.makeFlush(e.mapping, e.keys, local, dirty, fn.body.location, e.fromModifier)];
       }
-      fn.body.statements = [cache, dirtyLocal, ...stmts];
+      // Point-in-time key snapshots must execute before the cache read which consumes them. They are emitted as
+      // a contiguous compiler-owned prefix by LowerVMapCounterLoops; retain that prefix even when several cache
+      // entries are installed one after another.
+      let snapshotPrefixLength = 0;
+      while (stmts[snapshotPrefixLength] instanceof VariableDefinitionNode
+        && (stmts[snapshotPrefixLength] as VariableDefinitionNode).name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)) {
+        snapshotPrefixLength += 1;
+      }
+      fn.body.statements = [
+        ...stmts.slice(0, snapshotPrefixLength), cache, dirtyLocal, ...stmts.slice(snapshotPrefixLength),
+      ];
     }
   }
 
@@ -423,6 +441,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         || (e.written && this.structMappings.has(e.mapping)))) continue;
       // key must be invariant across the function: an identifier must not be reassigned; nullary keys always are.
       if (e.keys.some((key) => key.kind === 'id'
+        && !key.name.startsWith(VMAP_KEY_SNAPSHOT_PREFIX)
         && (this.assignsName(body, key.name) || this.declaresNameInsideLoop(body, key.name)))) continue;
       const expressionKeys = e.keys.filter((key): key is Extract<KeyKind, { kind: 'expression' }> =>
         key.kind === 'expression');

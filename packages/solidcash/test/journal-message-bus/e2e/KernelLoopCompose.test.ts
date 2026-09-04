@@ -440,6 +440,14 @@ contract KernelSelectedCounterMapping() {
     }
     require(true);
   }
+  function writeReassignedKey(int n, int owner) public {
+    owner = owner + 5;
+    for (int i = 0; i < n; i = i + 1) {
+      this.m[i] = i + 850;
+      this.totals[owner] = i;
+    }
+    require(true);
+  }
   function writeNestedInvariant(int n, int group, bytes owner) public {
     for (int i = 0; i < n; i = i + 1) {
       this.m[i] = i + 900;
@@ -669,6 +677,13 @@ contract KernelSameIterationLocalKeyArray() {
     keys[0] = key;
     key = key + 100;
     for (int i = 0; i < count; i = i + 1) { this.slots[keys[i]] = i + 40; }
+    require(true);
+  }
+  function writeAfterAssignment(int count, int key) public {
+    int[] keys = new int[](count);
+    key = key + 1;
+    keys[0] = key;
+    for (int i = 0; i < count; i = i + 1) { this.slots[keys[i]] = i + 50; }
     require(true);
   }
   function check(int key, int expected) public { require(this.slots[key] == expected); }
@@ -1044,6 +1059,36 @@ describe('kernel signature-array rows', () => {
 });
 
 describe('kernel counter-key mapping loop compose', () => {
+  it('settles a batched invariant key from its reassigned point-in-time value', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`pragma solidcash ^0.13.0;
+      contract KernelReassignedInvariantKey() {
+        mapping(int => int) keyed;
+        mapping(int => int) totals;
+        function write(int n, int owner) public {
+          owner = owner + 5;
+          for (int i = 0; i < n; i = i + 1) {
+            this.keyed[i] = i + 10;
+            this.totals[owner] = i;
+            this.totals[owner] = i + 100;
+          }
+          require(true);
+        }
+        function check(int key, int expected) public { require(this.totals[key] == expected); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const batch = contract.batch([{ function: 'write', args: [3n, 30n] }]);
+    await expect(batch.send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(35n, 102n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('settles exactly the iterations selected by a runtime predicate', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SELECTED_COUNTER_MAPPING_SOURCE, {
@@ -1060,6 +1105,7 @@ describe('kernel counter-key mapping loop compose', () => {
     const computedHandler = artifact.abi.find((candidate) => candidate.name === 'writeComputed')!;
     const mixedHandler = artifact.abi.find((candidate) => candidate.name === 'writeMixed')!;
     const computedKeyHandler = artifact.abi.find((candidate) => candidate.name === 'writeComputedKey')!;
+    const reassignedKeyHandler = artifact.abi.find((candidate) => candidate.name === 'writeReassignedKey')!;
     const nestedInvariantHandler = artifact.abi.find((candidate) => candidate.name === 'writeNestedInvariant')!;
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write'))
       .toMatchObject({ eligible: true });
@@ -1101,6 +1147,9 @@ describe('kernel counter-key mapping loop compose', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeComputedKey'))
       .toMatchObject({ eligible: true });
     expect(computedKeyHandler.sortedUpsertLoopInfo).toHaveLength(1);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeReassignedKey'))
+      .toMatchObject({ eligible: true });
+    expect(reassignedKeyHandler.sortedUpsertLoopInfo).toHaveLength(1);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeNestedInvariant'))
       .toMatchObject({ eligible: true });
     expect(nestedInvariantHandler.sortedUpsertLoopInfo).toHaveLength(1);
@@ -1345,6 +1394,15 @@ describe('kernel counter-key mapping loop compose', () => {
       .batch([{ function: 'writeComputedKey', args: [3n, owner] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(StatefulContract.withCategory(inner, categoryId).call.checkHashedTotal(owner, 2n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.writeReassignedKey(4n, 20n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.checkTotal(25n, 3n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeReassignedKey', args: [3n, 30n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.checkTotal(35n, 2n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(() => StatefulContract.withCategory(inner, categoryId).batch([
       { function: 'writeComputedKey', args: [1n, owner] },
@@ -2790,6 +2848,8 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(15n, 32n).send()).resolves.toBeDefined();
     await expect(contract.call.writeCaptured(1n, 50n).send()).resolves.toBeDefined();
     await expect(contract.call.check(50n, 40n).send()).resolves.toBeDefined();
+    await expect(contract.call.writeAfterAssignment(1n, 60n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(61n, 50n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles loop and event predicates from dominating scalar-state assignments', async () => {

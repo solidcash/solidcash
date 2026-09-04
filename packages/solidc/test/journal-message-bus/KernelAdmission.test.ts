@@ -690,12 +690,12 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('refuses a local key-array write after its parameter dependency was reassigned', () => {
+  it('refuses a local key-array write after a non-dominating parameter reassignment', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
-      function denied(int n, int key) public {
+      function denied(int n, int key, bool take) public {
         int[] xs = new int[](n);
-        key = key + 1;
+        if (take) { key = key + 1; }
         xs[0] = key;
         for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
         require(true);
@@ -1173,7 +1173,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a computed loop key whose parameter dependency is reassigned', () => {
+  it('snapshots a computed loop key after a replayable parameter reassignment', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) keyed;
       mapping(bytes32 => int) totals;
@@ -1184,11 +1184,46 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('composes a self-dependent reassignment into an invariant loop key snapshot', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) keyed;
+      mapping(int => int) totals;
+      function write(int n, int owner) public {
+        owner = owner + 5;
+        for (int i = 0; i < n; i = i + 1) {
+          this.keyed[i] = i;
+          this.totals[owner] = i;
+          this.totals[owner] = i + 100;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.entryAccesses
+      ?.filter((entry) => entry.collection === 'totals')).toHaveLength(1);
+  });
+
+  it('replays a local key-array write after a straight-line parameter reassignment', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n, int key) public {
+        int[] xs = new int[](n);
+        key = key + 1;
+        xs[0] = key;
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
   });
 
   it('lowers a serializable compound counter key and its repeated effect onto the runtime streams', () => {

@@ -14324,7 +14324,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     let entryNfts: EntryNftInfo[] = [];
     let entryValueWitnesses: Array<Uint8Array | Uint8Array[]> = [];
-    let entryBatchWitnesses: unknown[] = [];
+    let entryBatchWitnesses = new Map<string, unknown>();
     // vmap sorted-set inserts to inject after the builder is created: P' (the predecessor's new commitment at its
     // entry slot) and NEW (the new node minted at the trailing loop-entry output).
     const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
@@ -15406,14 +15406,32 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         batchTrailingCount += predOutputs.length;
       }
       if ((entryAbiFunction?.sortedBatchInfo?.length ?? 0) > 0) batchWitnesses.push(BigInt(batchTrailingCount));
-      entryBatchWitnesses = batchWitnesses;
+      const batchWitnessNames = (entryAbiFunction?.sortedBatchInfo ?? []).flatMap((batch) => [
+        ...batch.slotIndices.flatMap((slotIndex) => [
+          `__internal__vmapBatchSlot_${slotIndex}`,
+          `__internal__vmapBatchProof_${slotIndex}`,
+          `__internal__vmapBatchNext_${slotIndex}`,
+          `__internal__vmapBatchPredOut_${slotIndex}`,
+          ...(batch.linear ? [`__internal__vmapBatchRank_${slotIndex}`] : []),
+        ]),
+        ...(batch.linear ? [`__internal__vmapBatchRows_${batch.collection}`] : []),
+      ]);
+      if ((entryAbiFunction?.sortedBatchInfo?.length ?? 0) > 0) {
+        batchWitnessNames.push('__internal__vmapBatchTrailingCount');
+      }
+      if (batchWitnessNames.length !== batchWitnesses.length) {
+        throw new Error(
+          `Internal error: function '${entryAbiFunction!.name}' derived ${batchWitnesses.length} vmap batch values `
+          + `for ${batchWitnessNames.length} named witnesses.`,
+        );
+      }
+      entryBatchWitnesses = new Map(batchWitnessNames.map((name, index) => [name, batchWitnesses[index]]));
       if (entryAbiFunction === abiFunction) {
-        const positions = abiFunction!.inputs.flatMap((input, index) =>
-          input.name.startsWith('__internal__vmapBatch') ? [index] : []);
-        if (positions.length < batchWitnesses.length) {
+        const positions = batchWitnessNames.map((name) =>
+          abiFunction!.inputs.findIndex((input) => input.name === name));
+        if (positions.some((position) => position < 0)) {
           throw new Error(
-            `Internal error: function '${abiFunction!.name}' publishes ${positions.length} vmap batch inputs `
-            + `for ${batchWitnesses.length} derived witnesses.`,
+            `Internal error: function '${abiFunction!.name}' does not publish every derived vmap batch witness.`,
           );
         }
         // Hidden resource families do not necessarily form one contiguous suffix. In particular, a handler
@@ -15423,18 +15441,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // then left `BatchNext` undefined. Materialize only through the last batch position with type-correct
         // sentinels and place every witness by its published ABI index. Later runtime-loop planning replaces the
         // intervening count sentinels in place; any resource family after this one can still append normally.
-        const lastPosition = positions[batchWitnesses.length - 1];
+        const lastPosition = Math.max(...positions);
         while (finalArgs.length <= lastPosition) {
           const input = abiFunction!.inputs[finalArgs.length];
           if (!input?.name.startsWith('__internal__')) {
             throw new Error(
-              `Internal error: cannot place vmap batch witnesses before unresolved user argument `
+              'Internal error: cannot place vmap batch witnesses before unresolved user argument '
               + `'${input?.name ?? finalArgs.length}' in '${abiFunction!.name}'.`,
             );
           }
           finalArgs.push(defaultInternalFunctionArg(input));
         }
-        batchWitnesses.forEach((witness, index) => { finalArgs[positions[index]] = witness; });
+        batchWitnessNames.forEach((name, index) => {
+          finalArgs[positions[index]] = entryBatchWitnesses.get(name);
+        });
       }
 
       // Append the P5b value witnesses in slotIndex order (SymbolTable injects them right after blockhash, before
@@ -22628,7 +22648,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ? group.functionArgs
               : group.compilerRoute?.args) ?? [];
           let visibleIndex = 0;
-          let batchWitnessIndex = 0;
           let valueWitnessIndex = 0;
           let delegateReturnWitnessIndex = 0;
           let delegateCallInputWitnessIndex = 0;
@@ -22966,7 +22985,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
                 return groupInternalValue;
               }
-              const value = entryBatchWitnesses[batchWitnessIndex++];
+              const value = entryBatchWitnesses.get(inp.name);
               if (value !== undefined) {
                 // The compiler adds the participant master to proof offsets. PredOut is the exception: its
                 // OP_OUTPUT* consumers take an absolute coordinate and therefore require SDK-side resolution.

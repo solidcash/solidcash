@@ -1801,8 +1801,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       }
       // Conditions and mapping values are replayed at their own source statement. This permits a write before an
-      // assignment and another after it without conflating the two local values. Other effect families retain the
-      // conservative whole-loop map until they also publish site-specific value recipes.
+      // assignment and another after it without conflating the two local values. Runtime event and transfer sites
+      // use the same position map below. Break fallthrough still needs phase-tagged path terms: its accumulated
+      // condition may combine identifiers observed at several earlier statements, so substituting one site's map
+      // would conflate distinct source values.
       for (const write of keyed) {
         const position = (block.statements ?? []).findIndex((statement) => containsNode(statement, write));
         const siteValues = loopCarriedLocalValuesByStatement.get(position);

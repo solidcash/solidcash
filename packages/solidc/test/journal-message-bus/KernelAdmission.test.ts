@@ -1788,6 +1788,28 @@ describe('required kernel admission', () => {
     expect(conditions?.[0]).not.toEqual(conditions?.[1]);
   });
 
+  it('refuses a write whose fallthrough combines differently phased break predicates', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function denied(int n) public {
+        bool stop = false;
+        for (int i = 0; i < n; i = i + 1) {
+          if (stop) break;
+          stop = i == 2;
+          if (stop) break;
+          this.values[i] = i;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('admits a public enum getter encoded as int', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       enum Status { A, B }

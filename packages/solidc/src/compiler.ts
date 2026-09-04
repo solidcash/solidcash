@@ -2571,7 +2571,6 @@ function synthesizeMessageBusRoute(
     let routeUsesStableOwnerIntrospection = false;
     let routeUsesOtherIntrospection = false;
     let routeUsesTxOrigin = false;
-    let signatureCheck = false;
     let statefulExternalCall = false;
     let methodCallCount = 0;
     const directExternalCallsites = new Set<Node>();
@@ -2700,8 +2699,6 @@ function synthesizeMessageBusRoute(
               }
             }
           }
-          if (node instanceof FunctionCallNode
-            && ['checkSig', 'checkMultiSig'].includes(node.identifier.name)) signatureCheck = true;
           if (node instanceof FunctionCallNode
             && /\.(call|staticcall|delegatecall)$/.test(node.identifier.name)) {
             statefulExternalCall = true;
@@ -3550,11 +3547,12 @@ function synthesizeMessageBusRoute(
     if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
     else if (!reason && foreignOutStatePrecedesSharedCall(fn))
       reason = 'foreign-outstate-read-precedes-shared-call-settlement';
-    // A transaction signature cannot be placed inside the message-bus envelope: the signature commits the
-    // transaction containing the call manifest, while the call manifest would in turn commit the signature.
-    // The kernel binds every finite `sig` array shape as an aligned positional route witness with one additional
-    // array dimension; the original handler verifies the selected element against the final transaction.
-    else if (!reason && (signatureCheck || transactionSignatureParameterTypes.length > 0)
+    // A transaction-signature *parameter* cannot be placed inside the message-bus envelope: it commits the
+    // transaction containing that envelope, while the envelope would in turn commit the signature. The kernel
+    // binds finite sig-array parameter shapes as aligned route witnesses with one extra row dimension. A
+    // literal or locally computed signature is already part of executable handler code, not the envelope, so
+    // it has no circular dependency and its original checkSig remains authoritative.
+    else if (!reason && transactionSignatureParameterTypes.length > 0
       && !kernelSignatureParametersRepresentable) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive

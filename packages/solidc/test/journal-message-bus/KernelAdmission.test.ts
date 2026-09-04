@@ -116,14 +116,15 @@ describe('required kernel admission', () => {
     }));
   });
 
-  it('refuses a transaction signature check with no bindable signature parameter', () => {
-    expect(denied(`contract C(pubkey owner) {
+  it('admits a transaction signature check with a code-local signature', () => {
+    const artifact = compileString(`contract C(pubkey owner) {
       function denied() public { require(checkSig(sig(hex"00"), owner)); }
       function control() public { require(true); }
-    }`, 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_TX_SIGNATURE',
-    });
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
   });
 
   it('admits a counter-keyed mapping loop via a hidden permutation witness', () => {

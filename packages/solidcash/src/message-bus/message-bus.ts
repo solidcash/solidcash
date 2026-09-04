@@ -192,6 +192,30 @@ export function encodeMessageBatch(
   }
 
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
+  // A compiler-owned literal mapping key has no row argument to source it from. Recover it from the direct
+  // handler's published entry access, which is the same constant the route's key witness is checked against.
+  // This keeps literals distinct from genuinely computed expressions, which still require a caller/composer
+  // supplied witness when their expression cannot be evaluated locally.
+  const literalKeyWitness = (
+    handlerName: string,
+    binding: NonNullable<typeof capability.handlers[number]['batchKeyWitnesses']>[number],
+  ): FunctionArgument | undefined => {
+    if (binding.source !== 'expression') return undefined;
+    const routeAccess = capability.route.entryAccesses?.find((access) => access.keyParams.some((param) =>
+      param.replace(/^__message_bus_ek_/, '') === binding.routeInput));
+    if (routeAccess?.slotIndex === undefined) return undefined;
+    const direct = artifact.abi.find((candidate) => candidate.name === handlerName);
+    const access = direct?.entryAccesses?.find((candidate) => candidate.slotIndex === routeAccess.slotIndex);
+    const match = binding.routeInput.match(/_(\d+)(?:_row)?$/);
+    const source = match ? access?.keySources?.[Number(match[1])] : undefined;
+    if (source?.kind !== 'constant' || source.constantValue === undefined) return undefined;
+    const type = capability.route.inputs.find((input) => input.name === binding.routeInput)?.type;
+    if (type === 'bool') return source.constantValue !== '0';
+    if (type === 'bigint' || type === 'int' || type === 'uint' || /^u?int\d+$/.test(type ?? '')) {
+      return BigInt(source.constantValue);
+    }
+    return undefined;
+  };
   // X199. Over the handlers the route can DISPATCH, not every published one. A REFUSED handler still publishes
   // `usesMsgValue` - `EnglishAuction.bid` is payable, uses msg.value and is refused by route synthesis - and
   // counting it wrote `01` into a header the compiled route demands to be `00`, aborting in the route preamble
@@ -348,6 +372,7 @@ export function encodeMessageBatch(
         ? invocation.logicalCaller
         : binding.source === 'expression'
           ? unboundRouteWitnesses[binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput]
+            ?? literalKeyWitness(handler.name, binding)
           : args[binding.inputIndex];
       if (value === undefined) {
         throw new MessageBusDiagnosticError(

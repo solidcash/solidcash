@@ -1290,6 +1290,61 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           loopValueDefinitions.set(statement.name, statement.expression);
         }
       }
+      // A top-level scalar recurrence has one exact source-order value at every logical counter rank. Keep the
+      // assignment in the source loop (later local uses still observe it), but let journal values use the affine
+      // form so physical key permutation does not turn a source-order local into a physical-rank value. Restrict
+      // this to one `x = x +/- constant` before every keyed write and to an initializer in the enclosing block.
+      // Branches, non-constant deltas, and multiple updates retain the conservative loop-carried fence below.
+      const loopIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
+      const outerInitializers = new Map<string, ExpressionNode>();
+      if (loopIndex >= 0) {
+        for (const statement of canonical.parent.statements!.slice(0, loopIndex)) {
+          if (statement instanceof VariableDefinitionNode && statement.expression) {
+            outerInitializers.set(statement.name, statement.expression);
+          }
+        }
+      }
+      const keyedStatementIndices = new Map<Node, number>();
+      for (const [index, statement] of (block.statements ?? []).entries()) {
+        if (keyed.includes(statement as typeof keyed[number])) keyedStatementIndices.set(statement, index);
+      }
+      for (const [index, statement] of (block.statements ?? []).entries()) {
+        if (!(statement instanceof AssignNode) || !outerInitializers.has(statement.identifier.name)) continue;
+        const recurrence = statement.expression;
+        if (!(recurrence instanceof BinaryOpNode)
+          || !(recurrence.operator === BinaryOperator.PLUS || recurrence.operator === BinaryOperator.MINUS)
+          || !(recurrence.left instanceof IdentifierNode)
+          || recurrence.left.name !== statement.identifier.name
+          || !(recurrence.right instanceof IntLiteralNode)) continue;
+        const writesAfter = [...keyedStatementIndices.values()].every((writeIndex) => writeIndex > index);
+        const updates = (block.statements ?? []).filter((candidate) => candidate instanceof AssignNode
+          && candidate.identifier.name === statement.identifier.name);
+        if (!writesAfter || updates.length !== 1) continue;
+        const delta = recurrence.operator === BinaryOperator.PLUS
+          ? recurrence.right.value : -recurrence.right.value;
+        const rank = step === 1n && start === 0n
+          ? new IdentifierNode(logical)
+          : new BinaryOpNode(
+            new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
+            BinaryOperator.DIV, new IntLiteralNode(step),
+          );
+        const occurrence = new BinaryOpNode(rank, BinaryOperator.PLUS, new IntLiteralNode(1n));
+        const scaled = new BinaryOpNode(occurrence, BinaryOperator.MUL, new IntLiteralNode(delta));
+        const affine = new BinaryOpNode(
+          cloneNode(outerInitializers.get(statement.identifier.name)!), BinaryOperator.PLUS, scaled,
+        );
+        const stampLocation = (candidate: Node): void => {
+          candidate.location = statement.location;
+          for (const key of Object.keys(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
+            const value = (candidate as unknown as Record<string, unknown>)[key];
+            if (value instanceof Node) stampLocation(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) stampLocation(item);
+          }
+        };
+        stampLocation(affine);
+        loopValueDefinitions.set(statement.identifier.name, affine);
+      }
       const safeLoopValueAlias = (name: string, seen = new Set<string>()): boolean => {
         const expression = loopValueDefinitions.get(name);
         if (!expression || seen.has(name)) return false;

@@ -839,7 +839,6 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['a loop-carried local value', 'running = running + 1; this.a[i] = running;'],
     ['loop-carried scalar state', 'this.total = this.total + 1; this.a[i] = this.total;'],
     ['a counter-dependent read from another mapping', 'this.a[i] = this.b[i];'],
   ])('refuses a canonical counter loop with %s', (_label, statement) => {
@@ -859,6 +858,19 @@ describe('required kernel admission', () => {
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('admits an affine loop-carried local mapping value', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a;
+      function write(int n) public {
+        int running = 0;
+        for (int i = 0; i < n; i = i + 1) { running = running + 1; this.a[i] = running; }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
   });
 
   it('admits sequential counter loops over one collection and defers physical overlap to planning', () => {

@@ -569,6 +569,8 @@ export interface SortedUpsertLoopAbi {
   iterationBreakCondition?: ExternalCallExpression;
   /** Public-argument expression computing a non-affine source-loop bound. */
   iterationBound?: ExternalCallExpression;
+  /** The source condition is `counter != bound`; the endpoint must be exactly reachable by the signed step. */
+  iterationExactBound?: boolean;
   /** Public-argument expression computing the signed source-loop step. */
   iterationStep?: ExternalCallExpression;
   op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default

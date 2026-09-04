@@ -184,6 +184,7 @@ interface VmapCounterPermutationSpec {
   postTest: boolean;
   start: bigint;
   step: bigint;
+  exactBound?: boolean;
 }
 
 const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
@@ -243,6 +244,18 @@ function vmapCounterPermutationValues(
 ): bigint[] {
   const effectiveBound = bound + spec.boundOffset;
   if (spec.step === 0n) throw new Error('vmap counter loop step must be non-zero');
+  if (spec.exactBound) {
+    const distance = spec.step > 0n
+      ? effectiveBound - spec.start : spec.start - effectiveBound;
+    const directionMatches = spec.postTest ? distance > 0n : distance >= 0n;
+    if (!directionMatches) {
+      throw new Error(`vmap counter loop exact bound '${spec.countName}' must be in the direction of its step`);
+    }
+    const magnitude = spec.step > 0n ? spec.step : -spec.step;
+    if (distance % magnitude !== 0n) {
+      throw new Error(`vmap counter loop exact bound '${spec.countName}' must be reachable by its step`);
+    }
+  }
   // Legacy unit-domain rows authenticate the public bound itself as the iteration count, including its
   // historical non-negative constraint. Ranged and affine rows authenticate the derived progression length,
   // so a bound below their start is a valid zero-trip domain.
@@ -27048,7 +27061,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       info, spec, functionArgs, artifact, callerInputs, state, executionSelfAddress,
     );
     return step === undefined
-      ? undefined : vmapCounterPermutationValues(BigInt(resolved), { ...spec, step });
+      ? undefined : vmapCounterPermutationValues(BigInt(resolved), {
+        ...spec, step, exactBound: info?.iterationExactBound,
+      });
   }
 
   private _vmapCounterStep(

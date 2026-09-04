@@ -1968,6 +1968,44 @@ describe('required kernel admission', () => {
     );
   });
 
+  it.each([
+    ['ascending for', 'for (int i = 1; i != bound; i = i + 2) { this.m[i] = i; }', 'step_p2'],
+    ['reversed ascending for', 'for (int i = 1; bound != i; i = 2 + i) { this.m[i] = i; }', 'step_p2'],
+    ['descending source while', `int i = 5;
+      while (i != bound) { this.m[i] = i; i = i - 2; }`, 'step_n2'],
+    ['ascending do-while', `int i = 1;
+      do { this.m[i] = i; i = i + 2; } while (i != bound);`, 'step_p2_post'],
+  ])('admits an exact-termination %s counter domain', (_label, loop, encodedDomain) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int bound) public { ${loop} require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.inputs).toContainEqual(
+      expect.objectContaining({ name: expect.stringContaining(encodedDomain) }),
+    );
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({ iterationExactBound: true });
+  });
+
+  it('publishes a replayable runtime step for an exact-termination domain', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int bound, int stride) public {
+        for (int i = 1; i != bound; i = i + stride) { this.m[i] = i; }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({
+        iterationExactBound: true,
+        iterationStep: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      });
+  });
+
   it('admits a do-while counter-keyed mapping loop beside a typed call', () => {
     const artifact = compileString(`interface I { function r(int i); }
       contract C() {

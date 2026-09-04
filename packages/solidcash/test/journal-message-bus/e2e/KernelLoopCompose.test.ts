@@ -73,6 +73,18 @@ contract KernelAffineCounterMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
+const EXACT_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelExactCounterMapping() {
+  mapping(int => int) m;
+  function writeAscending(bool active, int bound, int stride, int value) public {
+    if (active) {
+      for (int i = 1; i != bound; i = i + stride) { this.m[i] = value; }
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.m[key] == expected); }
+}`;
+
 const REASSIGNED_BOUND_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelReassignedBoundMapping() {
   mapping(int => int) m;
@@ -1708,6 +1720,78 @@ describe('kernel counter-key mapping loop compose', () => {
       await expect(StatefulContract.withCategory(inner, categoryId).check(key, 20n).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
+  }, 180_000);
+
+  it('settles exact-termination domains and rejects unreachable endpoints before construction', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(EXACT_COUNTER_MAPPING_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeAscending'))
+      .toMatchObject({ eligible: true });
+    const exactInfo = artifact.abi.find((candidate) =>
+      candidate.name === 'writeAscending')?.sortedUpsertLoopInfo?.[0];
+    expect(exactInfo).toMatchObject({ iterationExactBound: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+
+    await expect(contract.call.writeAscending(true, 7n, 2n, 11n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    await expect(contract.call.writeAscending(true, 1n, 2n, 99n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+
+    // Artifact metadata makes invalid domains fail early, but it is not trusted by the covenant. Simulate an
+    // older/hostile planner which omits the exact-endpoint flag and verify that the generated route still refuses.
+    exactInfo!.iterationExactBound = undefined;
+    const hostile = contract.batch([{ function: 'writeAscending', args: [true, 6n, 2n, 44n] }]);
+    const hostileBuilder = await hostile.build();
+    exactInfo!.iterationExactBound = true;
+    const hostileRouteIndex = hostileBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(hostileRouteIndex).toBeGreaterThanOrEqual(0);
+    const hostileTransaction = hostileBuilder.buildLibauthTransaction();
+    const hostileVm = createVirtualMachineBch2026ForProvider(provider);
+    expect(hostileVm.stateSuccess(
+      hostileVm.evaluate({
+        inputIndex: hostileRouteIndex,
+        sourceOutputs: generateLibauthSourceOutputs(hostileBuilder.inputs),
+        transaction: hostileTransaction,
+      }),
+    )).not.toBe(true);
+
+    await expect(contract.batch([{
+      function: 'writeAscending', args: [false, 6n, 0n, 99n],
+    }]).send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const routed = contract.batch([{ function: 'writeAscending', args: [true, 7n, 2n, 22n] }]);
+    const routedBuilder = await routed.build();
+    const routeInput = routedBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    if (!routeInput || !('params' in routeInput.unlocker)) throw new Error('message-bus route input is missing');
+    const ascending = artifact.abi.find((candidate) => candidate.name === 'writeAscending')!;
+    const permutationName = ascending.inputs.find((input) =>
+      input.name.startsWith('__internal__vmapCounterPerm_'))!.name;
+    const permutationIndex = artifact.messageBus!.route.inputs.findIndex((input) => input.name === permutationName);
+    const planned = routeInput.unlocker.params[permutationIndex];
+    expect(Array.isArray(planned) && Array.isArray(planned[0])
+      ? [...planned[0]].sort((left, right) => Number(BigInt(left) - BigInt(right))) : planned)
+      .toEqual([1n, 3n, 5n]);
+    await expect(routed.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    for (const key of [1n, 3n, 5n]) {
+      await expect(contract.call.check(key, 22n).send()).resolves.toMatchObject({
+        txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+    }
+    expect(() => contract.batch([{ function: 'writeAscending', args: [true, 6n, 2n, 44n] }]))
+      .toThrow(/exact bound 'bound' must be reachable by its step/);
+    expect(() => contract.batch([{ function: 'writeAscending', args: [true, -1n, 2n, 44n] }]))
+      .toThrow(/exact bound 'bound' must be in the direction of its step/);
+    expect(() => contract.batch([{ function: 'writeAscending', args: [true, 7n, 0n, 44n] }]))
+      .toThrow(/runtime step must advance toward its bound/);
   }, 180_000);
 
   it('replays straight-line public and local bound assignments for routed calls', async () => {

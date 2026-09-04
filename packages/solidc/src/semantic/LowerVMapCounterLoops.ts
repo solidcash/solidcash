@@ -168,6 +168,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       stepAssignments: AssignNode[];
       counterType: IntType;
       postTest: boolean;
+      exactBound: boolean;
       sourceWhile: boolean;
       counterUpdate?: AssignNode;
       parent: BlockNode;
@@ -512,6 +513,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             [BinaryOperator.LE]: BinaryOperator.GE,
             [BinaryOperator.GT]: BinaryOperator.LT,
             [BinaryOperator.GE]: BinaryOperator.LE,
+            [BinaryOperator.NE]: BinaryOperator.NE,
           } as Partial<Record<BinaryOperator, BinaryOperator>>)[loop.condition.operator];
           if (comparisonOperator === undefined) continue;
           const update = loop.block.statements?.at(-1);
@@ -545,9 +547,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const progressionUpdate = literalStep !== undefined && literalStep === variable.loopStepValue;
           const comparisonAdvances = directionalStep !== undefined && (
             (directionalStep > 0n && (comparisonOperator === BinaryOperator.LT
-              || comparisonOperator === BinaryOperator.LE))
+              || comparisonOperator === BinaryOperator.LE || comparisonOperator === BinaryOperator.NE))
             || (directionalStep < 0n && (comparisonOperator === BinaryOperator.GT
-              || comparisonOperator === BinaryOperator.GE))
+              || comparisonOperator === BinaryOperator.GE || comparisonOperator === BinaryOperator.NE))
           );
           const sourceWhile = loop instanceof WhileNode && variable.isLoopVariable !== true
             && loop.forLoopUpdateCount === 0;
@@ -613,6 +615,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             stepAssignments: resolvedRuntimeStep?.assignments ?? [],
             counterType: variable.type instanceof IntType ? variable.type : new IntType(true, 256),
             postTest,
+            exactBound: comparisonOperator === BinaryOperator.NE,
             sourceWhile,
             counterUpdate: update as AssignNode,
             parent: x,
@@ -1171,7 +1174,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const {
         logical, count, boundNames, boundDefinitions, boundAssignments, boundOffset, boundExpression,
         start, step, stepExpression, stepNames, stepDefinitions, stepAssignments,
-        counterType, postTest, sourceWhile, counterUpdate,
+        counterType, postTest, exactBound, sourceWhile, counterUpdate,
         pathConditions, pathSupported,
       } = canonical;
       const serial = apply ? this.serial++ : this.serial;
@@ -2512,6 +2515,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         (node.runtimeCounterLoopCounters ??= new Map()).set(group.hidden, {
           name: logical, initialValue: start, stepValue: step,
           ...(stepExpression && { stepExpression: cloneNode(stepExpression) }),
+          ...(exactBound && { exactBound: true }),
         });
         if (group.inputCount && group.outputCount) {
           (node.runtimeCounterLoopCardinalityParams ??= new Map()).set(group.hidden, {
@@ -2571,6 +2575,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       }
       const boundValue = (): ExpressionNode => boundSnapshot
         ? id(boundSnapshot) : asProofInt(sourceBoundValue());
+      const exactDistance = (): ExpressionNode => step > 0n
+        ? binary(boundValue(), BinaryOperator.MINUS, lit(start))
+        : binary(lit(start), BinaryOperator.MINUS, boundValue());
       const positiveIterationCount = (): ExpressionNode => binary(
         binary(binary(
           step > 0n
@@ -2796,10 +2803,21 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // schema later in layout planning.
       node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
         + MAX_COUNTER_ITERATIONS * (keyedByStream.size + runtimeEmits.length + runtimeTransfers.length);
+      const whenLoopActive = (expression: ExpressionNode): ExpressionNode => pathCondition
+        ? at(new TernaryOpNode(activePath(), expression, at(new BoolLiteralNode(true))))
+        : expression;
       if (stepExpression) {
-        prelude.push(at(new RequireNode(binary(
+        prelude.push(at(new RequireNode(whenLoopActive(binary(
           proofStepValue(), step > 0n ? BinaryOperator.GT : BinaryOperator.LT, lit(0n),
-        ), 'vmap counter loop runtime step must advance toward its bound')));
+        )), 'vmap counter loop runtime step must advance toward its bound')));
+      }
+      if (exactBound) {
+        prelude.push(at(new RequireNode(whenLoopActive(binary(
+          exactDistance(), postTest ? BinaryOperator.GT : BinaryOperator.GE, lit(0n),
+        )), 'vmap counter loop exact bound must be in the direction of its step')));
+        prelude.push(at(new RequireNode(whenLoopActive(binary(
+          binary(exactDistance(), BinaryOperator.MOD, stepMagnitude()), BinaryOperator.EQ, lit(0n),
+        )), 'vmap counter loop exact bound must be reachable by its step')));
       }
       if (!unitDomain) {
         prelude.push(at(new VariableDefinitionNode(

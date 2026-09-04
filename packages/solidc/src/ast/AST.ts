@@ -417,8 +417,11 @@ export class FunctionDefinitionNode extends Node implements Named {
     iterationBreakCondition?: ExpressionNode;
     /** Expanded public-argument expression computing a non-affine loop bound. */
     iterationBound?: ExpressionNode;
+    /** The source condition is `counter != bound`, so the signed step must reach the endpoint exactly. */
+    iterationExactBound?: boolean;
     iterationCounter?: {
       name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+      exactBound?: boolean;
     };
     op: '+' | '-' | 'set' | 'delete';
   }>;
@@ -439,6 +442,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Source counter descriptor keyed by compiler-owned permutation parameter. */
   runtimeCounterLoopCounters?: Map<string, {
     name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+    exactBound?: boolean;
   }>;
 
   /** Physical stream widths keyed by the compiler-owned permutation parameter. */

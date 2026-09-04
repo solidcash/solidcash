@@ -21822,7 +21822,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           && writeNode.messageBusRuntimeOldValueWitness.array instanceof IdentifierNode
           && { oldValuesWitnessParam: writeNode.messageBusRuntimeOldValueWitness.array.name }),
         ...(cardinality && { inputCountParam: cardinality.input, outputCountParam: cardinality.output }),
-        ...(counter && { iterationCounter: counter }), op });
+        ...(counter && { iterationCounter: counter }),
+        ...(counter?.exactBound && { iterationExactBound: true }), op });
       if (condition) infos.at(-1)!.condition = condition;
       if (iterationBound) infos.at(-1)!.iterationBound = iterationBound;
       if (iteration) {

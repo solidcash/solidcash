@@ -105,6 +105,12 @@ interface ActiveMultiCache {
 const COLLECTION_CACHE_LOADED_MASK = '__cj_cache_loaded_mask';
 const COLLECTION_CACHE_DIRTY_MASK = '__cj_cache_dirty_mask';
 
+/** A lowered counter-loop entry is settled by its dedicated trailing journal, not this fixed-entry cache. */
+const isRuntimeCounterEntry = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode): boolean =>
+  node.keys.some((key) => key instanceof ArrayAccessNode
+    && key.array instanceof IdentifierNode
+    && key.array.name.startsWith('__internal__vmapCounterPerm_'));
+
 /** Sink a cloned collection-cache flush immediately before every non-tail control-flow return. */
 class FlushCollectionCachesBeforeReturns extends AstTraversal {
   constructor(private readonly writes: StatementNode[]) { super(); }
@@ -233,6 +239,15 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       // event into the authenticated route-owned effect frame. It can therefore share the value-threaded
       // collection-journal exit. Ordinary internal helpers still have no such projection and retain X118's gate.
       if (emitsEvent && !fn.graphEmissionHandler) continue;
+      // A kernel counter-loop write owns its own trailing upsert journal.  It
+      // must not prevent this helper from value-threading a separate fixed
+      // entry read/write: e.g. `target[i] = source[0]` needs `source[0]` to
+      // share the route-wide cache while `target[i]` remains on the runtime
+      // row journal.  Entry slots are assigned by the preceding semantic pass
+      // and are stable on the cloned body at this point.
+      const runtimeLoopSlots = new Set((fn.entryAccesses ?? [])
+        .filter((entry) => entry.inLoop)
+        .map((entry) => entry.slotIndex));
       const accesses: Array<{
         name: string;
         keys: ExpressionNode[];
@@ -244,6 +259,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         if (candidate instanceof FunctionCallNode && candidate.identifier.name === fn.name) unsupported = true;
         if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
           || candidate instanceof MappingDeleteNode) {
+          if (runtimeLoopSlots.has(candidate.entrySlotIndex) || isRuntimeCounterEntry(candidate)) return;
           if ((candidate instanceof MappingAccessNode && candidate.arrayIndex)
             || (candidate instanceof MappingAssignNode && candidate.arrayIndex)) unsupported = true;
           accesses.push({ name: candidate.name, keys: candidate.keys, node: candidate });

@@ -1215,6 +1215,24 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const expression = write instanceof MappingAssignNode ? write.expression
           : write instanceof ArrayAssignNode ? write.value : undefined;
         if (!expression || !containsCollectionAccess(expression)) return false;
+        // A fixed read from another collection (`a[i] = b[0]`) already has its ordinary authenticated entry
+        // witness. It does not need the destination's row-local old-value vector; reserve that vector only for
+        // expressions that actually read the entry being written.
+        const readsWrittenCollection = (candidate: Node): boolean => {
+          const access = collectionAccessOf(candidate);
+          if (access?.name === write.name) return true;
+          for (const key of Object.keys(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'collection') continue;
+            const value = (candidate as unknown as Record<string, unknown>)[key];
+            if (value instanceof Node && readsWrittenCollection(value)) return true;
+            if (Array.isArray(value) && value.some((item) => item instanceof Node && readsWrittenCollection(item))) {
+              return true;
+            }
+          }
+          return false;
+        };
+        if (!readsWrittenCollection(expression)) return false;
         const left = expression instanceof BinaryOpNode ? collectionAccessOf(expression.left) : undefined;
         const compact = expression instanceof BinaryOpNode
           && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)

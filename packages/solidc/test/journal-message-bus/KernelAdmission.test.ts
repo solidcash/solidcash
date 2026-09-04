@@ -786,6 +786,21 @@ describe('required kernel admission', () => {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
+  it('keeps a fixed read from another mapping on its ordinary authenticated witness', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a;
+      mapping(int => int) b;
+      function fill(int n) public {
+        for (int i = 0; i < n; i = i + 1) { this.a[i] = this.b[0]; }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'fill');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'fill')?.inputs.some((input) =>
+      input.name.startsWith('__internal__vmapCounterOld_'))).toBe(false);
+  });
+
   it.each([
     ['a loop-carried local value', 'running = running + 1; this.a[i] = running;'],
     ['loop-carried scalar state', 'this.total = this.total + 1; this.a[i] = this.total;'],

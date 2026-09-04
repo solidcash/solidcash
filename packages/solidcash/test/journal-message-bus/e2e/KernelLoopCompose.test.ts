@@ -2038,7 +2038,7 @@ describe('kernel composite counter-key settlement', () => {
     await contract.call.seed(0n, 10n, 20n).send();
     await contract.call.seed(1n, 30n, 40n).send();
 
-    const call = contract.batch([{ function: 'update', args: [2n] }]);
+    const call = contract.batch([{ function: 'update', args: [3n] }]);
     const builder = await call.build();
     const vm = createVirtualMachineBch2026ForProvider(provider);
     const transaction = builder.buildLibauthTransaction();
@@ -2050,5 +2050,6 @@ describe('kernel composite counter-key settlement', () => {
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.check(0n, 11n, 20n).send()).resolves.toBeDefined();
     await expect(contract.call.check(1n, 31n, 40n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(2n, 1n, 0n).send()).resolves.toBeDefined();
   }, 180_000);
 });

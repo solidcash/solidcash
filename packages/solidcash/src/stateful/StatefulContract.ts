@@ -16274,8 +16274,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       if (info.valueRuntimeLocal) {
         const oldWitnesses: ConstructorArgument[] = [];
-        const runtimeInputs: UnlockableUtxo[] = [];
         const runtimeSlots = new Set<string>();
+        const consumedInputs = new Set<string>();
+        let outputCount = 0;
+        // The covenant defers a present update, then can re-point it for the next absent key in its gap.
+        // Mirror that physical input schedule here: the re-point consumes no second predecessor input and
+        // contributes one additional entry output. Consecutive new keys in one gap chain in the same way.
+        let deferred: { slot: Uint8Array; nextKey: Uint8Array } | undefined;
         const runtimeUnlocker = createEntryNftUnlocker(
           this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
         );
@@ -16289,27 +16294,58 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           runtimeSlots.add(slotHex);
           const entry = list.find(slot);
           let raw: Uint8Array;
-          if (!entry) throw new Error(`vmap runtime struct loop ${info.collection}: key ${i} has no existing entry`);
-          runtimeInputs.push({ ...entry.utxo, unlocker: runtimeUnlocker });
-          const tail = entry.value;
-          if (tail.length < 4) throw new Error(`vmap runtime struct value for ${info.collection} has an invalid tail`);
-          const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
-          if (len <= 60) {
-            raw = tail.slice(4, 4 + len);
-          } else {
-            const root = tail.slice(4, 36);
-            const headData = tail.slice(36, 64);
-            const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
-            const chunks = (await this.inner.provider.getUtxos(chunkAddr))
-              .filter((utxo) => utxo.token?.category === this.categoryId
-                && !!utxo.token?.nft?.commitment && utxo.token.nft.commitment.length > 0)
-              .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))
-              .sort((a, b) => a.chunkIndex - b.chunkIndex);
-            raw = joinValueChunks(headData, chunks, len);
-            if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
-              throw new Error('vmap runtime struct value chunks do not match the authenticated root');
+          if (entry) {
+            const inputId = `${entry.utxo.txid}:${entry.utxo.vout}`;
+            if (consumedInputs.has(inputId)) {
+              throw new Error(`vmap runtime struct loop ${info.collection}: entry ${i} is already co-spent`);
             }
-            valueChunkGc.push({ collection: info.collection, slotHex, oldDigestHex: binToHex(root) });
+            consumedInputs.add(inputId);
+            appendRuntimeJournalInput({ ...entry.utxo, unlocker: runtimeUnlocker }, info.collection);
+            const tail = entry.value;
+            if (tail.length < 4) throw new Error(`vmap runtime struct value for ${info.collection} has an invalid tail`);
+            const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
+            if (len <= 60) {
+              raw = tail.slice(4, 4 + len);
+            } else {
+              const root = tail.slice(4, 36);
+              const headData = tail.slice(36, 64);
+              const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
+              const chunks = (await this.inner.provider.getUtxos(chunkAddr))
+                .filter((utxo) => utxo.token?.category === this.categoryId
+                  && !!utxo.token?.nft?.commitment && utxo.token.nft.commitment.length > 0)
+                .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))
+                .sort((a, b) => a.chunkIndex - b.chunkIndex);
+              raw = joinValueChunks(headData, chunks, len);
+              if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
+                throw new Error('vmap runtime struct value chunks do not match the authenticated root');
+              }
+              valueChunkGc.push({ collection: info.collection, slotHex, oldDigestHex: binToHex(root) });
+            }
+            deferred = { slot: entry.slot, nextKey: entry.nextKey };
+            outputCount += 1;
+          } else {
+            raw = encodePushdataValue(
+              getDefaultStateValue(collection.valueType, stateLayout.structs),
+              collection.valueType, stateLayout.structs,
+            );
+            const predecessor = list.predecessorOf(slot);
+            const slotValue = bytesToSlotValue(slot);
+            const rePointsDeferred = deferred !== undefined
+              && bytesToSlotValue(deferred.slot) < slotValue
+              && (bytesToSlotValue(deferred.nextKey) === 0n || slotValue < bytesToSlotValue(deferred.nextKey));
+            if (rePointsDeferred) {
+              deferred = { slot, nextKey: deferred!.nextKey };
+              outputCount += 1;
+            } else {
+              const inputId = `${predecessor.utxo.txid}:${predecessor.utxo.vout}`;
+              if (consumedInputs.has(inputId)) {
+                throw new Error(`vmap runtime struct loop ${info.collection}: absent key ${i} shares a non-adjacent predecessor`);
+              }
+              consumedInputs.add(inputId);
+              appendRuntimeJournalInput({ ...predecessor.utxo, unlocker: runtimeUnlocker }, info.collection);
+              deferred = { slot, nextKey: predecessor.nextKey };
+              outputCount += 2;
+            }
           }
           oldWitnesses.push(info.oldValuesWitnessParam?.startsWith(VMAP_COUNTER_OLD_PREFIX)
             ? decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value as ConstructorArgument
@@ -16320,10 +16356,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`vmap runtime struct loop ${info.collection}: missing old-value witness ABI input`);
         }
         replaceLoopArgument(witnessIndex, oldWitnesses);
-        for (const input of runtimeInputs) appendRuntimeJournalInput(input, info.collection);
-        runtimeLoopDerivedCounts.set(info.collection, keysArr.length);
+        runtimeLoopDerivedCounts.set(info.collection, outputCount);
         addRuntimeLoopCardinality(
-          info.collection, insertLoopPredecessors.length - runtimeInputStart, keysArr.length,
+          info.collection, insertLoopPredecessors.length - runtimeInputStart, outputCount,
         );
         if (collection.chunkableValue) addComputedValueChunkRun(info.collection);
         continue;

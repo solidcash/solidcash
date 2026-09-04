@@ -1769,13 +1769,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || runtimePathExpressionSupported(
             condition, logical, new Set(), stateValues, loopCarriedLocalValues,
           ));
+      const sourceWhileContinueUpdates = new Set<AssignNode>();
+      const sourceWhileContinueUpdateBlocks = new Map<BlockNode, Set<AssignNode>>();
+      const sourceWhileContinues = new Set<ContinueNode>();
       const hasUnexpectedLoopControlMutation = (
         x: Node,
         inspectLogical: boolean,
         inspectBound: boolean,
       ): boolean => {
         if (x instanceof AssignNode
-          && ((inspectLogical && x.identifier.name === logical && x !== counterUpdate)
+          && ((inspectLogical && x.identifier.name === logical && x !== counterUpdate
+            && !sourceWhileContinueUpdates.has(x))
             || (inspectBound && (
               (boundNames.includes(x.identifier.name) && !boundAssignments.includes(x))
               || (stepNames.includes(x.identifier.name) && !stepAssignments.includes(x))
@@ -1798,26 +1802,61 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
-      const hasSourceWhileContinue = (x: Node): boolean => {
-        if (x instanceof ContinueNode) return true;
-        if (x !== block && (x instanceof WhileNode || x instanceof DoWhileNode)) return false;
-        for (const [key, value] of Object.entries(x)) {
+      let sourceWhileContinueValid = true;
+      const inspectSourceWhileContinues = (candidate: Node): void => {
+        if (!sourceWhileContinueValid) return;
+        if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
+        if (candidate instanceof BlockNode) {
+          for (const [index, statement] of (candidate.statements ?? []).entries()) {
+            if (statement instanceof ContinueNode) {
+              const update = candidate.statements?.[index - 1];
+              if (!(update instanceof AssignNode)
+                || update.identifier.name !== logical || !counterUpdate
+                || expressionShape(update.expression) !== expressionShape(counterUpdate.expression)) {
+                sourceWhileContinueValid = false;
+                return;
+              }
+              sourceWhileContinueUpdates.add(update);
+              const updates = sourceWhileContinueUpdateBlocks.get(candidate) ?? new Set<AssignNode>();
+              updates.add(update);
+              sourceWhileContinueUpdateBlocks.set(candidate, updates);
+              sourceWhileContinues.add(statement);
+              return;
+            }
+            inspectSourceWhileContinues(statement);
+            if (!sourceWhileContinueValid) return;
+          }
+          return;
+        }
+        if (candidate instanceof BranchNode) {
+          inspectSourceWhileContinues(candidate.ifBlock);
+          if (candidate.elseBlock) inspectSourceWhileContinues(candidate.elseBlock);
+          return;
+        }
+        if (candidate instanceof SwitchNode) {
+          for (const arm of candidate.cases) inspectSourceWhileContinues(arm.body);
+          if (candidate.defaultCase) inspectSourceWhileContinues(candidate.defaultCase);
+          return;
+        }
+        for (const [key, value] of Object.entries(candidate)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
             || key === 'resolvedFunction') continue;
-          if (value instanceof Node && hasSourceWhileContinue(value)) return true;
-          if (Array.isArray(value)
-            && value.some((item) => item instanceof Node && hasSourceWhileContinue(item))) return true;
+          if (value instanceof Node) inspectSourceWhileContinues(value);
+          else if (Array.isArray(value)) {
+            for (const item of value) if (item instanceof Node) inspectSourceWhileContinues(item);
+          }
         }
-        return false;
       };
+      if (sourceWhile) inspectSourceWhileContinues(block);
       if (keyed.length === 0 || !selectionConditionSupported
         || keyed.some((write) => hasObservableEffect(write))
         || conditionalRuntimeEmit
         || conditionalRuntimeTransfer
         || hasUnjournalledRepeatedEffect(block, runtimeEmitSet, runtimeTransferSet)
-        // Unlike a desugared for-loop, `continue` in a source while skips its syntactic tail update. It can
-        // therefore repeat a logical counter value and is not this canonical progression.
-        || (sourceWhile && hasSourceWhileContinue(block))
+        // A source while may continue only after executing the same canonical step. Such a path can be
+        // normalized to the desugared-for representation below; every other continue can repeat a logical value
+        // and remains outside this progression model.
+        || (sourceWhile && !sourceWhileContinueValid)
         // The permutation proof relies on visiting every physical rank exactly once. Apart from the canonical
         // post-test tail update, mutating the counter can shorten, extend, or repeat the loop. Mutating the
         // public bound anywhere in the function similarly disconnects the SDK-derived witness length from the
@@ -2084,7 +2123,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (x instanceof VariableDefinitionNode) loopAssignedLocals.add(x.name);
         else if (x instanceof AssignNode) {
           loopAssignedLocals.add(x.identifier.name);
-          if (x !== counterUpdate) loopReassignedLocals.add(x.identifier.name);
+          if (x !== counterUpdate && !sourceWhileContinueUpdates.has(x)) {
+            loopReassignedLocals.add(x.identifier.name);
+          }
         } else if (x instanceof StateAssignNode || x instanceof StateArrayAssignNode
           || x instanceof StateArrayDeleteNode || x instanceof StateArrayPopNode
           || x instanceof StateArrayPushNode) loopWrittenState.add(x.name);
@@ -2922,6 +2963,24 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             ))])),
           ))]
           : []);
+      // Canonical source `while` continues explicitly perform the tail update before jumping. Re-express that
+      // as the AST's desugared-for form: BreakContinueTransformation will run the one retained tail update on
+      // every continue path, while ordinary fall-through still executes it exactly once.
+      if (apply && sourceWhileContinueUpdates.size > 0) {
+        for (const [owner, updates] of sourceWhileContinueUpdateBlocks) {
+          owner.statements = owner.statements?.flatMap((statement): StatementNode[] => {
+            if (updates.has(statement as AssignNode)) return [];
+            // A selected write before this jump has already consumed its physical entry. The ordinary tail
+            // cursor advance is skipped by `continue`, so mirror it here before BreakContinueTransformation
+            // rewrites the jump. Unselected paths evaluate these predicates to false and advance nothing.
+            if (sourceWhileContinues.has(statement as ContinueNode)) {
+              return [...cursorAdvances.map((advance) => cloneNode(advance)), statement];
+            }
+            return [statement];
+          });
+        }
+        loop.forLoopUpdateCount = 1;
+      }
       const originalStatements = block.statements ?? [];
       const injectBreakAdvances = (target: BlockNode): void => {
         if (cursorAdvances.length === 0) return;

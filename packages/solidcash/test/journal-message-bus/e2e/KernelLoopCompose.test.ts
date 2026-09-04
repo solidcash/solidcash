@@ -418,6 +418,7 @@ event Selected(int i);
 event Visited(int i);
 contract KernelSelectedCounterMapping() {
   mapping(int => int) m;
+  mapping(int => int) whileRest;
   mapping(uint => uint) u;
   mapping(int => int) totals;
   mapping(bytes32 => int) hashedTotals;
@@ -438,6 +439,15 @@ contract KernelSelectedCounterMapping() {
       if (i % 2 == 0) continue;
       this.m[i] = i + 30;
       emit Selected(i);
+    }
+    require(true);
+  }
+  function writeWhileSplit(int n) public {
+    int i = 0;
+    while (i < n) {
+      if (i % 2 == 0) { this.m[i] = i + 130; i = i + 1; continue; }
+      this.whileRest[i] = i + 230;
+      i = i + 1;
     }
     require(true);
   }
@@ -525,6 +535,7 @@ contract KernelSelectedCounterMapping() {
     require(true);
   }
   function check(int key, int expected) public { require(this.m[key] == expected); }
+  function checkWhileRest(int key, int expected) public { require(this.whileRest[key] == expected); }
   function checkUnsigned(uint key, uint expected) public { require(this.u[key] == expected); }
   function checkTotal(int key, int expected) public { require(this.totals[key] == expected); }
   function checkHashedTotal(bytes owner, int expected) public {
@@ -1251,6 +1262,7 @@ describe('kernel counter-key mapping loop compose', () => {
     });
     const writeHandler = artifact.abi.find((candidate) => candidate.name === 'write')!;
     const oddsHandler = artifact.abi.find((candidate) => candidate.name === 'writeOdds')!;
+    const whileSplitHandler = artifact.abi.find((candidate) => candidate.name === 'writeWhileSplit')!;
     const untilHandler = artifact.abi.find((candidate) => candidate.name === 'writeUntil')!;
     const voidReturnHandler = artifact.abi.find((candidate) => candidate.name === 'writeVoidReturn')!;
     const returnHandler = artifact.abi.find((candidate) => candidate.name === 'writeReturn')!;
@@ -1268,6 +1280,12 @@ describe('kernel counter-key mapping loop compose', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeOdds'))
       .toMatchObject({ eligible: true });
     expect(oddsHandler.sortedUpsertLoopInfo?.[0].iterationCondition).toBeDefined();
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeWhileSplit'))
+      .toMatchObject({ eligible: true });
+    expect(whileSplitHandler.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({ collection: 'm', iterationCondition: expect.anything() }),
+      expect.objectContaining({ collection: 'whileRest', iterationCondition: expect.anything() }),
+    ]);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'writeUntil'))
       .toMatchObject({ eligible: true });
     expect(untilHandler.sortedUpsertLoopInfo?.[0].iterationBreakCondition).toBeDefined();
@@ -1393,6 +1411,37 @@ describe('kernel counter-key mapping loop compose', () => {
     });
     for (const [key, expected] of [[1n, 31n], [3n, 33n], [5n, 35n]] as const) {
       await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+
+    const whileContinued = StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeWhileSplit', args: [6n] }]);
+    const whileBuilder = await whileContinued.build();
+    const whileInput = whileBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    if (!whileInput || !('params' in whileInput.unlocker)) {
+      throw new Error('message-bus writeWhileSplit input is missing');
+    }
+    const expectedWhileKeys = new Map([
+      ['m', [0n, 2n, 4n]],
+      ['whileRest', [1n, 3n, 5n]],
+    ]);
+    for (const info of whileSplitHandler.sortedUpsertLoopInfo ?? []) {
+      const whilePermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+        input.name === info.varyingArrayParam);
+      expect([...(whileInput.unlocker.params[whilePermutationIndex] as bigint[][])[0]]
+        .sort((left, right) => Number(left - right))).toEqual(expectedWhileKeys.get(info.collection));
+    }
+    await expect(whileContinued.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    for (const [key, expected] of [[0n, 130n], [2n, 132n], [4n, 134n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, expected).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+    for (const [key, expected] of [[1n, 231n], [3n, 233n], [5n, 235n]] as const) {
+      await expect(StatefulContract.withCategory(inner, categoryId).call.checkWhileRest(key, expected).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
 

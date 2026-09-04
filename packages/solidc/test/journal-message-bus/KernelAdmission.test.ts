@@ -2070,6 +2070,46 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('normalizes a source while continue which performs its canonical step', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n) public {
+        int i = 0;
+        while (i < n) {
+          if (i % 2 != 0) { i = i + 1; continue; }
+          this.m[i] = i;
+          i = i + 1;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationCondition).toBeDefined();
+  });
+
+  it.each([
+    ['ascending runtime', 'int i = 1;', 'i < n', 'i = stride + i'],
+    ['descending runtime', 'int i = 9;', 'i > n', 'i = i - stride'],
+    ['exact runtime', 'int i = 1;', 'i != n', 'i = i + stride'],
+  ])('normalizes a %s source while continue', (_label, initializer, condition, update) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, int stride) public {
+        ${initializer}
+        while (${condition}) {
+          if (i % 2 == 0) { ${update}; continue; }
+          this.m[i] = i;
+          ${update};
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('refuses a source while continue which skips the canonical tail update', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
@@ -2085,6 +2125,29 @@ describe('required kernel admission', () => {
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
+  });
+
+  it('normalizes a source while continue after a selected keyed write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      mapping(int => int) rest;
+      function write(int n) public {
+        int i = 0;
+        while (i < n) {
+          if (i % 2 == 0) { this.m[i] = i; i = i + 1; continue; }
+          this.rest[i] = i;
+          i = i + 1;
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual([
+        expect.objectContaining({ collection: 'm', iterationCondition: expect.anything() }),
+        expect.objectContaining({ collection: 'rest', iterationCondition: expect.anything() }),
+      ]);
   });
 
   it('admits fallback that wraps a UDVT mapping key', () => {

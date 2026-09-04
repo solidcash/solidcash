@@ -119,6 +119,24 @@ describe('required kernel admission', () => {
     }));
   });
 
+  it('admits a synthesized block-oracle updater at the entry-point synthesis boundary', () => {
+    const artifact = compileString(`contract C(pubkey owner) {
+      mapping(int => int) values;
+      function set(int key) public {
+        this.values[key] = int(block.number);
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const updater = artifact.messageBus?.handlers.find((handler) =>
+      handler.name === '__updateBlockOracle');
+    expect(updater).toMatchObject({ eligible: true });
+    expect(updater?.rejectionReason).toBeUndefined();
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: expect.stringMatching(/^__message_bus_sig_\d+_0_rows$/),
+      type: 'sig[]',
+    }));
+  });
+
   it('binds a transaction signature-array as a row-aligned nested route witness', () => {
     const artifact = compileString(`contract C() {
       function signed(sig[] signatures) public { require(true); }

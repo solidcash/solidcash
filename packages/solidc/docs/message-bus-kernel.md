@@ -316,6 +316,10 @@ Fixed-point scalar, array, and struct-field results use their scaled signed/unsi
 same recursive encoder.
 Native `pubkey` and `datasig` results use compact ABI framing. A transaction `sig` result remains refused because
 committing it into an output would change the transaction preimage signed by that value.
+Compiler-owned public entry points are finalized before kernel admission. In particular, a contract using an
+oracle-backed `block.*` register publishes `__updateBlockOracle` as an ordinary eligible row with its detached
+transaction-signature witness; it is not appended later as an unexamined ABI-only function. Public state getters
+follow the same synthesis boundary.
 Recursive mapping handlers and result types the wrapper cannot encode stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
 Counter-keyed mapping loops with zero or direction-mismatched steps, mutated bounds, or extra counter mutations

@@ -1145,6 +1145,48 @@ describe('kernel loop message-bus compose', () => {
 });
 
 describe('kernel scalar-signature rows', () => {
+  it('executes the synthesized block-oracle updater through the row loop', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelBlockOracle() {
+      mapping(int => int) values;
+      function seed(int key, int value) public {
+        this.values[key] = value;
+        require(true);
+      }
+      function readTimestamp(int expected) public {
+        require(block.timestamp == expected);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) =>
+      handler.name === '__updateBlockOracle')).toMatchObject({ eligible: true });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider,
+      inner,
+      artifact.stateLayout!,
+      { __block_timestamp: 0n, __blockOracleOwner: alicePub },
+      { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{
+      function: '__updateBlockOracle',
+      args: [new SignatureTemplate(alicePriv), 1_700_000_000n],
+    }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({
+      __block_timestamp: 1_700_000_000n,
+    });
+  }, 180_000);
+
   it('signs two aligned route-witness elements against the invoked handler body', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelSigned(pubkey owner) {

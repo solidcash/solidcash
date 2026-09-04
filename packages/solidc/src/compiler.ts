@@ -7408,6 +7408,24 @@ function compileResolvedAst(
     ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   }
 
+  // Message-bus admission snapshots every entry point which can execute through the row loop. Block-oracle
+  // synthesis appends `__updateBlockOracle`, so it belongs on this side of that snapshot just like public-getter
+  // synthesis above. Keeping it immediately after storage-slot shaping also matches `prepareSplitAst`: both
+  // passes append physical state, and every unsplit/root/facet build must agree on their relative layout.
+  //
+  // The ordinary late invocation remains intentionally idempotent. It covers block operations exposed by later
+  // lowering (notably a Yul block which could not be translated at the early kernel boundary), while this early
+  // invocation makes all currently visible compiler-synthesized entry points participate in route admission.
+  // Inspect the resolved AST rather than conservatively running the mutating traversal for every imported
+  // program. Apart from avoiding needless work, this matters for split candidates: their resolved symbol links
+  // can still point into the complete prepared contract, so even a nominally no-op visitor must not walk a
+  // block-free facet before its route-only parameter lowering has been isolated on the facet clone.
+  if (mergedCompilerOptions.messageBus && surveyOptionalLowerings(ast).needsBlockOracle) {
+    ast = ast.accept(new SynthesizeBlockOracle(
+      mergedCompilerOptions.solidityImportCompat ?? false,
+    )) as Ast;
+  }
+
   // A fixed-array collection iteration must expose its compiler-owned indexed accesses before deciding whether
   // the hidden route is synthesized at the early collection boundary. Otherwise an unrelated collection
   // handler can move synthesis ahead of the ordinary unroll pass and leave the iteration's stale blanket marker.

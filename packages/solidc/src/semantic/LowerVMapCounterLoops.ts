@@ -61,6 +61,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
   private functionsByName = new Map<string, FunctionDefinitionNode[]>();
   private eventfulFunctionNames = new Set<string>();
   private externalTypeNames = new Set<string>();
+  private structTypeNames = new Set<string>();
   private serial = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -76,6 +77,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.collections = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
     this.collectionsByName = new Map(node.collections.map((collection) => [collection.name, collection]));
+    this.structTypeNames = new Set(node.structDefinitions.map((definition) => definition.name));
+    for (const collection of node.collections) {
+      if (collection.innermostValueType instanceof StructType) {
+        this.structTypeNames.add(collection.innermostValueType.name);
+      }
+    }
     this.functionsByName = new Map();
     for (const fn of node.functions) {
       const overloads = this.functionsByName.get(fn.name) ?? [];
@@ -434,7 +441,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // contract function are admitted only when every same-name overload is explicitly pure; semantic
         // analysis later enforces that declaration. Unknown, view, side-car and external calls remain fenced.
         const pureBuiltin = overloads === undefined && PURE_COUNTER_VALUE_BUILTINS.has(x.identifier.name);
-        if (!pureContractCall && !pureBuiltin) return true;
+        const pureStructConstructor = this.structTypeNames.has(x.identifier.name);
+        if (!pureContractCall && !pureBuiltin && !pureStructConstructor) return true;
       } else if (x instanceof FunctionCallStatementNode
         || x instanceof MethodCallNode || x instanceof MethodCallStatementNode
         || x instanceof ExternalFunctionCallNode || x instanceof TransferStatementNode
@@ -1070,8 +1078,81 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      const collectionAccessOf = (x: Node): { name: string; keys: ExpressionNode[] } | undefined => {
+        if (x instanceof MappingAccessNode) return { name: x.name, keys: x.keys };
+        if (!(x instanceof ArrayAccessNode)) return undefined;
+        const keys: ExpressionNode[] = [];
+        let cursor: ExpressionNode = x;
+        while (cursor instanceof ArrayAccessNode) {
+          keys.unshift(cursor.index);
+          cursor = cursor.array;
+        }
+        return (cursor instanceof IdentifierNode || cursor instanceof StateAccessNode)
+          && this.collections.has(cursor.name)
+          ? { name: cursor.name, keys } : undefined;
+      };
+      type StructRuntimeRmw = {
+        local: string;
+        declaration: VariableDefinitionNode;
+      };
+      const structRuntimeRmws = new Map<ArrayAssignNode | MappingAssignNode, StructRuntimeRmw>();
+      // A local whole-struct update is one authenticated entry transition. At this early phase, source
+      // `m[i] = value` is still an ArrayAssignNode; SymbolTableTraversal turns it into MappingAssignNode later.
+      // Recognize the language-level pattern here so the old value can travel in the same row journal as the write.
+      for (const candidate of keyed) {
+        if (!(candidate instanceof ArrayAssignNode || candidate instanceof MappingAssignNode)) continue;
+        const assigned = candidate instanceof ArrayAssignNode ? candidate.value : candidate.expression;
+        if (!(assigned instanceof IdentifierNode)) continue;
+        const collection = this.collectionsByName.get(candidate.name);
+        if (!(collection?.innermostValueType instanceof StructType)) continue;
+        const structType = collection.innermostValueType;
+        const local = assigned.name;
+        let declaration: VariableDefinitionNode | undefined;
+        let declarations = 0;
+        let rebuilds = 0;
+        let invalid = false;
+        const walk = (current: Node, owner?: Node, rebuildValue = false): void => {
+          if (current instanceof VariableDefinitionNode && current.name === local) {
+            declarations += 1;
+            const access = current.expression ? collectionAccessOf(current.expression) : undefined;
+            if (access?.name === candidate.name
+              && access.keys.map(expressionShape).join('|') === writeKeyShape(candidate)) declaration = current;
+            else invalid = true;
+          } else if (current instanceof AssignNode && current.identifier.name === local) {
+            if (!(current.expression instanceof FunctionCallNode)
+              || current.expression.identifier.name !== structType.name) invalid = true;
+            else rebuilds += 1;
+          } else if (current instanceof IdentifierNode && current.name === local) {
+            const isFinalValue = owner === candidate && assigned === current;
+            const isAssignmentTarget = owner instanceof AssignNode && owner.identifier === current;
+            if (!isFinalValue && !isAssignmentTarget && !rebuildValue) invalid = true;
+          }
+          for (const key of Object.keys(current)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection') continue;
+            const value = (current as unknown as Record<string, unknown>)[key];
+            const childRebuild = rebuildValue || (current instanceof AssignNode
+              && current.identifier.name === local && key === 'expression'
+              && current.expression instanceof FunctionCallNode
+              && current.expression.identifier.name === structType.name);
+            if (value instanceof Node) walk(value, current, childRebuild);
+            else if (Array.isArray(value)) {
+              for (const item of value) if (item instanceof Node) walk(item, current, childRebuild);
+            }
+          }
+        };
+        walk(block);
+        if (!invalid && declaration && declarations === 1 && rebuilds >= 1
+          && writePaths.get(candidate) === undefined) {
+          structRuntimeRmws.set(candidate, { local, declaration });
+        }
+      }
+      const structRuntimeReads = new Set([...structRuntimeRmws.values()]
+        .map(({ declaration }) => declaration.expression)
+        .filter((expression): expression is MappingAccessNode => expression instanceof MappingAccessNode));
       const hasSiblingMappingRead = (x: Node): boolean => {
         if (keyedSet.has(x)) return false;
+        if (structRuntimeReads.has(x as MappingAccessNode)) return false;
         if (x instanceof MappingAccessNode && keyedCollections.has(x.name)) return true;
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
@@ -1100,6 +1181,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return false;
       };
       const hasUnsafeRead = (x: Node): boolean => {
+        if (structRuntimeReads.has(x as MappingAccessNode)) return false;
         if (keyedSet.has(x)) {
           const write = x as ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
           | MappingFieldAssignNode;
@@ -1114,18 +1196,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && value.some((item) => item instanceof Node && hasUnsafeRead(item))) return true;
         }
         return false;
-      };
-      const collectionAccessOf = (x: Node): { name: string; keys: ExpressionNode[] } | undefined => {
-        if (x instanceof MappingAccessNode) return { name: x.name, keys: x.keys };
-        if (!(x instanceof ArrayAccessNode)) return undefined;
-        const keys: ExpressionNode[] = [];
-        let cursor: ExpressionNode = x;
-        while (cursor instanceof ArrayAccessNode) {
-          keys.unshift(cursor.index);
-          cursor = cursor.array;
-        }
-        return cursor instanceof IdentifierNode && this.collections.has(cursor.name)
-          ? { name: cursor.name, keys } : undefined;
       };
       const containsCollectionAccess = (x: Node): boolean => {
         if (collectionAccessOf(x)) return true;
@@ -1160,6 +1230,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         generalOldEntryWrites.add(write);
         return false;
       });
+      for (const write of structRuntimeRmws.keys()) generalOldEntryWrites.add(write);
       // Do not silently turn a physical loop rank into a logical mapping value through an alias or loop-carried
       // scalar state. Direct uses of `i` inside a write are rewritten to perm[i]; values assigned earlier in the
       // loop are intentionally left in source order, so depending on them would change program semantics.
@@ -1273,7 +1344,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         || hasSiblingMappingRead(block) || hasUnsafeRead(block)
         || hasUnsupportedOldEntryExpression
         || (!writeSelectionCondition && hasLoopCarriedWriteGuard(block))
-        || keyed.some((write) => dependsOnLoopMutation(write))) return false;
+        || keyed.some((write) => !structRuntimeRmws.has(write as ArrayAssignNode | MappingAssignNode)
+          && dependsOnLoopMutation(write))) return false;
 
       if (!apply) return true;
 
@@ -1491,6 +1563,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             mappingWrite.value = replaceOldEntry(mappingWrite.value) as ExpressionNode;
           }
           mappingWrite.messageBusRuntimeOldValueWitness = oldRead();
+          const structRmw = structRuntimeRmws.get(mappingWrite);
+          if (structRmw) {
+            structRmw.declaration.expression = cloneNode(
+              mappingWrite.messageBusRuntimeOldValueWitness,
+            ) as ExpressionNode;
+          }
         }
         if (write instanceof ArrayAssignNode) {
           write.index = permRead(group);

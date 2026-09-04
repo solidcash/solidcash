@@ -16273,7 +16273,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
       if (info.valueRuntimeLocal) {
-        const oldWitnesses: Uint8Array[] = [];
+        const oldWitnesses: ConstructorArgument[] = [];
         const runtimeInputs: UnlockableUtxo[] = [];
         const runtimeSlots = new Set<string>();
         const runtimeUnlocker = createEntryNftUnlocker(
@@ -16288,12 +16288,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           runtimeSlots.add(slotHex);
           const entry = list.find(slot);
+          let raw: Uint8Array;
           if (!entry) throw new Error(`vmap runtime struct loop ${info.collection}: key ${i} has no existing entry`);
           runtimeInputs.push({ ...entry.utxo, unlocker: runtimeUnlocker });
           const tail = entry.value;
           if (tail.length < 4) throw new Error(`vmap runtime struct value for ${info.collection} has an invalid tail`);
           const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
-          let raw: Uint8Array;
           if (len <= 60) {
             raw = tail.slice(4, 4 + len);
           } else {
@@ -16311,7 +16311,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             valueChunkGc.push({ collection: info.collection, slotHex, oldDigestHex: binToHex(root) });
           }
-          oldWitnesses.push(raw);
+          oldWitnesses.push(info.oldValuesWitnessParam?.startsWith(VMAP_COUNTER_OLD_PREFIX)
+            ? decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value as ConstructorArgument
+            : raw);
         }
         const witnessIndex = loopAbiFunction.inputs.findIndex((input) => input.name === info.oldValuesWitnessParam);
         if (witnessIndex < 0) {

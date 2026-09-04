@@ -21058,7 +21058,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private isLoopStructRuntimeRmw(block: Node, write: MappingAssignNode, localName: string): boolean {
-    let read: MappingAccessNode | undefined;
+    let read: MappingAccessNode | ArrayAccessNode | undefined;
     const rebuilds: FunctionCallNode[] = [];
     let reassigned = 0;
     let invalidReassignment = false;
@@ -21067,7 +21067,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (seen.has(node)) return;
       seen.add(node);
       if (node instanceof VariableDefinitionNode && node.name === localName
-        && node.expression instanceof MappingAccessNode) read = node.expression;
+        && (node.expression instanceof MappingAccessNode || node.expression instanceof ArrayAccessNode)) {
+        read = node.expression;
+      }
       if (node instanceof AssignNode && node.identifier.name === localName) {
         if (!read && node.expression instanceof MappingAccessNode) read = node.expression;
         else {
@@ -21086,7 +21088,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     walk(block);
     const structName = (write.collection!.innermostValueType as StructType).name;
-    if (!read || reassigned < 2 || invalidReassignment || rebuilds.length !== reassigned || read.name !== write.name
+    const witness = write.messageBusRuntimeOldValueWitness;
+    const validRead = read instanceof MappingAccessNode ? read.name === write.name
+      : read instanceof ArrayAccessNode && witness?.array instanceof IdentifierNode
+        && read.array instanceof IdentifierNode && read.array.name === witness.array.name;
+    if (!read || reassigned < 1 || invalidReassignment || rebuilds.length !== reassigned || !validRead
       || rebuilds.some((rebuild) => rebuild.identifier.name !== structName)) return false;
     const sameExpression = (a: ExpressionNode, b: ExpressionNode): boolean => {
       if (a.constructor !== b.constructor) return false;
@@ -21098,8 +21104,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (a instanceof CastNode && b instanceof CastNode) return sameExpression(a.expression, b.expression);
       return false;
     };
-    if (read.keys.length !== write.keys.length
-      || !read.keys.every((key, i) => sameExpression(key, write.keys[i]))) return false;
+    if (read instanceof MappingAccessNode && (read.keys.length !== write.keys.length
+      || !read.keys.every((key, i) => sameExpression(key, write.keys[i])))) return false;
     return rebuilds.every((rebuild) => rebuild.parameters.some((parameter) => parameter instanceof FieldAccessNode
       && parameter.expression instanceof IdentifierNode && parameter.expression.name === localName));
   }
@@ -21762,9 +21768,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (oldWitness) {
         // Only a present target owns coValue. On an insertion, the co-spent record is the predecessor and the
         // language-level mapping read is instead the value-type default (verified in the absent branch below).
-        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc);
-        this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 4)), loc);
-        this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+        if (isChunkableVal) {
+          this.emit(Op.OP_DUP, loc);
+          this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc);
+          this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc); // coValue, rest, len
+          // Keep the stored value tail and its length on the main stack, while moving the framed payload
+          // aside. `OP_SIZE` retains the old value below its size, so rotate the length and returned size
+          // around that retained value before comparing them. This also leaves exactly [tail, old] for the
+          // inline/hash comparison below.
+          this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+          this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 4)), loc);
+          this.emit(Op.OP_PICK, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_TOALTSTACK, loc);
+          this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+          this.emit(Op.OP_SIZE, loc);
+          this.emit(encodeInt(60n), loc); this.emit(Op.OP_GREATERTHAN, loc);
+          this.emit(Op.OP_IF, loc);
+          this.emit(Op.OP_SHA256, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emitTakeFirst32(loc);
+          this.emit(Op.OP_EQUALVERIFY, loc);
+          this.emit(Op.OP_ELSE, loc);
+          this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+          this.emit(Op.OP_ENDIF, loc);
+        } else {
+          this.emit(Op.OP_DUP, loc); this.emit(Op.OP_BIN2NUM, loc);
+          this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 4)), loc);
+          this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+        }
       }
       if (op === 'set' || op === 'delete') {
         this.emit(Op.OP_DROP, loc);                                          // drop coValue -> [.., coSlot, coNext] U=2
@@ -21798,8 +21826,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (oldWitness) {
         // An absent mapping entry reads as the value-type default. The witness cannot manufacture a non-zero base.
         this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 3)), loc);
-        this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
-        this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+        this.emit(Op.OP_PICK, loc);
+        if (isChunkableVal) {
+          this.emitDefaultValue(loc, collection.innermostValueType);
+          this.emit(Op.OP_EQUALVERIFY, loc);
+        } else {
+          this.emit(Op.OP_BIN2NUM, loc);
+          this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+        }
       }
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);       // coSlot# (U=4)
       this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#

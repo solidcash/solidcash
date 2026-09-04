@@ -2434,6 +2434,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           // (opt-out) bytes/string mapping reads its value tail verbatim and must NOT get a spurious witness param.
           if (!coll?.sorted || !vt || !isChunkableValueType(vt)) continue;
           if (!info.operations.includes('read') && !info.operations.includes('write')) continue;
+          // Counter-loop structural RMWs materialize the old value from their authenticated typed vector and
+          // restrict the new value to the inline tail. They neither execute emitChunkableValueRead nor publish
+          // chunk outputs, so the ordinary per-slot blob/leading witnesses would be dead ABI and dead route code.
+          const runtimeTypedOld = info.inLoop && node.parameters.some((parameter) =>
+            parameter.name.startsWith('__internal__vmapCounterOld_')
+            && parameter.name.endsWith(`_${info.collection}`));
+          if (runtimeTypedOld) continue;
           const wname = `__internal__valueWitness_${info.slotIndex}`;
           // A varying-key array RMW loop needs one old whole-value witness per iteration. The covenant selects
           // witness[i] with the same runtime index as key[i] and authenticates it against that entry's inline
@@ -3083,8 +3090,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     // interchangeable regardless of their source-level names.
     const writesChunkableMappingValue = node.entryAccesses?.some((access) => {
       const collection = this.collectionMap.get(access.collection);
+      const runtimeTypedOld = access.inLoop && node.parameters.some((parameter) =>
+        parameter.name.startsWith('__internal__vmapCounterOld_')
+        && parameter.name.endsWith(`_${access.collection}`));
       return access.operations.includes('write') && collection?.sorted === true
-        && isChunkableValueType(collection.innermostValueType);
+        && isChunkableValueType(collection.innermostValueType) && !runtimeTypedOld;
     }) ?? false;
     if (writesChunkableMappingValue
       && !node.parameters.some((parameter) => parameter.name === '__internal__valueChunkOutputBase')) {

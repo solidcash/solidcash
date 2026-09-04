@@ -452,6 +452,29 @@ contract KernelRangedDoCounter() {
   }
 }`;
 
+const COUNTER_STRUCT_RMW_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelCounterStructRmw() {
+  struct Pair { int left; int right; }
+  mapping(int => Pair) pairs;
+  function seed(int key, int left, int right) public {
+    this.pairs[key] = Pair(left, right);
+    require(true);
+  }
+  function update(int count) public {
+    for (int i = 0; i < count; i = i + 1) {
+      Pair pair = this.pairs[i];
+      pair.left = pair.left + 1;
+      this.pairs[i] = pair;
+    }
+    require(true);
+  }
+  function check(int key, int left, int right) public {
+    require(this.pairs[key].left == left);
+    require(this.pairs[key].right == right);
+    require(true);
+  }
+}`;
+
 describe('kernel loop message-bus compose', () => {
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
@@ -1999,5 +2022,33 @@ describe('kernel composite counter-key settlement', () => {
     for (const [key, expected] of [[5n, 25n], [3n, 23n], [1n, 21n]]) {
       expect(valuesBySlot.get(binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))).toBe(expected);
     }
+  }, 180_000);
+
+  it('authenticates old structs and persists counter-keyed row updates', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(COUNTER_STRUCT_RMW_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'update'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.call.seed(0n, 10n, 20n).send();
+    await contract.call.seed(1n, 30n, 40n).send();
+
+    const call = contract.batch([{ function: 'update', args: [2n] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      const state = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+      expect(vm.stateSuccess(state), `input ${inputIndex}`).toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(0n, 11n, 20n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 31n, 40n).send()).resolves.toBeDefined();
   }, 180_000);
 });

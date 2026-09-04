@@ -14,6 +14,30 @@ ReturnType<typeof compileString>['messageBus']
 };
 
 describe('required kernel admission', () => {
+  it('authenticates a straight-line struct read-modify-write on a counter-keyed entry', () => {
+    const artifact = compileString(`contract C() {
+      struct Pair { int left; int right; }
+      mapping(int => Pair) pairs;
+      function update(int n) public {
+        for (int i=0; i<n; i=i+1) { Pair pair=pairs[i]; pair.left=pair.left+1; pairs[i]=pair; }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'update'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'update')?.sortedUpsertLoopInfo).toEqual([
+      expect.objectContaining({
+        collection: 'pairs', valueRuntimeLocal: 'pair',
+        oldValuesWitnessParam: expect.stringMatching(/^__internal__vmapCounterOld_/),
+      }),
+    ]);
+    expect(artifact.abi.find((handler) => handler.name === 'update')?.inputs).toContainEqual(
+      expect.objectContaining({ name: expect.stringMatching(/^__internal__vmapCounterOld_/), type: 'Pair[]' }),
+    );
+    expect(artifact.messageBus?.route.inputs).toContainEqual(expect.objectContaining({
+      name: expect.stringMatching(/^__internal__vmapCounterOld_/), type: 'Pair[][]',
+    }));
+  });
   it('refuses lifecycle handlers as KERNEL_LIFECYCLE', () => {
     expect(denied(`contract C() {
       int value;

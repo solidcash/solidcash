@@ -1130,6 +1130,9 @@ export abstract class ExpressionNode extends Node {
   // transition. Its value comes from the authenticated runtime journal entry; route admission must not reserve
   // an additional fixed-key witness for the loop-local identity.
   messageBusRuntimeLoopTransitionRead?: boolean;
+  // A runtime-sized local-array key reconstructed from dominating writes. LowerVMapCounterLoops may treat this
+  // expression as counter-derived without broadening that rule to arbitrary source array reads.
+  messageBusDeterministicArrayKey?: boolean;
 }
 
 // `(x op= rhs)` used as an expression: performs the assignment to local `x` and yields its new value

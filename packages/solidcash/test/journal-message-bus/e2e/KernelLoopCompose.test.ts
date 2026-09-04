@@ -536,6 +536,19 @@ contract KernelImmutableDefaultKeyArray() {
   function check(int expected) unsafe { require(this.slots[0] == expected); }
 }`;
 
+const DOMINATING_LOCAL_KEY_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelDominatingLocalKeyArray() {
+  mapping(int => int) slots;
+  function write(int count, int first, int second) public {
+    int[] keys = new int[](count);
+    keys[0] = first;
+    keys[1] = second;
+    for (int i = 0; i < count; i = i + 1) { this.slots[keys[i]] = i + 10; }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.slots[key] == expected); }
+}`;
+
 describe('kernel loop message-bus compose', () => {
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
@@ -2158,6 +2171,23 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.write(3n).send()).resolves.toBeDefined();
     await expect(contract.call.write(0n).send()).resolves.toBeDefined();
     await expect(contract.call.check(1n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('settles runtime-sized local key arrays with dominating writes', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(DOMINATING_LOCAL_KEY_ARRAY_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.call.write(2n, 5n, 3n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    await expect(contract.call.check(5n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(3n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles affine loop-carried local mapping values in source order', async () => {

@@ -21261,8 +21261,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // key after route lowering. Recover invariant outer keys from the semantic write node without duplicating the
     // varying array element.
     const writeKeySources = (writeNode.keySources ?? []) as KeySourceInfo[];
+    const writeKeys = writeNode instanceof ArrayAssignNode || writeNode instanceof ArrayDeleteNode
+      ? [writeNode.index] : writeNode.keys;
+    const deterministicArrayName = (root: Node): string | undefined => {
+      if (root instanceof ArrayAccessNode && root.array instanceof IdentifierNode
+        && root.array.name.startsWith(VMAP_COUNTER_PERM_PREFIX)) return root.array.name;
+      for (const [key, value] of Object.entries(root)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+          || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+        if (value instanceof Node) {
+          const found = deterministicArrayName(value);
+          if (found) return found;
+        } else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) {
+            const found = deterministicArrayName(item);
+            if (found) return found;
+          }
+        }
+      }
+      return undefined;
+    };
+    const varyingSourceName = (source: KeySourceInfo, index: number): string | undefined => {
+      const direct = (source.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/)?.[1];
+      if (direct) return direct;
+      const key = writeKeys[index];
+      return key?.messageBusDeterministicArrayKey === true ? deterministicArrayName(key) : undefined;
+    };
     const fixedCount = (sources: readonly KeySourceInfo[]): number => (
-      sources.filter((src) => !/^arridx\(/.test(src.canonical ?? '')).length
+      sources.filter((src, index) => varyingSourceName(src, index) === undefined).length
     );
     let metadataKeySources = keySources.length >= writeKeySources.length ? keySources : writeKeySources;
     const recoveredFromKeys = this.recoverUpsertFixedKeySources(writeNode);
@@ -21270,7 +21296,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       metadataKeySources = recoveredFromKeys;
     }
     const fixedKeyParams: string[] = [];
-    let fixedKeySources = metadataKeySources.filter((src) => !/^arridx\(/.test(src.canonical ?? ''));
+    let fixedKeySources = metadataKeySources.filter((src, index) =>
+      varyingSourceName(src, index) === undefined);
     // Nested whitelistWorkers[jobId][worker] can reach codegen with only the varying worker key,
     // or with an inlined `id:jobId_` that is not a parameter of this function.
     const unresolvedLocal = fixedKeySources.length > 0 && fixedKeySources.every((source) => {
@@ -21286,10 +21313,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const varyingKeyIndices: number[] = [];
     for (const [index, src] of metadataKeySources.entries()) {
       if (src.kind === 'param' && src.paramName) { fixedKeyParams.push(src.paramName); continue; }
-      const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/);
-      if (m) {
-        if (varyingArrayParam === undefined) varyingArrayParam = m[1];
-        if (varyingArrayParam === m[1]) varyingKeyIndices.push(index);
+      const name = varyingSourceName(src, index);
+      if (name) {
+        if (varyingArrayParam === undefined) varyingArrayParam = name;
+        if (varyingArrayParam === name) varyingKeyIndices.push(index);
       }
     }
     const decodedKeyRecipe = this.runtimeDecodedLoopKeyRecipe(block, writeNode);

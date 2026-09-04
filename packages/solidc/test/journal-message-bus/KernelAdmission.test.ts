@@ -552,7 +552,7 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('keeps a mutated runtime-constructed key array off the kernel route', () => {
+  it('lowers dominating writes to a runtime-constructed key array', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function denied(int n) public {
@@ -563,13 +563,57 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({
+        collection: 'slots',
+        varyingKeyExpressions: [expect.objectContaining({ kind: 'ternary' })],
+      })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('keeps a loop-mutated local key array off the kernel route', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function denied(int n) public {
+        int[] xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) {
+          xs[i] = i + 1;
+          this.slots[xs[i]] = 1;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')).toMatchObject({
-      eligible: true,
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps a captured reassigned parameter out of a local key recipe', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function denied(int n, int key) public {
+        int[] xs = new int[](n);
+        xs[0] = key;
+        key = key + 1;
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
   });
 
   it('publishes KERNEL_* handlers when every entry point is refused', () => {

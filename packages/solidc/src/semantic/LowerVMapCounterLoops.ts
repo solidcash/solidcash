@@ -431,9 +431,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       logical: string,
     ): number => {
       if (write instanceof ArrayAssignNode || write instanceof ArrayDeleteNode) {
-        return write.index instanceof IdentifierNode && write.index.name === logical ? 0 : -1;
+        return write.index instanceof IdentifierNode && write.index.name === logical
+          || (write.index.messageBusDeterministicArrayKey === true && containsIdentifier(write.index, logical))
+          ? 0 : -1;
       }
-      return write.keys.findIndex((key) => key instanceof IdentifierNode && key.name === logical);
+      return write.keys.findIndex((key) => (key instanceof IdentifierNode && key.name === logical)
+        || (key.messageBusDeterministicArrayKey === true && containsIdentifier(key, logical)));
     };
     const hasObservableEffect = (x: Node): boolean => {
       if (x instanceof FunctionCallNode) {
@@ -1721,11 +1724,32 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return x;
       };
+      const replaceKey = (x: Node, group: typeof groups[number]): Node => {
+        // Unlike a value expression, a derived key must retain the hidden permutation array in its canonical
+        // recipe so code generation can identify the varying source even when no tuple component is the bare
+        // counter (`m[i == 0 ? first : second]`). The logical value and perm[rank] are equal by construction.
+        if (x instanceof IdentifierNode && x.name === logical) return permRead(group);
+        if (x instanceof IdentifierNode && safeLoopValueAlias(x.name)) {
+          return replaceKey(cloneNode(loopValueDefinitions.get(x.name)!), group);
+        }
+        for (const key of Object.keys(x)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
+          const value = (x as unknown as Record<string, unknown>)[key];
+          if (value instanceof Node) {
+            (x as unknown as Record<string, unknown>)[key] = replaceKey(value, group);
+          } else if (Array.isArray(value)) {
+            (x as unknown as Record<string, unknown>)[key] = value.map((item) =>
+              item instanceof Node ? replaceKey(item, group) : item);
+          }
+        }
+        return x;
+      };
       for (const write of keyed) {
         const group = groupByCollection.get(write.name)!;
-        const keyIndex = counterKeyIndex(write, logical);
         const keyRecipe = `${group.hidden}\0${write.name}`;
         const originalKeys = keyExpressions(write);
+        const hasDirectCounterComponent = originalKeys.some((key) =>
+          key instanceof IdentifierNode && key.name === logical);
         const hasDerivedCounterComponent = originalKeys.some((key) =>
           containsIdentifier(key, logical) && !(key instanceof IdentifierNode && key.name === logical));
         if (hasDerivedCounterComponent && !node.runtimeCounterLoopKeyExpressions?.has(keyRecipe)) {
@@ -1789,14 +1813,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         } else if (write instanceof ArrayDeleteNode) {
           write.index = permRead(group);
         } else if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) {
-          write.keys = write.keys.map((key, index) => index === keyIndex
-            || (key instanceof IdentifierNode && key.name === logical) ? permRead(group)
-            : containsIdentifier(key, logical) ? replace(key, group) as ExpressionNode : key);
+          write.keys = write.keys.map((key) => key instanceof IdentifierNode && key.name === logical
+            ? permRead(group)
+            : containsIdentifier(key, logical)
+              ? (hasDirectCounterComponent ? replace(key, group) : replaceKey(key, group)) as ExpressionNode
+              : key);
           write.expression = replace(write.expression, group) as ExpressionNode;
         } else {
-          write.keys = write.keys.map((key, index) => index === keyIndex
-            || (key instanceof IdentifierNode && key.name === logical) ? permRead(group)
-            : containsIdentifier(key, logical) ? replace(key, group) as ExpressionNode : key);
+          write.keys = write.keys.map((key) => key instanceof IdentifierNode && key.name === logical
+            ? permRead(group)
+            : containsIdentifier(key, logical)
+              ? (hasDirectCounterComponent ? replace(key, group) : replaceKey(key, group)) as ExpressionNode
+              : key);
         }
       }
       if (runtimeEmits.length > 0) {
@@ -2188,17 +2216,18 @@ export default class LowerVMapCounterLoops extends AstTraversal {
   }
 
   /**
-   * A fresh `new T[](n)` local with no subsequent writes has the exact value
-   * `[default(T), ...]`, independently of its runtime length. Replacing an
-   * access used as a mapping key with that default turns repeated writes to
-   * the same entry into the ordinary fixed-entry journal; it does not infer
-   * anything about mutable local arrays. This is deliberately type-generic
-   * (ints, bytes, enums, structs, etc.) and works for every handler shape.
+   * Represent a fresh local array at a mapping-key read as its default value plus the straight-line writes which
+   * dominate that read. `new T[](n); xs[p] = v; m[xs[i]] = ...` becomes the replayable key
+   * `i == p ? v : default(T)`. The original `xs[i]` read remains in a generated equality requirement, preserving
+   * bounds checks and authenticating the symbolic form against the source memory value. Writes inside a loop,
+   * writes crossing control-flow joins, and escaped arrays stay untouched and therefore fail closed at ordinary
+   * runtime-key admission. This is type-generic and independent of any contract schema.
    */
   private normalizeImmutableDefaultArrayKeys(node: FunctionDefinitionNode): void {
     if (!node.body) return;
-    const defaults = new Map<string, ExpressionNode>();
-    const mutated = new Set<string>();
+    type ArrayWrite = { index: ExpressionNode; value: ExpressionNode };
+    type ArrayPlan = { defaultValue: ExpressionNode; writes: ArrayWrite[] };
+    const plans = new Map<string, ArrayPlan>();
     const walk = (root: Node, visit: (candidate: Node) => void): void => {
       visit(root);
       for (const key of Object.keys(root)) {
@@ -2209,31 +2238,185 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item, visit);
       }
     };
+    let hasLocalNewArray = false;
     walk(node.body, (candidate) => {
       if (candidate instanceof VariableDefinitionNode && candidate.expression instanceof NewArrayNode) {
-        defaults.set(candidate.name, createDefaultValueExpression(
-          candidate.expression.elementType, candidate.location,
-        ));
+        hasLocalNewArray = true;
       }
-      if (candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode
-        || candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode) mutated.add(candidate.name);
-      if (candidate instanceof AssignNode) mutated.add(candidate.identifier.name);
-      if (candidate instanceof MethodCallNode && candidate.object instanceof IdentifierNode
-        && ['push', 'pop'].includes(candidate.methodName)) mutated.add(candidate.object.name);
     });
-    for (const name of mutated) defaults.delete(name);
-    if (defaults.size === 0) return;
-    const replaceKey = (key: ExpressionNode): ExpressionNode => (
-      key instanceof ArrayAccessNode && key.array instanceof IdentifierNode && defaults.has(key.array.name)
-        ? cloneNode(defaults.get(key.array.name)!) as ExpressionNode : key
-    );
+    if (!hasLocalNewArray) return;
+
+    const mutatedArrays = (root: Node): Set<string> => {
+      const result = new Set<string>();
+      walk(root, (candidate) => {
+        if (candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode
+          || candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode) result.add(candidate.name);
+        if (candidate instanceof AssignNode) result.add(candidate.identifier.name);
+        if (candidate instanceof MethodCallNode && candidate.object instanceof IdentifierNode
+          && ['push', 'pop'].includes(candidate.methodName)) result.add(candidate.object.name);
+      });
+      return result;
+    };
+    const reassignedNames = new Set<string>();
     walk(node.body, (candidate) => {
-      if (candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode) {
-        candidate.index = replaceKey(candidate.index);
-      } else if (candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode
-        || candidate instanceof MappingDeleteNode) {
-        candidate.keys = candidate.keys.map(replaceKey);
-      }
+      if (candidate instanceof AssignNode) reassignedNames.add(candidate.identifier.name);
     });
+    const containsReassignedName = (root: Node): boolean => {
+      let found = false;
+      walk(root, (candidate) => {
+        if (candidate instanceof IdentifierNode && reassignedNames.has(candidate.name)) found = true;
+      });
+      return found;
+    };
+    const escapedPlanNames = (root: Node, active: Map<string, ArrayPlan>): Set<string> => {
+      const escaped = new Set<string>();
+      walk(root, (candidate) => {
+        if (!(candidate instanceof FunctionCallNode || candidate instanceof ExternalFunctionCallNode
+          || candidate instanceof MethodCallNode)) return;
+        const parameters = candidate instanceof MethodCallNode
+          ? [candidate.object, ...candidate.parameters] : candidate.parameters;
+        for (const parameter of parameters) {
+          walk(parameter, (part) => {
+            if (part instanceof IdentifierNode && active.has(part.name)) escaped.add(part.name);
+          });
+        }
+      });
+      return escaped;
+    };
+    const symbolicRead = (access: ArrayAccessNode, plan: ArrayPlan): ExpressionNode => {
+      let value = cloneNode(plan.defaultValue) as ExpressionNode;
+      for (const write of plan.writes) {
+        const matches = new BinaryOpNode(
+          cloneNode(access.index), BinaryOperator.EQ, cloneNode(write.index),
+        );
+        matches.location = access.location;
+        const selected = new TernaryOpNode(matches, cloneNode(write.value), value);
+        selected.location = access.location;
+        selected.type = access.type;
+        selected.messageBusDeterministicArrayKey = true;
+        value = selected;
+      }
+      return value;
+    };
+    const replaceArrayReads = (
+      expression: ExpressionNode,
+      active: Map<string, ArrayPlan>,
+      checks: RequireNode[],
+    ): ExpressionNode => {
+      if (expression instanceof ArrayAccessNode && expression.array instanceof IdentifierNode) {
+        const plan = active.get(expression.array.name);
+        if (plan) {
+          const replacement = symbolicRead(expression, plan);
+          const equality = new BinaryOpNode(
+            cloneNode(expression), BinaryOperator.EQ, cloneNode(replacement),
+          );
+          equality.location = expression.location;
+          const check = new RequireNode(equality, 'deterministic local array key mismatch');
+          check.location = expression.location;
+          checks.push(check);
+          return replacement;
+        }
+      }
+      const replaced = cloneNode(expression) as ExpressionNode;
+      for (const key of Object.keys(replaced)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+          || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+        const value = (replaced as unknown as Record<string, unknown>)[key];
+        if (value instanceof ExpressionNode) {
+          (replaced as unknown as Record<string, unknown>)[key] = replaceArrayReads(value, active, checks);
+        } else if (Array.isArray(value)) {
+          (replaced as unknown as Record<string, unknown>)[key] = value.map((item) =>
+            item instanceof ExpressionNode ? replaceArrayReads(item, active, checks) : item);
+        }
+      }
+      return replaced;
+    };
+    const rewriteMappingKeys = (
+      statement: StatementNode,
+      active: Map<string, ArrayPlan>,
+    ): RequireNode[] => {
+      const checks: RequireNode[] = [];
+      if (statement instanceof ArrayAssignNode || statement instanceof ArrayDeleteNode) {
+        statement.index = replaceArrayReads(statement.index, active, checks);
+      } else if (statement instanceof MappingAssignNode || statement instanceof MappingFieldAssignNode
+        || statement instanceof MappingDeleteNode) {
+        statement.keys = statement.keys.map((key) => replaceArrayReads(key, active, checks));
+      }
+      return checks;
+    };
+    const copyPlans = (source: Map<string, ArrayPlan>): Map<string, ArrayPlan> => new Map(
+      [...source].map(([name, plan]) => [name, {
+        defaultValue: cloneNode(plan.defaultValue) as ExpressionNode,
+        writes: plan.writes.map((write) => ({
+          index: cloneNode(write.index) as ExpressionNode,
+          value: cloneNode(write.value) as ExpressionNode,
+        })),
+      }]),
+    );
+    const transformBlock = (block: BlockNode, active: Map<string, ArrayPlan>): void => {
+      const transformed: StatementNode[] = [];
+      for (const statement of block.statements ?? []) {
+        if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
+          const loopPlans = copyPlans(active);
+          for (const name of mutatedArrays(statement.block)) loopPlans.delete(name);
+          transformBlock(statement.block, loopPlans);
+          transformed.push(statement);
+          for (const name of mutatedArrays(statement)) active.delete(name);
+          continue;
+        }
+        if (statement instanceof BranchNode) {
+          transformBlock(statement.ifBlock, copyPlans(active));
+          if (statement.elseBlock) transformBlock(statement.elseBlock, copyPlans(active));
+          transformed.push(statement);
+          for (const name of mutatedArrays(statement)) active.delete(name);
+          continue;
+        }
+        if (statement instanceof SwitchNode) {
+          for (const candidate of statement.cases) transformBlock(candidate.body, copyPlans(active));
+          if (statement.defaultCase) transformBlock(statement.defaultCase, copyPlans(active));
+          transformed.push(statement);
+          for (const name of mutatedArrays(statement)) active.delete(name);
+          continue;
+        }
+        if (statement instanceof TryCatchNode) {
+          transformBlock(statement.tryBlock, copyPlans(active));
+          for (const candidate of statement.catchClauses) transformBlock(candidate.block, copyPlans(active));
+          transformed.push(statement);
+          for (const name of mutatedArrays(statement)) active.delete(name);
+          continue;
+        }
+
+        transformed.push(...rewriteMappingKeys(statement, active), statement);
+        const escaped = escapedPlanNames(statement, active);
+        if (statement instanceof VariableDefinitionNode && statement.expression instanceof NewArrayNode) {
+          active.set(statement.name, {
+            defaultValue: createDefaultValueExpression(
+              statement.expression.elementType, statement.location,
+            ),
+            writes: [],
+          });
+        } else if (statement instanceof ArrayAssignNode && active.has(statement.name)) {
+          if (containsReassignedName(statement.index) || containsReassignedName(statement.value)) {
+            active.delete(statement.name);
+          } else {
+            active.get(statement.name)!.writes.push({
+              index: cloneNode(statement.index) as ExpressionNode,
+              value: cloneNode(statement.value) as ExpressionNode,
+            });
+          }
+        } else if (statement instanceof ArrayDeleteNode && active.has(statement.name)) {
+          active.get(statement.name)!.writes.push({
+            index: cloneNode(statement.index) as ExpressionNode,
+            value: cloneNode(active.get(statement.name)!.defaultValue) as ExpressionNode,
+          });
+        } else if (statement instanceof ArrayPushNode || statement instanceof ArrayPopNode
+          || statement instanceof AssignNode) {
+          active.delete(statement instanceof AssignNode ? statement.identifier.name : statement.name);
+        }
+        for (const name of escaped) active.delete(name);
+      }
+      block.statements = transformed;
+    };
+    transformBlock(node.body, plans);
   }
 }

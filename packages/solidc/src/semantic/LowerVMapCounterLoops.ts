@@ -716,6 +716,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       counterName?: string,
       resolving = new Set<string>(),
       stateValues: ReadonlyMap<string, ExpressionNode> = new Map(),
+      localValues: ReadonlyMap<string, ExpressionNode> = new Map(),
     ): boolean => {
       if (expression instanceof LiteralNode) return true;
       if (expression instanceof StateAccessNode) {
@@ -724,40 +725,43 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const assigned = stateValues.get(expression.name);
         return assigned !== undefined && runtimePathExpressionSupported(
           assigned, counterName, new Set(resolving).add(`state:${expression.name}`), stateValues,
+          localValues,
         );
       }
       if (expression instanceof IdentifierNode) {
         if (expression.name === counterName
           || visibleParameters.some((parameter) => parameter.name === expression.name)) return true;
         if (resolving.has(expression.name)) return false;
-        const initializer = runtimePathLocalInitializer(expression.name);
+        const initializer = localValues.get(expression.name) ?? runtimePathLocalInitializer(expression.name);
         return initializer !== undefined
           && runtimePathExpressionSupported(
-            initializer, counterName, new Set(resolving).add(expression.name), stateValues,
+            initializer, counterName, new Set(resolving).add(expression.name), stateValues, localValues,
           );
       }
       if (expression instanceof CastNode || expression instanceof UnaryOpNode
         || expression instanceof FieldAccessNode) {
-        return runtimePathExpressionSupported(expression.expression, counterName, resolving, stateValues);
+        return runtimePathExpressionSupported(
+          expression.expression, counterName, resolving, stateValues, localValues,
+        );
       }
       if (expression instanceof BinaryOpNode) {
-        return runtimePathExpressionSupported(expression.left, counterName, resolving, stateValues)
-          && runtimePathExpressionSupported(expression.right, counterName, resolving, stateValues);
+        return runtimePathExpressionSupported(expression.left, counterName, resolving, stateValues, localValues)
+          && runtimePathExpressionSupported(expression.right, counterName, resolving, stateValues, localValues);
       }
       if (expression instanceof TernaryOpNode) {
-        return runtimePathExpressionSupported(expression.condition, counterName, resolving, stateValues)
-          && runtimePathExpressionSupported(expression.ifTrue, counterName, resolving, stateValues)
-          && runtimePathExpressionSupported(expression.ifFalse, counterName, resolving, stateValues);
+        return runtimePathExpressionSupported(expression.condition, counterName, resolving, stateValues, localValues)
+          && runtimePathExpressionSupported(expression.ifTrue, counterName, resolving, stateValues, localValues)
+          && runtimePathExpressionSupported(expression.ifFalse, counterName, resolving, stateValues, localValues);
       }
       if (expression instanceof MappingAccessNode) {
         return !runtimePathMutatedState.has(expression.name)
           && expression.keys.every((key) => runtimePathExpressionSupported(
-            key, counterName, resolving, stateValues,
+            key, counterName, resolving, stateValues, localValues,
           ));
       }
       if (expression instanceof ArrayAccessNode) {
-        return runtimePathExpressionSupported(expression.array, counterName, resolving, stateValues)
-          && runtimePathExpressionSupported(expression.index, counterName, resolving, stateValues);
+        return runtimePathExpressionSupported(expression.array, counterName, resolving, stateValues, localValues)
+          && runtimePathExpressionSupported(expression.index, counterName, resolving, stateValues, localValues);
       }
       return false;
     };
@@ -766,21 +770,23 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       counterName?: string,
       resolving = new Set<string>(),
       stateValues: ReadonlyMap<string, ExpressionNode> = new Map(),
+      localValues: ReadonlyMap<string, ExpressionNode> = new Map(),
     ): ExpressionNode | undefined => {
       if (expression instanceof StateAccessNode && runtimePathMutatedState.has(expression.name)) {
         if (resolving.has(`state:${expression.name}`)) return cloneNode(expression);
         const assigned = stateValues.get(expression.name);
         return assigned && expandRuntimePathExpression(
           cloneNode(assigned), counterName, new Set(resolving).add(`state:${expression.name}`), stateValues,
+          localValues,
         );
       }
       if (expression instanceof IdentifierNode
         && expression.name !== counterName
         && !visibleParameters.some((parameter) => parameter.name === expression.name)) {
         if (resolving.has(expression.name)) return undefined;
-        const initializer = runtimePathLocalInitializer(expression.name);
+        const initializer = localValues.get(expression.name) ?? runtimePathLocalInitializer(expression.name);
         return initializer && expandRuntimePathExpression(
-          cloneNode(initializer), counterName, new Set(resolving).add(expression.name), stateValues,
+          cloneNode(initializer), counterName, new Set(resolving).add(expression.name), stateValues, localValues,
         );
       }
       const expanded = cloneNode(expression);
@@ -789,12 +795,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
         const value = (expanded as unknown as Record<string, unknown>)[key];
         if (value instanceof ExpressionNode) {
-          const replacement = expandRuntimePathExpression(value, counterName, resolving, stateValues);
+          const replacement = expandRuntimePathExpression(
+            value, counterName, resolving, stateValues, localValues,
+          );
           if (!replacement) return undefined;
           (expanded as unknown as Record<string, unknown>)[key] = replacement;
         } else if (Array.isArray(value)) {
           const replacements = value.map((item) => item instanceof ExpressionNode
-            ? expandRuntimePathExpression(item, counterName, resolving, stateValues) : item);
+            ? expandRuntimePathExpression(item, counterName, resolving, stateValues, localValues) : item);
           if (replacements.some((item) => item === undefined)) return undefined;
           (expanded as unknown as Record<string, unknown>)[key] = replacements;
         }
@@ -948,6 +956,76 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       collectWrites(block);
+      const keyed = writes.filter((write) =>
+        this.collections.has(write.name) && counterKeyIndex(write, logical) >= 0);
+      const loopCarriedLocalValues = new Map<string, ExpressionNode>();
+      const predicateOuterIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
+      const predicateOuterInitializers = new Map<string, ExpressionNode>();
+      if (predicateOuterIndex >= 0) {
+        for (const statement of canonical.parent.statements!.slice(0, predicateOuterIndex)) {
+          if (statement instanceof VariableDefinitionNode && statement.expression) {
+            predicateOuterInitializers.set(statement.name, statement.expression);
+          }
+        }
+      }
+      const topLevelAssignments = new Map<string, Array<{ statement: AssignNode; index: number }>>();
+      for (const [index, statement] of (block.statements ?? []).entries()) {
+        if (!(statement instanceof AssignNode) || statement === counterUpdate) continue;
+        const updates = topLevelAssignments.get(statement.identifier.name) ?? [];
+        updates.push({ statement, index });
+        topLevelAssignments.set(statement.identifier.name, updates);
+      }
+      for (const [name, updates] of topLevelAssignments) {
+        let allAssignments = 0;
+        const countAssignments = (candidate: Node): void => {
+          if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return;
+          if (candidate instanceof AssignNode && candidate.identifier.name === name) allAssignments += 1;
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node) countAssignments(value);
+            else if (Array.isArray(value)) {
+              for (const item of value) if (item instanceof Node) countAssignments(item);
+            }
+          }
+        };
+        countAssignments(block);
+        if (allAssignments !== updates.length || updates.some(({ statement }) => {
+          const expression = statement.expression;
+          return !(expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT
+            && expression.expression instanceof IdentifierNode && expression.expression.name === name);
+        })) continue;
+        const initializer = predicateOuterInitializers.get(name)
+          ?? (visibleParameters.some((parameter) => parameter.name === name)
+            ? new IdentifierNode(name) : undefined);
+        if (!initializer || keyed.length === 0) continue;
+        const writePositions = keyed.map((write) => (block.statements ?? [])
+          .findIndex((statement) => containsNode(statement, write)));
+        if (writePositions.some((index) => index < 0)) continue;
+        const togglesBefore = new Set(writePositions.map((writeIndex) =>
+          updates.filter(({ index }) => index < writeIndex).length));
+        if (togglesBefore.size !== 1) continue;
+        const rank = step === 1n && start === 0n
+          ? new IdentifierNode(logical)
+          : new BinaryOpNode(
+            new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
+            BinaryOperator.DIV, new IntLiteralNode(step),
+          );
+        const totalToggles = new BinaryOpNode(
+          new BinaryOpNode(rank, BinaryOperator.MUL, new IntLiteralNode(BigInt(updates.length))),
+          BinaryOperator.PLUS,
+          new IntLiteralNode(BigInt([...togglesBefore][0])),
+        );
+        const even = new BinaryOpNode(
+          new BinaryOpNode(totalToggles, BinaryOperator.MOD, new IntLiteralNode(2n)),
+          BinaryOperator.EQ,
+          new IntLiteralNode(0n),
+        );
+        const toggled = new UnaryOpNode(UnaryOperator.NOT, cloneNode(initializer));
+        const value = new TernaryOpNode(even, cloneNode(initializer), toggled);
+        value.location = updates[0].statement.location;
+        loopCarriedLocalValues.set(name, value);
+      }
       // Runtime event cardinality must be derivable before the first VM probe. Nested if/else paths are safe when
       // their predicate can be replayed from SDK-visible inputs and stable pre-state. Switch arms and the reachable
       // try body use those same paths; nested loops still need richer path metadata. This is a construct rule, not
@@ -961,11 +1039,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ): void => {
         if (x instanceof EmitStatementNode) {
           if (condition && !runtimePathExpressionSupported(
-            condition, logical, new Set(), stateValues,
+            condition, logical, new Set(), stateValues, loopCarriedLocalValues,
           )) conditionalRuntimeEmit = true;
           else {
             const expanded = condition && expandRuntimePathExpression(
-              condition, logical, new Set(), stateValues,
+              condition, logical, new Set(), stateValues, loopCarriedLocalValues,
             );
             if (condition && !expanded) conditionalRuntimeEmit = true;
             else runtimeEmits.push({ emit: x, ...(expanded && { condition: expanded }) });
@@ -1051,8 +1129,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       collectImpureInlineResults(block);
       const runtimeEmitSet = new Set(runtimeEmits.map(({ emit }) => emit));
-      const keyed = writes.filter((write) =>
-        this.collections.has(write.name) && counterKeyIndex(write, logical) >= 0);
       const keyedSelectionConditions = keyed.map((write) => writePaths.get(write));
       const uniqueDisjunction = (
         conditions: readonly (ExpressionNode | undefined)[],
@@ -1077,9 +1153,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         writeSelectionCondition = new BoolLiteralNode(true);
       }
       const selectionConditionSupported = keyedSelectionConditions.every((condition) => !condition
-          || runtimePathExpressionSupported(condition, logical, new Set(), stateValues))
+          || runtimePathExpressionSupported(
+            condition, logical, new Set(), stateValues, loopCarriedLocalValues,
+          ))
         && breakPaths.every((condition) => !condition
-          || runtimePathExpressionSupported(condition, logical, new Set(), stateValues));
+          || runtimePathExpressionSupported(
+            condition, logical, new Set(), stateValues, loopCarriedLocalValues,
+          ));
       const hasUnexpectedLoopControlMutation = (
         x: Node,
         inspectLogical: boolean,
@@ -1120,7 +1200,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const keys = keyExpressions(write);
         const at = counterKeyIndex(write, logical);
         return keys.some((key, index) => index !== at && containsIdentifier(key, logical)
-          && !runtimePathExpressionSupported(key, logical, new Set(), stateValues));
+          && !runtimePathExpressionSupported(
+            key, logical, new Set(), stateValues, loopCarriedLocalValues,
+          ));
       })) return false;
       // One collection currently owns one physical entry stream per iteration, but different collections need
       // not share their invariant key components. `a[left][i]` and `b[right][i]` therefore receive independently
@@ -1672,7 +1754,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (!apply) return true;
 
       const expandedBreakCondition = breakPaths.length > 0 && (breakCondition
-        ? expandRuntimePathExpression(breakCondition, logical, new Set(), stateValues)
+        ? expandRuntimePathExpression(
+          breakCondition, logical, new Set(), stateValues, loopCarriedLocalValues,
+        )
         : new BoolLiteralNode(true));
       if (breakPaths.length > 0 && !expandedBreakCondition) return false;
       const serial = this.serial++;
@@ -1714,7 +1798,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const groupSerial = index === 0 ? serial : this.serial++;
         const { selectionCondition } = plan;
         const expandedSelectionCondition = selectionCondition
-          && expandRuntimePathExpression(selectionCondition, logical, new Set(), stateValues);
+          && expandRuntimePathExpression(
+            selectionCondition, logical, new Set(), stateValues, loopCarriedLocalValues,
+          );
         return {
           collections: plan.collections,
           writes: new Set<Node>(plan.collectionWrites),

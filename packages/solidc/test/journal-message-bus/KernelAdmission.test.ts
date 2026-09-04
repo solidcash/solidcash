@@ -1192,25 +1192,42 @@ describe('required kernel admission', () => {
     ]);
   });
 
-  it.each([
-    ['a loop-carried local guard', `bool take = true;
+  it('publishes a closed predicate for a toggled loop-carried local guard', () => {
+    const body = `bool take = true;
       for (int i = 0; i < n; i = i + 1) {
         if (take) this.m[i] = i;
         take = !take;
-      }`],
-  ])('refuses one physical permutation with %s', (_label, body) => {
+      }`;
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       mapping(int => mapping(int => int)) nested;
-      function denied(int n) public { ${body} require(true); }
+      function write(int n) public { ${body} require(true); }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationCondition).toMatchObject({ kind: 'ternary' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('refuses a non-replayable loop-carried local guard', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n) public {
+        bool take = true;
+        for (int i = 0; i < n; i = i + 1) {
+          if (take) this.m[i] = i;
+          take = i % 3 == 0;
+        }
+        require(true);
+      }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
-    expect(artifact.abi.find((handler) => handler.name === 'denied')?.inputs.some((input) =>
-      input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(false);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

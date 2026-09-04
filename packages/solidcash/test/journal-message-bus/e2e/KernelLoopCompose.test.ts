@@ -572,6 +572,20 @@ contract KernelDominatingStatePredicate() {
   function check(int key, int expected) public { require(this.values[key] == expected); }
 }`;
 
+const LOOP_CARRIED_GUARD_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelLoopCarriedGuard() {
+  mapping(int => int) values;
+  function write(int count) public {
+    bool take = true;
+    for (int i = 0; i < count; i = i + 1) {
+      if (take) this.values[i] = i + 10;
+      take = !take;
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.values[key] == expected); }
+}`;
+
 describe('kernel loop message-bus compose', () => {
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
@@ -2233,6 +2247,23 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.conditionalWrite(2n, true).send()).resolves.toBeDefined();
     await expect(contract.call.check(0n, 20n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('settles a toggled loop-carried write predicate in logical source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(LOOP_CARRIED_GUARD_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.call.write(4n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 0n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(2n, 12n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(3n, 0n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles affine loop-carried local mapping values in source order', async () => {

@@ -12838,7 +12838,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.data = this.visit(node.data) as ExpressionNode;
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
-    return this.lowerVoidRawCallToGraphEdge(node) ?? node;
+    const lowered = this.lowerVoidRawCallToGraphEdge(node);
+    if (!lowered) return node;
+    // This rewrite happens while the enclosing body is already being visited. Visit the newly created graph
+    // expression now so the active body survey sees an external edge; the later external-call pre-scan is gated
+    // by that survey and otherwise leaves the sentinel slot index on this compiler-created node.
+    lowered.expression = this.visit(lowered.expression!) as ExpressionNode;
+    return lowered;
   }
 
   /**
@@ -12859,7 +12865,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    * receiver. A call option, a `delegatecall` (a delegate participant edge with its own authority argument), or
    * a non-address receiver is left alone for its own diagnostic.
    */
-  private lowerVoidRawCallToGraphEdge(node: LowLevelCallStatementNode): Node | undefined {
+  private lowerVoidRawCallToGraphEdge(node: LowLevelCallStatementNode): MethodCallStatementNode | undefined {
     const messageBusGraphMode = !!this.compilerOptions.messageBus;
     if (!messageBusGraphMode) return undefined;
     if (node.callMode !== 'call' && node.callMode !== 'staticcall') return undefined;
@@ -12877,10 +12883,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!(receiverType instanceof AddressType)) return undefined;
 
     const callNode = new ExternalFunctionCallNode('__raw__', receiver, '__raw__', [node.data]);
+    callNode.opaqueReturn = true;
+    callNode.discardedOpaqueReturn = true;
     callNode.callInfo = {
       interfaceName: '__raw__',
       functionName: '__raw__',
       externalCallSlotIndex: -1,
+      hasReturnValues: true,
+      returnTypes: [new BytesType()],
+      returnEventSignature: '_Return___raw__(bytes)',
       callMode: node.callMode === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
     };
     callNode.location = node.location;

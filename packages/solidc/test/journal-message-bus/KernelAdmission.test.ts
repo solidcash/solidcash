@@ -543,18 +543,21 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a native low-level call as KERNEL_OPAQUE_EFFECT', () => {
-    expect(denied(`contract C(address target) {
-      function denied(bytes data) public {
-        target.call(data);
-        require(true);
-      }
-      function control() public { require(true); }
-    }`, 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_OPAQUE_EFFECT',
-    });
-  });
+  it.each(['call', 'staticcall'] as const)(
+    'admits a straight-line native low-level %s with a discarded result', (method) => {
+      const artifact = compileString(`contract C(address target) {
+        function denied(bytes data) public {
+          target.${method}(data);
+          require(true);
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+        .toMatchObject({ eligible: true });
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+        .toMatchObject({ eligible: true });
+    },
+  );
 
   it('refuses a deploy-in-handler as KERNEL_LAYOUT', () => {
     expect(denied(`contract Child() { }

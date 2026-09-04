@@ -2818,14 +2818,14 @@ function synthesizeMessageBusRoute(
     // form cannot name it (`Expected variable '__extaddr_bar' does not exist on the stack`). Leaving it out keeps
     // `graphTailStatement` false, which routes the shape to the runtime form that authenticates the row at the
     // call site itself, where that local is in scope.
-    const directMethodCallCount = bodyStatements.filter((statement) =>
-      statement instanceof MethodCallStatementNode).length;
+    const directStatementCallCount = bodyStatements.filter((statement) =>
+      statement instanceof MethodCallStatementNode || statement instanceof LowLevelCallStatementNode).length;
     const directTypedCallCount = bodyStatements.filter((statement) =>
       statement instanceof MethodCallStatementNode
       || (statement instanceof FunctionCallStatementNode
         && contractTypedReceiverCall(statement.call, interfaceTypedReceivers(fn)))).length;
     const graphTailStatement = bodyStatements.length >= 2
-      && directMethodCallCount === methodCallCount
+      && directStatementCallCount === methodCallCount
       && bodyStatements[bodyStatements.length - 1] instanceof RequireNode
       && (bodyStatements[bodyStatements.length - 1] as RequireNode).expression
         instanceof BoolLiteralNode
@@ -3580,12 +3580,13 @@ function synthesizeMessageBusRoute(
       reason = 'dynamic-and-collection-route-not-enabled';
     }
     // Explicit atomic-graph mode has an authenticated continuation channel for a low-level call's opaque
-    // result. Permit that channel only for a source result-consumer whose complete named-call closure is finite
-    // and acyclic. Auto mode retains the conservative refusal, as do getters which merely share a contract with
-    // some unrelated low-level consumer, delegate execution, and every handler without a result-producing call
-    // statement. The later graph clone still proves each reached call/effect row against the callManifest.
+    // result. A result-consuming assignment uses that continuation, while a straight-line statement call followed
+    // by `require(true)` deliberately discards it after authenticating the same row. Permit both when the complete
+    // named-call closure is finite and acyclic. Auto mode retains the conservative refusal, as do getters which
+    // merely share a contract with some unrelated low-level consumer, delegate execution, and calls beneath
+    // unresolved control flow. The later graph clone still proves every reached row against the callManifest.
     const authenticatedBoundedLowLevelConsumer = explicitlyEnabledMessageBus
-      && graphResultStatement
+      && (graphResultStatement || graphTailStatement)
       && statefulExternalCall
       && boundedNamedClosure
       && !graphHasDelegatecall;

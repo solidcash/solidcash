@@ -16058,6 +16058,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       const returnTypes = physicalSlot?.returnTypes ?? node.callInfo?.returnTypes ?? [];
       if (node.opaqueReturn) {
+        if (node.discardedOpaqueReturn) return node;
         // The graph subroutine receives one authenticated opaque blob. Rebuild
         // the source-level `(success, data)` tuple locally; a failed child
         // covenant aborts the transaction, so a reached edge is successful.

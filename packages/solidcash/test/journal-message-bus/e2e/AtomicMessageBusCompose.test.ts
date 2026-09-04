@@ -1021,6 +1021,54 @@ describe('messageBus.compose atomic transaction', () => {
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 
+  it('authenticates a kernel low-level call whose result is discarded', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const targetArtifact = compileString(`contract ComposeVoidRawTarget() {
+      function echo(int value) public pure returns (int) { return value; }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    const targetBase = new Contract(targetArtifact, [], { provider });
+    const targetSetup = await setupStatefulUtxos(
+      provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const target = StatefulContract.withCategory(
+      targetBase.withCategory(hexToBin(targetSetup.categoryId)), targetSetup.categoryId,
+    );
+    const selector = targetArtifact.abi.find((fn) => fn.name === 'echo')?.selector;
+    if (!selector) throw new Error('test target did not publish its selector');
+    const payload = new Uint8Array([
+      ...hexToBin(selector), ...scriptToBytecode([bigIntToVmNumber(3n)]),
+    ]);
+    const callerArtifact = compileString(`contract ComposeVoidRawCaller(address target) {
+      function invoke(bytes payload) public {
+        target.call(payload);
+        require(true);
+      }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    expect(callerArtifact.messageBus?.handlers.find((handler) => handler.name === 'invoke'))
+      .toMatchObject({ eligible: true });
+    const callerBase = new Contract(
+      callerArtifact, [hexToBin(target.inner.lockingBytecode)], { provider },
+    );
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = messageBus.compose({
+      calls: [caller.call.invoke(payload), target.call.echo(3n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const canonical = await composition.build();
+    expect(vmRejects(canonical)).toBe(false);
+    const hostileResult = await composition.build();
+    mutateAuthenticatedFrame(hostileResult, '', 'messageEnvelope-result');
+    expect(vmRejects(hostileResult)).toBe(true);
+    await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
   it.skipIf(process.env.TESTS_USE_REGTEST === 'true')(
     'advances past a reached conditional opaque-return row in a delegated root', async () => {
     const provider = createMessageBusCapstoneTestProvider();

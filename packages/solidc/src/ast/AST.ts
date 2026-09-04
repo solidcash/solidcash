@@ -2237,6 +2237,9 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // EVM-parity expression-form low-level call `(bool, bytes) = addr.call(payload)`: the callee's type/function
   // are unknown at compile time, the return is read as a single opaque bytes blob, identity-bound to addr.
   opaqueReturn?: boolean;
+  // Statement-form `addr.call(payload);` authenticates the same opaque result frame so it can target either a
+  // returning or void handler, but deliberately does not reconstruct `(success, data)` on the source stack.
+  discardedOpaqueReturn?: boolean;
   // Set for a same-address varying-method function pointer `f = cond ? c.a : c.b; f(args)`: the RUNTIME selector
   // expression (`cond ? c.a.selector : c.b.selector`). Codegen stashes it into a temp and the covenant asserts
   // the co-spent callee's selector == it (instead of the compile-time witness), binding the co-spent method to

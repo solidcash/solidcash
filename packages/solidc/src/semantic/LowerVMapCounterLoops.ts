@@ -1332,20 +1332,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         };
         countAssignments(block);
         if (allAssignments !== updates.length) continue;
-        let delta = 0n;
+        const deltaTerms: ExpressionNode[] = [];
         let valid = true;
         for (const { statement } of updates) {
           const recurrence = statement.expression;
+          const parameterDeltaName = recurrence instanceof BinaryOpNode && recurrence.right instanceof IdentifierNode
+            ? recurrence.right.name : undefined;
+          const parameterDelta = parameterDeltaName !== undefined
+            && node.parameters.some((parameter) => parameter.name === parameterDeltaName)
+            && !loopReassignedLocals.has(parameterDeltaName);
           if (!(recurrence instanceof BinaryOpNode)
             || !(recurrence.operator === BinaryOperator.PLUS || recurrence.operator === BinaryOperator.MINUS)
             || !(recurrence.left instanceof IdentifierNode)
             || recurrence.left.name !== name
-            || !(recurrence.right instanceof IntLiteralNode)) {
+            || !(recurrence.right instanceof IntLiteralNode || parameterDelta)) {
             valid = false;
             break;
           }
-          delta += recurrence.operator === BinaryOperator.PLUS
-            ? recurrence.right.value : -recurrence.right.value;
+          const right = cloneNode(recurrence.right);
+          deltaTerms.push(recurrence.operator === BinaryOperator.PLUS
+            ? right : new BinaryOpNode(new IntLiteralNode(0n), BinaryOperator.MINUS, right));
         }
         const lastUpdate = updates.at(-1)!;
         const writesAfter = [...keyedStatementIndices.values()].every((writeIndex) => writeIndex > lastUpdate.index);
@@ -1357,7 +1363,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             BinaryOperator.DIV, new IntLiteralNode(step),
           );
         const occurrence = new BinaryOpNode(rank, BinaryOperator.PLUS, new IntLiteralNode(1n));
-        const scaled = new BinaryOpNode(occurrence, BinaryOperator.MUL, new IntLiteralNode(delta));
+        const netDelta = deltaTerms.reduce((sum, term) => sum === undefined
+          ? term : new BinaryOpNode(sum, BinaryOperator.PLUS, term), undefined as ExpressionNode | undefined);
+        if (!netDelta) continue;
+        const scaled = new BinaryOpNode(occurrence, BinaryOperator.MUL, netDelta);
         const affine = new BinaryOpNode(
           cloneNode(initializer), BinaryOperator.PLUS, scaled,
         );

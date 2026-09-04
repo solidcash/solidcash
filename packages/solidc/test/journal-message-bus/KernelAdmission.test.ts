@@ -902,6 +902,22 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('admits an immutable parameter as an affine local delta', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) a;
+      function write(int n, int amount) public {
+        int running = 0;
+        for (int i = 0; i < n; i = i + 1) {
+          running = running + amount;
+          this.a[i] = running;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('admits a straight-line affine local recurrence with several constant updates', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) a;

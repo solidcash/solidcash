@@ -1801,10 +1801,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       }
       // Conditions and mapping values are replayed at their own source statement. This permits a write before an
-      // assignment and another after it without conflating the two local values. Runtime event and transfer sites
-      // use the same position map below. Break fallthrough still needs phase-tagged path terms: its accumulated
-      // condition may combine identifiers observed at several earlier statements, so substituting one site's map
-      // would conflate distinct source values.
+      // assignment and another after it without conflating the two local values. Runtime effects and abrupt
+      // fallthrough use the same position map below; their atomic path terms are expanded before composition.
       for (const write of keyed) {
         const position = (block.statements ?? []).findIndex((statement) => containsNode(statement, write));
         const siteValues = loopCarriedLocalValuesByStatement.get(position);
@@ -1832,6 +1830,94 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const siteValues = loopCarriedLocalValuesByStatement.get(position);
         return siteValues ? new Map([...loopCarriedLocalValues, ...siteValues]) : loopCarriedLocalValues;
       };
+      const conditionAt = (expression: ExpressionNode, site: Node): ExpressionNode =>
+        expandRuntimePathExpression(
+          expression, logical, new Set(), stateValues, loopCarriedValuesAt(site),
+        ) ?? expression;
+      const phasedFallthrough = (x: Node): ExpressionNode | undefined => {
+        if (x instanceof ContinueNode || x instanceof BreakNode || x instanceof ReturnNode) {
+          return new BoolLiteralNode(false);
+        }
+        if (x instanceof WhileNode || x instanceof DoWhileNode) return undefined;
+        if (x instanceof BlockNode) {
+          let active: ExpressionNode | undefined;
+          for (const statement of x.statements ?? []) active = pathAnd(active, phasedFallthrough(statement));
+          return active;
+        }
+        if (x instanceof BranchNode) {
+          const condition = conditionAt(x.condition, x);
+          const ifFallthrough = phasedFallthrough(x.ifBlock);
+          const elseFallthrough = x.elseBlock ? phasedFallthrough(x.elseBlock) : undefined;
+          if (!ifFallthrough && !elseFallthrough) return undefined;
+          return pathOr(
+            pathAnd(condition, ifFallthrough), pathAnd(pathNot(condition), elseFallthrough),
+          );
+        }
+        return undefined;
+      };
+      // Rebuild paths after deriving source-position recipes. The discovery traversal above intentionally runs
+      // first because those recipes depend on the set and positions of keyed writes. Expanding each atomic branch
+      // before composing fallthrough preserves `local` values observed on opposite sides of an assignment.
+      writePaths.clear();
+      breakPaths.length = 0;
+      const collectPhasedPaths = (
+        x: Node, condition?: ExpressionNode, breakExitsLoop = true,
+      ): void => {
+        if (x instanceof WhileNode || x instanceof DoWhileNode) return;
+        if (isWrite(x)) {
+          if (this.collections.has(x.name)) writePaths.set(x, condition);
+          return;
+        }
+        if ((x instanceof BreakNode && breakExitsLoop) || x instanceof ReturnNode) {
+          breakPaths.push(condition); return;
+        }
+        if (x instanceof BlockNode) {
+          let active = condition;
+          for (const statement of x.statements ?? []) {
+            collectPhasedPaths(statement, active, breakExitsLoop);
+            active = pathAnd(active, phasedFallthrough(statement));
+          }
+          return;
+        }
+        if (x instanceof BranchNode) {
+          const branchCondition = conditionAt(x.condition, x);
+          collectPhasedPaths(x.ifBlock, pathAnd(condition, branchCondition), breakExitsLoop);
+          if (x.elseBlock) {
+            collectPhasedPaths(x.elseBlock, pathAnd(condition, pathNot(branchCondition)), breakExitsLoop);
+          }
+          return;
+        }
+        if (x instanceof SwitchNode) {
+          const expression = conditionAt(x.expression, x);
+          const matches = x.cases.map((candidate) => {
+            const equality = new BinaryOpNode(
+              cloneNode(expression), BinaryOperator.EQ, cloneNode(candidate.value),
+            );
+            equality.location = candidate.value.location ?? x.location;
+            return equality;
+          });
+          x.cases.forEach((candidate, index) => {
+            collectPhasedPaths(candidate.body, pathAnd(condition, matches[index]), false);
+          });
+          if (x.defaultCase) {
+            const defaultCondition = matches.reduce<ExpressionNode | undefined>(
+              (active, match) => pathAnd(active, pathNot(match)), condition,
+            );
+            collectPhasedPaths(x.defaultCase, defaultCondition, false);
+          }
+          return;
+        }
+        if (x instanceof TryCatchNode) { collectPhasedPaths(x.tryBlock, condition, breakExitsLoop); return; }
+        for (const [key, value] of Object.entries(x)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction') continue;
+          if (value instanceof Node) collectPhasedPaths(value, condition, breakExitsLoop);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+            collectPhasedPaths(item, condition, breakExitsLoop);
+          }
+        }
+      };
+      collectPhasedPaths(block);
       // Runtime event cardinality must be derivable before the first VM probe. Nested if/else paths are safe when
       // their predicate can be replayed from SDK-visible inputs and stable pre-state. Switch arms and the reachable
       // try body use those same paths; nested loops still need richer path metadata. This is a construct rule, not
@@ -1861,21 +1947,23 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           let active = condition;
           for (const statement of x.statements ?? []) {
             collectRuntimeEmits(statement, active);
-            active = pathAnd(active, fallthrough(statement));
+            active = pathAnd(active, phasedFallthrough(statement));
           }
           return;
         }
         if (x instanceof BranchNode) {
-          collectRuntimeEmits(x.ifBlock, pathAnd(condition, x.condition));
+          const branchCondition = conditionAt(x.condition, x);
+          collectRuntimeEmits(x.ifBlock, pathAnd(condition, branchCondition));
           if (x.elseBlock) {
-            collectRuntimeEmits(x.elseBlock, pathAnd(condition, pathNot(x.condition)));
+            collectRuntimeEmits(x.elseBlock, pathAnd(condition, pathNot(branchCondition)));
           }
           return;
         }
         if (x instanceof SwitchNode) {
+          const expression = conditionAt(x.expression, x);
           const matches = x.cases.map((candidate) => {
             const equality = new BinaryOpNode(
-              cloneNode(x.expression), BinaryOperator.EQ, cloneNode(candidate.value),
+              cloneNode(expression), BinaryOperator.EQ, cloneNode(candidate.value),
             );
             equality.location = candidate.value.location ?? x.location;
             return equality;
@@ -1945,19 +2033,23 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           let active = condition;
           for (const statement of x.statements ?? []) {
             collectRuntimeTransfers(statement, active);
-            active = pathAnd(active, fallthrough(statement));
+            active = pathAnd(active, phasedFallthrough(statement));
           }
           return;
         }
         if (x instanceof BranchNode) {
-          collectRuntimeTransfers(x.ifBlock, pathAnd(condition, x.condition));
-          if (x.elseBlock) collectRuntimeTransfers(x.elseBlock, pathAnd(condition, pathNot(x.condition)));
+          const branchCondition = conditionAt(x.condition, x);
+          collectRuntimeTransfers(x.ifBlock, pathAnd(condition, branchCondition));
+          if (x.elseBlock) collectRuntimeTransfers(
+            x.elseBlock, pathAnd(condition, pathNot(branchCondition)),
+          );
           return;
         }
         if (x instanceof SwitchNode) {
+          const expression = conditionAt(x.expression, x);
           const matches = x.cases.map((candidate) => {
             const equality = new BinaryOpNode(
-              cloneNode(x.expression), BinaryOperator.EQ, cloneNode(candidate.value),
+              cloneNode(expression), BinaryOperator.EQ, cloneNode(candidate.value),
             );
             equality.location = candidate.value.location ?? x.location;
             return equality;

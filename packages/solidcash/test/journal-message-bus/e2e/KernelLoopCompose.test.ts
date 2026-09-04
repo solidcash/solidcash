@@ -940,6 +940,7 @@ contract KernelLoopCarriedGuard() {
   mapping(int => int) afterValues;
   mapping(int => int) beforeAssignedValues;
   mapping(int => int) afterAssignedValues;
+  mapping(int => int) breakValues;
   function write(int count) public {
     bool take = true;
     for (int i = 0; i < count; i = i + 1) {
@@ -983,6 +984,16 @@ contract KernelLoopCarriedGuard() {
     }
     require(true);
   }
+  function writeBreakPhases(int count) public {
+    bool stop = false;
+    for (int i = 0; i < count; i = i + 1) {
+      if (stop) break;
+      stop = i == 2;
+      if (stop) break;
+      this.breakValues[i] = i + 70;
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.values[key] == expected); }
   function checkBefore(int key, int expected) public { require(this.beforeValues[key] == expected); }
   function checkAfter(int key, int expected) public { require(this.afterValues[key] == expected); }
@@ -992,6 +1003,7 @@ contract KernelLoopCarriedGuard() {
   function checkAfterAssigned(int key, int expected) public {
     require(this.afterAssignedValues[key] == expected);
   }
+  function checkBreak(int key, int expected) public { require(this.breakValues[key] == expected); }
 }`;
 
 describe('kernel loop message-bus compose', () => {
@@ -3818,6 +3830,12 @@ describe('kernel composite counter-key settlement', () => {
     ] as const) {
       await expect(contract.call.checkBeforeAssigned(key, before).send()).resolves.toBeDefined();
       await expect(contract.call.checkAfterAssigned(key, after).send()).resolves.toBeDefined();
+    }
+
+    await expect(contract.batch([{ function: 'writeBreakPhases', args: [6n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [[0n, 70n], [1n, 71n], [2n, 0n]] as const) {
+      await expect(contract.call.checkBreak(key, expected).send()).resolves.toBeDefined();
     }
   }, 180_000);
 

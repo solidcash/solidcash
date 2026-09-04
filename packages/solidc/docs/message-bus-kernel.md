@@ -385,9 +385,9 @@ the current counter. An exhaustive top-level `if`/`else`
 or `switch` assignment to the same local is collapsed to its exact ternary expression for subsequent guards and
 mapping values when every arm is independently replayable. Exhaustive nested branches and switches are reduced
 recursively. Straight-line loop-carried values used before and after an assignment receive separate per-site
-recipes for mapping guards, mapping values, and runtime-effect predicates. Incomplete joins, self-dependent arms,
-recurrences other than the supported boolean toggle, and accumulated fallthrough across break sites which observe
-different local phases remain fenced.
+recipes for mapping guards, mapping values, runtime-effect predicates, and early-exit fallthrough: each atomic path
+term is expanded at its own source statement before the terms are composed. Incomplete joins, self-dependent arms,
+and recurrences other than the supported boolean toggle remain fenced.
 Sibling reads of a mutated mapping, foreign counter-keyed reads, and
 write values derived through mutable/loop-carried locals or scalar state mutated by the loop remain
 `KERNEL_UNBOUNDED_KEY`. Integer same-entry expressions are supported generally: for example,

@@ -1788,10 +1788,10 @@ describe('required kernel admission', () => {
     expect(conditions?.[0]).not.toEqual(conditions?.[1]);
   });
 
-  it('refuses a write whose fallthrough combines differently phased break predicates', () => {
+  it('replays a write whose fallthrough combines differently phased break predicates', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
-      function denied(int n) public {
+      function write(int n) public {
         bool stop = false;
         for (int i = 0; i < n; i = i + 1) {
           if (stop) break;
@@ -1801,13 +1801,14 @@ describe('required kernel admission', () => {
         }
         require(true);
       }
-      function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({
+        iterationCondition: { kind: 'binary', operator: '&&' },
+        iterationBreakCondition: { kind: 'binary', operator: '||' },
+      });
   });
 
   it('admits a public enum getter encoded as int', () => {

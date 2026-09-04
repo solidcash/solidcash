@@ -15870,7 +15870,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const routeFrames = [
         (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments,
         entryCompilerRoute?.rowArguments,
-        ...lowLevelCallUtxoGroups.map((group) => group.compilerRoute?.rowArguments),
+        ...(overrides?.calls ?? []).flatMap((call) => call.type === 'stateful' && call.compilerRoute
+          ? [call.compilerRoute.rowArguments] : []),
       ];
       for (const rows of routeFrames) {
         const index = rows?.findIndex((candidate) => candidate === row) ?? -1;

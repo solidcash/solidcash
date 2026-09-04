@@ -2665,7 +2665,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a loop predicate after a non-dominating scalar-state assignment', () => {
+  it('merges a conditional scalar-state assignment into a loop predicate', () => {
     const artifact = compileString(`contract C() {
       bool enabled;
       mapping(int => int) m;
@@ -2678,11 +2678,66 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo?.[0].condition)
+      .toEqual({
+        kind: 'ternary',
+        condition: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+        ifTrue: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        ifFalse: { kind: 'state', name: 'enabled' },
+      });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('merges exhaustive scalar-state assignments used by a later loop predicate', () => {
+    const artifact = compileString(`contract C() {
+      bool enabled;
+      bool armed;
+      mapping(int => int) m;
+      function write(int n, bool next, bool take) public {
+        if (take) { this.enabled = next; this.armed = this.enabled; }
+        else { this.enabled = !next; this.armed = this.enabled; }
+        if (this.armed) {
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0].condition)
+      .toEqual({
+        kind: 'ternary',
+        condition: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+        ifTrue: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        ifFalse: {
+          kind: 'unary', operator: '!',
+          expression: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        },
+      });
+  });
+
+  it('merges a finite switch scalar-state assignment into a loop predicate', () => {
+    const artifact = compileString(`contract C() {
+      bool enabled;
+      mapping(int => int) m;
+      function write(int n, int choice, bool next) public {
+        switch (choice) {
+          case 1: this.enabled = next; break;
+          case 2: this.enabled = !next; break;
+          default: break;
+        }
+        if (this.enabled) {
+          for (int i = 0; i < n; i = i + 1) { this.m[i] = i; }
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0].condition)
+      .toMatchObject({ kind: 'ternary' });
   });
 
   it('composes sequential dominating scalar-state assignments in a loop predicate', () => {

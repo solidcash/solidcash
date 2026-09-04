@@ -58,8 +58,9 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * domains with constant or replayable runtime steps, lower. A unit post-test domain authenticates
  * `max(publicBound, 1)` entries. Multiple unconditional source-order loops may lower together when their
  * runtime keys are disjoint; each loop receives its own authenticated trailing input/output segment.
- * Loop-carried predicates/values, sibling reads of the mutated mapping, and nested loops
- * control still need richer logical-journal or path metadata.
+ * Finite pre-loop scalar-state assignments merge through if/else and switch into replayable path expressions.
+ * Unsupported loop-carried predicates/values, sibling reads of the mutated mapping, and nested-loop control still
+ * need richer logical-journal or path metadata.
  *
  * The permutation is an untrusted unlocking witness. Generated checks prove it has exactly the canonical domain's
  * number of distinct elements in that domain, hence it is a complete permutation rather than an SDK convention.
@@ -1003,6 +1004,113 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return composed;
       };
+      const scalarStateMutations = (root: Node): Set<string> => {
+        const names = new Set<string>();
+        const collect = (candidate: Node): void => {
+          if (candidate instanceof StateAssignNode) names.add(candidate.name);
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node) collect(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) collect(item);
+          }
+        };
+        collect(root);
+        return names;
+      };
+      const stateAccess = (name: string, root: Node): StateAccessNode => {
+        const access = new StateAccessNode(name);
+        const find = (candidate: Node): StateAssignNode | undefined => {
+          if (candidate instanceof StateAssignNode && candidate.name === name) return candidate;
+          for (const [key, value] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (value instanceof Node) {
+              const found = find(value);
+              if (found) return found;
+            } else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) {
+              const found = find(item);
+              if (found) return found;
+            }
+          }
+          return undefined;
+        };
+        const assignment = find(root);
+        access.location = assignment?.location ?? root.location;
+        access.stateVariable = assignment?.stateVariable;
+        access.type = assignment?.stateVariable?.type;
+        return access;
+      };
+      const mutatesNonScalarState = (root: Node, name: string): boolean => {
+        if ((root instanceof StateArrayAssignNode || root instanceof StateArrayDeleteNode
+          || root instanceof StateArrayPushNode || root instanceof StateArrayPopNode || isWrite(root))
+          && root.name === name) return true;
+        for (const [key, value] of Object.entries(root)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && mutatesNonScalarState(value, name)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && mutatesNonScalarState(item, name))) return true;
+        }
+        return false;
+      };
+      function replayScalarState(
+        name: string,
+        block: BlockNode | undefined,
+        incoming: ReadonlyMap<string, ExpressionNode>,
+        source: Node,
+      ): ExpressionNode | undefined {
+        const current = new Map(incoming);
+        if (!current.has(name)) current.set(name, stateAccess(name, source));
+        for (const statement of block?.statements ?? []) {
+          if (statement instanceof StateAssignNode) {
+            current.set(statement.name, composeStateReads(statement.expression, current));
+            continue;
+          }
+          if (statement instanceof BranchNode) {
+            if (!scalarStateMutations(statement).has(name)) continue;
+            if (mutatesNonScalarState(statement, name)) return undefined;
+            const condition = composeStateReads(statement.condition, current);
+            const ifValue = replayScalarState(name, statement.ifBlock, current, statement);
+            const elseValue = replayScalarState(name, statement.elseBlock, current, statement);
+            if (!ifValue || !elseValue) return undefined;
+            const merged = new TernaryOpNode(condition, ifValue, elseValue);
+            merged.location = statement.location;
+            merged.type = ifValue.type ?? elseValue.type;
+            current.set(name, merged);
+            continue;
+          }
+          if (statement instanceof SwitchNode) {
+            if (!scalarStateMutations(statement).has(name)) continue;
+            if (mutatesNonScalarState(statement, name)) return undefined;
+            const selected = composeStateReads(statement.expression, current);
+            const defaultValue = replayScalarState(name, statement.defaultCase, current, statement);
+            if (!defaultValue) return undefined;
+            let merged: ExpressionNode = defaultValue;
+            for (const arm of [...statement.cases].reverse()) {
+              const armValue = replayScalarState(name, arm.body, current, statement);
+              if (!armValue) return undefined;
+              const condition = new BinaryOpNode(
+                cloneNode(selected), BinaryOperator.EQ, cloneNode(arm.value),
+              );
+              condition.location = arm.value.location ?? statement.location;
+              const next = new TernaryOpNode(condition, armValue, merged);
+              next.location = statement.location;
+              next.type = armValue.type ?? merged.type;
+              merged = next;
+            }
+            current.set(name, merged);
+            continue;
+          }
+          // A value crossing an abrupt or iterative control-flow boundary needs a path phi rather than a
+          // straight-line ternary. Leave it unknown until that wider representation exists.
+          if ((statement instanceof TryCatchNode || statement instanceof WhileNode || statement instanceof DoWhileNode
+            || statement instanceof ReturnNode || statement instanceof BreakNode
+            || statement instanceof ContinueNode) && scalarStateMutations(statement).has(name)) return undefined;
+          if (mutatesNonScalarState(statement, name)) return undefined;
+        }
+        return current.get(name);
+      }
       const search = (
         root: Node,
         incoming: Map<string, ExpressionNode>,
@@ -1015,11 +1123,68 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             if (containsNode(statement, target)) return search(statement, current);
             if (statement instanceof StateAssignNode) {
               current.set(statement.name, composeStateReads(statement.expression, current));
+            } else if (statement instanceof BranchNode) {
+              const mutations = scalarStateMutations(statement);
+              const branchIncoming = new Map(current);
+              const mergedValues = new Map<string, ExpressionNode>();
+              for (const name of mutations) {
+                if (mutatesNonScalarState(statement, name)) {
+                  current.delete(name);
+                  continue;
+                }
+                const condition = composeStateReads(statement.condition, branchIncoming);
+                const ifValue = replayScalarState(name, statement.ifBlock, branchIncoming, statement);
+                const elseValue = replayScalarState(name, statement.elseBlock, branchIncoming, statement);
+                if (!ifValue || !elseValue) {
+                  current.delete(name);
+                  continue;
+                }
+                const merged = new TernaryOpNode(condition, ifValue, elseValue);
+                merged.location = statement.location;
+                merged.type = ifValue.type ?? elseValue.type;
+                mergedValues.set(name, merged);
+              }
+              for (const [name, value] of mergedValues) current.set(name, value);
+            } else if (statement instanceof SwitchNode) {
+              const mutations = scalarStateMutations(statement);
+              const switchIncoming = new Map(current);
+              const selected = composeStateReads(statement.expression, switchIncoming);
+              const mergedValues = new Map<string, ExpressionNode>();
+              for (const name of mutations) {
+                if (mutatesNonScalarState(statement, name)) {
+                  current.delete(name);
+                  continue;
+                }
+                const defaultValue = replayScalarState(name, statement.defaultCase, switchIncoming, statement);
+                if (!defaultValue) {
+                  current.delete(name);
+                  continue;
+                }
+                let merged: ExpressionNode = defaultValue;
+                let complete = true;
+                for (const arm of [...statement.cases].reverse()) {
+                  const armValue = replayScalarState(name, arm.body, switchIncoming, statement);
+                  if (!armValue) {
+                    complete = false;
+                    break;
+                  }
+                  const condition = new BinaryOpNode(
+                    cloneNode(selected), BinaryOperator.EQ, cloneNode(arm.value),
+                  );
+                  condition.location = arm.value.location ?? statement.location;
+                  const next = new TernaryOpNode(condition, armValue, merged);
+                  next.location = statement.location;
+                  next.type = armValue.type ?? merged.type;
+                  merged = next;
+                }
+                if (complete) mergedValues.set(name, merged);
+                else current.delete(name);
+              }
+              for (const [name, value] of mergedValues) current.set(name, value);
             } else if (statement instanceof StateArrayAssignNode || statement instanceof StateArrayDeleteNode
               || statement instanceof StateArrayPushNode || statement instanceof StateArrayPopNode) {
               current.delete(statement.name);
-            } else if (statement instanceof BranchNode || statement instanceof SwitchNode
-              || statement instanceof TryCatchNode || statement instanceof WhileNode
+            } else if (statement instanceof TryCatchNode || statement instanceof WhileNode
               || statement instanceof DoWhileNode) {
               for (const name of runtimePathMutatedState) {
                 if (containsNode(statement, target)) break;

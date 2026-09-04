@@ -898,6 +898,24 @@ contract KernelDominatingStatePredicate() {
     }
     require(true);
   }
+  function conditionalStateWrite(int count, bool next, bool take) public {
+    if (take) { this.enabled = next; }
+    if (this.enabled) {
+      for (int i = 0; i < count; i = i + 1) { this.values[i] = i + 30; }
+    }
+    require(true);
+  }
+  function switchStateWrite(int count, int choice, bool next) public {
+    switch (choice) {
+      case 1: this.enabled = next; break;
+      case 2: this.enabled = !next; break;
+      default: break;
+    }
+    if (this.enabled) {
+      for (int i = 0; i < count; i = i + 1) { this.values[i] = i + 40; }
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.values[key] == expected); }
 }`;
 
@@ -3656,10 +3674,12 @@ describe('kernel composite counter-key settlement', () => {
     const provider = createTestProvider();
     const artifact = compileString(DOMINATING_STATE_PREDICATE_SOURCE, KERNEL);
     expect(artifact.messageBus?.handlers.filter((handler) =>
-      ['eventWrite', 'conditionalWrite'].includes(handler.name)))
+      ['eventWrite', 'conditionalWrite', 'conditionalStateWrite', 'switchStateWrite'].includes(handler.name)))
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ name: 'eventWrite', eligible: true }),
         expect.objectContaining({ name: 'conditionalWrite', eligible: true }),
+        expect.objectContaining({ name: 'conditionalStateWrite', eligible: true }),
+        expect.objectContaining({ name: 'switchStateWrite', eligible: true }),
       ]));
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -3672,6 +3692,28 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.conditionalWrite(2n, true).send()).resolves.toBeDefined();
     await expect(contract.call.check(0n, 20n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{
+      function: 'conditionalStateWrite', args: [100n, false, true],
+    }]).send()).resolves.toBeDefined();
+    await expect(contract.batch([{
+      function: 'conditionalStateWrite', args: [100n, true, false],
+    }]).send()).resolves.toBeDefined();
+    await expect(contract.batch([{
+      function: 'conditionalStateWrite', args: [2n, true, true],
+    }]).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 30n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 31n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{
+      function: 'switchStateWrite', args: [100n, 1n, false],
+    }]).send()).resolves.toBeDefined();
+    await expect(contract.batch([{
+      function: 'switchStateWrite', args: [100n, 0n, true],
+    }]).send()).resolves.toBeDefined();
+    await expect(contract.batch([{
+      function: 'switchStateWrite', args: [2n, 2n, false],
+    }]).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 40n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 41n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles a toggled loop-carried write predicate in logical source order', async () => {

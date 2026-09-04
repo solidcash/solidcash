@@ -947,6 +947,7 @@ describe('required kernel admission', () => {
       contract C(bytes32 dest) {
         mapping(int => int) m;
         function write(int n, int stride) public {
+          stride = stride + 1;
           for (int i = 1; i < n; i = i + stride) {
             this.m[i] = i;
             I(dest).hit(i);
@@ -961,7 +962,7 @@ describe('required kernel admission', () => {
       .argSources?.[0]).toMatchObject({
       kind: 'loopIndex',
       initialValue: '1',
-      stepExpression: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      stepExpression: { kind: 'binary', operator: '+' },
     });
   });
 
@@ -980,7 +981,7 @@ describe('required kernel admission', () => {
       .iterationStep).toMatchObject({ kind: 'binary', operator: '+' });
   });
 
-  it('refuses a runtime step mutated inside its loop', () => {
+  it('refuses runtime steps mutated inside their loop and snapshots a dominating reassignment', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function denied(int n, int stride) public {
@@ -1003,6 +1004,11 @@ describe('required kernel admission', () => {
         for (int i = 0; i < n; i = i + stride) { this.m[i] = i; }
         require(true);
       }
+      function admittedConditional(int n, int stride, bool wide) public {
+        if (wide) { stride = stride + 1; } else { stride = stride + 2; }
+        for (int i = 0; i < n; i = i + stride) { this.m[i] = i; }
+        require(true);
+      }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
@@ -1013,10 +1019,14 @@ describe('required kernel admission', () => {
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'deniedReassigned')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'deniedReassigned'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'deniedReassigned')?.sortedUpsertLoopInfo?.[0]
+      .iterationStep).toMatchObject({ kind: 'binary', operator: '+' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'admittedConditional'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'admittedConditional')?.sortedUpsertLoopInfo?.[0]
+      .iterationStep).toMatchObject({ kind: 'ternary' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

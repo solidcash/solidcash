@@ -644,6 +644,7 @@ interface IKernelCounterSink { function ping(int value); }
 contract KernelCounterCaller(address sink) {
   mapping(int => int) m;
   function invoke(int n, int stride) public {
+    stride = stride + 1;
     for (int i = 1; i < n; i = i + stride) {
       this.m[i] = i + 10;
       try IKernelCounterSink(sink).ping(i) { } catch { }
@@ -2956,7 +2957,7 @@ describe('kernel composite counter-key settlement', () => {
     );
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const composition = messageBus.compose({
-      calls: [caller.call.invoke(6n, 2n), sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n)],
+      calls: [caller.call.invoke(6n, 1n), sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n)],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
@@ -2976,7 +2977,7 @@ describe('kernel composite counter-key settlement', () => {
     }
 
     const wrongOrder = messageBus.compose({
-      calls: [caller.call.invoke(6n, 2n), sink.call.ping(3n), sink.call.ping(1n), sink.call.ping(5n)],
+      calls: [caller.call.invoke(6n, 1n), sink.call.ping(3n), sink.call.ping(1n), sink.call.ping(5n)],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
@@ -2985,7 +2986,7 @@ describe('kernel composite counter-key settlement', () => {
 
     const updateFee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const update = messageBus.compose({
-      calls: [caller.call.invoke(6n, 2n), sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n)],
+      calls: [caller.call.invoke(6n, 1n), sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n)],
       funder: updateFee,
       changeAddress: updateFee.unlocker.generateLockingBytecode(),
     });

@@ -165,6 +165,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       stepExpression?: ExpressionNode;
       stepNames: string[];
       stepDefinitions: VariableDefinitionNode[];
+      stepAssignments: AssignNode[];
       counterType: IntType;
       postTest: boolean;
       counterUpdate?: AssignNode;
@@ -564,6 +565,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               ...resolvedRuntimeStep.assignments.map((assignment) => assignment.identifier.name),
             ] : [],
             stepDefinitions: resolvedRuntimeStep?.definitions ?? [],
+            stepAssignments: resolvedRuntimeStep?.assignments ?? [],
             counterType: variable.type instanceof IntType ? variable.type : new IntType(true, 256),
             postTest,
             counterUpdate: update as AssignNode,
@@ -1122,10 +1124,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (!canonical) return false;
       const {
         logical, count, boundNames, boundDefinitions, boundAssignments, boundOffset, boundExpression,
-        start, step, stepExpression, stepNames, stepDefinitions,
+        start, step, stepExpression, stepNames, stepDefinitions, stepAssignments,
         counterType, postTest, counterUpdate,
         pathConditions, pathSupported,
       } = canonical;
+      const serial = apply ? this.serial++ : this.serial;
+      const stepSnapshot = apply && stepAssignments.length > 0
+        ? `__internal__vmapCounterStep_${serial}` : undefined;
       const stateValues = dominantStateValues(loop);
       const sourcePathCondition = runtimePathCondition(pathConditions);
       if (!pathSupported
@@ -1137,8 +1142,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       );
       if (sourcePathCondition && !pathCondition) return false;
       const { block, location } = loop;
-      const stepValue = (): ExpressionNode => stepExpression
-        ? cloneNode(stepExpression) : new IntLiteralNode(step);
+      const stepValue = (): ExpressionNode => {
+        if (!stepSnapshot) return stepExpression ? cloneNode(stepExpression) : new IntLiteralNode(step);
+        const reference = new IdentifierNode(stepSnapshot);
+        reference.location = location;
+        return reference;
+      };
       const unitDomain = !stepExpression && start === 0n && step === 1n;
       const writes: Array<ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
       | MappingFieldAssignNode> = [];
@@ -1720,7 +1729,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           && ((inspectLogical && x.identifier.name === logical && x !== counterUpdate)
             || (inspectBound && (
               (boundNames.includes(x.identifier.name) && !boundAssignments.includes(x))
-              || stepNames.includes(x.identifier.name)
+              || (stepNames.includes(x.identifier.name) && !stepAssignments.includes(x))
             )))) return true;
         if (x instanceof VariableDefinitionNode
           && ((inspectLogical && x.name === logical)
@@ -2190,7 +2199,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const lastUpdate = updates.at(-1)!;
         const writesAfter = [...keyedStatementIndices.values()].every((writeIndex) => writeIndex > lastUpdate.index);
         if (!valid || !source || !writesAfter) continue;
-        const snapshot = `__internal__vmapCounterStateBase_${this.serial}_${name}`;
+        const snapshot = `__internal__vmapCounterStateBase_${serial}_${name}`;
         affineStateSnapshots.set(snapshot, cloneNode(source));
         const rank = unitDomain
           ? new IdentifierNode(logical)
@@ -2303,11 +2312,19 @@ export default class LowerVMapCounterLoops extends AstTraversal {
 
       if (!apply) return true;
 
-      // A source do-while counter is an ordinary local declaration rather than AstBuilder's synthetic
-      // `for` initializer, so it does not yet carry progression metadata. Publish the same metadata once this
-      // pass has proved the post-test loop canonical. External-call argument planning can then replay the live
-      // logical counter instead of incorrectly classifying it as its initializer expression.
-      if (postTest) {
+      if (stepSnapshot && stepExpression) {
+        const snapshot = new VariableDefinitionNode(
+          new IntType(true, 256), [], stepSnapshot, cloneNode(stepExpression),
+        );
+        snapshot.location = location;
+        prelude.push(snapshot);
+      }
+
+      // Publish the fully resolved progression once this pass has proved the loop canonical. A source do-while
+      // counter has no AstBuilder progression metadata, while a for-loop step may still name a local which was
+      // reassigned before the loop. External-call planning must replay this point-in-time expression rather than
+      // classify the counter as its initializer or serialize the stale source identifier.
+      {
         const sourceLoopIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
         const variable = sourceLoopIndex > 0
           ? canonical.parent.statements?.[sourceLoopIndex - 1] : undefined;
@@ -2356,7 +2373,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         )
         : new BoolLiteralNode(true));
       if (breakPaths.length > 0 && !expandedBreakCondition) return false;
-      const serial = this.serial++;
       const signedComponent = (value: bigint): string => value < 0n ? `n${-value}` : `p${value}`;
       const rangeSuffix = unitDomain
         ? '' : `_from_${signedComponent(start)}_step_${stepExpression

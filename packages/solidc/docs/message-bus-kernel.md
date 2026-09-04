@@ -314,8 +314,9 @@ Solidity field tuple), and dynamic arrays of structs or enums returned through t
 Recursive mapping handlers and result types the wrapper cannot encode stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
 Counter-keyed mapping loops with zero or direction-mismatched steps, mutated bounds, or extra counter mutations
-stay `KERNEL_UNBOUNDED_KEY`. A runtime step may be any replayable expression over public arguments and immutable
-local aliases; the route proves that its signed value advances toward the bound and the SDK rejects zero or wrong-
+stay `KERNEL_UNBOUNDED_KEY`. A runtime step may be any replayable expression over public arguments, immutable
+local aliases, and straight-line or finite conditional dominating assignments; the route proves that its signed
+value advances toward the bound and the SDK rejects zero or wrong-
 direction values before construction. Deterministic bound expressions over
 public arguments and immutable local aliases are serialized for SDK replay. A constant-start,
 constant- or runtime-step domain is represented by the exact ascending or descending arithmetic progression, with a maximum of 64 iterations;

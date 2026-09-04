@@ -14,6 +14,35 @@ ReturnType<typeof compileString>['messageBus']
 };
 
 describe('required kernel admission', () => {
+  it('keeps source ABI selectors stable after injecting sorted-map witnesses', () => {
+    const artifact = compileString(`contract C() {
+      mapping(bigint => bigint) values;
+      function set(bigint key, bigint value) public {
+        this.values[key] = value;
+        require(value >= 0);
+      }
+    }`, KERNEL);
+    // sha256("set(bigint,bigint)")[0..4]. Internal vmap witnesses are physical operands, not selector inputs.
+    expect(artifact.abi.find((fn) => fn.name === 'set')?.selector).toBe('f7bda9dc');
+    expect(artifact.messageBus?.handlers.find((fn) => fn.name === 'set')?.selector).toBe('f7bda9dc');
+    expect(artifact.abi.find((fn) => fn.name === 'set')?.inputs.some(
+      (input) => input.name.startsWith('__internal__vmapBatch'),
+    )).toBe(true);
+  });
+
+  it('does not classify the kernel row dispatcher as a source keccak loop', () => {
+    const artifact = compileString(`interface I { function accept(bytes32 value); }
+    contract C() {
+      function digest(address target, bytes value) public {
+        require(value.length > 0);
+        I(target).accept(keccak256(value));
+      }
+    }`, KERNEL);
+    const route = artifact.messageBus!.route;
+    expect(route.keccakLoopReads).not.toBe(true);
+    expect(route.blockLayout?.slots.filter((slot) => slot.kind === 'keccakSideCar')).toHaveLength(1);
+  });
+
   it('authenticates a straight-line struct read-modify-write on a counter-keyed entry', () => {
     const artifact = compileString(`contract C() {
       struct Pair { int left; int right; }

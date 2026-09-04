@@ -22744,6 +22744,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // stateful and stateless reads use the same absolute-forward covenant (self-preserve via OP_INPUTINDEX).
   private emitLoopKeccakSetup(block: Node, loc: SingleLocationData): boolean {
     if (this.keccakLoopActive) return false;
+    // The kernel's row dispatcher is a transport loop, not a source-level repetition of the selected handler.
+    // Semantic links from its typed handler call can make the recursive scan see a handler's keccak node; using
+    // the row counter as a dynamic side-car ordinal then moves an ordinary fixed compute slot past blockSize.
+    if (this.currentFunctionIsMessageBusRoute) return false;
     if (!this.currentFunction.keccakCompute) return false;
     if (!this.blockHasKeccakCall(block)) return false;
     this.currentFunction.keccakLoopReads = true; // tells the SDK to progressively co-spend N runtime side-cars
@@ -22781,6 +22785,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // emitEcrecoverComputeCall reads pair `counter`, binds argBlob, reads Q, and increments the counter each iteration.
   private emitLoopEcrecoverSetup(block: Node, loc: SingleLocationData): boolean {
     if (this.ecrecoverLoopActive) return false;
+    if (this.currentFunctionIsMessageBusRoute) return false;
     if (!this.currentFunction.ecrecoverCompute) return false;
     if (!this.blockHasEcrecoverCall(block)) return false;
     this.emit(encodeInt(0n), loc);

@@ -15864,10 +15864,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ?? []
     ).filter((row) => (row.handler.sortedUpsertLoopInfo?.length ?? 0) > 0);
     const routeRowIndex = (row: RouteExpressionKeyRow): number => {
-      const rows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments
-        ?? entryCompilerRoute?.rowArguments
-        ?? [];
-      return rows.findIndex((candidate) => candidate === row);
+      // A delegated root can carry both a proxy route and one or more implementation routes. The selected row
+      // belongs to exactly one of those frames; preferring a defined-but-unrelated proxy array returns -1 and
+      // makes runtime effects in the implementation appear unpositioned. Resolve identity within each owner.
+      const routeFrames = [
+        (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments,
+        entryCompilerRoute?.rowArguments,
+        ...lowLevelCallUtxoGroups.map((group) => group.compilerRoute?.rowArguments),
+      ];
+      for (const rows of routeFrames) {
+        const index = rows?.findIndex((candidate) => candidate === row) ?? -1;
+        if (index >= 0) return index;
+      }
+      return -1;
     };
     const selectedRowArgument = (row: RouteExpressionKeyRow, name: string): unknown => {
       if (name.startsWith('__internal__')) return row.internalArgs?.[name];
@@ -23703,9 +23712,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let ecrecoverEvmPreimages: Array<Uint8Array | null> = [];
     if ((abiFunction?.ecrecoverCompute || entryAbiFunction?.ecrecoverCompute) && this.categoryId) {
       const ecrecoverAbiFunction = abiFunction?.ecrecoverCompute ? abiFunction : entryAbiFunction!;
-      const delegatedEcrecover = ecrecoverAbiFunction !== abiFunction;
+      // A selected message-bus handler is represented by a different ABI object than the synthetic route
+      // wrapper, but its compute resources still belong to the route owner's balanced block. Treat resources as
+      // delegated only when an actual delegatecall group executes that ABI; object inequality alone also matches
+      // every ordinary kernel handler and incorrectly moves its fixed compute slots behind the owner block.
+      const ecrecoverExecutingGroup = ecrecoverAbiFunction !== abiFunction
+        ? lowLevelCallUtxoGroups.find((group) => (
+          group.callMode === 'delegatecall'
+          && (group.compilerRoute?.abiFunction === ecrecoverAbiFunction
+            || group.functionName === ecrecoverAbiFunction.name)
+        ))
+        : undefined;
+      const delegatedEcrecover = ecrecoverExecutingGroup !== undefined;
       delegateComputeResources ||= delegatedEcrecover;
-      const ecrecoverArgs = delegatedEcrecover ? entryArgs : args;
+      const ecrecoverArgs = ecrecoverAbiFunction === entryAbiFunction ? entryArgs : args;
       const graphRuntime = ecrecoverAbiFunction as MessageBusRuntimeAbiFunction;
       const graphCalls = graphRuntime.graphEcrecoverCalls;
       const resolution = await this._resolveEcrecoverComputeCoSpends(
@@ -23754,13 +23774,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const keccakAbiFunction = abiFunction
         && (abiFunction.keccakCompute || abiFunction.ecrecoverEvmFlags?.some(Boolean))
         ? abiFunction : entryAbiFunction!;
-      const delegatedKeccak = keccakAbiFunction !== abiFunction;
+      const executingGroup = keccakAbiFunction !== abiFunction
+        ? lowLevelCallUtxoGroups.find((group) => (
+          group.callMode === 'delegatecall'
+          && (group.compilerRoute?.abiFunction === keccakAbiFunction
+            || group.functionName === keccakAbiFunction.name)
+        ))
+        : undefined;
+      const delegatedKeccak = executingGroup !== undefined;
       delegateComputeResources ||= delegatedKeccak;
-      const keccakArgs = delegatedKeccak ? entryArgs : args;
-      const executingGroup = delegatedKeccak ? lowLevelCallUtxoGroups.find((group) => (
-        group.compilerRoute?.abiFunction === keccakAbiFunction
-        || group.functionName === keccakAbiFunction.name
-      )) : undefined;
+      const keccakArgs = keccakAbiFunction === entryAbiFunction ? entryArgs : args;
       const resolution = await this._resolveKeccakComputeCoSpends(keccakAbiFunction, keccakArgs, {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,

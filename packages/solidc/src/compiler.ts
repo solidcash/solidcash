@@ -4173,8 +4173,9 @@ function synthesizeMessageBusRoute(
   }
 
   const selector = (fn: FunctionDefinitionNode): string => binToHex(computeFunctionSelector(
-    computeFunctionSignature(fn.name, fn.parameters.map((parameter) =>
-      parameter.type.toString().replace(/address payable/g, 'address'))),
+    computeFunctionSignature(fn.name, fn.parameters
+      .filter((parameter) => !parameter.name.startsWith('__internal__'))
+      .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
   // The production 10KB profile keeps the compact two-row resource route. Permissive development/compatibility
   // profiles can afford the fully unrolled row band, which is required when one physical collection owner is
@@ -9626,7 +9627,8 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: s
     fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.VIEW
       && modifier !== FunctionModifier.PURE);
     for (const param of fn.parameters) param.syntheticallyUsed = true;
-    const signature = computeFunctionSignature(fn.name, fn.parameters.map((p) => p.type.toString()));
+    const signature = computeFunctionSignature(fn.name, fn.parameters
+      .filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type.toString()));
     const target = new IdentifierNode(route.link); target.location = fn.location;
     const data = new HexLiteralNode(computeFunctionSelector(signature)); data.location = fn.location;
     if (fn.returnTypes.length === 0 || !wasReadOnly) {

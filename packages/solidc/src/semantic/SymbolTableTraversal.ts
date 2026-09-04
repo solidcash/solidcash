@@ -1322,7 +1322,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const func of node.functions) {
       if (!func.isEntryPoint || func.isAbstract) continue;
       // Solidity ABI selectors erase address payability (including inside arrays), matching artifact ABI types.
-      const paramTypes = func.parameters.map((p) => p.type.toString().replace(/address payable/g, 'address'));
+      // Compiler-internal witnesses are physical unlocking operands, not part of the source ABI. This pass can
+      // run again after vmap/journal lowering has appended them, so always derive selectors from source params.
+      const paramTypes = func.parameters
+        .filter((p) => !p.name.startsWith('__internal__'))
+        .map((p) => p.type.toString().replace(/address payable/g, 'address'));
       const sig = computeFunctionSignature(func.name, paramTypes);
       const selector = func.messageBusRoute
         ? Uint8Array.from([0x53, 0x43, 0x42, 0x31])
@@ -1688,7 +1692,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!fn) return undefined;
       const signature = computeFunctionSignature(
         fn.name,
-        fn.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+        fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+          .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
       );
       return literal(computeFunctionSelector(signature), 4);
     };
@@ -8882,7 +8887,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (fn) {
         const signature = computeFunctionSignature(
           fn.name,
-          fn.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+          fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+            .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
         );
         const literal = new HexLiteralNode(computeFunctionSelector(signature));
         literal.location = node.expression.location;
@@ -10148,7 +10154,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (method && cast.parameters.length === 1) {
             const signature = computeFunctionSignature(
               method.name,
-              method.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+              method.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+                .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
             );
             selector = new HexLiteralNode(computeFunctionSelector(signature));
             address = cast.parameters[0];
@@ -11183,7 +11190,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (target) {
         const signature = computeFunctionSignature(
           target.name,
-          target.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+          target.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+            .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
         );
         const selector = new HexLiteralNode(computeFunctionSelector(signature));
         selector.location = node.location;
@@ -11215,7 +11223,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!method) return undefined;
         const signature = computeFunctionSignature(
           branch.name,
-          method.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+          method.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+            .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
         );
         const selector = new HexLiteralNode(computeFunctionSelector(signature));
         selector.location = branch.location;
@@ -11506,7 +11515,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         const method = methods[0];
         const signature = computeFunctionSignature(
           method.name,
-          method.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+          method.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+            .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
         );
         const selector = new HexLiteralNode(computeFunctionSelector(signature));
         selector.location = node.location;

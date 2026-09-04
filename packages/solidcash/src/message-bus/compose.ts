@@ -1226,7 +1226,19 @@ export class AtomicMessageBusComposition {
             ...(executorInput.token && { token: executorInput.token }),
           };
         }
-        aggregate.locktime = Math.max(aggregate.locktime, local.locktime);
+        // Stateful builders normally stamp the provider's current Unix time, but a selected blockhash row can
+        // require height-mode CLTV (< 500M). Taking a numeric maximum silently changes the height requirement
+        // into timestamp mode and makes the otherwise valid oracle spend fail by type. Preserve a concrete
+        // height-mode requirement over ambient timestamp defaults. If another participant genuinely requires a
+        // timestamp lock as well, final VM preflight still rejects the inherently incompatible composition.
+        const aggregateIsHeight = aggregate.locktime > 0 && aggregate.locktime < 500_000_000;
+        const localIsHeight = local.locktime > 0 && local.locktime < 500_000_000;
+        if (local.locktime > 0) {
+          if (localIsHeight && !aggregateIsHeight) aggregate.locktime = local.locktime;
+          else if (localIsHeight === aggregateIsHeight) {
+            aggregate.locktime = Math.max(aggregate.locktime, local.locktime);
+          }
+        }
         while (local.outputs.length < blockSize && local.outputs.length < local.inputs.length) {
           const input = local.inputs[local.outputs.length];
           local.addOutput({

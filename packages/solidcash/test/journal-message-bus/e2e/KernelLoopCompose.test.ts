@@ -670,6 +670,15 @@ contract KernelDoCounterCaller(address sink) {
     } while (i < n);
     require(true);
   }
+  function invokeRuntime(int n, int stride) public {
+    int i = 1;
+    do {
+      this.m[i] = i + 10;
+      IKernelCounterSink(sink).ping(i);
+      i = i + stride;
+    } while (i < n);
+    require(true);
+  }
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
@@ -3039,6 +3048,39 @@ describe('kernel composite counter-key settlement', () => {
     await evaluateAndSend(3n);
     for (let key = 0; key < 3; key += 1) {
       await expect(caller.call.check(BigInt(key), BigInt(key + 10)).send()).resolves.toMatchObject({
+        txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+    }
+
+    const runtimeHandler = callerArtifact.abi.find((candidate) => candidate.name === 'invokeRuntime')!;
+    expect(runtimeHandler.sortedUpsertLoopInfo?.[0]?.iterationStep)
+      .toMatchObject({ kind: 'source', source: { kind: 'forward', paramIndex: 1 } });
+    expect(runtimeHandler.externalCalls?.[0].argSources?.[0]).toMatchObject({
+      kind: 'loopIndex', initialValue: '1', stepExpression: { kind: 'source' },
+    });
+    const runtimeFee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const runtimeComposition = messageBus.compose({
+      calls: [
+        caller.call.invokeRuntime(6n, 2n),
+        sink.call.ping(1n), sink.call.ping(3n), sink.call.ping(5n),
+      ],
+      funder: runtimeFee,
+      changeAddress: runtimeFee.unlocker.generateLockingBytecode(),
+    });
+    const runtimeBuilder = await runtimeComposition.build();
+    const runtimeVm = createVirtualMachineBch2026ForProvider(provider);
+    const runtimeTransaction = runtimeBuilder.buildLibauthTransaction();
+    const runtimeSources = generateLibauthSourceOutputs(runtimeBuilder.inputs);
+    for (let inputIndex = 0; inputIndex < runtimeTransaction.inputs.length; inputIndex += 1) {
+      expect(runtimeVm.stateSuccess(runtimeVm.evaluate({
+        inputIndex, sourceOutputs: runtimeSources, transaction: runtimeTransaction,
+      })), `runtime-step input ${inputIndex}`).toBe(true);
+    }
+    await expect(runtimeComposition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    for (const key of [1n, 3n, 5n]) {
+      await expect(caller.call.check(key, key + 10n).send()).resolves.toMatchObject({
         txid: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
     }

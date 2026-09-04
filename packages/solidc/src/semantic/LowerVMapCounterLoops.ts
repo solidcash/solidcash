@@ -54,8 +54,8 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * Try/catch and nested-loop effect reachability and token-container transfers still need richer runtime effect
  * records. Direct BCH transfers use a source-ordered trailing stream alongside events. The canonical pre-test domains
  * `for (int i = constantStart; i < publicBound; i = i + positiveConstantStep)` and
- * `for (int i = constantStart; i > publicBound; i = i - positiveConstantStep)`, plus the post-test domain
- * `int i = 0; do { ...; i = i + 1; } while (i < publicBound)` lower. The latter authenticates
+ * `for (int i = constantStart; i > publicBound; i = i - positiveConstantStep)`, plus equivalent post-test
+ * domains with constant or replayable runtime steps, lower. A unit post-test domain authenticates
  * `max(publicBound, 1)` entries. Multiple unconditional source-order loops may lower together when their
  * runtime keys are disjoint; each loop receives its own authenticated trailing input/output segment.
  * Loop-carried predicates/values, sibling reads of the mutated mapping, and nested loops
@@ -2302,6 +2302,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           && dependsOnLoopMutation(write, new Set(), true))) return false;
 
       if (!apply) return true;
+
+      // A source do-while counter is an ordinary local declaration rather than AstBuilder's synthetic
+      // `for` initializer, so it does not yet carry progression metadata. Publish the same metadata once this
+      // pass has proved the post-test loop canonical. External-call argument planning can then replay the live
+      // logical counter instead of incorrectly classifying it as its initializer expression.
+      if (postTest) {
+        const sourceLoopIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
+        const variable = sourceLoopIndex > 0
+          ? canonical.parent.statements?.[sourceLoopIndex - 1] : undefined;
+        if (variable instanceof VariableDefinitionNode) {
+          variable.loopInitialValue = start;
+          if (stepExpression) {
+            variable.loopStepValue = undefined;
+            variable.loopStepExpression = cloneNode(stepExpression);
+          } else {
+            variable.loopStepValue = step;
+            variable.loopStepExpression = undefined;
+          }
+        }
+      }
 
       // Evaluate replayed invariant keys before any source assignments and use the immutable local for both the
       // physical loop and its function-wide authenticated cache. This preserves `k = f(k); m[g(k)] = ...`

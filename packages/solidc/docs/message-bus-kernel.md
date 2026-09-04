@@ -321,7 +321,8 @@ public arguments and immutable local aliases are serialized for SDK replay. A co
 constant- or runtime-step domain is represented by the exact ascending or descending arithmetic progression, with a maximum of 64 iterations;
 the authenticated permutation is over those logical counter values rather than assuming `0..n-1`, and its ABI element type
 matches a signed or unsigned source counter. Canonical post-test domains support constant starts and non-zero
-constant steps in the comparison's direction, including `int i = 0; do { ...; i = i + 1; } while (i < n)` and
+constant or replayable runtime steps in the comparison's direction, including
+`int i = 0; do { ...; i = i + 1; } while (i < n)` and
 descending/ranged forms. They authenticate the exact progression with at least the mandatory first iteration;
 an immutable local affine-alias chain such as
 `requested = n; limit = 1 + (requested - 2)` and nonlinear forms such as `limit = n * scale` preserve the exact

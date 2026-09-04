@@ -6310,8 +6310,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               return { kind: 'constructorArg', paramName: defNode.name };
             }
           }
-          if (defNode instanceof VariableDefinitionNode && defNode.isLoopVariable
-            && defNode.loopInitialValue !== undefined
+          if (defNode instanceof VariableDefinitionNode && defNode.loopInitialValue !== undefined
             && (defNode.loopStepValue !== undefined || defNode.loopStepExpression !== undefined)) {
             return {
               kind: 'loopIndex',

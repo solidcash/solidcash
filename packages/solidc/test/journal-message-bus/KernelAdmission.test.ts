@@ -1950,6 +1950,30 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it('publishes a runtime do-while step for mapping and typed-call replay', () => {
+    const artifact = compileString(`interface I { function r(int i); }
+      contract C(address dest) {
+        mapping(int => int) m;
+        function write(int n, int stride) public {
+          int i = 1;
+          do { this.m[i] = i; I(dest).r(i); i = i + stride; } while (i < n);
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const handler = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    expect(handler.sortedUpsertLoopInfo?.[0]).toMatchObject({
+      varyingArrayParam: expect.stringMatching(/_from_p1_step_runtime_p_post$/),
+      iterationStep: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+    });
+    expect(handler.externalCalls?.[0].argSources?.[0]).toMatchObject({
+      kind: 'loopIndex',
+      initialValue: '1',
+      stepExpression: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+    });
+  });
+
   it('admits fallback that wraps a UDVT mapping key', () => {
     const artifact = compileString(`type TokenId is bytes32;
       contract C() {

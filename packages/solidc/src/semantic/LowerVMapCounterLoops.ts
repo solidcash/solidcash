@@ -1015,40 +1015,115 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           }
         };
         countAssignments(block);
-        if (allAssignments !== updates.length || updates.some(({ statement }) => {
-          const expression = statement.expression;
-          return !(expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT
-            && expression.expression instanceof IdentifierNode && expression.expression.name === name);
-        })) continue;
         const initializer = predicateOuterInitializers.get(name)
           ?? (visibleParameters.some((parameter) => parameter.name === name)
             ? new IdentifierNode(name) : undefined);
+        if (allAssignments !== updates.length) continue;
+        const toggles = updates.every(({ statement }) => {
+          const expression = statement.expression;
+          return expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT
+            && expression.expression instanceof IdentifierNode && expression.expression.name === name;
+        });
         if (!initializer || keyed.length === 0) continue;
         const writePositions = keyed.map((write) => (block.statements ?? [])
           .findIndex((statement) => containsNode(statement, write)));
         if (writePositions.some((index) => index < 0)) continue;
-        const togglesBefore = new Set(writePositions.map((writeIndex) =>
-          updates.filter(({ index }) => index < writeIndex).length));
-        if (togglesBefore.size !== 1) continue;
         const rank = step === 1n && start === 0n
           ? new IdentifierNode(logical)
           : new BinaryOpNode(
             new BinaryOpNode(new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(start)),
             BinaryOperator.DIV, new IntLiteralNode(step),
           );
-        const totalToggles = new BinaryOpNode(
-          new BinaryOpNode(rank, BinaryOperator.MUL, new IntLiteralNode(BigInt(updates.length))),
-          BinaryOperator.PLUS,
-          new IntLiteralNode(BigInt([...togglesBefore][0])),
+        const locateGenerated = (candidate: Node, seen = new Set<Node>()): void => {
+          if (seen.has(candidate)) return;
+          seen.add(candidate);
+          candidate.location ??= updates[0].statement.location;
+          for (const [key, child] of Object.entries(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+            if (child instanceof Node) locateGenerated(child, seen);
+            else if (Array.isArray(child)) {
+              for (const item of child) if (item instanceof Node) locateGenerated(item, seen);
+            }
+          }
+        };
+        if (toggles) {
+          const togglesBefore = new Set(writePositions.map((writeIndex) =>
+            updates.filter(({ index }) => index < writeIndex).length));
+          if (togglesBefore.size !== 1) continue;
+          const totalToggles = new BinaryOpNode(
+            new BinaryOpNode(rank, BinaryOperator.MUL, new IntLiteralNode(BigInt(updates.length))),
+            BinaryOperator.PLUS,
+            new IntLiteralNode(BigInt([...togglesBefore][0])),
+          );
+          const even = new BinaryOpNode(
+            new BinaryOpNode(totalToggles, BinaryOperator.MOD, new IntLiteralNode(2n)),
+            BinaryOperator.EQ,
+            new IntLiteralNode(0n),
+          );
+          const toggled = new UnaryOpNode(UnaryOperator.NOT, cloneNode(initializer));
+          const value = new TernaryOpNode(even, cloneNode(initializer), toggled);
+          value.location = updates[0].statement.location;
+          locateGenerated(value);
+          loopCarriedLocalValues.set(name, value);
+          continue;
+        }
+
+        // A single unconditional recurrence which does not read itself has an exact closed form at every use.
+        // Uses after the assignment observe f(i); uses before it observe the initializer for rank zero and
+        // f(i-step) thereafter. Requiring every use to be on the same side avoids pretending one expression can
+        // represent two source-order values in a loop containing both pre- and post-assignment effects.
+        if (updates.length !== 1 || containsIdentifier(updates[0].statement.expression, name)) continue;
+        const statements = block.statements ?? [];
+        const usePositions = statements.flatMap((statement, index) => (
+          index !== updates[0].index && containsIdentifier(statement, name) ? [index] : []
+        ));
+        if (usePositions.length === 0) continue;
+        const usesBefore = usePositions.every((index) => index < updates[0].index);
+        const usesAfter = usePositions.every((index) => index > updates[0].index);
+        if (!usesBefore && !usesAfter) continue;
+        if (!runtimePathExpressionSupported(
+          initializer, logical, new Set(), stateValues, loopCarriedLocalValues,
+        ) || !runtimePathExpressionSupported(
+          updates[0].statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
+        )) continue;
+        const expandedInitializer = expandRuntimePathExpression(
+          initializer, logical, new Set(), stateValues, loopCarriedLocalValues,
         );
-        const even = new BinaryOpNode(
-          new BinaryOpNode(totalToggles, BinaryOperator.MOD, new IntLiteralNode(2n)),
-          BinaryOperator.EQ,
-          new IntLiteralNode(0n),
+        const expandedUpdate = expandRuntimePathExpression(
+          updates[0].statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
         );
-        const toggled = new UnaryOpNode(UnaryOperator.NOT, cloneNode(initializer));
-        const value = new TernaryOpNode(even, cloneNode(initializer), toggled);
+        if (!expandedInitializer || !expandedUpdate) continue;
+        let value: ExpressionNode = expandedUpdate;
+        if (usesBefore) {
+          const previous = cloneNode(expandedUpdate) as ExpressionNode;
+          const replaceCounter = (candidate: Node): Node => {
+            if (candidate instanceof IdentifierNode && candidate.name === logical) {
+              const prior = new BinaryOpNode(
+                new IdentifierNode(logical), BinaryOperator.MINUS, new IntLiteralNode(step),
+              );
+              prior.location = candidate.location;
+              return prior;
+            }
+            for (const [key, child] of Object.entries(candidate)) {
+              if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+                || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+              if (child instanceof Node) {
+                (candidate as unknown as Record<string, unknown>)[key] = replaceCounter(child);
+              } else if (Array.isArray(child)) {
+                (candidate as unknown as Record<string, unknown>)[key] = child.map((item) =>
+                  item instanceof Node ? replaceCounter(item) : item);
+              }
+            }
+            return candidate;
+          };
+          const first = new BinaryOpNode(cloneNode(rank), BinaryOperator.EQ, new IntLiteralNode(0n));
+          value = new TernaryOpNode(
+            first, expandedInitializer, replaceCounter(previous) as ExpressionNode,
+          );
+        }
         value.location = updates[0].statement.location;
+        locateGenerated(value);
         loopCarriedLocalValues.set(name, value);
       }
       // Runtime event cardinality must be derivable before the first VM probe. Nested if/else paths are safe when

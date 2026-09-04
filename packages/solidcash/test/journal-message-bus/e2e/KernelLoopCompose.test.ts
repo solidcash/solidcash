@@ -684,6 +684,22 @@ contract KernelLoopCarriedGuard() {
     }
     require(true);
   }
+  function writeCounterDerived(int count) public {
+    bool take = true;
+    for (int i = 0; i < count; i = i + 1) {
+      if (take) this.values[100 + i] = i + 20;
+      take = i % 3 == 0;
+    }
+    require(true);
+  }
+  function writeCounterCurrent(int count) public {
+    bool take = false;
+    for (int i = 0; i < count; i = i + 1) {
+      take = i % 3 == 0;
+      if (take) this.values[200 + i] = i + 30;
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.values[key] == expected); }
 }`;
 
@@ -2676,7 +2692,9 @@ describe('kernel composite counter-key settlement', () => {
 
   it('settles a toggled loop-carried write predicate in logical source order', async () => {
     const provider = createTestProvider();
-    const artifact = compileString(LOOP_CARRIED_GUARD_SOURCE, KERNEL);
+    const artifact = compileString(LOOP_CARRIED_GUARD_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
@@ -2689,6 +2707,22 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(1n, 0n).send()).resolves.toBeDefined();
     await expect(contract.call.check(2n, 12n).send()).resolves.toBeDefined();
     await expect(contract.call.check(3n, 0n).send()).resolves.toBeDefined();
+
+    const counterDerived = contract.batch([{ function: 'writeCounterDerived', args: [5n] }]);
+    await expect(counterDerived.send()).resolves.toBeDefined();
+    for (const [key, expected] of [
+      [100n, 20n], [101n, 21n], [102n, 0n], [103n, 0n], [104n, 24n],
+    ] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+
+    await expect(contract.batch([{ function: 'writeCounterCurrent', args: [5n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [
+      [200n, 30n], [201n, 0n], [202n, 0n], [203n, 33n], [204n, 0n],
+    ] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
   }, 180_000);
 
   it('settles affine loop-carried local mapping values in source order', async () => {

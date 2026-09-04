@@ -350,8 +350,12 @@ selected mapping subset, applies each site's fall-through predicate, and stops a
 Both void and value-returning `return` use the same terminated-domain representation after the compiler lowers
 the return to a stashed result/flag and break. The post-loop return is captured through the ordinary result channel,
 while the mapping cursor proves the exact terminated iteration domain.
-Loop-carried write guards, sibling reads of a mutated
-mapping, foreign counter-keyed reads, and
+Loop-carried guards with one unconditional, replayable assignment are closed over the logical counter when every
+use is consistently before or after that assignment. For example, `if (take) m[i] = i; take = i % 3 == 0`
+publishes `take` as the initializer at rank zero and the previous counter's expression thereafter; assigning before
+the guarded write publishes the current counter's expression. Self-dependent recurrences other than the supported
+boolean toggle, conditional assignments, and values observed on both sides of one assignment remain fenced.
+Sibling reads of a mutated mapping, foreign counter-keyed reads, and
 write values derived through mutable/loop-carried locals or scalar state mutated by the loop remain
 `KERNEL_UNBOUNDED_KEY`. Integer same-entry expressions are supported generally: for example,
 `m[i] = max(m[i] * 2, m[i] + i)` evaluates with an SDK-supplied old-value vector whose elements are verified

@@ -1263,7 +1263,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a non-replayable loop-carried local guard', () => {
+  it('publishes a counter-derived loop-carried local guard', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function denied(int n) public {
@@ -1276,11 +1276,52 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo?.[0]
+      .iterationCondition).toMatchObject({ kind: 'ternary' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('publishes a counter-derived local assigned before its guarded write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n) public {
+        bool take = false;
+        for (int i = 0; i < n; i = i + 1) {
+          take = i % 3 == 0;
+          if (take) this.m[i] = i;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationCondition).toMatchObject({ kind: 'binary', operator: '==' });
+  });
+
+  it('refuses one loop-carried local observed on both sides of its assignment', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function denied(int n) public {
+        bool take = true;
+        for (int i = 0; i < n; i = i + 1) {
+          if (take) this.left[i] = i;
+          take = i % 3 == 0;
+          if (take) this.right[i] = i;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')
+      ?.eligible).toBe(true);
   });
 
   it('admits a public enum getter encoded as int', () => {

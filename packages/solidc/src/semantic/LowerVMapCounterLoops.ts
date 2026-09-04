@@ -1069,33 +1069,35 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           continue;
         }
 
-        // A single unconditional recurrence which does not read itself has an exact closed form at every use.
-        // Uses after the assignment observe f(i); uses before it observe the initializer for rank zero and
-        // f(i-step) thereafter. Requiring every use to be on the same side avoids pretending one expression can
-        // represent two source-order values in a loop containing both pre- and post-assignment effects.
-        if (updates.length !== 1 || containsIdentifier(updates[0].statement.expression, name)) continue;
+        // Straight-line unconditional assignments which do not read themselves have an exact closed form at every
+        // source-order phase. A use after assignment K observes fK(i); a use before the first assignment observes
+        // the initializer at rank zero and the final assignment evaluated at i-step thereafter. All uses must share
+        // one phase: one serialized expression cannot represent different values on opposite sides of an update.
+        if (updates.some(({ statement }) => containsIdentifier(statement.expression, name))) continue;
         const statements = block.statements ?? [];
         const usePositions = statements.flatMap((statement, index) => (
-          index !== updates[0].index && containsIdentifier(statement, name) ? [index] : []
+          !updates.some((update) => update.index === index) && containsIdentifier(statement, name) ? [index] : []
         ));
         if (usePositions.length === 0) continue;
-        const usesBefore = usePositions.every((index) => index < updates[0].index);
-        const usesAfter = usePositions.every((index) => index > updates[0].index);
-        if (!usesBefore && !usesAfter) continue;
+        const phases = new Set(usePositions.map((index) =>
+          updates.filter((update) => update.index < index).length));
+        if (phases.size !== 1) continue;
+        const phase = [...phases][0];
+        const selectedUpdate = phase === 0 ? updates.at(-1)! : updates[phase - 1];
         if (!runtimePathExpressionSupported(
           initializer, logical, new Set(), stateValues, loopCarriedLocalValues,
         ) || !runtimePathExpressionSupported(
-          updates[0].statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
+          selectedUpdate.statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
         )) continue;
         const expandedInitializer = expandRuntimePathExpression(
           initializer, logical, new Set(), stateValues, loopCarriedLocalValues,
         );
         const expandedUpdate = expandRuntimePathExpression(
-          updates[0].statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
+          selectedUpdate.statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
         );
         if (!expandedInitializer || !expandedUpdate) continue;
         let value: ExpressionNode = expandedUpdate;
-        if (usesBefore) {
+        if (phase === 0) {
           const previous = cloneNode(expandedUpdate) as ExpressionNode;
           const replaceCounter = (candidate: Node): Node => {
             if (candidate instanceof IdentifierNode && candidate.name === logical) {

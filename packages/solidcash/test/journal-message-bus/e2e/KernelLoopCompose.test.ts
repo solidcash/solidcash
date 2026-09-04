@@ -697,6 +697,7 @@ contract KernelLoopCarriedGuard() {
     for (int i = 0; i < count; i = i + 1) {
       take = i % 3 == 0;
       if (take) this.values[200 + i] = i + 30;
+      take = false;
     }
     require(true);
   }

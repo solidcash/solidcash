@@ -1291,6 +1291,7 @@ describe('required kernel admission', () => {
         for (int i = 0; i < n; i = i + 1) {
           take = i % 3 == 0;
           if (take) this.m[i] = i;
+          take = false;
         }
         require(true);
       }

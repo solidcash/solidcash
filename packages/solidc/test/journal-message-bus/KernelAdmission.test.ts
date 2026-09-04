@@ -1108,7 +1108,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses an unlowered compound counter key instead of publishing repeated effects as fixed slots', () => {
+  it('lowers a serializable compound counter key and its repeated effect onto the runtime streams', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) keyed;
       function denied(int base, int n, bytes32 category, bytes recipient) public {
@@ -1120,10 +1120,15 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({
+        collection: 'keyed',
+        varyingKeyExpressions: [expect.objectContaining({ kind: 'binary', operator: '+' })],
+      })]);
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.runtimeLoopTransfers)
+      .toEqual([expect.objectContaining({ siteKinds: ['token'], tokenContainerSlots: [0] })]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

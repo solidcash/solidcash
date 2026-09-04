@@ -434,12 +434,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       logical: string,
     ): number => {
       if (write instanceof ArrayAssignNode || write instanceof ArrayDeleteNode) {
-        return write.index instanceof IdentifierNode && write.index.name === logical
-          || (write.index.messageBusDeterministicArrayKey === true && containsIdentifier(write.index, logical))
-          ? 0 : -1;
+        return containsIdentifier(write.index, logical) ? 0 : -1;
       }
-      return write.keys.findIndex((key) => (key instanceof IdentifierNode && key.name === logical)
-        || (key.messageBusDeterministicArrayKey === true && containsIdentifier(key, logical)));
+      return write.keys.findIndex((key) => containsIdentifier(key, logical));
     };
     const hasObservableEffect = (x: Node): boolean => {
       if (x instanceof FunctionCallNode) {
@@ -1308,13 +1305,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // runtime domain, including assignments which occur before the loop.
         || hasUnexpectedLoopControlMutation(block, true, false)
         || hasUnexpectedLoopControlMutation(node.body, false, true)) return false;
-      // One direct counter component selects the physical cursor. Every additional counter-dependent component
-      // must be replayable from the authenticated logical value so the SDK can derive the complete composite
-      // slot before sorting (`m[i + 1][i]`, casts, ternaries, and immutable aliases all use this path).
+      // One counter-dependent component selects the physical cursor. It and every additional counter-dependent
+      // component must be replayable from the authenticated logical value so the SDK can derive the complete
+      // composite slot before sorting (`m[base + i]`, `m[i + 1][i]`, casts, ternaries, and immutable aliases all
+      // use this path).
       if (keyed.some((write) => {
         const keys = keyExpressions(write);
-        const at = counterKeyIndex(write, logical);
-        return keys.some((key, index) => index !== at && containsIdentifier(key, logical)
+        return keys.some((key) => containsIdentifier(key, logical)
           && !runtimePathExpressionSupported(
             key, logical, new Set(), stateValues, loopCarriedLocalValues,
           ));

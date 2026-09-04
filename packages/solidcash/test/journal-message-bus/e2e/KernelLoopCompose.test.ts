@@ -265,6 +265,13 @@ contract KernelRuntimeTokenTransfer() {
     }
     require(true);
   }
+  function payAt(int base, int n, bytes32 category, bytes recipient) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.rows[base + i] = i + 1;
+      this.tokens[category].transfer(recipient, 2 + i);
+    }
+    require(true);
+  }
   function payOther(int n, bytes32 category, bytes recipient) public {
     for (int i = 0; i < n; i = i + 1) {
       this.otherRows[i] = i + 1;
@@ -2104,7 +2111,7 @@ describe('kernel composite counter-key settlement', () => {
     }))).not.toBe(true);
   }, 180_000);
 
-  it('composes runtime token transfers from disjoint rows against one container remainder', async () => {
+  it('composes a derived-key row and an independent row against one token-container remainder', async () => {
     const provider = createTestProvider();
     const artifact = compileString(
       RUNTIME_TOKEN_TRANSFER_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 },
@@ -2119,7 +2126,7 @@ describe('kernel composite counter-key settlement', () => {
     const recipient = recipientFunder.unlocker.generateLockingBytecode();
 
     const builder = await contract.batch([
-      { function: 'pay', args: [2n, hexToBin(token.category), recipient] },
+      { function: 'payAt', args: [10n, 2n, hexToBin(token.category), recipient] },
       { function: 'payOther', args: [2n, hexToBin(token.category), recipient] },
     ]).build();
     const transaction = builder.buildLibauthTransaction();

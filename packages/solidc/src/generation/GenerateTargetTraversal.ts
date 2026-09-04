@@ -21497,7 +21497,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const direct = (source.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/)?.[1];
       if (direct) return direct;
       const key = writeKeys[index];
-      return key?.messageBusDeterministicArrayKey === true ? deterministicArrayName(key) : undefined;
+      // A complete derived key such as `base + perm[rank]` carries the compiler-owned permutation below its
+      // root rather than on a direct ArrayAccess node. The array-name prefix is the authoritative marker here:
+      // ordinary source arrays cannot use it, and requiring the root's legacy deterministic-array flag makes
+      // the semantic lowering admit the row without publishing any settlement metadata.
+      return key ? deterministicArrayName(key) : undefined;
     };
     const fixedCount = (sources: readonly KeySourceInfo[]): number => (
       sources.filter((src, index) => varyingSourceName(src, index) === undefined).length

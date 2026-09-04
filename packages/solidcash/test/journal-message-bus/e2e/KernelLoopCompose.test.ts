@@ -991,6 +991,7 @@ contract KernelLoopCarriedGuard() {
       stop = i == 2;
       if (stop) break;
       this.breakValues[i] = i + 70;
+      emit Phase(i + 200);
     }
     require(true);
   }

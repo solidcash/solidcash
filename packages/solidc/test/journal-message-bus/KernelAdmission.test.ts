@@ -1789,7 +1789,8 @@ describe('required kernel admission', () => {
   });
 
   it('replays a write whose fallthrough combines differently phased break predicates', () => {
-    const artifact = compileString(`contract C() {
+    const artifact = compileString(`event Reached(int value);
+      contract C() {
       mapping(int => int) values;
       function write(int n) public {
         bool stop = false;
@@ -1798,6 +1799,7 @@ describe('required kernel admission', () => {
           stop = i == 2;
           if (stop) break;
           this.values[i] = i;
+          emit Reached(i);
         }
         require(true);
       }
@@ -1809,6 +1811,29 @@ describe('required kernel admission', () => {
         iterationCondition: { kind: 'binary', operator: '&&' },
         iterationBreakCondition: { kind: 'binary', operator: '||' },
       });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write')
+      ?.runtimeLoopEvents?.[0].conditions?.[0]).toMatchObject({ kind: 'binary', operator: '&&' });
+  });
+
+  it('replays a transfer after differently phased break predicates', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function write(int n, bytes to) public {
+        bool stop = false;
+        for (int i = 0; i < n; i = i + 1) {
+          if (stop) break;
+          stop = i == 2;
+          if (stop) break;
+          this.values[i] = i;
+          this.transfer(to, 1);
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'write');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.runtimeLoopTransfers?.[0].conditions?.[0])
+      .toMatchObject({ kind: 'binary', operator: '&&' });
   });
 
   it('admits a public enum getter encoded as int', () => {

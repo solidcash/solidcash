@@ -1240,6 +1240,59 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       collectWrites(block);
       const keyed = writes.filter((write) =>
         this.collections.has(write.name) && counterKeyIndex(write, logical) >= 0);
+      // Collapse an exhaustive top-level local assignment join into the exact value produced for this source
+      // iteration. The original branch remains in the executable body; this expression is metadata used wherever
+      // physical key sorting requires replaying that value in logical counter order.
+      const conditionalAssignmentJoins = new Map<string, Array<{
+        statement: AssignNode; index: number; actualAssignments: number;
+      }>>();
+      const countAssignmentsTo = (root: Node, name: string): number => {
+        if (root !== block && (root instanceof WhileNode || root instanceof DoWhileNode)) return 0;
+        let assignmentCount = root instanceof AssignNode && root.identifier.name === name ? 1 : 0;
+        for (const [key, value] of Object.entries(root)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node) assignmentCount += countAssignmentsTo(value, name);
+          else if (Array.isArray(value)) {
+            for (const item of value) if (item instanceof Node) assignmentCount += countAssignmentsTo(item, name);
+          }
+        }
+        return assignmentCount;
+      };
+      for (const [index, statement] of (block.statements ?? []).entries()) {
+        if (!(statement instanceof BranchNode) || !statement.elseBlock) continue;
+        const directByName = (arm: BlockNode): Map<string, AssignNode> => {
+          const result = new Map<string, AssignNode>();
+          const duplicates = new Set<string>();
+          for (const candidate of arm.statements ?? []) if (candidate instanceof AssignNode) {
+            if (result.has(candidate.identifier.name)) duplicates.add(candidate.identifier.name);
+            else result.set(candidate.identifier.name, candidate);
+          }
+          for (const name of duplicates) result.delete(name);
+          return result;
+        };
+        const ifAssignments = directByName(statement.ifBlock);
+        const elseAssignments = directByName(statement.elseBlock);
+        for (const [name, ifAssignment] of ifAssignments) {
+          const elseAssignment = elseAssignments.get(name);
+          if (!elseAssignment
+            || countAssignmentsTo(statement.ifBlock, name) !== 1
+            || countAssignmentsTo(statement.elseBlock, name) !== 1
+            || containsIdentifier(ifAssignment.expression, name)
+            || containsIdentifier(elseAssignment.expression, name)) continue;
+          const expression = new TernaryOpNode(
+            cloneNode(statement.condition), cloneNode(ifAssignment.expression), cloneNode(elseAssignment.expression),
+          );
+          expression.location = statement.location;
+          expression.type = ifAssignment.expression.type ?? elseAssignment.expression.type;
+          const identifier = cloneNode(ifAssignment.identifier);
+          const collapsed = new AssignNode(identifier, expression);
+          collapsed.location = statement.location;
+          const joins = conditionalAssignmentJoins.get(name) ?? [];
+          joins.push({ statement: collapsed, index, actualAssignments: 2 });
+          conditionalAssignmentJoins.set(name, joins);
+        }
+      }
       const loopCarriedLocalValues = new Map<string, ExpressionNode>();
       const predicateOuterIndex = canonical.parent.statements?.indexOf(loop) ?? -1;
       const predicateOuterInitializers = new Map<string, ExpressionNode>();
@@ -1256,6 +1309,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const updates = topLevelAssignments.get(statement.identifier.name) ?? [];
         updates.push({ statement, index });
         topLevelAssignments.set(statement.identifier.name, updates);
+      }
+      for (const [name, joins] of conditionalAssignmentJoins) {
+        const updates = topLevelAssignments.get(name) ?? [];
+        updates.push(...joins.map(({ statement, index }) => ({ statement, index })));
+        updates.sort((left, right) => left.index - right.index);
+        topLevelAssignments.set(name, updates);
       }
       for (const [name, updates] of topLevelAssignments) {
         let allAssignments = 0;
@@ -1275,7 +1334,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const initializer = predicateOuterInitializers.get(name)
           ?? (visibleParameters.some((parameter) => parameter.name === name)
             ? new IdentifierNode(name) : undefined);
-        if (allAssignments !== updates.length) continue;
+        const collapsedExtras = (conditionalAssignmentJoins.get(name) ?? [])
+          .reduce((sum, join) => sum + join.actualAssignments - 1, 0);
+        if (allAssignments !== updates.length + collapsedExtras) continue;
         const toggles = updates.every(({ statement }) => {
           const expression = statement.expression;
           return expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NOT
@@ -1931,6 +1992,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const keyedStatementIndices = new Map<Node, number>();
       for (const [index, statement] of (block.statements ?? []).entries()) {
         if (keyed.includes(statement as typeof keyed[number])) keyedStatementIndices.set(statement, index);
+      }
+      for (const [name, joins] of conditionalAssignmentJoins) {
+        if (joins.length !== 1) continue;
+        const join = joins[0];
+        const allAssignments = countAssignmentsTo(block, name);
+        const writesAfter = [...keyedStatementIndices.values()].every((writeIndex) => writeIndex > join.index);
+        if (allAssignments !== join.actualAssignments || !writesAfter
+          || !runtimePathExpressionSupported(
+            join.statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
+          )) continue;
+        const expanded = expandRuntimePathExpression(
+          join.statement.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
+        );
+        if (expanded) loopValueDefinitions.set(name, expanded);
       }
       for (const [name, initializer] of outerInitializers) {
         const updates = (block.statements ?? []).flatMap((statement, index) => (

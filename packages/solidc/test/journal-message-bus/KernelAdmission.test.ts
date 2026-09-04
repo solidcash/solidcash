@@ -1462,6 +1462,55 @@ describe('required kernel admission', () => {
       .iterationCondition).toMatchObject({ kind: 'binary', operator: '==' });
   });
 
+  it('replays an exhaustive conditional local assignment as a mapping value and guard', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, int base) public {
+        int next = 0;
+        bool take = false;
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) { next = base + i; take = true; }
+          else { next = base + 10 + i; take = false; }
+          if (take) this.m[i] = next;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const info = artifact.abi.find((candidate) => candidate.name === 'write')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.iterationCondition).toMatchObject({ kind: 'ternary' });
+    expect(info?.valueRuntimeExpression).toBe(true);
+  });
+
+  it.each([
+    ['an incomplete conditional local assignment', `
+      if (i % 2 == 0) { next = base + i; }
+    `],
+    ['a self-dependent conditional local assignment', `
+      if (i % 2 == 0) { next = next + 1; }
+      else { next = base + i; }
+    `],
+  ])('refuses %s whose value cannot be replayed independently', (_label, update) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function denied(int n, int base) public {
+        int next = 0;
+        for (int i = 0; i < n; i = i + 1) {
+          ${update}
+          this.m[i] = next;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
   it('refuses one loop-carried local observed on both sides of its assignment', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) left;

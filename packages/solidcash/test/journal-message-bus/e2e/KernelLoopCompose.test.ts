@@ -598,6 +598,16 @@ contract KernelDisjointSameCollectionRows() {
     }
     require(true);
   }
+  function writeConditionalLocal(int n, int base) public {
+    int next = 0;
+    bool take = false;
+    for (int i = 0; i < n; i = i + 1) {
+      if (i % 2 == 0) { next = base + i; take = true; }
+      else { next = base + 10 + i; take = false; }
+      if (take) this.values[10][i] = next;
+    }
+    require(true);
+  }
   function check(int group, int key, int expected) public {
     require(this.values[group][key] == expected);
   }
@@ -2775,6 +2785,19 @@ describe('kernel composite counter-key settlement', () => {
       await expect(updated.call.check(9n, i * 2n, 100n + i).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
       await expect(updated.call.check(9n, i * 2n + 1n, 110n + i).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+
+    const conditionalLocal = artifact.abi.find((candidate) => candidate.name === 'writeConditionalLocal')!;
+    expect(conditionalLocal.sortedUpsertLoopInfo?.[0]).toMatchObject({
+      iterationCondition: { kind: 'ternary' }, valueRuntimeExpression: true,
+    });
+    await expect(updated.call.writeConditionalLocal(5n, 200n).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(updated.batch([{ function: 'writeConditionalLocal', args: [5n, 300n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (const key of [0n, 2n, 4n]) {
+      await expect(updated.call.check(10n, key, 300n + key).send())
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
 

@@ -233,9 +233,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         for (let index = 1; index < statements.length; index++) {
           const loop = statements[index];
           const variable = statements[index - 1];
-          const bound = (loop instanceof WhileNode || loop instanceof DoWhileNode)
-            && loop.condition instanceof BinaryOpNode
-            ? loop.condition.right : undefined;
+          const loopCondition = (loop instanceof WhileNode || loop instanceof DoWhileNode)
+            && loop.condition instanceof BinaryOpNode ? loop.condition : undefined;
+          const counterOnLeft = variable instanceof VariableDefinitionNode
+            && loopCondition?.left instanceof IdentifierNode
+            && loopCondition.left.name === variable.name;
+          const counterOnRight = variable instanceof VariableDefinitionNode
+            && loopCondition?.right instanceof IdentifierNode
+            && loopCondition.right.name === variable.name;
+          const bound = counterOnLeft ? loopCondition?.right
+            : counterOnRight ? loopCondition?.left : undefined;
           const visibleCounts = new Set(node.parameters
             .filter((parameter) => !parameter.name.startsWith('__internal__'))
             .map((parameter) => parameter.name));
@@ -497,8 +504,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (!(loop instanceof WhileNode || loop instanceof DoWhileNode)
             || !(variable instanceof VariableDefinitionNode)
             || !(loop.condition instanceof BinaryOpNode)
-            || !(loop.condition.left instanceof IdentifierNode) || loop.condition.left.name !== variable.name
+            || (!counterOnLeft && !counterOnRight)
             || boundResolution === undefined) continue;
+          const comparisonOperator = counterOnLeft ? loop.condition.operator : ({
+            [BinaryOperator.LT]: BinaryOperator.GT,
+            [BinaryOperator.LE]: BinaryOperator.GE,
+            [BinaryOperator.GT]: BinaryOperator.LT,
+            [BinaryOperator.GE]: BinaryOperator.LE,
+          } as Partial<Record<BinaryOperator, BinaryOperator>>)[loop.condition.operator];
+          if (comparisonOperator === undefined) continue;
           const update = loop.block.statements?.at(-1);
           const updateOperator = update instanceof AssignNode && update.identifier.name === variable.name
             && update.expression instanceof BinaryOpNode
@@ -525,10 +539,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             ? (updateOperator === BinaryOperator.PLUS ? 1n : -1n) : undefined);
           const progressionUpdate = literalStep !== undefined && literalStep === variable.loopStepValue;
           const comparisonAdvances = directionalStep !== undefined && (
-            (directionalStep > 0n && (loop.condition.operator === BinaryOperator.LT
-              || loop.condition.operator === BinaryOperator.LE))
-            || (directionalStep < 0n && (loop.condition.operator === BinaryOperator.GT
-              || loop.condition.operator === BinaryOperator.GE))
+            (directionalStep > 0n && (comparisonOperator === BinaryOperator.LT
+              || comparisonOperator === BinaryOperator.LE))
+            || (directionalStep < 0n && (comparisonOperator === BinaryOperator.GT
+              || comparisonOperator === BinaryOperator.GE))
           );
           const preTest = loop instanceof WhileNode && variable.isLoopVariable === true
             && variable.expression instanceof IntLiteralNode
@@ -541,8 +555,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           // The rest of the lowering proves an exclusive half-open progression. Integer `i <= bound` is exactly
           // `i < bound + 1`, and descending `i >= bound` is `i > bound - 1`. Normalize the replayed bound once so
           // the SDK, permutation proof, event worklist, and source loop all describe the same inclusive endpoint.
-          const inclusiveAdjustment = loop.condition.operator === BinaryOperator.LE ? 1n
-            : loop.condition.operator === BinaryOperator.GE ? -1n : 0n;
+          const inclusiveAdjustment = comparisonOperator === BinaryOperator.LE ? 1n
+            : comparisonOperator === BinaryOperator.GE ? -1n : 0n;
           if (inclusiveAdjustment !== 0n) {
             if (boundResolution.metadataExpression) {
               const adjusted = new BinaryOpNode(

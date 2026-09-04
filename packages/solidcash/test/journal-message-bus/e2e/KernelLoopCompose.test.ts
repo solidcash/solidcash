@@ -635,11 +635,11 @@ contract KernelDisjointSameCollectionRows() {
     require(true);
   }
   function writeInclusive(int bound, int base) public {
-    for (int i = 1; i <= bound; i = i + 2) { this.values[14][i] = base + i; }
+    for (int i = 1; bound >= i; i = i + 2) { this.values[14][i] = base + i; }
     require(true);
   }
   function writeInclusiveDown(int bound, int base) public {
-    for (int i = 5; i >= bound; i = i - 2) { this.values[15][i] = base + i; }
+    for (int i = 5; bound <= i; i = i - 2) { this.values[15][i] = base + i; }
     require(true);
   }
   function check(int group, int key, int expected) public {

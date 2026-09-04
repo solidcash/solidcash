@@ -1949,7 +1949,13 @@ describe('required kernel admission', () => {
       do { this.m[i] = i; i = i + 2; } while (i <= bound);`, 'bound_p1'],
     ['descending do-while', `int i = 5;
       do { this.m[i] = i; i = i - 2; } while (i >= bound);`, 'bound_n1'],
-  ])('admits an inclusive %s counter domain', (_label, loop, encodedBound) => {
+    ['reversed ascending for', 'for (int i = 1; bound >= i; i = i + 2) { this.m[i] = i; }', 'bound_p1'],
+    ['reversed descending for', 'for (int i = 5; bound <= i; i = i - 2) { this.m[i] = i; }', 'bound_n1'],
+    ['reversed ascending do-while', `int i = 1;
+      do { this.m[i] = i; i = i + 2; } while (bound > i);`, 'step_p2_post'],
+    ['reversed descending do-while', `int i = 5;
+      do { this.m[i] = i; i = i - 2; } while (bound < i);`, 'step_n2_post'],
+  ])('admits a %s counter domain', (_label, loop, encodedBound) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function write(int bound) public { ${loop} require(true); }

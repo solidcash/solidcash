@@ -1694,6 +1694,35 @@ describe('required kernel admission', () => {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
+  it('admits independently sorted key shapes in one physical collection', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.m[i * 2] = i + 10;
+          this.m[i * 2 + 1] = i + 20;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const handler = artifact.abi.find((candidate) => candidate.name === 'write')!;
+    expect(handler.sortedUpsertLoopInfo).toHaveLength(2);
+    expect(handler.sortedUpsertLoopInfo?.map((info) => info.collection)).toEqual(['m', 'm']);
+    expect(new Set(handler.sortedUpsertLoopInfo?.map((info) => info.varyingArrayParam))).toHaveLength(2);
+    expect(handler.sortedUpsertLoopInfo).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        inputCountParam: expect.stringMatching(/^__internal__vmapCounterInputCount_/),
+        outputCountParam: expect.stringMatching(/^__internal__vmapCounterOutputCount_/),
+      }),
+    ]));
+    expect(handler.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterInputCount_')))
+      .toHaveLength(2);
+    expect(handler.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterOutputCount_')))
+      .toHaveLength(2);
+  });
+
   it('admits a do-while counter-keyed mapping loop with a max(n, 1) permutation', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;

@@ -558,6 +558,9 @@ export interface SortedUpsertLoopAbi {
   mutationIndexScalarParam?: string;
   mutationIndexConst?: string;
   oldValuesWitnessParam?: string;
+  /** Exact physical widths of this independently sorted runtime stream. */
+  inputCountParam?: string;
+  outputCountParam?: string;
   /** Runtime predicate controlling whether this loop contributes any journal entries. */
   condition?: ExternalCallExpression;
   /** Predicate selecting logical counter values which actually contribute journal entries. */

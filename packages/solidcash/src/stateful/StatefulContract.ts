@@ -190,6 +190,8 @@ const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
 const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
 const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
+const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
+const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
 const vmapRuntimeOutputCountName = (collection: string): string =>
@@ -4452,6 +4454,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && !input.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX))
         || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
       resolvedCallerInternalWitnesses[input.name] = 0n;
+    }
+    for (const input of capability.route.inputs) {
+      if ((!input.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
+        && !input.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX))
+        || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
+      const rowValues = Array.from({ length: effectiveRowArguments?.length ?? 0 }, () => 0n);
+      for (const row of effectiveRowArguments ?? []) {
+        if (row.handler.inputs.some((candidate) => candidate.name === input.name)) {
+          (row.internalArgs as Record<string, FunctionArgument>)[input.name] = 0n;
+        }
+      }
+      resolvedCallerInternalWitnesses[input.name] = rowValues;
     }
     for (const input of capability.route.inputs) {
       if (!input.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
@@ -14177,7 +14191,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         return av < bv ? -1 : av > bv ? 1 : 0;
       });
       args[hiddenIdx] = perm;
-      finalArgs = [...finalArgs, perm];
+      while (finalArgs.length <= hiddenIdx) {
+        const pending = abiFunction!.inputs[finalArgs.length];
+        if (!pending?.name.startsWith('__internal__')) {
+          throw new Error(
+            `Internal error: missing user argument '${pending?.name ?? finalArgs.length}' before vmap loop witnesses.`,
+          );
+        }
+        finalArgs.push(defaultInternalFunctionArg(pending));
+      }
+      finalArgs[hiddenIdx] = perm;
     }
 
     // Multi-use view+mutate loop (getReserves() + swap() on one pair): auto-fill each `__internal__viewReturn<n>`
@@ -16693,9 +16716,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           });
         }
       }
-      addRuntimeLoopCardinality(
-        info.collection, insertLoopPredecessors.length - runtimeInputStart, commitments.length,
-      );
+      const streamInputCount = insertLoopPredecessors.length - runtimeInputStart;
+      const streamOutputCount = commitments.length;
+      addRuntimeLoopCardinality(info.collection, streamInputCount, streamOutputCount);
+      for (const [name, count] of [
+        [info.inputCountParam, streamInputCount], [info.outputCountParam, streamOutputCount],
+      ] as const) {
+        if (!name) continue;
+        const index = loopAbiFunction.inputs.findIndex((input) => input.name === name);
+        if (index < 0) throw new Error(
+          `Runtime loop in '${loopAbiFunction.name}' is missing stream cardinality argument '${name}'.`,
+        );
+        replaceLoopArgument(index, BigInt(count));
+      }
       }
     }
 

@@ -339,8 +339,12 @@ the repeated positions or complete component recipes so the SDK derives the full
 with the same complete key expression and selected iteration set share one authenticated permutation; collections
 with different invariant components (for example `a[left][i]` plus `b[right][i]`) receive independent permutations
 so each follows its own full composite-key slot order. Different selected iteration subsets across collections also
-receive independent permutations and cursors. Two key shapes in the same physical collection still need a wider
-route-frame journal and remain fenced. A scalar mapping entry whose complete key tuple consists of stable public
+receive independent permutations and cursors. Distinct key shapes in the same physical collection (for example
+`m[i * 2]` plus `m[i * 2 + 1]`) likewise receive independent permutations and compiler-owned exact physical
+input/output widths. Those widths partition the shared trailing journal without trusting an address scan that cannot
+distinguish the streams; the collection-wide cardinality witness still binds their sum to the physical transaction.
+Concrete overlap between streams remains a planning-time read-your-writes refusal. A scalar mapping entry whose
+complete key tuple consists of stable public
 parameters, literals, `msg.sender`, `tx.origin`,
 or pure expressions over public arguments may coexist: it is read once,
 mutated as a local in source order, and flushed through one authenticated fixed-entry transition after the loop.

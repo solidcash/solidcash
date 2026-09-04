@@ -1577,6 +1577,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitParameter(node: ParameterNode): Node {
     const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
       || node.name.startsWith('__internal__vmapCounterOld_')
+      || node.name.startsWith('__internal__vmapCounterInputCount_')
+      || node.name.startsWith('__internal__vmapCounterOutputCount_')
       || node.name.startsWith('__internal__vmapRuntimeInputCount_')
       || node.name.startsWith('__internal__vmapRuntimeOutputCount_')
       || node.name.startsWith('__internal__valueWitness_')
@@ -2171,7 +2173,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     for (const parameter of node.parameters.filter((candidate) =>
       candidate.name.startsWith('__internal__vmapRuntimeInputCount_')
-      || candidate.name.startsWith('__internal__vmapRuntimeOutputCount_'))) {
+      || candidate.name.startsWith('__internal__vmapRuntimeOutputCount_')
+      || candidate.name.startsWith('__internal__vmapCounterInputCount_')
+      || candidate.name.startsWith('__internal__vmapCounterOutputCount_'))) {
       const count = this.symbolTables[0].get(parameter.name);
       if (count) count.references.push({ name: parameter.name } as IdentifierNode);
     }

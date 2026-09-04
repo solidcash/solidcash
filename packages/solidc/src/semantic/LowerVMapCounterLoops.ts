@@ -27,6 +27,8 @@ import {
 
 export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 export const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
+export const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
+export const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 export const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
 export const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
 export const vmapRuntimeInputCountName = (collection: string): string =>
@@ -1632,17 +1634,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             key, logical, new Set(), stateValues, loopCarriedLocalValues,
           ));
       })) return false;
-      // One collection currently owns one physical entry stream per iteration, but different collections need
-      // not share their invariant key components. `a[left][i]` and `b[right][i]` therefore receive independently
-      // sortable authenticated permutations below. Two distinct tuples in the SAME collection still need a wider
-      // per-iteration stream and remain fenced here.
-      const keyShapeByCollection = new Map<string, string>();
-      for (const write of keyed) {
-        const shape = writeKeyShape(write);
-        const prior = keyShapeByCollection.get(write.name);
-        if (prior !== undefined && prior !== shape) return false;
-        keyShapeByCollection.set(write.name, shape);
-      }
       const keyedSet = new Set<Node>(keyed);
       const invariantWrites = writes.filter((write) => !keyedSet.has(write));
       const keyedCollections = new Set(keyed.map((write) => write.name));
@@ -2210,18 +2201,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const boundSuffix = boundOffset === 0n ? '' : `_bound_${signedComponent(boundOffset)}`;
       const hiddenName = (groupSerial: number): string =>
         `${PREFIX}${count}_${groupSerial}${boundSuffix}${rangeSuffix}${postTest ? '_post' : ''}`;
-      const keyedByCollection = new Map<string, typeof keyed>();
+      const keyedByStream = new Map<string, typeof keyed>();
       for (const write of keyed) {
-        const group = keyedByCollection.get(write.name) ?? [];
+        const stream = `${write.name}\0${writeKeyShape(write)}`;
+        const group = keyedByStream.get(stream) ?? [];
         group.push(write);
-        keyedByCollection.set(write.name, group);
+        keyedByStream.set(stream, group);
       }
       const permutationGroups = new Map<string, {
         collections: string[];
         collectionWrites: typeof keyed;
         selectionCondition?: ExpressionNode;
       }>();
-      for (const [collection, collectionWrites] of keyedByCollection) {
+      for (const [stream, collectionWrites] of keyedByStream) {
+        const collection = stream.slice(0, stream.indexOf('\0'));
         let selectionCondition = uniqueDisjunction(collectionWrites.map((write) => writePaths.get(write)));
         // An otherwise-unconditional collection still needs a cursor when `break`/`return` can terminate the
         // domain: the cursor authenticates the consumed prefix and carries the shared break predicate metadata.
@@ -2257,16 +2250,33 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           settlementCursor: `__internal__vmapCounterCursor_${groupSerial}`,
           bit: `__internal__vmapCounterBit_${groupSerial}`,
           mask: `__internal__vmapCounterMask_${groupSerial}`,
+          inputCount: undefined as string | undefined,
+          outputCount: undefined as string | undefined,
         };
       });
       if (groups.some((group) => group.selectionCondition && !group.expandedSelectionCondition)) return false;
-      const groupByCollection = new Map(groups.flatMap((group) =>
-        group.collections.map((collection) => [collection, group] as const)));
+      const collectionStreamCounts = new Map<string, number>();
+      for (const group of groups) for (const collection of group.collections) {
+        collectionStreamCounts.set(collection, (collectionStreamCounts.get(collection) ?? 0) + 1);
+      }
+      for (const group of groups) if (group.collections.some(
+        (collection) => (collectionStreamCounts.get(collection) ?? 0) > 1,
+      )) {
+        group.inputCount = `${VMAP_COUNTER_INPUT_COUNT_PREFIX}${group.serial}`;
+        group.outputCount = `${VMAP_COUNTER_OUTPUT_COUNT_PREFIX}${group.serial}`;
+      }
+      const groupByWrite = new Map(groups.flatMap((group) =>
+        [...group.writes].map((write) => [write, group] as const)));
       const primaryGroup = groups[0];
       for (const group of groups) {
         (node.runtimeCounterLoopCounters ??= new Map()).set(group.hidden, {
           name: logical, initialValue: start, stepValue: step,
         });
+        if (group.inputCount && group.outputCount) {
+          (node.runtimeCounterLoopCardinalityParams ??= new Map()).set(group.hidden, {
+            input: group.inputCount, output: group.outputCount,
+          });
+        }
         if (boundExpression) {
           (node.runtimeCounterLoopBounds ??= new Map()).set(group.hidden, cloneNode(boundExpression));
         }
@@ -2281,9 +2291,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           });
         }
       }
-      const oldValueHidden = (collection: string): string => {
-        const group = groupByCollection.get(collection)!;
-        return `${VMAP_COUNTER_OLD_PREFIX}${count}_${group.serial}_${collection}`;
+      const oldValueHidden = (write: Node & { name: string }): string => {
+        const group = groupByWrite.get(write)!;
+        return `${VMAP_COUNTER_OLD_PREFIX}${count}_${group.serial}_${write.name}`;
       };
       const rangedIterationCount = `__internal__vmapCounterCount_${serial}`;
       const unitDomain = start === 0n && step === 1n;
@@ -2414,7 +2424,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return x;
       };
       for (const write of keyed) {
-        const group = groupByCollection.get(write.name)!;
+        const group = groupByWrite.get(write)!;
         const keyRecipe = `${group.hidden}\0${write.name}`;
         const originalKeys = keyExpressions(write);
         const hasDirectCounterComponent = originalKeys.some((key) =>
@@ -2440,7 +2450,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const mappingWrite = write as ArrayAssignNode | MappingAssignNode;
           const oldRead = (): ArrayAccessNode => {
             const valueType = this.collectionsByName.get(mappingWrite.name)!.innermostValueType;
-            const values = new IdentifierNode(oldValueHidden(mappingWrite.name)); values.location = location;
+            const values = new IdentifierNode(oldValueHidden(mappingWrite)); values.location = location;
             values.type = new ArrayType(valueType);
             const read = new ArrayAccessNode(values, physical(group)); read.location = location;
             read.type = valueType;
@@ -2533,7 +2543,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // site. Summing here handles sequential loops and multi-collection loops without recognizing a contract
       // schema later in layout planning.
       node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
-        + MAX_COUNTER_ITERATIONS * (keyedCollections.size + runtimeEmits.length + runtimeTransfers.length);
+        + MAX_COUNTER_ITERATIONS * (keyedByStream.size + runtimeEmits.length + runtimeTransfers.length);
       if (!unitDomain) {
         prelude.push(at(new VariableDefinitionNode(
           new IntType(true, 256), [], rangedIterationCount,
@@ -2693,14 +2703,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const p = new ParameterNode(new ArrayType(counterType), group.hidden);
         p.location = node.location;
         added.push(p);
+        if (group.inputCount && group.outputCount) {
+          const inputCount = new ParameterNode(new IntType(true, 256), group.inputCount);
+          inputCount.location = node.location;
+          const outputCount = new ParameterNode(new IntType(true, 256), group.outputCount);
+          outputCount.location = node.location;
+          added.push(inputCount, outputCount);
+        }
       }
       if (generalOldEntryWrites.size > 0) {
         const seen = new Set<string>();
         for (const write of generalOldEntryWrites) {
-          if (seen.has(write.name)) continue;
-          seen.add(write.name);
+          const oldName = oldValueHidden(write);
+          if (seen.has(oldName)) continue;
+          seen.add(oldName);
           const old = new ParameterNode(
-            new ArrayType(this.collectionsByName.get(write.name)!.innermostValueType), oldValueHidden(write.name),
+            new ArrayType(this.collectionsByName.get(write.name)!.innermostValueType), oldName,
           );
           old.location = node.location;
           added.push(old);

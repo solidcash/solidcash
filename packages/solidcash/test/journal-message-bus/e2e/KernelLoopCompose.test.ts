@@ -591,6 +591,13 @@ contract KernelDisjointSameCollectionRows() {
     }
     require(true);
   }
+  function writeShapes(int n, int base) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.values[9][i * 2] = base + i;
+      this.values[9][i * 2 + 1] = base + 10 + i;
+    }
+    require(true);
+  }
   function check(int group, int key, int expected) public {
     require(this.values[group][key] == expected);
   }
@@ -2683,6 +2690,9 @@ describe('kernel composite counter-key settlement', () => {
         await contract.call.seed(group, key, 1n).send();
       }
     }
+    for (const key of [0n, 1n, 2n, 3n, 4n, 5n]) {
+      await contract.call.seed(9n, key, 1n).send();
+    }
     const call = contract.batch([
       { function: 'writeB', args: [2n, 20n] },
       { function: 'writeA', args: [0n, 99n] },
@@ -2719,6 +2729,54 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(updated.call.check(7n, 1n, 7n).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+
+    const shapes = artifact.abi.find((candidate) => candidate.name === 'writeShapes')!;
+    expect(shapes.sortedUpsertLoopInfo).toHaveLength(2);
+    expect(new Set(shapes.sortedUpsertLoopInfo?.map((info) => info.varyingArrayParam)).size).toBe(2);
+    const shapeCall = updated.call.writeShapes(3n, 80n);
+    const shapeBuilder = await shapeCall.build();
+    const shapeInput = shapeBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === 'writeShapes');
+    if (!shapeInput || !('params' in shapeInput.unlocker)) throw new Error('shape input missing');
+    for (const info of shapes.sortedUpsertLoopInfo ?? []) {
+      const inputIndex = shapes.inputs.findIndex((input) => input.name === info.inputCountParam);
+      const outputIndex = shapes.inputs.findIndex((input) => input.name === info.outputCountParam);
+      expect(shapeInput.unlocker.params[inputIndex]).toBe(3n);
+      expect(shapeInput.unlocker.params[outputIndex]).toBe(3n);
+    }
+    await expect(shapeCall.send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    const routedShapes = updated.batch([{ function: 'writeShapes', args: [3n, 100n] }]);
+    const routedShapeBuilder = await routedShapes.build();
+    const routedShapeInputIndex = routedShapeBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const routedShapeUnlocker = routedShapeBuilder.inputs[routedShapeInputIndex]?.unlocker;
+    if (!routedShapeUnlocker || !('params' in routedShapeUnlocker)) throw new Error('shape route input missing');
+    const firstCountName = shapes.sortedUpsertLoopInfo![0].inputCountParam!;
+    const firstCountRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) => input.name === firstCountName);
+    expect(routedShapeUnlocker.params[firstCountRouteIndex]).toEqual([3n]);
+    const restoreRoutedShapeUnlocker = routedShapeUnlocker.contract.createCompilerRouteUnlocker(
+      routedShapeUnlocker.abiFunction, hexToBin(artifact.messageBus!.route.selector!),
+    );
+    const hostileShapeParams = [...routedShapeUnlocker.params];
+    hostileShapeParams[firstCountRouteIndex] = [2n];
+    routedShapeBuilder.inputs[routedShapeInputIndex].unlocker = restoreRoutedShapeUnlocker(...hostileShapeParams);
+    const hostileShapeVm = createVirtualMachineBch2026ForProvider(provider);
+    const hostileShapeTransaction = routedShapeBuilder.buildLibauthTransaction();
+    expect(hostileShapeVm.stateSuccess(hostileShapeVm.evaluate({
+      inputIndex: routedShapeInputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(routedShapeBuilder.inputs),
+      transaction: hostileShapeTransaction,
+    }))).not.toBe(true);
+    routedShapeBuilder.inputs[routedShapeInputIndex].unlocker = routedShapeUnlocker;
+    await expect(routedShapes.send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    for (let i = 0n; i < 3n; i += 1n) {
+      await expect(updated.call.check(9n, i * 2n, 100n + i).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+      await expect(updated.call.check(9n, i * 2n + 1n, 110n + i).send())
+        .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
 
     const repeated = updated.batch([{ function: 'transform', args: [7n, 2n] }]);
     const hostileBuilder = await repeated.build();

@@ -107,6 +107,8 @@ import {
 } from './semantic/PointerTableBound.js';
 import LowerVMapCounterLoops, {
   VMAP_COUNTER_OLD_PREFIX,
+  VMAP_COUNTER_INPUT_COUNT_PREFIX,
+  VMAP_COUNTER_OUTPUT_COUNT_PREFIX,
   VMAP_COUNTER_PERM_PREFIX,
   VMAP_RUNTIME_INPUT_COUNT_PREFIX,
   VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
@@ -5215,7 +5217,9 @@ function synthesizeMessageBusRoute(
               })()
               : (() => {
                 if (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
-                  || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)) {
+                  || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
+                  || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
+                  || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)) {
                   return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
                 }
                 if (parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
@@ -5378,6 +5382,8 @@ function synthesizeMessageBusRoute(
     fn.parameters.filter((parameter) => {
       if (!parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
+        && !parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
+        && !parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
         && !parameter.name.startsWith('__internal__collectionIter')
@@ -5390,7 +5396,9 @@ function synthesizeMessageBusRoute(
     }).map((parameter) => {
       const type = parameter.type.toString();
       return (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
-        || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)) && kernelLoopDispatch
+        || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
+        || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
+        || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)) && kernelLoopDispatch
         ? `${type}[] ${parameter.name}` : `${type} ${parameter.name}`;
     }));
   const resourceVerificationMode = eligible.some((fn) => {

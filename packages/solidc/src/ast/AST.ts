@@ -404,6 +404,11 @@ export class FunctionDefinitionNode extends Node implements Named {
     mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;
     mutationIndexArrayParam?: string; mutationIndexScalarParam?: string; mutationIndexConst?: string;
     oldValuesWitnessParam?: string;
+
+    /** Compiler-owned exact physical widths for this independently sorted runtime stream. */
+    inputCountParam?: string;
+    outputCountParam?: string;
+
     /** Source-path predicate for a conditionally reached runtime loop. */
     condition?: ExpressionNode;
     /** Per-source-iteration predicate selecting the exact logical mapping-write domain. */
@@ -415,6 +420,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     iterationCounter?: { name: string; initialValue: bigint; stepValue: bigint };
     op: '+' | '-' | 'set' | 'delete';
   }>;
+
   /** Source-path predicate keyed by the compiler-owned counter permutation parameter. */
   runtimeCounterLoopConditions?: Map<string, ExpressionNode>;
   /** Per-iteration selection predicate keyed by compiler-owned counter permutation parameter. */
@@ -423,12 +429,16 @@ export class FunctionDefinitionNode extends Node implements Named {
     breakCondition?: ExpressionNode;
     counter: { name: string; initialValue: bigint; stepValue: bigint };
   }>;
+
   /** Expanded public-argument expression which computes a non-affine counter-loop bound. */
   runtimeCounterLoopBounds?: Map<string, ExpressionNode>;
   /** Original key tuples keyed by `<permutation>\0<collection>`, before physical-loop rewriting. */
   runtimeCounterLoopKeyExpressions?: Map<string, ExpressionNode[]>;
   /** Source counter descriptor keyed by compiler-owned permutation parameter. */
   runtimeCounterLoopCounters?: Map<string, { name: string; initialValue: bigint; stepValue: bigint }>;
+
+  /** Physical stream widths keyed by the compiler-owned permutation parameter. */
+  runtimeCounterLoopCardinalityParams?: Map<string, { input: string; output: string }>;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[]; linear?: boolean }>;

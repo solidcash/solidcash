@@ -1345,7 +1345,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it.each(['bool', 'fixed128x18'])(
+  it.each(['bool', 'fixed128x18', 'bytes20', 'address', 'pubkey', 'datasig'])(
     'authenticates a canonical counter loop read of %s values', (type) => {
       const artifact = compileString(`contract C() {
         mapping(int => ${type}) source;

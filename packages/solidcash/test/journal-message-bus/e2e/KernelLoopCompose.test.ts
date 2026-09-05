@@ -166,6 +166,8 @@ contract KernelCounterMappingRead() {
   mapping(int => int) source;
   mapping(int => int) second;
   mapping(int => int) destination;
+  mapping(int => bytes20) rawSource;
+  mapping(int => bytes20) rawDestination;
   function seed(int key, int value) public { this.source[key] = value; require(true); }
   function seedSecond(int key, int value) public { this.second[key] = value; require(true); }
   function copy(int n) public {
@@ -178,9 +180,15 @@ contract KernelCounterMappingRead() {
     }
     require(true);
   }
+  function seedRaw(int key, bytes20 value) public { this.rawSource[key] = value; require(true); }
+  function copyRaw(int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.rawDestination[i] = this.rawSource[i]; }
+    require(true);
+  }
   function checkSource(int key, int expected) public { require(this.source[key] == expected); }
   function checkSecond(int key, int expected) public { require(this.second[key] == expected); }
   function checkDestination(int key, int expected) public { require(this.destination[key] == expected); }
+  function checkRaw(int key, bytes20 expected) public { require(this.rawDestination[key] == expected); }
 }`;
 
 const AFFINE_COUNTER_STATE_VALUE_SOURCE = `pragma solidcash ^0.13.0;
@@ -4260,6 +4268,19 @@ describe('kernel composite counter-key settlement', () => {
         .resolves.toBeDefined();
       await expect(contract.call.checkSource(BigInt(key), expected[key]).send()).resolves.toBeDefined();
       await expect(contract.call.checkSecond(BigInt(key), second[key]).send()).resolves.toBeDefined();
+    }
+
+    const raw = [
+      hexToBin('00112233445566778899aabbccddeeff00112233'),
+      hexToBin('ffeeddccbbaa99887766554433221100ffeeddcc'),
+    ];
+    for (let key = 0; key < raw.length; key += 1) {
+      await contract.call.seedRaw(BigInt(key), raw[key]).send();
+    }
+    await expect(contract.batch([{ function: 'copyRaw', args: [BigInt(raw.length)] }]).send())
+      .resolves.toBeDefined();
+    for (let key = 0; key < raw.length; key += 1) {
+      await expect(contract.call.checkRaw(BigInt(key), raw[key]).send()).resolves.toBeDefined();
     }
   }, 180_000);
 

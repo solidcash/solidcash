@@ -2342,8 +2342,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               && candidateAccess.keys.every((key, index) =>
                 expressionShape(key) === expressionShape(destinationKeys[index]));
             const valueType = sourceCollection?.innermostValueType;
+            const fixedBytes = valueType instanceof BytesType && valueType.bound !== undefined;
             const supportedValue = valueType instanceof IntType || valueType instanceof FixedType
-              || valueType === PrimitiveType.BOOL;
+              || valueType === PrimitiveType.BOOL || fixedBytes || valueType instanceof AddressType
+              || valueType === PrimitiveType.PUBKEY || valueType === PrimitiveType.DATASIG;
             if (sourceCollection?.sorted && sameKeyShape && supportedValue
               && valueType.toString() === destinationCollection.innermostValueType.toString()) {
               runtimeReadSignatures.add(`${candidateAccess.name}:${candidateAccess.keys.map(expressionShape).join('|')}`);

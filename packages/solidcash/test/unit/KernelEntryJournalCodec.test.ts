@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { binToHex } from '@bitauth/libauth';
 import {
   KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES,
   KERNEL_ENTRY_JOURNAL_TAG,
   decodeKernelEntryJournalRecord,
   encodeKernelEntryJournalRecord,
+  encodeKernelEntryJournalRecords,
 } from '../../src/stateful/KernelEntryJournal.js';
+import { SortedList, encodeEntryCommitment, slotValueToBytes } from '../../src/stateful/SortedList.js';
+import type { Utxo } from '../../src/interfaces.js';
 
 const bytes = (length: number, fill: number): Uint8Array => new Uint8Array(length).fill(fill);
 
@@ -71,5 +75,26 @@ describe('kernel pending-entry journal codec', () => {
     expect(() => decodeKernelEntryJournalRecord(badTag)).toThrow('tag');
     const badFlags = encodeKernelEntryJournalRecord(valid); badFlags[1] = 0x80;
     expect(() => decodeKernelEntryJournalRecord(badFlags)).toThrow('unknown flags');
+  });
+
+  it('encodes a complete planner result without changing first-touch record ordinals', () => {
+    const slot = (value: bigint): Uint8Array => slotValueToBytes(value);
+    const entry = (txidByte: string, value: bigint, next: bigint): Utxo => ({
+      txid: txidByte.repeat(64), vout: 0, satoshis: 1000n,
+      token: {
+        category: '11'.repeat(32), amount: 0n,
+        nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(slot(value), slot(next))) },
+      },
+    });
+    const plan = SortedList.fromUtxos([entry('0', 0n, 10n), entry('1', 10n, 0n)])
+      .planJournaledUpserts([
+        { slot: slot(20n), operation: Uint8Array.of(1) },
+        { slot: slot(20n), operation: Uint8Array.of(2) },
+      ], (_current, operation) => operation);
+    const encoded = encodeKernelEntryJournalRecords(bytes(32, 0xaa), plan.records);
+    expect(encoded.map((record) => Number(record[1] & 0x08))).toEqual([0, 8]);
+    expect(encoded.map((record) => Number(decodeKernelEntryJournalRecord(record).slot[0])))
+      .toEqual([10, 20]);
+    expect(plan.accesses.map((access) => access.targetRecordOrdinal)).toEqual([1, 1]);
   });
 });

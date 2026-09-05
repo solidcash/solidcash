@@ -1,3 +1,5 @@
+import type { JournaledMutationRecord } from './SortedList.js';
+
 /** Canonical record tag, distinct from runtime event/BCH/FT/NFT effect tags 0x01..0x04. */
 export const KERNEL_ENTRY_JOURNAL_TAG = 0x05;
 
@@ -86,4 +88,22 @@ export function decodeKernelEntryJournalRecord(encoded: Uint8Array): KernelEntry
     tombstone,
     synthetic,
   };
+}
+
+/** Encode a planner's first-touch-ordered records for one collection into the exact covenant carrier format. */
+export function encodeKernelEntryJournalRecords(
+  collectionHash: Uint8Array,
+  records: readonly JournaledMutationRecord[],
+): Uint8Array[] {
+  requireIdentity('collectionHash', collectionHash);
+  return records.map((record) => encodeKernelEntryJournalRecord({
+    collectionHash,
+    slot: record.slot,
+    nextKey: record.nextKey,
+    value: record.value,
+    authenticated: record.authenticated,
+    dirty: record.dirty,
+    tombstone: record.tombstone,
+    synthetic: record.synthetic,
+  }));
 }

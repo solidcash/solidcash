@@ -224,6 +224,12 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
       { authenticated: true, synthetic: false, tombstone: false },
       { authenticated: false, synthetic: true, tombstone: false },
     ]);
+    expect(plan.accesses).toEqual([
+      { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true },
+      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true },
+      { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true },
+      { targetRecordOrdinal: 2, presentBefore: true, presentAfter: true },
+    ]);
   });
 
   it('co-spends one original predecessor and flushes one final same-gap chain', () => {
@@ -238,6 +244,11 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([20, 30, 50]);
     expect(decoded.map((entry) => binToHex(entry.value))).toEqual(['', '03', '04']);
     expect(plan.records.map((record) => Number(bytesToSlotValue(record.slot)))).toEqual([10, 20, 30]);
+    expect(plan.accesses).toEqual([
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
+      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true },
+      { targetRecordOrdinal: 1, presentBefore: true, presentAfter: true },
+    ]);
   });
 
   it('does not expose the HEAD sentinel as a writable logical slot', () => {
@@ -261,6 +272,9 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     }))).toEqual([
       { slot: 50, next: 90, tombstone: true },
       { slot: 10, next: 90, tombstone: false },
+    ]);
+    expect(plan.accesses).toEqual([
+      { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: true, presentAfter: false },
     ]);
   });
 
@@ -293,6 +307,10 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     expect(reinserted.records.map((record) => ({
       slot: Number(bytesToSlotValue(record.slot)), tombstone: record.tombstone,
     }))).toEqual([{ slot: 50, tombstone: false }, { slot: 10, tombstone: false }]);
+    expect(reinserted.accesses).toEqual([
+      { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: true, presentAfter: false },
+      { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true },
+    ]);
 
     const cancelledInsert = list.planJournaledMutations<Operation>([
       { slot: s(20), operation: { kind: 'set', value: hexToBin('aa') } },
@@ -307,6 +325,10 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     }))).toEqual([
       { slot: 10, tombstone: false, synthetic: false },
       { slot: 20, tombstone: true, synthetic: true },
+    ]);
+    expect(cancelledInsert.accesses).toEqual([
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: true, presentAfter: false },
     ]);
   });
 });

@@ -111,11 +111,12 @@ export {
   SortedList, getCachedSortedList, keyToSlot, keyToSlotMulti, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
   encodeEntryCommitment, decodeEntryCommitment, isEmptyValueEntryCommitment, headSentinelCommitment,
   type SortedEntry, type NonMembershipPlan, type MembershipPlan, type InsertPlan, type DeletePlan, type UpdatePlan,
-  type BatchUpsertPlan, type JournaledUpsert, type JournaledMutationRecord, type JournaledMutationPlan,
+  type BatchUpsertPlan, type JournaledUpsert, type JournaledMutationRecord, type JournaledMutationAccess,
+  type JournaledMutationPlan,
 } from './SortedList.js';
 export {
   KERNEL_ENTRY_JOURNAL_TAG, KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES,
-  encodeKernelEntryJournalRecord, decodeKernelEntryJournalRecord,
+  encodeKernelEntryJournalRecord, encodeKernelEntryJournalRecords, decodeKernelEntryJournalRecord,
   type KernelEntryJournalRecord,
 } from './KernelEntryJournal.js';
 export {

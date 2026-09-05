@@ -4819,6 +4819,26 @@ describe('kernel composite counter-key settlement', () => {
         }
         require(true);
       }
+      function conditional(int n) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) xs.push(i + 50);
+          else xs.push(i + 60);
+          this.slots[xs[i]] = i + 1;
+        }
+        require(true);
+      }
+      function conditionalSwitch(int n) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          switch (i % 2) {
+            case 0: xs.push(i + 70); break;
+            default: xs.push(i + 80);
+          }
+          this.slots[xs[i]] = i + 1;
+        }
+        require(true);
+      }
       function seed(int key) public { this.slots[key] = 0; require(true); }
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
@@ -4827,6 +4847,10 @@ describe('kernel composite counter-key settlement', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'prefix'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'defaultPrefix'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'conditional'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'conditionalSwitch'))
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -4859,6 +4883,16 @@ describe('kernel composite counter-key settlement', () => {
     await contract.call.seed(0n).send();
     await expect(contract.batch([{ function: 'defaultPrefix', args: [3n] }]).send()).resolves.toBeDefined();
     await expect(contract.call.check(0n, 3n).send()).resolves.toBeDefined();
+    for (const key of [50n, 61n, 52n, 63n]) await contract.call.seed(key).send();
+    await expect(contract.batch([{ function: 'conditional', args: [4n] }]).send()).resolves.toBeDefined();
+    for (const [key, expected] of [[50n, 1n], [61n, 2n], [52n, 3n], [63n, 4n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    for (const key of [70n, 81n, 72n, 83n]) await contract.call.seed(key).send();
+    await expect(contract.batch([{ function: 'conditionalSwitch', args: [4n] }]).send()).resolves.toBeDefined();
+    for (const [key, expected] of [[70n, 1n], [81n, 2n], [72n, 3n], [83n, 4n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
   }, 180_000);
 
   it('preserves every occurrence when counter-derived keys repeat', async () => {
@@ -4929,10 +4963,22 @@ describe('kernel composite counter-key settlement', () => {
         }
         require(true);
       }
+      function conditionalPop(int n) public {
+        int[] xs = new int[](6);
+        xs[0] = 11; xs[1] = 12; xs[2] = 13; xs[3] = 14; xs[4] = 15; xs[5] = 16;
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) xs.pop();
+          else xs.pop();
+          this.slots[xs[4 - i]] = i + 200;
+        }
+        require(true);
+      }
       function seed(int key) public { this.slots[key] = 0; require(true); }
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'conditionalPop'))
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -4951,6 +4997,11 @@ describe('kernel composite counter-key settlement', () => {
     }
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     for (const [key, expected] of [[13n, 100n], [12n, 101n], [11n, 102n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    for (const key of [13n, 14n, 15n]) await contract.call.seed(key).send();
+    await expect(contract.batch([{ function: 'conditionalPop', args: [3n] }]).send()).resolves.toBeDefined();
+    for (const [key, expected] of [[15n, 200n], [14n, 201n], [13n, 202n]] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
   }, 180_000);

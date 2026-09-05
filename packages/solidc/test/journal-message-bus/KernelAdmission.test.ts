@@ -1116,6 +1116,47 @@ describe('required kernel admission', () => {
       .toHaveLength(2);
   });
 
+  it('replays exhaustive equal-width conditional resizes per canonical iteration', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) xs.push(i + 10);
+          else xs.push(i + 20);
+          this.slots[xs[i]] = i;
+        }
+        require(true);
+      }
+      function choose(int n) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          switch (i % 2) {
+            case 0: xs.push(i + 30); break;
+            default: xs.push(i + 40);
+          }
+          this.slots[xs[i]] = i;
+        }
+        require(true);
+      }
+      function trim(int n) public {
+        int[] xs = new int[](6);
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) xs.pop();
+          else xs.pop();
+          this.slots[xs[4 - i]] = i;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'choose'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trim'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('replays an initial constructed-array prefix before the current iteration pushes', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

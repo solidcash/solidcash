@@ -4328,6 +4328,67 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         active.set(name, merged);
       }
     };
+    const mergeSwitchPlans = (
+      active: Map<string, ArrayPlan>,
+      before: ReadonlyMap<string, ArrayPlan>,
+      casePlans: readonly ReadonlyMap<string, ArrayPlan>[],
+      defaultPlans: ReadonlyMap<string, ArrayPlan>,
+      statement: SwitchNode,
+      selected: ExpressionNode,
+    ): void => {
+      const caseConditions = statement.cases.map((candidate) => {
+        const condition = new BinaryOpNode(
+          cloneNode(selected), BinaryOperator.EQ, cloneNode(candidate.value),
+        );
+        condition.location = candidate.location ?? statement.location;
+        return condition;
+      });
+      let anyCase: ExpressionNode | undefined;
+      for (const condition of caseConditions) {
+        if (!anyCase) anyCase = condition;
+        else {
+          const combined = new BinaryOpNode(anyCase, BinaryOperator.OR, cloneNode(condition));
+          combined.location = statement.location;
+          anyCase = combined;
+        }
+      }
+      const defaultCondition = anyCase
+        ? (() => {
+          const condition = new UnaryOpNode(UnaryOperator.NOT, anyCase);
+          condition.location = statement.location;
+          return condition;
+        })()
+        : undefined;
+      for (const [name, base] of before) {
+        const arms = casePlans.map((branchPlans) => branchPlans.get(name));
+        const fallback = defaultPlans.get(name);
+        if (arms.some((plan) => !plan || plan.writes.length < base.writes.length)
+          || !fallback || fallback.writes.length < base.writes.length) {
+          active.delete(name);
+          continue;
+        }
+        const merged = copyPlans(new Map([[name, base]])).get(name)!;
+        arms.forEach((plan, index) => {
+          for (const write of plan!.writes.slice(base.writes.length)) {
+            merged.writes.push({
+              index: cloneNode(write.index) as ExpressionNode,
+              value: cloneNode(write.value) as ExpressionNode,
+              condition: branchCondition(caseConditions[index], write.condition, false),
+            });
+          }
+        });
+        for (const write of fallback.writes.slice(base.writes.length)) {
+          merged.writes.push({
+            index: cloneNode(write.index) as ExpressionNode,
+            value: cloneNode(write.value) as ExpressionNode,
+            ...(defaultCondition && {
+              condition: branchCondition(defaultCondition, write.condition, false),
+            }),
+          });
+        }
+        active.set(name, merged);
+      }
+    };
     const transformBlock = (
       block: BlockNode,
       active: Map<string, ArrayPlan>,
@@ -4446,14 +4507,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           continue;
         }
         if (statement instanceof SwitchNode) {
-          for (const candidate of statement.cases) {
-            transformBlock(candidate.body, copyPlans(active), new Map(snapshots), false);
-          }
-          if (statement.defaultCase) {
-            transformBlock(statement.defaultCase, copyPlans(active), new Map(snapshots), false);
-          }
+          const before = copyPlans(active);
+          const casePlans = statement.cases.map(() => copyPlans(active));
+          statement.cases.forEach((candidate, index) => {
+            transformBlock(candidate.body, casePlans[index], new Map(snapshots), false);
+          });
+          const defaultPlans = copyPlans(active);
+          if (statement.defaultCase) transformBlock(
+            statement.defaultCase, defaultPlans, new Map(snapshots), false,
+          );
+          mergeSwitchPlans(
+            active, before, casePlans, defaultPlans, statement,
+            replaceSnapshots(statement.expression, snapshots),
+          );
           transformed.push(statement);
-          for (const name of mutatedArrays(statement)) active.delete(name);
           continue;
         }
         if (statement instanceof TryCatchNode) {

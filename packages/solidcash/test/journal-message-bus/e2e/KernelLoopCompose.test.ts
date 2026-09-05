@@ -4669,6 +4669,49 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(80n, 60n).send()).resolves.toBeDefined();
   }, 180_000);
 
+  it('settles local array keys initialized by nested switch control', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelSwitchLocalKeys() {
+      mapping(int => int) slots;
+      function write(int n, int mode, bool take) public {
+        int[] xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) {
+          switch (mode) {
+            case 0: if (take) { xs[i] = 10 + i; } else { xs[i] = 20 + i; } break;
+            case 1: xs[i] = 30 + i; break;
+            default: xs[i] = 40 + i;
+          }
+          this.slots[xs[i]] = i + 1;
+        }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.slots[key] == expected); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'write', args: [2n, 0n, true] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(10n, 1n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(11n, 2n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'write', args: [2n, 0n, false] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(20n, 1n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(21n, 2n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'write', args: [2n, 1n, false] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(30n, 1n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(31n, 2n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'write', args: [2n, 9n, false] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(40n, 1n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(41n, 2n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('settles loop and event predicates from dominating scalar-state assignments', async () => {
     const provider = createTestProvider();
     const artifact = compileString(DOMINATING_STATE_PREDICATE_SOURCE, KERNEL);

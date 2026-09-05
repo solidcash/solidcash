@@ -478,9 +478,9 @@ derives the expected value and rejects empty pops and out-of-range element write
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays are admitted when their bounded
-length and every reached element write can be replayed from dominating public/local expressions. Finite conditional
-element writes and conditional scalar dependencies become ternary recipes; unwritten elements retain their typed
-default. Dynamically resized or escaped arrays, nested-control assignments, and writes whose index/value cannot be
+length and every reached element write can be replayed from dominating public/local expressions. Finite nested
+`if`/`else` and `switch` element writes and conditional scalar dependencies become ternary recipes; unwritten elements retain their typed
+default. Dynamically resized or escaped arrays, loop-dependent control assignments, and writes whose index/value cannot be
 replayed stay `KERNEL_UNBOUNDED_KEY` without aborting sibling handlers.
 
 The legacy convention is intentionally unchanged: it does not acquire this runtime event family and continues to

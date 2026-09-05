@@ -933,6 +933,29 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('derives a switch-initialized same-iteration local array key', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n, int mode, bool take) public {
+        int[] xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) {
+          switch (mode) {
+            case 0: if (take) { xs[i] = 10 + i; } else { xs[i] = 20 + i; } break;
+            case 1: xs[i] = 30 + i; break;
+            default: xs[i] = 40 + i;
+          }
+          this.slots[xs[i]] = i + 1;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .varyingKeyExpressions).toEqual([expect.objectContaining({ kind: 'ternary' })]);
+  });
+
   it('keeps a local key-array snapshot stable across a later parameter reassignment', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

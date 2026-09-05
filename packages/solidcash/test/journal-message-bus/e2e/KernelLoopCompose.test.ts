@@ -1441,6 +1441,43 @@ describe('kernel loop message-bus compose', () => {
     await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 4n });
   }, 180_000);
 
+  it('executes a homogeneous mutual tail-recursion cycle through one row', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelMutualTailRecursion() {
+      int calls;
+      function evenStep(int remaining, int total) internal returns (int) {
+        this.calls = this.calls + 1;
+        if (remaining == 0) return total;
+        return oddStep(remaining - 1, total + 1);
+      }
+      function oddStep(int remaining, int total) internal returns (int) {
+        this.calls = this.calls + 1;
+        if (remaining == 0) return total;
+        return evenStep(remaining - 1, total + 1);
+      }
+      function run(int remaining) public returns (int) { return evenStep(remaining, 0); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'run', args: [4n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 5n });
+  }, 180_000);
+
   it('executes an unnamed tail-recursive result through one row', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelUnnamedTailRecursion() {

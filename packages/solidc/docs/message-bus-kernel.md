@@ -322,10 +322,12 @@ Compiler-owned public entry points are finalized before kernel admission. In par
 oracle-backed `block.*` register publishes `__updateBlockOracle` as an ordinary eligible row with its detached
 transaction-signature witness; it is not appended later as an unexamined ABI-only function. Public state getters
 follow the same synthesis boundary.
-Conservative named or unnamed result tuples and void tail recursion are normalized to their ordinary loop before closure admission,
-including explicit value-returning and void base-case `return` statements nested in pre-existing source loops, so the
-kernel executes the same finite source transition without cloning a recursive route frame. Non-tail recursion
-(including work performed after the recursive call), mutual recursion, and result types the wrapper cannot encode
+Conservative named or unnamed result tuples and void tail recursion are normalized to their ordinary loop before closure admission.
+Homogeneous mutually tail-recursive functions—matching parameter and result frames, with no overloaded target—are
+lowered as one program-counter loop for each callable entry, including cycles longer than two. Self-recursive
+functions also support explicit value-returning and void base-case `return` statements nested in pre-existing source
+loops. The kernel therefore executes the finite source transition without cloning a recursive route frame. Non-tail recursion
+(including work performed after the recursive call), heterogeneous/overloaded recursion cycles, and result types the wrapper cannot encode
 stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
 Counter-keyed mapping loops with zero or direction-mismatched steps, mutated bounds, or extra counter mutations

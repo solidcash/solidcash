@@ -167,6 +167,61 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('normalizes a homogeneous mutual tail-recursion cycle before kernel closure admission', () => {
+    const artifact = compileString(`contract C() {
+      function evenStep(int remaining, int total) internal returns (int) {
+        if (remaining == 0) return total;
+        return oddStep(remaining - 1, total + 1);
+      }
+      function oddStep(int remaining, int total) internal returns (int) {
+        if (remaining == 0) return total;
+        return evenStep(remaining - 1, total + 1);
+      }
+      function run(int remaining) public returns (int) {
+        return evenStep(remaining, 0);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('normalizes mutual tail recursion with tuple results and a three-function void cycle', () => {
+    const artifact = compileString(`contract C() {
+      int calls;
+      function left(int remaining) internal returns (int, bool) {
+        if (remaining == 0) return (7, true);
+        return right(remaining - 1);
+      }
+      function right(int remaining) internal returns (int, bool) {
+        if (remaining == 0) return (8, false);
+        return left(remaining - 1);
+      }
+      function first(int remaining) internal {
+        this.calls = this.calls + 1;
+        if (remaining > 0) second(remaining - 1);
+      }
+      function second(int remaining) internal {
+        this.calls = this.calls + 1;
+        if (remaining > 0) third(remaining - 1);
+      }
+      function third(int remaining) internal {
+        this.calls = this.calls + 1;
+        if (remaining > 0) first(remaining - 1);
+      }
+      function pair(int remaining) public returns (int, bool) { return left(remaining); }
+      function run(int remaining) public { first(remaining); require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pair'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'pair')?.outputs)
+      .toEqual([{ type: 'int256' }, { type: 'bool' }]);
+  });
+
   it('normalizes explicit value and void base-case returns in tail recursion', () => {
     const artifact = compileString(`contract C() {
       int calls;

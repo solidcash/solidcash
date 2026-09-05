@@ -1294,6 +1294,25 @@ describe('required kernel admission', () => {
   });
 
   it.each([
+    ['postfix increment', 'int i = 0', 'i < n', 'i++'],
+    ['prefix increment', 'int i = 0', 'i < n', '++i'],
+    ['postfix decrement', 'int i = 5', 'i >= n', 'i--'],
+    ['prefix decrement', 'int i = 5', 'i >= n', '--i'],
+  ])('admits a canonical for loop written with %s', (_label, init, condition, update) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n) public {
+        for (${init}; ${condition}; ${update}) { this.m[i] = i; }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toHaveLength(1);
+  });
+
+  it.each([
     ['ascending', '1', '<', '+', 'stride', 'source'],
     ['descending', '9', '>', '-', 'stride + 1', 'binary'],
   ])('admits a replayable runtime %s counter step', (_label, start, comparison, operator, stride, kind) => {

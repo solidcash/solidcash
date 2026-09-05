@@ -2862,6 +2862,39 @@ describe('kernel counter-key mapping loop compose', () => {
     await expect(repeatedClear.build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 
+  it('settles ascending and descending counter rows written with increment operators', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelIncrementLoops() {
+      mapping(int => int) slots;
+      function ascending(int n) public {
+        for (int i = 0; i < n; i++) { this.slots[i] = i + 10; }
+        require(true);
+      }
+      function descending(int n) public {
+        for (int i = 5; i >= n; --i) { this.slots[i + 10] = i + 20; }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.slots[key] == expected); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'ascending'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'descending'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'ascending', args: [3n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(2n, 12n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'descending', args: [3n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(15n, 25n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(13n, 23n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('reads disjoint fixed and runtime entries from the same mapping as a write stream', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SAME_MAPPING_FIXED_READ_SOURCE, {

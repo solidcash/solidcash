@@ -3769,7 +3769,30 @@ export default class AstBuilder
           || expressionCtx instanceof MethodCallNamedContext) {
           updateNode = this.buildCallStatement(expressionCtx);
         } else {
-          updateNode = new ExpressionStatementNode(this.visit(expressionCtx) as ExpressionNode);
+          const expression = this.visit(expressionCtx) as ExpressionNode;
+          // A for-update discards its expression value, so prefix and postfix identifier increments have the
+          // same statement semantics. Normalize them here to the assignment shape consumed by canonical loop
+          // analysis, which intentionally runs before the general expression-valued ++/-- desugar.
+          if (expression instanceof UnaryOpNode && expression.expression instanceof IdentifierNode
+            && [UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.PREFIX_INCREMENT,
+              UnaryOperator.POSTFIX_DECREMENT, UnaryOperator.PREFIX_DECREMENT].includes(expression.operator)) {
+            const increment = expression.operator === UnaryOperator.POSTFIX_INCREMENT
+              || expression.operator === UnaryOperator.PREFIX_INCREMENT;
+            const target = expression.expression;
+            const read = new IdentifierNode(target.name);
+            read.location = target.location;
+            const one = new IntLiteralNode(1n);
+            one.location = expression.location;
+            const next = new BinaryOpNode(
+              read, increment ? BinaryOperator.PLUS : BinaryOperator.MINUS, one,
+            );
+            next.location = expression.location;
+            const identifier = new IdentifierNode(target.name);
+            identifier.location = target.location;
+            updateNode = new AssignNode(identifier, next);
+          } else {
+            updateNode = new ExpressionStatementNode(expression);
+          }
           updateNode.location = Location.fromCtx(updateCtx);
         }
       }

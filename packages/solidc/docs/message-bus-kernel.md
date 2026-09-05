@@ -338,8 +338,9 @@ constant- or runtime-step domain is represented by the exact ascending or descen
 the authenticated permutation is over those logical counter values rather than assuming `0..n-1`, and its ABI element type
 matches a signed or unsigned source counter. Canonical post-test domains support constant starts and non-zero
 constant or replayable runtime steps in the comparison's direction, including
-`int i = 0; do { ...; i = i + 1; } while (i < n)` and
-descending/ranged forms. An `i != bound` condition additionally proves that the directional distance is an exact
+`int i = 0; do { ...; i = i + 1; } while (i < n)`. Canonical `for` updates may equivalently use prefix or
+postfix `++` / `--`, in addition to assignment form, including descending/ranged forms. An `i != bound`
+condition additionally proves that the directional distance is an exact
 multiple of the signed step; the SDK performs the same check before transaction construction. A pre-test loop may
 start at its bound and execute zero times, while a post-test loop must reach its bound after at least one step.
 Post-test crossing comparisons authenticate the exact progression with at least the mandatory first iteration;

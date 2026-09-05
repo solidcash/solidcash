@@ -22807,9 +22807,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
     }
 
-    const vectors = new IdentifierNode(KERNEL_JOURNAL_ACCESS_STREAMS);
-    vectors.type = new ArrayType(new BytesType());
-    vectors.location = this.currentFunction.location;
+    const accessVector = (): IdentifierNode => {
+      const vectors = new IdentifierNode(KERNEL_JOURNAL_ACCESS_STREAMS);
+      vectors.type = new ArrayType(new BytesType());
+      vectors.location = this.currentFunction.location;
+      return vectors;
+    };
+    const vectorLength = new UnaryOpNode(UnaryOperator.SIZE, accessVector());
+    vectorLength.type = PrimitiveType.INT;
+    vectorLength.location = this.currentFunction.location;
+    this.visit(vectorLength);
+    this.emit(encodeInt(BigInt(this.currentFunction.sortedUpsertLoopInfo?.length ?? 0)), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack();
+
+    const vectors = accessVector();
     const ordinal = new IntLiteralNode(BigInt(streamIndex));
     ordinal.location = this.currentFunction.location;
     const access = new ArrayAccessNode(vectors, ordinal);

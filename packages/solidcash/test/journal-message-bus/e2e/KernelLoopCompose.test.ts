@@ -2974,6 +2974,19 @@ describe('kernel counter-key mapping loop compose', () => {
         inputIndex: routeInputIndex, sourceOutputs, transaction,
       })), `hostile journal stream: ${label}`).not.toBe(true);
     }
+    for (const [label, hostileStreams] of [
+      ['missing stream', []],
+      ['extra stream', [originalAccessStream, Uint8Array.of(0x06, 0)]],
+    ] as const) {
+      const hostileRouteParams = [...routeUnlocker.params];
+      hostileRouteParams[routeJournalIndex] = [hostileStreams];
+      hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileRouteParams);
+      const transaction = hostileBuilder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(hostileBuilder.inputs);
+      expect(hostileVm.stateSuccess(hostileVm.evaluate({
+        inputIndex: routeInputIndex, sourceOutputs, transaction,
+      })), `hostile journal vector: ${label}`).not.toBe(true);
+    }
     const journalRecords = routeUnlocker.params[routeRecordIndex];
     if (!Array.isArray(journalRecords) || !(journalRecords[0] instanceof Uint8Array)) {
       throw new Error('expected compiler-derived journal records');

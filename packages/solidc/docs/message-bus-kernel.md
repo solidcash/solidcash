@@ -336,7 +336,9 @@ direction values before construction. Deterministic bound expressions over
 public arguments and immutable local aliases are serialized for SDK replay. A constant-start,
 constant- or runtime-step domain is represented by the exact ascending or descending arithmetic progression, with a maximum of 64 iterations;
 the authenticated permutation is over those logical counter values rather than assuming `0..n-1`, and its ABI element type
-matches a signed or unsigned source counter. Canonical post-test domains support constant starts and non-zero
+matches a signed or unsigned source counter. Canonical source `while` / `do-while` tails and their matching
+pre-`continue` steps may use prefix or postfix `++` / `--` as well as assignment form. Canonical post-test
+domains support constant starts and non-zero
 constant or replayable runtime steps in the comparison's direction, including
 `int i = 0; do { ...; i = i + 1; } while (i < n)`. Canonical `for` updates may equivalently use prefix or
 postfix `++` / `--`, in addition to assignment form, including descending/ranged forms. An `i != bound`

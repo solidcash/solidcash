@@ -767,18 +767,18 @@ contract KernelSelectedCounterMapping() {
   function writeWhileSplit(int n) public {
     int i = 0;
     while (i < n) {
-      if (i % 2 == 0) { this.m[i] = i + 130; i = i + 1; continue; }
+      if (i % 2 == 0) { this.m[i] = i + 130; i++; continue; }
       this.whileRest[i] = i + 230;
-      i = i + 1;
+      i++;
     }
     require(true);
   }
   function writeDoWhileSplit(int n) public {
     int i = 0;
     do {
-      if (i % 2 == 0) { this.m[i] = i + 330; i = i + 1; continue; }
+      if (i % 2 == 0) { this.m[i] = i + 330; ++i; continue; }
       this.whileRest[i] = i + 330;
-      i = i + 1;
+      ++i;
     } while (i < n);
     require(true);
   }

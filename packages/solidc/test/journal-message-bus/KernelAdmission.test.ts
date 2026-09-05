@@ -2768,6 +2768,48 @@ describe('required kernel admission', () => {
     });
   });
 
+  it.each([
+    ['source while postfix increment', 'int i = 0;', 'while (i < n) { this.m[i] = i; i++; }'],
+    ['source while prefix decrement', 'int i = 5;', 'while (i > n) { this.m[i] = i; --i; }'],
+    ['source do-while prefix increment', 'int i = 0;', 'do { this.m[i] = i; ++i; } while (i < n);'],
+    ['source do-while postfix decrement', 'int i = 5;', 'do { this.m[i] = i; i--; } while (i > n);'],
+  ])('normalizes a %s tail', (_label, initializer, loop) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n) public {
+        ${initializer}
+        ${loop}
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toHaveLength(1);
+  });
+
+  it.each([
+    ['postfix source while', 'i++'],
+    ['prefix source while', '++i'],
+  ])('normalizes a %s update before continue', (_label, update) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n) public {
+        int i = 0;
+        while (i < n) {
+          if (i % 2 == 0) { ${update}; continue; }
+          this.m[i] = i;
+          ${update};
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .iterationCondition).toBeDefined();
+  });
+
   it('normalizes a source while continue which performs its canonical step', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;

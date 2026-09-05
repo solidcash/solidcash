@@ -4,7 +4,8 @@ import {
   AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, CastNode, CollectionNode, ContinueNode,
   ContractNode,
   DoWhileNode,
-  EmitStatementNode, ExpressionNode, ExternalFunctionCallNode, FunctionCallNode, FunctionCallStatementNode,
+  EmitStatementNode, ExpressionNode, ExpressionStatementNode, ExternalFunctionCallNode, FunctionCallNode,
+  FunctionCallStatementNode,
   FieldAccessNode, FunctionDefinitionNode, IdentifierNode, IntLiteralNode, LiteralNode, MappingAccessNode,
   MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode, NewArrayNode, Node, ParameterNode, RequireNode,
@@ -178,6 +179,43 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       pathSupported: boolean;
     };
     const canonicalLoops = new Map<WhileNode | DoWhileNode, CanonicalLoop>();
+    // Canonical-loop discovery runs before the general expression-valued ++/-- lowering. In statement position
+    // the prefix/postfix result is discarded, so all four identifier forms have exactly the assignment semantics
+    // consumed by this pass. Normalize only a requested counter name: increments of mapping values, array
+    // elements, or unrelated locals remain for DesugarPostfixExpressions and retain their ordinary evaluation
+    // rules.
+    const normalizeDiscardedCounterUpdate = (
+      statement: StatementNode | undefined, counter: string,
+    ): AssignNode | undefined => {
+      if (statement instanceof AssignNode) return statement;
+      if (!(statement instanceof ExpressionStatementNode)
+        || !(statement.expression instanceof UnaryOpNode)
+        || !(statement.expression.expression instanceof IdentifierNode)
+        || statement.expression.expression.name !== counter
+        || ![UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.PREFIX_INCREMENT,
+          UnaryOperator.POSTFIX_DECREMENT, UnaryOperator.PREFIX_DECREMENT]
+          .includes(statement.expression.operator)) return undefined;
+      const unary = statement.expression;
+      const increment = unary.operator === UnaryOperator.POSTFIX_INCREMENT
+        || unary.operator === UnaryOperator.PREFIX_INCREMENT;
+      const target = unary.expression as IdentifierNode;
+      const read = new IdentifierNode(target.name);
+      read.location = target.location;
+      read.type = target.type;
+      const one = new IntLiteralNode(1n);
+      one.location = unary.location;
+      const expression = new BinaryOpNode(
+        read, increment ? BinaryOperator.PLUS : BinaryOperator.MINUS, one,
+      );
+      expression.location = unary.location;
+      expression.type = unary.type ?? target.type;
+      const identifier = new IdentifierNode(target.name);
+      identifier.location = target.location;
+      identifier.type = target.type;
+      const assignment = new AssignNode(identifier, expression);
+      assignment.location = statement.location;
+      return assignment;
+    };
     const findCanonicalLoops = (
       x: Node,
       pathConditions: Array<{ expression: ExpressionNode; negated: boolean }> = [],
@@ -518,7 +556,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             [BinaryOperator.NE]: BinaryOperator.NE,
           } as Partial<Record<BinaryOperator, BinaryOperator>>)[loop.condition.operator];
           if (comparisonOperator === undefined) continue;
-          const update = loop.block.statements?.at(-1);
+          const updateIndex = (loop.block.statements?.length ?? 0) - 1;
+          const update = normalizeDiscardedCounterUpdate(
+            loop.block.statements?.[updateIndex], variable.name,
+          );
+          if (update && loop.block.statements && loop.block.statements[updateIndex] !== update) {
+            loop.block.statements[updateIndex] = update;
+          }
           const updateExpression = update instanceof AssignNode && update.identifier.name === variable.name
             && update.expression instanceof BinaryOpNode ? update.expression : undefined;
           const updateCounterOnLeft = updateExpression?.left instanceof IdentifierNode
@@ -2189,12 +2233,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (candidate instanceof BlockNode) {
           for (const [index, statement] of (candidate.statements ?? []).entries()) {
             if (statement instanceof ContinueNode) {
-              const update = candidate.statements?.[index - 1];
-              if (!(update instanceof AssignNode)
+              const update = normalizeDiscardedCounterUpdate(
+                candidate.statements?.[index - 1], logical,
+              );
+              if (!update
                 || update.identifier.name !== logical || !counterUpdate
                 || expressionShape(update.expression) !== expressionShape(counterUpdate.expression)) {
                 sourceContinueValid = false;
                 return;
+              }
+              if (candidate.statements && candidate.statements[index - 1] !== update) {
+                candidate.statements[index - 1] = update;
               }
               sourceContinueUpdates.add(update);
               const updates = sourceContinueUpdateBlocks.get(candidate) ?? new Set<AssignNode>();

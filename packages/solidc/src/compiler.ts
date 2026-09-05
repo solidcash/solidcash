@@ -106,6 +106,7 @@ import {
   containsIndirectCall, PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
 import LowerVMapCounterLoops, {
+  KERNEL_JOURNAL_ACCESS_STREAMS,
   VMAP_COUNTER_OLD_PREFIX,
   VMAP_COUNTER_INPUT_COUNT_PREFIX,
   VMAP_COUNTER_OUTPUT_COUNT_PREFIX,
@@ -5239,6 +5240,9 @@ function synthesizeMessageBusRoute(
                   || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)) {
                   return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
                 }
+                if (parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS) {
+                  return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
+                }
                 if (parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
                   || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)) return parameter.name;
                 if (parameter.name.startsWith('__internal__collectionIter')
@@ -5396,6 +5400,8 @@ function synthesizeMessageBusRoute(
         `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`);
     }));
   const declaredPermNames = new Set<string>();
+  const kernelJournalAccessMode = eligible.some((fn) =>
+    fn.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS));
   const routeCounterPermParameters = eligible.flatMap((fn) =>
     fn.parameters.filter((parameter) => {
       if (!parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
@@ -5405,6 +5411,7 @@ function synthesizeMessageBusRoute(
         && !parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
+        && parameter.name !== KERNEL_JOURNAL_ACCESS_STREAMS
         && !parameter.name.startsWith('__internal__collectionIter')
         && !parameter.name.startsWith('__internal__valueWitness_')
         && !parameter.name.startsWith('__internal__leadingPushValue_')
@@ -5418,7 +5425,8 @@ function synthesizeMessageBusRoute(
         || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
-        || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)) && kernelLoopDispatch
+        || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
+        || parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS) && kernelLoopDispatch
         ? `${type}[] ${parameter.name}` : `${type} ${parameter.name}`;
     }));
   const resourceVerificationMode = eligible.some((fn) => {
@@ -6398,6 +6406,8 @@ function synthesizeMessageBusRoute(
         require(${fixedStandaloneResourceBatch
     ? `rowCount == ${routeMaximumRows}`
     : `rowCount >= 1 && rowCount <= ${routeMaximumRows}`});
+        ${kernelJournalAccessMode
+    ? `require(${KERNEL_JOURNAL_ACCESS_STREAMS}.length == rowCount);` : ''}
         ${atomicPrologue}
         bigint cursor = 7;
         ${!graphExecutionContext ? '' : 'bigint __message_bus_graph_caller_cursor = 0;'}
@@ -7531,7 +7541,7 @@ function compileResolvedAst(
     ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
     // Counter-keyed `m[i]` must expose `__internal__vmapCounterPerm_*` on the source handler before
     // admission clones it, so the route can pass that hidden witness into the DEFINE body.
-    ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
+    ast = ast.accept(new LowerVMapCounterLoops(true)) as Ast;
     // Single `m[k].field = v` writes become a whole-entry MappingAssign so kernel admission sees a
     // parameter-keyed journal slot instead of a field-update layout gap.
     ast = ast.accept(new CoalesceMappingEntryFieldWrites(true)) as Ast;
@@ -7625,7 +7635,11 @@ function compileResolvedAst(
   if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
 
   // Canonical dynamic vmap `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
-  if (needsVMapCounter && needsLoop) ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
+  if (needsVMapCounter && needsLoop) {
+    ast = ast.accept(new LowerVMapCounterLoops(
+      mergedCompilerOptions.messageBus === true && mergedCompilerOptions.messageBusKernel === true,
+    )) as Ast;
+  }
 
   // Break/continue expansion (before semantic analysis)
   if (needsBreakContinue) ast = expandBreakContinue(ast);

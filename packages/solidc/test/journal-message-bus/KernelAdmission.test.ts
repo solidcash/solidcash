@@ -491,6 +491,12 @@ describe('required kernel admission', () => {
       name: expect.stringMatching(/^__internal__vmapCounterOld_/),
       type: 'int256[][]',
     }));
+    expect(artifact.abi.find((handler) => handler.name === 'transform')?.inputs).toContainEqual({
+      name: '__internal__kernelJournalAccessStreams', type: 'bytes[]',
+    });
+    expect(artifact.messageBus?.route.inputs).toContainEqual({
+      name: '__internal__kernelJournalAccessStreams', type: 'bytes[][]',
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'credit')?.eligible).toBe(true);
     expect(artifact.abi.find((handler) => handler.name === 'credit')?.sortedUpsertLoopInfo).toEqual([
       expect.objectContaining({ op: '+', valueScalarParam: 'amount' }),
@@ -2438,6 +2444,41 @@ describe('required kernel admission', () => {
       ?.map((info) => info.varyingArrayParam)).size).toBe(2);
     expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo
       ?.map((info) => info.journalAccessStreamIndex)).toEqual([0, 1]);
+  });
+
+  it('publishes journal streams independently of contract, collection, and function names', () => {
+    const compileRenamed = (
+      contract: string, first: string, second: string, operation: string,
+    ): ReturnType<typeof compileString> => compileString(`
+      contract ${contract}() {
+        mapping(int => mapping(int => int)) ${first};
+        mapping(int => mapping(int => int)) ${second};
+        function ${operation}(int n, int left, int right) public {
+          for (int cursor = 0; cursor < n; cursor = cursor + 1) {
+            this.${first}[left][cursor] = 1;
+            this.${second}[right][cursor] = 2;
+          }
+          require(true);
+        }
+      }
+    `, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const streamShape = (
+      artifact: ReturnType<typeof compileString>, operation: string,
+    ): { handlerWitness?: string; routeWitness?: string; ordinals?: number[] } => ({
+      handlerWitness: artifact.abi.find((candidate) => candidate.name === operation)?.inputs
+        .find((input) => input.name === '__internal__kernelJournalAccessStreams')?.type,
+      routeWitness: artifact.messageBus?.route.inputs
+        .find((input) => input.name === '__internal__kernelJournalAccessStreams')?.type,
+      ordinals: artifact.abi.find((candidate) => candidate.name === operation)?.sortedUpsertLoopInfo
+        ?.map((info) => info.journalAccessStreamIndex),
+    });
+    const ledger = compileRenamed('Ledger', 'credits', 'debits', 'reconcile');
+    const registry = compileRenamed('Registry', 'primary', 'secondary', 'apply');
+
+    expect(streamShape(ledger, 'reconcile')).toEqual({
+      handlerWitness: 'bytes[]', routeWitness: 'bytes[][]', ordinals: [0, 1],
+    });
+    expect(streamShape(registry, 'apply')).toEqual(streamShape(ledger, 'reconcile'));
   });
 
   it('publishes independent permutations for different selected subsets across collections', () => {

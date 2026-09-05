@@ -496,6 +496,9 @@ non-canonical predecessor sentinels, and target/predecessor aliasing. Multiple s
 by the selected row, so the total contract surface is not constrained to one 520-byte concatenation.
 Every `sortedUpsertLoopInfo` entry publishes its stable `journalAccessStreamIndex`; the SDK and covenant therefore
 address the selected row's stream vector without reconstructing compiler traversal order from collection names.
+The source handler carries that vector as the compiler-owned `bytes[] __internal__kernelJournalAccessStreams`
+context. The kernel route adds only its outer row dimension (`bytes[][]`) and selects `[row]` in the physical
+dispatcher, instead of adding one dynamic ABI band for every stream.
 The SDK's sorted-list model exposes ordered `planJournaledUpserts` / `planJournaledMutations` reference planners:
 repeated logical slots reduce against their pending values, delete/reinsert observes pending absence, original
 entries and shared predecessors are selected once, and the final linked-list commitments are emitted once. The

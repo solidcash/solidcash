@@ -33,6 +33,8 @@ export const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCoun
 export const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 export const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
 export const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
+/** One compact `0x06` access program per runtime journal stream in this selected row. */
+export const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
 export const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
 export const vmapRuntimeOutputCountName = (collection: string): string =>
@@ -68,6 +70,10 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * number of distinct elements in that domain, hence it is a complete permutation rather than an SDK convention.
  */
 export default class LowerVMapCounterLoops extends AstTraversal {
+  constructor(private readonly publishJournalAccessStreams = false) {
+    super();
+  }
+
   private collections = new Set<string>();
   private collectionsByName = new Map<string, CollectionNode>();
   private functionsByName = new Map<string, FunctionDefinitionNode[]>();
@@ -4108,6 +4114,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       );
       outputCount.location = node.location;
       added.push(inputCount, outputCount);
+    }
+    if (this.publishJournalAccessStreams && runtimeCountCollections.size > 0
+      && !node.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS)) {
+      const accesses = new ParameterNode(new ArrayType(new BytesType()), KERNEL_JOURNAL_ACCESS_STREAMS);
+      accesses.location = node.location;
+      added.push(accesses);
     }
     if (keySnapshotPrelude.length > 0 || prelude.length > 0) {
       node.body.statements = [...keySnapshotPrelude, ...prelude, ...(node.body.statements ?? [])];

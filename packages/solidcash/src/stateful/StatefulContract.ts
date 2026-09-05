@@ -195,6 +195,7 @@ const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
 const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
 const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
 const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
+const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
 const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
 const vmapRuntimeOutputCountName = (collection: string): string =>
@@ -360,6 +361,7 @@ function functionArgumentListsEqual(left: readonly unknown[], right: readonly un
 
 function defaultInternalFunctionArg(input: { name: string; type?: string }): FunctionArgument {
   const { name, type = '' } = input;
+  if (name === KERNEL_JOURNAL_ACCESS_STREAMS) return [];
   if (name.includes('Selector') || type === 'bytes4') return new Uint8Array(4);
   if (name.includes('Category') || name.includes('BatchSlot')
     || name.includes('BatchNext') || type === 'bytes32') return new Uint8Array(32);
@@ -4420,6 +4422,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       internalArgs: { ...(row.internalArgs ?? {}) },
     }));
     const resolvedCallerInternalWitnesses: Record<string, FunctionArgument> = { ...internalRouteWitnesses };
+    for (const input of capability.route.inputs) {
+      if (input.name !== KERNEL_JOURNAL_ACCESS_STREAMS
+        || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
+      const rowStreams: Uint8Array[][] = Array.from(
+        { length: effectiveRowArguments?.length ?? 0 }, () => [],
+      );
+      for (const [rowIndex, row] of (effectiveRowArguments ?? []).entries()) {
+        if (!row.handler.inputs.some((candidate) => candidate.name === input.name)) continue;
+        (row.internalArgs as Record<string, FunctionArgument>)[input.name] = [];
+        rowStreams[rowIndex] = [];
+      }
+      resolvedCallerInternalWitnesses[input.name] = rowStreams;
+    }
     for (const input of capability.route.inputs) {
       const permutationSpec = vmapCounterPermutationSpec(input.name);
       if (!permutationSpec || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;

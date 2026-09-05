@@ -6582,7 +6582,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Loop-write entries emit a runtime-counter-indexed trailing output per iteration (emitLoopEntryWrite) and
       // have NO fixed block slot, so they must not be pre-allocated into the fixed-slot epilogue write path (the
       // epilogue would then look up a non-existent entry[i] slot). Matches the other two pre-alloc sites; without
-      // it a loop mapping write reachable through a branch (EACC publishJobPost's whitelistWorkers loop) trips
+      // it a loop mapping write reachable through a branch (for example a nested allow-list update) trips
       // "Block slot not found: entry[N]". Callee trailing upserts are the same class when the kernel row loop
       // only *invokes* the writer.
       if (!this.ownsFixedEntrySlot(slotIndex)) continue;
@@ -21633,9 +21633,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Recover invariant outer mapping keys that route/inline lowering dropped from the loop slot recipe.
-   * `publishJobPost` inlines `updateJobWhitelist(jobId, ...)` where `jobId = jobs.length - 1`; the slot
-   * often keeps only the varying `allowedWorkers_[i]` key. Walk the write's AST keys and see through a
-   * single-assign local so the ABI still carries `binop:-(unop:.length(state:jobs),lit:1)`.
+   * An inlined helper can receive an outer key derived as `records.length - 1`, while the slot retains only
+   * the inner `keys[i]` key. Walk the write's AST keys and see through a single-assign local so the ABI still
+   * carries the invariant outer-key expression.
    */
   /** `uint id = this.arr.length - 1` in `node`, as the SDK evalComputedKey label. */
   private findLengthMinusOneKeyCanonical(node: Node | undefined): string | undefined {
@@ -22047,8 +22047,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!varyingArrayParam || (!isDelete && !hasValue && !valueRuntimeExpression)) return false;
     this.sortedUpsertLoopOp = op;
     const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);
-    // Two loops can write the same mapping from different arrays
-    // (`allowedWorkers_` = true, then `disallowedWorkers_` = false). Key by
+    // Two loops can write the same mapping from different key arrays and values. Key by
     // collection + varying array + predicate so the SDK co-spends both runs.
     const valueTraceWitness = writeNode instanceof MappingAssignNode
       ? writeNode.messageBusRuntimeValueTrace?.witnessParam : undefined;

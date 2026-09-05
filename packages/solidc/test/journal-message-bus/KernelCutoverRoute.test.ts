@@ -112,12 +112,12 @@ contract Ledger() {
 pragma solidcash ^0.13.0;
 contract Ledger() {
   mapping(int => mapping(bytes20 => int)) seen;
-  int[] jobs;
-  function create(bytes20[] workers, int[] weights) public {
-    this.jobs.push(0);
-    int id = this.jobs.length - 1;
-    for (int i = 0; i < int(workers.length); i = i + 1) {
-      this.seen[id][workers[i]] = weights[i];
+  int[] records;
+  function create(bytes20[] keys, int[] values) public {
+    this.records.push(0);
+    int id = this.records.length - 1;
+    for (int i = 0; i < int(keys.length); i = i + 1) {
+      this.seen[id][keys[i]] = values[i];
     }
     require(true);
   }
@@ -130,7 +130,7 @@ contract Ledger() {
         collection: 'seen',
         varyingArrayParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
         varyingKeyExpressions: expect.any(Array),
-        valueArrayParam: 'weights',
+        valueArrayParam: 'values',
         valueArrayIndexParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
       }),
     );
@@ -160,17 +160,17 @@ contract Mixed() {
 pragma solidcash ^0.13.0;
 contract Ledger() {
   mapping(int => mapping(bytes20 => int)) seen;
-  bytes20 worker;
-  function refund(int id) public {
+  bytes20 member;
+  function revoke(int id) public {
     bytes20[] xs = new bytes20[](1);
-    xs[0] = this.worker;
+    xs[0] = this.member;
     for (int i = 0; i < xs.length; i = i + 1) {
       this.seen[id][xs[i]] = 0;
     }
     require(true);
   }
 }
-`, 'refund');
+`, 'revoke');
   });
 
   it('dispatches a satoshi transfer from the runtime row loop', () => {
@@ -578,26 +578,26 @@ contract Slots() {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
   });
 
-  it('journals takeJob-shaped msg.sender and getter argument keys without _rN', () => {
+  it('journals nested msg.sender and getter argument keys without _rN', () => {
     const artifact = assertKernelRoute(`
 pragma solidcash ^0.13.0;
-contract Jobs() {
-  mapping(int => mapping(address => int)) whitelistWorkers;
-  function take(int id) public {
-    require(this.whitelistWorkers[id][msg.sender] == 1);
-    this.whitelistWorkers[id][msg.sender] = 0;
+contract Registry() {
+  mapping(int => mapping(address => int)) permissions;
+  function consume(int id) public {
+    require(this.permissions[id][msg.sender] == 1);
+    this.permissions[id][msg.sender] = 0;
     require(true);
   }
   function peek(int id, address who) public {
-    require(this.whitelistWorkers[id][who] == 1 || this.whitelistWorkers[id][who] == 0);
+    require(this.permissions[id][who] == 1 || this.permissions[id][who] == 0);
   }
 }
-`, 'take');
+`, 'consume');
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'peek')).toMatchObject({
       eligible: true,
     });
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
-    expect(artifact.abi.some((fn) => fn.name === '__message_bus_resource_take')).toBe(false);
+    expect(artifact.abi.some((fn) => fn.name === '__message_bus_resource_consume')).toBe(false);
   });
 
   it('keeps a scalar pause handler beside a collection sibling on the row loop', () => {
@@ -649,17 +649,17 @@ contract Token() {
   it('journals a public mapping getter as a parameter-keyed read on the row loop', () => {
     const artifact = compileString(`
 pragma solidity ^0.8.0;
-contract Jobs {
-  mapping(uint => mapping(address => bool)) public whitelistWorkers;
-  function take(uint id) public {
-    require(whitelistWorkers[id][msg.sender]);
-    whitelistWorkers[id][msg.sender] = false;
+contract Registry {
+  mapping(uint => mapping(address => bool)) public permissions;
+  function consume(uint id) public {
+    require(permissions[id][msg.sender]);
+    permissions[id][msg.sender] = false;
     require(true);
   }
 }
 `, { ...OPTIONS, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'take')?.eligible).toBe(true);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'whitelistWorkers')?.eligible)
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'consume')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'permissions')?.eligible)
       .toBe(true);
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
     const asm = routeAsm(artifact);
@@ -669,14 +669,14 @@ contract Jobs {
   it('journals a returning nested mapping read on the row loop', () => {
     const artifact = assertKernelRoute(`
 pragma solidcash ^0.13.0;
-contract Jobs() {
-  mapping(int => mapping(address => int)) whitelistWorkers;
-  function allowed(int id, address who) public returns (int) {
-    return this.whitelistWorkers[id][who];
+contract Registry() {
+  mapping(int => mapping(address => int)) permissions;
+  function lookup(int id, address who) public returns (int) {
+    return this.permissions[id][who];
   }
 }
-`, 'allowed');
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'allowed')?.outputs
+`, 'lookup');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'lookup')?.outputs
       ?.some((output) => output.type.includes('int'))).toBe(true);
   });
 
@@ -718,34 +718,34 @@ contract Acc() {
   it('journals a mapping read with a typed interface call on the row loop', () => {
     const artifact = assertKernelRoute(`
 pragma solidcash ^0.13.0;
-interface IData { function userRegistered(address who) returns (bool); }
-contract Jobs() {
-  mapping(int => mapping(address => bool)) whitelistWorkers;
-  IData data;
-  function post(int id, address who) public {
-    require(this.whitelistWorkers[id][msg.sender] || this.data.userRegistered(who));
+interface IRegistry { function contains(address who) returns (bool); }
+contract Gateway() {
+  mapping(int => mapping(address => bool)) permissions;
+  IRegistry registry;
+  function check(int id, address who) public {
+    require(this.permissions[id][msg.sender] || this.registry.contains(who));
     require(true);
   }
 }
-`, 'post');
+`, 'check');
     expect(artifact.abi.some((fn) => fn.name.startsWith('__message_bus_graph_'))).toBe(false);
     expect(artifact.invocationAnalysis?.functions.some((fn) =>
-      fn.name === '__message_bus_entry_post' || fn.name === '__message_bus_handler_post')).toBe(true);
+      fn.name === '__message_bus_entry_check' || fn.name === '__message_bus_handler_check')).toBe(true);
   });
 
   it('journals a mapping write with an IERC20-shaped call on the row loop', () => {
     const artifact = assertKernelRoute(`
 pragma solidcash ^0.13.0;
 interface IERC20 { function transfer(address to, int amount) returns (bool); }
-contract Jobs() {
-  mapping(int => mapping(address => bool)) whitelistWorkers;
-  function take(int id, IERC20 token, address to, int amount) public {
-    require(this.whitelistWorkers[id][msg.sender]);
-    this.whitelistWorkers[id][msg.sender] = false;
+contract Gateway() {
+  mapping(int => mapping(address => bool)) permissions;
+  function consume(int id, IERC20 token, address to, int amount) public {
+    require(this.permissions[id][msg.sender]);
+    this.permissions[id][msg.sender] = false;
     require(token.transfer(to, amount));
   }
 }
-`, 'take');
+`, 'consume');
     expect(artifact.abi.some((fn) => fn.name.startsWith('__message_bus_graph_'))).toBe(false);
   });
 
@@ -804,64 +804,64 @@ contract Pay {
     expect(asm).toMatch(/OP_UNTIL|OP_BEGIN/);
   });
 
-  it('journals a helper-refund whitelist loop after unrolling the literal key array', () => {
+  it('journals a helper-owned permission loop after unrolling the literal key array', () => {
     assertKernelRoute(`
 pragma solidcash ^0.13.0;
 contract Ledger() {
   mapping(int => mapping(bytes20 => int)) seen;
-  bytes20 worker;
-  function _update(int id, bytes20[] allowed, bytes20[] denied) internal {
-    for (int i = 0; i < int(allowed.length); i = i + 1) {
-      this.seen[id][allowed[i]] = 1;
+  bytes20 member;
+  function _update(int id, bytes20[] enabled, bytes20[] disabled) internal {
+    for (int i = 0; i < int(enabled.length); i = i + 1) {
+      this.seen[id][enabled[i]] = 1;
     }
-    for (int j = 0; j < int(denied.length); j = j + 1) {
-      this.seen[id][denied[j]] = 0;
+    for (int j = 0; j < int(disabled.length); j = j + 1) {
+      this.seen[id][disabled[j]] = 0;
     }
   }
-  function refund(int id) public {
+  function revoke(int id) public {
     bytes20[] xs = new bytes20[](1);
-    xs[0] = this.worker;
+    xs[0] = this.member;
     _update(id, new bytes20[](0), xs);
     require(true);
   }
 }
-`, 'refund');
+`, 'revoke');
   });
 
-  it('journals a helper-refund expression key nested in a branch with a typed call', () => {
+  it('journals a helper-owned expression key nested in a branch with a typed call', () => {
     const artifact = compileString(`
 pragma solidity ^0.8.0;
-interface IUnicrow { function refund(uint id) external; }
-interface IData { function userRefunded(address who) external; }
-struct JobPost { uint8 state; address worker; uint escrowId; bool disputed; }
-contract Jobs {
-  JobPost[] public jobs;
-  mapping(uint => mapping(address => bool)) public whitelistWorkers;
-  address unicrowAddress;
-  IData data;
-  function _update(uint id, address[] memory allowed, address[] memory denied) internal {
-    for (uint i = 0; i < allowed.length; i++) { whitelistWorkers[id][allowed[i]] = true; }
-    for (uint j = 0; j < denied.length; j++) { whitelistWorkers[id][denied[j]] = false; }
+interface ISettlement { function release(uint id) external; }
+interface IObserver { function record(address who) external; }
+struct Record { uint8 state; address owner; uint resourceId; bool flagged; }
+contract Registry {
+  Record[] public records;
+  mapping(uint => mapping(address => bool)) public permissions;
+  address settlementAddress;
+  IObserver observer;
+  function _update(uint id, address[] memory enabled, address[] memory disabled) internal {
+    for (uint i = 0; i < enabled.length; i++) { permissions[id][enabled[i]] = true; }
+    for (uint j = 0; j < disabled.length; j++) { permissions[id][disabled[j]] = false; }
   }
-  function _refund(uint jobId, bool byWorker) internal {
-    JobPost storage job = jobs[jobId];
-    require(job.state == 1);
-    job.disputed = false;
-    IUnicrow(unicrowAddress).refund(job.escrowId);
-    job.state = 0;
-    job.escrowId = 0;
-    if (byWorker) {
-      data.userRefunded(job.worker);
+  function _release(uint recordId, bool notifyOwner) internal {
+    Record storage item = records[recordId];
+    require(item.state == 1);
+    item.flagged = false;
+    ISettlement(settlementAddress).release(item.resourceId);
+    item.state = 0;
+    item.resourceId = 0;
+    if (notifyOwner) {
+      observer.record(item.owner);
       address[] memory xs = new address[](1);
-      xs[0] = job.worker;
-      _update(jobId, new address[](0), xs);
+      xs[0] = item.owner;
+      _update(recordId, new address[](0), xs);
     }
-    job.worker = address(0);
+    item.owner = address(0);
   }
-  function refund(uint jobId) public { _refund(jobId, true); }
+  function release(uint recordId) public { _release(recordId, true); }
 }
 `, { ...OPTIONS, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refund')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'release')?.eligible).toBe(true);
     expect(artifact.abi.some((fn) => clonePrefix.test(fn.name))).toBe(false);
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
     const asm = routeAsm(artifact);
@@ -1070,13 +1070,13 @@ contract C() {
   it('journals a returning dynamic-array resize without a typed call', () => {
     const artifact = compileString(`
 pragma solidity ^0.8.0;
-struct Job { uint8 state; }
+struct Record { uint8 state; }
 contract C {
-  Job[] public jobs;
+  Record[] public records;
   function denied() public returns (uint) {
-    jobs.push();
-    uint id = jobs.length - 1;
-    jobs[id].state = 1;
+    records.push();
+    uint id = records.length - 1;
+    records[id].state = 1;
     return id;
   }
   function control() public { require(true); }

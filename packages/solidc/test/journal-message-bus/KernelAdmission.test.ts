@@ -672,12 +672,12 @@ describe('required kernel admission', () => {
   it('admits an expression-keyed parameter-array mapping loop', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(bytes20 => int)) seen;
-      int[] jobs;
-      function create(bytes20[] workers) public {
-        this.jobs.push(0);
-        int id = this.jobs.length - 1;
-        for (int i = 0; i < int(workers.length); i = i + 1) {
-          this.seen[id][workers[i]] = 1;
+      int[] records;
+      function create(bytes20[] keys) public {
+        this.records.push(0);
+        int id = this.records.length - 1;
+        for (int i = 0; i < int(keys.length); i = i + 1) {
+          this.seen[id][keys[i]] = 1;
         }
         require(true);
       }
@@ -2939,8 +2939,8 @@ describe('required kernel admission', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Rec { uint x; }
       contract C {
-        Rec[] jobs;
-        function denied() public view returns (Rec[] memory) { return jobs; }
+        Rec[] records;
+        function denied() public view returns (Rec[] memory) { return records; }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);

@@ -317,29 +317,29 @@ describe('message-bus compilation selection', () => {
       interface ISink { function ping(uint value) external; }
       contract RoutedRuntimeCollection {
         ISink sink;
-        uint[] jobs;
-        mapping(uint => mapping(address => bool)) public whitelist;
+        uint[] records;
+        mapping(uint => mapping(address => bool)) public membership;
 
         function edge() internal { sink.ping(1); }
-        function update(uint id, address[] allowed, address[] denied) internal {
-          for (uint i = 0; i < allowed.length; i++) {
-            whitelist[id][allowed[i]] = true;
+        function update(uint id, address[] included, address[] excluded) internal {
+          for (uint i = 0; i < included.length; i++) {
+            membership[id][included[i]] = true;
             edge();
           }
-          for (uint i = 0; i < denied.length; i++) {
-            whitelist[id][denied[i]] = false;
+          for (uint i = 0; i < excluded.length; i++) {
+            membership[id][excluded[i]] = false;
             edge();
           }
         }
-        function setOne(uint id, address worker) public {
-          whitelist[id][worker] = true;
+        function setOne(uint id, address member) public {
+          membership[id][member] = true;
           require(true);
         }
-        function create(address[] workers) public returns (uint) {
+        function create(address[] members) public returns (uint) {
           edge();
-          jobs.push(0);
-          uint id = jobs.length - 1;
-          update(id, workers, new address[](0));
+          records.push(0);
+          uint id = records.length - 1;
+          update(id, members, new address[](0));
           return id;
         }
       }
@@ -363,9 +363,9 @@ describe('message-bus compilation selection', () => {
     });
     expect(abi?.sortedUpsertLoopInfo).toEqual([
       expect.objectContaining({
-        collection: 'whitelist',
+        collection: 'membership',
         fixedKeyParams: [],
-        varyingArrayParam: 'workers',
+        varyingArrayParam: 'members',
         valueConst: '1',
         op: 'set',
       }),

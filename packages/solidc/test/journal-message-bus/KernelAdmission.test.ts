@@ -2789,17 +2789,18 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['postfix source while', 'i++'],
-    ['prefix source while', '++i'],
-  ])('normalizes a %s update before continue', (_label, update) => {
+    ['postfix source while', 'i++', 'i = 1 + i'],
+    ['prefix source while', '++i', 'i = i + 1'],
+    ['commuted runtime source while', 'i = i + stride', 'i = stride + i'],
+  ])('normalizes a %s update before continue', (_label, continueUpdate, tailUpdate) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
-      function write(int n) public {
+      function write(int n, int stride) public {
         int i = 0;
         while (i < n) {
-          if (i % 2 == 0) { ${update}; continue; }
+          if (i % 2 == 0) { ${continueUpdate}; continue; }
           this.m[i] = i;
-          ${update};
+          ${tailUpdate};
         }
         require(true);
       }

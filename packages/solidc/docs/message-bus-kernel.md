@@ -355,7 +355,8 @@ Noncanonical `while` / `do-while` domains remain refused. A source `while` or `d
 when the `continue` is immediately preceded by the same canonical counter step as the loop tail. The lowering
 removes that duplicate source step, executes the retained tail step on the continuation path, and advances any
 already-consumed selected settlement cursors before jumping. A `continue` which omits or changes the canonical
-step can repeat a logical value and remains refused. A desugared `for` already runs its update on `continue` and
+step can repeat a logical value and remains refused. Equivalent additive spellings such as `i = d + i`,
+`i = i + d`, and unit `++i` / `i++` are treated as the same step. A desugared `for` already runs its update on `continue` and
 is supported.
 A handler may contain multiple unconditional top-level counter loops in source order,
 including loops over the same physical collection. The compiler threads exact accumulated input and output widths

@@ -824,6 +824,25 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       return nodeShape(root);
     };
+    // Compare source-while continuation updates by their logical delta, not their surface spelling. Addition is
+    // commutative (`i = stride + i` and `i = i + stride`), and discarded ++ has already normalized to `i + 1`.
+    // Subtraction remains directional: only `i = i - stride` is a canonical counter step.
+    const counterUpdateStepShape = (expression: ExpressionNode, counter: string): string | undefined => {
+      if (!(expression instanceof BinaryOpNode)) return undefined;
+      if (expression.operator === BinaryOperator.PLUS) {
+        if (expression.left instanceof IdentifierNode && expression.left.name === counter) {
+          return `plus:${expressionShape(expression.right)}`;
+        }
+        if (expression.right instanceof IdentifierNode && expression.right.name === counter) {
+          return `plus:${expressionShape(expression.left)}`;
+        }
+      }
+      if (expression.operator === BinaryOperator.MINUS
+        && expression.left instanceof IdentifierNode && expression.left.name === counter) {
+        return `minus:${expressionShape(expression.right)}`;
+      }
+      return undefined;
+    };
     const writeKeyShape = (
       write: ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode | MappingFieldAssignNode,
     ): string => keyExpressions(write).map(expressionShape).join('|');
@@ -2236,9 +2255,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const update = normalizeDiscardedCounterUpdate(
                 candidate.statements?.[index - 1], logical,
               );
-              if (!update
-                || update.identifier.name !== logical || !counterUpdate
-                || expressionShape(update.expression) !== expressionShape(counterUpdate.expression)) {
+              if (!update || update.identifier.name !== logical || !counterUpdate
+                || counterUpdateStepShape(update.expression, logical) === undefined
+                || counterUpdateStepShape(update.expression, logical)
+                  !== counterUpdateStepShape(counterUpdate.expression, logical)) {
                 sourceContinueValid = false;
                 return;
               }

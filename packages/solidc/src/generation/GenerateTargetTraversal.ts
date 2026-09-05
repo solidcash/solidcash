@@ -78,6 +78,7 @@ import { MAX_INPUT_BYTESIZE } from '../constants.js';
 import { hasEffectiveCallValue } from '../semantic/branchOps.js';
 import {
   KERNEL_JOURNAL_ACCESS_STREAMS,
+  KERNEL_JOURNAL_RECORDS,
   VMAP_COUNTER_PERM_PREFIX,
   VMAP_RUNTIME_INPUT_COUNT_PREFIX,
   VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
@@ -711,6 +712,7 @@ interface SortedUpsertLoopContext {
   collection: string;
   varyingArrayParam: string;
   journalAccessStreamIndex?: number;
+  journalCursorName: string;
   inputCountParam?: string;
   outputCountParam?: string;
   grouped: boolean;
@@ -897,6 +899,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly TOKEN_LBC_SUBROUTINE_ID = -9n;
   private static readonly SORTED_VALUE_OUTPUT_SUBROUTINE_ID = -10n;
   private static readonly SORTED_ABSENCE_SUBROUTINE_ID = -11n;
+  private static readonly KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID = -12n;
+  private static readonly KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID = -13n;
   /**
    * Captured subroutines that keep being extracted even when outlining could reach them - which is all of
    * them. DO NOT DEFER THESE TO OUTLINING; the experiment has been run, per subroutine, and it does not hold.
@@ -915,7 +919,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * A structural helper is a different case and IS deferred: see `capturedSubroutineIsProfitable`.
    */
-  private static readonly EXTRACT_EVEN_IF_OUTLINABLE: readonly bigint[] = [-1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n];
+  private static readonly EXTRACT_EVEN_IF_OUTLINABLE: readonly bigint[] = [
+    -1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n, -12n, -13n,
+  ];
 
   private static readonly ALL_SUBROUTINE_IDS = [
     GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID,
@@ -929,6 +935,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     GenerateTargetTraversalWithLocation.TOKEN_LBC_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.SORTED_VALUE_OUTPUT_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.SORTED_ABSENCE_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID,
   ];
 
   private allocateCompactHelperId(): bigint {
@@ -1369,6 +1377,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopStreamKey = '';
   private sortedUpsertLoopVaryingArrayParam = '';
   private sortedUpsertLoopJournalAccessStreamIndex: number | undefined;
+  private sortedUpsertLoopJournalCursorName: string = '(kernel_journal_cursor)';
   private sortedUpsertLoopInputCountParam: string | undefined;
   private sortedUpsertLoopOutputCountParam: string | undefined;
   private sortedUpsertGrouped = false;
@@ -2247,7 +2256,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(node.fallbackDef ? [node.fallbackDef] : []),
       ...(node.receiveDef ? [node.receiveDef] : []),
     ];
-    this.compactHelperIds = { next: -12n, used: new Set(), cheap: [], allocated: new Set() };
+    this.compactHelperIds = { next: -14n, used: new Set(), cheap: [], allocated: new Set() };
     for (const id of GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS) {
       this.compactHelperIds.used.add(id);
     }
@@ -2598,6 +2607,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       spans.push({
         id,
         span: this.defineCapturedSubroutine(id, emitBody, loc),
+      });
+    }
+    // Journal selection helpers are kept distinct from the general array access machinery: their fixed wire
+    // frames are authenticated here, while generic source arrays retain their ordinary decoding semantics.
+    const KERNEL_TARGET = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID;
+    const emitKernelTarget = (t: GenerateTargetTraversalWithLocation): void => {
+      t.emitKernelJournalTargetSlotHelperInline(loc);
+    };
+    if (this.capturedSubroutineIsProfitable(KERNEL_TARGET, count(KERNEL_TARGET), emitKernelTarget)) {
+      spans.push({
+        id: KERNEL_TARGET,
+        span: this.defineCapturedSubroutine(KERNEL_TARGET, emitKernelTarget, loc),
+      });
+    }
+    const KERNEL_CURSOR = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID;
+    const emitKernelCursor = (t: GenerateTargetTraversalWithLocation): void => {
+      t.emitKernelJournalCursorHelperInline(loc);
+    };
+    if (this.capturedSubroutineIsProfitable(KERNEL_CURSOR, count(KERNEL_CURSOR), emitKernelCursor)) {
+      spans.push({
+        id: KERNEL_CURSOR,
+        span: this.defineCapturedSubroutine(KERNEL_CURSOR, emitKernelCursor, loc),
       });
     }
     // Complete field extraction composes the structural prefix helper with the target-field decoder. Define it
@@ -21716,6 +21747,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       collection: this.sortedUpsertLoopCollection!,
       varyingArrayParam: this.sortedUpsertLoopVaryingArrayParam,
       journalAccessStreamIndex: this.sortedUpsertLoopJournalAccessStreamIndex,
+      journalCursorName: this.sortedUpsertLoopJournalCursorName,
       inputCountParam: this.sortedUpsertLoopInputCountParam,
       outputCountParam: this.sortedUpsertLoopOutputCountParam,
       grouped: this.sortedUpsertGrouped,
@@ -21743,6 +21775,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertLoopCollection = context.collection;
     this.sortedUpsertLoopVaryingArrayParam = context.varyingArrayParam;
     this.sortedUpsertLoopJournalAccessStreamIndex = context.journalAccessStreamIndex;
+    this.sortedUpsertLoopJournalCursorName = context.journalCursorName;
     this.sortedUpsertLoopInputCountParam = context.inputCountParam;
     this.sortedUpsertLoopOutputCountParam = context.outputCountParam;
     this.sortedUpsertGrouped = context.grouped;
@@ -21769,6 +21802,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     Object.assign(context, this.captureSortedUpsertLoopContext());
   }
 
+  /** Select one stream: [encoded streams, stream ordinal, expected vector count] -> [tuple payload]. */
+  private emitKernelJournalCursorHelperInline(loc: SingleLocationData): void {
+    this.emit(Op.OP_TOALTSTACK, loc); // expected vector count
+    this.emit(Op.OP_SWAP, loc); // stream ordinal, encoded streams
+    this.emitGenericPushdataDecode(PrimitiveType.BIGINT, loc); // ordinal, count, encoded elements
+    this.emit(Op.OP_SWAP, loc); // ordinal, encoded elements, count
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_SWAP, loc); // encoded elements, ordinal
+    // Exact vector cardinality was just authenticated, and the ordinal is compiler-owned.
+    this.emitVariableArrayElementExtractInline(new BytesType(), loc);
+    this.emit(encodeInt(22n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+  }
+
+  private emitKernelJournalCursorHelper(loc: SingleLocationData): void {
+    const id = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID;
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), loc);
+      this.emit(Op.OP_INVOKE, loc);
+      return;
+    }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
+    this.emitKernelJournalCursorHelperInline(loc);
+  }
+
   private emitSortedUpsertLoopSetup(
     block: Node, loc: SingleLocationData, excludedStreams: ReadonlySet<string> = new Set(),
   ): boolean {
@@ -21792,6 +21851,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertPendNextName = `(pu_next_${suffix})`;
     this.sortedUpsertReadProofSlotName = `(read_proof_slot_${suffix})`;
     this.sortedUpsertReadProofNextName = `(read_proof_next_${suffix})`;
+    this.sortedUpsertLoopJournalCursorName = `(kernel_journal_cursor_${suffix})`;
     // Conditional lowering may clone the write after slots were assigned. Recover the collection's unique
     // runtime-loop slot; key/value recipe validation below still rejects ambiguous unsupported shapes.
     const slotIndex = writeNode.entrySlotIndex >= 0 ? writeNode.entrySlotIndex
@@ -22141,6 +22201,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(0n), loc);
     this.pushToStack(this.sortedUpsertLoopOutCounterName);
 
+    // Materialize this operation stream's tuple payload as an independent cursor. Entry-input and output counters
+    // are physical resource counters: deferred updates intentionally make them diverge from source operation order.
+    // A cursor is therefore the only sound identity for consuming one journal access per executed mapping operation.
+    if ((this.isCompilerMessageBusRoute() || this.currentFunction.name.startsWith('__message_bus_'))
+      && this.sortedUpsertLoopJournalAccessStreamIndex !== undefined
+      && this.getStackIndex(KERNEL_JOURNAL_ACCESS_STREAMS, true) >= 0) {
+      const vectorValue = new IdentifierNode(KERNEL_JOURNAL_ACCESS_STREAMS);
+      vectorValue.type = new ArrayType(new BytesType());
+      vectorValue.location = this.currentFunction.location;
+      this.visit(vectorValue);
+      this.emit(encodeInt(BigInt(this.sortedUpsertLoopJournalAccessStreamIndex)), loc);
+      this.emit(encodeInt(BigInt(this.currentFunction.sortedUpsertLoopInfo?.length ?? 0)), loc);
+      this.emitKernelJournalCursorHelper(loc);
+      this.stack[0] = this.sortedUpsertLoopJournalCursorName;
+    }
+
     // MSG.SENDER MERGE: when EXACTLY ONE fixed (non-loop) entry of this collection coexists (the cached msg.sender
     // debit), push a re-point register (0). A new recipient landing in the debit entry's gap is then inserted by
     // re-pointing the debit's single co-spend - the credit loop records the new slot, the debit flush applies it.
@@ -22428,6 +22504,74 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Link preserved so sortedness holds; supply conserved via the shared v[] param. The SDK detects same-predecessor
    * conflicts (two new keys in one gap / a co-spend used twice) and fails closed.
    */
+  /** Consume and verify [access tuple cursor, encoded records, expected slot], returning [cursor tail]. */
+  private emitKernelJournalTargetSlotHelperInline(loc: SingleLocationData): void {
+    this.emit(Op.OP_TOALTSTACK, loc); // expected slot
+    this.emit(Op.OP_TOALTSTACK, loc); // encoded records
+    this.emit(encodeInt(5n), loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc); // cursor tail, tuple
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); // cursor tail, flags, ordinals
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(8n), loc); this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // cursor tail, flags, target, predecessor
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
+    this.emit(new Uint8Array([0xff, 0xff]), loc); this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_VERIFY, loc);
+
+    this.emit(Op.OP_FROMALTSTACK, loc); // cursor tail, flags, target, predecessor, encoded records
+    this.emitGenericPushdataDecode(PrimitiveType.BIGINT, loc); // ..., predecessor, count, encoded records
+    // Select target: [..., target, predecessor, count, elements] -> [..., elements, target, count].
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_ROT, loc);
+    // The variable-element scan fails closed if the untrusted record ordinal is out of range.
+    this.emit(Op.OP_DROP, loc);
+    this.emitVariableArrayElementExtractInline(new BytesType(), loc);
+    this.emit(encodeInt(22n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
+  }
+
+  private emitKernelJournalTargetSlotHelper(loc: SingleLocationData): void {
+    const id = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID;
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), loc);
+      this.emit(Op.OP_INVOKE, loc);
+      return;
+    }
+    if (this.isSubroutineUseProbe && this.compilerOptions.optimizeForCompilationSpeed === true) return;
+    this.emitKernelJournalTargetSlotHelperInline(loc);
+  }
+
+  private emitKernelJournalTargetSlotCheck(node: Node, loc: SingleLocationData): void {
+    if (this.sortedUpsertLoopJournalAccessStreamIndex === undefined
+      || this.getStackIndex(KERNEL_JOURNAL_RECORDS, true) < 0
+      || this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) < 0) return;
+
+    // Give the shared verifier explicit values; it returns the remaining cursor while preserving the tracked slot.
+    this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(kernel_journal_tuple_tail)');
+    this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emitKernelJournalTargetSlotHelper(loc);
+    this.emitReplace(this.getStackIndex(this.sortedUpsertLoopJournalCursorName), node);
+    this.popFromStack();
+  }
+
   private emitSortedUpsertLoopBody(node: MappingAssignNode | MappingDeleteNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const collection = node.collection!;
@@ -22471,6 +22615,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // or the whole assign expression ('set'); 'delete' has no value - nullify to the type default (0/empty).
     this.emitSortedKeyHash(node, slotIndex, loc);
     this.pushToStack('(credit_hk)');
+    this.emitKernelJournalTargetSlotCheck(node, loc);
     if (oldWitness) {
       this.visit(oldWitness);
       // Expression visitors already track their result as `(value)`. Rename that real slot; pushing another
@@ -22918,10 +23063,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     loc: SingleLocationData, accumulate = true, includeGroupedBase = false,
   ): void {
     if (!this.sortedUpsertLoopActive) return;
+    if (this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) >= 0) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopJournalCursorName))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    }
     // CASE (b) FLUSH: the loop's last iteration DEFERS its update's mint into the pending registers; mint it now
     // (before the count pins, which read outCounter). No key follows, so it is always a normal (non-re-pointed) flush.
     if (this.sortedUpsertPendActive) this.emitSortedFlushPendingNormal(loc);
-    this.emitKernelJournalAccessStreamShape(loc);
     const collection = this.sortedUpsertLoopCollection;
     if (collection === null) throw new Error('Missing runtime-loop collection while settling cardinality');
     for (const [counterName, exactName] of [
@@ -22976,6 +23126,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const dropNames = [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName,
       ...(localScanAddress ? ['(ul_scan_addr)'] : []), this.sortedUpsertLoopAddrName];
+    if (this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) >= 0) {
+      dropNames.unshift(this.sortedUpsertLoopJournalCursorName);
+    }
     if (this.sortedUpsertGrouped) dropNames.push(this.sortedUpsertOutputBaseName, this.sortedUpsertInputBaseName);
     if (this.sortedUpsertPendActive) {
       dropNames.unshift(this.sortedUpsertPendSlotName, this.sortedUpsertPendValName, this.sortedUpsertPendNextName);
@@ -22995,6 +23148,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertLoopStreamKey = '';
     this.sortedUpsertLoopVaryingArrayParam = '';
     this.sortedUpsertLoopJournalAccessStreamIndex = undefined;
+    this.sortedUpsertLoopJournalCursorName = '(kernel_journal_cursor)';
     this.sortedUpsertLoopInputCountParam = undefined;
     this.sortedUpsertLoopOutputCountParam = undefined;
   }

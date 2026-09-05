@@ -6239,25 +6239,17 @@ function synthesizeMessageBusRoute(
           __message_bus_journal_record_index = __message_bus_journal_record_index + 1) {
           bytes __message_bus_journal_record =
             ${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_record_index];
-          require(__message_bus_journal_record.length >= 86);
-          require(__message_bus_journal_record.length <= 150);
+          require(within(__message_bus_journal_record.length, 86, 151));
           require(__message_bus_journal_record.slice(0, 1) == hex"05");
           bigint __message_bus_journal_record_flags = int(bytes.concat(
             __message_bus_journal_record.slice(1, 2), hex"00"
           ));
           require(__message_bus_journal_record_flags < 16);
-          bool __message_bus_journal_record_authenticated =
-            __message_bus_journal_record_flags % 2 == 1;
-          bool __message_bus_journal_record_dirty =
-            __message_bus_journal_record_flags % 4 >= 2;
-          bool __message_bus_journal_record_tombstone =
-            __message_bus_journal_record_flags % 8 >= 4;
-          bool __message_bus_journal_record_synthetic =
-            __message_bus_journal_record_flags >= 8;
-          require(!__message_bus_journal_record_authenticated
-            || !__message_bus_journal_record_synthetic);
-          require(!__message_bus_journal_record_tombstone
-            || __message_bus_journal_record_dirty || __message_bus_journal_record_synthetic);
+          require(__message_bus_journal_record_flags % 2 != 1
+            || __message_bus_journal_record_flags < 8);
+          require(__message_bus_journal_record_flags < 4
+            || __message_bus_journal_record_flags % 4 >= 2
+            || __message_bus_journal_record_flags >= 8);
         }
         for (int __message_bus_journal_row_index = 0;
           __message_bus_journal_row_index < ${KERNEL_JOURNAL_ACCESS_STREAMS}.length;
@@ -6269,7 +6261,6 @@ function synthesizeMessageBusRoute(
             __message_bus_journal_stream_index = __message_bus_journal_stream_index + 1) {
             bytes __message_bus_journal_stream =
               __message_bus_journal_row_streams[__message_bus_journal_stream_index];
-            require(__message_bus_journal_stream.length >= 22);
             require(__message_bus_journal_stream.slice(0, 1) == hex"06");
             bigint __message_bus_journal_access_count = int(bytes.concat(
               __message_bus_journal_stream.slice(1, 2), hex"00"
@@ -6291,17 +6282,10 @@ function synthesizeMessageBusRoute(
                   __message_bus_journal_access_offset + 3, __message_bus_journal_access_offset + 5
                 ), hex"00"
               ));
-              require(__message_bus_journal_target < ${KERNEL_JOURNAL_RECORDS}.length);
-              require(__message_bus_journal_predecessor == 65535
-                || __message_bus_journal_predecessor < ${KERNEL_JOURNAL_RECORDS}.length);
-              bytes __message_bus_journal_target_record =
-                ${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_target];
-              require(__message_bus_journal_target_record.slice(2, 22)
+              require(${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_target].slice(2, 22)
                 == __message_bus_journal_stream.slice(2, 22));
               if (__message_bus_journal_predecessor != 65535) {
-                bytes __message_bus_journal_predecessor_record =
-                  ${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_predecessor];
-                require(__message_bus_journal_predecessor_record.slice(2, 22)
+                require(${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_predecessor].slice(2, 22)
                   == __message_bus_journal_stream.slice(2, 22));
               }
             }

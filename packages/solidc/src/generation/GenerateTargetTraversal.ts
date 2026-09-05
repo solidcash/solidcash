@@ -22855,7 +22855,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_TOALTSTACK, loc); // preserve next payload
     // HAS_PREDECESSOR must agree exactly with the 0xffff sentinel.
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
     this.emit(new Uint8Array([0xff, 0xff]), loc); this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc);

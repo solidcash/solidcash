@@ -2905,6 +2905,10 @@ describe('kernel counter-key mapping loop compose', () => {
       || !(rowJournalVectors[0][0] instanceof Uint8Array)) {
       throw new Error('expected row-indexed compiler-derived journal access streams');
     }
+    const journalRecords = routeUnlocker.params[routeRecordIndex];
+    if (!Array.isArray(journalRecords) || !(journalRecords[0] instanceof Uint8Array)) {
+      throw new Error('expected compiler-derived journal records');
+    }
     expect(decodeKernelEntryJournalAccesses(rowJournalVectors[0][0])).toEqual([
       { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
       { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true },
@@ -2960,10 +2964,17 @@ describe('kernel counter-key mapping loop compose', () => {
     const aliasedPredecessor = new Uint8Array(originalAccessStream);
     aliasedPredecessor[5] = aliasedPredecessor[3];
     aliasedPredecessor[6] = aliasedPredecessor[4];
+    const outOfRangeTarget = new Uint8Array(originalAccessStream);
+    outOfRangeTarget[3] = journalRecords.length & 0xff;
+    outOfRangeTarget[4] = journalRecords.length >>> 8;
+    const outOfRangePredecessor = new Uint8Array(originalAccessStream);
+    outOfRangePredecessor[5] = journalRecords.length & 0xff;
+    outOfRangePredecessor[6] = journalRecords.length >>> 8;
     for (const [label, hostileStream] of [
       ['wrong tag', wrongTag], ['wrong count', wrongCount], ['truncated payload', truncated],
       ['unknown flags', unknownFlags], ['reserved target', reservedTarget],
       ['non-canonical predecessor', nonCanonicalPredecessor], ['aliased predecessor', aliasedPredecessor],
+      ['out-of-range target', outOfRangeTarget], ['out-of-range predecessor', outOfRangePredecessor],
     ] as const) {
       const hostileRouteParams = [...routeUnlocker.params];
       hostileRouteParams[routeJournalIndex] = [[hostileStream]];
@@ -2987,16 +2998,13 @@ describe('kernel counter-key mapping loop compose', () => {
         inputIndex: routeInputIndex, sourceOutputs, transaction,
       })), `hostile journal vector: ${label}`).not.toBe(true);
     }
-    const journalRecords = routeUnlocker.params[routeRecordIndex];
-    if (!Array.isArray(journalRecords) || !(journalRecords[0] instanceof Uint8Array)) {
-      throw new Error('expected compiler-derived journal records');
-    }
     const hostileRecord = (mutate: (record: Uint8Array) => Uint8Array): Uint8Array[] =>
       journalRecords.map((record, index) => index === 0
         ? mutate(new Uint8Array(record as Uint8Array)) : new Uint8Array(record as Uint8Array));
     const oversizedRecord = new Uint8Array(151);
     oversizedRecord.set(journalRecords[0].slice(0, Math.min(journalRecords[0].length, 151)));
     for (const [label, hostileRecords] of [
+      ['missing records', []],
       ['wrong tag', hostileRecord((record) => { record[0] = 0x04; return record; })],
       ['truncated header', hostileRecord((record) => record.slice(0, 85))],
       ['oversized value', hostileRecord(() => oversizedRecord)],

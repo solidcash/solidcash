@@ -6232,7 +6232,7 @@ function synthesizeMessageBusRoute(
     return Array.from({ length: bound }, (_unused, index) =>
       `require(${routeStateReference(name)}[${index}] == ${routeStateReference(name)}[${index}]);`);
   }).join('\n');
-  const kernelJournalRecordValidation = !kernelJournalAccessMode ? '' : `
+  const kernelJournalValidation = !kernelJournalAccessMode ? '' : `
         require(${KERNEL_JOURNAL_RECORDS}.length <= 65535);
         for (int __message_bus_journal_record_index = 0;
           __message_bus_journal_record_index < ${KERNEL_JOURNAL_RECORDS}.length;
@@ -6258,6 +6258,44 @@ function synthesizeMessageBusRoute(
             || !__message_bus_journal_record_synthetic);
           require(!__message_bus_journal_record_tombstone
             || __message_bus_journal_record_dirty || __message_bus_journal_record_synthetic);
+        }
+        for (int __message_bus_journal_row_index = 0;
+          __message_bus_journal_row_index < ${KERNEL_JOURNAL_ACCESS_STREAMS}.length;
+          __message_bus_journal_row_index = __message_bus_journal_row_index + 1) {
+          bytes[] __message_bus_journal_row_streams =
+            ${KERNEL_JOURNAL_ACCESS_STREAMS}[__message_bus_journal_row_index];
+          for (int __message_bus_journal_stream_index = 0;
+            __message_bus_journal_stream_index < __message_bus_journal_row_streams.length;
+            __message_bus_journal_stream_index = __message_bus_journal_stream_index + 1) {
+            bytes __message_bus_journal_stream =
+              __message_bus_journal_row_streams[__message_bus_journal_stream_index];
+            require(__message_bus_journal_stream.length >= 2);
+            require(__message_bus_journal_stream.slice(0, 1) == hex"06");
+            bigint __message_bus_journal_access_count = int(bytes.concat(
+              __message_bus_journal_stream.slice(1, 2), hex"00"
+            ));
+            require(__message_bus_journal_stream.length
+              == 2 + __message_bus_journal_access_count * 5);
+            for (int __message_bus_journal_access_index = 0;
+              __message_bus_journal_access_index < __message_bus_journal_access_count;
+              __message_bus_journal_access_index = __message_bus_journal_access_index + 1) {
+              bigint __message_bus_journal_access_offset =
+                2 + __message_bus_journal_access_index * 5;
+              bigint __message_bus_journal_target = int(bytes.concat(
+                __message_bus_journal_stream.slice(
+                  __message_bus_journal_access_offset + 1, __message_bus_journal_access_offset + 3
+                ), hex"00"
+              ));
+              bigint __message_bus_journal_predecessor = int(bytes.concat(
+                __message_bus_journal_stream.slice(
+                  __message_bus_journal_access_offset + 3, __message_bus_journal_access_offset + 5
+                ), hex"00"
+              ));
+              require(__message_bus_journal_target < ${KERNEL_JOURNAL_RECORDS}.length);
+              require(__message_bus_journal_predecessor == 65535
+                || __message_bus_journal_predecessor < ${KERNEL_JOURNAL_RECORDS}.length);
+            }
+          }
         }
   `;
   const routeStructs = [...ast.structDefinitions, ...contract.structDefinitions]
@@ -6388,7 +6426,7 @@ function synthesizeMessageBusRoute(
   const routeSource = `${preamble}    contract __MessageBusHost() {
       function __message_bus1(${routeParameters}) external${returnDeclaration} {
         ${fixedIterationEntryPins}
-        ${kernelJournalRecordValidation}
+        ${kernelJournalValidation}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${MAX_MESSAGE_BUS_BLOB_BYTES});
         bytes __message_bus_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;

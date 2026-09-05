@@ -2951,27 +2951,30 @@ describe('kernel counter-key mapping loop compose', () => {
     const originalAccessStream = rowJournalVectors[0][0];
     const wrongTag = new Uint8Array(originalAccessStream);
     wrongTag[0] = 0x07;
+    const wrongCollection = new Uint8Array(originalAccessStream);
+    wrongCollection[2] ^= 0x01;
     const wrongCount = new Uint8Array(originalAccessStream);
     wrongCount[1] = 2;
     const truncated = originalAccessStream.slice(0, -1);
     const unknownFlags = new Uint8Array(originalAccessStream);
-    unknownFlags[2] |= 0x80;
+    unknownFlags[22] |= 0x80;
     const reservedTarget = new Uint8Array(originalAccessStream);
-    reservedTarget[3] = 0xff;
-    reservedTarget[4] = 0xff;
+    reservedTarget[23] = 0xff;
+    reservedTarget[24] = 0xff;
     const nonCanonicalPredecessor = new Uint8Array(originalAccessStream);
-    nonCanonicalPredecessor[2] &= ~0x04;
+    nonCanonicalPredecessor[22] &= ~0x04;
     const aliasedPredecessor = new Uint8Array(originalAccessStream);
-    aliasedPredecessor[5] = aliasedPredecessor[3];
-    aliasedPredecessor[6] = aliasedPredecessor[4];
+    aliasedPredecessor[25] = aliasedPredecessor[23];
+    aliasedPredecessor[26] = aliasedPredecessor[24];
     const outOfRangeTarget = new Uint8Array(originalAccessStream);
-    outOfRangeTarget[3] = journalRecords.length & 0xff;
-    outOfRangeTarget[4] = journalRecords.length >>> 8;
+    outOfRangeTarget[23] = journalRecords.length & 0xff;
+    outOfRangeTarget[24] = journalRecords.length >>> 8;
     const outOfRangePredecessor = new Uint8Array(originalAccessStream);
-    outOfRangePredecessor[5] = journalRecords.length & 0xff;
-    outOfRangePredecessor[6] = journalRecords.length >>> 8;
+    outOfRangePredecessor[25] = journalRecords.length & 0xff;
+    outOfRangePredecessor[26] = journalRecords.length >>> 8;
     for (const [label, hostileStream] of [
-      ['wrong tag', wrongTag], ['wrong count', wrongCount], ['truncated payload', truncated],
+      ['wrong tag', wrongTag], ['wrong collection', wrongCollection],
+      ['wrong count', wrongCount], ['truncated payload', truncated],
       ['unknown flags', unknownFlags], ['reserved target', reservedTarget],
       ['non-canonical predecessor', nonCanonicalPredecessor], ['aliased predecessor', aliasedPredecessor],
       ['out-of-range target', outOfRangeTarget], ['out-of-range predecessor', outOfRangePredecessor],
@@ -2985,9 +2988,11 @@ describe('kernel counter-key mapping loop compose', () => {
         inputIndex: routeInputIndex, sourceOutputs, transaction,
       })), `hostile journal stream: ${label}`).not.toBe(true);
     }
+    const emptyAccessStream = originalAccessStream.slice(0, 22);
+    emptyAccessStream[1] = 0;
     for (const [label, hostileStreams] of [
       ['missing stream', []],
-      ['extra stream', [originalAccessStream, Uint8Array.of(0x06, 0)]],
+      ['extra stream', [originalAccessStream, emptyAccessStream]],
     ] as const) {
       const hostileRouteParams = [...routeUnlocker.params];
       hostileRouteParams[routeJournalIndex] = [hostileStreams];
@@ -3006,6 +3011,7 @@ describe('kernel counter-key mapping loop compose', () => {
     for (const [label, hostileRecords] of [
       ['missing records', []],
       ['wrong tag', hostileRecord((record) => { record[0] = 0x04; return record; })],
+      ['wrong collection', hostileRecord((record) => { record[2] ^= 0x01; return record; })],
       ['truncated header', hostileRecord((record) => record.slice(0, 85))],
       ['oversized value', hostileRecord(() => oversizedRecord)],
       ['unknown flags', hostileRecord((record) => { record[1] |= 0x80; return record; })],

@@ -22072,7 +22072,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const cardinality = this.currentFunction.runtimeCounterLoopCardinalityParams?.get(varyingArrayParam);
       const varyingKeyExpressions = this.currentFunction.runtimeCounterLoopKeyExpressions
         ?.get(`${varyingArrayParam}\0${collection.name}`);
-      infos.push({ collection: collection.name, journalAccessStreamIndex: infos.length,
+      infos.push({ collection: collection.name, collectionHash: binToHex(collectionHash),
+        journalAccessStreamIndex: infos.length,
         fixedKeyParams, fixedKeySources, varyingArrayParam,
         ...(varyingKeyIndices.length !== 1
           || varyingKeyIndices[0] !== metadataKeySources.length - 1 ? { varyingKeyIndices } : {}),
@@ -22839,9 +22840,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc);
     this.emit(Op.OP_DUP, loc); this.emit(encodeInt(5n), loc); this.emit(Op.OP_MUL, loc);
+    this.emit(encodeInt(20n), loc); this.emit(Op.OP_ADD, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
+
+    const collection = this.sortedUpsertLoopCollection;
+    if (collection === null) throw new Error('Missing runtime-loop collection while binding journal access');
+    const collectionSignature = this.entrySlots.find((slot) => slot.collection === collection)?.collectionSignature;
+    if (!collectionSignature) throw new Error(`Missing journal collection signature for '${collection}'`);
+    this.emit(Op.OP_SWAP, loc); // count, collection hash + payload
+    this.emit(encodeInt(20n), loc); this.emit(Op.OP_SPLIT, loc); // count, collection hash, payload
+    this.emit(Op.OP_SWAP, loc); // count, payload, collection hash
+    this.emit(computeCollectionHash(collectionSignature), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_SWAP, loc); // payload, count
 
     // Validate every access tuple before its ordinals can select shared records. The two ordinals are raw
     // unsigned little-endian bytes (not Script numbers), so canonical sentinel and alias checks remain bytewise.

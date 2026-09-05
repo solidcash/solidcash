@@ -25,7 +25,7 @@ const FLAG_TOMBSTONE = 1 << 2;
 const FLAG_SYNTHETIC = 1 << 3;
 const KNOWN_FLAGS = FLAG_AUTHENTICATED | FLAG_DIRTY | FLAG_TOMBSTONE | FLAG_SYNTHETIC;
 
-const ACCESS_HEADER_BYTES = 2;
+const ACCESS_HEADER_BYTES = 2 + COLLECTION_HASH_BYTES;
 const ACCESS_BYTES = 5;
 const ACCESS_FLAG_PRESENT_BEFORE = 1 << 0;
 const ACCESS_FLAG_PRESENT_AFTER = 1 << 1;
@@ -173,7 +173,7 @@ export function planKernelEntryJournalStreams<T>(
   const encodedAccessStreams = streamLengths.map((length) => {
     const streamAccesses = mutationPlan.accesses.slice(accessOffset, accessOffset + length);
     accessOffset += length;
-    return encodeKernelEntryJournalAccesses(streamAccesses);
+    return encodeKernelEntryJournalAccesses(collectionHash, streamAccesses);
   });
   return {
     mutationPlan,
@@ -234,7 +234,7 @@ export function planKernelEntryJournalAccessTopology(
     encodedAccessStreams: streamLengths.map((length) => {
       const accesses = mutationPlan.accesses.slice(accessOffset, accessOffset + length);
       accessOffset += length;
-      return encodeKernelEntryJournalAccesses(accesses);
+      return encodeKernelEntryJournalAccesses(collectionHash, accesses);
     }),
   };
 }
@@ -252,8 +252,10 @@ function requireRecordOrdinal(name: string, ordinal: number): void {
  * format remains valid up to the largest fixed-width program which fits one 520-byte BCH stack item.
  */
 export function encodeKernelEntryJournalAccesses(
+  collectionHash: Uint8Array,
   accesses: readonly JournaledMutationAccess[],
 ): Uint8Array {
+  requireIdentity('collectionHash', collectionHash, COLLECTION_HASH_BYTES);
   if (accesses.length > KERNEL_ENTRY_JOURNAL_MAX_ACCESSES) {
     throw new Error(
       `kernel entry journal access stream exceeds ${KERNEL_ENTRY_JOURNAL_MAX_ACCESSES} operations`,
@@ -262,6 +264,7 @@ export function encodeKernelEntryJournalAccesses(
   const encoded = new Uint8Array(ACCESS_HEADER_BYTES + accesses.length * ACCESS_BYTES);
   encoded[0] = KERNEL_ENTRY_JOURNAL_ACCESS_TAG;
   encoded[1] = accesses.length;
+  encoded.set(collectionHash, 2);
   accesses.forEach((access, index) => {
     requireRecordOrdinal('targetRecordOrdinal', access.targetRecordOrdinal);
     if (access.predecessorRecordOrdinal !== undefined) {

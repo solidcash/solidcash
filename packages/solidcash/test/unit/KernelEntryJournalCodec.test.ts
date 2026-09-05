@@ -18,24 +18,30 @@ import type { Utxo } from '../../src/interfaces.js';
 import { kernelJournalAccessStreamPlaceholders } from '../../src/stateful/StatefulContract.js';
 
 const bytes = (length: number, fill: number): Uint8Array => new Uint8Array(length).fill(fill);
+const ACCESS_COLLECTION_HASH = bytes(20, 0xcc);
 
 describe('kernel pending-entry journal codec', () => {
   it('builds a dense canonical placeholder vector from stream ordinals, independent of schema names', () => {
     const handler = (name: string, collections: string[]): {
       name: string;
       inputs: Array<{ name: string; type: string }>;
-      sortedUpsertLoopInfo: Array<{ collection: string; journalAccessStreamIndex: number }>;
+      sortedUpsertLoopInfo: Array<{
+        collection: string; collectionHash: string; journalAccessStreamIndex: number;
+      }>;
     } => ({
       name,
       inputs: [{ name: '__internal__kernelJournalAccessStreams', type: 'bytes[]' }],
       sortedUpsertLoopInfo: collections.map((collection, journalAccessStreamIndex) => ({
-        collection, journalAccessStreamIndex,
+        collection, collectionHash: binToHex(bytes(20, journalAccessStreamIndex + 1)), journalAccessStreamIndex,
       })),
     });
     const ledger = kernelJournalAccessStreamPlaceholders(handler('reconcile', ['credits', 'debits']) as never);
     const registry = kernelJournalAccessStreamPlaceholders(handler('apply', ['primary', 'secondary']) as never);
 
-    expect(ledger).toEqual([Uint8Array.of(0x06, 0), Uint8Array.of(0x06, 0)]);
+    expect(ledger).toEqual([
+      Uint8Array.of(0x06, 0, ...bytes(20, 1)),
+      Uint8Array.of(0x06, 0, ...bytes(20, 2)),
+    ]);
     expect(registry).toEqual(ledger);
     expect(() => kernelJournalAccessStreamPlaceholders({
       ...handler('invalid', ['first', 'second']),
@@ -44,6 +50,10 @@ describe('kernel pending-entry journal codec', () => {
         { collection: 'second', journalAccessStreamIndex: 0 },
       ],
     } as never)).toThrow('non-canonical');
+    expect(() => kernelJournalAccessStreamPlaceholders({
+      ...handler('missing-hash', ['only']),
+      sortedUpsertLoopInfo: [{ collection: 'only', journalAccessStreamIndex: 0 }],
+    } as never)).toThrow('no canonical collection hash');
   });
 
   it('round-trips an authenticated dirty scalar entry', () => {
@@ -131,7 +141,9 @@ describe('kernel pending-entry journal codec', () => {
     expect(encoded.map((record) => Number(decodeKernelEntryJournalRecord(record).slot[0])))
       .toEqual([10, 20]);
     expect(plan.accesses.map((access) => access.targetRecordOrdinal)).toEqual([1, 1]);
-    expect(decodeKernelEntryJournalAccesses(encodeKernelEntryJournalAccesses(plan.accesses)))
+    expect(decodeKernelEntryJournalAccesses(
+      encodeKernelEntryJournalAccesses(bytes(20, 0xaa), plan.accesses),
+    ))
       .toEqual(plan.accesses);
   });
 
@@ -236,9 +248,10 @@ describe('kernel pending-entry journal codec', () => {
       { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: true, presentAfter: false },
       { targetRecordOrdinal: 2, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: false },
     ];
-    const encoded = encodeKernelEntryJournalAccesses(accesses);
+    const encoded = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, accesses);
     expect(encoded[0]).toBe(KERNEL_ENTRY_JOURNAL_ACCESS_TAG);
-    expect(encoded).toHaveLength(2 + accesses.length * 5);
+    expect(encoded).toHaveLength(22 + accesses.length * 5);
+    expect(encoded.slice(2, 22)).toEqual(ACCESS_COLLECTION_HASH);
     expect(decodeKernelEntryJournalAccesses(encoded)).toEqual(accesses);
   });
 
@@ -248,29 +261,36 @@ describe('kernel pending-entry journal codec', () => {
       presentBefore: true,
       presentAfter: true,
     }));
-    const encoded = encodeKernelEntryJournalAccesses(accesses);
+    const encoded = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, accesses);
     expect(encoded).toHaveLength(517);
     expect(encoded.length).toBeLessThanOrEqual(520);
     expect(decodeKernelEntryJournalAccesses(encoded)).toEqual(accesses);
-    expect(() => encodeKernelEntryJournalAccesses([...accesses, accesses[0]]))
+    expect(() => encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [...accesses, accesses[0]]))
       .toThrow(`exceeds ${KERNEL_ENTRY_JOURNAL_MAX_ACCESSES}`);
   });
 
   it('rejects malformed access programs and reserved or aliased ordinals', () => {
-    expect(() => encodeKernelEntryJournalAccesses([{
+    expect(() => encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
       targetRecordOrdinal: 65535, presentBefore: true, presentAfter: true,
     }])).toThrow('below 65535');
-    expect(() => encodeKernelEntryJournalAccesses([{
+    expect(() => encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
       targetRecordOrdinal: 1, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true,
     }])).toThrow('must differ');
+    expect(() => encodeKernelEntryJournalAccesses(bytes(19, 0), [])).toThrow('exactly 20');
     expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06))).toThrow('truncated');
-    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x07, 0))).toThrow('tag');
-    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06, 1))).toThrow('length');
-    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06, 1, 0x80, 0, 0, 0xff, 0xff)))
-      .toThrow('unknown flags');
-    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06, 1, 0, 0xff, 0xff, 0xff, 0xff)))
-      .toThrow('reserved target');
-    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06, 1, 0, 0, 0, 0, 0)))
+    const valid = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
+      targetRecordOrdinal: 0, presentBefore: true, presentAfter: true,
+    }]);
+    const wrongTag = new Uint8Array(valid); wrongTag[0] = 0x07;
+    expect(() => decodeKernelEntryJournalAccesses(wrongTag)).toThrow('tag');
+    expect(() => decodeKernelEntryJournalAccesses(valid.slice(0, -1))).toThrow('length');
+    const unknownFlags = new Uint8Array(valid); unknownFlags[22] = 0x80;
+    expect(() => decodeKernelEntryJournalAccesses(unknownFlags)).toThrow('unknown flags');
+    const reservedTarget = new Uint8Array(valid); reservedTarget[23] = 0xff; reservedTarget[24] = 0xff;
+    expect(() => decodeKernelEntryJournalAccesses(reservedTarget)).toThrow('reserved target');
+    const nonCanonicalPredecessor = new Uint8Array(valid);
+    nonCanonicalPredecessor[25] = 0; nonCanonicalPredecessor[26] = 0;
+    expect(() => decodeKernelEntryJournalAccesses(nonCanonicalPredecessor))
       .toThrow('non-canonical predecessor');
   });
 });

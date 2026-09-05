@@ -542,6 +542,8 @@ export interface SortedInsertLoopAbi {
 // output[master+blockSize+i] with value = oldValue op v[i].
 export interface SortedUpsertLoopAbi {
   collection: string;
+  /** Hex-encoded 20-byte hash binding this access stream to one collection covenant. */
+  collectionHash: string;
   /** Stable source-order position of this stream in the selected row's compact journal-access vector. */
   journalAccessStreamIndex: number;
   fixedKeyParams: readonly string[];

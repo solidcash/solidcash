@@ -391,7 +391,17 @@ export function kernelJournalAccessStreamPlaceholders(handler: Pick<AbiFunction,
     || ordinals.some((ordinal) => !Number.isSafeInteger(ordinal) || !expected.delete(ordinal))) {
     throw new Error(`Kernel handler '${handler.name}' has a non-canonical journal access stream ordinal space`);
   }
-  return Array.from({ length: infos.length }, () => encodeKernelEntryJournalAccesses([]));
+  return [...infos]
+    .sort((left, right) => left.journalAccessStreamIndex - right.journalAccessStreamIndex)
+    .map((info) => {
+      if (!/^[0-9a-f]{40}$/i.test(info.collectionHash)) {
+        throw new Error(
+          `Kernel handler '${handler.name}' has no canonical collection hash for journal stream `
+          + `${info.journalAccessStreamIndex}`,
+        );
+      }
+      return encodeKernelEntryJournalAccesses(hexToBin(info.collectionHash), []);
+    });
 }
 
 type GraphBlockhashSelection = {
@@ -17322,7 +17332,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             predecessorRecordOrdinal: access.predecessorRecordOrdinal + recordOffset,
           }),
         }));
-        stream.publish(encodeKernelEntryJournalAccesses(shifted));
+        stream.publish(encodeKernelEntryJournalAccesses(stream.collectionHash, shifted));
       });
       kernelJournalRecords.push(...plan.encodedRecords);
     }

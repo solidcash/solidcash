@@ -6269,18 +6269,18 @@ function synthesizeMessageBusRoute(
             __message_bus_journal_stream_index = __message_bus_journal_stream_index + 1) {
             bytes __message_bus_journal_stream =
               __message_bus_journal_row_streams[__message_bus_journal_stream_index];
-            require(__message_bus_journal_stream.length >= 2);
+            require(__message_bus_journal_stream.length >= 22);
             require(__message_bus_journal_stream.slice(0, 1) == hex"06");
             bigint __message_bus_journal_access_count = int(bytes.concat(
               __message_bus_journal_stream.slice(1, 2), hex"00"
             ));
             require(__message_bus_journal_stream.length
-              == 2 + __message_bus_journal_access_count * 5);
+              == 22 + __message_bus_journal_access_count * 5);
             for (int __message_bus_journal_access_index = 0;
               __message_bus_journal_access_index < __message_bus_journal_access_count;
               __message_bus_journal_access_index = __message_bus_journal_access_index + 1) {
               bigint __message_bus_journal_access_offset =
-                2 + __message_bus_journal_access_index * 5;
+                22 + __message_bus_journal_access_index * 5;
               bigint __message_bus_journal_target = int(bytes.concat(
                 __message_bus_journal_stream.slice(
                   __message_bus_journal_access_offset + 1, __message_bus_journal_access_offset + 3
@@ -6294,6 +6294,16 @@ function synthesizeMessageBusRoute(
               require(__message_bus_journal_target < ${KERNEL_JOURNAL_RECORDS}.length);
               require(__message_bus_journal_predecessor == 65535
                 || __message_bus_journal_predecessor < ${KERNEL_JOURNAL_RECORDS}.length);
+              bytes __message_bus_journal_target_record =
+                ${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_target];
+              require(__message_bus_journal_target_record.slice(2, 22)
+                == __message_bus_journal_stream.slice(2, 22));
+              if (__message_bus_journal_predecessor != 65535) {
+                bytes __message_bus_journal_predecessor_record =
+                  ${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_predecessor];
+                require(__message_bus_journal_predecessor_record.slice(2, 22)
+                  == __message_bus_journal_stream.slice(2, 22));
+              }
             }
           }
         }

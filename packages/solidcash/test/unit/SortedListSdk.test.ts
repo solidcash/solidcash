@@ -200,6 +200,45 @@ describe('SortedList SDK: atomic batch upsert planning', () => {
   });
 });
 
+describe('SortedList SDK: ordered pending-output journal planning', () => {
+  const s = (n: number): Uint8Array => slotValueToBytes(BigInt(n));
+  const add = (current: Uint8Array | undefined, amount: number): Uint8Array =>
+    Uint8Array.of((current?.[0] ?? 0) + amount);
+
+  it('reduces repeated existing and inserted slots against their pending values', () => {
+    const plan = SortedList.fromUtxos(sampleUtxos()).planJournaledUpserts([
+      { slot: s(50), operation: 2 },
+      { slot: s(20), operation: 1 },
+      { slot: s(50), operation: 3 },
+      { slot: s(20), operation: 4 },
+    ], add);
+    expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
+    const decoded = plan.outputs.map((output) => decodeEntryCommitment(output.commitment));
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 20, 50]);
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([20, 50, 90]);
+    expect(decoded.map((entry) => binToHex(entry.value))).toEqual(['', '05', '05']);
+  });
+
+  it('co-spends one original predecessor and flushes one final same-gap chain', () => {
+    const plan = SortedList.fromUtxos(sampleUtxos()).planJournaledUpserts([
+      { slot: s(20), operation: 1 },
+      { slot: s(30), operation: 4 },
+      { slot: s(20), operation: 2 },
+    ], add);
+    expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10]);
+    const decoded = plan.outputs.map((output) => decodeEntryCommitment(output.commitment));
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 20, 30]);
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([20, 30, 50]);
+    expect(decoded.map((entry) => binToHex(entry.value))).toEqual(['', '03', '04']);
+  });
+
+  it('does not expose the HEAD sentinel as a writable logical slot', () => {
+    expect(() => SortedList.fromUtxos(sampleUtxos()).planJournaledUpserts([
+      { slot: s(0), operation: 1 },
+    ], add)).toThrow('HEAD sentinel');
+  });
+});
+
 describe('SortedList SDK: plans satisfy the proven covenants (end to end)', () => {
   const s = (n: number): Uint8Array => slotValueToBytes(BigInt(n));
 

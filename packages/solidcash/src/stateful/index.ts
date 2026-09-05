@@ -111,6 +111,7 @@ export {
   SortedList, getCachedSortedList, keyToSlot, keyToSlotMulti, keyToSlotValue, slotValueToBytes, bytesToSlotValue,
   encodeEntryCommitment, decodeEntryCommitment, isEmptyValueEntryCommitment, headSentinelCommitment,
   type SortedEntry, type NonMembershipPlan, type MembershipPlan, type InsertPlan, type DeletePlan, type UpdatePlan,
+  type BatchUpsertPlan, type JournaledUpsert,
 } from './SortedList.js';
 export {
   registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,

@@ -124,6 +124,9 @@ export interface BatchUpsertPlan {
   outputs: Array<{ slot: Uint8Array; commitment: Uint8Array; existed: boolean }>;
 }
 
+/** One logical write in an ordered owner-local journal. */
+export interface JournaledUpsert<T> { slot: Uint8Array; operation: T }
+
 export class SortedList {
   private entries: SortedEntry[]; // sorted ascending by slot value
 
@@ -217,11 +220,37 @@ export class SortedList {
       if (bySlot.has(key)) throw new Error('vmap batch upsert contains a duplicate slot');
       bySlot.set(key, w);
     }
-    if (bySlot.size === 0) return { inputs: [], outputs: [] };
+    return this.planJournaledUpserts(
+      [...bySlot.values()].map(({ slot, value }) => ({ slot, operation: value })),
+      (_current, value) => value,
+    );
+  }
+
+  /**
+   * Plan an ordered sequence of logical upserts against one authenticated pre-state list. Each original entry or
+   * predecessor is co-spent at most once, repeated slots observe the reducer's pending value, and every affected
+   * node is emitted once in its final linked-list shape. This is the SDK reference model for the kernel's future
+   * pending-output journal; the current batch-upsert API remains the strict distinct-slot compatibility surface.
+   */
+  planJournaledUpserts<T>(
+    writes: readonly JournaledUpsert<T>[],
+    reduce: (current: Uint8Array | undefined, operation: T, slot: Uint8Array) => Uint8Array,
+  ): BatchUpsertPlan {
+    if (writes.length === 0) return { inputs: [], outputs: [] };
+
+    const finalValues = new Map<string, { slot: Uint8Array; value: Uint8Array }>();
+    for (const write of writes) {
+      const numericSlot = bytesToSlotValue(write.slot);
+      if (numericSlot === 0n) throw new Error('slot 0 is reserved for the sorted-list HEAD sentinel');
+      const key = numericSlot.toString();
+      const pending = finalValues.get(key)?.value;
+      const current = pending ?? this.find(write.slot)?.value;
+      finalValues.set(key, { slot: write.slot, value: reduce(current, write.operation, write.slot) });
+    }
 
     const inputMap = new Map<string, SortedEntry>();
     const affected = new Set<string>();
-    for (const w of bySlot.values()) {
+    for (const w of finalValues.values()) {
       const present = this.find(w.slot);
       const source = present ?? this.predecessorOf(w.slot);
       const sourceKey = bytesToSlotValue(source.slot).toString();
@@ -233,9 +262,9 @@ export class SortedList {
     const finalSlots = new Map<string, { slot: Uint8Array; value: Uint8Array; existed: boolean }>();
     for (const e of this.entries) {
       const key = bytesToSlotValue(e.slot).toString();
-      finalSlots.set(key, { slot: e.slot, value: bySlot.get(key)?.value ?? e.value, existed: true });
+      finalSlots.set(key, { slot: e.slot, value: finalValues.get(key)?.value ?? e.value, existed: true });
     }
-    for (const [key, w] of bySlot) {
+    for (const [key, w] of finalValues) {
       if (!finalSlots.has(key)) finalSlots.set(key, { slot: w.slot, value: w.value, existed: false });
     }
     const ordered = [...finalSlots.values()].sort((a, b) => {

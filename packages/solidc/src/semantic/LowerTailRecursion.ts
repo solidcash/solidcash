@@ -1,5 +1,5 @@
 import {
-  AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, ContractNode,
+  AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, ContractNode,
   DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
   Node, ReturnNode, SourceFileNode, StatementNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
@@ -53,7 +53,7 @@ export default class LowerTailRecursion extends AstTraversal {
     const returnName = node.returnNames[0];
     const selfCalls = this.countSelfCalls(node.body, node.name);
     if (selfCalls === 0 || !this.selfCallsHaveArity(node.body, node.name, node.parameters.length)
-      || this.hasNonRecursiveReturn(node.body, node.name, voidFunction)
+      || this.hasBaseReturnInSourceLoop(node.body, node.name)
       || !this.validTailBlock(node.body, node.name, returnName)) return node;
 
     const frame = this.counter++;
@@ -104,15 +104,15 @@ export default class LowerTailRecursion extends AstTraversal {
     });
   }
 
-  private hasNonRecursiveReturn(node: Node, name: string, voidFunction: boolean): boolean {
-    if (node instanceof ReturnNode) {
-      return voidFunction || node.expressions.length !== 1 || !this.isSelfCall(node.expressions[0], name);
-    }
+  private hasBaseReturnInSourceLoop(node: Node, name: string, insideLoop = false): boolean {
+    if (insideLoop && node instanceof ReturnNode
+      && !(node.expressions.length === 1 && this.isSelfCall(node.expressions[0], name))) return true;
+    const childInsideLoop = insideLoop || node instanceof WhileNode || node instanceof DoWhileNode;
     return Object.entries(node).some(([key, child]) => {
       if (['resolvedFunction', 'definition', 'symbolTable', 'location'].includes(key)) return false;
-      if (child instanceof Node) return this.hasNonRecursiveReturn(child, name, voidFunction);
+      if (child instanceof Node) return this.hasBaseReturnInSourceLoop(child, name, childInsideLoop);
       return Array.isArray(child) && child.some((item) =>
-        item instanceof Node && this.hasNonRecursiveReturn(item, name, voidFunction));
+        item instanceof Node && this.hasBaseReturnInSourceLoop(item, name, childInsideLoop));
     });
   }
 
@@ -171,7 +171,12 @@ export default class LowerTailRecursion extends AstTraversal {
       if (statement.expressions.length === 1 && this.isSelfCall(statement.expressions[0], fn.name)) {
         return this.recur(statement.expressions[0], fn, iterationName, repeatName, statement.location);
       }
-      return [statement];
+      const exit = this.stamp(new BreakNode(), statement.location);
+      if (returnName === undefined || statement.expressions.length === 0) return [exit];
+      const result = this.stamp(new AssignNode(
+        this.stamp(new IdentifierNode(returnName), statement.location), statement.expressions[0],
+      ), statement.location);
+      return [result, exit];
     }
     if (returnName === undefined && statement instanceof FunctionCallStatementNode
       && this.isSelfCall(statement.call, fn.name)) {

@@ -167,6 +167,30 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('normalizes explicit value and void base-case returns in tail recursion', () => {
+    const artifact = compileString(`contract C() {
+      int calls;
+      function value(int remaining) internal returns (int result) {
+        if (remaining == 0) return 7;
+        return value(remaining - 1);
+      }
+      function count(int remaining) internal {
+        if (remaining == 0) return;
+        this.calls = this.calls + 1;
+        count(remaining - 1);
+      }
+      function run(int remaining) public returns (int result) {
+        count(remaining);
+        result = value(remaining);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('binds a transaction signature-array as a row-aligned nested route witness', () => {
     const artifact = compileString(`contract C() {
       function signed(sig[] signatures) public { require(true); }

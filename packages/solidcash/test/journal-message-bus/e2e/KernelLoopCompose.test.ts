@@ -1464,6 +1464,45 @@ describe('kernel loop message-bus compose', () => {
     await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 4n });
   }, 180_000);
 
+  it('executes explicit value and void base-case returns in normalized tail recursion', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelTailReturn() {
+      int calls;
+      function value(int remaining) internal returns (int result) {
+        if (remaining == 0) return 7;
+        return value(remaining - 1);
+      }
+      function count(int remaining) internal {
+        if (remaining == 0) return;
+        this.calls = this.calls + 1;
+        count(remaining - 1);
+      }
+      function run(int remaining) public returns (int result) {
+        count(remaining);
+        result = value(remaining);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'run', args: [1n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 1n });
+  }, 180_000);
+
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, KERNEL);

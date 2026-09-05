@@ -29,7 +29,7 @@ import {
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
   CollectionIterationMode,
-  CollectionNode, StateAccessNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode, NewArrayNode,
+  CollectionNode, StateAccessNode, StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
   FunctionCallStatementNode,
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MappingFieldAssignNode,
@@ -2455,9 +2455,6 @@ function synthesizeMessageBusRoute(
     }
     return undefined;
   };
-  const literalNewArraySize = (expression: ExpressionNode | undefined): bigint | undefined =>
-    expression instanceof NewArrayNode && expression.size instanceof IntLiteralNode
-      ? expression.size.value : undefined;
   const expressionIdentifier = (expression: ExpressionNode): string | undefined => {
     if (expression instanceof IdentifierNode) return expression.name;
     if (expression instanceof CastNode) return expressionIdentifier(expression.expression);
@@ -2475,10 +2472,10 @@ function synthesizeMessageBusRoute(
   /**
    * Graph clones of a source handler inline its closure. A verified-mapping write `m[k][xs[i]] = v` in a
    * runtime loop is only representable when `xs` is a parameter of THAT source handler (the SDK reads it from
-   * the row) or a zero-length `new T[](0)` that never iterates. A locally constructed non-empty array
-   * (`address[] memory xs = new address[](1); ... m[k][xs[i]] = v`) reaches code generation as an unsupported
-   * insert/update loop shape and used to fail only after lowering+semantic+partial codegen of the clone.
-   * Refuse the graph handler here so admission does not replay that compile.
+   * the row), an alias which ultimately resolves to that parameter, or has already been eliminated by the
+   * constructed-array symbolic replay. A remaining locally constructed array is not a runtime witness, even when
+   * its allocation size is a small literal: helper-side resizing can leave the planner's length stale while the
+   * generated handler still reaches a fail-closed OP_VERIFY. Refuse that graph handler during admission.
    */
   const arraySupportedFromSource = (
     arrayName: string,
@@ -2486,22 +2483,16 @@ function synthesizeMessageBusRoute(
     source: FunctionDefinitionNode,
     closure: Set<string>,
     visiting: Set<string>,
-    boundedLiteralMax = 0n,
   ): boolean => {
     const seen = `${owner.name}\0${arrayName}`;
     if (visiting.has(seen)) return false;
     visiting.add(seen);
-    const literalOk = (expression: ExpressionNode | undefined): boolean => {
-      const size = literalNewArraySize(expression);
-      return size !== undefined && size <= boundedLiteralMax;
-    };
     if (owner === source) {
       if (source.parameters.some((parameter) => parameter.name === arrayName)) return true;
       const init = localInitOf(owner, arrayName);
-      if (literalOk(init)) return true;
       const alias = init === undefined ? undefined : expressionIdentifier(init);
       return alias !== undefined
-        && arraySupportedFromSource(alias, owner, source, closure, visiting, boundedLiteralMax);
+        && arraySupportedFromSource(alias, owner, source, closure, visiting);
     }
     const paramIndex = owner.parameters.findIndex((parameter) => parameter.name === arrayName);
     if (paramIndex >= 0) {
@@ -2515,11 +2506,10 @@ function synthesizeMessageBusRoute(
             if (!(node instanceof FunctionCallNode) || node.identifier.name !== owner.name) return;
             sawCall = true;
             const argument = node.parameters[paramIndex];
-            if (literalOk(argument)) return;
             const argumentName = argument === undefined ? undefined : expressionIdentifier(argument);
             if (argumentName === undefined
               || !arraySupportedFromSource(
-                argumentName, caller, source, closure, visiting, boundedLiteralMax,
+                argumentName, caller, source, closure, visiting,
               )) {
               allSupported = false;
             }
@@ -2529,13 +2519,12 @@ function synthesizeMessageBusRoute(
       return sawCall && allSupported;
     }
     const init = localInitOf(owner, arrayName);
-    if (literalOk(init)) return true;
     const alias = init === undefined ? undefined : expressionIdentifier(init);
     return alias !== undefined
-      && arraySupportedFromSource(alias, owner, source, closure, visiting, boundedLiteralMax);
+      && arraySupportedFromSource(alias, owner, source, closure, visiting);
   };
   const hasUnsupportedSortedRuntimeLoopWrite = (
-    source: FunctionDefinitionNode, boundedLiteralMax = 0n,
+    source: FunctionDefinitionNode,
   ): boolean => {
     const closure = collectNamedFunctionClosure(source, byName);
     let unsupported = false;
@@ -2606,7 +2595,7 @@ function synthesizeMessageBusRoute(
           }
           if (varyingName === undefined) return;
           if (!arraySupportedFromSource(
-            varyingName, candidate, source, closure, new Set(), boundedLiteralMax,
+            varyingName, candidate, source, closure, new Set(),
           )) {
             unsupported = true;
           }
@@ -3737,7 +3726,7 @@ function synthesizeMessageBusRoute(
       // symbolic element plan, including invariant variable-width branches and replayable straight-line or finite
       // exhaustive loop-local value assignments. Escaped or counter-variably resized constructed key arrays,
       // non-canonical iteration domains, and repeated fixed-slot effects still have no kernel representation.
-      if (hasUnsupportedSortedRuntimeLoopWrite(fn, 64n)) {
+      if (hasUnsupportedSortedRuntimeLoopWrite(fn)) {
         reason = 'KERNEL_UNBOUNDED_KEY';
       } else if (deploys && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
         reason = 'KERNEL_LAYOUT';

@@ -1172,6 +1172,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly VALUE_CHUNK_TRAILING_COUNT = '__internal__valueChunkTrailingCount';
   private runtimeLoopEntryInputCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_INPUT_COUNT = '__internal__runtimeLoopEntryInputCount';
+  // Route-owned, packed pending-entry journal. Unlike the numeric input/output cursors this value is opaque to
+  // ordinary handlers: it is copied into every runtime-entry subroutine and returned to the caller in place, so
+  // later rows can consume transitions produced by earlier rows without expanding the public ABI or changing the
+  // source-order frame. The first implementation step deliberately keeps the empty journal byte-for-byte stable;
+  // the runtime upsert verifier is the sole future owner of its record encoding.
+  private runtimeLoopEntryJournalActive = false;
+  private static readonly RUNTIME_LOOP_ENTRY_JOURNAL = '__internal__runtimeLoopEntryJournal';
   private runtimeLoopEntryOutputCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_OUTPUT_COUNT = '__internal__runtimeLoopEntryOutputCount';
   // Counter-loop events are accumulated as framed (commitment, locking-bytecode) records while the source loop
@@ -4866,6 +4873,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingDynamicWrites = new Map();
     this.valueChunkTrailingCountActive = false;
     this.runtimeLoopEntryInputCountActive = false;
+    this.runtimeLoopEntryJournalActive = false;
     this.runtimeLoopEntryOutputCountActive = false;
     this.runtimeLoopEventActive = false;
     this.runtimeLoopTransferActive = false;
@@ -5197,6 +5205,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isDefineSubTraversal && runtimeLoopEntryInputCountRequired) {
       // A second runtime mapping loop starts after the exact input width consumed by its predecessors.
       this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT, true);
+      // The packed journal follows the input cursor in the hidden copy-in/copy-out frame. Keeping both under the
+      // same closure guarantees that every caller capable of invoking a runtime-entry body owns the journal too.
+      this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL, true);
     }
     if (this.isDefineSubTraversal && runtimeLoopEntryOutputCountRequired) {
       // Copy-in/copy-out context supplied by visitUserFunctionCall. It is declared before journal fields to match
@@ -5440,8 +5451,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.isDefineSubTraversal) {
         this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
         this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
+        // Empty bytes is the canonical empty record stream. It is intentionally a distinct frame cell from the
+        // numeric zero cursor even though both use OP_0 on the VM stack.
+        this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+        this.pushToStack(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL);
       }
       this.runtimeLoopEntryInputCountActive = true;
+      this.runtimeLoopEntryJournalActive = true;
     }
     if (runtimeLoopEntryOutputCountRequired) {
       // Runtime mapping loops and dynamic-state writes share one trailing frame. Keep an exact path-stable total
@@ -5639,6 +5655,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (node.graphRuntimeEmissionHandler) journalNames.add('__internal__graphEmissions');
       if (runtimeLoopEntryInputCountRequired) {
         journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
+        journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL);
       }
       if (runtimeLoopEntryOutputCountRequired) {
         journalNames.add(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT);
@@ -9625,6 +9642,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const callerOwnsRuntimeLoopEntryInputCount = this.stack.includes(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT,
     );
+    const callerOwnsRuntimeLoopEntryJournal = this.stack.includes(
+      GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL,
+    );
     const callerOwnsRuntimeLoopEntryOutputCount = this.stack.includes(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT,
     );
@@ -9638,7 +9658,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const targetJournalContextNames = [
       ...(targetFunc.graphRuntimeEmissionThreaded ? ['__internal__graphEmissions'] : []),
       ...(targetRuntimeLoopEntryInputCount
-        ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT] : []),
+        ? [
+          GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT,
+          GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL,
+        ] : []),
       ...(targetRuntimeLoopEntryOutputCount
         ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT] : []),
       ...(targetRuntimeLoopEventContext ? [
@@ -9667,6 +9690,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const stackName = targetJournalContextNames[i];
       if (!this.stack.includes(stackName)) {
         if (stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT
+          || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL
           || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT
           || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START
           || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END) {
@@ -9674,7 +9698,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // supplies a neutral value and discards the returned total.
           const neutral = stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START
             || stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_END ? -1n : 0n;
-          this.emit(encodeInt(neutral), locationData);
+          if (stackName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL) {
+            this.emit(Op.OP_0, locationData);
+          } else {
+            this.emit(encodeInt(neutral), locationData);
+          }
           this.pushToStack(`(__runtime_context_arg_${targetFunc.functionId}_${i})`);
           continue;
         }
@@ -9949,6 +9977,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const originalName = targetReturnedContextNames[i];
       if ((originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT
           && !callerOwnsRuntimeLoopEntryInputCount)
+        || (originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL
+          && !callerOwnsRuntimeLoopEntryJournal)
         || (originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT
           && !callerOwnsRuntimeLoopEntryOutputCount)
         || ((originalName === GenerateTargetTraversalWithLocation.RUNTIME_LOOP_EVENT_START
@@ -10210,13 +10240,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((name) => name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
         || name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX));
     if (this.isDefineSubTraversal && (this.activeJournalSlots.length > 0 || graphEmissionContext
-      || this.runtimeLoopEntryInputCountActive || this.runtimeLoopEntryOutputCountActive
+      || this.runtimeLoopEntryInputCountActive || this.runtimeLoopEntryJournalActive
+      || this.runtimeLoopEntryOutputCountActive
       || this.runtimeLoopEventActive || runtimeCardinalityNames.length > 0)) {
       const journalNames = [
         ...runtimeCardinalityNames,
         ...(graphEmissionContext ? ['__internal__graphEmissions'] : []),
         ...(this.functionNeedsRuntimeLoopEntryInputCount(this.currentFunction)
-          ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT] : []),
+          ? [
+            GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT,
+            GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL,
+          ] : []),
         ...(this.functionNeedsRuntimeLoopEntryOutputCount(this.currentFunction)
           ? [GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT] : []),
         ...(this.functionNeedsRuntimeLoopEventContext(this.currentFunction) ? [
@@ -23672,6 +23706,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (this.runtimeLoopEntryInputCountActive) {
       finalTemps.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
+    }
+    if (this.runtimeLoopEntryJournalActive) {
+      finalTemps.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL);
     }
     if (this.runtimeLoopEntryOutputCountActive) {
       finalTemps.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT);

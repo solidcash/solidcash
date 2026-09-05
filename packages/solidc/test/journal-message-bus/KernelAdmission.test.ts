@@ -1091,6 +1091,24 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('refuses helper-side constructed-key resizing until memory aliases share length', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function resize(int[] memory xs, int key) internal pure { xs.push(key); }
+      function denied(int n, int key) public {
+        int[] memory xs = new int[](0);
+        resize(xs, key);
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('replays one straight-line constructed-array push per canonical loop iteration', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

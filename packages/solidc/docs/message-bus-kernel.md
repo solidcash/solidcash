@@ -476,6 +476,11 @@ disjoint key ranges in one physical collection; each row owns its authenticated 
 Rows whose physical inputs overlap remain fenced until the planner can build a complete journal from pending row
 transitions. Multiple collections in one admitted loop share a permutation only when their complete key expression
 and selected domain are identical.
+The runtime-entry closure now reserves one opaque packed pending-journal cell beside its input cursor and threads
+that cell through every `OP_INVOKE` copy-in/copy-out frame, including void, returning, and neutral shared-caller
+paths. Physical entries still use the canonical empty encoding and the SDK continues to reject overlap until the
+upsert verifier owns a complete record codec and final-flush pass; the carrier is not treated as evidence that an
+overlap has settled.
 Different key expressions over the same selected domain receive independent row-owned permutations. Separate
 disjoint loops use separate permutations and separate accumulated physical segments. Counter-keyed mapping-array
 element writes, pushes, and pops authenticate the complete old array through a typed row witness, perform the
@@ -511,7 +516,8 @@ symbolic plan, and finite nested `if`/`else` and `switch` writes use the same pa
 matching the compiler's pass-by-reference memory model. Mixed push/pop operations, a push value derived
 from the array itself or from a loop-carried local without a closed current-counter recipe, a counter-dependent
 unequal-width resize schedule, passing the array to a mutating, external, ambiguous, or otherwise unprovable call,
-resizing it across a helper boundary, loop-dependent
+resizing it across a helper boundary (the current memory-alias model shares element stores but not a resized
+length/pointer), loop-dependent
 control assignments, and writes whose index/value cannot be replayed stay `KERNEL_UNBOUNDED_KEY` without aborting
 sibling handlers.
 

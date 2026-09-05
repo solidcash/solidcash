@@ -513,12 +513,12 @@ pushes. Passing an element value to a helper does not escape the array, and pass
 transitively read-only `pure` helper preserves its symbolic plan. A unique `pure` helper may also write elements
 through an explicit `memory` parameter: scalar parameters and helper locals are substituted into the caller's
 symbolic plan, and finite nested `if`/`else` and `switch` writes use the same path joins as direct source code,
-matching the compiler's pass-by-reference memory model. Mixed push/pop operations, a push value derived
+matching the compiler's pass-by-reference memory model. A helper which does not rebind that parameter may also
+push and pop through the shared alias; those operations advance the symbolic length at their exact source point.
+Mixed push/pop operations in a counter-dependent resize recurrence, a push value derived
 from the array itself or from a loop-carried local without a closed current-counter recipe, a counter-dependent
 unequal-width resize schedule, passing the array to a mutating, external, ambiguous, or otherwise unprovable call,
-resizing it across a helper boundary (the current memory-alias model shares element stores but not a resized
-length/pointer), loop-dependent
-control assignments, and writes whose index/value cannot be replayed stay `KERNEL_UNBOUNDED_KEY` without aborting
+loop-dependent control assignments, and writes whose index/value cannot be replayed stay `KERNEL_UNBOUNDED_KEY` without aborting
 sibling handlers.
 
 The legacy convention is intentionally unchanged: it does not acquire this runtime event family and continues to

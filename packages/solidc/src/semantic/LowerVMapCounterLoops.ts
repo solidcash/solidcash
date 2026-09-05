@@ -5206,6 +5206,32 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               });
               continue;
             }
+            if (helperStatement instanceof ArrayPushNode && helperStatement.name === arrayParameter.name) {
+              const pushedValue = replay(helperStatement.value);
+              if (!safe(pushedValue)) return undefined;
+              plan.writes.push({
+                index: cloneNode(plan.length) as ExpressionNode,
+                value: pushedValue,
+              });
+              const one = new IntLiteralNode(1n);
+              one.location = helperStatement.location;
+              one.type = plan.length.type ?? new IntType(true, 256);
+              const length = new BinaryOpNode(cloneNode(plan.length), BinaryOperator.PLUS, one);
+              length.location = helperStatement.location;
+              length.type = plan.length.type;
+              plan.length = length;
+              continue;
+            }
+            if (helperStatement instanceof ArrayPopNode && helperStatement.name === arrayParameter.name) {
+              const one = new IntLiteralNode(1n);
+              one.location = helperStatement.location;
+              one.type = plan.length.type ?? new IntType(true, 256);
+              const length = new BinaryOpNode(cloneNode(plan.length), BinaryOperator.MINUS, one);
+              length.location = helperStatement.location;
+              length.type = plan.length.type;
+              plan.length = length;
+              continue;
+            }
             if (helperStatement instanceof BranchNode) {
               const condition = replay(helperStatement.condition);
               if (!safe(condition)) return undefined;
@@ -5259,10 +5285,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               values = mergeValues(base.values, arms);
               continue;
             }
-            // Resizing across an internal array-call boundary needs a separately authenticated length/alias model.
-            // Keep it opaque even though finite element-write control flow is replayable.
-            if ((helperStatement instanceof ArrayPushNode || helperStatement instanceof ArrayPopNode)
-              && helperStatement.name === arrayParameter.name) return undefined;
             if (helperStatement instanceof RequireNode) continue;
             if (helperStatement instanceof BreakNode && index === body.length - 1) continue;
             if (helperStatement instanceof ReturnNode && allowTerminalReturn && index === body.length - 1) continue;

@@ -5232,6 +5232,33 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(902n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
+  it('settles constructed-key resizes through a pure memory helper alias', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelHelperResizeKeys() {
+      mapping(int => int) slots;
+      function resize(int[] memory xs, int key) internal pure {
+        xs.push(key); xs.push(key + 1); xs.pop();
+      }
+      function write(int n, int key) public {
+        int[] memory xs = new int[](0);
+        resize(xs, key);
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = i + 10; }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.slots[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'write', args: [1n, 700n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(700n, 10n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('settles local array keys written earlier in the same logical iteration', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SAME_ITERATION_LOCAL_KEY_ARRAY_SOURCE, KERNEL);

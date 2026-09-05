@@ -2474,8 +2474,8 @@ function synthesizeMessageBusRoute(
    * runtime loop is only representable when `xs` is a parameter of THAT source handler (the SDK reads it from
    * the row), an alias which ultimately resolves to that parameter, or has already been eliminated by the
    * constructed-array symbolic replay. A remaining locally constructed array is not a runtime witness, even when
-   * its allocation size is a small literal: helper-side resizing can leave the planner's length stale while the
-   * generated handler still reaches a fail-closed OP_VERIFY. Refuse that graph handler during admission.
+   * its allocation size is a small literal; admitting it leaves code generation with only its fail-closed
+   * `OP_VERIFY` fallback. Refuse that graph handler during admission.
    */
   const arraySupportedFromSource = (
     arrayName: string,

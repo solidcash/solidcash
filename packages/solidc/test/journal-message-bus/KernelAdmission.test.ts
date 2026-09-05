@@ -1091,11 +1091,13 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('refuses helper-side constructed-key resizing until memory aliases share length', () => {
+  it('replays helper-side constructed-key resizing through the shared memory alias', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
-      function resize(int[] memory xs, int key) internal pure { xs.push(key); }
-      function denied(int n, int key) public {
+      function resize(int[] memory xs, int key) internal pure {
+        xs.push(key); xs.push(key + 1); xs.pop();
+      }
+      function write(int n, int key) public {
         int[] memory xs = new int[](0);
         resize(xs, key);
         for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
@@ -1103,8 +1105,13 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({
+        collection: 'slots',
+        varyingKeyExpressions: [expect.objectContaining({ kind: 'ternary' })],
+      })]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });

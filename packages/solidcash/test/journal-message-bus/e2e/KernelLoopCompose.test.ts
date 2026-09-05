@@ -4973,12 +4973,48 @@ describe('kernel composite counter-key settlement', () => {
         }
         require(true);
       }
+      function variablePop(int n, bool twice) public {
+        int[] xs = new int[](8);
+        xs[0] = 11; xs[1] = 12; xs[2] = 13; xs[3] = 14;
+        xs[4] = 15; xs[5] = 16; xs[6] = 17; xs[7] = 18;
+        for (int i = 0; i < n; i = i + 1) {
+          if (twice) { xs.pop(); xs.pop(); }
+          else xs.pop();
+          this.slots[xs[twice ? 5 - i * 2 : 6 - i]] = i + 300;
+        }
+        require(true);
+      }
+      function optionalPop(int n, bool shrink) public {
+        int[] xs = new int[](8);
+        xs[0] = 21; xs[1] = 22; xs[2] = 23; xs[3] = 24;
+        xs[4] = 25; xs[5] = 26; xs[6] = 27; xs[7] = 28;
+        for (int i = 0; i < n; i = i + 1) {
+          if (shrink) xs.pop();
+          this.slots[xs[shrink ? 6 - i : i]] = i + 400;
+        }
+        require(true);
+      }
+      function variablePush(int n, bool twice) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          if (twice) { xs.push(i + 40); xs.push(i + 50); }
+          else xs.push(i + 60);
+          this.slots[xs[twice ? i * 2 + 1 : i]] = i + 500;
+        }
+        require(true);
+      }
       function seed(int key) public { this.slots[key] = 0; require(true); }
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'conditionalPop'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'variablePop'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'optionalPop'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'variablePush'))
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -5002,6 +5038,81 @@ describe('kernel composite counter-key settlement', () => {
     for (const key of [13n, 14n, 15n]) await contract.call.seed(key).send();
     await expect(contract.batch([{ function: 'conditionalPop', args: [3n] }]).send()).resolves.toBeDefined();
     for (const [key, expected] of [[15n, 200n], [14n, 201n], [13n, 202n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    for (const key of [14n, 16n, 17n]) await contract.call.seed(key).send();
+    await expect(contract.batch([{ function: 'variablePop', args: [2n, true] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [[16n, 300n], [14n, 301n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    await expect(contract.batch([{ function: 'variablePop', args: [2n, false] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [[17n, 300n], [16n, 301n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    for (const key of [21n, 22n, 26n, 27n]) await contract.call.seed(key).send();
+    await expect(contract.batch([{ function: 'optionalPop', args: [2n, true] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'optionalPop', args: [2n, false] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [[27n, 400n], [26n, 401n], [21n, 400n], [22n, 401n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    await expect(contract.batch([{ function: 'variablePush', args: [2n, true] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'variablePush', args: [2n, false] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [[50n, 500n], [51n, 501n], [60n, 500n], [61n, 501n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+  }, 180_000);
+
+  it('settles symbolic push widths, ordinals, and historical branch predicates', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelVariablePushSwitch() {
+      mapping(int => int) slots;
+      function write(int n, int mode) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          switch (mode) {
+            case 0: xs.push(i + 70); break;
+            case 1: xs.push(i + 80); xs.push(i + 90); break;
+            default: xs.push(i + 100); xs.push(i + 110); xs.push(i + 120);
+          }
+          this.slots[xs[mode == 0 ? i : mode == 1 ? i * 2 + 1 : i * 3 + 2]] = i + 600;
+        }
+        require(true);
+      }
+      function historical(int n) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) xs.push(i + 130);
+          else xs.push(i + 140);
+          if (i > 0) this.slots[xs[i - 1]] = i + 700;
+        }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.slots[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    for (const mode of [0n, 1n, 2n]) {
+      await expect(contract.batch([{ function: 'write', args: [2n, mode] }]).send())
+        .resolves.toBeDefined();
+    }
+    for (const key of [70n, 90n, 120n]) {
+      await expect(contract.call.check(key, 600n).send()).resolves.toBeDefined();
+      await expect(contract.call.check(key + 1n, 601n).send()).resolves.toBeDefined();
+    }
+    await expect(contract.batch([{ function: 'historical', args: [4n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [[130n, 701n], [141n, 702n], [132n, 703n]] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
   }, 180_000);

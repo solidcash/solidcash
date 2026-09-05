@@ -1116,7 +1116,7 @@ describe('required kernel admission', () => {
       .toHaveLength(2);
   });
 
-  it('replays exhaustive equal-width conditional resizes per canonical iteration', () => {
+  it('replays fixed and invariant variable-width conditional resizes per canonical iteration', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function write(int n) public {
@@ -1148,12 +1148,78 @@ describe('required kernel admission', () => {
         }
         require(true);
       }
+      function trimVariableWidth(int n, bool twice) public {
+        int[] xs = new int[](8);
+        xs[0] = 11; xs[1] = 12; xs[2] = 13; xs[3] = 14;
+        xs[4] = 15; xs[5] = 16; xs[6] = 17; xs[7] = 18;
+        for (int i = 0; i < n; i = i + 1) {
+          if (twice) { xs.pop(); xs.pop(); }
+          else xs.pop();
+          this.slots[xs[twice ? 5 - i * 2 : 6 - i]] = i;
+        }
+        require(true);
+      }
+      function pushVariableWidth(int n, bool twice) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          if (twice) { xs.push(i + 40); xs.push(i + 50); }
+          else xs.push(i + 60);
+          this.slots[xs[twice ? i * 2 + 1 : i]] = i;
+        }
+        require(true);
+      }
+      function pushVariableSwitch(int n, int mode) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          switch (mode) {
+            case 0: xs.push(i + 70); break;
+            case 1: xs.push(i + 80); xs.push(i + 90); break;
+            default: xs.push(i + 100); xs.push(i + 110); xs.push(i + 120);
+          }
+          this.slots[xs[mode == 0 ? i : mode == 1 ? i * 2 + 1 : i * 3 + 2]] = i;
+        }
+        require(true);
+      }
+      function trimOptional(int n, bool shrink) public {
+        int[] xs = new int[](8);
+        xs[0] = 21; xs[1] = 22; xs[2] = 23; xs[3] = 24;
+        xs[4] = 25; xs[5] = 26; xs[6] = 27; xs[7] = 28;
+        for (int i = 0; i < n; i = i + 1) {
+          if (shrink) xs.pop();
+          this.slots[xs[shrink ? 6 - i : i]] = i;
+        }
+        require(true);
+      }
+      function trimVariableSwitch(int n, int mode) public {
+        int[] xs = new int[](10);
+        xs[0] = 30; xs[1] = 31; xs[2] = 32; xs[3] = 33; xs[4] = 34;
+        xs[5] = 35; xs[6] = 36; xs[7] = 37; xs[8] = 38; xs[9] = 39;
+        for (int i = 0; i < n; i = i + 1) {
+          switch (mode) {
+            case 0: xs.pop(); break;
+            case 1: xs.pop(); xs.pop(); break;
+            default: break;
+          }
+          this.slots[xs[mode == 0 ? 8 - i : mode == 1 ? 7 - i * 2 : i]] = i;
+        }
+        require(true);
+      }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'choose'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trim'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trimVariableWidth'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushVariableWidth'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushVariableSwitch'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trimOptional'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trimVariableSwitch'))
       .toMatchObject({ eligible: true });
   });
 
@@ -1195,6 +1261,8 @@ describe('required kernel admission', () => {
 
   it.each([
     ['conditionally pushes inside the loop', 'if (i > 0) xs.push(i + 1); this.slots[xs[i]] = i;'],
+    ['uses a counter-dependent unequal push width', `if (i > 0) { xs.push(i + 1); xs.push(i + 2); }
+      else xs.push(i + 3); this.slots[xs[i]] = i;`],
     ['mixes pushes and pops', 'xs.push(i + 1); xs.pop(); this.slots[xs[i]] = i;'],
     ['conditionally pops inside the loop', 'if (i > 0) xs.pop(); this.slots[xs[i]] = i;'],
   ])('refuses a constructed array which %s', (_label, body) => {

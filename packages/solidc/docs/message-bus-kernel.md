@@ -493,15 +493,20 @@ at that exact point-in-time index. A fixed positive number of unconditional top-
 runtime-loop iteration is also represented as a closed recurrence: reads after all pushes derive the selected push
 and its value from the logical source counter, including non-zero starts and non-unit constant or replayable runtime
 steps. Exhaustive nested `if`/`else` and `switch` paths may select different pushed values when every reachable arm
-has the same fixed push width; each value recipe retains the complete branch predicate for its logical iteration.
-The same equal-width rule admits conditional pop paths because every arm produces the same symbolic length.
+has the same fixed push width. They may also select different positive widths when the selection is invariant across
+logical iterations; the recurrence carries the selected width and each push site's symbolic ordinal. Every value
+recipe retains the complete branch predicate for its logical iteration.
+Conditional pop paths may have different widths, including a missing zero-width arm, when the selection is invariant
+across logical iterations; the symbolic length uses the exact runtime-selected width. Counter-dependent unequal-width
+pop paths remain fenced because their prior length requires a prefix sum of earlier branch outcomes.
 Reads between push sites use the same recipes with the point-in-time symbolic length, so they see every prior
 iteration and only the pushes already executed in the current iteration; reads before the first push retain the
 original array prefix. A fixed positive number of unconditional top-level `pop` operations similarly shortens the
 known prefix on each iteration. Passing an element value to a helper does not escape the array, and passing the whole
 array through a transitively read-only `pure` helper preserves its symbolic plan. Mixed push/pop operations, a push
-value derived from another loop-assigned local or the array itself, a non-exhaustive or unequal-width conditional
-resize schedule, passing the array to a mutating, external, ambiguous, or otherwise unprovable call, loop-dependent
+value derived from another loop-assigned local or the array itself, a variable-width push schedule with a zero-width
+arm, a counter-dependent unequal-width resize schedule, passing the array to a mutating, external, ambiguous,
+or otherwise unprovable call, loop-dependent
 control assignments, and writes whose index/value cannot be replayed stay `KERNEL_UNBOUNDED_KEY` without aborting
 sibling handlers.
 

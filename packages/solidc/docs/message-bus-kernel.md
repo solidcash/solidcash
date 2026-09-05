@@ -488,9 +488,11 @@ DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused 
 length and every reached element write can be replayed from dominating public/local expressions. Finite nested
 `if`/`else` and `switch` element writes and conditional scalar dependencies become ternary recipes; unwritten elements retain their typed
 default. Straight-line `push` and `pop` mutations advance a symbolic array length and contribute replayable writes
-at that exact point-in-time index. Arrays resized inside a runtime loop or escaped through a call, loop-dependent
-control assignments, and writes whose index/value cannot be replayed stay `KERNEL_UNBOUNDED_KEY` without aborting
-sibling handlers.
+at that exact point-in-time index. Passing an element value to a helper does not escape the array, and passing the
+whole array through a transitively read-only `pure` helper preserves its symbolic plan. Arrays resized inside a
+runtime loop or passed to a mutating, external, ambiguous, or otherwise unprovable call, loop-dependent control
+assignments, and writes whose index/value cannot be replayed stay `KERNEL_UNBOUNDED_KEY` without aborting sibling
+handlers.
 
 The legacy convention is intentionally unchanged: it does not acquire this runtime event family and continues to
 refuse the corresponding bus handler with its historical route-generation diagnostic. The same function remains

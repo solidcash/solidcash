@@ -13,7 +13,7 @@ import {
   ReturnNode,
   StateAccessNode, StateArrayAssignNode, StateArrayDeleteNode, StateArrayPopNode, StateArrayPushNode,
   StateAssignNode, StatementNode, SwitchNode, TernaryOpNode, TokenContainerMethodStatementNode, TransferStatementNode,
-  TryCatchNode, UnaryOpNode, VariableDefinitionNode, WhileNode, FunctionModifier,
+  TryCatchNode, TupleIndexOpNode, UnaryOpNode, VariableDefinitionNode, WhileNode, FunctionModifier,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -4245,17 +4245,117 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       });
       return found;
     };
+    const readOnlyArrayParameterCache = new Map<FunctionDefinitionNode, Map<number, boolean>>();
+    const readOnlyArrayParameter = (
+      fn: FunctionDefinitionNode,
+      parameterIndex: number,
+      visiting = new Set<FunctionDefinitionNode>(),
+    ): boolean => {
+      const cached = readOnlyArrayParameterCache.get(fn)?.get(parameterIndex);
+      if (cached !== undefined) return cached;
+      if (!fn.modifiers.includes(FunctionModifier.PURE) || !fn.body) return false;
+      // Overloaded and recursive forwarding is deliberately conservative. At this pre-semantic stage a named
+      // call has no resolvedFunction yet, so accepting a cycle or an ambiguous target would turn the source
+      // array into an untracked memory alias.
+      if (visiting.has(fn)) return false;
+      const parameter = fn.parameters[parameterIndex];
+      if (!parameter || !(parameter.type instanceof ArrayType)) return false;
+      const nextVisiting = new Set(visiting).add(fn);
+      let safe = true;
+      const scan = (candidate: Node): void => {
+        if (!safe) return;
+        if ((candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode
+          || candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode)
+          && candidate.name === parameter.name) {
+          safe = false;
+          return;
+        }
+        if (candidate instanceof AssignNode && candidate.identifier.name === parameter.name) {
+          safe = false;
+          return;
+        }
+        if (candidate instanceof MethodCallNode) {
+          // A direct receiver or argument is a memory alias. Element expressions such as f(xs[i]) only pass the
+          // selected value and therefore do not escape xs.
+          if ((candidate.object instanceof IdentifierNode && candidate.object.name === parameter.name)
+            || candidate.parameters.some((argument) =>
+              argument instanceof IdentifierNode && argument.name === parameter.name)) {
+            safe = false;
+            return;
+          }
+        } else if (candidate instanceof ExternalFunctionCallNode) {
+          if (candidate.parameters.some((argument) =>
+            argument instanceof IdentifierNode && argument.name === parameter.name)) {
+            safe = false;
+            return;
+          }
+        } else if (candidate instanceof FunctionCallNode) {
+          candidate.parameters.forEach((argument, argumentIndex) => {
+            if (!safe || !(argument instanceof IdentifierNode) || argument.name !== parameter.name) return;
+            const targets = (this.functionsByName.get(candidate.identifier.name) ?? [])
+              .filter((target) => target.parameters.length === candidate.parameters.length);
+            if (targets.length === 0 || targets.some((target) =>
+              !readOnlyArrayParameter(target, argumentIndex, nextVisiting))) safe = false;
+          });
+          if (!safe) return;
+        }
+        for (const key of Object.keys(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+            || key === 'stateVariable') continue;
+          const value = (candidate as unknown as Record<string, unknown>)[key];
+          if (value instanceof Node) scan(value);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) scan(item);
+        }
+      };
+      scan(fn.body);
+      const cachedParameters = readOnlyArrayParameterCache.get(fn) ?? new Map<number, boolean>();
+      cachedParameters.set(parameterIndex, safe);
+      readOnlyArrayParameterCache.set(fn, cachedParameters);
+      return safe;
+    };
     const escapedPlanNames = (root: Node, active: Map<string, ArrayPlan>): Set<string> => {
       const escaped = new Set<string>();
+      const arrayObjectsPassed = (expression: ExpressionNode): Set<string> => {
+        const referenced = new Set<string>();
+        const scan = (candidate: Node): void => {
+          if (candidate instanceof IdentifierNode && active.has(candidate.name)) {
+            referenced.add(candidate.name);
+            return;
+          }
+          // These expressions consume an element/field value. The underlying array object is not passed to the
+          // callee. Other wrappers (casts, conditionals, tuples, and unknown expressions) remain conservative.
+          if (candidate instanceof ArrayAccessNode || candidate instanceof TupleIndexOpNode
+            || candidate instanceof FieldAccessNode) return;
+          for (const key of Object.keys(candidate)) {
+            if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+              || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+              || key === 'stateVariable') continue;
+            const value = (candidate as unknown as Record<string, unknown>)[key];
+            if (value instanceof Node) scan(value);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) scan(item);
+          }
+        };
+        scan(expression);
+        return referenced;
+      };
       walk(root, (candidate) => {
         if (!(candidate instanceof FunctionCallNode || candidate instanceof ExternalFunctionCallNode
           || candidate instanceof MethodCallNode)) return;
         const parameters = candidate instanceof MethodCallNode
           ? [candidate.object, ...candidate.parameters] : candidate.parameters;
-        for (const parameter of parameters) {
-          walk(parameter, (part) => {
-            if (part instanceof IdentifierNode && active.has(part.name)) escaped.add(part.name);
-          });
+        for (let parameterIndex = 0; parameterIndex < parameters.length; parameterIndex += 1) {
+          const parameter = parameters[parameterIndex];
+          const passedArrays = arrayObjectsPassed(parameter);
+          if (passedArrays.size === 0) continue;
+          if (candidate instanceof FunctionCallNode && parameter instanceof IdentifierNode
+            && passedArrays.size === 1 && passedArrays.has(parameter.name)) {
+            const targets = (this.functionsByName.get(candidate.identifier.name) ?? [])
+              .filter((target) => target.parameters.length === candidate.parameters.length);
+            if (targets.length > 0 && targets.every((target) =>
+              readOnlyArrayParameter(target, parameterIndex))) continue;
+          }
+          for (const name of passedArrays) escaped.add(name);
         }
       });
       return escaped;

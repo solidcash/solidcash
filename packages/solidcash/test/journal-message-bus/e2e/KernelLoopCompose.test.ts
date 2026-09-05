@@ -4749,6 +4749,45 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(3n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
+  it('settles constructed keys after read-only array and value helper calls', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelReadOnlyArrayEscape() {
+      mapping(int => int) slots;
+      function inspect(int[] xs) internal pure returns (int) { return xs.length; }
+      function inspectScalar(int value) internal pure returns (int) { return value; }
+      function write(int n, int first) public {
+        int[] xs = new int[](n);
+        xs[0] = first;
+        int observedLength = inspect(xs);
+        int observedFirst = inspectScalar(xs[0]);
+        for (int i = 0; i < n; i = i + 1) {
+          this.slots[xs[i]] = observedLength + observedFirst;
+        }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.slots[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'write', args: [2n, 5n] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(5n, 7n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 7n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('settles straight-line resized local key arrays on a kernel row', async () => {
     const provider = createTestProvider();
     const artifact = compileString(RESIZED_LOCAL_KEY_ARRAY_SOURCE, KERNEL);

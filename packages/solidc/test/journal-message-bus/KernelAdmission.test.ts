@@ -1026,6 +1026,53 @@ describe('required kernel admission', () => {
       ]));
   });
 
+  it('retains a constructed-key plan across value-only and read-only helper calls', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function inspect(int[] xs) internal pure returns (int) { return xs.length; }
+      function inspectScalar(int value) internal pure returns (int) { return value; }
+      function write(int n, int first) public {
+        int[] xs = new int[](n);
+        xs[0] = first;
+        int observedLength = inspect(xs);
+        int observedFirst = inspectScalar(xs[0]);
+        for (int i = 0; i < n; i = i + 1) {
+          this.slots[xs[i]] = observedLength + observedFirst;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({
+        collection: 'slots',
+        varyingKeyExpressions: [expect.objectContaining({ kind: 'ternary' })],
+      })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('invalidates a constructed-key plan when a pure helper mutates the array alias', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function mutate(int[] xs, int next) internal pure { xs[0] = next; }
+      function denied(int n, int first, int second) public {
+        int[] xs = new int[](n);
+        xs[0] = first;
+        mutate(xs, second);
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('derives a straight-line same-iteration local array key', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

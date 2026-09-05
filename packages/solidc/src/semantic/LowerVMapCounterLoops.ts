@@ -60,8 +60,8 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * `max(publicBound, 1)` entries. Multiple unconditional source-order loops may lower together when their
  * runtime keys are disjoint; each loop receives its own authenticated trailing input/output segment.
  * Finite pre-loop scalar-state assignments merge through if/else and switch into replayable path expressions.
- * Unsupported loop-carried predicates/values, sibling reads of the mutated mapping, and nested-loop control still
- * need richer logical-journal or path metadata.
+ * Unsupported loop-carried predicates/values, counter-derived sibling reads of the mutated mapping, and nested-loop
+ * control still need richer logical-journal or path metadata.
  *
  * The permutation is an untrusted unlocking witness. Generated checks prove it has exactly the canonical domain's
  * number of distinct elements in that domain, hence it is a complete permutation rather than an SDK convention.
@@ -2508,7 +2508,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const hasSiblingMappingRead = (x: Node): boolean => {
         if (keyedSet.has(x)) return false;
         if (structRuntimeReads.has(x as MappingAccessNode)) return false;
-        if (x instanceof MappingAccessNode && keyedCollections.has(x.name)) return true;
+        if (x instanceof MappingAccessNode && keyedCollections.has(x.name)) {
+          // A stable fixed entry can share the collection's ordinary authenticated journal with the runtime
+          // stream. Concrete overlap is a topology property: the SDK rejects a runtime slot which aliases this
+          // fixed co-spend. Counter-derived or otherwise unreplayable sibling reads still need their own stream.
+          return x.keys.some((key) => containsLogical(key)
+            || !isFunctionEntryInvariantMappingKey(key, node.body, publicParameterNames));
+        }
         for (const key of Object.keys(x)) {
           if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type') continue;
           const value = (x as unknown as Record<string, unknown>)[key];
@@ -2584,21 +2590,22 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         // A fixed read from another collection (`a[i] = b[0]`) already has its ordinary authenticated entry
         // witness. It does not need the destination's row-local old-value vector; reserve that vector only for
         // expressions that actually read the entry being written.
-        const readsWrittenCollection = (candidate: Node): boolean => {
+        const readsWrittenEntry = (candidate: Node): boolean => {
           const access = collectionAccessOf(candidate);
-          if (access?.name === write.name) return true;
+          if (access?.name === write.name
+            && access.keys.map(expressionShape).join('|') === writeKeyShape(write)) return true;
           for (const key of Object.keys(candidate)) {
             if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
               || key === 'collection') continue;
             const value = (candidate as unknown as Record<string, unknown>)[key];
-            if (value instanceof Node && readsWrittenCollection(value)) return true;
-            if (Array.isArray(value) && value.some((item) => item instanceof Node && readsWrittenCollection(item))) {
+            if (value instanceof Node && readsWrittenEntry(value)) return true;
+            if (Array.isArray(value) && value.some((item) => item instanceof Node && readsWrittenEntry(item))) {
               return true;
             }
           }
           return false;
         };
-        if (!readsWrittenCollection(expression)) return false;
+        if (!readsWrittenEntry(expression)) return false;
         const collection = this.collectionsByName.get(write.name);
         const valueType = collection?.innermostValueType;
         const numericValue = valueType instanceof IntType || valueType instanceof FixedType;

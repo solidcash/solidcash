@@ -374,6 +374,10 @@ complete key tuple consists of stable public
 parameters, literals, `msg.sender`, `tx.origin`,
 or pure expressions over public arguments may coexist: it is read once,
 mutated as a local in source order, and flushed through one authenticated fixed-entry transition after the loop.
+The same fixed-entry journal may also provide a read-only source for a runtime write stream in that physical
+collection (`base = m[source]; m[i] = base + i`). The fixed and runtime slots remain independently authenticated;
+if a concrete runtime key aliases the fixed source, construction refuses the duplicate co-spend as requiring a
+read-your-writes transition.
 Straight-line scalar assignments and finite `if`/`else` assignment joins before that loop are replayed as immutable
 snapshots, so the authenticated key is the value at the source write boundary rather than the function-entry value.
 A stable,

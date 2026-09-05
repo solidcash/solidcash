@@ -17070,7 +17070,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (entry) {
           // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).
           if (cospent.has(uidOf(entry.utxo))) {
-            throw new Error(`vmap upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx`);
+            throw new Error(
+              `vmap upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx; `
+                + 'a read-your-writes transition is required',
+            );
           }
           cospent.add(uidOf(entry.utxo));
           const oldVal = info.op === '+' || info.op === '-'

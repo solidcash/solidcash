@@ -944,8 +944,8 @@ describe('required kernel admission', () => {
     ['a bound assigned inside its loop', `for (int i = 0; i < n; i = i + 1) {
       n = n - 1; this.m[i] = i;
     }`],
-    ['a sibling read of the mutated mapping', `for (int i = 0; i < n; i = i + 1) {
-      int before = this.m[0]; this.m[i] = before + 1;
+    ['a counter-derived sibling read of the mutated mapping', `for (int i = 0; i < n; i = i + 1) {
+      int before = this.m[i + 1]; this.m[i] = before + 1;
     }`],
   ])('refuses %s as KERNEL_UNBOUNDED_KEY and preserves an eligible sibling', (_label, loop) => {
     const artifact = compileString(`contract C() {
@@ -958,6 +958,22 @@ describe('required kernel admission', () => {
       rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('admits a stable disjoint read from the same mapping as a runtime write stream', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n, int source) public {
+        int base = this.m[source];
+        for (int i = 0; i < n; i = i + 1) { this.m[i] = base + i; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
   });
 
   it('journals a counter-keyed mapping-array push through an authenticated old-value vector', () => {

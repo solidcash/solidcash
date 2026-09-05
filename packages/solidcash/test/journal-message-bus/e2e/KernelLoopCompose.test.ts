@@ -64,6 +64,18 @@ contract KernelCounterMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
+const SAME_MAPPING_FIXED_READ_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelSameMappingFixedRead() {
+  mapping(int => int) m;
+  function seed(int key, int value) public { this.m[key] = value; require(true); }
+  function write(int n, int source) public {
+    int base = this.m[source];
+    for (int i = 0; i < n; i = i + 1) { this.m[i] = base + i; }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.m[key] == expected); }
+}`;
+
 const COUNTER_MAPPING_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelCounterMappingArray() {
   mapping(int => int[]) values;
@@ -2705,6 +2717,34 @@ describe('kernel counter-key mapping loop compose', () => {
       { function: 'clear', args: [3n] },
     ]);
     await expect(repeatedClear.build()).rejects.toThrow(/read-your-writes transition/);
+  }, 180_000);
+
+  it('reads a disjoint fixed entry from the same mapping as a runtime write stream', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(SAME_MAPPING_FIXED_READ_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true, physicalEntrySlots: [0] });
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.call.seed(100n, 7n).send();
+    await expect(contract.call.write(3n, 100n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    for (const [key, expected] of [[0n, 7n], [1n, 8n], [2n, 9n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toMatchObject({
+        txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+    }
+
+    const updated = StatefulContract.withCategory(inner, categoryId);
+    await expect(updated.call.write(2n, 0n).build()).rejects
+      .toThrow(/read-your-writes transition/);
   }, 180_000);
 
   it('authenticates and persists counter-keyed mapping-array pushes and element writes', async () => {

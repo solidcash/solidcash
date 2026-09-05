@@ -8123,8 +8123,14 @@ function compileResolvedAst(
       if ((routeClone || directlyDispatchedSource)
         && fixedHandlerEntries.length > 0 && messageBusRoute.entryAccesses?.length) {
         fn.messageBusPhysicalEntrySlots = fixedHandlerEntries.map((entry) => {
+          // A fixed source entry can share its physical collection with one or more runtime-loop streams, but
+          // it can only bind the route's fixed journal slot. Runtime entries are owned by their trailing stream
+          // and have independent permutation/cursor metadata; considering them here makes an otherwise unique
+          // parameter-keyed fixed read ambiguous with `m[i]` from the same handler. The converse is handled by
+          // the runtime-loop setup rather than this fixed-entry projection.
           const byShape = messageBusRoute.entryAccesses!.filter((routeEntry) =>
-            routeEntry.collection === entry.collection
+            !routeEntry.inLoop
+              && routeEntry.collection === entry.collection
               && routeEntry.keyParams.length === entry.keyParams.length);
           const keyBase = (key: string): string => {
             const bare = key.startsWith('id:') ? key.slice(3) : key;

@@ -17710,8 +17710,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // not just bare params. The final masked hash is left UNTRACKED (the callers account for it manually / push it).
     for (let i = 0; i < numKeys; i++) {
       const keySource = localEntrySlot.keySources?.[i];
-      if (!keySource || keySource.kind === 'param') {
-        const keyParamName = keySource?.paramName ?? localEntrySlot.keyParams[i];
+      const keyNode = node.keys[i];
+      const keyParamName = keySource?.paramName ?? localEntrySlot.keyParams[i];
+      // A runtime-loop slot may omit keySources while keyParams names only the hidden settlement permutation. Its
+      // actual key can still be a rewritten expression such as `keys[logical]`; hashing the hidden index would store
+      // the entry under sha256(index). Use the parameter shortcut only when the AST key is genuinely that parameter.
+      const bareParameter = keyNode instanceof IdentifierNode && keyNode.name === keyParamName;
+      if (bareParameter) {
         if (keyParamName === undefined && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_ROUTE === '1') {
           // eslint-disable-next-line no-console
@@ -18171,17 +18176,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   // Design D: pin the value chunks for a LONG (>60 B) sorted-mapping value. The full value `v` is tracked on top
   // of the stack; the slot H(k) is parked at the top of the altstack. When size(v) > 60, verify the tx creates exactly
-  // ceil(size/VC) value-chunk NFT outputs - the trailing chunk region at masterInput+blockSize+isInsert (after an
-  // INSERT's NEW node) - each at the collection's compile-time value-chunk P2SH with commitment slot(32) ++
+  // ceil(size/VC) value-chunk NFT outputs at the collection's compile-time value-chunk P2SH with commitment slot(32) ++
   // digest(32) ++ pushdata(i) ++ pushdata(v[i*VC:]). digest = sha256(v). A read reassembles the authentic value;
   // a forged/absent/misplaced chunk fails this OP_EQUALVERIFY at write time. Stack-neutral: v is left untouched on
   // top for emitChunkableValueTail. VC=56 leaves room for slot+digest in the 128 B commitment.
   private emitSortedValueChunkPin(
-    collectionName: string,
-    slotIndex: number,
-    node: Node,
-    loc: SingleLocationData,
-    emitRuntimeInputIndex?: () => void,
+    collectionName: string, node: Node, loc: SingleLocationData,
   ): void {
     const VC = VALUE_CHUNK_SIZE;
     const chunkHash = computeCollectionHash(valueChunkSignature(collectionName));
@@ -18196,25 +18196,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
     const outerDepth = this.stack.length;
-
-    // isInsert = (co-spent entry's slot != H(k)): a present-key UPDATE has no NEW node (chunks at masterInput+
-    // blockSize); an absent-key INSERT mints NEW at masterInput+blockSize, so the chunks sit one output later.
-    const inBatch = (this.currentFunction.sortedBatchInfo ?? []).some((batch) =>
-      batch.slotIndices.includes(slotIndex)) || this.routePhysicalSortedBatchCollections.has(collectionName);
-    if (inBatch) {
-      // A batch materializes every target in its fixed entry slot; it has no scalar trailing NEW node. Treating
-      // an absent target as a scalar insert shifts the first value chunk onto the following output (typically
-      // change), even though the batch predecessor/target transition already owns the insertion topology.
-      this.emit(encodeInt(0n), loc);
-    } else {
-      if (emitRuntimeInputIndex) emitRuntimeInputIndex();
-      else this.emitEntryInputIndex(slotIndex, loc, 0);
-      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-      this.emitTakeFirst32(loc); // coSlot
-      this.emitCopyUpsertHashFromAltstack(loc);
-      this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc); // 1 if coSlot != Hk (insert)
-    }
-    this.pushToStack('(vc_isinsert)');
 
     // --- loop-invariant temps: digest = sha256(v), slot = Hk32, chunk address, nNew, base ---
     this.emit(encodeInt(BigInt(this.getStackIndex(vName))), loc);
@@ -18406,7 +18387,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isChunkableValue(collection.innermostValueType)) {
       // Design D: pin the value chunks from the on-stack value BEFORE transforming it into the digest tail. This
       // works for ANY value (computed or a direct param) and rejects forged/absent chunks at write time.
-      this.emitSortedValueChunkPin(collection.name, slotIndex, node, loc);
+      this.emitSortedValueChunkPin(collection.name, node, loc);
       this.emitChunkableValueTail(loc); // len4 ++ [inline|hash]
     }
 
@@ -21859,10 +21840,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const isDelete = writeNode instanceof MappingDeleteNode;
     let op: '+' | '-' | 'set' | 'delete' | 'read' = 'set';
     let valueArrayParam: string | undefined;    // per-key vs[i]
+    let valueArrayIndexParam: string | undefined; // hidden permutation selecting the untouched public value array
     let valueScalarParam: string | undefined;   // loop-invariant param (e.g. `+= amount` fixed-amount airdrop)
     let valueConst: string | undefined;         // loop-invariant int literal (e.g. `+= 100`)
     let valueRuntimeLocal: string | undefined;
     let valueArrayOffset: string | undefined;
+    const usesPermutedLogicalIndex = (root: Node, seen = new WeakSet<object>()): boolean => {
+      if (seen.has(root)) return false;
+      seen.add(root);
+      if (root instanceof IdentifierNode && root.name.startsWith('__internal__vmapCounterLogical_')) return true;
+      for (const [property, value] of Object.entries(root)) {
+        if (property === 'location' || property === 'definition' || property === 'symbol'
+          || property === 'type' || property === 'resolvedFunction' || property === 'collection') continue;
+        if (value instanceof Node && usesPermutedLogicalIndex(value, seen)) return true;
+        if (Array.isArray(value)
+          && value.some((item) => item instanceof Node && usesPermutedLogicalIndex(item, seen))) return true;
+      }
+      return false;
+    };
     if (writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeReadOnly) {
       op = 'read';
       const witness = writeNode.messageBusRuntimeOldValueWitness;
@@ -21923,10 +21918,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // physically ordered value array and must not enter the ordinary SDK key/value zip-and-sort path.
       } else if (valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode) {
         valueArrayParam = valueRight.array.name;                        // per-key vs[i]
+        valueArrayIndexParam = deterministicArrayName(valueRight.index)
+          ?? (usesPermutedLogicalIndex(valueRight.index) ? varyingArrayParam : undefined);
       } else if (!isRmw && valueRight instanceof BinaryOpNode
         && valueRight.operator === BinaryOperator.PLUS && valueRight.left instanceof ArrayAccessNode
         && valueRight.left.array instanceof IdentifierNode && valueRight.right instanceof IntLiteralNode) {
         valueArrayParam = valueRight.left.array.name;
+        valueArrayIndexParam = deterministicArrayName(valueRight.left.index)
+          ?? (usesPermutedLogicalIndex(valueRight.left.index) ? varyingArrayParam : undefined);
         valueArrayOffset = valueRight.right.value.toString();
       } else if (valueRight instanceof IdentifierNode
         && this.currentFunction.parameters.some((p) => p.name === (valueRight as IdentifierNode).name)) {
@@ -21982,7 +21981,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           ...(decodedKeyRecipe.predicateArrayParam && { predicateArrayParam: decodedKeyRecipe.predicateArrayParam }),
           ...(decodedKeyRecipe.predicateEquals !== undefined && { predicateEquals: decodedKeyRecipe.predicateEquals }),
         }),
-        ...(valueArrayParam && { valueArrayParam }), ...(valueScalarParam && { valueScalarParam }),
+        ...(valueArrayParam && { valueArrayParam }), ...(valueArrayIndexParam && { valueArrayIndexParam }),
+        ...(valueScalarParam && { valueScalarParam }),
         ...(valueConst !== undefined && { valueConst }),
         ...(valueRuntimeLocal && { valueRuntimeLocal }),
         ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeValueTrace && {
@@ -22342,9 +22342,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // from the runtime journal input rather than the fixed entry slot used by scalar writes.
         this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)'))), loc);
         this.emit(Op.OP_PICK, loc); this.emit(Op.OP_TOALTSTACK, loc);
-        this.emitSortedValueChunkPin(collection.name, slotIndex, node, loc, () => {
-          pushIdx(this.sortedUpsertLoopCounterName, 0, 0);
-        });
+        this.emitSortedValueChunkPin(collection.name, node, loc);
         this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
         this.emitChunkableValueTail(loc);
       }

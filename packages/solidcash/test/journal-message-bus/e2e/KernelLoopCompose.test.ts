@@ -1,4 +1,6 @@
-import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
+import {
+  bigIntToVmNumber, binToHex, hexToBin, sha256,
+} from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
@@ -207,6 +209,20 @@ contract KernelParameterArrayMappingRead() {
     require(true);
   }
   function check(int key, int expected) public { require(this.destination[key] == expected); }
+}`;
+
+const PARAMETER_ARRAY_VALUE_SOURCE = `pragma solidcash ^0.13.0;
+event Applied(int key, bytes32 digest);
+contract KernelParameterArrayValue() {
+  mapping(int => bytes) values;
+  function fill(int[] keys, bytes[] payloads) public {
+    for (int i = 0; i < int(keys.length); i = i + 1) {
+      this.values[keys[i]] = payloads[i];
+      emit Applied(keys[i], sha256(payloads[i]));
+    }
+    require(true);
+  }
+  function check(int key, bytes expected) public { require(this.values[key] == expected); }
 }`;
 
 const AFFINE_COUNTER_STATE_VALUE_SOURCE = `pragma solidcash ^0.13.0;
@@ -4420,6 +4436,46 @@ describe('kernel composite counter-key settlement', () => {
     for (const [index, key] of keys.entries()) {
       await expect(contract.call.check(key, BigInt(index + 10)).send()).resolves.toBeDefined();
     }
+  }, 180_000);
+
+  it('settles chunked parameter-array values without reordering public arrays or effects', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(PARAMETER_ARRAY_VALUE_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    const fillAbi = artifact.abi.find((handler) => handler.name === 'fill')!;
+    const write = fillAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'values');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
+      .toMatchObject({ eligible: true });
+    expect(write).toMatchObject({
+      op: 'set',
+      varyingArrayParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
+      valueArrayParam: 'payloads',
+      valueArrayIndexParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
+    });
+    expect(artifact.abi.some((handler) => /^__message_bus_(graph|array|resource)_/.test(handler.name)))
+      .toBe(false);
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const short = hexToBin('010203');
+    const long = Uint8Array.from({ length: 170 }, (_unused, index) => (index * 29 + 7) & 0xff);
+    const keys = [91n, 4n];
+    const receipt = await contract.batch([{ function: 'fill', args: [keys, [short, long]] }]).send();
+    expect(receipt.events?.map((event) => [event.event, event.args.key, binToHex(event.args.digest)])).toEqual(
+      keys.map((key, index) => ['Applied', key, binToHex(sha256.hash([short, long][index]))]),
+    );
+    await expect(contract.call.check(keys[0], short).send()).resolves.toBeDefined();
+    await expect(contract.call.check(keys[1], long).send()).resolves.toBeDefined();
+
+    const first = new Uint8Array(70).fill(0x11);
+    const last = Uint8Array.from({ length: 170 }, (_unused, index) => (index * 11 + 9) & 0xff);
+    await expect(contract.batch([{ function: 'fill', args: [[7n, 7n], [first, last]] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.call.check(7n, last).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles boolean same-entry expressions with typed old-value witnesses', async () => {

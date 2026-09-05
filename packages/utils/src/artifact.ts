@@ -556,6 +556,8 @@ export interface SortedUpsertLoopAbi {
   predicateArrayParam?: string;
   predicateEquals?: string;
   valueArrayParam?: string;    // the array of per-key values (amounts); absent for 'delete' (no value)
+  /** Compiler-owned logical-index array used to select valueArrayParam elements without reordering the public array. */
+  valueArrayIndexParam?: string;
   valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`

@@ -113,11 +113,11 @@ pragma solidcash ^0.13.0;
 contract Ledger() {
   mapping(int => mapping(bytes20 => int)) seen;
   int[] jobs;
-  function create(bytes20[] workers) public {
+  function create(bytes20[] workers, int[] weights) public {
     this.jobs.push(0);
     int id = this.jobs.length - 1;
     for (int i = 0; i < int(workers.length); i = i + 1) {
-      this.seen[id][workers[i]] = 1;
+      this.seen[id][workers[i]] = weights[i];
     }
     require(true);
   }
@@ -130,6 +130,8 @@ contract Ledger() {
         collection: 'seen',
         varyingArrayParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
         varyingKeyExpressions: expect.any(Array),
+        valueArrayParam: 'weights',
+        valueArrayIndexParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
       }),
     );
   });

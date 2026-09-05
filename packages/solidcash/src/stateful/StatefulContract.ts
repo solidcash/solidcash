@@ -16432,7 +16432,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         keysArr = [...keysArr].sort((left, right) => {
           const leftSlot = bytesToSlotValue(slotForKey(left));
           const rightSlot = bytesToSlotValue(slotForKey(right));
-          return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1 : 0;
+          // This is the first sort which sees the complete derived key recipe. Equal slots are repeated writes to
+          // one entry, so restore logical source order rather than retaining the provisional raw-counter order;
+          // the pending transition then implements the language's last-write-wins semantics.
+          return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1
+            : occurrenceOf(left) - occurrenceOf(right);
         });
         const varyingIndex = loopAbiFunction.inputs.findIndex((input) => input.name === info.varyingArrayParam);
         if (varyingIndex >= 0) replaceLoopArgument(varyingIndex, keysArr as FunctionArgument);
@@ -16465,6 +16469,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       } else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
       let perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
       let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
+      if (Array.isArray(valsArr) && info.valueArrayIndexParam) {
+        const sourceValues = valsArr as unknown[];
+        const logicalIndices = info.valueArrayIndexParam === info.varyingArrayParam
+          ? keysArr : argOf(info.valueArrayIndexParam);
+        if (!Array.isArray(logicalIndices)) {
+          throw new Error(`vmap upsert loop ${info.collection}: value index array `
+            + `'${info.valueArrayIndexParam}' is missing`);
+        }
+        valsArr = logicalIndices.map((logicalIndex) => {
+          const numeric = typeof logicalIndex === 'bigint' ? logicalIndex : BigInt(logicalIndex as number | string);
+          const index = Number(numeric);
+          if (!Number.isSafeInteger(index) || index < 0 || index >= sourceValues.length) {
+            throw new Error(`vmap upsert loop ${info.collection}: value index ${numeric} is out of bounds`);
+          }
+          return sourceValues[index];
+        });
+      }
       if (valueTrace) {
         valsArr = keysArr.map((key) => valueTrace![occurrenceOf(key)]);
         perKey = true;
@@ -16577,7 +16598,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`vmap array mutation loop ${info.collection}: duplicate keys are ambiguous; combine them first`);
         }
       }
-      if (!info.mutation && Array.isArray(keysArr) && keysArr.length > 1 && (isDelete || perKey || info.op === 'set')) {
+      if (!info.mutation && Array.isArray(keysArr) && keysArr.length > 1
+        && !info.valueArrayIndexParam && (isDelete || perKey || info.op === 'set')) {
         const kArr = keysArr as unknown[];
         const slotHexes = kArr.map((key) => binToHex(slotForKey(key)));
         if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
@@ -16597,7 +16619,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (vArr) {
             valsArr = order.map((i) => merged.get(slotHexes[i])!);
             const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
-            if (!runtimeFiltered && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+            if (!runtimeFiltered && !info.valueArrayIndexParam
+              && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
               replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
             }
           }
@@ -16645,7 +16668,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const vArr = valsArr as unknown[];
               valsArr = keepIdx.map((i) => vArr[i]);
               const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
-              if (!runtimeFiltered && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+              if (!runtimeFiltered && !info.valueArrayIndexParam
+                && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
                 replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
               }
             }
@@ -16723,7 +16747,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const vArr = valsArr as unknown[];
             valsArr = order.map((i) => vArr[i]);
             const amtIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.valueArrayParam);
-            if (!runtimeFiltered && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+            if (!runtimeFiltered && !info.valueArrayIndexParam
+              && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
               replaceLoopArgument(amtIdx, valsArr as FunctionArgument);
             }
           }
@@ -16930,12 +16955,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const loopRawValue = collection.chunkableValue && info.op === 'set'
           ? rawValueBytes(perKeyRawbytes ? (valsArr as unknown[])[i] : rawScalar)
           : undefined;
-        if (perKeyRawbytes && loopRawValue && loopRawValue.length > 60) {
-          throw new Error(
-            `Sorted mapping loop value is ${loopRawValue.length} bytes (> 60); `
-            + 'per-key chunked values in a runtime loop are unsupported.',
-          );
-        }
         if (loopRawValue && loopRawValue.length > 60) {
           loopValueChunkMints.push({
             collection: info.collection, slot, digest: sha256Sync(loopRawValue),
@@ -16952,6 +16971,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             lastDeferred.newVal = (lastDeferred.newVal as bigint) + (info.op === '-' ? -(amt as bigint) : (amt as bigint));
             commitments[lastDeferred.commitIndex] =
               binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, commitValue(lastDeferred.newVal)));
+            continue;
+          }
+          // A compiler-owned permutation leaves public key/value arrays untouched. Repeated logical keys therefore
+          // remain as repeated physical iterations; the on-chain pending SET consumes them without another co-spend
+          // and keeps the last value. Mirror that transition by replacing the pending commitment in place.
+          if (info.op === 'set' && perKey && info.valueArrayIndexParam && lastDeferred
+            && binToHex(lastDeferred.slot) === slotHex) {
+            lastDeferred.newVal = amt;
+            commitments[lastDeferred.commitIndex] =
+              binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, commitValue(amt)));
             continue;
           }
           throw new Error(`vmap upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);

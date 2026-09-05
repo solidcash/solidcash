@@ -3443,10 +3443,23 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           }
         }
         if (write instanceof ArrayAssignNode) {
-          write.index = permRead(group);
+          // Before the symbol pass, a mapping whose value is itself array-like is still represented as an
+          // ArrayAssignNode. Its `index` is the complete mapping key expression, not necessarily the bare loop
+          // counter. Preserve derived forms such as `m[keys[i]]` and rewrite only their counter dependency to the
+          // authenticated permutation; replacing the whole expression with `perm[i]` would store the entry under
+          // the logical array index rather than under `keys[perm[i]]`.
+          write.index = write.index instanceof IdentifierNode && write.index.name === logical
+            ? permRead(group)
+            : containsIdentifier(write.index, logical)
+              ? (hasDirectCounterComponent ? replace(write.index, group) : replaceKey(write.index, group)) as ExpressionNode
+              : write.index;
           write.value = replace(write.value, group) as ExpressionNode;
         } else if (write instanceof ArrayDeleteNode) {
-          write.index = permRead(group);
+          write.index = write.index instanceof IdentifierNode && write.index.name === logical
+            ? permRead(group)
+            : containsIdentifier(write.index, logical)
+              ? (hasDirectCounterComponent ? replace(write.index, group) : replaceKey(write.index, group)) as ExpressionNode
+              : write.index;
         } else if (write instanceof MappingAssignNode || write instanceof MappingFieldAssignNode) {
           write.keys = write.keys.map((key) => key instanceof IdentifierNode && key.name === logical
             ? permRead(group)

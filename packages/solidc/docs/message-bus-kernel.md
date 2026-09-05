@@ -434,6 +434,11 @@ Nested counter keys `m[k][i]` permute the inner key only.
 Parameter-array keys use the same compiler-owned logical-index permutation: `m[keys[i]]` becomes
 `m[keys[perm[i]]]` only at journaled mapping accesses. The public `keys` array is never reordered or replaced;
 calls, events, transfers, and other source expressions continue to observe `keys[i]` in logical source order.
+Likewise, `m[keys[i]] = values[i]` selects `values[perm[i]]` only for the physical journal write; the public
+`values` array remains unchanged for every other source expression. Equal derived slots retain logical occurrence
+order, so repeated keys preserve source last-write-wins semantics. Chunkable per-key values use the same route:
+values larger than 60 bytes are committed by digest and the covenant pins each trailing chunk output by its complete
+slot-specific address, without assuming a distinct runtime input for every physical iteration.
 The SDK sorts `perm` by the complete derived slot recipe, so cross-mapping reads and writes over the same
 `keys[i]` domain share one physical order without changing ABI-visible arguments.
 At transaction construction time, selected rows with independent pre-state journals may share one envelope. The

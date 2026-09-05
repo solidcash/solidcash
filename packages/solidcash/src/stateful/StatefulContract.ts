@@ -16839,8 +16839,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             `Kernel runtime loop in '${loopAbiFunction.name}' has invalid journal stream ordinal ${streamIndex}.`,
           );
         }
-        const operation: KernelEntryJournalTopologyOperation = info.op === 'read'
-          ? 'read' : info.op === 'delete' ? 'delete' : 'write';
+        // Mapping `delete` resets the value but retains the verified-list node, so it has ordinary write topology.
+        // `remove` is reserved by the journal codec for a future physical linked-list splice.
+        const operation: KernelEntryJournalTopologyOperation = info.op === 'read' ? 'read' : 'write';
         runtimeKernelJournalStreams.push({
           collection: info.collection,
           collectionHash: computeCollectionHash(collection.signature),

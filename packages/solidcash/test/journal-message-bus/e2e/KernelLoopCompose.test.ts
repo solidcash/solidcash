@@ -3047,6 +3047,29 @@ describe('kernel counter-key mapping loop compose', () => {
       ).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
 
+    // Mapping delete is a default-value write, not a linked-list splice. Its journal access must therefore retain
+    // presence and select only the existing target record; inventing a predecessor here would give the future flush
+    // protocol different topology from the verified mapping covenant which actually executes this row.
+    const clearBuilder = await contract.batch([{ function: 'clear', args: [3n] }]).build();
+    const clearRouteInput = clearBuilder.inputs.find((input) =>
+      'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    if (!clearRouteInput || !('params' in clearRouteInput.unlocker)) {
+      throw new Error('clear row has no compiler route parameters');
+    }
+    const clearJournalVectors = clearRouteInput.unlocker.params[routeJournalIndex];
+    if (!Array.isArray(clearJournalVectors) || !Array.isArray(clearJournalVectors[0])
+      || !(clearJournalVectors[0][0] instanceof Uint8Array)) {
+      throw new Error('clear row has no compiler-derived journal access stream');
+    }
+    expect(decodeKernelEntryJournalAccesses(clearJournalVectors[0][0])).toEqual([
+      expect.objectContaining({ presentBefore: true, presentAfter: true }),
+      expect.objectContaining({ presentBefore: true, presentAfter: true }),
+      expect.objectContaining({ presentBefore: true, presentAfter: true }),
+    ]);
+    expect(decodeKernelEntryJournalAccesses(clearJournalVectors[0][0])
+      .every((access) => access.predecessorRecordOrdinal === undefined)).toBe(true);
+
     const repeatedClear = contract.batch([
       { function: 'clear', args: [3n] },
       { function: 'clear', args: [3n] },

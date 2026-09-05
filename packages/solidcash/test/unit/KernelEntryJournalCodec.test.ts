@@ -209,7 +209,7 @@ describe('kernel pending-entry journal codec', () => {
       bytes(20, 0xaa),
       [
         [{ slot: slot(10n), operation: 'read' }, { slot: slot(20n), operation: 'read' }],
-        [{ slot: slot(20n), operation: 'write' }, { slot: slot(10n), operation: 'delete' }],
+        [{ slot: slot(20n), operation: 'write' }, { slot: slot(10n), operation: 'remove' }],
       ],
     );
 

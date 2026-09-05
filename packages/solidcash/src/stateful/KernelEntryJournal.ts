@@ -61,8 +61,11 @@ export interface KernelEntryJournalStreamPlan {
   encodedAccessStreams: Uint8Array[];
 }
 
-/** Value-independent operation classes used while assigning stable access ordinals. */
-export type KernelEntryJournalTopologyOperation = 'read' | 'write' | 'delete';
+/**
+ * Value-independent operation classes used while assigning stable access ordinals. A SolidCash mapping `delete`
+ * is a default-value write and therefore uses `write`; `remove` is reserved for an actual linked-list splice.
+ */
+export type KernelEntryJournalTopologyOperation = 'read' | 'write' | 'remove';
 
 export interface KernelEntryJournalAccessTopologyPlan {
   /** Number of first-touch records addressed by every stream in this plan. */
@@ -201,7 +204,7 @@ export function planKernelEntryJournalAccessTopology(
   const mutationPlan = list.planJournaledMutations(
     streams.flat(),
     (current, operation) => operation === 'read' ? preserve(current)
-      : operation === 'delete' ? undefined : new Uint8Array(),
+      : operation === 'remove' ? undefined : new Uint8Array(),
   );
   let accessOffset = 0;
   return {

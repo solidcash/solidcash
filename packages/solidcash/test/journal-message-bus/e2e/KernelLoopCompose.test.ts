@@ -2947,8 +2947,20 @@ describe('kernel counter-key mapping loop compose', () => {
     const wrongCount = new Uint8Array(originalAccessStream);
     wrongCount[1] = 2;
     const truncated = originalAccessStream.slice(0, -1);
+    const unknownFlags = new Uint8Array(originalAccessStream);
+    unknownFlags[2] |= 0x80;
+    const reservedTarget = new Uint8Array(originalAccessStream);
+    reservedTarget[3] = 0xff;
+    reservedTarget[4] = 0xff;
+    const nonCanonicalPredecessor = new Uint8Array(originalAccessStream);
+    nonCanonicalPredecessor[2] &= ~0x04;
+    const aliasedPredecessor = new Uint8Array(originalAccessStream);
+    aliasedPredecessor[5] = aliasedPredecessor[3];
+    aliasedPredecessor[6] = aliasedPredecessor[4];
     for (const [label, hostileStream] of [
       ['wrong tag', wrongTag], ['wrong count', wrongCount], ['truncated payload', truncated],
+      ['unknown flags', unknownFlags], ['reserved target', reservedTarget],
+      ['non-canonical predecessor', nonCanonicalPredecessor], ['aliased predecessor', aliasedPredecessor],
     ] as const) {
       const hostileRouteParams = [...routeUnlocker.params];
       hostileRouteParams[routeJournalIndex] = [[hostileStream]];

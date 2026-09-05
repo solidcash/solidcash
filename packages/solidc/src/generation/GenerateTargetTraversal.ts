@@ -22818,7 +22818,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.visit(access);
     this.stack[0] = '(kernel_journal_access_stream)';
 
-    // stream -> count. Validate tag, then require payload.length == count * 5.
+    // stream -> count. Validate the tag and fixed-width framing first.
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(Op.OP_SWAP, loc);
@@ -22830,7 +22830,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);
+
+    // Validate every access tuple before its ordinals can select shared records. The two ordinals are raw
+    // unsigned little-endian bytes (not Script numbers), so canonical sentinel and alias checks remain bytewise.
+    // Preserve the count on the altstack for the compiler-owned permutation-length check below.
+    // Stack: payload, count.
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc); // count, payload
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_SWAP, loc); // count, rest, flags
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(7n), loc); this.emit(Op.OP_AND, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc); // reject unknown flag bits
+    this.emit(Op.OP_SWAP, loc); // count, flags, rest
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_SWAP, loc);
+    // count, flags, tail, target
+    this.emit(Op.OP_DUP, loc); this.emit(new Uint8Array([0xff, 0xff]), loc);
+    this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_SWAP, loc); // count, flags, target, tail
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // count, flags, target, predecessor, next
+    this.emit(Op.OP_TOALTSTACK, loc); // preserve next payload
+    // HAS_PREDECESSOR must agree exactly with the 0xffff sentinel.
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
+    this.emit(new Uint8Array([0xff, 0xff]), loc); this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    // A predecessor record can never alias its target record.
+    this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc); // count
+    this.emit(Op.OP_1SUB, loc); this.emit(Op.OP_FROMALTSTACK, loc); // remaining, next payload
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
     this.stack[0] = '(kernel_journal_access_count)';
 
     const permutation = new IdentifierNode(this.sortedUpsertLoopVaryingArrayParam);

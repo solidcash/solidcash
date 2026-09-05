@@ -15644,10 +15644,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (abiFunction?.inputs.some((input) => input.name.startsWith('__internal__valueWitness_'))) {
         const positions = abiFunction.inputs.flatMap((input, index) =>
           input.name.startsWith('__internal__valueWitness_') ? [index] : []);
-        if (finalArgs.length === abiFunction.inputs.length && positions.length >= chunkableValueWitnesses.length) {
-          chunkableValueWitnesses.forEach((witness, index) => { finalArgs[positions[index]] = witness; });
-        } else {
-          for (const witness of chunkableValueWitnesses) finalArgs = [...finalArgs, witness];
+        if (chunkableValueWitnesses.length > positions.length) {
+          throw new Error(
+            `Internal error: function '${abiFunction.name}' derived ${chunkableValueWitnesses.length} value witnesses `
+            + `for ${positions.length} published ABI positions.`,
+          );
+        }
+        for (let index = 0; index < chunkableValueWitnesses.length; index += 1) {
+          const position = positions[index];
+          while (finalArgs.length <= position) {
+            const input = abiFunction.inputs[finalArgs.length];
+            if (!input?.name.startsWith('__internal__')) {
+              throw new Error(
+                `Internal error: cannot place value witness before unresolved user argument `
+                + `'${input?.name ?? finalArgs.length}' in '${abiFunction.name}'.`,
+              );
+            }
+            finalArgs.push(defaultInternalFunctionArg(input));
+          }
+          finalArgs[position] = chunkableValueWitnesses[index];
         }
       }
       entryValueWitnesses = chunkableValueWitnesses;

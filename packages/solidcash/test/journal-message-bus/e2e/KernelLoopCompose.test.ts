@@ -1056,12 +1056,36 @@ contract KernelDynamicBytesRmw() {
   }
 }`;
 
+const DYNAMIC_BYTES_SCALAR_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelDynamicBytesScalar() {
+  mapping(int => bytes) values;
+  function set(int key, bytes value) public {
+    this.values[key] = value;
+    require(true);
+  }
+}`;
+
 const DYNAMIC_STRING_RMW_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelDynamicStringRmw() {
   mapping(int => string) values;
   function append(int count, string suffix) public {
     for (int i = 0; i < count; i = i + 1) {
       this.values[i] = string.concat(this.values[i], suffix);
+    }
+    require(true);
+  }
+}`;
+
+const DYNAMIC_STRUCT_RMW_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelDynamicStructRmw() {
+  struct Record { bytes data; int revisions; }
+  mapping(int => Record) records;
+  function append(int count, bytes suffix) public {
+    for (int i = 0; i < count; i = i + 1) {
+      this.records[i] = Record(
+        bytes.concat(this.records[i].data, suffix),
+        this.records[i].revisions + 1
+      );
     }
     require(true);
   }
@@ -4104,6 +4128,30 @@ describe('kernel composite counter-key settlement', () => {
     expect(valueAt(1n)).toEqual(new Uint8Array([...first, ...third]));
   }, 180_000);
 
+  it('settles routed and direct scalar insertions with chunked mapping values', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(DYNAMIC_BYTES_SCALAR_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const value = new Uint8Array(130).fill(0x5a);
+    const directValue = new Uint8Array(96).fill(0x6b);
+
+    await expect(contract.batch([{ function: 'set', args: [7n, value] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.call.set(8n, directValue).send()).resolves.toBeDefined();
+
+    const entries = await contract.getEntries('values');
+    expect(entries.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(7n)])))?.value).toEqual(value);
+    expect(entries.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(8n)])))?.value).toEqual(directValue);
+  }, 180_000);
+
   it('settles string same-entry expressions for present and absent keys', async () => {
     const provider = createTestProvider();
     const artifact = compileString(DYNAMIC_STRING_RMW_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
@@ -4130,6 +4178,34 @@ describe('kernel composite counter-key settlement', () => {
       binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
     expect(valueAt(0n)).toBe(first + second + third);
     expect(valueAt(1n)).toBe(first + third);
+  }, 180_000);
+
+  it('settles chunked dynamic-struct expressions for present and absent keys', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(DYNAMIC_STRUCT_RMW_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const first = new Uint8Array(40).fill(0x11);
+    const second = new Uint8Array(130).fill(0x22);
+    const third = hexToBin('3344');
+    await expect(contract.batch([{ function: 'append', args: [2n, first] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'append', args: [1n, second] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'append', args: [2n, third] }]).send())
+      .resolves.toBeDefined();
+
+    const entries = await contract.getEntries('records');
+    const valueAt = (key: bigint): unknown => entries.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+    expect(valueAt(0n)).toEqual({ data: new Uint8Array([...first, ...second, ...third]), revisions: 3n });
+    expect(valueAt(1n)).toEqual({ data: new Uint8Array([...first, ...third]), revisions: 2n });
   }, 180_000);
 
   it.each([

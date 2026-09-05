@@ -1,5 +1,5 @@
 import {
-  bigIntToVmNumber, binToHex, hexToBin, sha256,
+  bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, hexToBin, sha256,
 } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from 'solidc';
@@ -22,6 +22,7 @@ import { alicePriv, alicePub, bobPriv, bobPub } from '../../fixture/vars.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
+const KERNEL_ROUTE_DENSITY_RESERVE_BYTES = 520;
 
 const SOURCE = `pragma solidcash ^0.13.0;
 contract KernelAcc() {
@@ -5996,6 +5997,13 @@ describe('kernel composite counter-key settlement', () => {
     expect(permutationIndex).toBeGreaterThanOrEqual(0);
     const logicalPermutation = (routeInput.unlocker.params[permutationIndex] as bigint[][])[0];
     expect(logicalPermutation.map((logical) => keys[Number(logical)])).toEqual(physical);
+    const routeInputIndex = builder.inputs.indexOf(routeInput);
+    const routeInstructions = decodeAuthenticationInstructions(
+      builder.buildLibauthTransaction().inputs[routeInputIndex].unlockingBytecode,
+    );
+    expect(routeInstructions[2]).toMatchObject({ data: expect.any(Uint8Array) });
+    if (!('data' in routeInstructions[2])) throw new Error('kernel route density reserve is missing');
+    expect(routeInstructions[2].data).toHaveLength(KERNEL_ROUTE_DENSITY_RESERVE_BYTES);
 
     const receipt = await call.send();
     expect(receipt.events?.map((event) => [event.event, event.args.key])).toEqual(

@@ -30,6 +30,9 @@ import {
 import type { TransactionBuilder } from './TransactionBuilder.js';
 import semver from 'semver';
 
+// Use the full BCH consensus stack-item allowance without changing the compiler route's semantic ABI.
+const KERNEL_ROUTE_DENSITY_RESERVE_BYTES = 520;
+
 // Large generated contracts can carry multi-megabyte ASM listings. Stateful deployment and proxy wiring create
 // several Contract instances from the exact same artifact (withCategory, logical-address attachment, delegates).
 // Parsing that immutable listing for every instance retains enormous duplicate instruction/data graphs. Cache only
@@ -607,8 +610,15 @@ export class Contract<
       if (!(blob instanceof Uint8Array)) throw new Error('message-bus batch batchBlob must encode as bytes');
       const positionalPush = scriptToBytecode([blob]);
       // Preserve the historical positional frame without carrying the callManifest in the master. The
-      // artifact-specialized verifier inputs carry the canonical callManifest.
-      const messageEnvelopePlaceholder = scriptToBytecode([new Uint8Array()]);
+      // artifact-specialized verifier inputs carry the canonical callManifest. Kernel journal routes retain a
+      // bounded payload in this already-discarded slot: their record scans can otherwise exceed BCH-2026's
+      // operation-density budget despite remaining below every absolute operation and script-size limit.
+      const kernelJournalRoute = abiFunction.inputs.some(
+        (input) => input.name === '__internal__kernelJournalAccessStreams',
+      );
+      const reservedPositionalPush = scriptToBytecode([
+        new Uint8Array(kernelJournalRoute ? KERNEL_ROUTE_DENSITY_RESERVE_BYTES : 0),
+      ]);
       let cachedOrdinary: Uint8Array | undefined;
       let cachedCompilerRoute: Uint8Array | undefined;
       const generateUnlockingBytecode = (
@@ -628,7 +638,7 @@ export class Contract<
         cachedCompilerRoute = new Uint8Array([
           ...ordinary.slice(0, 5),
           ...positionalPush,
-          ...messageEnvelopePlaceholder,
+          ...reservedPositionalPush,
           ...ordinary.slice(5),
         ]);
         return cachedCompilerRoute;

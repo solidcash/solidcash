@@ -2622,10 +2622,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const affineStateSnapshots = new Map<string, StateAccessNode>();
       for (const statement of block.statements ?? []) {
         if (statement instanceof VariableDefinitionNode && statement.expression
-          && statement.inlinedReturningHelperPure !== false
           && !loopReassignedLocals.has(statement.name)
           && !hasObservableEffect(statement.expression)
           && !containsCollectionAccess(statement.expression)) {
+          // Returning-helper inlining leaves the helper's effects as separate source-order statements and marks
+          // only the result local as originating in a non-pure helper. The result expression itself is safe to
+          // replay onto the logical key permutation when it passes the same resource-free checks as any other SSA
+          // alias; the original definition and adjacent effects remain in the physical source-order loop.
           loopValueDefinitions.set(statement.name, statement.expression);
         }
       }

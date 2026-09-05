@@ -420,7 +420,7 @@ describe('required kernel admission', () => {
     );
   });
 
-  it('does not reorder an effectful helper used as a counter-loop mapping value', () => {
+  it('keeps an effectful helper in source order while permuting its replayable result', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       int calls;
@@ -434,10 +434,8 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control')?.eligible).toBe(true);
   });
 

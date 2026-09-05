@@ -126,6 +126,23 @@ contract KernelAffineCounterValue() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
+const EFFECTFUL_HELPER_VALUE_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelEffectfulHelperValue() {
+  mapping(int => int) m;
+  int calls;
+  function next(int value) internal returns (int) {
+    this.calls = this.calls + 1;
+    return value;
+  }
+  function write(int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.m[i] = next(i + 10); }
+    require(true);
+  }
+  function check(int key, int expected, int expectedCalls) public {
+    require(this.m[key] == expected && this.calls == expectedCalls);
+  }
+}`;
+
 const TRACED_COUNTER_VALUE_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelTracedCounterValue() {
   mapping(int => int) m;
@@ -4201,6 +4218,22 @@ describe('kernel composite counter-key settlement', () => {
       await expect(contract.call.check(key, expected).send()).resolves.toMatchObject({
         txid: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
+    }
+  }, 180_000);
+
+  it('keeps effectful helper evaluation in source order while mapping its result to permuted keys', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(EFFECTFUL_HELPER_VALUE_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'write', args: [4n] }]).send()).resolves.toBeDefined();
+    for (let key = 0n; key < 4n; key += 1n) {
+      await expect(contract.call.check(key, key + 10n, 4n).send()).resolves.toBeDefined();
     }
   }, 180_000);
 

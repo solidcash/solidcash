@@ -206,9 +206,11 @@ serialized path plan as `if`/`else`. Event arguments may use ordinary expression
 returning helpers. After helper inlining, an effectful helper body and its result definition remain adjacent to
 the event in the source-order physical loop, so consuming that already-computed local neither duplicates nor
 permutes the helper effect. BCH and fungible-token transfer operands use the same rule and the same authenticated,
-source-ordered runtime effect span. An effectful helper result used as a mapping value remains refused because
-that value would follow the authenticated key permutation rather than source order. Repeated NFT transfer uses
-the same authenticated stream. A minting-capability container may produce several NFT outputs; a non-minting
+source-ordered runtime effect span. A mapping value may also consume an effectful helper result when inlining leaves
+a resource-free, replayable result expression: the helper effects and original result definition remain in source
+order, while only that pure result expression is replayed against the authenticated logical key. Results which still
+depend on an opaque effect or resource remain refused. Repeated NFT transfer uses the same authenticated stream. A
+minting-capability container may produce several NFT outputs; a non-minting
 container may reach at most one selected NFT site because one input NFT cannot authorize duplication. The SDK
 rejects a concrete non-minting plan which reaches more than one site.
 

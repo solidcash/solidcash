@@ -2977,6 +2977,10 @@ describe('kernel counter-key mapping loop compose', () => {
     // The second insertion's real predecessor is the first pending target (record 1), not the HEAD (record 0).
     wrongPredecessorRecord[30] = 0;
     wrongPredecessorRecord[31] = 0;
+    const falsePresentBefore = new Uint8Array(originalAccessStream);
+    falsePresentBefore[22] |= 0x01;
+    const falsePresentAfter = new Uint8Array(originalAccessStream);
+    falsePresentAfter[22] &= ~0x02;
     const outOfRangePredecessor = new Uint8Array(originalAccessStream);
     outOfRangePredecessor[25] = journalRecords.length & 0xff;
     outOfRangePredecessor[26] = journalRecords.length >>> 8;
@@ -2987,6 +2991,7 @@ describe('kernel counter-key mapping loop compose', () => {
       ['non-canonical predecessor', nonCanonicalPredecessor], ['aliased predecessor', aliasedPredecessor],
       ['wrong target record', wrongTargetRecord],
       ['wrong predecessor record', wrongPredecessorRecord],
+      ['false present-before state', falsePresentBefore], ['false present-after state', falsePresentAfter],
       ['out-of-range target', outOfRangeTarget], ['out-of-range predecessor', outOfRangePredecessor],
     ] as const) {
       const hostileRouteParams = [...routeUnlocker.params];

@@ -22523,11 +22523,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   /**
    * Consume and verify [count || collection || access tuple cursor, encoded records, expected target slot,
-   * actual predecessor slot], returning [count || collection || cursor tail]. The predecessor is empty for a
-   * present target and otherwise names the exact record used by the physical-input, pending-node,
-   * fixed-entry, or cached-read path selected by this iteration.
+   * actual predecessor slot, expected access flags], returning [count || collection || cursor tail]. The
+   * predecessor is empty for a present target and otherwise names the exact record used by the physical-input,
+   * pending-node, fixed-entry, or cached-read path selected by this iteration.
    */
   private emitKernelJournalTargetSlotHelperInline(loc: SingleLocationData): void {
+    this.emit(Op.OP_TOALTSTACK, loc); // expected access flags
     this.emit(Op.OP_TOALTSTACK, loc); // actual predecessor slot
     this.emit(Op.OP_ROT, loc); // encoded records, expected target slot, header || cursor
     this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc);
@@ -22595,6 +22596,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, loc); // header
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.emit(Op.OP_ENDIF, loc);
+    // Bind the access program's topology state to the branch which actually ran. At this point the decoded flags
+    // are the fourth item beneath the retained header, while the compiler-derived expectation is atop altstack.
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.emit(Op.OP_TOALTSTACK, loc);
     this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
@@ -22629,6 +22634,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)') + 1)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_FROMALTSTACK, loc);
+    // Supported row operations have exactly three transition shapes: an existing/pending target remains present
+    // (0b011), an absent read remains absent behind its proof predecessor (0b100), or an insertion becomes present
+    // behind that predecessor (0b110). Derive the expected flags from the proof branch, not from the carrier.
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(this.sortedUpsertLoopOp === 'read' ? 4n : 6n), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_ENDIF, loc);
     this.emitKernelJournalTargetSlotHelper(loc);
     this.emitReplace(this.getStackIndex(this.sortedUpsertLoopJournalCursorName), node);
     this.popFromStack();

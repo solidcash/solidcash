@@ -71,14 +71,14 @@ export function findLengthMinusOneKeyCanonical(
 ): string | undefined {
   if (!node) return undefined;
   const seen = new WeakSet<object>();
-  let found: string | undefined;
+  const found = new Set<string>();
   const consider = (expression: ExpressionNode | undefined): void => {
-    if (!expression || found) return;
+    if (!expression) return;
     const canonical = canonicalizeUpsertKeyExpression(expression, stateVarNames);
-    if (canonical && LENGTH_MINUS_ONE.test(canonical)) found = canonical;
+    if (canonical && LENGTH_MINUS_ONE.test(canonical)) found.add(canonical);
   };
   const walk = (current: Node): void => {
-    if (found || seen.has(current)) return;
+    if (seen.has(current)) return;
     seen.add(current);
     if (current instanceof VariableDefinitionNode) consider(current.expression);
     if (current instanceof AssignNode) consider(current.expression);
@@ -90,7 +90,7 @@ export function findLengthMinusOneKeyCanonical(
     }
   };
   walk(node);
-  return found;
+  return found.size === 1 ? [...found][0] : undefined;
 }
 
 function isUnresolvedFixedSource(source: KeySourceInfo, fn: FunctionDefinitionNode): boolean {
@@ -111,7 +111,7 @@ export function inferLengthMinusOneFromDynamicWrites(
 
 /**
  * Fill `sortedUpsertLoopInfo.fixedKeySources` when route/inline lowering dropped the outer
- * `jobs.length - 1` key. Runs at artifact emission so the ABI matches the body even if codegen
+ * an invariant `stateArray.length - 1` key. Runs at artifact emission so the ABI matches the body even if codegen
  * recorded the loop on a cloned helper.
  */
 export function applyUpsertFixedKeyRecovery(
@@ -138,7 +138,7 @@ type AbiUpsertFn = {
   }[];
 };
 
-/** Repair published ABI upsert metadata when the body walk could not see `jobs.length-1`. */
+/** Repair published ABI upsert metadata when the body walk could not see an unambiguous array-tail key. */
 export function patchAbiUpsertFixedKeys(
   abi: readonly AbiUpsertFn[] | undefined,
   stateVarNames?: ReadonlySet<string>,

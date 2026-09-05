@@ -21848,8 +21848,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const fixedKeyParams: string[] = [];
     let fixedKeySources = metadataKeySources.filter((src, index) =>
       varyingSourceName(src, index) === undefined);
-    // Nested whitelistWorkers[jobId][worker] can reach codegen with only the varying worker key,
-    // or with an inlined `id:jobId_` that is not a parameter of this function.
+    // A nested mapping can reach codegen with only its varying inner key, or with an inlined outer-key local
+    // which is not a parameter of this function.
     const unresolvedLocal = fixedKeySources.length > 0 && fixedKeySources.every((source) => {
       const name = source.kind === 'param' ? source.paramName
         : source.canonical?.startsWith('id:') ? source.canonical.slice(3) : undefined;

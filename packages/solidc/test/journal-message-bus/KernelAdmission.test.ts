@@ -396,6 +396,30 @@ describe('required kernel admission', () => {
     );
   });
 
+  it.each([
+    ['bytes', 'bytes suffix', 'bytes.concat(this.values[i], suffix)', 'bytes[]'],
+    ['string', 'string suffix', 'string.concat(this.values[i], suffix)', 'string[]'],
+  ])('journals a direct dynamic %s same-entry expression', (_label, parameter, expression, witnessType) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => ${_label}) values;
+      function append(int n, ${parameter}) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.values[i] = ${expression};
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'append');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'append')?.inputs).toContainEqual(
+      expect.objectContaining({ name: expect.stringMatching(/^__internal__vmapCounterOld_/), type: witnessType }),
+    );
+    expect(artifact.abi.find((candidate) => candidate.name === 'append')?.sortedUpsertLoopInfo).toContainEqual(
+      expect.objectContaining({ collection: 'values', valueRuntimeExpression: true, op: 'set' }),
+    );
+  });
+
   it('does not reorder an effectful helper used as a counter-loop mapping value', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

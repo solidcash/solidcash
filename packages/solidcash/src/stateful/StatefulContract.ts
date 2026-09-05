@@ -2485,6 +2485,25 @@ export function selectAuthenticatedCollectionValue(
   return authenticatedCollectionValueSelector(valueType, structs)(items, roots, preferredRoots);
 }
 
+/** Every distinct long value whose complete bytes and authenticating root both occur in a probe trace. */
+function authenticatedCollectionValues(
+  items: readonly Uint8Array[], roots: ReadonlySet<string>,
+  valueType: string | undefined, structs: StateLayout['structs'],
+): Uint8Array[] {
+  const values = new Map<string, Uint8Array>();
+  for (const item of items) {
+    if (item.length <= VALUE_INLINE_LIMIT || item.length > 10_000) continue;
+    const root = binToHex(sha256Sync(item));
+    if (!roots.has(root)) continue;
+    // Mapping bytes/string tails contain their payload verbatim. Unlike arrays and structs, there is no recursive
+    // pushdata frame for decodePushdataValue to consume; the authenticated SHA-256 root is the complete framing.
+    if (valueType !== 'bytes' && valueType !== 'string'
+      && !isCompleteCollectionValue(item, valueType, structs)) continue;
+    values.set(root, item);
+  }
+  return [...values.values()];
+}
+
 /** Recover a dynamic array whose element blob and authenticated whole-value root occur in different trace states. */
 function recoverAuthenticatedArrayValue(
   traceItems: readonly Uint8Array[], roots: ReadonlySet<string>, valueType: string | undefined,
@@ -12962,7 +12981,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // Resolve the address while the region is still speculative. Once a real continuation commitment
               // exists, the address is fixed; later families may inspect the same output index and must not replace
               // this collection's already-authenticated address.
-              if (derivedBytecodes.length > 0 && existing.every((commitment) => commitment === '00')) {
+              if (!vcv.slot && derivedBytecodes.length > 0
+                && existing.every((commitment) => commitment === '00')) {
                 stb.setValueChunkLockingBytecode(vcv.id, derivedBytecodes[0]);
                 commitmentProgress += 1;
               }
@@ -12977,6 +12997,43 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const traceRoots = new Set(traceItems.filter((item) => item.length === 32).map(binToHex));
               const priorRoots = storedChunkableValueRoots(probeBuilder2.inputs);
               const newRoots = new Set([...traceRoots].filter((root) => !priorRoots.has(root)));
+              // Runtime-loop runs publish their exact storage slot. Associate each rooted computed value with its
+              // slot by the value-chunk address the covenant itself constructs in the trace. This remains sound
+              // while loop-entry discovery shifts the tentative output base: unlike the output coordinate, the
+              // address commits only to category, collection, slot, and the computed value digest.
+              if (vcv.slot) {
+                const rooted = authenticatedCollectionValues(
+                  traceItems, newRoots.size > 0 ? newRoots : traceRoots,
+                  collection?.valueType, stateLayout.structs,
+                );
+                const traceItemsHex = new Set(traceItems.map(binToHex));
+                const matched = rooted.find((value) => {
+                  const address = getValueChunkAddress(
+                    this.inner, this.categoryId, vcv.collection, vcv.slot!, sha256Sync(value),
+                  );
+                  return traceItemsHex.has(binToHex(addressToLockScript(address)));
+                });
+                if (matched) {
+                  const lockingBytecode = addressToLockScript(getValueChunkAddress(
+                    this.inner, this.categoryId, vcv.collection, vcv.slot, sha256Sync(matched),
+                  ));
+                  const exact = splitValueIntoValueChunks(matched)
+                    .map((chunk, index) => buildValueChunkCommitment(index, chunk));
+                  const lockChanged = binToHex(vcv.lockingBytecode) !== binToHex(lockingBytecode);
+                  const commitmentsChanged = exact.some((commitment, index) => commitment !== existing[index])
+                    || exact.length !== existing.length;
+                  if (lockChanged) stb.setValueChunkLockingBytecode(vcv.id, lockingBytecode);
+                  if (commitmentsChanged) stb.setValueChunkRawCommitments(vcv.id, exact);
+                  if (lockChanged || commitmentsChanged) commitmentProgress += Math.max(1, exact.length);
+                  vcOffset += exact.length;
+                  continue;
+                }
+                // No authenticated address for this slot means this physical iteration produced an inline value,
+                // or its pin is not reachable in this probe yet. Never assign another iteration's rooted value to
+                // it; retain the placeholder until convergence cleanup (or a later probe) resolves the run.
+                vcOffset += existing.length;
+                continue;
+              }
               const authenticatedValue = selectAuthenticatedCollectionValue(
                 traceItems,
                 traceRoots,
@@ -14458,9 +14515,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }> = [];
     // P5b COMPUTED chunkable writes (no resolvable value param): the covenant pins the chunks, so the SDK derives
     // their commitments from the trace (registered as valueChunkVars after the builder is created).
-    const computedValueChunkRuns: Array<{ id: string; collection: string }> = [];
-    const addComputedValueChunkRun = (collection: string): void => {
-      computedValueChunkRuns.push({ id: `${collection}#${computedValueChunkRuns.length}`, collection });
+    const computedValueChunkRuns: Array<{ id: string; collection: string; slot?: Uint8Array }> = [];
+    const addComputedValueChunkRun = (collection: string, slot?: Uint8Array): void => {
+      computedValueChunkRuns.push({ id: `${collection}#${computedValueChunkRuns.length}`, collection, slot });
     };
     // Computed UPDATES (present key, no NEW node): pin the loop entry empty so it is not phantom-derived.
     const computedValueUpdateCollections = new Set<string>();
@@ -14901,7 +14958,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // `valueParam` is intentionally absent for handler-computed values (array push/pop, partial field
               // writes, and arbitrary expressions). Raw route arguments cannot reproduce mutations performed by
               // the handler before its write, so the covenant's authenticated VM pin is the only exact source.
-              addComputedValueChunkRun(access.collection);
+              addComputedValueChunkRun(access.collection, slot);
               // A computed UPDATE (present key) mints no NEW node; pin its loop entry EMPTY so the loop-entry
               // derivation does not misread the value-chunk pin's OP_OUTPUTTOKENCOMMITMENT calls as a phantom NEW.
               if (list.has(slot)) computedValueUpdateCollections.add(access.collection);
@@ -16286,8 +16343,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // A rawbytes VALUE (whole bytes/string/array/bytesN param `m[k[i]] = a`): the covenant stores the value tail
       // (len4 ++ value inline for a chunkable type, verbatim for bytesN); the SDK mirrors it. Only op==='set' reaches
       // here for rawbytes (the guard gates RMW/const to int). scalarTail is the invariant value's on-chain bytes.
-      // On-chain value bytes for a rawbytes value. Chunked values in this loop remain fail-closed until the
-      // compiler and builder share a bounded-cost runtime output layout.
+      // On-chain value bytes for a rawbytes value.
       const encodeValueTail = (v: unknown): Uint8Array => {
         const vB = v instanceof Uint8Array ? v
           : typeof v === 'string' ? utf8ToBin(v)
@@ -16332,7 +16388,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (collection.valueType === 'bool') return entry
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) !== 0n
             : false;
-          if (stateLayout.structs?.some((struct) => struct.name === collection.valueType)) {
+          const structuredValue = collection.chunkableValue
+            || stateLayout.structs?.some((struct) => struct.name === collection.valueType);
+          if (structuredValue) {
             if (!entry) return getDefaultStateValue(collection.valueType, stateLayout.structs);
             const tail = entry.value;
             if (tail.length < 4) {
@@ -16357,6 +16415,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               valueChunkGc.push({ collection: info.collection, slotHex: binToHex(slot), oldDigestHex: binToHex(root) });
             }
+            // Chunkable entry tails store bytes/string payloads verbatim. Structs and arrays retain their
+            // recursive pushdata framing, but feeding a raw string payload (for example `hello`) to the generic
+            // decoder interprets its first character as an opcode and rejects an otherwise authenticated value.
+            if (collection.valueType === 'bytes') return raw;
+            if (collection.valueType === 'string') return binToUtf8(raw);
             return decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value;
           }
           if (!/^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)) {
@@ -16367,6 +16430,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             : 0n;
         }));
         replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
+      }
+      if (info.valueRuntimeExpression && collection.chunkableValue) {
+        // One speculative run per concrete storage identity lets derivation distinguish several long values in
+        // the same loop, while short iterations naturally shed their empty placeholder at convergence.
+        for (const key of keysArr) addComputedValueChunkRun(info.collection, slotForKey(key));
       }
       // Per-key RAWBYTES value `m[k[i]] = vs[i]` (vs a bytes[]/array-of-array param): each vs[i] is committed as its own
       // inline tail. Detected from the arg (an empty array does no work). op is always 'set' here (the guard gates it).
@@ -16639,7 +16707,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         addRuntimeLoopCardinality(
           info.collection, insertLoopPredecessors.length - runtimeInputStart, outputCount,
         );
-        if (collection.chunkableValue) addComputedValueChunkRun(info.collection);
+        if (collection.chunkableValue) {
+          for (const key of keysArr) addComputedValueChunkRun(info.collection, slotForKey(key));
+        }
         continue;
       }
       if (info.mutation) {
@@ -24865,7 +24935,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // pins them but the SDK has no value param to build them). The auto-derivation reads nNew from the entry's len4
     // and progressively extracts the pinned chunk commitments (like dynamicChunkVars).
     for (const run of computedValueChunkRuns) {
-      builder.registerValueChunkVar(run.collection, DUMMY_FUNDER_LOCKING_BYTECODE, run.id);
+      builder.registerValueChunkVar(run.collection, DUMMY_FUNDER_LOCKING_BYTECODE, run.id, run.slot);
     }
     for (const collectionName of computedValueUpdateCollections) {
       builder.setLoopEntryCommitments(collectionName, []);
@@ -26101,11 +26171,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           (input) => input.name === '__internal__valueChunkOutputBase',
         );
         if (topLevelValueChunkBase >= 0) {
-          // During the isolated derivation probe, -1 deliberately selects the route-relative continuation band.
-          // Once the complete participant geometry is known, publish the absolute coordinate on the physical
-          // route input too. The atomic convergence pass discovers ownership from this compiler-declared witness;
-          // previously only nested external groups were refreshed, leaving a root route's computed chunks at an
-          // intermediate locking bytecode which its own final covenant rejected.
+          // During derivation the default/sentinel selects the route-relative continuation band. Once the complete
+          // transaction geometry is known, publish the absolute coordinate on the executing input too. This is
+          // required for standalone kernel rows as well as atomic graphs: runtime mapping entries precede their
+          // computed value chunks, so the layout-relative base is no longer the materialized coordinate.
           finalArgs[topLevelValueChunkBase] = BigInt(
             (overrides?.blockBase ?? 0) + builder.getValueChunkOutputBase(),
           );

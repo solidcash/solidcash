@@ -2456,23 +2456,27 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           return false;
         };
         if (!readsWrittenCollection(expression)) return false;
+        const collection = this.collectionsByName.get(write.name);
+        const valueType = collection?.innermostValueType;
+        const numericValue = valueType instanceof IntType || valueType instanceof FixedType;
         const left = expression instanceof BinaryOpNode ? collectionAccessOf(expression.left) : undefined;
-        const compact = expression instanceof BinaryOpNode
+        const compact = numericValue && expression instanceof BinaryOpNode
           && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
           && !!left && left.name === write.name
           && left.keys.map(expressionShape).join('|') === writeKeyShape(write)
           && !containsCollectionAccess(expression.right);
         if (compact) return false;
-        const collection = this.collectionsByName.get(write.name);
-        const valueType = collection?.innermostValueType;
         const fixedBytes = valueType instanceof BytesType && valueType.bound !== undefined;
         const rawScalar = fixedBytes || valueType instanceof AddressType
           || valueType === PrimitiveType.PUBKEY || valueType === PrimitiveType.DATASIG;
+        const structured = valueType instanceof StructType || valueType instanceof ArrayType
+          || valueType === PrimitiveType.STRING
+          || (valueType instanceof BytesType && valueType.bound === undefined);
         if (!(write instanceof MappingAssignNode || write instanceof ArrayAssignNode)
           || (write instanceof MappingAssignNode && (write.arrayIndex !== undefined
             || write.arrayPush || write.arrayPop)) || !collection
           || (!(valueType instanceof IntType) && !(valueType instanceof FixedType)
-            && valueType !== PrimitiveType.BOOL && !(valueType instanceof StructType) && !rawScalar)) return true;
+            && valueType !== PrimitiveType.BOOL && !structured && !rawScalar)) return true;
         generalOldEntryWrites.add(write);
         return false;
       });

@@ -4333,7 +4333,9 @@ export class StatefulTransactionBuilder {
   private lateValueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
   // P5b (computed values): collections whose value chunks are DERIVED from the trace (the SDK has no value param to
   // build them). The covenant pins them, so their commitments come from auto-derivation like dynamicChunkVars.
-  private valueChunkVars: Map<string, { collection: string; lockingBytecode: Uint8Array }> = new Map();
+  private valueChunkVars: Map<string, {
+    collection: string; lockingBytecode: Uint8Array; slot?: Uint8Array;
+  }> = new Map();
   private valueChunkRawCommitments: Map<string, string[]> = new Map(); // run id -> ordered chunk commitments (hex)
   private eventRawCommitments: Map<number, string> = new Map(); // emitIndex -> hex commitment (from auto-derivation)
   private pendingEventPlaceholders: Array<{ eventSignature: string; emitIndex: number }> = [];
@@ -9822,8 +9824,10 @@ export class StatefulTransactionBuilder {
   }
 
   /** Register a collection whose value chunks are DERIVED from the trace (computed value, no direct param). */
-  registerValueChunkVar(collection: string, lockingBytecode: Uint8Array, id = collection): this {
-    this.valueChunkVars.set(id, { collection, lockingBytecode });
+  registerValueChunkVar(
+    collection: string, lockingBytecode: Uint8Array, id = collection, slot?: Uint8Array,
+  ): this {
+    this.valueChunkVars.set(id, { collection, lockingBytecode, ...(slot && { slot }) });
     return this;
   }
 
@@ -9834,7 +9838,9 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
-  getValueChunkVars(): Array<{ id: string; collection: string; lockingBytecode: Uint8Array }> {
+  getValueChunkVars(): Array<{
+    id: string; collection: string; lockingBytecode: Uint8Array; slot?: Uint8Array;
+  }> {
     return [...this.valueChunkVars.entries()].map(([id, value]) => ({ id, ...value }));
   }
 

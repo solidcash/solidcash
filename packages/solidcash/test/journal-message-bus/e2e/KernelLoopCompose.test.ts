@@ -1045,6 +1045,28 @@ contract KernelFixedRmw() {
   function check(int key, fixed128x18 expected) public { require(this.values[key] == expected); }
 }`;
 
+const DYNAMIC_BYTES_RMW_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelDynamicBytesRmw() {
+  mapping(int => bytes) values;
+  function append(int count, bytes suffix) public {
+    for (int i = 0; i < count; i = i + 1) {
+      this.values[i] = bytes.concat(this.values[i], suffix);
+    }
+    require(true);
+  }
+}`;
+
+const DYNAMIC_STRING_RMW_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelDynamicStringRmw() {
+  mapping(int => string) values;
+  function append(int count, string suffix) public {
+    for (int i = 0; i < count; i = i + 1) {
+      this.values[i] = string.concat(this.values[i], suffix);
+    }
+    require(true);
+  }
+}`;
+
 const rawScalarRmwSource = (type: string): string => `pragma solidcash ^0.13.0;
 contract KernelRawScalarRmw() {
   mapping(int => ${type}) values;
@@ -4050,6 +4072,64 @@ describe('kernel composite counter-key settlement', () => {
     for (let key = 0n; key < 2n; key += 1n) {
       await expect(contract.call.check(key, high).send()).resolves.toBeDefined();
     }
+  }, 180_000);
+
+  it('settles chunked bytes same-entry expressions for present and absent keys', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(DYNAMIC_BYTES_RMW_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const first = new Uint8Array(40).fill(0xaa);
+    // Cross directly into a three-continuation value, then update it beside an inline key.
+    const second = new Uint8Array(130).fill(0xbb);
+    const third = hexToBin('ccdd');
+    await expect(contract.batch([{ function: 'append', args: [2n, first] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'append', args: [1n, second] }]).send())
+      .resolves.toBeDefined();
+
+    const call = contract.batch([{ function: 'append', args: [2n, third] }]);
+    await expect(call.send()).resolves.toBeDefined();
+
+    const entries = await contract.getEntries('values');
+    const valueAt = (key: bigint): unknown => entries.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+    expect(valueAt(0n)).toEqual(new Uint8Array([...first, ...second, ...third]));
+    expect(valueAt(1n)).toEqual(new Uint8Array([...first, ...third]));
+  }, 180_000);
+
+  it('settles string same-entry expressions for present and absent keys', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(DYNAMIC_STRING_RMW_SOURCE, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const first = 'a'.repeat(40);
+    const second = 'b'.repeat(130);
+    const third = ' cd';
+    await expect(contract.batch([{ function: 'append', args: [2n, first] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'append', args: [1n, second] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'append', args: [2n, third] }]).send())
+      .resolves.toBeDefined();
+
+    const entries = await contract.getEntries('values');
+    const valueAt = (key: bigint): unknown => entries.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+    expect(valueAt(0n)).toBe(first + second + third);
+    expect(valueAt(1n)).toBe(first + third);
   }, 180_000);
 
   it.each([

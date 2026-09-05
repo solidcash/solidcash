@@ -12655,7 +12655,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // `var.method{value:}(..)`: `var` is an interface/contract-typed identifier (a function/constructor param,
     // or a synthesized __extaddr_ local for a state-var target). `this.var.method(..)` is the same target
-    // spelled as a state access (Marketplace `marketplaceData.userRegistered(msg.sender)`). The no-option
+    // spelled as a state access (for example `registry.isMember(msg.sender)`). The no-option
     // identifier form is a namespaced FunctionCall (handled in visitFunctionCall); the call-option form and
     // the `this.` spelling arrive here. Route to external call.
     if (node.object instanceof IdentifierNode || node.object instanceof StateAccessNode) {

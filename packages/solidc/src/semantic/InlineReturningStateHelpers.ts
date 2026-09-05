@@ -343,7 +343,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         && fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler && this.eligibleShape(fn)
         // An IERC20/SafeERC20 edge must keep its graph OP_INVOKE frame. Flattening it into the kernel
         // dispatch loop makes SymbolTableTraversal treat the row iterator as a callee-target index and
-        // rewrite `token.transfer` to an unbound `__internal__loopTargets[jobId]`.
+        // rewrite the call target to an unbound compiler-owned loop-target element.
         && !this.transitivelyContainsExternalCall(fn)
         && !this.transitivelyContainsLowLevelCall(fn);
       if (returningEntryEffectClone || (compilerOwnedRouteClone

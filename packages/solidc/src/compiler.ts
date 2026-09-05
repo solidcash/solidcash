@@ -115,6 +115,7 @@ import LowerVMapCounterLoops, {
   VMAP_RUNTIME_INPUT_COUNT_PREFIX,
   VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
 } from './semantic/LowerVMapCounterLoops.js';
+import LowerLegacyVMapCounterLoops from './semantic/LowerLegacyVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
@@ -3428,7 +3429,7 @@ function synthesizeMessageBusRoute(
             return access?.name === collectionName && access.keys.length === collection.allKeyTypes.length;
           });
           // Kernel journals an expression-keyed write from the row whether it is a top-level statement or
-          // nested in `if` / `_refund` after helper inlining (Marketplace `if (byWorker) whitelist[id][worker]`).
+          // nested in a branch/helper after inlining (for example `if (allowed) entries[group][member]`).
           // Legacy still requires a direct statement so auto-mode artifacts stay byte-identical.
           const admitComputedKey = explicitlyEnabledMessageBus
             && (compilerOptions.messageBusKernel === true || directComputedWrite);
@@ -4485,7 +4486,7 @@ function synthesizeMessageBusRoute(
   const allGraphEmissionHandlersRuntime = graphTailHandlers.size > 0
     && [...graphTailHandlers].every((handler) => graphRuntimeHandlers.has(handler));
   // Collection-journal clones are created before the graph-effect clone pass. A handler that both
-  // touches a mapping and makes a typed call (Marketplace `postThreadMessage`) would otherwise keep
+  // touches a mapping and makes a typed call would otherwise keep
   // a journal clone without `graphEmissionHandler`, so semantic analysis injects selector/index
   // parameters the kernel row invoke never supplies. Promote that existing clone onto the graph
   // OP_INVOKE frame instead of emitting a second `__message_bus_graph_*` family.
@@ -7634,11 +7635,12 @@ function compileResolvedAst(
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
   if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
 
-  // Canonical dynamic vmap `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
-  if (needsVMapCounter && needsLoop) {
-    ast = ast.accept(new LowerVMapCounterLoops(
-      mergedCompilerOptions.messageBus === true && mergedCompilerOptions.messageBusKernel === true,
-    )) as Ast;
+  // Keep direct compilation's narrow permutation ABI stable. Message-bus compilation still needs the richer
+  // analysis to classify legacy-unroll refusals, while kernel execution was already lowered at admission.
+  if (needsVMapCounter && needsLoop && !mergedCompilerOptions.messageBus) {
+    ast = ast.accept(new LowerLegacyVMapCounterLoops()) as Ast;
+  } else if (needsVMapCounter && needsLoop && mergedCompilerOptions.messageBusKernel !== true) {
+    ast = ast.accept(new LowerVMapCounterLoops(false)) as Ast;
   }
 
   // Break/continue expansion (before semantic analysis)

@@ -490,6 +490,8 @@ identities, authenticated+synthetic records, and clean tombstones.
 The SDK's sorted-list model exposes ordered `planJournaledUpserts` / `planJournaledMutations` reference planners:
 repeated logical slots reduce against their pending values, delete/reinsert observes pending absence, original
 entries and shared predecessors are selected once, and the final linked-list commitments are emitted once. The
+planner also publishes the final nodes and tombstones in first-touch record order, independently of its legacy
+sorted-output view. The covenant can therefore reproduce the flush order without sorting dynamic slots on-chain.
 active transaction path does not use that oracle to relax overlap until the covenant implements the same
 load/store and final-flush transition.
 Different key expressions over the same selected domain receive independent row-owned permutations. Separate

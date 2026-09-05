@@ -217,6 +217,13 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 20, 50]);
     expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([20, 50, 90]);
     expect(decoded.map((entry) => binToHex(entry.value))).toEqual(['', '05', '05']);
+    expect(plan.records.map((record) => Number(bytesToSlotValue(record.slot)))).toEqual([50, 10, 20]);
+    expect(plan.records.map(({ authenticated, synthetic, tombstone }) =>
+      ({ authenticated, synthetic, tombstone }))).toEqual([
+      { authenticated: true, synthetic: false, tombstone: false },
+      { authenticated: true, synthetic: false, tombstone: false },
+      { authenticated: false, synthetic: true, tombstone: false },
+    ]);
   });
 
   it('co-spends one original predecessor and flushes one final same-gap chain', () => {
@@ -230,6 +237,7 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 20, 30]);
     expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([20, 30, 50]);
     expect(decoded.map((entry) => binToHex(entry.value))).toEqual(['', '03', '04']);
+    expect(plan.records.map((record) => Number(bytesToSlotValue(record.slot)))).toEqual([10, 20, 30]);
   });
 
   it('does not expose the HEAD sentinel as a writable logical slot', () => {
@@ -246,6 +254,14 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     const decoded = plan.outputs.map((output) => decodeEntryCommitment(output.commitment));
     expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10]);
     expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([90]);
+    expect(plan.records.map((record) => ({
+      slot: Number(bytesToSlotValue(record.slot)),
+      next: Number(bytesToSlotValue(record.nextKey)),
+      tombstone: record.tombstone,
+    }))).toEqual([
+      { slot: 50, next: 90, tombstone: true },
+      { slot: 10, next: 90, tombstone: false },
+    ]);
   });
 
   it('combines a predecessor update with deletion of its successor', () => {
@@ -274,6 +290,9 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     expect(reinserted.outputs.map((output) => decodeEntryCommitment(output.commitment))
       .map((entry) => [Number(bytesToSlotValue(entry.slot)), binToHex(entry.value)]))
       .toEqual([[10, ''], [50, 'bb']]);
+    expect(reinserted.records.map((record) => ({
+      slot: Number(bytesToSlotValue(record.slot)), tombstone: record.tombstone,
+    }))).toEqual([{ slot: 50, tombstone: false }, { slot: 10, tombstone: false }]);
 
     const cancelledInsert = list.planJournaledMutations<Operation>([
       { slot: s(20), operation: { kind: 'set', value: hexToBin('aa') } },
@@ -283,6 +302,12 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     expect(cancelledInsert.outputs.map((output) => decodeEntryCommitment(output.commitment))
       .map((entry) => [Number(bytesToSlotValue(entry.slot)), Number(bytesToSlotValue(entry.nextKey))]))
       .toEqual([[10, 50]]);
+    expect(cancelledInsert.records.map((record) => ({
+      slot: Number(bytesToSlotValue(record.slot)), tombstone: record.tombstone, synthetic: record.synthetic,
+    }))).toEqual([
+      { slot: 10, tombstone: false, synthetic: false },
+      { slot: 20, tombstone: true, synthetic: true },
+    ]);
   });
 });
 

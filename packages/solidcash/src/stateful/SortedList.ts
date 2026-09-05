@@ -124,6 +124,21 @@ export interface BatchUpsertPlan {
   outputs: Array<{ slot: Uint8Array; commitment: Uint8Array; existed: boolean }>;
 }
 
+export interface JournaledMutationRecord {
+  slot: Uint8Array;
+  nextKey: Uint8Array;
+  value: Uint8Array;
+  authenticated: boolean;
+  dirty: boolean;
+  tombstone: boolean;
+  synthetic: boolean;
+}
+
+export interface JournaledMutationPlan extends BatchUpsertPlan {
+  /** Final logical nodes in deterministic first-touch order; tombstones are retained but produce no output. */
+  records: JournaledMutationRecord[];
+}
+
 /** One logical write in an ordered owner-local journal. */
 export interface JournaledUpsert<T> { slot: Uint8Array; operation: T }
 
@@ -235,7 +250,7 @@ export class SortedList {
   planJournaledUpserts<T>(
     writes: readonly JournaledUpsert<T>[],
     reduce: (current: Uint8Array | undefined, operation: T, slot: Uint8Array) => Uint8Array,
-  ): BatchUpsertPlan {
+  ): JournaledMutationPlan {
     return this.planJournaledMutations(writes, reduce);
   }
 
@@ -248,17 +263,29 @@ export class SortedList {
   planJournaledMutations<T>(
     writes: readonly JournaledUpsert<T>[],
     reduce: (current: Uint8Array | undefined, operation: T, slot: Uint8Array) => Uint8Array | undefined,
-  ): BatchUpsertPlan {
-    if (writes.length === 0) return { inputs: [], outputs: [] };
+  ): JournaledMutationPlan {
+    if (writes.length === 0) return { inputs: [], outputs: [], records: [] };
 
     const finalValues = new Map<string, { slot: Uint8Array; value: Uint8Array | undefined; deleted: boolean }>();
+    const recordOrder: string[] = [];
+    const seenRecords = new Set<string>();
+    const appendRecord = (slot: Uint8Array): void => {
+      const key = bytesToSlotValue(slot).toString();
+      if (seenRecords.has(key)) return;
+      seenRecords.add(key);
+      recordOrder.push(key);
+    };
     for (const write of writes) {
       const numericSlot = bytesToSlotValue(write.slot);
       if (numericSlot === 0n) throw new Error('slot 0 is reserved for the sorted-list HEAD sentinel');
       const key = numericSlot.toString();
       const prior = finalValues.get(key);
-      const current = prior ? prior.value : this.find(write.slot)?.value;
+      const original = this.find(write.slot);
+      const current = prior ? prior.value : original?.value;
       const value = reduce(current, write.operation, write.slot);
+      if (!original) appendRecord(this.predecessorOf(write.slot).slot);
+      appendRecord(write.slot);
+      if (value === undefined && original) appendRecord(this.predecessorOf(write.slot).slot);
       finalValues.set(key, { slot: write.slot, value, deleted: (prior?.deleted ?? false) || value === undefined });
     }
 
@@ -302,11 +329,31 @@ export class SortedList {
       const next = i + 1 < ordered.length ? ordered[i + 1].slot : ZERO_SLOT;
       outputs.push({ slot: cur.slot, commitment: encodeEntryCommitment(cur.slot, next, cur.value), existed: cur.existed });
     }
+    const finalByKey = new Map(ordered.map((entry, index) => [bytesToSlotValue(entry.slot).toString(), {
+      ...entry,
+      nextKey: index + 1 < ordered.length ? ordered[index + 1].slot : ZERO_SLOT,
+    }]));
+    const records: JournaledMutationRecord[] = recordOrder.map((key) => {
+      const final = finalByKey.get(key);
+      const original = this.entries.find((entry) => bytesToSlotValue(entry.slot).toString() === key);
+      const pending = finalValues.get(key);
+      const tombstone = !final && pending?.value === undefined;
+      if (!final && !tombstone) throw new Error(`journal record ${key} has no final or tombstone state`);
+      return {
+        slot: final?.slot ?? pending!.slot,
+        nextKey: final?.nextKey ?? original?.nextKey ?? ZERO_SLOT,
+        value: final?.value ?? new Uint8Array(),
+        authenticated: original !== undefined,
+        dirty: affected.has(key),
+        tombstone,
+        synthetic: original === undefined,
+      };
+    });
     const inputs = [...inputMap.values()].sort((a, b) => {
       const av = bytesToSlotValue(a.slot); const bv = bytesToSlotValue(b.slot);
       return av < bv ? -1 : av > bv ? 1 : 0;
     });
-    return { inputs, outputs };
+    return { inputs, outputs, records };
   }
 
   planDelete(slot: Uint8Array): DeletePlan {

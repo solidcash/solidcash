@@ -156,6 +156,17 @@ export interface JournaledMutationPlan extends BatchUpsertPlan {
 /** One logical write in an ordered owner-local journal. */
 export interface JournaledUpsert<T> { slot: Uint8Array; operation: T }
 
+/**
+ * An explicit reducer result for an operation which may only observe the pending journal. Plain byte arrays and
+ * `undefined` retain their compatibility meaning of a dirty write and delete respectively. A clean result must
+ * preserve the current value exactly; it exists so an authenticated present or absent read can publish record
+ * ordinals without being mistaken for a state transition.
+ */
+export interface JournaledMutationResult {
+  value: Uint8Array | undefined;
+  dirty: boolean;
+}
+
 export class SortedList {
   private entries: SortedEntry[]; // sorted ascending by slot value
 
@@ -276,11 +287,20 @@ export class SortedList {
    */
   planJournaledMutations<T>(
     writes: readonly JournaledUpsert<T>[],
-    reduce: (current: Uint8Array | undefined, operation: T, slot: Uint8Array) => Uint8Array | undefined,
+    reduce: (
+      current: Uint8Array | undefined,
+      operation: T,
+      slot: Uint8Array,
+    ) => Uint8Array | undefined | JournaledMutationResult,
   ): JournaledMutationPlan {
     if (writes.length === 0) return { inputs: [], outputs: [], records: [], accesses: [] };
 
-    const finalValues = new Map<string, { slot: Uint8Array; value: Uint8Array | undefined; deleted: boolean }>();
+    const finalValues = new Map<string, {
+      slot: Uint8Array;
+      value: Uint8Array | undefined;
+      deleted: boolean;
+      dirty: boolean;
+    }>();
     const recordOrder: string[] = [];
     const recordOrdinals = new Map<string, number>();
     const appendRecord = (slot: Uint8Array): number => {
@@ -317,7 +337,19 @@ export class SortedList {
       const current = prior ? prior.value : original?.value;
       const presentBefore = current !== undefined;
       const predecessor = pendingPredecessor(write.slot);
-      const value = reduce(current, write.operation, write.slot);
+      const reduced = reduce(current, write.operation, write.slot);
+      const explicit = reduced !== undefined && !(reduced instanceof Uint8Array);
+      const value = explicit
+        ? (reduced as JournaledMutationResult).value : reduced as Uint8Array | undefined;
+      const dirty = explicit ? (reduced as JournaledMutationResult).dirty : true;
+      if (!dirty) {
+        const preservesAbsence = current === undefined && value === undefined;
+        const preservesValue = current !== undefined && value !== undefined
+          && current.length === value.length && current.every((byte, index) => byte === value[index]);
+        if (!preservesAbsence && !preservesValue) {
+          throw new Error('a clean journal operation must preserve the pending value');
+        }
+      }
       let predecessorRecordOrdinal: number | undefined;
       let targetRecordOrdinal: number;
       if (presentBefore) {
@@ -333,9 +365,16 @@ export class SortedList {
         presentBefore,
         presentAfter: value !== undefined,
       });
-      if (value === undefined) liveSlots.delete(key);
-      else liveSlots.set(key, write.slot);
-      finalValues.set(key, { slot: write.slot, value, deleted: (prior?.deleted ?? false) || value === undefined });
+      if (dirty) {
+        if (value === undefined) liveSlots.delete(key);
+        else liveSlots.set(key, write.slot);
+      }
+      finalValues.set(key, {
+        slot: write.slot,
+        value,
+        deleted: (prior?.deleted ?? false) || (dirty && value === undefined),
+        dirty: (prior?.dirty ?? false) || dirty,
+      });
     }
 
     const inputMap = new Map<string, SortedEntry>();
@@ -345,8 +384,10 @@ export class SortedList {
       const source = present ?? this.predecessorOf(w.slot);
       const sourceKey = bytesToSlotValue(source.slot).toString();
       inputMap.set(`${source.utxo.txid}:${source.utxo.vout}`, source);
-      affected.add(sourceKey);
-      affected.add(bytesToSlotValue(w.slot).toString());
+      if (w.dirty) {
+        affected.add(sourceKey);
+        affected.add(bytesToSlotValue(w.slot).toString());
+      }
       if (present && w.deleted) {
         const predecessor = this.predecessorOf(w.slot);
         inputMap.set(`${predecessor.utxo.txid}:${predecessor.utxo.vout}`, predecessor);

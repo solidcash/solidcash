@@ -331,6 +331,30 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
       { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: true, presentAfter: false },
     ]);
   });
+
+  it('authenticates clean present and absent reads without producing journal outputs', () => {
+    const plan = SortedList.fromUtxos(sampleUtxos()).planJournaledMutations([
+      { slot: s(50), operation: 'read' },
+      { slot: s(20), operation: 'read' },
+    ], (current) => ({ value: current, dirty: false }));
+
+    expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
+    expect(plan.outputs).toEqual([]);
+    expect(plan.records.map((record) => ({
+      slot: Number(bytesToSlotValue(record.slot)),
+      authenticated: record.authenticated,
+      dirty: record.dirty,
+      tombstone: record.tombstone,
+      synthetic: record.synthetic,
+    }))).toEqual([
+      { slot: 50, authenticated: true, dirty: false, tombstone: false, synthetic: false },
+      { slot: 10, authenticated: true, dirty: false, tombstone: false, synthetic: false },
+      { slot: 20, authenticated: false, dirty: false, tombstone: true, synthetic: true },
+    ]);
+    expect(() => SortedList.fromUtxos(sampleUtxos()).planJournaledMutations([
+      { slot: s(50), operation: 'invalid-clean-write' },
+    ], () => ({ value: Uint8Array.of(9), dirty: false }))).toThrow('must preserve');
+  });
 });
 
 describe('SortedList SDK: plans satisfy the proven covenants (end to end)', () => {

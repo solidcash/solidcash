@@ -112,7 +112,11 @@ import {
   SortedList, getCachedSortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment,
   encodeEntryCommitment, decodeEntryCommitment,
 } from './SortedList.js';
-import { encodeKernelEntryJournalAccesses } from './KernelEntryJournal.js';
+import {
+  encodeKernelEntryJournalAccesses,
+  planKernelEntryJournalAccessTopology,
+  type KernelEntryJournalTopologyOperation,
+} from './KernelEntryJournal.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
@@ -16017,6 +16021,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       : (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) > 0
         ? [{ abiFunction: entryAbiFunction!, args: entryArgs, routed: false, row: undefined }]
         : [];
+    const runtimeKernelJournalStreams: Array<{
+      collection: string;
+      list: SortedList;
+      writes: Array<{ slot: Uint8Array; operation: KernelEntryJournalTopologyOperation }>;
+      publish: (encoded: Uint8Array) => void;
+    }> = [];
     const runtimeLoopsByCollection = new Map<string, Array<(typeof upsertPlanningFrames)[number]>>();
     for (const frame of upsertPlanningFrames) {
       for (const info of frame.abiFunction.sortedUpsertLoopInfo ?? []) {
@@ -16801,6 +16811,44 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
       }
+      const journalArgumentIndex = loopAbiFunction.inputs.findIndex(
+        (input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS,
+      );
+      if (journalArgumentIndex >= 0) {
+        const streamIndex = info.journalAccessStreamIndex;
+        const streamCount = loopAbiFunction.sortedUpsertLoopInfo?.length ?? 0;
+        if (!Number.isSafeInteger(streamIndex) || streamIndex < 0 || streamIndex >= streamCount) {
+          throw new Error(
+            `Kernel runtime loop in '${loopAbiFunction.name}' has invalid journal stream ordinal ${streamIndex}.`,
+          );
+        }
+        const operation: KernelEntryJournalTopologyOperation = info.op === 'read'
+          ? 'read' : info.op === 'delete' ? 'delete' : 'write';
+        runtimeKernelJournalStreams.push({
+          collection: info.collection,
+          list,
+          writes: keysArr.map((key) => ({ slot: slotForKey(key), operation })),
+          publish: (encoded) => {
+            const current = argOf(KERNEL_JOURNAL_ACCESS_STREAMS);
+            const initialized = current === undefined || (Array.isArray(current) && current.length === 0)
+              ? kernelJournalAccessStreamPlaceholders(loopAbiFunction) : current;
+            if (!Array.isArray(initialized) || initialized.length !== streamCount
+              || initialized.some((stream) => !(stream instanceof Uint8Array))) {
+              const actual = !Array.isArray(initialized) ? typeof initialized
+                : `${initialized.length} (${initialized.map((stream) => (
+                  stream instanceof Uint8Array ? 'bytes' : typeof stream
+                )).join(', ')})`;
+              throw new Error(
+                `Kernel handler '${loopAbiFunction.name}' requires ${streamCount} journal access streams; `
+                + `received ${actual}.`,
+              );
+            }
+            const streams = [...initialized] as Uint8Array[];
+            streams[streamIndex] = encoded;
+            replaceLoopArgument(journalArgumentIndex, streams);
+          },
+        });
+      }
       if (info.valueRuntimeLocal) {
         const oldWitnesses: ConstructorArgument[] = [];
         const runtimeSlots = new Set<string>();
@@ -17239,6 +17287,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         replaceLoopArgument(index, BigInt(count));
       }
       }
+    }
+
+    const kernelStreamsByCollection = new Map<string, typeof runtimeKernelJournalStreams>();
+    for (const stream of runtimeKernelJournalStreams) {
+      const collectionStreams = kernelStreamsByCollection.get(stream.collection) ?? [];
+      collectionStreams.push(stream);
+      kernelStreamsByCollection.set(stream.collection, collectionStreams);
+    }
+    for (const collectionStreams of kernelStreamsByCollection.values()) {
+      const plan = planKernelEntryJournalAccessTopology(
+        collectionStreams[0].list,
+        collectionStreams.map((stream) => stream.writes),
+      );
+      collectionStreams.forEach((stream, index) => stream.publish(plan.encodedAccessStreams[index]));
     }
 
     // Every row which can touch a collection receives the same transaction-wide runtime cardinality. The route

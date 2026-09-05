@@ -11,6 +11,7 @@ import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';
 import {
   getEntryNftAddress, getSatoshiContainerAddress, getTokenContainerAddress,
 } from '../../../src/stateful/covenant-helpers.js';
@@ -2893,6 +2894,19 @@ describe('kernel counter-key mapping loop compose', () => {
     const routePermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
       input.name === permutationInput!.name);
     expect(routePermutationIndex).toBeGreaterThanOrEqual(0);
+    const routeJournalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === '__internal__kernelJournalAccessStreams');
+    expect(routeJournalIndex).toBeGreaterThanOrEqual(0);
+    const rowJournalVectors = routeUnlocker.params[routeJournalIndex];
+    if (!Array.isArray(rowJournalVectors) || !Array.isArray(rowJournalVectors[0])
+      || !(rowJournalVectors[0][0] instanceof Uint8Array)) {
+      throw new Error('expected row-indexed compiler-derived journal access streams');
+    }
+    expect(decodeKernelEntryJournalAccesses(rowJournalVectors[0][0])).toEqual([
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
+      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true },
+      { targetRecordOrdinal: 3, predecessorRecordOrdinal: 2, presentBefore: false, presentAfter: true },
+    ]);
     const originalRouteUnlocker = routeUnlocker;
     const routeSelector = artifact.messageBus!.route.selector;
     if (!routeSelector) throw new Error('message-bus route has no selector');

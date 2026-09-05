@@ -3,6 +3,7 @@ import {
   type JournaledMutationAccess,
   type JournaledMutationPlan,
   type JournaledMutationRecord,
+  type JournaledMutationResult,
   type JournaledUpsert,
 } from './SortedList.js';
 
@@ -59,6 +60,16 @@ export interface KernelEntryJournalStreamPlan {
   encodedAccessStreams: Uint8Array[];
 }
 
+/** Value-independent operation classes used while assigning stable access ordinals. */
+export type KernelEntryJournalTopologyOperation = 'read' | 'write' | 'delete';
+
+export interface KernelEntryJournalAccessTopologyPlan {
+  /** Number of first-touch records addressed by every stream in this plan. */
+  recordCount: number;
+  /** One compact access program for each source stream. */
+  encodedAccessStreams: Uint8Array[];
+}
+
 function requireIdentity(name: string, value: Uint8Array): void {
   if (value.length !== IDENTITY_BYTES) throw new Error(`${name} must be exactly ${IDENTITY_BYTES} bytes`);
 }
@@ -77,7 +88,9 @@ export function encodeKernelEntryJournalRecord(record: KernelEntryJournalRecord)
   if (record.authenticated && record.synthetic) {
     throw new Error('a journal node cannot be both authenticated and synthetic');
   }
-  if (record.tombstone && !record.dirty) throw new Error('a journal tombstone must be dirty');
+  if (record.tombstone && !record.dirty && !record.synthetic) {
+    throw new Error('a clean journal tombstone must describe an unauthenticated synthetic record');
+  }
   let flags = 0;
   if (record.authenticated) flags |= FLAG_AUTHENTICATED;
   if (record.dirty) flags |= FLAG_DIRTY;
@@ -106,7 +119,9 @@ export function decodeKernelEntryJournalRecord(encoded: Uint8Array): KernelEntry
   const tombstone = (flags & FLAG_TOMBSTONE) !== 0;
   const synthetic = (flags & FLAG_SYNTHETIC) !== 0;
   if (authenticated && synthetic) throw new Error('a journal node cannot be both authenticated and synthetic');
-  if (tombstone && !dirty) throw new Error('a journal tombstone must be dirty');
+  if (tombstone && !dirty && !synthetic) {
+    throw new Error('a clean journal tombstone must describe an unauthenticated synthetic record');
+  }
   return {
     collectionHash: encoded.slice(2, 2 + IDENTITY_BYTES),
     slot: encoded.slice(2 + IDENTITY_BYTES, 2 + IDENTITY_BYTES * 2),
@@ -161,6 +176,36 @@ export function planKernelEntryJournalStreams<T>(
     mutationPlan,
     encodedRecords: encodeKernelEntryJournalRecords(collectionHash, mutationPlan.records),
     encodedAccessStreams,
+  };
+}
+
+/**
+ * Plan record selection before concrete values are available. This intentionally returns no record carriers:
+ * placeholder values are sufficient to determine presence, predecessor topology, and first-touch ordinals, but
+ * must never be confused with the final values emitted by `planKernelEntryJournalStreams`.
+ */
+export function planKernelEntryJournalAccessTopology(
+  list: SortedList,
+  streams: readonly (readonly JournaledUpsert<KernelEntryJournalTopologyOperation>[])[],
+): KernelEntryJournalAccessTopologyPlan {
+  const preserve = (current: Uint8Array | undefined): JournaledMutationResult => ({
+    value: current,
+    dirty: false,
+  });
+  const streamLengths = streams.map((stream) => stream.length);
+  const mutationPlan = list.planJournaledMutations(
+    streams.flat(),
+    (current, operation) => operation === 'read' ? preserve(current)
+      : operation === 'delete' ? undefined : new Uint8Array(),
+  );
+  let accessOffset = 0;
+  return {
+    recordCount: mutationPlan.records.length,
+    encodedAccessStreams: streamLengths.map((length) => {
+      const accesses = mutationPlan.accesses.slice(accessOffset, accessOffset + length);
+      accessOffset += length;
+      return encodeKernelEntryJournalAccesses(accesses);
+    }),
   };
 }
 

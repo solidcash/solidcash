@@ -113,15 +113,16 @@ export {
   encodeEntryCommitment, decodeEntryCommitment, isEmptyValueEntryCommitment, headSentinelCommitment,
   type SortedEntry, type NonMembershipPlan, type MembershipPlan, type InsertPlan, type DeletePlan, type UpdatePlan,
   type BatchUpsertPlan, type JournaledUpsert, type JournaledMutationRecord, type JournaledMutationAccess,
-  type JournaledMutationPlan,
+  type JournaledMutationPlan, type JournaledMutationResult,
 } from './SortedList.js';
 export {
   KERNEL_ENTRY_JOURNAL_TAG, KERNEL_ENTRY_JOURNAL_ACCESS_TAG,
   KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES, KERNEL_ENTRY_JOURNAL_MAX_ACCESSES,
   encodeKernelEntryJournalRecord, encodeKernelEntryJournalRecords, decodeKernelEntryJournalRecord,
   encodeKernelEntryJournalAccesses, decodeKernelEntryJournalAccesses,
-  planKernelEntryJournalStreams,
+  planKernelEntryJournalStreams, planKernelEntryJournalAccessTopology,
   type KernelEntryJournalRecord, type KernelEntryJournalStreamPlan,
+  type KernelEntryJournalTopologyOperation, type KernelEntryJournalAccessTopologyPlan,
 } from './KernelEntryJournal.js';
 export {
   registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,

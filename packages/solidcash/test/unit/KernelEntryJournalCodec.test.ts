@@ -10,6 +10,7 @@ import {
   encodeKernelEntryJournalAccesses,
   encodeKernelEntryJournalRecord,
   encodeKernelEntryJournalRecords,
+  planKernelEntryJournalAccessTopology,
   planKernelEntryJournalStreams,
 } from '../../src/stateful/KernelEntryJournal.js';
 import { SortedList, encodeEntryCommitment, slotValueToBytes } from '../../src/stateful/SortedList.js';
@@ -20,7 +21,11 @@ const bytes = (length: number, fill: number): Uint8Array => new Uint8Array(lengt
 
 describe('kernel pending-entry journal codec', () => {
   it('builds a dense canonical placeholder vector from stream ordinals, independent of schema names', () => {
-    const handler = (name: string, collections: string[]) => ({
+    const handler = (name: string, collections: string[]): {
+      name: string;
+      inputs: Array<{ name: string; type: string }>;
+      sortedUpsertLoopInfo: Array<{ collection: string; journalAccessStreamIndex: number }>;
+    } => ({
       name,
       inputs: [{ name: '__internal__kernelJournalAccessStreams', type: 'bytes[]' }],
       sortedUpsertLoopInfo: collections.map((collection, journalAccessStreamIndex) => ({
@@ -97,7 +102,7 @@ describe('kernel pending-entry journal codec', () => {
       ...valid, value: bytes(KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES + 1, 4),
     })).toThrow('exceeds');
     expect(() => encodeKernelEntryJournalRecord({ ...valid, synthetic: true })).toThrow('both');
-    expect(() => encodeKernelEntryJournalRecord({ ...valid, tombstone: true })).toThrow('must be dirty');
+    expect(() => encodeKernelEntryJournalRecord({ ...valid, tombstone: true })).toThrow('clean journal tombstone');
     expect(() => decodeKernelEntryJournalRecord(bytes(97, 0))).toThrow('truncated');
     const badTag = encodeKernelEntryJournalRecord(valid); badTag[0] = 0x06;
     expect(() => decodeKernelEntryJournalRecord(badTag)).toThrow('tag');
@@ -169,6 +174,36 @@ describe('kernel pending-entry journal codec', () => {
       { slot: 20, value: 7, synthetic: true },
     ]);
     expect(plan.encodedRecords).toHaveLength(2);
+  });
+
+  it('plans clean reads and writes across neutral runtime stream boundaries', () => {
+    const slot = (value: bigint): Uint8Array => slotValueToBytes(value);
+    const entry = (txidByte: string, value: bigint, next: bigint): Utxo => ({
+      txid: txidByte.repeat(64), vout: 0, satoshis: 1000n,
+      token: {
+        category: '11'.repeat(32), amount: 0n,
+        nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(slot(value), slot(next))) },
+      },
+    });
+    const plan = planKernelEntryJournalAccessTopology(
+      SortedList.fromUtxos([entry('0', 0n, 10n), entry('1', 10n, 0n)]),
+      [
+        [{ slot: slot(10n), operation: 'read' }, { slot: slot(20n), operation: 'read' }],
+        [{ slot: slot(20n), operation: 'write' }, { slot: slot(10n), operation: 'delete' }],
+      ],
+    );
+
+    expect(plan.recordCount).toBe(3);
+    expect(plan.encodedAccessStreams.map((stream) => decodeKernelEntryJournalAccesses(stream))).toEqual([
+      [
+        { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true },
+        { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: false },
+      ],
+      [
+        { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
+        { targetRecordOrdinal: 0, predecessorRecordOrdinal: 2, presentBefore: true, presentAfter: false },
+      ],
+    ]);
   });
 
   it('round-trips insert, update, delete, and absent-delete access states', () => {

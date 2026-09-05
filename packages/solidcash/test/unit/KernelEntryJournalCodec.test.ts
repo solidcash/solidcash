@@ -14,10 +14,33 @@ import {
 } from '../../src/stateful/KernelEntryJournal.js';
 import { SortedList, encodeEntryCommitment, slotValueToBytes } from '../../src/stateful/SortedList.js';
 import type { Utxo } from '../../src/interfaces.js';
+import { kernelJournalAccessStreamPlaceholders } from '../../src/stateful/StatefulContract.js';
 
 const bytes = (length: number, fill: number): Uint8Array => new Uint8Array(length).fill(fill);
 
 describe('kernel pending-entry journal codec', () => {
+  it('builds a dense canonical placeholder vector from stream ordinals, independent of schema names', () => {
+    const handler = (name: string, collections: string[]) => ({
+      name,
+      inputs: [{ name: '__internal__kernelJournalAccessStreams', type: 'bytes[]' }],
+      sortedUpsertLoopInfo: collections.map((collection, journalAccessStreamIndex) => ({
+        collection, journalAccessStreamIndex,
+      })),
+    });
+    const ledger = kernelJournalAccessStreamPlaceholders(handler('reconcile', ['credits', 'debits']) as never);
+    const registry = kernelJournalAccessStreamPlaceholders(handler('apply', ['primary', 'secondary']) as never);
+
+    expect(ledger).toEqual([Uint8Array.of(0x06, 0), Uint8Array.of(0x06, 0)]);
+    expect(registry).toEqual(ledger);
+    expect(() => kernelJournalAccessStreamPlaceholders({
+      ...handler('invalid', ['first', 'second']),
+      sortedUpsertLoopInfo: [
+        { collection: 'first', journalAccessStreamIndex: 0 },
+        { collection: 'second', journalAccessStreamIndex: 0 },
+      ],
+    } as never)).toThrow('non-canonical');
+  });
+
   it('round-trips an authenticated dirty scalar entry', () => {
     const encoded = encodeKernelEntryJournalRecord({
       collectionHash: bytes(32, 0x11),

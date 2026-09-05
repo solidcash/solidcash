@@ -112,6 +112,7 @@ import {
   SortedList, getCachedSortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment,
   encodeEntryCommitment, decodeEntryCommitment,
 } from './SortedList.js';
+import { encodeKernelEntryJournalAccesses } from './KernelEntryJournal.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { attachWait } from '../wait.js';
 import Signer from '../Signer.js';
@@ -371,6 +372,20 @@ function defaultInternalFunctionArg(input: { name: string; type?: string }): Fun
     || name.includes('OutputIdx')) return -1n;
   if (type === 'bool') return false;
   return 0n;
+}
+
+/** Build the canonical empty access vector for one handler's compiler-published stream ordinal space. */
+export function kernelJournalAccessStreamPlaceholders(handler: Pick<AbiFunction, 'name' | 'inputs'
+| 'sortedUpsertLoopInfo'>): Uint8Array[] {
+  if (!handler.inputs.some((input) => input.name === KERNEL_JOURNAL_ACCESS_STREAMS)) return [];
+  const infos = handler.sortedUpsertLoopInfo ?? [];
+  const ordinals = infos.map((info) => info.journalAccessStreamIndex);
+  const expected = new Set(Array.from({ length: infos.length }, (_unused, index) => index));
+  if (ordinals.length !== expected.size
+    || ordinals.some((ordinal) => !Number.isSafeInteger(ordinal) || !expected.delete(ordinal))) {
+    throw new Error(`Kernel handler '${handler.name}' has a non-canonical journal access stream ordinal space`);
+  }
+  return Array.from({ length: infos.length }, () => encodeKernelEntryJournalAccesses([]));
 }
 
 type GraphBlockhashSelection = {
@@ -4430,8 +4445,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
       for (const [rowIndex, row] of (effectiveRowArguments ?? []).entries()) {
         if (!row.handler.inputs.some((candidate) => candidate.name === input.name)) continue;
-        (row.internalArgs as Record<string, FunctionArgument>)[input.name] = [];
-        rowStreams[rowIndex] = [];
+        const streams = kernelJournalAccessStreamPlaceholders(row.handler);
+        (row.internalArgs as Record<string, FunctionArgument>)[input.name] = streams;
+        rowStreams[rowIndex] = streams;
       }
       resolvedCallerInternalWitnesses[input.name] = rowStreams;
     }

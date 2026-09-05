@@ -498,7 +498,9 @@ Every `sortedUpsertLoopInfo` entry publishes its stable `journalAccessStreamInde
 address the selected row's stream vector without reconstructing compiler traversal order from collection names.
 The source handler carries that vector as the compiler-owned `bytes[] __internal__kernelJournalAccessStreams`
 context. The kernel route adds only its outer row dimension (`bytes[][]`) and selects `[row]` in the physical
-dispatcher, instead of adding one dynamic ABI band for every stream.
+dispatcher, instead of adding one dynamic ABI band for every stream. The SDK initializes every handler vector as
+a dense ordinal-indexed set of canonical empty `0x06 0x00` programs; duplicate, missing, or out-of-range compiler
+ordinals fail before transaction construction rather than aliasing two logical streams.
 The SDK's sorted-list model exposes ordered `planJournaledUpserts` / `planJournaledMutations` reference planners:
 repeated logical slots reduce against their pending values, delete/reinsert observes pending absence, original
 entries and shared predecessors are selected once, and the final linked-list commitments are emitted once. The

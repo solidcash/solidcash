@@ -33,6 +33,7 @@ export {
   visibleHandlerInputs,
   matchingRouteRowsForExpressionKey,
   resolveRouteRowExpressionKey,
+  kernelJournalAccessStreamPlaceholders,
   type RouteExpressionKeyRow,
   type SoftStateSnapshot,
 } from './StatefulContract.js';

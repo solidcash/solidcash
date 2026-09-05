@@ -22123,10 +22123,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.sortedUpsertPendingRepoint = false;
     }
 
-    // Pending-defer registers: crediting ops (+/set, which can INSERT + CHAIN) and the DEBIT op (-, which only updates
-    // + accumulates duplicates; its flush INSERT/re-point path is gated off below). Not 'delete'. Init empty:
+    // Pending-defer registers: crediting ops (+/set, which can INSERT + CHAIN), the DEBIT op (-), and delete. The
+    // latter two only update existing entries and use the pending value to consume duplicate logical occurrences;
+    // their flush INSERT/re-point path is gated off below. Init empty:
     // pu_slot = b'' (no pending), pu_val = 0, pu_next = b'' (+inf).
-    if (op === '+' || op === 'set' || op === '-') {
+    if (op === '+' || op === 'set' || op === '-' || op === 'delete') {
       this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertPendSlotName);
       this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertPendValName);
       this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertPendNextName);
@@ -22280,7 +22281,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
     // DUPLICATE of the pending entry (Hk == pu_slot): the SAME key listed again. Accumulate into the pending instead of
-    // co-spending its entry a second time - pu_val OP amt (+= for '+', = for 'set'), keep the pending, consumed = 1.
+    // co-spending its entry a second time - pu_val OP amt (+=/-= for arithmetic, = for set/delete), keep the pending,
+    // consumed = 1.
     // This is what lets a SCALAR/const-value loop (`+= amount` / `+= 100`, no per-key array to merge in the SDK) support
     // a duplicate recipient: the covenant applies the scalar once per occurrence to the single co-spent entry.
     this.emit(encodeInt(BigInt(this.getStackIndex(pSlot))), loc); this.emit(Op.OP_PICK, loc);          // pu_slot U=1
@@ -22288,7 +22290,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUAL, loc);                                                                       // isDup U=1
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
-    if (this.sortedUpsertLoopOp === 'set') {
+    if (this.sortedUpsertLoopOp === 'set' || this.sortedUpsertLoopOp === 'delete') {
       const mutationOldWitness = node instanceof MappingAssignNode
         ? node.messageBusRuntimeOldValueWitness : undefined;
       if (mutationOldWitness) {
@@ -22340,9 +22342,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BOOLAND, loc); // inGap U=1
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
-    // A DEBIT (`-=`) can never INSERT a new key (debiting an absent key is invalid), so its in-gap flush - which would
-    // mint a NEW node - fails closed. Only +/set reach the re-point. (The duplicate/normal flush paths still apply.)
-    if (this.sortedUpsertLoopOp === '-') { this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc); }
+    // A DEBIT (`-=`) or delete can never INSERT a new key, so its in-gap flush - which would mint a NEW node - fails
+    // closed. Only +/set reach the re-point. (The duplicate/normal flush paths still apply.)
+    if (this.sortedUpsertLoopOp === '-' || this.sortedUpsertLoopOp === 'delete') {
+      this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc);
+    }
     // ===== RE-POINT + CHAIN-DEFER: mint P' = [pu_slot|Hk|pu_val] (P re-pointed to the new node), then DEFER the new
     // node itself into the pending (pu_slot=Hk, pu_val=amt, pu_next stays = P.oldNext = the new node's successor).
     // outCounter += 1; consumed = 1. Deferring the new node lets a FURTHER new recipient in the same gap chain off it

@@ -4811,12 +4811,22 @@ describe('kernel composite counter-key settlement', () => {
         }
         require(true);
       }
+      function defaultPrefix(int n) public {
+        int[] xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) {
+          this.slots[xs[i]] = i + 1;
+          xs.push(i + 40);
+        }
+        require(true);
+      }
       function seed(int key) public { this.slots[key] = 0; require(true); }
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'prefix'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'defaultPrefix'))
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -4846,6 +4856,64 @@ describe('kernel composite counter-key settlement', () => {
     for (const [key, expected] of [[31n, 1n], [32n, 2n], [33n, 3n]] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
+    await contract.call.seed(0n).send();
+    await expect(contract.batch([{ function: 'defaultPrefix', args: [3n] }]).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 3n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('preserves every occurrence when counter-derived keys repeat', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelRepeatedCounterKey() {
+      mapping(int => int) slots;
+      function write(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.slots[i % 2] = i + 10;
+        }
+        require(true);
+      }
+      function setInvariant(int n, int value) public {
+        for (int i = 0; i < n; i = i + 1) { this.slots[i % 2] = value; }
+        require(true);
+      }
+      function add(int n) public {
+        for (int i = 0; i < n; i = i + 1) { this.slots[i % 2] += i + 1; }
+        require(true);
+      }
+      function clear(int n) public {
+        for (int i = 0; i < n; i = i + 1) { delete this.slots[i % 2]; }
+        require(true);
+      }
+      function seed(int key) public { this.slots[key] = 0; require(true); }
+      function check(int key, int expected) public { require(this.slots[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await contract.call.seed(0n).send();
+    await contract.call.seed(1n).send();
+    const call = contract.batch([{ function: 'write', args: [4n] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(0n, 12n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 13n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'setInvariant', args: [4n, 20n] }]).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'add', args: [4n] }]).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 24n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 26n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'clear', args: [4n] }]).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 0n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(1n, 0n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles a constructed-array pop recurrence inside a kernel loop', async () => {

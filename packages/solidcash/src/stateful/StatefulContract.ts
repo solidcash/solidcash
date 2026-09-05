@@ -16606,10 +16606,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // entry per recipient, combine duplicates into ONE entry (co-spent once) with the merged amount, BEFORE the
       // self-transfer filter / reorder. For += the merged sum equals the original sum, so a coexisting `bal[msg.sender]
       // -= amounts[i]` debit is unchanged. Scalar/const-value: a `set` (= amount / = 100) duplicate is idempotent, so
-      // dedupe (keep one); a scalar `+=` duplicate is handled by the covenant's isDup accumulate (below - the entry is
-      // co-spent once and the scalar applied per occurrence), so it is NOT pre-merged here; a scalar `-=` duplicate
-      // stays fail-closed (`-=` has no pending-defer).
-      if (!info.mutation && Array.isArray(keysArr) && keysArr.length > 1
+      // dedupe (keep one); compiler-owned counter streams retain every occurrence because their row loop and effect
+      // domains cannot be shortened. Those streams use the pending transition below for set/delete/`+=`/`-=`.
+      if (!counterSpec && !info.mutation && Array.isArray(keysArr) && keysArr.length > 1
         && !info.valueArrayIndexParam && (isDelete || perKey || info.op === 'set')) {
         const kArr = keysArr as unknown[];
         const slotHexes = kArr.map((key) => binToHex(slotForKey(key)));
@@ -17044,19 +17043,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const amt: bigint | Uint8Array = perKeyRawbytes ? encodeValueTail((valsArr as unknown[])[i])
           : isRawbytesVal ? 0n : isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         if (seenSlots.has(slotHex)) {
-          // SCALAR `+=` / `-=` DUPLICATE: the grouping above made this adjacent to its first occurrence, which is the
-          // pending (lastDeferred). Accumulate the scalar into that entry's commitment - the covenant's isDup does the
-          // same, co-spending the entry only once. (per-key / scalar-set / delete duplicates were already merged/deduped.)
-          if ((info.op === '+' || info.op === '-') && !perKey && !isDelete && lastDeferred && binToHex(lastDeferred.slot) === slotHex) {
+          // DUPLICATE `+=` / `-=`: compiler-owned counter permutations preserve every source occurrence, while public
+          // key arrays may have been pre-merged above. Accumulate this occurrence into the pending commitment exactly
+          // as the covenant does, without attempting to co-spend the entry again.
+          if ((info.op === '+' || info.op === '-') && !isDelete && lastDeferred
+            && binToHex(lastDeferred.slot) === slotHex) {
             lastDeferred.newVal = (lastDeferred.newVal as bigint) + (info.op === '-' ? -(amt as bigint) : (amt as bigint));
             commitments[lastDeferred.commitIndex] =
               binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, commitValue(lastDeferred.newVal)));
             continue;
           }
           // A compiler-owned permutation leaves public key/value arrays untouched. Repeated logical keys therefore
-          // remain as repeated physical iterations; the on-chain pending SET consumes them without another co-spend
-          // and keeps the last value. Mirror that transition by replacing the pending commitment in place.
-          if (info.op === 'set' && perKey && (info.valueArrayIndexParam || info.mutation) && lastDeferred
+          // remain as repeated physical iterations; the on-chain pending SET/DELETE consumes them without another
+          // co-spend and keeps the last value. Mirror that transition by replacing the pending commitment in place.
+          if ((info.op === 'set' || isDelete) && lastDeferred
             && binToHex(lastDeferred.slot) === slotHex) {
             lastDeferred.newVal = amt;
             commitments[lastDeferred.commitIndex] =
@@ -17091,9 +17091,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
           // Record this update as the pending-defer target BEFORE pushing its (initially normal) commitment, so a
-          // following bracketed new key can re-point it (foldActive) OR a duplicate can accumulate into it (also `-`,
-          // whose covenant pending-defer is active for duplicates even though it never inserts/folds).
-          if (foldActive || info.op === '-') {
+          // following bracketed new key can re-point it (foldActive) OR a duplicate can update it (`-` and delete also
+          // keep the pending register solely for duplicates even though they never insert/fold).
+          if (foldActive || info.op === '-' || isDelete) {
             lastDeferred = {
               uid: uidOf(entry.utxo), commitIndex: commitments.length,
               slot: entry.slot, newVal, oldNext: entry.nextKey,

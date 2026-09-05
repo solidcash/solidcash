@@ -16023,6 +16023,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         : [];
     const runtimeKernelJournalStreams: Array<{
       collection: string;
+      collectionHash: Uint8Array;
       list: SortedList;
       writes: Array<{ slot: Uint8Array; operation: KernelEntryJournalTopologyOperation }>;
       publish: (encoded: Uint8Array) => void;
@@ -16826,6 +16827,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ? 'read' : info.op === 'delete' ? 'delete' : 'write';
         runtimeKernelJournalStreams.push({
           collection: info.collection,
+          collectionHash: computeCollectionHash(collection.signature),
           list,
           writes: keysArr.map((key) => ({ slot: slotForKey(key), operation })),
           publish: (encoded) => {
@@ -17298,6 +17300,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const collectionStreams of kernelStreamsByCollection.values()) {
       const plan = planKernelEntryJournalAccessTopology(
         collectionStreams[0].list,
+        collectionStreams[0].collectionHash,
         collectionStreams.map((stream) => stream.writes),
       );
       collectionStreams.forEach((stream, index) => stream.publish(plan.encodedAccessStreams[index]));

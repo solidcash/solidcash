@@ -178,15 +178,21 @@ describe('kernel pending-entry journal codec', () => {
 
   it('plans clean reads and writes across neutral runtime stream boundaries', () => {
     const slot = (value: bigint): Uint8Array => slotValueToBytes(value);
-    const entry = (txidByte: string, value: bigint, next: bigint): Utxo => ({
+    const entry = (txidByte: string, value: bigint, next: bigint, tail?: number): Utxo => ({
       txid: txidByte.repeat(64), vout: 0, satoshis: 1000n,
       token: {
         category: '11'.repeat(32), amount: 0n,
-        nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(slot(value), slot(next))) },
+        nft: {
+          capability: 'mutable',
+          commitment: binToHex(encodeEntryCommitment(
+            slot(value), slot(next), tail === undefined ? new Uint8Array() : Uint8Array.of(tail),
+          )),
+        },
       },
     });
     const plan = planKernelEntryJournalAccessTopology(
-      SortedList.fromUtxos([entry('0', 0n, 10n), entry('1', 10n, 0n)]),
+      SortedList.fromUtxos([entry('0', 0n, 10n), entry('1', 10n, 0n, 4)]),
+      bytes(32, 0xaa),
       [
         [{ slot: slot(10n), operation: 'read' }, { slot: slot(20n), operation: 'read' }],
         [{ slot: slot(20n), operation: 'write' }, { slot: slot(10n), operation: 'delete' }],
@@ -194,6 +200,21 @@ describe('kernel pending-entry journal codec', () => {
     );
 
     expect(plan.recordCount).toBe(3);
+    expect(plan.encodedRecords.map((record) => {
+      const decoded = decodeKernelEntryJournalRecord(record);
+      return {
+        collection: decoded.collectionHash[0], slot: decoded.slot[0], value: decoded.value[0],
+        next: decoded.nextKey[0], authenticated: decoded.authenticated,
+        dirty: decoded.dirty, tombstone: decoded.tombstone, synthetic: decoded.synthetic,
+      };
+    })).toEqual([
+      { collection: 0xaa, slot: 10, value: 4, next: 0,
+        authenticated: true, dirty: false, tombstone: false, synthetic: false },
+      { collection: 0xaa, slot: 20, value: undefined, next: 0,
+        authenticated: false, dirty: false, tombstone: true, synthetic: true },
+      { collection: 0xaa, slot: 0, value: undefined, next: 10,
+        authenticated: true, dirty: false, tombstone: false, synthetic: false },
+    ]);
     expect(plan.encodedAccessStreams.map((stream) => decodeKernelEntryJournalAccesses(stream))).toEqual([
       [
         { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true },

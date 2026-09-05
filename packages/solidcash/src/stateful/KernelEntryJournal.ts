@@ -66,6 +66,8 @@ export type KernelEntryJournalTopologyOperation = 'read' | 'write' | 'delete';
 export interface KernelEntryJournalAccessTopologyPlan {
   /** Number of first-touch records addressed by every stream in this plan. */
   recordCount: number;
+  /** Truthful pre-state carriers in the same first-touch ordinal space as the access programs. */
+  encodedRecords: Uint8Array[];
   /** One compact access program for each source stream. */
   encodedAccessStreams: Uint8Array[];
 }
@@ -186,8 +188,10 @@ export function planKernelEntryJournalStreams<T>(
  */
 export function planKernelEntryJournalAccessTopology(
   list: SortedList,
+  collectionHash: Uint8Array,
   streams: readonly (readonly JournaledUpsert<KernelEntryJournalTopologyOperation>[])[],
 ): KernelEntryJournalAccessTopologyPlan {
+  requireIdentity('collectionHash', collectionHash);
   const preserve = (current: Uint8Array | undefined): JournaledMutationResult => ({
     value: current,
     dirty: false,
@@ -201,6 +205,31 @@ export function planKernelEntryJournalAccessTopology(
   let accessOffset = 0;
   return {
     recordCount: mutationPlan.records.length,
+    // Topology planning intentionally does not claim final values. Existing records carry their exact authenticated
+    // pre-state commitment, while absent targets are clean synthetic tombstones. The covenant may transition these
+    // records in source order later; neither form can be mistaken for an already-settled dirty output.
+    encodedRecords: mutationPlan.records.map((record) => {
+      const original = list.find(record.slot);
+      return encodeKernelEntryJournalRecord(original ? {
+        collectionHash,
+        slot: original.slot,
+        nextKey: original.nextKey,
+        value: original.value,
+        authenticated: true,
+        dirty: false,
+        tombstone: false,
+        synthetic: false,
+      } : {
+        collectionHash,
+        slot: record.slot,
+        nextKey: new Uint8Array(IDENTITY_BYTES),
+        value: new Uint8Array(),
+        authenticated: false,
+        dirty: false,
+        tombstone: true,
+        synthetic: true,
+      });
+    }),
     encodedAccessStreams: streamLengths.map((length) => {
       const accesses = mutationPlan.accesses.slice(accessOffset, accessOffset + length);
       accessOffset += length;

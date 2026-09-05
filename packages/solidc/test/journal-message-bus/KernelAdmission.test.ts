@@ -3129,6 +3129,9 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.route.inputs.some((input) =>
       input.name.startsWith('__internal__vmapCounterPerm_'))).toBe(true);
+    const streams = artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo ?? [];
+    expect(streams).toHaveLength(2);
+    expect(new Set(streams.map((stream) => stream.journalExecutionGroup)).size).toBe(1);
   });
 
   it('admits independently sorted key shapes in one physical collection', () => {

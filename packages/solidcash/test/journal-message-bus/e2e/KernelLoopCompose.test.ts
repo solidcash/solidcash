@@ -3498,6 +3498,7 @@ describe('kernel composite counter-key settlement', () => {
     expect(write.inputs.filter((input) => input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
     expect(write.sortedUpsertLoopInfo).toHaveLength(2);
     expect(new Set(write.sortedUpsertLoopInfo?.map((info) => info.varyingArrayParam)).size).toBe(2);
+    expect(new Set(write.sortedUpsertLoopInfo?.map((info) => info.journalExecutionGroup)).size).toBe(1);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -4412,6 +4413,7 @@ describe('kernel composite counter-key settlement', () => {
     const shapes = artifact.abi.find((candidate) => candidate.name === 'writeShapes')!;
     expect(shapes.sortedUpsertLoopInfo).toHaveLength(2);
     expect(new Set(shapes.sortedUpsertLoopInfo?.map((info) => info.varyingArrayParam)).size).toBe(2);
+    expect(new Set(shapes.sortedUpsertLoopInfo?.map((info) => info.journalExecutionGroup)).size).toBe(1);
     const shapeCall = updated.call.writeShapes(3n, 80n);
     const shapeBuilder = await shapeCall.build();
     const shapeInput = shapeBuilder.inputs.find((input) =>

@@ -1374,6 +1374,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertInputBaseName = '(sorted_upsert_input_base)';
   private sortedUpsertOutputBaseName = '(sorted_upsert_output_base)';
   private sortedUpsertLoopContexts = new Map<string, SortedUpsertLoopContext>();
+  /** Monotonic, function-local-in-practice identity for streams emitted by one source loop setup. */
+  private nextKernelJournalExecutionGroup = 0;
   private sortedUpsertLoopStreamKey = '';
   private sortedUpsertLoopVaryingArrayParam = '';
   private sortedUpsertLoopJournalAccessStreamIndex: number | undefined;
@@ -22149,7 +22151,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const varyingKeyExpressions = this.currentFunction.runtimeCounterLoopKeyExpressions
         ?.get(`${varyingArrayParam}\0${collection.name}`);
       infos.push({ collection: collection.name, collectionHash: binToHex(collectionHash),
-        journalAccessStreamIndex: infos.length,
+        journalAccessStreamIndex: infos.length, journalExecutionGroup: -1,
         fixedKeyParams, fixedKeySources, varyingArrayParam,
         ...(varyingKeyIndices.length !== 1
           || varyingKeyIndices[0] !== metadataKeySources.length - 1 ? { varyingKeyIndices } : {}),
@@ -22281,6 +22283,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitSortedUpsertLoopSetups(block: Node, loc: SingleLocationData): SortedUpsertLoopContext[] {
     const contexts: SortedUpsertLoopContext[] = [];
+    const executionGroup = this.nextKernelJournalExecutionGroup++;
+    const markExecutionGroup = (): void => {
+      for (const context of contexts) {
+        const info = this.currentFunction.sortedUpsertLoopInfo?.find(
+          (candidate) => candidate.journalAccessStreamIndex === context.journalAccessStreamIndex,
+        );
+        if (info) info.journalExecutionGroup = executionGroup;
+      }
+    };
     const candidates = new Set<string>();
     for (;;) {
       const candidate = this.findSortedUpsertLoopWrite(block, candidates);
@@ -22292,6 +22303,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (candidates.size <= 1) {
       this.sortedUpsertGrouped = false;
       if (this.emitSortedUpsertLoopSetup(block, loc)) contexts.push(this.captureSortedUpsertLoopContext());
+      markExecutionGroup();
       this.sortedUpsertLoopContexts = new Map(contexts.map((context) => [context.streamKey, context]));
       return contexts;
     }
@@ -22333,6 +22345,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.sortedUpsertLoopActive = false;
       this.sortedUpsertLoopCollection = null;
     }
+    markExecutionGroup();
     for (const name of [nextOutputBase, nextInputBase]) {
       const index = this.getStackIndex(name);
       this.emit(encodeInt(BigInt(index)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);

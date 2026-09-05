@@ -546,6 +546,8 @@ export interface SortedUpsertLoopAbi {
   collectionHash: string;
   /** Stable source-order position of this stream in the selected row's compact journal-access vector. */
   journalAccessStreamIndex: number;
+  /** Opaque compiler ordinal shared by operation streams executed within the same source loop. */
+  journalExecutionGroup?: number;
   fixedKeyParams: readonly string[];
   fixedKeySources?: readonly KeySourceAbi[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration

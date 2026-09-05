@@ -6232,6 +6232,34 @@ function synthesizeMessageBusRoute(
     return Array.from({ length: bound }, (_unused, index) =>
       `require(${routeStateReference(name)}[${index}] == ${routeStateReference(name)}[${index}]);`);
   }).join('\n');
+  const kernelJournalRecordValidation = !kernelJournalAccessMode ? '' : `
+        require(${KERNEL_JOURNAL_RECORDS}.length <= 65535);
+        for (int __message_bus_journal_record_index = 0;
+          __message_bus_journal_record_index < ${KERNEL_JOURNAL_RECORDS}.length;
+          __message_bus_journal_record_index = __message_bus_journal_record_index + 1) {
+          bytes __message_bus_journal_record =
+            ${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_record_index];
+          require(__message_bus_journal_record.length >= 86);
+          require(__message_bus_journal_record.length <= 150);
+          require(__message_bus_journal_record.slice(0, 1) == hex"05");
+          bigint __message_bus_journal_record_flags = int(bytes.concat(
+            __message_bus_journal_record.slice(1, 2), hex"00"
+          ));
+          require(__message_bus_journal_record_flags < 16);
+          bool __message_bus_journal_record_authenticated =
+            __message_bus_journal_record_flags % 2 == 1;
+          bool __message_bus_journal_record_dirty =
+            __message_bus_journal_record_flags % 4 >= 2;
+          bool __message_bus_journal_record_tombstone =
+            __message_bus_journal_record_flags % 8 >= 4;
+          bool __message_bus_journal_record_synthetic =
+            __message_bus_journal_record_flags >= 8;
+          require(!__message_bus_journal_record_authenticated
+            || !__message_bus_journal_record_synthetic);
+          require(!__message_bus_journal_record_tombstone
+            || __message_bus_journal_record_dirty || __message_bus_journal_record_synthetic);
+        }
+  `;
   const routeStructs = [...ast.structDefinitions, ...contract.structDefinitions]
     .filter((definition, index, all) =>
       all.findIndex((candidate) => candidate.name === definition.name) === index)
@@ -6360,6 +6388,7 @@ function synthesizeMessageBusRoute(
   const routeSource = `${preamble}    contract __MessageBusHost() {
       function __message_bus1(${routeParameters}) external${returnDeclaration} {
         ${fixedIterationEntryPins}
+        ${kernelJournalRecordValidation}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${MAX_MESSAGE_BUS_BLOB_BYTES});
         bytes __message_bus_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;

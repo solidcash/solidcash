@@ -2897,6 +2897,9 @@ describe('kernel counter-key mapping loop compose', () => {
     const routeJournalIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
       input.name === '__internal__kernelJournalAccessStreams');
     expect(routeJournalIndex).toBeGreaterThanOrEqual(0);
+    const routeRecordIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === '__internal__kernelJournalRecords');
+    expect(routeRecordIndex).toBeGreaterThanOrEqual(0);
     const rowJournalVectors = routeUnlocker.params[routeJournalIndex];
     if (!Array.isArray(rowJournalVectors) || !Array.isArray(rowJournalVectors[0])
       || !(rowJournalVectors[0][0] instanceof Uint8Array)) {
@@ -2970,6 +2973,32 @@ describe('kernel counter-key mapping loop compose', () => {
       expect(hostileVm.stateSuccess(hostileVm.evaluate({
         inputIndex: routeInputIndex, sourceOutputs, transaction,
       })), `hostile journal stream: ${label}`).not.toBe(true);
+    }
+    const journalRecords = routeUnlocker.params[routeRecordIndex];
+    if (!Array.isArray(journalRecords) || !(journalRecords[0] instanceof Uint8Array)) {
+      throw new Error('expected compiler-derived journal records');
+    }
+    const hostileRecord = (mutate: (record: Uint8Array) => Uint8Array): Uint8Array[] =>
+      journalRecords.map((record, index) => index === 0
+        ? mutate(new Uint8Array(record as Uint8Array)) : new Uint8Array(record as Uint8Array));
+    const oversizedRecord = new Uint8Array(151);
+    oversizedRecord.set(journalRecords[0].slice(0, Math.min(journalRecords[0].length, 151)));
+    for (const [label, hostileRecords] of [
+      ['wrong tag', hostileRecord((record) => { record[0] = 0x04; return record; })],
+      ['truncated header', hostileRecord((record) => record.slice(0, 85))],
+      ['oversized value', hostileRecord(() => oversizedRecord)],
+      ['unknown flags', hostileRecord((record) => { record[1] |= 0x80; return record; })],
+      ['authenticated synthetic', hostileRecord((record) => { record[1] = 0x09; return record; })],
+      ['clean tombstone', hostileRecord((record) => { record[1] = 0x04; return record; })],
+    ] as const) {
+      const hostileRouteParams = [...routeUnlocker.params];
+      hostileRouteParams[routeRecordIndex] = hostileRecords;
+      hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileRouteParams);
+      const transaction = hostileBuilder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(hostileBuilder.inputs);
+      expect(hostileVm.stateSuccess(hostileVm.evaluate({
+        inputIndex: routeInputIndex, sourceOutputs, transaction,
+      })), `hostile journal record: ${label}`).not.toBe(true);
     }
     hostileBuilder.inputs[routeInputIndex].unlocker = originalRouteUnlocker;
 

@@ -725,6 +725,9 @@ interface SortedUpsertLoopContext {
   pendValName: string;
   pendNextName: string;
   pendActive: boolean;
+  readProofSlotName: string;
+  readProofNextName: string;
+  readProofActive: boolean;
 }
 /**
  * Whether a declared type is one whose access the compiler lowers through structural helpers - struct field
@@ -1344,6 +1347,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertPendValName: string = '(pu_val)';   // deferred entry new value
   private sortedUpsertPendNextName: string = '(pu_next)'; // deferred entry nextKey (empty b'' = +inf)
   private sortedUpsertPendActive: boolean = false;        // the pending-defer registers are live on the stack
+  // READ ABSENCE CACHE: once a read authenticates and reproduces a real entry, its [slot,nextKey) interval can
+  // prove any immediately following missing keys in that same gap without co-spending the entry again.
+  private sortedUpsertReadProofSlotName: string = '(read_proof_slot)';
+  private sortedUpsertReadProofNextName: string = '(read_proof_next)';
+  private sortedUpsertReadProofActive: boolean = false;
   // A runtime dispatcher loop can touch several conditional vmap collections. Positions in the shared trailing
   // region advance globally in source order, while each collection keeps independent authenticated counts and
   // topology registers.
@@ -21698,6 +21706,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       pendValName: this.sortedUpsertPendValName,
       pendNextName: this.sortedUpsertPendNextName,
       pendActive: this.sortedUpsertPendActive,
+      readProofSlotName: this.sortedUpsertReadProofSlotName,
+      readProofNextName: this.sortedUpsertReadProofNextName,
+      readProofActive: this.sortedUpsertReadProofActive,
     };
   }
 
@@ -21721,6 +21732,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertPendValName = context.pendValName;
     this.sortedUpsertPendNextName = context.pendNextName;
     this.sortedUpsertPendActive = context.pendActive;
+    this.sortedUpsertReadProofSlotName = context.readProofSlotName;
+    this.sortedUpsertReadProofNextName = context.readProofNextName;
+    this.sortedUpsertReadProofActive = context.readProofActive;
     this.sortedUpsertLoopActive = true;
   }
 
@@ -21749,6 +21763,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertPendSlotName = `(pu_slot_${suffix})`;
     this.sortedUpsertPendValName = `(pu_val_${suffix})`;
     this.sortedUpsertPendNextName = `(pu_next_${suffix})`;
+    this.sortedUpsertReadProofSlotName = `(read_proof_slot_${suffix})`;
+    this.sortedUpsertReadProofNextName = `(read_proof_next_${suffix})`;
     // Conditional lowering may clone the write after slots were assigned. Recover the collection's unique
     // runtime-loop slot; key/value recipe validation below still rejects ambiguous unsupported shapes.
     const slotIndex = writeNode.entrySlotIndex >= 0 ? writeNode.entrySlotIndex
@@ -22029,6 +22045,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.sortedUpsertPendActive = true;
     } else {
       this.sortedUpsertPendActive = false;
+    }
+
+    // Empty slot means no authenticated interval yet. A real slot is always exactly 32 bytes, including the
+    // all-zero sentinel, so OP_SIZE distinguishes an active proof without reserving a possible slot value.
+    if (op === 'read') {
+      this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertReadProofSlotName);
+      this.emit(Op.OP_0, loc); this.pushToStack(this.sortedUpsertReadProofNextName);
+      this.sortedUpsertReadProofActive = true;
+    } else {
+      this.sortedUpsertReadProofActive = false;
     }
 
     this.sortedUpsertLoopActive = true;
@@ -22522,6 +22548,57 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     };
 
+    // A sorted read stream can reuse the immediately prior authenticated node as an absence proof for every
+    // subsequent key in that node's open successor interval. The first use co-spends and reproduces the node;
+    // reuse consumes/mints nothing and only authenticates that the supplied language value is the exact default.
+    const emitReadProofOrNormalDispatch = (): void => {
+      if (!this.sortedUpsertReadProofActive) {
+        emitMergeOrNormalDispatch();
+        return;
+      }
+      // active && proofSlot < Hk && (proofNext == 0 || Hk < proofNext)
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertReadProofSlotName))), loc);
+      this.emit(Op.OP_PICK, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_0NOTEQUAL, loc);
+      this.emit(Op.OP_NIP, loc);                                                               // active (U=1)
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertReadProofSlotName) + 1)), loc);
+      this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);                                // slot# (U=2)
+      this.emit(encodeInt(BigInt(hkIdx() + 2)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+      this.emit(Op.OP_LESSTHAN, loc);                                                           // active,b1 (U=2)
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertReadProofNextName) + 2)), loc);
+      this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);                                // next# (U=3)
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DROP, loc); this.emit(Op.OP_1, loc);                                      // +inf -> b2 (U=3)
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(encodeInt(BigInt(hkIdx() + 3)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc);                               // Hk < next (U=3)
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_BOOLAND, loc); this.emit(Op.OP_BOOLAND, loc);                             // reusable (U=1)
+      this.emit(Op.OP_IF, loc);
+      this.scopeDepth += 1;
+      if (oldWitness) {
+        this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)'))), loc); this.emit(Op.OP_PICK, loc);
+        if (isRawbytes) {
+          this.emitDefaultValue(loc, collection.innermostValueType);
+          this.emit(Op.OP_EQUALVERIFY, loc);
+        } else {
+          this.emit(Op.OP_BIN2NUM, loc);
+          this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+        }
+      }
+      this.emit(Op.OP_0, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_0, loc);                 // cleanup shape
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ELSE, loc);
+      this.scopeDepth += 1;
+      emitNormalStep();                                                                          // coSlot,coNext,X (U=3)
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);                                 // coSlot copy (U=4)
+      this.emitReplace(this.getStackIndex(this.sortedUpsertReadProofSlotName) + 4, node);
+      this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc);                                 // coNext copy (U=4)
+      this.emitReplace(this.getStackIndex(this.sortedUpsertReadProofNextName) + 4, node);
+      this.scopeDepth -= 1;
+      this.emit(Op.OP_ENDIF, loc);                                                               // t,t,t (U=3)
+    };
+
     // CASE (b) FLUSH-WITH-REPOINT: mint the prior iteration's DEFERRED update (if any). If THIS key lands in the
     // pending's gap it is a NEW node right after the pending: re-point the pending + mint NEW here (consumed = 1),
     // and skip the current key's normal processing (it co-spent nothing). Otherwise mint the pending normally and
@@ -22534,11 +22611,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.scopeDepth -= 1;
       this.emit(Op.OP_ELSE, loc);
       this.scopeDepth += 1;
-      emitMergeOrNormalDispatch();                                            // -> [x,x,x] U=3
+      emitReadProofOrNormalDispatch();                                        // -> [x,x,x] U=3
       this.scopeDepth -= 1;
       this.emit(Op.OP_ENDIF, loc);                                            // [x,x,x] U=3
     } else {
-      emitMergeOrNormalDispatch();                                            // -> [coSlot,coNext,X] U=3
+      emitReadProofOrNormalDispatch();                                        // -> [coSlot,coNext,X] U=3
     }
 
     // common cleanup: drop the 3 untracked temps + [credit_amt, optional credit_old, credit_hk].
@@ -22619,12 +22696,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.sortedUpsertPendActive) {
       dropNames.unshift(this.sortedUpsertPendSlotName, this.sortedUpsertPendValName, this.sortedUpsertPendNextName);
     }
+    if (this.sortedUpsertReadProofActive) {
+      dropNames.unshift(this.sortedUpsertReadProofSlotName, this.sortedUpsertReadProofNextName);
+    }
     for (const name of dropNames) {
       const i = this.getStackIndex(name);
       this.emit(encodeInt(BigInt(i)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
       this.removeFromStack(i);
     }
     this.sortedUpsertPendActive = false;
+    this.sortedUpsertReadProofActive = false;
     this.sortedUpsertLoopActive = false;
     this.sortedUpsertLoopCollection = null;
     this.sortedUpsertLoopStreamKey = '';

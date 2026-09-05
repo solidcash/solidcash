@@ -16896,6 +16896,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const seenSlots = new Set<string>();
       const cospent = new Set<string>();
       const uidOf = (u: { txid: string; vout: number }): string => `${u.txid}:${u.vout}`;
+      // The on-chain read loop caches the last real node it authenticated and reproduced unchanged. Sorted keys
+      // which remain in that node's successor gap reuse the proof instead of attempting an invalid duplicate
+      // co-spend. Keep the exact same interval here so physical input/output counts match the covenant.
+      let priorReadProof: { uid: string; slot: Uint8Array; nextKey: Uint8Array } | undefined;
       // Pre-seed with this collection's FIXED (non-loop) entry co-spends - notably the cached `bal[msg.sender] -=`
       // DEBIT write. If a NEW recipient's bracketing predecessor is one of those already-co-spent entries, co-spending
       // it again would make an invalid duplicate input; detect it here and fail closed with a clear message (else the
@@ -16984,6 +16988,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             };
           }
           commitments.push(binToHex(encodeEntryCommitment(entry.slot, entry.nextKey, commitValue(newVal))));
+          if (info.op === 'read') {
+            priorReadProof = {
+              uid: uidOf(entry.utxo), slot: entry.slot, nextKey: entry.nextKey,
+            };
+          }
         } else {
           // INSERT (a NEW recipient): co-spend the bracketing predecessor (from the ORIGINAL list) + mint P' then NEW.
           // 'delete'/'-' on an absent key fail closed (nothing to nullify/debit).
@@ -16995,6 +17004,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const pred = list.predecessorOf(slot);
           if (info.op === 'read') {
             const predecessorId = uidOf(pred.utxo);
+            const slotValue = bytesToSlotValue(slot);
+            const reusesPriorProof = priorReadProof?.uid === predecessorId
+              && bytesToSlotValue(priorReadProof.slot) < slotValue
+              && (bytesToSlotValue(priorReadProof.nextKey) === 0n
+                || slotValue < bytesToSlotValue(priorReadProof.nextKey));
+            if (reusesPriorProof) continue;
             if (cospent.has(predecessorId)) {
               throw new Error(`vmap read loop ${info.collection}: absent key ${i} shares an already co-spent `
                 + 'predecessor; a shared absence proof is required');
@@ -17002,6 +17017,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             cospent.add(predecessorId);
             appendRuntimeJournalInput({ ...pred.utxo, unlocker: wUnlocker }, info.collection);
             commitments.push(binToHex(encodeEntryCommitment(pred.slot, pred.nextKey, pred.value)));
+            priorReadProof = { uid: predecessorId, slot: pred.slot, nextKey: pred.nextKey };
             continue;
           }
           const deferred: DeferredEntry | null = lastDeferred; // the covenant's pending; an insert never defers

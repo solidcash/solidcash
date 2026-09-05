@@ -8,7 +8,7 @@ import {
 import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
-import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   getEntryNftAddress, getSatoshiContainerAddress, getTokenContainerAddress,
 } from '../../../src/stateful/covenant-helpers.js';
@@ -4210,17 +4210,65 @@ describe('kernel composite counter-key settlement', () => {
     const sourceAddress = getEntryNftAddress(inner, categoryId, sourceCollection.signature);
     const emptySourceEntryCount = (await provider.getUtxos(sourceAddress)).filter((utxo) =>
       utxo.token?.category === categoryId && utxo.token.nft?.capability === 'mutable').length;
-    await expect(contract.batch([{ function: 'copy', args: [1n] }]).send()).resolves.toBeDefined();
-    await expect(contract.call.checkDestination(0n, 0n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkSource(0n, 0n).send()).resolves.toBeDefined();
+    // Every key is absent from the empty source mapping and therefore shares the sentinel predecessor. The
+    // authenticated read stream must reproduce that predecessor once and reuse its gap proof for the other keys.
+    await expect(contract.call.copy(4n).send()).resolves.toBeDefined();
+    const absentCopyCall = contract.batch([{ function: 'copy', args: [4n] }]);
+    const absentCopyBuilder = await absentCopyCall.build();
+    const absentRouteInputIndex = absentCopyBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(absentRouteInputIndex).toBeGreaterThanOrEqual(0);
+    const absentRouteUnlocker = absentCopyBuilder.inputs[absentRouteInputIndex].unlocker;
+    if (!('params' in absentRouteUnlocker)) throw new Error('message-bus route input has no contract parameters');
+    const absentRead = artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo
+      ?.find((info) => info.collection === 'source');
+    const absentWitnessIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === absentRead?.oldValuesWitnessParam);
+    const absentSelector = artifact.messageBus!.route.selector;
+    if (absentWitnessIndex < 0 || !absentSelector) throw new Error('missing absent-read route witness');
+    const hostileAbsentParams = [...absentRouteUnlocker.params];
+    const absentWitnessRows = absentRouteUnlocker.params[absentWitnessIndex] as bigint[][];
+    hostileAbsentParams[absentWitnessIndex] = [[...absentWitnessRows[0].slice(0, 1), 1n,
+      ...absentWitnessRows[0].slice(2)]];
+    absentCopyBuilder.inputs[absentRouteInputIndex].unlocker = absentRouteUnlocker.contract
+      .createCompilerRouteUnlocker(absentRouteUnlocker.abiFunction, hexToBin(absentSelector))(...hostileAbsentParams);
+    const absentHostileVm = createVirtualMachineBch2026ForProvider(provider);
+    expect(absentHostileVm.stateSuccess(absentHostileVm.evaluate({
+      inputIndex: absentRouteInputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(absentCopyBuilder.inputs),
+      transaction: absentCopyBuilder.buildLibauthTransaction(),
+    }))).not.toBe(true);
+    absentCopyBuilder.inputs[absentRouteInputIndex].unlocker = absentRouteUnlocker;
+    await expect(absentCopyCall.send()).resolves.toBeDefined();
+    for (let key = 0n; key < 4n; key += 1n) {
+      await expect(contract.call.checkDestination(key, 0n).send()).resolves.toBeDefined();
+      await expect(contract.call.checkSource(key, 0n).send()).resolves.toBeDefined();
+    }
     expect((await provider.getUtxos(sourceAddress)).filter((utxo) =>
       utxo.token?.category === categoryId && utxo.token.nft?.capability === 'mutable'))
       .toHaveLength(emptySourceEntryCount);
 
-    const expected = [17n, 29n, 43n, 61n];
-    for (let key = 0; key < expected.length; key += 1) {
-      await contract.call.seed(BigInt(key), expected[key]).send();
+    // Exercise the other reusable interval shape with one deliberate hole. Making the highest hashed slot absent
+    // guarantees that its immediate predecessor is a present node processed immediately before it.
+    const proofValues = [17n, 29n, 43n, 61n, 71n, 73n, 79n, 83n];
+    const proofSlots = proofValues.map((_value, key) => ({
+      key: BigInt(key), value: bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(BigInt(key))])),
+    }));
+    const missingKey = proofSlots.sort((a, b) => a.value > b.value ? -1 : 1)[0].key;
+    for (let key = 0; key < proofValues.length; key += 1) {
+      if (BigInt(key) !== missingKey) await contract.call.seed(BigInt(key), proofValues[key]).send();
     }
+    const sourceCountBeforeGapReuse = (await provider.getUtxos(sourceAddress)).filter((utxo) =>
+      utxo.token?.category === categoryId && utxo.token.nft?.capability === 'mutable').length;
+    await expect(contract.batch([{ function: 'copy', args: [BigInt(proofValues.length)] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.call.checkDestination(missingKey, 0n).send()).resolves.toBeDefined();
+    expect((await provider.getUtxos(sourceAddress)).filter((utxo) =>
+      utxo.token?.category === categoryId && utxo.token.nft?.capability === 'mutable'))
+      .toHaveLength(sourceCountBeforeGapReuse);
+    await contract.call.seed(missingKey, proofValues[Number(missingKey)]).send();
+
+    const expected = proofValues.slice(0, 4);
 
     const copyCall = contract.batch([{ function: 'copy', args: [BigInt(expected.length)] }]);
     const copyBuilder = await copyCall.build();

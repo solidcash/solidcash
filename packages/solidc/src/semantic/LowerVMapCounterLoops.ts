@@ -4264,6 +4264,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       });
       return found;
     };
+    const containsNamedIdentifier = (root: Node, names: ReadonlySet<string>): boolean => {
+      let found = false;
+      walk(root, (candidate) => {
+        if (candidate instanceof IdentifierNode && names.has(candidate.name)) found = true;
+      });
+      return found;
+    };
     const readOnlyArrayParameterCache = new Map<FunctionDefinitionNode, Map<number, boolean>>();
     const readOnlyArrayParameter = (
       fn: FunctionDefinitionNode,
@@ -4399,14 +4406,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       return replaced;
     };
     const symbolicRead = (access: ArrayAccessNode, plan: ArrayPlan): ExpressionNode | undefined => {
-      // Before the source push executes, the current loop iteration has not installed its recurrence recipe.
-      // Leaving the array read untouched makes ordinary runtime-key admission reject that genuinely
-      // loop-carried dependency instead of publishing a proof which only happens to work at iteration zero.
-      if (plan.recurrence && plan.writes.filter((write) => write.recurrence).length
-        < plan.recurrence.pushesPerIteration) {
-        node.messageBusUnboundedConstructedArray = true;
-        return undefined;
-      }
       let value = cloneNode(plan.defaultValue) as ExpressionNode;
       for (const write of plan.writes) {
         let selectedValue = cloneNode(write.value) as ExpressionNode;
@@ -4712,28 +4711,40 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const loopPlans = copyPlans(active);
           const canonical = canonicalLoops.get(statement);
           if (canonical) for (const [name, plan] of loopPlans) {
-            const directPushes = (statement.block.statements ?? []).filter((candidate) =>
+            const directPushes = (statement.block.statements ?? []).filter((candidate): candidate is ArrayPushNode =>
               candidate instanceof ArrayPushNode && candidate.name === name);
-            const directPops = (statement.block.statements ?? []).filter((candidate) =>
+            const directPops = (statement.block.statements ?? []).filter((candidate): candidate is ArrayPopNode =>
               candidate instanceof ArrayPopNode && candidate.name === name);
             let mutationCount = 0;
             let resizeCount = 0;
+            const loopAssignedNames = new Set<string>();
             walk(statement.block, (candidate) => {
               if ((candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode
                 || candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode)
                 && candidate.name === name) mutationCount += 1;
               if ((candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode)
                 && candidate.name === name) resizeCount += 1;
-              if (candidate instanceof AssignNode && candidate.identifier.name === name) mutationCount += 1;
+              if (candidate instanceof AssignNode) {
+                loopAssignedNames.add(candidate.identifier.name);
+                if (candidate.identifier.name === name) mutationCount += 1;
+              }
             });
             // A fixed number of unconditional same-kind resizes has a closed length recurrence. Pushes additionally
             // publish one value recipe per source site; pops only shorten the already-known prefix. Mixed or nested
             // schedules retain their ordinary array accesses and are refused by admission.
             const directResizeCount = directPushes.length + directPops.length;
-            const fixedPushes = directPushes.length > 0 && directPops.length === 0
+            let fixedPushes = directPushes.length > 0 && directPops.length === 0
               && mutationCount === directPushes.length && resizeCount === directPushes.length;
             const fixedPops = directPops.length > 0 && directPushes.length === 0
               && mutationCount === directPops.length && resizeCount === directPops.length;
+            // Preinstalling every push recipe lets a read between push sites observe all prior iterations while
+            // plan.length excludes later pushes from the current iteration. A push value which depends on another
+            // loop-assigned local has no single counter-only recipe, and a self-read would recursively depend on the
+            // array being reconstructed, so keep either form fenced.
+            const unavailablePushNames = new Set(loopAssignedNames).add(name);
+            unavailablePushNames.delete(canonical.logical);
+            if (fixedPushes && directPushes.some((push) =>
+              containsNamedIdentifier(push.value, unavailablePushNames))) fixedPushes = false;
             if ((!fixedPushes && !fixedPops) || directResizeCount === 0) {
               if (resizeCount > 0) {
                 node.messageBusUnboundedConstructedArray = true;
@@ -4775,6 +4786,25 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 baseLength: cloneNode(plan.length) as ExpressionNode,
                 pushesPerIteration: directPushes.length,
               };
+              directPushes.forEach((push, ordinal) => {
+                const index = ordinal === 0
+                  ? cloneNode(length) as ExpressionNode
+                  : new BinaryOpNode(
+                    cloneNode(length), BinaryOperator.PLUS, new IntLiteralNode(BigInt(ordinal)),
+                  );
+                index.location = push.location;
+                plan.writes.push({
+                  index,
+                  value: replaceSnapshots(push.value, snapshots),
+                  recurrence: {
+                    ...plan.recurrence!, ordinal,
+                    baseLength: cloneNode(plan.recurrence!.baseLength) as ExpressionNode,
+                    ...(plan.recurrence!.stepExpression && {
+                      stepExpression: cloneNode(plan.recurrence!.stepExpression) as ExpressionNode,
+                    }),
+                  },
+                });
+              });
             }
             plan.length = length;
           }
@@ -5008,19 +5038,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         } else if (statement instanceof ArrayPushNode && active.has(statement.name)
           && replayedArrayValue !== undefined && !containsReassignedName(replayedArrayValue)) {
           const plan = active.get(statement.name)!;
-          const recurrenceOrdinal = plan.writes.filter((write) => write.recurrence).length;
-          plan.writes.push({
-            index: cloneNode(plan.length) as ExpressionNode,
-            value: keySnapshot?.identifier ?? cloneNode(replayedArrayValue) as ExpressionNode,
-            ...(plan.recurrence && { recurrence: {
-              ...plan.recurrence,
-              ordinal: recurrenceOrdinal,
-              baseLength: cloneNode(plan.recurrence.baseLength) as ExpressionNode,
-              ...(plan.recurrence.stepExpression && {
-                stepExpression: cloneNode(plan.recurrence.stepExpression) as ExpressionNode,
-              }),
-            } }),
-          });
+          if (!plan.recurrence) {
+            plan.writes.push({
+              index: cloneNode(plan.length) as ExpressionNode,
+              value: keySnapshot?.identifier ?? cloneNode(replayedArrayValue) as ExpressionNode,
+            });
+          }
           const one = new IntLiteralNode(1n);
           one.location = statement.location;
           one.type = plan.length.type ?? new IntType(true, 256);

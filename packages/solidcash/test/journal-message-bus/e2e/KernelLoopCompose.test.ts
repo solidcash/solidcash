@@ -4796,9 +4796,18 @@ describe('kernel composite counter-key settlement', () => {
         int[] xs = new int[](0);
         for (int i = 1; i < n; i = i + 2) {
           xs.push(i + 10);
-          xs.push(i + 20);
           this.slots[xs[((i - 1) / 2) * 2]] = i;
+          xs.push(i + 20);
           this.slots[xs[((i - 1) / 2) * 2 + 1]] = i + 100;
+        }
+        require(true);
+      }
+      function prefix(int n) public {
+        int[] xs = new int[](3);
+        xs[0] = 31; xs[1] = 32; xs[2] = 33;
+        for (int i = 0; i < n; i = i + 1) {
+          this.slots[xs[i]] = i + 1;
+          xs.push(i + 30);
         }
         require(true);
       }
@@ -4806,6 +4815,8 @@ describe('kernel composite counter-key settlement', () => {
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'prefix'))
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -4828,6 +4839,11 @@ describe('kernel composite counter-key settlement', () => {
     for (const [key, expected] of [
       [11n, 1n], [21n, 101n], [13n, 3n], [23n, 103n], [15n, 5n], [25n, 105n],
     ] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    for (const key of [31n, 32n, 33n]) await contract.call.seed(key).send();
+    await expect(contract.batch([{ function: 'prefix', args: [3n] }]).send()).resolves.toBeDefined();
+    for (const [key, expected] of [[31n, 1n], [32n, 2n], [33n, 3n]] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
   }, 180_000);

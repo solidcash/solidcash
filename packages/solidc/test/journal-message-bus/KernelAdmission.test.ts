@@ -1102,8 +1102,8 @@ describe('required kernel admission', () => {
         int[] xs = new int[](0);
         for (int i = 1; i < n; i = i + 2) {
           xs.push(i + 10);
-          xs.push(i + 20);
           this.slots[xs[((i - 1) / 2) * 2]] = i;
+          xs.push(i + 20);
           this.slots[xs[((i - 1) / 2) * 2 + 1]] = i + 100;
         }
         require(true);
@@ -1114,6 +1114,24 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
     expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
       .toHaveLength(2);
+  });
+
+  it('replays an initial constructed-array prefix before the current iteration pushes', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n) public {
+        int[] xs = new int[](3);
+        xs[0] = 31; xs[1] = 32; xs[2] = 33;
+        for (int i = 0; i < n; i = i + 1) {
+          this.slots[xs[i]] = i;
+          xs.push(i + 1);
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
   });
 
   it('replays a fixed number of straight-line constructed-array pops per canonical iteration', () => {
@@ -1135,8 +1153,8 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['reads before its push', 'this.slots[xs[i]] = i; xs.push(i + 1);'],
-    ['reads between two pushes', 'xs.push(i + 1); this.slots[xs[i]] = i; xs.push(i + 2);'],
+    ['conditionally pushes inside the loop', 'if (i > 0) xs.push(i + 1); this.slots[xs[i]] = i;'],
+    ['mixes pushes and pops', 'xs.push(i + 1); xs.pop(); this.slots[xs[i]] = i;'],
     ['conditionally pops inside the loop', 'if (i > 0) xs.pop(); this.slots[xs[i]] = i;'],
   ])('refuses a constructed array which %s', (_label, body) => {
     const artifact = compileString(`contract C() {

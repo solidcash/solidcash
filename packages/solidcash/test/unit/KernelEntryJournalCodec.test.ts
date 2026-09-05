@@ -48,7 +48,7 @@ describe('kernel pending-entry journal codec', () => {
 
   it('round-trips an authenticated dirty scalar entry', () => {
     const encoded = encodeKernelEntryJournalRecord({
-      collectionHash: bytes(32, 0x11),
+      collectionHash: bytes(20, 0x11),
       slot: bytes(32, 0x22),
       nextKey: bytes(32, 0x33),
       value: Uint8Array.of(0x2a),
@@ -58,9 +58,9 @@ describe('kernel pending-entry journal codec', () => {
       synthetic: false,
     });
     expect(encoded[0]).toBe(KERNEL_ENTRY_JOURNAL_TAG);
-    expect(encoded).toHaveLength(99);
+    expect(encoded).toHaveLength(87);
     expect(decodeKernelEntryJournalRecord(encoded)).toEqual({
-      collectionHash: bytes(32, 0x11),
+      collectionHash: bytes(20, 0x11),
       slot: bytes(32, 0x22),
       nextKey: bytes(32, 0x33),
       value: Uint8Array.of(0x2a),
@@ -73,11 +73,11 @@ describe('kernel pending-entry journal codec', () => {
 
   it('keeps the largest entry-tail record independently below BCH item limits', () => {
     const encoded = encodeKernelEntryJournalRecord({
-      collectionHash: bytes(32, 1), slot: bytes(32, 2), nextKey: bytes(32, 3),
+      collectionHash: bytes(20, 1), slot: bytes(32, 2), nextKey: bytes(32, 3),
       value: bytes(KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES, 4),
       authenticated: false, dirty: true, tombstone: false, synthetic: true,
     });
-    expect(encoded).toHaveLength(162);
+    expect(encoded).toHaveLength(150);
     expect(encoded.length).toBeLessThanOrEqual(520);
     expect(decodeKernelEntryJournalRecord(encoded).value)
       .toEqual(bytes(KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES, 4));
@@ -85,7 +85,7 @@ describe('kernel pending-entry journal codec', () => {
 
   it('round-trips a dirty tombstone without a value tail', () => {
     const decoded = decodeKernelEntryJournalRecord(encodeKernelEntryJournalRecord({
-      collectionHash: bytes(32, 1), slot: bytes(32, 2), nextKey: bytes(32, 3), value: new Uint8Array(),
+      collectionHash: bytes(20, 1), slot: bytes(32, 2), nextKey: bytes(32, 3), value: new Uint8Array(),
       authenticated: true, dirty: true, tombstone: true, synthetic: false,
     }));
     expect(decoded).toMatchObject({ authenticated: true, dirty: true, tombstone: true, synthetic: false });
@@ -94,16 +94,18 @@ describe('kernel pending-entry journal codec', () => {
 
   it('rejects malformed identities, tails, tags, flags, and impossible flag combinations', () => {
     const valid = {
-      collectionHash: bytes(32, 1), slot: bytes(32, 2), nextKey: bytes(32, 3), value: new Uint8Array(),
+      collectionHash: bytes(20, 1), slot: bytes(32, 2), nextKey: bytes(32, 3), value: new Uint8Array(),
       authenticated: true, dirty: false, tombstone: false, synthetic: false,
     };
+    expect(() => encodeKernelEntryJournalRecord({ ...valid, collectionHash: bytes(32, 1) }))
+      .toThrow('exactly 20');
     expect(() => encodeKernelEntryJournalRecord({ ...valid, slot: bytes(31, 2) })).toThrow('exactly 32');
     expect(() => encodeKernelEntryJournalRecord({
       ...valid, value: bytes(KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES + 1, 4),
     })).toThrow('exceeds');
     expect(() => encodeKernelEntryJournalRecord({ ...valid, synthetic: true })).toThrow('both');
     expect(() => encodeKernelEntryJournalRecord({ ...valid, tombstone: true })).toThrow('clean journal tombstone');
-    expect(() => decodeKernelEntryJournalRecord(bytes(97, 0))).toThrow('truncated');
+    expect(() => decodeKernelEntryJournalRecord(bytes(85, 0))).toThrow('truncated');
     const badTag = encodeKernelEntryJournalRecord(valid); badTag[0] = 0x06;
     expect(() => decodeKernelEntryJournalRecord(badTag)).toThrow('tag');
     const badFlags = encodeKernelEntryJournalRecord(valid); badFlags[1] = 0x80;
@@ -124,7 +126,7 @@ describe('kernel pending-entry journal codec', () => {
         { slot: slot(20n), operation: Uint8Array.of(1) },
         { slot: slot(20n), operation: Uint8Array.of(2) },
       ], (_current, operation) => operation);
-    const encoded = encodeKernelEntryJournalRecords(bytes(32, 0xaa), plan.records);
+    const encoded = encodeKernelEntryJournalRecords(bytes(20, 0xaa), plan.records);
     expect(encoded.map((record) => Number(record[1] & 0x08))).toEqual([0, 8]);
     expect(encoded.map((record) => Number(decodeKernelEntryJournalRecord(record).slot[0])))
       .toEqual([10, 20]);
@@ -151,7 +153,7 @@ describe('kernel pending-entry journal codec', () => {
     ]);
     const plan = planKernelEntryJournalStreams(
       list,
-      bytes(32, 0xaa),
+      bytes(20, 0xaa),
       [
         [{ slot: slot(10n), operation: 3 }],
         [{ slot: slot(10n), operation: 5 }, { slot: slot(20n), operation: 7 }],
@@ -192,7 +194,7 @@ describe('kernel pending-entry journal codec', () => {
     });
     const plan = planKernelEntryJournalAccessTopology(
       SortedList.fromUtxos([entry('0', 0n, 10n), entry('1', 10n, 0n, 4)]),
-      bytes(32, 0xaa),
+      bytes(20, 0xaa),
       [
         [{ slot: slot(10n), operation: 'read' }, { slot: slot(20n), operation: 'read' }],
         [{ slot: slot(20n), operation: 'write' }, { slot: slot(10n), operation: 'delete' }],

@@ -107,6 +107,7 @@ import {
 } from './semantic/PointerTableBound.js';
 import LowerVMapCounterLoops, {
   KERNEL_JOURNAL_ACCESS_STREAMS,
+  KERNEL_JOURNAL_RECORDS,
   VMAP_COUNTER_OLD_PREFIX,
   VMAP_COUNTER_INPUT_COUNT_PREFIX,
   VMAP_COUNTER_OUTPUT_COUNT_PREFIX,
@@ -5244,6 +5245,7 @@ function synthesizeMessageBusRoute(
                 if (parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS) {
                   return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
                 }
+                if (parameter.name === KERNEL_JOURNAL_RECORDS) return parameter.name;
                 if (parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
                   || parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)) return parameter.name;
                 if (parameter.name.startsWith('__internal__collectionIter')
@@ -5413,6 +5415,7 @@ function synthesizeMessageBusRoute(
         && !parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_RUNTIME_OUTPUT_COUNT_PREFIX)
         && parameter.name !== KERNEL_JOURNAL_ACCESS_STREAMS
+        && parameter.name !== KERNEL_JOURNAL_RECORDS
         && !parameter.name.startsWith('__internal__collectionIter')
         && !parameter.name.startsWith('__internal__valueWitness_')
         && !parameter.name.startsWith('__internal__leadingPushValue_')

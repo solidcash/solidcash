@@ -1606,6 +1606,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__blockhashRowOffset',
         '__internal__messageBusOwnerInput',
         '__internal__kernelJournalAccessStreams',
+        '__internal__kernelJournalRecords',
         '__internal__vmapBatchTrailingCount',
       ].includes(node.name);
     if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {

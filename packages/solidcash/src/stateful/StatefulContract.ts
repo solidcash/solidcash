@@ -113,6 +113,7 @@ import {
   encodeEntryCommitment, decodeEntryCommitment,
 } from './SortedList.js';
 import {
+  decodeKernelEntryJournalAccesses,
   encodeKernelEntryJournalAccesses,
   planKernelEntryJournalAccessTopology,
   type KernelEntryJournalTopologyOperation,
@@ -201,6 +202,7 @@ const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
 const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
 const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
+const KERNEL_JOURNAL_RECORDS = '__internal__kernelJournalRecords';
 const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
 const vmapRuntimeOutputCountName = (collection: string): string =>
@@ -366,7 +368,7 @@ function functionArgumentListsEqual(left: readonly unknown[], right: readonly un
 
 function defaultInternalFunctionArg(input: { name: string; type?: string }): FunctionArgument {
   const { name, type = '' } = input;
-  if (name === KERNEL_JOURNAL_ACCESS_STREAMS) return [];
+  if (name === KERNEL_JOURNAL_ACCESS_STREAMS || name === KERNEL_JOURNAL_RECORDS) return [];
   if (name.includes('Selector') || type === 'bytes4') return new Uint8Array(4);
   if (name.includes('Category') || name.includes('BatchSlot')
     || name.includes('BatchNext') || type === 'bytes32') return new Uint8Array(32);
@@ -4454,6 +4456,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         rowStreams[rowIndex] = streams;
       }
       resolvedCallerInternalWitnesses[input.name] = rowStreams;
+    }
+    if (capability.route.inputs.some((input) => input.name === KERNEL_JOURNAL_RECORDS)
+      && resolvedCallerInternalWitnesses[KERNEL_JOURNAL_RECORDS] === undefined) {
+      resolvedCallerInternalWitnesses[KERNEL_JOURNAL_RECORDS] = [];
     }
     for (const input of capability.route.inputs) {
       const permutationSpec = vmapCounterPermutationSpec(input.name);
@@ -17297,13 +17303,63 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       collectionStreams.push(stream);
       kernelStreamsByCollection.set(stream.collection, collectionStreams);
     }
+    const kernelJournalRecords: Uint8Array[] = [];
     for (const collectionStreams of kernelStreamsByCollection.values()) {
       const plan = planKernelEntryJournalAccessTopology(
         collectionStreams[0].list,
         collectionStreams[0].collectionHash,
         collectionStreams.map((stream) => stream.writes),
       );
-      collectionStreams.forEach((stream, index) => stream.publish(plan.encodedAccessStreams[index]));
+      const recordOffset = kernelJournalRecords.length;
+      if (recordOffset + plan.recordCount > 0xffff) {
+        throw new Error('Kernel entry journal exceeds the unsigned 16-bit record ordinal space.');
+      }
+      collectionStreams.forEach((stream, index) => {
+        const shifted = decodeKernelEntryJournalAccesses(plan.encodedAccessStreams[index]).map((access) => ({
+          ...access,
+          targetRecordOrdinal: access.targetRecordOrdinal + recordOffset,
+          ...(access.predecessorRecordOrdinal !== undefined && {
+            predecessorRecordOrdinal: access.predecessorRecordOrdinal + recordOffset,
+          }),
+        }));
+        stream.publish(encodeKernelEntryJournalAccesses(shifted));
+      });
+      kernelJournalRecords.push(...plan.encodedRecords);
+    }
+    const journalRecordsIndex = entryAbiFunction?.inputs.findIndex(
+      (input) => input.name === KERNEL_JOURNAL_RECORDS,
+    ) ?? -1;
+    if (kernelJournalRecords.length > 0 && journalRecordsIndex < 0) {
+      throw new Error('Kernel runtime journal records have no compiler-owned route input.');
+    }
+    if (journalRecordsIndex >= 0) {
+      while (finalArgs.length <= journalRecordsIndex) {
+        const pending = entryAbiFunction!.inputs[finalArgs.length];
+        if (!pending?.name.startsWith('__internal__')) {
+          throw new Error(
+            `Internal error: missing user argument '${pending?.name ?? finalArgs.length}' before kernel records.`,
+          );
+        }
+        finalArgs.push(defaultInternalFunctionArg(pending));
+      }
+      while (entryArgs.length <= journalRecordsIndex) {
+        entryArgs.push(defaultInternalFunctionArg(entryAbiFunction!.inputs[entryArgs.length]));
+      }
+      entryArgs[journalRecordsIndex] = kernelJournalRecords;
+      finalArgs[journalRecordsIndex] = kernelJournalRecords;
+      for (const frame of upsertPlanningFrames) {
+        if (!frame.routed) continue;
+        frame.row!.internalArgs = {
+          ...frame.row!.internalArgs,
+          [KERNEL_JOURNAL_RECORDS]: kernelJournalRecords,
+        };
+      }
+      if (entryCompilerRoute) {
+        entryCompilerRoute.internalArgs = {
+          ...entryCompilerRoute.internalArgs,
+          [KERNEL_JOURNAL_RECORDS]: kernelJournalRecords,
+        };
+      }
     }
 
     // Every row which can touch a collection receives the same transaction-wide runtime cardinality. The route

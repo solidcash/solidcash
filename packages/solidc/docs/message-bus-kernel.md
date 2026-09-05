@@ -483,9 +483,9 @@ row/iteration surface does not exceed BCH's per-item size limit. Physical entrie
 and the SDK continues to reject overlap until the upsert verifier owns the record codec and final-flush pass; the
 carrier is not treated as evidence that an overlap has settled.
 The canonical entry record is
-`0x05 || flags || collectionHash32 || slot32 || nextKey32 || valueTail`, where the four low flag bits mean
+`0x05 || flags || collectionHash20 || slot32 || nextKey32 || valueTail`, where the four low flag bits mean
 authenticated-input, dirty, tombstone, and synthetic-node. The value tail is at most 64 bytes, matching the entry
-NFT commitment limit, so a complete record is at most 162 bytes. The SDK codec rejects unknown flags, malformed
+NFT commitment limit, so a complete record is at most 150 bytes. The SDK codec rejects unknown flags, malformed
 identities, authenticated+synthetic records, and authenticated clean tombstones. A clean synthetic tombstone is
 the canonical record for an absent read target: it proves no physical input existed and requests no final delete.
 Each logical mutation stream has one compact access program

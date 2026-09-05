@@ -16,8 +16,9 @@ export const KERNEL_ENTRY_JOURNAL_ACCESS_TAG = 0x06;
 /** Entry NFT commitments are capped at 128 bytes: slot + next slot + at most 64 bytes of value tail. */
 export const KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES = 64;
 
-const IDENTITY_BYTES = 32;
-const HEADER_BYTES = 2 + IDENTITY_BYTES * 3;
+const COLLECTION_HASH_BYTES = 20;
+const SLOT_BYTES = 32;
+const HEADER_BYTES = 2 + COLLECTION_HASH_BYTES + SLOT_BYTES * 2;
 const FLAG_AUTHENTICATED = 1 << 0;
 const FLAG_DIRTY = 1 << 1;
 const FLAG_TOMBSTONE = 1 << 2;
@@ -72,18 +73,18 @@ export interface KernelEntryJournalAccessTopologyPlan {
   encodedAccessStreams: Uint8Array[];
 }
 
-function requireIdentity(name: string, value: Uint8Array): void {
-  if (value.length !== IDENTITY_BYTES) throw new Error(`${name} must be exactly ${IDENTITY_BYTES} bytes`);
+function requireIdentity(name: string, value: Uint8Array, length: number): void {
+  if (value.length !== length) throw new Error(`${name} must be exactly ${length} bytes`);
 }
 
 /**
  * Encode one independently bounded pending-entry record:
- * `0x05 || flags || collectionHash32 || slot32 || nextKey32 || valueTail`.
+ * `0x05 || flags || collectionHash20 || slot32 || nextKey32 || valueTail`.
  */
 export function encodeKernelEntryJournalRecord(record: KernelEntryJournalRecord): Uint8Array {
-  requireIdentity('collectionHash', record.collectionHash);
-  requireIdentity('slot', record.slot);
-  requireIdentity('nextKey', record.nextKey);
+  requireIdentity('collectionHash', record.collectionHash, COLLECTION_HASH_BYTES);
+  requireIdentity('slot', record.slot, SLOT_BYTES);
+  requireIdentity('nextKey', record.nextKey, SLOT_BYTES);
   if (record.value.length > KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES) {
     throw new Error(`journal value tail exceeds ${KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES} bytes`);
   }
@@ -102,8 +103,8 @@ export function encodeKernelEntryJournalRecord(record: KernelEntryJournalRecord)
   encoded[0] = KERNEL_ENTRY_JOURNAL_TAG;
   encoded[1] = flags;
   encoded.set(record.collectionHash, 2);
-  encoded.set(record.slot, 2 + IDENTITY_BYTES);
-  encoded.set(record.nextKey, 2 + IDENTITY_BYTES * 2);
+  encoded.set(record.slot, 2 + COLLECTION_HASH_BYTES);
+  encoded.set(record.nextKey, 2 + COLLECTION_HASH_BYTES + SLOT_BYTES);
   encoded.set(record.value, HEADER_BYTES);
   return encoded;
 }
@@ -125,9 +126,9 @@ export function decodeKernelEntryJournalRecord(encoded: Uint8Array): KernelEntry
     throw new Error('a clean journal tombstone must describe an unauthenticated synthetic record');
   }
   return {
-    collectionHash: encoded.slice(2, 2 + IDENTITY_BYTES),
-    slot: encoded.slice(2 + IDENTITY_BYTES, 2 + IDENTITY_BYTES * 2),
-    nextKey: encoded.slice(2 + IDENTITY_BYTES * 2, HEADER_BYTES),
+    collectionHash: encoded.slice(2, 2 + COLLECTION_HASH_BYTES),
+    slot: encoded.slice(2 + COLLECTION_HASH_BYTES, 2 + COLLECTION_HASH_BYTES + SLOT_BYTES),
+    nextKey: encoded.slice(2 + COLLECTION_HASH_BYTES + SLOT_BYTES, HEADER_BYTES),
     value: encoded.slice(HEADER_BYTES),
     authenticated,
     dirty,
@@ -141,7 +142,7 @@ export function encodeKernelEntryJournalRecords(
   collectionHash: Uint8Array,
   records: readonly JournaledMutationRecord[],
 ): Uint8Array[] {
-  requireIdentity('collectionHash', collectionHash);
+  requireIdentity('collectionHash', collectionHash, COLLECTION_HASH_BYTES);
   return records.map((record) => encodeKernelEntryJournalRecord({
     collectionHash,
     slot: record.slot,
@@ -191,7 +192,7 @@ export function planKernelEntryJournalAccessTopology(
   collectionHash: Uint8Array,
   streams: readonly (readonly JournaledUpsert<KernelEntryJournalTopologyOperation>[])[],
 ): KernelEntryJournalAccessTopologyPlan {
-  requireIdentity('collectionHash', collectionHash);
+  requireIdentity('collectionHash', collectionHash, COLLECTION_HASH_BYTES);
   const preserve = (current: Uint8Array | undefined): JournaledMutationResult => ({
     value: current,
     dirty: false,
@@ -222,7 +223,7 @@ export function planKernelEntryJournalAccessTopology(
       } : {
         collectionHash,
         slot: record.slot,
-        nextKey: new Uint8Array(IDENTITY_BYTES),
+        nextKey: new Uint8Array(SLOT_BYTES),
         value: new Uint8Array(),
         authenticated: false,
         dirty: false,

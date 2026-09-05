@@ -35,6 +35,8 @@ export const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCoun
 export const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
 /** One compact `0x06` access program per runtime journal stream in this selected row. */
 export const KERNEL_JOURNAL_ACCESS_STREAMS = '__internal__kernelJournalAccessStreams';
+/** Transaction-wide truthful initial `0x05` records selected by the compact access programs. */
+export const KERNEL_JOURNAL_RECORDS = '__internal__kernelJournalRecords';
 export const vmapRuntimeInputCountName = (collection: string): string =>
   `${VMAP_RUNTIME_INPUT_COUNT_PREFIX}${collection}`;
 export const vmapRuntimeOutputCountName = (collection: string): string =>
@@ -4119,7 +4121,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       && !node.parameters.some((parameter) => parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS)) {
       const accesses = new ParameterNode(new ArrayType(new BytesType()), KERNEL_JOURNAL_ACCESS_STREAMS);
       accesses.location = node.location;
-      added.push(accesses);
+      const records = new ParameterNode(new ArrayType(new BytesType()), KERNEL_JOURNAL_RECORDS);
+      records.location = node.location;
+      added.push(accesses, records);
     }
     if (keySnapshotPrelude.length > 0 || prelude.length > 0) {
       node.body.statements = [...keySnapshotPrelude, ...prelude, ...(node.body.statements ?? [])];

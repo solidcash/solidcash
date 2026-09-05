@@ -114,6 +114,11 @@ export {
   type BatchUpsertPlan, type JournaledUpsert,
 } from './SortedList.js';
 export {
+  KERNEL_ENTRY_JOURNAL_TAG, KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES,
+  encodeKernelEntryJournalRecord, decodeKernelEntryJournalRecord,
+  type KernelEntryJournalRecord,
+} from './KernelEntryJournal.js';
+export {
   registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,
   findDeploymentImplementing, clearDeployments, takeDeploymentRegistrySnapshot,
   type RegisteredDeployment, type DeploymentRegistrySnapshot,

@@ -482,6 +482,11 @@ Individual bounded records will reside on the shared altstack rather than one co
 row/iteration surface does not exceed BCH's per-item size limit. Physical entries still initialize the count to zero
 and the SDK continues to reject overlap until the upsert verifier owns the record codec and final-flush pass; the
 carrier is not treated as evidence that an overlap has settled.
+The canonical entry record is
+`0x05 || flags || collectionHash32 || slot32 || nextKey32 || valueTail`, where the four low flag bits mean
+authenticated-input, dirty, tombstone, and synthetic-node. The value tail is at most 64 bytes, matching the entry
+NFT commitment limit, so a complete record is at most 162 bytes. The SDK codec rejects unknown flags, malformed
+identities, authenticated+synthetic records, and clean tombstones.
 The SDK's sorted-list model exposes ordered `planJournaledUpserts` / `planJournaledMutations` reference planners:
 repeated logical slots reduce against their pending values, delete/reinsert observes pending absence, original
 entries and shared predecessors are selected once, and the final linked-list commitments are emitted once. The

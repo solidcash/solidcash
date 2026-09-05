@@ -1425,6 +1425,29 @@ describe('kernel loop message-bus compose', () => {
     await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 4n });
   }, 180_000);
 
+  it('executes a normalized void tail-recursive helper through one row', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelVoidTailRecursion() {
+      int calls;
+      function countDown(int value) internal {
+        this.calls = this.calls + 1;
+        if (value > 0) { countDown(value - 1); }
+      }
+      function run(int value) public { countDown(value); require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'run', args: [3n] },
+    ]);
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 4n });
+  }, 180_000);
+
   it('executes isolated read-only transaction assembly inside a row handler', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, KERNEL);

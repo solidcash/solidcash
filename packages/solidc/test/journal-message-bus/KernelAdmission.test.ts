@@ -151,6 +151,22 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('normalizes a void tail-recursive helper before kernel closure admission', () => {
+    const artifact = compileString(`contract C() {
+      int calls;
+      function countDown(int value) internal {
+        this.calls = this.calls + 1;
+        if (value > 0) { countDown(value - 1); }
+      }
+      function run(int value) public { countDown(value); require(true); }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('binds a transaction signature-array as a row-aligned nested route witness', () => {
     const artifact = compileString(`contract C() {
       function signed(sig[] signatures) public { require(true); }

@@ -487,6 +487,13 @@ The canonical entry record is
 authenticated-input, dirty, tombstone, and synthetic-node. The value tail is at most 64 bytes, matching the entry
 NFT commitment limit, so a complete record is at most 162 bytes. The SDK codec rejects unknown flags, malformed
 identities, authenticated+synthetic records, and clean tombstones.
+Each logical mutation stream has one compact access program
+`0x06 || count8 || count * (flags8 || targetRecordOrdinal16le || predecessorRecordOrdinal16le)`.
+The access flags publish presence-before, presence-after, and whether the predecessor ordinal is present; `0xffff`
+is the canonical absent-predecessor sentinel. At five bytes per operation, a canonical 64-iteration stream is 322
+bytes and remains one BCH stack item. The codec rejects oversized programs, unknown flags, reserved ordinals,
+non-canonical predecessor sentinels, and target/predecessor aliasing. Multiple streams remain separate items owned
+by the selected row, so the total contract surface is not constrained to one 520-byte concatenation.
 The SDK's sorted-list model exposes ordered `planJournaledUpserts` / `planJournaledMutations` reference planners:
 repeated logical slots reduce against their pending values, delete/reinsert observes pending absence, original
 entries and shared predecessors are selected once, and the final linked-list commitments are emitted once. The

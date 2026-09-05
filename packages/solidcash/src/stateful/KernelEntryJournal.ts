@@ -1,7 +1,10 @@
-import type { JournaledMutationRecord } from './SortedList.js';
+import type { JournaledMutationAccess, JournaledMutationRecord } from './SortedList.js';
 
 /** Canonical record tag, distinct from runtime event/BCH/FT/NFT effect tags 0x01..0x04. */
 export const KERNEL_ENTRY_JOURNAL_TAG = 0x05;
+
+/** Compact per-stream record-selection program consumed by a kernel row. */
+export const KERNEL_ENTRY_JOURNAL_ACCESS_TAG = 0x06;
 
 /** Entry NFT commitments are capped at 128 bytes: slot + next slot + at most 64 bytes of value tail. */
 export const KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES = 64;
@@ -13,6 +16,17 @@ const FLAG_DIRTY = 1 << 1;
 const FLAG_TOMBSTONE = 1 << 2;
 const FLAG_SYNTHETIC = 1 << 3;
 const KNOWN_FLAGS = FLAG_AUTHENTICATED | FLAG_DIRTY | FLAG_TOMBSTONE | FLAG_SYNTHETIC;
+
+const ACCESS_HEADER_BYTES = 2;
+const ACCESS_BYTES = 5;
+const ACCESS_FLAG_PRESENT_BEFORE = 1 << 0;
+const ACCESS_FLAG_PRESENT_AFTER = 1 << 1;
+const ACCESS_FLAG_HAS_PREDECESSOR = 1 << 2;
+const KNOWN_ACCESS_FLAGS = ACCESS_FLAG_PRESENT_BEFORE
+  | ACCESS_FLAG_PRESENT_AFTER | ACCESS_FLAG_HAS_PREDECESSOR;
+const NO_PREDECESSOR = 0xffff;
+/** `tag || count || N * (flags || target-u16le || predecessor-u16le)` must remain one BCH item. */
+export const KERNEL_ENTRY_JOURNAL_MAX_ACCESSES = Math.floor((520 - ACCESS_HEADER_BYTES) / ACCESS_BYTES);
 
 export interface KernelEntryJournalRecord {
   /** Hash of the collection signature; combined with the owner category to derive its entry covenant address. */
@@ -106,4 +120,90 @@ export function encodeKernelEntryJournalRecords(
     tombstone: record.tombstone,
     synthetic: record.synthetic,
   }));
+}
+
+function requireRecordOrdinal(name: string, ordinal: number): void {
+  if (!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= NO_PREDECESSOR) {
+    throw new Error(`${name} must be an unsigned 16-bit journal record ordinal below 65535`);
+  }
+}
+
+/**
+ * Encode one row-owned mutation stream. Record identities stay in independently bounded `0x05` items; this
+ * compact program only selects their stable first-touch ordinals and states whether the operation inserts,
+ * updates, deletes, or observes absence. Canonical counter streams contain at most 64 operations, while the
+ * format remains valid up to the largest fixed-width program which fits one 520-byte BCH stack item.
+ */
+export function encodeKernelEntryJournalAccesses(
+  accesses: readonly JournaledMutationAccess[],
+): Uint8Array {
+  if (accesses.length > KERNEL_ENTRY_JOURNAL_MAX_ACCESSES) {
+    throw new Error(
+      `kernel entry journal access stream exceeds ${KERNEL_ENTRY_JOURNAL_MAX_ACCESSES} operations`,
+    );
+  }
+  const encoded = new Uint8Array(ACCESS_HEADER_BYTES + accesses.length * ACCESS_BYTES);
+  encoded[0] = KERNEL_ENTRY_JOURNAL_ACCESS_TAG;
+  encoded[1] = accesses.length;
+  accesses.forEach((access, index) => {
+    requireRecordOrdinal('targetRecordOrdinal', access.targetRecordOrdinal);
+    if (access.predecessorRecordOrdinal !== undefined) {
+      requireRecordOrdinal('predecessorRecordOrdinal', access.predecessorRecordOrdinal);
+      if (access.predecessorRecordOrdinal === access.targetRecordOrdinal) {
+        throw new Error('journal target and predecessor record ordinals must differ');
+      }
+    }
+    let flags = 0;
+    if (access.presentBefore) flags |= ACCESS_FLAG_PRESENT_BEFORE;
+    if (access.presentAfter) flags |= ACCESS_FLAG_PRESENT_AFTER;
+    if (access.predecessorRecordOrdinal !== undefined) flags |= ACCESS_FLAG_HAS_PREDECESSOR;
+    const offset = ACCESS_HEADER_BYTES + index * ACCESS_BYTES;
+    const predecessor = access.predecessorRecordOrdinal ?? NO_PREDECESSOR;
+    encoded[offset] = flags;
+    encoded[offset + 1] = access.targetRecordOrdinal & 0xff;
+    encoded[offset + 2] = access.targetRecordOrdinal >>> 8;
+    encoded[offset + 3] = predecessor & 0xff;
+    encoded[offset + 4] = predecessor >>> 8;
+  });
+  return encoded;
+}
+
+/** Decode and canonically validate one compact row-owned mutation stream. */
+export function decodeKernelEntryJournalAccesses(encoded: Uint8Array): JournaledMutationAccess[] {
+  if (encoded.length < ACCESS_HEADER_BYTES) throw new Error('kernel entry journal access stream is truncated');
+  if (encoded[0] !== KERNEL_ENTRY_JOURNAL_ACCESS_TAG) {
+    throw new Error('invalid kernel entry journal access stream tag');
+  }
+  const count = encoded[1];
+  if (count > KERNEL_ENTRY_JOURNAL_MAX_ACCESSES) {
+    throw new Error(`kernel entry journal access stream exceeds ${KERNEL_ENTRY_JOURNAL_MAX_ACCESSES} operations`);
+  }
+  if (encoded.length !== ACCESS_HEADER_BYTES + count * ACCESS_BYTES) {
+    throw new Error('kernel entry journal access stream has a non-canonical length');
+  }
+  return Array.from({ length: count }, (_unused, index) => {
+    const offset = ACCESS_HEADER_BYTES + index * ACCESS_BYTES;
+    const flags = encoded[offset];
+    if ((flags & ~KNOWN_ACCESS_FLAGS) !== 0) {
+      throw new Error('kernel entry journal access stream has unknown flags');
+    }
+    const targetRecordOrdinal = encoded[offset + 1] | (encoded[offset + 2] << 8);
+    const predecessor = encoded[offset + 3] | (encoded[offset + 4] << 8);
+    const hasPredecessor = (flags & ACCESS_FLAG_HAS_PREDECESSOR) !== 0;
+    if (targetRecordOrdinal === NO_PREDECESSOR) {
+      throw new Error('kernel entry journal access stream uses the reserved target ordinal');
+    }
+    if (hasPredecessor !== (predecessor !== NO_PREDECESSOR)) {
+      throw new Error('kernel entry journal access stream has a non-canonical predecessor');
+    }
+    if (predecessor === targetRecordOrdinal) {
+      throw new Error('journal target and predecessor record ordinals must differ');
+    }
+    return {
+      targetRecordOrdinal,
+      ...(hasPredecessor && { predecessorRecordOrdinal: predecessor }),
+      presentBefore: (flags & ACCESS_FLAG_PRESENT_BEFORE) !== 0,
+      presentAfter: (flags & ACCESS_FLAG_PRESENT_AFTER) !== 0,
+    };
+  });
 }

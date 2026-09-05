@@ -115,8 +115,10 @@ export {
   type JournaledMutationPlan,
 } from './SortedList.js';
 export {
-  KERNEL_ENTRY_JOURNAL_TAG, KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES,
+  KERNEL_ENTRY_JOURNAL_TAG, KERNEL_ENTRY_JOURNAL_ACCESS_TAG,
+  KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES, KERNEL_ENTRY_JOURNAL_MAX_ACCESSES,
   encodeKernelEntryJournalRecord, encodeKernelEntryJournalRecords, decodeKernelEntryJournalRecord,
+  encodeKernelEntryJournalAccesses, decodeKernelEntryJournalAccesses,
   type KernelEntryJournalRecord,
 } from './KernelEntryJournal.js';
 export {

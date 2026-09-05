@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import {
   KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES,
+  KERNEL_ENTRY_JOURNAL_MAX_ACCESSES,
+  KERNEL_ENTRY_JOURNAL_ACCESS_TAG,
   KERNEL_ENTRY_JOURNAL_TAG,
+  decodeKernelEntryJournalAccesses,
   decodeKernelEntryJournalRecord,
+  encodeKernelEntryJournalAccesses,
   encodeKernelEntryJournalRecord,
   encodeKernelEntryJournalRecords,
 } from '../../src/stateful/KernelEntryJournal.js';
@@ -96,5 +100,52 @@ describe('kernel pending-entry journal codec', () => {
     expect(encoded.map((record) => Number(decodeKernelEntryJournalRecord(record).slot[0])))
       .toEqual([10, 20]);
     expect(plan.accesses.map((access) => access.targetRecordOrdinal)).toEqual([1, 1]);
+    expect(decodeKernelEntryJournalAccesses(encodeKernelEntryJournalAccesses(plan.accesses)))
+      .toEqual(plan.accesses);
+  });
+
+  it('round-trips insert, update, delete, and absent-delete access states', () => {
+    const accesses = [
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
+      { targetRecordOrdinal: 1, presentBefore: true, presentAfter: true },
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: true, presentAfter: false },
+      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: false },
+    ];
+    const encoded = encodeKernelEntryJournalAccesses(accesses);
+    expect(encoded[0]).toBe(KERNEL_ENTRY_JOURNAL_ACCESS_TAG);
+    expect(encoded).toHaveLength(2 + accesses.length * 5);
+    expect(decodeKernelEntryJournalAccesses(encoded)).toEqual(accesses);
+  });
+
+  it('keeps the largest compact access program within one BCH item', () => {
+    const accesses = Array.from({ length: KERNEL_ENTRY_JOURNAL_MAX_ACCESSES }, (_unused, ordinal) => ({
+      targetRecordOrdinal: ordinal,
+      presentBefore: true,
+      presentAfter: true,
+    }));
+    const encoded = encodeKernelEntryJournalAccesses(accesses);
+    expect(encoded).toHaveLength(517);
+    expect(encoded.length).toBeLessThanOrEqual(520);
+    expect(decodeKernelEntryJournalAccesses(encoded)).toEqual(accesses);
+    expect(() => encodeKernelEntryJournalAccesses([...accesses, accesses[0]]))
+      .toThrow(`exceeds ${KERNEL_ENTRY_JOURNAL_MAX_ACCESSES}`);
+  });
+
+  it('rejects malformed access programs and reserved or aliased ordinals', () => {
+    expect(() => encodeKernelEntryJournalAccesses([{
+      targetRecordOrdinal: 65535, presentBefore: true, presentAfter: true,
+    }])).toThrow('below 65535');
+    expect(() => encodeKernelEntryJournalAccesses([{
+      targetRecordOrdinal: 1, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true,
+    }])).toThrow('must differ');
+    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06))).toThrow('truncated');
+    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x07, 0))).toThrow('tag');
+    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06, 1))).toThrow('length');
+    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06, 1, 0x80, 0, 0, 0xff, 0xff)))
+      .toThrow('unknown flags');
+    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06, 1, 0, 0xff, 0xff, 0xff, 0xff)))
+      .toThrow('reserved target');
+    expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06, 1, 0, 0, 0, 0, 0)))
+      .toThrow('non-canonical predecessor');
   });
 });

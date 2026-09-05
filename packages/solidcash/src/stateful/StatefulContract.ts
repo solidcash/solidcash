@@ -16609,12 +16609,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // dedupe (keep one); a scalar `+=` duplicate is handled by the covenant's isDup accumulate (below - the entry is
       // co-spent once and the scalar applied per occurrence), so it is NOT pre-merged here; a scalar `-=` duplicate
       // stays fail-closed (`-=` has no pending-defer).
-      if (info.mutation && Array.isArray(keysArr) && keysArr.length > 1) {
-        const mutationSlots = keysArr.map((key) => binToHex(slotForKey(key)));
-        if (mutationSlots.some((h, i) => mutationSlots.indexOf(h) !== i)) {
-          throw new Error(`vmap array mutation loop ${info.collection}: duplicate keys are ambiguous; combine them first`);
-        }
-      }
       if (!info.mutation && Array.isArray(keysArr) && keysArr.length > 1
         && !info.valueArrayIndexParam && (isDelete || perKey || info.op === 'set')) {
         const kArr = keysArr as unknown[];
@@ -16950,12 +16944,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         };
         const oldWitnesses: StateValue[] = [];
         const mutated: StateValue[] = [];
+        const pendingArrays = new Map<string, StateValue[]>();
         for (let i = 0; i < keysArr.length; i++) {
           const slot = slotForKey(keysArr[i]);
-          const raw = await readRawValue(slot);
-          const decoded = decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value;
+          const slotHex = binToHex(slot);
+          const pending = pendingArrays.get(slotHex);
+          const raw = pending === undefined ? await readRawValue(slot) : undefined;
+          const decoded = pending ?? decodePushdataValue(
+            raw!, 0, collection.valueType, stateLayout.structs,
+          ).value;
           if (!Array.isArray(decoded)) throw new Error(`vmap mutation target ${info.collection} is not an array`);
-          oldWitnesses.push(decoded);
+          oldWitnesses.push([...decoded]);
           const next = [...decoded] as StateValue[];
           if (info.mutation === 'push') {
             next.push(operand(
@@ -16983,6 +16982,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ) as StateValue;
           }
           mutated.push(next);
+          pendingArrays.set(slotHex, next);
         }
         const wi = loopAbiFunction.inputs.findIndex((p) => p.name === info.oldValuesWitnessParam);
         if (wi < 0) throw new Error(`vmap array mutation ${info.collection}: missing old-value witness ABI input`);
@@ -17056,7 +17056,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // A compiler-owned permutation leaves public key/value arrays untouched. Repeated logical keys therefore
           // remain as repeated physical iterations; the on-chain pending SET consumes them without another co-spend
           // and keeps the last value. Mirror that transition by replacing the pending commitment in place.
-          if (info.op === 'set' && perKey && info.valueArrayIndexParam && lastDeferred
+          if (info.op === 'set' && perKey && (info.valueArrayIndexParam || info.mutation) && lastDeferred
             && binToHex(lastDeferred.slot) === slotHex) {
             lastDeferred.newVal = amt;
             commitments[lastDeferred.commitIndex] =

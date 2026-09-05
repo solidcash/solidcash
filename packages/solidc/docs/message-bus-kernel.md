@@ -463,8 +463,9 @@ Different key expressions over the same selected domain receive independent row-
 disjoint loops use separate permutations and separate accumulated physical segments. Counter-keyed mapping-array
 element writes, pushes, and pops authenticate the complete old array through a typed row witness, perform the
 mutation in the covenant, and publish the resulting whole-entry value through the same inline/chunked journal as
-fixed-key mapping-array mutations. The SDK independently derives the expected value and rejects duplicate mutation
-keys, empty pops, and out-of-range element writes before construction.
+fixed-key mapping-array mutations. Repeated physical keys are chained through the row's authenticated pending value,
+so every mutation observes the preceding source occurrence without a duplicate co-spend. The SDK independently
+derives the expected value and rejects empty pops and out-of-range element writes before construction.
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays are admitted when their bounded

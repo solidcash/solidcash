@@ -22289,6 +22289,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.scopeDepth += 1;
     if (this.sortedUpsertLoopOp === 'set') {
+      const mutationOldWitness = node instanceof MappingAssignNode
+        ? node.messageBusRuntimeOldValueWitness : undefined;
+      if (mutationOldWitness) {
+        // A repeated mapping-array key has no second co-spent input: its language-level old value is the pending
+        // value produced by the preceding occurrence. Authenticate the caller-supplied raw-array witness against
+        // that pending framed tail before accepting the next on-chain mutation. This is the read-your-writes link
+        // which makes `m[i % k].push(v)` sequential rather than a last-write-wins overwrite of the pre-state.
+        this.emit(encodeInt(BigInt(this.getStackIndex(pVal))), loc); this.emit(Op.OP_PICK, loc); // tail U=1
+        this.emit(Op.OP_DUP, loc);
+        this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc);
+        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // [tail, len], payload on altstack
+        this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 2)), loc);
+        this.emit(Op.OP_PICK, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_TOALTSTACK, loc);
+        this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+        this.emit(Op.OP_SIZE, loc);
+        this.emit(encodeInt(60n), loc); this.emit(Op.OP_GREATERTHAN, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(Op.OP_SHA256, loc); this.emit(Op.OP_FROMALTSTACK, loc); this.emitTakeFirst32(loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+        this.emit(Op.OP_ENDIF, loc);
+        this.emit(Op.OP_DROP, loc); // copied pending tail
+      }
       this.emit(encodeInt(BigInt(this.getStackIndex(amt))), loc); this.emit(Op.OP_PICK, loc);          // amt copy U=1
       this.emitReplace(this.getStackIndex(pVal) + 1, node);                                            // pu_val = amt -> U=0
     } else {

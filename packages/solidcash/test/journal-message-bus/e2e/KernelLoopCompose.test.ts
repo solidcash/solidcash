@@ -5114,6 +5114,16 @@ describe('kernel composite counter-key settlement', () => {
         }
         require(true);
       }
+      function optional(int n, bool grow) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          if (grow) {
+            xs.push(i + 800);
+            this.slots[xs[i]] = i + 1000;
+          }
+        }
+        require(true);
+      }
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
@@ -5144,6 +5154,13 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.batch([{ function: 'joined', args: [3n] }]).send())
       .resolves.toBeDefined();
     for (const [key, expected] of [[300n, 900n], [401n, 901n], [302n, 902n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    await expect(contract.batch([{ function: 'optional', args: [3n, false] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'optional', args: [3n, true] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [[800n, 1000n], [801n, 1001n], [802n, 1002n]] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
   }, 180_000);

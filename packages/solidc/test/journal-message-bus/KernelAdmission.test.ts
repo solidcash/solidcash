@@ -1215,6 +1215,16 @@ describe('required kernel admission', () => {
         }
         require(true);
       }
+      function pushOptional(int n, bool grow) public {
+        int[] xs = new int[](0);
+        for (int i = 0; i < n; i = i + 1) {
+          if (grow) {
+            xs.push(i + 800);
+            this.slots[xs[i]] = i;
+          }
+        }
+        require(true);
+      }
       function trimOptional(int n, bool shrink) public {
         int[] xs = new int[](8);
         xs[0] = 21; xs[1] = 22; xs[2] = 23; xs[3] = 24;
@@ -1257,6 +1267,8 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushJoinedLocals'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushSwitchLocals'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushOptional'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trimOptional'))
       .toMatchObject({ eligible: true });

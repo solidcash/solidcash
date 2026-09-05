@@ -4419,10 +4419,27 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             cloneNode(access.index), BinaryOperator.MINUS, cloneNode(recurrence.baseLength),
           );
           relative.location = access.location;
-          const recurrenceWidth = recurrence.pushesPerIterationExpression
+          const selectedRecurrenceWidth = recurrence.pushesPerIterationExpression
             ? cloneNode(recurrence.pushesPerIterationExpression) as ExpressionNode
             : new IntLiteralNode(BigInt(recurrence.pushesPerIteration));
-          recurrenceWidth.location = access.location;
+          selectedRecurrenceWidth.location = access.location;
+          // An invariant conditional schedule may select a zero-width arm. That arm cannot contribute a matching
+          // pushed element, but the symbolic read still constructs its rank expression before the write predicate
+          // excludes it. Use one solely as the arithmetic denominator; plan.length and the site predicate retain
+          // the real selected width, so this cannot manufacture an element for the zero-width arm.
+          const recurrenceWidth = recurrence.pushesPerIterationExpression
+            ? (() => {
+              const nonzero = new BinaryOpNode(
+                cloneNode(selectedRecurrenceWidth), BinaryOperator.NE, new IntLiteralNode(0n),
+              );
+              nonzero.location = access.location;
+              const safe = new TernaryOpNode(
+                nonzero, cloneNode(selectedRecurrenceWidth), new IntLiteralNode(1n),
+              );
+              safe.location = access.location;
+              return safe;
+            })()
+            : selectedRecurrenceWidth;
           const occurrence = !recurrence.pushesPerIterationExpression
             && recurrence.pushesPerIteration === 1
             ? cloneNode(relative)
@@ -4742,7 +4759,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       type FixedPushSchedule = {
         width: number;
         widthExpression?: ExpressionNode;
-        minimumWidth: number;
         pushes: ScheduledPush[];
         values: Map<string, ExpressionNode>;
         assigned: Set<string>;
@@ -4754,7 +4770,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       ): FixedPushSchedule | undefined => {
         let width = 0;
         let widthExpression: ExpressionNode | undefined;
-        let minimumWidth = 0;
         const pushes: ScheduledPush[] = [];
         const assigned = new Set<string>();
         const expressionFor = (
@@ -4779,10 +4794,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           { width, ...(widthExpression && { widthExpression }) }, location,
         );
         const appendWidth = (
-          addition: Pick<FixedPushSchedule, 'width' | 'widthExpression' | 'minimumWidth'>,
+          addition: Pick<FixedPushSchedule, 'width' | 'widthExpression'>,
           location: Node,
         ): void => {
-          minimumWidth += addition.minimumWidth;
           if (!widthExpression && !addition.widthExpression) {
             width += addition.width;
             return;
@@ -4829,7 +4843,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 ordinalExpression: currentWidthExpression(statement),
               }),
             });
-            appendWidth({ width: 1, minimumWidth: 1 }, statement);
+            appendWidth({ width: 1 }, statement);
             continue;
           }
           if (statement instanceof VariableDefinitionNode && statement.expression) {
@@ -4851,7 +4865,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const elseArm = statement.elseBlock
               ? fixedPushSchedule(statement.elseBlock, arrayName, new Map(values))
               : {
-                width: 0, minimumWidth: 0, pushes: [], values: new Map(values), assigned: new Set<string>(),
+                width: 0, pushes: [], values: new Map(values), assigned: new Set<string>(),
               };
             if (!ifArm || !elseArm) return undefined;
             appendArm(ifArm, branchPredicate);
@@ -4868,7 +4882,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               appendWidth({
                 width: 0,
                 widthExpression: selected,
-                minimumWidth: Math.min(ifArm.minimumWidth, elseArm.minimumWidth),
               }, statement);
             }
             for (const name of new Set([...ifArm.assigned, ...elseArm.assigned])) {
@@ -4896,7 +4909,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const fallback = statement.defaultCase
               ? fixedPushSchedule(statement.defaultCase, arrayName, new Map(values))
               : {
-                width: 0, minimumWidth: 0, pushes: [], values: new Map(values), assigned: new Set<string>(),
+                width: 0, pushes: [], values: new Map(values), assigned: new Set<string>(),
               };
             if (!fallback || arms.some((arm) => !arm)) return undefined;
             const caseConditions = statement.cases.map((switchCase) => {
@@ -4935,7 +4948,6 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               appendWidth({
                 width: 0,
                 widthExpression: selectedWidth,
-                minimumWidth: Math.min(fallback.minimumWidth, ...arms.map((arm) => arm!.minimumWidth)),
               }, statement);
             }
             const assignedInArms = new Set([
@@ -4965,7 +4977,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (mutatedArrays(statement).has(arrayName)) return undefined;
         }
         return {
-          width, ...(widthExpression && { widthExpression }), minimumWidth, pushes, values, assigned,
+          width, ...(widthExpression && { widthExpression }), pushes, values, assigned,
         };
       };
       const fixedPopSchedule = (
@@ -5086,11 +5098,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             // A fixed number of same-kind resizes has a closed length recurrence. An invariant conditional width is
             // closed too: occurrence * (condition ? A : B). Pushes additionally publish a symbolic ordinal and one
             // conditionally selected value recipe per source site; pops only shorten the already-known prefix. Mixed
-            // schedules, zero-width push arms, and counter-dependent variable widths remain fenced.
+            // schedules and counter-dependent variable widths remain fenced.
             const scheduledPushCount = pushSchedule?.pushes.length ?? 0;
             const scheduledPopCount = popSchedule?.sites ?? 0;
             const directResizeCount = scheduledPushCount + scheduledPopCount;
-            let fixedPushes = !!pushSchedule && pushSchedule.minimumWidth > 0
+            let fixedPushes = !!pushSchedule
               && (pushSchedule.width > 0 || pushSchedule.widthExpression !== undefined)
               && popSchedule === undefined
               && mutationCount === scheduledPushCount && resizeCount === scheduledPushCount;

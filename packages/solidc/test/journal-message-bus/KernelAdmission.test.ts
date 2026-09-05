@@ -2436,6 +2436,8 @@ describe('required kernel admission', () => {
       input.name.startsWith('__internal__vmapCounterPerm_'))).toHaveLength(2);
     expect(new Set(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo
       ?.map((info) => info.varyingArrayParam)).size).toBe(2);
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo
+      ?.map((info) => info.journalAccessStreamIndex)).toEqual([0, 1]);
   });
 
   it('publishes independent permutations for different selected subsets across collections', () => {

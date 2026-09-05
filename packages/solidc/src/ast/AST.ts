@@ -390,7 +390,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // op is '+', '-', 'set', or 'delete'. The per-iteration value v is one of: valueArrayParam (per-key vs[i]),
   // valueScalarParam (a loop-INVARIANT param, e.g. `+= amount` fixed-amount airdrop), or valueConst (an int literal).
   sortedUpsertLoopInfo?: Array<{
-    collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
+    collection: string; journalAccessStreamIndex: number; fixedKeyParams: string[]; varyingArrayParam: string;
     fixedKeySources?: KeySourceInfo[];
     /** Composite-key positions populated from the same varying array element. Omitted for the usual final key. */
     varyingKeyIndices?: number[];

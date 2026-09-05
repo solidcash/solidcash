@@ -494,6 +494,8 @@ is the canonical absent-predecessor sentinel. At five bytes per operation, a can
 bytes and remains one BCH stack item. The codec rejects oversized programs, unknown flags, reserved ordinals,
 non-canonical predecessor sentinels, and target/predecessor aliasing. Multiple streams remain separate items owned
 by the selected row, so the total contract surface is not constrained to one 520-byte concatenation.
+Every `sortedUpsertLoopInfo` entry publishes its stable `journalAccessStreamIndex`; the SDK and covenant therefore
+address the selected row's stream vector without reconstructing compiler traversal order from collection names.
 The SDK's sorted-list model exposes ordered `planJournaledUpserts` / `planJournaledMutations` reference planners:
 repeated logical slots reduce against their pending values, delete/reinsert observes pending absence, original
 entries and shared predecessors are selected once, and the final linked-list commitments are emitted once. The

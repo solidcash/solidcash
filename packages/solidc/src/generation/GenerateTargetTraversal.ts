@@ -22068,7 +22068,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const cardinality = this.currentFunction.runtimeCounterLoopCardinalityParams?.get(varyingArrayParam);
       const varyingKeyExpressions = this.currentFunction.runtimeCounterLoopKeyExpressions
         ?.get(`${varyingArrayParam}\0${collection.name}`);
-      infos.push({ collection: collection.name, fixedKeyParams, fixedKeySources, varyingArrayParam,
+      infos.push({ collection: collection.name, journalAccessStreamIndex: infos.length,
+        fixedKeyParams, fixedKeySources, varyingArrayParam,
         ...(varyingKeyIndices.length !== 1
           || varyingKeyIndices[0] !== metadataKeySources.length - 1 ? { varyingKeyIndices } : {}),
         ...(varyingKeyExpressions && { varyingKeyExpressions }),

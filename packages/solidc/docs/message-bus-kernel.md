@@ -481,10 +481,11 @@ that cell through every `OP_INVOKE` copy-in/copy-out frame, including void, retu
 paths. Physical entries still use the canonical empty encoding and the SDK continues to reject overlap until the
 upsert verifier owns a complete record codec and final-flush pass; the carrier is not treated as evidence that an
 overlap has settled.
-The SDK's sorted-list model exposes an ordered `planJournaledUpserts` reference planner: repeated logical slots
-reduce against their pending values, original entries and shared predecessors are selected once, and the final
-linked-list commitments are emitted once. The active transaction path does not use that oracle to relax overlap
-until the covenant implements the same load/store and final-flush transition.
+The SDK's sorted-list model exposes ordered `planJournaledUpserts` / `planJournaledMutations` reference planners:
+repeated logical slots reduce against their pending values, delete/reinsert observes pending absence, original
+entries and shared predecessors are selected once, and the final linked-list commitments are emitted once. The
+active transaction path does not use that oracle to relax overlap until the covenant implements the same
+load/store and final-flush transition.
 Different key expressions over the same selected domain receive independent row-owned permutations. Separate
 disjoint loops use separate permutations and separate accumulated physical segments. Counter-keyed mapping-array
 element writes, pushes, and pops authenticate the complete old array through a typed row witness, perform the

@@ -237,6 +237,53 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
       { slot: s(0), operation: 1 },
     ], add)).toThrow('HEAD sentinel');
   });
+
+  it('rebuilds one final link after an existing node is deleted', () => {
+    const plan = SortedList.fromUtxos(sampleUtxos()).planJournaledMutations([
+      { slot: s(50), operation: 'delete' },
+    ], () => undefined);
+    expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
+    const decoded = plan.outputs.map((output) => decodeEntryCommitment(output.commitment));
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10]);
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([90]);
+  });
+
+  it('combines a predecessor update with deletion of its successor', () => {
+    type Operation = { kind: 'set'; value: Uint8Array } | { kind: 'delete' };
+    const plan = SortedList.fromUtxos(sampleUtxos()).planJournaledMutations<Operation>([
+      { slot: s(10), operation: { kind: 'set', value: hexToBin('aa') } },
+      { slot: s(50), operation: { kind: 'delete' } },
+    ], (_current, operation) => operation.kind === 'delete' ? undefined : operation.value);
+    expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
+    const decoded = plan.outputs.map((output) => decodeEntryCommitment(output.commitment));
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10]);
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([90]);
+    expect(decoded.map((entry) => binToHex(entry.value))).toEqual(['aa']);
+  });
+
+  it('observes pending absence across delete and reinsert while authenticating both original nodes', () => {
+    type Operation = { kind: 'set'; value: Uint8Array } | { kind: 'delete' };
+    const reduce = (_current: Uint8Array | undefined, operation: Operation): Uint8Array | undefined =>
+      operation.kind === 'delete' ? undefined : operation.value;
+    const list = SortedList.fromUtxos(sampleUtxos());
+    const reinserted = list.planJournaledMutations<Operation>([
+      { slot: s(50), operation: { kind: 'delete' } },
+      { slot: s(50), operation: { kind: 'set', value: hexToBin('bb') } },
+    ], reduce);
+    expect(reinserted.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
+    expect(reinserted.outputs.map((output) => decodeEntryCommitment(output.commitment))
+      .map((entry) => [Number(bytesToSlotValue(entry.slot)), binToHex(entry.value)]))
+      .toEqual([[10, ''], [50, 'bb']]);
+
+    const cancelledInsert = list.planJournaledMutations<Operation>([
+      { slot: s(20), operation: { kind: 'set', value: hexToBin('aa') } },
+      { slot: s(20), operation: { kind: 'delete' } },
+    ], reduce);
+    expect(cancelledInsert.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10]);
+    expect(cancelledInsert.outputs.map((output) => decodeEntryCommitment(output.commitment))
+      .map((entry) => [Number(bytesToSlotValue(entry.slot)), Number(bytesToSlotValue(entry.nextKey))]))
+      .toEqual([[10, 50]]);
+  });
 });
 
 describe('SortedList SDK: plans satisfy the proven covenants (end to end)', () => {

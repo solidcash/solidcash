@@ -236,16 +236,30 @@ export class SortedList {
     writes: readonly JournaledUpsert<T>[],
     reduce: (current: Uint8Array | undefined, operation: T, slot: Uint8Array) => Uint8Array,
   ): BatchUpsertPlan {
+    return this.planJournaledMutations(writes, reduce);
+  }
+
+  /**
+   * General ordered journal planner. Returning `undefined` removes the logical node; a later operation for the
+   * same slot observes that absence and may reinsert it. Any slot which is deleted along the way conservatively
+   * authenticates its original predecessor as well as its original node, so intermediate link semantics remain
+   * proven even when the final state contains that slot again.
+   */
+  planJournaledMutations<T>(
+    writes: readonly JournaledUpsert<T>[],
+    reduce: (current: Uint8Array | undefined, operation: T, slot: Uint8Array) => Uint8Array | undefined,
+  ): BatchUpsertPlan {
     if (writes.length === 0) return { inputs: [], outputs: [] };
 
-    const finalValues = new Map<string, { slot: Uint8Array; value: Uint8Array }>();
+    const finalValues = new Map<string, { slot: Uint8Array; value: Uint8Array | undefined; deleted: boolean }>();
     for (const write of writes) {
       const numericSlot = bytesToSlotValue(write.slot);
       if (numericSlot === 0n) throw new Error('slot 0 is reserved for the sorted-list HEAD sentinel');
       const key = numericSlot.toString();
-      const pending = finalValues.get(key)?.value;
-      const current = pending ?? this.find(write.slot)?.value;
-      finalValues.set(key, { slot: write.slot, value: reduce(current, write.operation, write.slot) });
+      const prior = finalValues.get(key);
+      const current = prior ? prior.value : this.find(write.slot)?.value;
+      const value = reduce(current, write.operation, write.slot);
+      finalValues.set(key, { slot: write.slot, value, deleted: (prior?.deleted ?? false) || value === undefined });
     }
 
     const inputMap = new Map<string, SortedEntry>();
@@ -257,15 +271,24 @@ export class SortedList {
       inputMap.set(`${source.utxo.txid}:${source.utxo.vout}`, source);
       affected.add(sourceKey);
       affected.add(bytesToSlotValue(w.slot).toString());
+      if (present && w.deleted) {
+        const predecessor = this.predecessorOf(w.slot);
+        inputMap.set(`${predecessor.utxo.txid}:${predecessor.utxo.vout}`, predecessor);
+        affected.add(bytesToSlotValue(predecessor.slot).toString());
+      }
     }
 
     const finalSlots = new Map<string, { slot: Uint8Array; value: Uint8Array; existed: boolean }>();
     for (const e of this.entries) {
       const key = bytesToSlotValue(e.slot).toString();
-      finalSlots.set(key, { slot: e.slot, value: finalValues.get(key)?.value ?? e.value, existed: true });
+      const pending = finalValues.get(key);
+      if (pending && pending.value === undefined) continue;
+      finalSlots.set(key, { slot: e.slot, value: pending?.value ?? e.value, existed: true });
     }
     for (const [key, w] of finalValues) {
-      if (!finalSlots.has(key)) finalSlots.set(key, { slot: w.slot, value: w.value, existed: false });
+      if (w.value !== undefined && !finalSlots.has(key)) {
+        finalSlots.set(key, { slot: w.slot, value: w.value, existed: false });
+      }
     }
     const ordered = [...finalSlots.values()].sort((a, b) => {
       const av = bytesToSlotValue(a.slot); const bv = bytesToSlotValue(b.slot);

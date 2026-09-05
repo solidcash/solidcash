@@ -1813,7 +1813,7 @@ describe('required kernel admission', () => {
       if (i % 2 == 0) { next = next + 1; }
       else { next = base + i; }
     `],
-  ])('refuses %s whose value cannot be replayed independently', (_label, update) => {
+  ])('authenticates %s through a source-order value trace', (_label, update) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
       function denied(int n, int base) public {
@@ -1826,10 +1826,15 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({
+        valueTraceWitnessParam: expect.stringMatching(/^__internal__vmapCounterValue_/),
+        valueTraceLocal: 'next',
+        valueTraceInitial: { kind: 'literal', type: 'bigint', value: '0' },
+        valueTraceUpdates: expect.any(Array),
+      });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

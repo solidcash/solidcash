@@ -1026,6 +1026,7 @@ function buildFunctionAbiMetadata(
     expression: ExpressionNode,
     counter?: EmitStatementNode['runtimeLoopEventCounter'],
     resolving = new Set<string>(),
+    preservedLocals = new Set<string>(),
   ): ExternalCallExpression | undefined => {
     if (expression instanceof LiteralNode) {
       const value = expression.value;
@@ -1038,9 +1039,10 @@ function buildFunctionAbiMetadata(
       return undefined;
     }
     if (expression instanceof IdentifierNode) {
+      if (preservedLocals.has(expression.name)) return { kind: 'identifier', name: expression.name };
       if (counter?.name === expression.name) {
         const stepExpression = counter.stepExpression
-          ? serializeCondition(counter.stepExpression, undefined, resolving) : undefined;
+          ? serializeCondition(counter.stepExpression, undefined, resolving, preservedLocals) : undefined;
         if (counter.stepExpression && !stepExpression) return undefined;
         return {
           kind: 'source',
@@ -1058,43 +1060,43 @@ function buildFunctionAbiMetadata(
       if (resolving.has(expression.name)) return undefined;
       const definitions = localInitializers.get(expression.name) ?? [];
       return definitions.length === 1
-        ? serializeCondition(definitions[0], counter, new Set(resolving).add(expression.name))
+        ? serializeCondition(definitions[0], counter, new Set(resolving).add(expression.name), preservedLocals)
         : undefined;
     }
     if (expression instanceof StateAccessNode) return { kind: 'state', name: expression.name };
     if (expression instanceof CastNode) {
-      const inner = serializeCondition(expression.expression, counter, resolving);
+      const inner = serializeCondition(expression.expression, counter, resolving, preservedLocals);
       return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
     }
     if (expression instanceof UnaryOpNode) {
-      const inner = serializeCondition(expression.expression, counter, resolving);
+      const inner = serializeCondition(expression.expression, counter, resolving, preservedLocals);
       return inner && { kind: 'unary', operator: expression.operator, expression: inner };
     }
     if (expression instanceof BinaryOpNode) {
-      const left = serializeCondition(expression.left, counter, resolving);
-      const right = serializeCondition(expression.right, counter, resolving);
+      const left = serializeCondition(expression.left, counter, resolving, preservedLocals);
+      const right = serializeCondition(expression.right, counter, resolving, preservedLocals);
       return left && right && { kind: 'binary', operator: expression.operator, left, right };
     }
     if (expression instanceof TernaryOpNode) {
-      const condition = serializeCondition(expression.condition, counter, resolving);
-      const ifTrue = serializeCondition(expression.ifTrue, counter, resolving);
-      const ifFalse = serializeCondition(expression.ifFalse, counter, resolving);
+      const condition = serializeCondition(expression.condition, counter, resolving, preservedLocals);
+      const ifTrue = serializeCondition(expression.ifTrue, counter, resolving, preservedLocals);
+      const ifFalse = serializeCondition(expression.ifFalse, counter, resolving, preservedLocals);
       return condition && ifTrue && ifFalse && { kind: 'ternary', condition, ifTrue, ifFalse };
     }
     if (expression instanceof FieldAccessNode) {
-      const inner = serializeCondition(expression.expression, counter, resolving);
+      const inner = serializeCondition(expression.expression, counter, resolving, preservedLocals);
       return inner && (expression.name === 'length'
         ? { kind: 'unary', operator: '.length', expression: inner }
         : { kind: 'field', name: expression.name, expression: inner });
     }
     if (expression instanceof MappingAccessNode) {
-      const args = expression.keys.map((key) => serializeCondition(key, counter, resolving));
+      const args = expression.keys.map((key) => serializeCondition(key, counter, resolving, preservedLocals));
       return args.every((arg): arg is ExternalCallExpression => arg !== undefined)
         ? { kind: 'stateAccess', name: expression.name, args } : undefined;
     }
     if (expression instanceof ArrayAccessNode) {
-      const left = serializeCondition(expression.array, counter, resolving);
-      const right = serializeCondition(expression.index, counter, resolving);
+      const left = serializeCondition(expression.array, counter, resolving, preservedLocals);
+      const right = serializeCondition(expression.index, counter, resolving, preservedLocals);
       return left && right && { kind: 'arrayAccess', left, right };
     }
     return undefined;
@@ -1512,6 +1514,26 @@ function buildFunctionAbiMetadata(
         const iterationBound = info.iterationBound && serializeCondition(info.iterationBound);
         const iterationStep = info.iterationCounter?.stepExpression
           && serializeCondition(info.iterationCounter.stepExpression);
+        const traceLocals = info.valueTraceLocal ? new Set([info.valueTraceLocal]) : new Set<string>();
+        const valueTraceInitial = info.valueTraceInitial && serializeCondition(
+          info.valueTraceInitial, info.iterationCounter,
+        );
+        const valueTraceUpdates = info.valueTraceUpdates?.map((update) => ({
+          condition: update.condition && serializeCondition(
+            update.condition, info.iterationCounter, new Set(), traceLocals,
+          ),
+          expression: serializeCondition(
+            update.expression, info.iterationCounter, new Set(), traceLocals,
+          ),
+        }));
+        const valueTraceAfterUpdates = info.valueTraceAfterUpdates?.map((update) => ({
+          condition: update.condition && serializeCondition(
+            update.condition, info.iterationCounter, new Set(), traceLocals,
+          ),
+          expression: serializeCondition(
+            update.expression, info.iterationCounter, new Set(), traceLocals,
+          ),
+        }));
         if (info.condition && !condition) {
           throw new Error(`Runtime loop condition in '${func.name}' cannot be represented in artifact metadata`);
         }
@@ -1530,6 +1552,17 @@ function buildFunctionAbiMetadata(
         if (varyingKeyExpressions?.some((expression) => expression === undefined)) {
           throw new Error(`Runtime loop key in '${func.name}' cannot be represented in artifact metadata`);
         }
+        if (info.valueTraceInitial && !valueTraceInitial) {
+          throw new Error(`Runtime loop value trace initial value in '${func.name}' cannot be represented`);
+        }
+        if (valueTraceUpdates?.some((update, index) => !update.expression
+          || (!!info.valueTraceUpdates?.[index].condition && !update.condition))) {
+          throw new Error(`Runtime loop value trace update in '${func.name}' cannot be represented`);
+        }
+        if (valueTraceAfterUpdates?.some((update, index) => !update.expression
+          || (!!info.valueTraceAfterUpdates?.[index].condition && !update.condition))) {
+          throw new Error(`Runtime loop value trace trailing update in '${func.name}' cannot be represented`);
+        }
         return {
           ...info,
           varyingKeyExpressions: varyingKeyExpressions as ExternalCallExpression[] | undefined,
@@ -1538,6 +1571,13 @@ function buildFunctionAbiMetadata(
           iterationBreakCondition,
           iterationBound,
           iterationStep,
+          valueTraceInitial,
+          valueTraceUpdates: valueTraceUpdates as Array<{
+            condition?: ExternalCallExpression; expression: ExternalCallExpression;
+          }> | undefined,
+          valueTraceAfterUpdates: valueTraceAfterUpdates as Array<{
+            condition?: ExternalCallExpression; expression: ExternalCallExpression;
+          }> | undefined,
           iterationCounter: undefined,
           ...(info.fixedKeySources && { fixedKeySources: info.fixedKeySources.map((source) => ({
             kind: source.kind,

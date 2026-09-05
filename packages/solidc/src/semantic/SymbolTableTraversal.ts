@@ -1581,6 +1581,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitParameter(node: ParameterNode): Node {
     const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
       || node.name.startsWith('__internal__vmapCounterOld_')
+      || node.name.startsWith('__internal__vmapCounterValue_')
       || node.name.startsWith('__internal__vmapCounterInputCount_')
       || node.name.startsWith('__internal__vmapCounterOutputCount_')
       || node.name.startsWith('__internal__vmapRuntimeInputCount_')

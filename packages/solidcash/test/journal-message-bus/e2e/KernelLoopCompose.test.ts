@@ -122,6 +122,37 @@ contract KernelAffineCounterValue() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
+const TRACED_COUNTER_VALUE_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelTracedCounterValue() {
+  mapping(int => int) m;
+  function writeRetained(int n, int base) public {
+    int next = 0;
+    for (int i = 0; i < n; i = i + 1) {
+      if (i % 2 == 0) { next = base + i; }
+      this.m[i] = next;
+    }
+    require(true);
+  }
+  function writeSelfDependent(int n, int base) public {
+    int next = 0;
+    for (int i = 0; i < n; i = i + 1) {
+      if (i % 2 == 0) { next = next + 1; }
+      else { next = base + i; }
+      this.m[i] = next;
+    }
+    require(true);
+  }
+  function writeAfter(int n) public {
+    int next = 2;
+    for (int i = 0; i < n; i = i + 1) {
+      this.m[i] = next;
+      if (i % 2 == 0) { next = next + 3; }
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.m[key] == expected); }
+}`;
+
 const AFFINE_COUNTER_STATE_VALUE_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelAffineCounterStateValue() {
   int total;
@@ -4067,6 +4098,46 @@ describe('kernel composite counter-key settlement', () => {
       await expect(contract.call.check(key, expected).send()).resolves.toMatchObject({
         txid: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
+    }
+  }, 180_000);
+
+  it('settles general loop-carried local values through an authenticated source-order trace', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(TRACED_COUNTER_VALUE_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    for (const name of ['writeRetained', 'writeSelfDependent', 'writeAfter']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: true });
+    }
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+
+    await expect(contract.call.writeRetained(5n, 10n).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [
+      [0n, 10n], [1n, 10n], [2n, 12n], [3n, 12n], [4n, 14n],
+    ] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+
+    await expect(contract.batch([{ function: 'writeSelfDependent', args: [5n, 10n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [
+      [0n, 1n], [1n, 11n], [2n, 12n], [3n, 13n], [4n, 14n],
+    ] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+
+    await expect(contract.batch([{ function: 'writeAfter', args: [5n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [
+      [0n, 2n], [1n, 5n], [2n, 5n], [3n, 8n], [4n, 8n],
+    ] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
   }, 180_000);
 

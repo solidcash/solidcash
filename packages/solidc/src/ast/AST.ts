@@ -401,6 +401,12 @@ export class FunctionDefinitionNode extends Node implements Named {
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
     valueRuntimeLocal?: string;
     valueRuntimeExpression?: boolean;
+    /** Source-ordered values for a loop-carried expression, authenticated in the executable source loop. */
+    valueTraceWitnessParam?: string;
+    valueTraceLocal?: string;
+    valueTraceInitial?: ExpressionNode;
+    valueTraceUpdates?: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
+    valueTraceAfterUpdates?: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
     valueArrayOffset?: string;
     mutation?: 'push' | 'pop' | 'setAt';
     mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;
@@ -1258,6 +1264,14 @@ export class MappingAssignNode extends StatementNode implements Named {
   // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
   // before accepting the computed output commitment.
   messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  /** Hidden source-order value vector used when physical key sorting cannot replay a loop-carried local. */
+  messageBusRuntimeValueTrace?: {
+    witnessParam: string;
+    local: string;
+    initial: ExpressionNode;
+    updates: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
+    afterUpdates: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
+  };
 
   constructor(
     public name: string,

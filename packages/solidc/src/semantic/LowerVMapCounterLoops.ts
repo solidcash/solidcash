@@ -27,6 +27,7 @@ import {
 
 export const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 export const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
+export const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
 export const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
 export const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 export const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
@@ -2777,11 +2778,147 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      type ValueTracePlan = {
+        witnessParam: string;
+        valueType: Type;
+        local: string;
+        initial: ExpressionNode;
+        updates: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
+        afterUpdates: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
+      };
+      const valueTracePlans = new Map<MappingAssignNode, ValueTracePlan>();
+      const hasAbruptControl = (candidate: Node): boolean => {
+        if (candidate instanceof BreakNode || candidate instanceof ContinueNode || candidate instanceof ReturnNode) {
+          return true;
+        }
+        if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) return true;
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+            || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+          if (value instanceof Node && hasAbruptControl(value)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && hasAbruptControl(item))) return true;
+        }
+        return false;
+      };
+      // A physical mapping loop cannot evaluate a loop-carried local in key order without changing the source
+      // recurrence. Publish the source-order values instead. The executable loop checks every witness element
+      // against the real local before the write; the physical write later addresses that vector by logical rank.
+      // This is deliberately a dataflow rule, not a catalogue of conditional shapes: any sequence of pure local
+      // assignments under replayable branch/switch predicates is represented by the same ordered update trace.
+      if (!hasAbruptControl(block)) {
+        for (const [writeIndex, write] of keyed.entries()) {
+          if (!(write instanceof MappingAssignNode)
+            || !(write.expression instanceof IdentifierNode)
+            || writePaths.get(write) !== undefined) continue;
+          const local = write.expression.name;
+          if (!loopAssignedLocals.has(local) || safeLoopValueAlias(local)) continue;
+          const initial = predicateOuterInitializers.get(local);
+          const valueType = this.collectionsByName.get(write.name)?.innermostValueType;
+          const reassignedBeforeLoop = predicateOuterIndex >= 0
+            && canonical.parent.statements!.slice(0, predicateOuterIndex)
+              .some((statement) => countAssignmentsTo(statement, local) > 0);
+          if (!initial || !valueType || !runtimePathExpressionSupported(
+            initial, logical, new Set(), stateValues, loopCarriedLocalValues,
+          ) || reassignedBeforeLoop || valueType instanceof StructType || valueType instanceof ArrayType) continue;
+          const statementIndex = (block.statements ?? []).findIndex((statement) => containsNode(statement, write));
+          if (statementIndex < 0) continue;
+          const collected: Array<{
+            index: number; condition?: ExpressionNode; expression: ExpressionNode;
+          }> = [];
+          let supported = true;
+          const collect = (candidate: Node, index: number, condition?: ExpressionNode): void => {
+            if (!supported) return;
+            if (candidate !== block && (candidate instanceof WhileNode || candidate instanceof DoWhileNode)) {
+              supported = false; return;
+            }
+            if (candidate instanceof AssignNode && candidate.identifier.name === local) {
+              collected.push({
+                index,
+                condition: condition && cloneNode(condition),
+                expression: cloneNode(candidate.expression),
+              });
+              return;
+            }
+            if (candidate instanceof BlockNode) {
+              for (const statement of candidate.statements ?? []) collect(statement, index, condition);
+              return;
+            }
+            if (candidate instanceof BranchNode) {
+              collect(candidate.ifBlock, index, pathAnd(condition, candidate.condition));
+              if (candidate.elseBlock) collect(
+                candidate.elseBlock, index, pathAnd(condition, pathNot(candidate.condition)),
+              );
+              return;
+            }
+            if (candidate instanceof SwitchNode) {
+              const matches = candidate.cases.map((entry) => {
+                const equality = new BinaryOpNode(
+                  cloneNode(candidate.expression), BinaryOperator.EQ, cloneNode(entry.value),
+                );
+                equality.location = entry.location ?? candidate.location;
+                return equality;
+              });
+              candidate.cases.forEach((entry, caseIndex) => collect(
+                entry.body, index, pathAnd(condition, matches[caseIndex]),
+              ));
+              if (candidate.defaultCase) {
+                const defaultPath = matches.reduce<ExpressionNode | undefined>(
+                  (active, match) => pathAnd(active, pathNot(match)), condition,
+                );
+                collect(candidate.defaultCase, index, defaultPath);
+              }
+              return;
+            }
+            // An assignment hidden in another construct is not a replayable straight-line recurrence.
+            if (countAssignmentsTo(candidate, local) > 0) supported = false;
+          };
+          (block.statements ?? []).forEach((statement, index) => collect(statement, index));
+          if (!supported || collected.length === 0
+            || collected.length !== countAssignmentsTo(block, local)) continue;
+          const substituteLocal = (candidate: Node): Node => {
+            if (candidate instanceof IdentifierNode && candidate.name === local) return cloneNode(initial);
+            for (const [key, value] of Object.entries(candidate)) {
+              if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+                || key === 'resolvedFunction' || key === 'collection' || key === 'stateVariable') continue;
+              if (value instanceof Node) {
+                (candidate as unknown as Record<string, unknown>)[key] = substituteLocal(value);
+              } else if (Array.isArray(value)) {
+                (candidate as unknown as Record<string, unknown>)[key] = value.map((item) =>
+                  item instanceof Node ? substituteLocal(item) : item);
+              }
+            }
+            return candidate;
+          };
+          for (const update of collected) {
+            if (update.condition && (containsIdentifier(update.condition, local)
+              || !runtimePathExpressionSupported(
+                update.condition, logical, new Set(), stateValues, loopCarriedLocalValues,
+              ))) { supported = false; break; }
+            const check = substituteLocal(cloneNode(update.expression));
+            if (!runtimePathExpressionSupported(
+              check as ExpressionNode, logical, new Set(), stateValues, loopCarriedLocalValues,
+            ) || dependsOnLoopMutation(check, new Set(), true)) { supported = false; break; }
+          }
+          if (!supported) continue;
+          valueTracePlans.set(write, {
+            witnessParam: `${VMAP_COUNTER_VALUE_PREFIX}${write.name}_${serial}_${writeIndex}`,
+            valueType,
+            local,
+            initial: cloneNode(initial),
+            updates: collected.filter((update) => update.index < statementIndex)
+              .map(({ condition, expression }) => ({ condition, expression })),
+            afterUpdates: collected.filter((update) => update.index > statementIndex)
+              .map(({ condition, expression }) => ({ condition, expression })),
+          });
+        }
+      }
       if ((!writeSelectionCondition && hasCounterDependentGuard(block))
         || hasSiblingMappingRead(block) || hasUnsafeRead(block)
         || hasUnsupportedOldEntryExpression
         || (!writeSelectionCondition && hasLoopCarriedWriteGuard(block))
         || keyed.some((write) => !structRuntimeRmws.has(write as ArrayAssignNode | MappingAssignNode)
+          && !valueTracePlans.has(write as MappingAssignNode)
           && dependsOnLoopMutation(write, new Set(), true))) return false;
 
       if (!apply) return true;
@@ -3086,6 +3223,27 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return x;
       };
+      const insertBefore = (owner: BlockNode, target: StatementNode, statement: StatementNode): boolean => {
+        const index = owner.statements?.indexOf(target) ?? -1;
+        if (index >= 0) {
+          owner.statements!.splice(index, 0, statement);
+          return true;
+        }
+        for (const child of owner.statements ?? []) {
+          if (child instanceof BlockNode && insertBefore(child, target, statement)) return true;
+          if (child instanceof BranchNode) {
+            if (insertBefore(child.ifBlock, target, statement)) return true;
+            if (child.elseBlock && insertBefore(child.elseBlock, target, statement)) return true;
+          }
+          if (child instanceof SwitchNode) {
+            for (const switchCase of child.cases) {
+              if (insertBefore(switchCase.body, target, statement)) return true;
+            }
+            if (child.defaultCase && insertBefore(child.defaultCase, target, statement)) return true;
+          }
+        }
+        return false;
+      };
       for (const write of keyed) {
         const group = groupByWrite.get(write)!;
         const keyRecipe = `${group.hidden}\0${write.name}`;
@@ -3101,6 +3259,30 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         const expression = write instanceof ArrayAssignNode ? write.value
           : write instanceof MappingAssignNode ? write.expression : undefined;
+        const valueTrace = write instanceof MappingAssignNode ? valueTracePlans.get(write) : undefined;
+        if (valueTrace && expression) {
+          const mappingWrite = write as MappingAssignNode;
+          const valueType = this.collectionsByName.get(write.name)!.innermostValueType;
+          const witness = (): IdentifierNode => {
+            const result = id(valueTrace.witnessParam);
+            result.type = new ArrayType(valueType);
+            return result;
+          };
+          const readAt = (index: ExpressionNode): ArrayAccessNode => {
+            const result = new ArrayAccessNode(witness(), index);
+            result.location = write.location ?? location;
+            result.type = valueType;
+            return result;
+          };
+          const sourceValue = readAt(physical(group));
+          const check = at(new RequireNode(binary(
+            sourceValue, BinaryOperator.EQ, cloneNode(expression),
+          ), 'vmap counter value trace mismatch'));
+          if (!insertBefore(block, write, check)) return false;
+          const permutedRank = unitDomain ? id(group.logicalValue) : id(group.logicalRank);
+          mappingWrite.expression = readAt(permutedRank);
+          mappingWrite.messageBusRuntimeValueTrace = valueTrace;
+        }
         if (expression instanceof BinaryOpNode
           && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
           && collectionAccessOf(expression.left) !== undefined) {
@@ -3250,6 +3432,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           : 'vmap counter loop iteration count must be between 0 and 64',
       )));
       for (const group of groups) {
+        const traceParams = [...valueTracePlans.values()]
+          .filter((trace) => keyed.some((write) => groupByWrite.get(write) === group
+            && write instanceof MappingAssignNode && valueTracePlans.get(write) === trace));
+        for (const trace of traceParams) {
+          prelude.push(at(new RequireNode(binary(
+            at(new UnaryOpNode(UnaryOperator.SIZE, id(trace.witnessParam))),
+            BinaryOperator.EQ,
+            iterationCount(),
+          ), 'vmap counter value trace length mismatch')));
+        }
         prelude.push(at(new RequireNode(binary(
           at(new UnaryOpNode(UnaryOperator.SIZE, id(group.hidden))),
           group.expandedSelectionCondition ? BinaryOperator.LE : BinaryOperator.EQ,
@@ -3415,6 +3607,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           outputCount.location = node.location;
           added.push(inputCount, outputCount);
         }
+      }
+      for (const trace of valueTracePlans.values()) {
+        const parameter = new ParameterNode(new ArrayType(trace.valueType), trace.witnessParam);
+        parameter.location = node.location;
+        added.push(parameter);
       }
       if (generalOldEntryWrites.size > 0) {
         const seen = new Set<string>();

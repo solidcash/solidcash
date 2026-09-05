@@ -110,6 +110,7 @@ import LowerVMapCounterLoops, {
   VMAP_COUNTER_INPUT_COUNT_PREFIX,
   VMAP_COUNTER_OUTPUT_COUNT_PREFIX,
   VMAP_COUNTER_PERM_PREFIX,
+  VMAP_COUNTER_VALUE_PREFIX,
   VMAP_RUNTIME_INPUT_COUNT_PREFIX,
   VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
 } from './semantic/LowerVMapCounterLoops.js';
@@ -5238,6 +5239,7 @@ function synthesizeMessageBusRoute(
               : (() => {
                 if (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
+                  || parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
                   || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)) {
                   return kernelLoopDispatch ? `${parameter.name}[${rowExpression}]` : parameter.name;
@@ -5403,6 +5405,7 @@ function synthesizeMessageBusRoute(
     fn.parameters.filter((parameter) => {
       if (!parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
+        && !parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)
         && !parameter.name.startsWith(VMAP_RUNTIME_INPUT_COUNT_PREFIX)
@@ -5418,6 +5421,7 @@ function synthesizeMessageBusRoute(
       const type = parameter.type.toString();
       return (parameter.name.startsWith(VMAP_COUNTER_PERM_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
+        || parameter.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_INPUT_COUNT_PREFIX)
         || parameter.name.startsWith(VMAP_COUNTER_OUTPUT_COUNT_PREFIX)) && kernelLoopDispatch
         ? `${type}[] ${parameter.name}` : `${type} ${parameter.name}`;

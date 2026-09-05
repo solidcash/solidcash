@@ -192,6 +192,7 @@ const VMAP_RUNTIME_INPUT_COUNT_PREFIX = '__internal__vmapRuntimeInputCount_';
 const VMAP_RUNTIME_OUTPUT_COUNT_PREFIX = '__internal__vmapRuntimeOutputCount_';
 const VMAP_COUNTER_PERM_PREFIX = '__internal__vmapCounterPerm_';
 const VMAP_COUNTER_OLD_PREFIX = '__internal__vmapCounterOld_';
+const VMAP_COUNTER_VALUE_PREFIX = '__internal__vmapCounterValue_';
 const VMAP_COUNTER_INPUT_COUNT_PREFIX = '__internal__vmapCounterInputCount_';
 const VMAP_COUNTER_OUTPUT_COUNT_PREFIX = '__internal__vmapCounterOutputCount_';
 const vmapRuntimeInputCountName = (collection: string): string =>
@@ -4517,6 +4518,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     for (const input of capability.route.inputs) {
       if (!input.name.startsWith(VMAP_COUNTER_OLD_PREFIX)
+        || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
+      const rowValues = Array.from({ length: effectiveRowArguments?.length ?? 0 }, () => []);
+      for (const row of effectiveRowArguments ?? []) {
+        if (row.handler.inputs.some((candidate) => candidate.name === input.name)) {
+          (row.internalArgs as Record<string, FunctionArgument>)[input.name] = [];
+        }
+      }
+      resolvedCallerInternalWitnesses[input.name] = rowValues as FunctionArgument;
+    }
+    for (const input of capability.route.inputs) {
+      if (!input.name.startsWith(VMAP_COUNTER_VALUE_PREFIX)
         || resolvedCallerInternalWitnesses[input.name] !== undefined) continue;
       const rowValues = Array.from({ length: effectiveRowArguments?.length ?? 0 }, () => []);
       for (const row of effectiveRowArguments ?? []) {
@@ -16304,6 +16316,77 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         return occurrence;
       };
+      let valueTrace: FunctionArgument[] | undefined;
+      if (info.valueTraceWitnessParam) {
+        if (!info.valueTraceLocal || !info.valueTraceInitial) {
+          throw new Error(`vmap value trace ${info.collection}: incomplete compiler metadata`);
+        }
+        const witnessIndex = loopAbiFunction.inputs.findIndex(
+          (input) => input.name === info.valueTraceWitnessParam,
+        );
+        if (witnessIndex < 0) {
+          throw new Error(`vmap value trace ${info.collection}: missing witness ABI input`);
+        }
+        const traceExpressions = [
+          info.valueTraceInitial,
+          ...(info.valueTraceUpdates ?? []).flatMap((update) => [update.condition, update.expression]),
+          ...(info.valueTraceAfterUpdates ?? []).flatMap((update) => [update.condition, update.expression]),
+        ].filter((expression): expression is ExternalCallExpression => expression !== undefined);
+        loopPredicateState = await this._hydrateExternalPredicateState(
+          traceExpressions,
+          conditionArgs,
+          entryArtifact,
+          loopPredicateState,
+          visibleInputs,
+          executionSelfAddress,
+          keysArr.map(occurrenceOf),
+        );
+        let current = this._evaluateExternalExpression(
+          info.valueTraceInitial,
+          conditionArgs,
+          entryArtifact,
+          loopPredicateState,
+          visibleInputs,
+          undefined,
+          0,
+          false,
+          executionSelfAddress,
+        );
+        if (current === undefined) {
+          throw new Error(`vmap value trace ${info.collection}: could not resolve initial value`);
+        }
+        valueTrace = [];
+        const bindings = new Map<string, FunctionArgument>();
+        const applyUpdates = (
+          updates: NonNullable<SortedUpsertLoopAbi['valueTraceUpdates']>, occurrence: number,
+        ): void => {
+          for (const update of updates) {
+            bindings.set(info.valueTraceLocal!, current!);
+            const selected = update.condition ? this._evaluateExternalExpression(
+              update.condition, conditionArgs, entryArtifact, loopPredicateState, visibleInputs,
+              undefined, occurrence, false, executionSelfAddress, bindings,
+            ) : true;
+            if (typeof selected !== 'boolean') {
+              throw new Error(`vmap value trace ${info.collection}: could not resolve update predicate`);
+            }
+            if (!selected) continue;
+            const next = this._evaluateExternalExpression(
+              update.expression, conditionArgs, entryArtifact, loopPredicateState, visibleInputs,
+              undefined, occurrence, false, executionSelfAddress, bindings,
+            );
+            if (next === undefined) {
+              throw new Error(`vmap value trace ${info.collection}: could not resolve update value`);
+            }
+            current = next;
+          }
+        };
+        for (let occurrence = 0; occurrence < keysArr.length; occurrence += 1) {
+          applyUpdates(info.valueTraceUpdates ?? [], occurrence);
+          valueTrace.push(current);
+          applyUpdates(info.valueTraceAfterUpdates ?? [], occurrence);
+        }
+        replaceLoopArgument(witnessIndex, valueTrace as ConstructorArgument[]);
+      }
       if (keyExpressions?.length) {
         loopPredicateState = await this._hydrateExternalPredicateState(
           keyExpressions,
@@ -16379,6 +16462,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       } else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
       let perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
       let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
+      if (valueTrace) {
+        valsArr = keysArr.map((key) => valueTrace![occurrenceOf(key)]);
+        perKey = true;
+      }
       if (info.valueRuntimeExpression) {
         // The first VM probe only needs a correctly typed placeholder; trace derivation replaces its commitment
         // with the value computed by the row. A numeric zero is not encodable as a struct/array and made direct

@@ -21869,6 +21869,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       const expr = assign.expression;
+      const valueTrace = assign.messageBusRuntimeValueTrace;
       if (expr instanceof IdentifierNode && collection.innermostValueType instanceof StructType
         && this.isLoopStructRuntimeRmw(block, assign, expr.name)) {
         valueRuntimeLocal = expr.name;
@@ -21892,7 +21893,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (src instanceof ArrayAccessNode || src instanceof IdentifierNode || src instanceof IntLiteralNode
           || src instanceof BoolLiteralNode) valueRight = src;
       }
-      if (valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode) {
+      if (valueTrace) {
+        // The source-order witness is addressed by the permuted key's logical rank in script. It is not a
+        // physically ordered value array and must not enter the ordinary SDK key/value zip-and-sort path.
+      } else if (valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode) {
         valueArrayParam = valueRight.array.name;                        // per-key vs[i]
       } else if (!isRmw && valueRight instanceof BinaryOpNode
         && valueRight.operator === BinaryOperator.PLUS && valueRight.left instanceof ArrayAccessNode
@@ -21909,7 +21913,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
-    const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined || !!valueRuntimeLocal;
+    const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined
+      || !!valueRuntimeLocal || !!(writeNode instanceof MappingAssignNode
+        && writeNode.messageBusRuntimeValueTrace);
     const valueRuntimeExpression = !isDelete && (
       (!!decodedKeyRecipe && (!hasValue || decodedKeyRecipe.predicateEquals !== undefined))
       || (!hasValue && writeNode.entrySlotIndex >= 0
@@ -21921,10 +21927,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Two loops can write the same mapping from different arrays
     // (`allowedWorkers_` = true, then `disallowedWorkers_` = false). Key by
     // collection + varying array + predicate so the SDK co-spends both runs.
+    const valueTraceWitness = writeNode instanceof MappingAssignNode
+      ? writeNode.messageBusRuntimeValueTrace?.witnessParam : undefined;
     const existingInfo = infos.find((x) => x.collection === collection.name
       && x.varyingArrayParam === varyingArrayParam
       && (x.predicateArrayParam ?? '') === (decodedKeyRecipe?.predicateArrayParam ?? '')
-      && (x.predicateEquals ?? '') === (decodedKeyRecipe?.predicateEquals ?? ''));
+      && (x.predicateEquals ?? '') === (decodedKeyRecipe?.predicateEquals ?? '')
+      && (x.valueTraceWitnessParam ?? '') === (valueTraceWitness ?? ''));
     if (existingInfo && (existingInfo.fixedKeySources?.length ?? 0) === 0 && fixedKeySources.length > 0) {
       existingInfo.fixedKeySources = fixedKeySources;
     }
@@ -21951,6 +21960,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(valueArrayParam && { valueArrayParam }), ...(valueScalarParam && { valueScalarParam }),
         ...(valueConst !== undefined && { valueConst }),
         ...(valueRuntimeLocal && { valueRuntimeLocal }),
+        ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeValueTrace && {
+          valueTraceWitnessParam: writeNode.messageBusRuntimeValueTrace.witnessParam,
+          valueTraceLocal: writeNode.messageBusRuntimeValueTrace.local,
+          valueTraceInitial: writeNode.messageBusRuntimeValueTrace.initial,
+          valueTraceUpdates: writeNode.messageBusRuntimeValueTrace.updates,
+          valueTraceAfterUpdates: writeNode.messageBusRuntimeValueTrace.afterUpdates,
+        }),
         ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
         ...(valueArrayOffset !== undefined && { valueArrayOffset }),
         ...(valueRuntimeLocal && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }),

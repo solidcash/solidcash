@@ -561,6 +561,18 @@ export interface SortedUpsertLoopAbi {
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
   valueRuntimeLocal?: string;
   valueRuntimeExpression?: boolean;
+  /** Authenticated source-order trace for a mapping value which carries state between loop iterations. */
+  valueTraceWitnessParam?: string;
+  valueTraceLocal?: string;
+  valueTraceInitial?: ExternalCallExpression;
+  valueTraceUpdates?: readonly {
+    condition?: ExternalCallExpression;
+    expression: ExternalCallExpression;
+  }[];
+  valueTraceAfterUpdates?: readonly {
+    condition?: ExternalCallExpression;
+    expression: ExternalCallExpression;
+  }[];
   mutation?: 'push' | 'pop' | 'setAt';
   mutationValueArrayParam?: string;
   mutationValueScalarParam?: string;

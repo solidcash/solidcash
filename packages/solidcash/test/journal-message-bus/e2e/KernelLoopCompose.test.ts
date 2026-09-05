@@ -148,11 +148,15 @@ contract KernelDisjointRuntimeValueRows() {
   struct Pair { int first; int second; }
   mapping(int => Pair) left;
   mapping(int => Pair) right;
+  mapping(int => Pair) shared;
   function seedLeft(int key, int first, int second) public {
     this.left[key] = Pair(first, second); require(true);
   }
   function seedRight(int key, int first, int second) public {
     this.right[key] = Pair(first, second); require(true);
+  }
+  function seedShared(int key, int first, int second) public {
+    this.shared[key] = Pair(first, second); require(true);
   }
   function updateLeft(int n) public {
     for (int i = 0; i < n; i = i + 1) {
@@ -172,11 +176,32 @@ contract KernelDisjointRuntimeValueRows() {
     }
     require(true);
   }
+  function updateSharedLow(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      Pair value = this.shared[i];
+      value.first = value.first + 50;
+      value.second = value.second + 60;
+      this.shared[i] = value;
+    }
+    require(true);
+  }
+  function updateSharedHigh(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      Pair value = this.shared[i + 2];
+      value.first = value.first + 70;
+      value.second = value.second + 80;
+      this.shared[i + 2] = value;
+    }
+    require(true);
+  }
   function checkLeft(int key, int first, int second) public {
     require(this.left[key].first == first); require(this.left[key].second == second); require(true);
   }
   function checkRight(int key, int first, int second) public {
     require(this.right[key].first == first); require(this.right[key].second == second); require(true);
+  }
+  function checkShared(int key, int first, int second) public {
+    require(this.shared[key].first == first); require(this.shared[key].second == second); require(true);
   }
 }`;
 
@@ -4279,7 +4304,7 @@ describe('kernel composite counter-key settlement', () => {
     const artifact = compileString(DISJOINT_RUNTIME_VALUE_ROWS_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
-    for (const name of ['updateLeft', 'updateRight']) {
+    for (const name of ['updateLeft', 'updateRight', 'updateSharedLow', 'updateSharedHigh']) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: true });
     }
@@ -4292,6 +4317,9 @@ describe('kernel composite counter-key settlement', () => {
       await contract.call.seedLeft(key, key + 1n, key + 2n).send();
       await contract.call.seedRight(key, key + 3n, key + 4n).send();
     }
+    for (let key = 0n; key < 4n; key += 1n) {
+      await contract.call.seedShared(key, key + 5n, key + 6n).send();
+    }
     await expect(contract.batch([
       { function: 'updateLeft', args: [2n] },
       { function: 'updateRight', args: [2n] },
@@ -4301,9 +4329,20 @@ describe('kernel composite counter-key settlement', () => {
       await expect(contract.call.checkRight(key, key + 33n, key + 44n).send()).resolves.toBeDefined();
     }
     await expect(contract.batch([
-      { function: 'updateLeft', args: [2n] },
-      { function: 'updateLeft', args: [2n] },
-    ]).build()).rejects.toThrow(/same collection requires journalled predecessor planning/);
+      { function: 'updateSharedLow', args: [2n] },
+      { function: 'updateSharedLow', args: [0n] },
+      { function: 'updateSharedHigh', args: [2n] },
+    ]).send()).resolves.toBeDefined();
+    for (let key = 0n; key < 4n; key += 1n) {
+      const low = key < 2n;
+      await expect(contract.call.checkShared(
+        key, key + (low ? 55n : 75n), key + (low ? 66n : 86n),
+      ).send()).resolves.toBeDefined();
+    }
+    await expect(contract.batch([
+      { function: 'updateSharedLow', args: [2n] },
+      { function: 'updateSharedLow', args: [2n] },
+    ]).build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 
   it('settles general loop-carried local values through an authenticated source-order trace', async () => {

@@ -15975,30 +15975,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const index = inputs.findIndex((input) => input.name === name);
       return index < 0 ? undefined : row.args[index];
     };
-    const activeSelectedUpsertRows = selectedUpsertRows.filter((row) => (
-      row.handler.sortedUpsertLoopInfo ?? []
-    ).some((info) => {
-      const value = selectedRowArgument(row, info.varyingArrayParam);
-      return !Array.isArray(value) || value.length > 0;
-    }));
-    const runtimeDerivedRows = activeSelectedUpsertRows.filter((row) => (
-      row.handler.sortedUpsertLoopInfo ?? []
-    ).some((info) => info.valueRuntimeLocal || info.mutation !== undefined));
-    const runtimeDerivedCollections = new Set<string>();
-    const overlappingRuntimeDerivedCollection = runtimeDerivedRows.length > 1
-      && runtimeDerivedRows.some((row) => [...new Set(
-        (row.handler.sortedUpsertLoopInfo ?? []).map((info) => info.collection),
-      )].some((collection) => {
-        if (runtimeDerivedCollections.has(collection)) return true;
-        runtimeDerivedCollections.add(collection);
-        return false;
-      }));
-    if (overlappingRuntimeDerivedCollection) {
-      throw new Error(
-        'A message-bus envelope with runtime-derived mapping values or mutations in multiple selected rows of '
-        + 'the same collection requires journalled predecessor planning; split the rows into separate transactions.',
-      );
-    }
     const plannedUpsertRows = selectedUpsertRows;
     const upsertPlanningFrames = selectedUpsertRows.length > 0
       ? plannedUpsertRows.map((row) => ({
@@ -16879,7 +16855,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`vmap runtime struct loop ${info.collection}: missing old-value witness ABI input`);
         }
         replaceLoopArgument(witnessIndex, oldWitnesses);
-        runtimeLoopDerivedCounts.set(info.collection, outputCount);
+        const priorOutputCount = runtimeLoopDerivedCounts.get(info.collection) ?? 0;
+        runtimeLoopDerivedCounts.set(info.collection, priorOutputCount + outputCount);
+        if (upsertFrame.routed && selectedUpsertRows.length > 1 && outputCount > 0) {
+          const rowIndex = routeRowIndex(upsertFrame.row!);
+          if (rowIndex < 0) throw new Error('Message-bus runtime loop row is missing from its route frame');
+          runtimeLoopEntrySegments.push({
+            rowIndex, collection: info.collection, offset: priorOutputCount, count: outputCount,
+          });
+        }
         addRuntimeLoopCardinality(
           info.collection, insertLoopPredecessors.length - runtimeInputStart, outputCount,
         );

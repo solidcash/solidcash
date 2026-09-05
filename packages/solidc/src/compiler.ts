@@ -3734,9 +3734,9 @@ function synthesizeMessageBusRoute(
       // `new T[](N)` locals (N<=64, unrolled to scalar writes), and canonical counter-keyed `m[i]` / `m[k][i]`
       // pre/post-test loops (hidden `__internal__vmapCounterPerm_*` on the counter key) journal as trailing
       // upserts / published witnesses. Straight-line local-array push/pop operations are reduced to the same bounded
-      // symbolic element plan, including exhaustive branches whose every arm has the same fixed push width. Escaped
-      // or variably resized constructed key arrays, non-canonical iteration domains, and repeated fixed-slot effects
-      // still have no kernel representation.
+      // symbolic element plan, including invariant variable-width branches and replayable straight-line or finite
+      // exhaustive loop-local value assignments. Escaped or counter-variably resized constructed key arrays,
+      // non-canonical iteration domains, and repeated fixed-slot effects still have no kernel representation.
       if (hasUnsupportedSortedRuntimeLoopWrite(fn, 64n)) {
         reason = 'KERNEL_UNBOUNDED_KEY';
       } else if (deploys && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {

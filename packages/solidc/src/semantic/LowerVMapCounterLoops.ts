@@ -4734,6 +4734,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     ): void => {
       type ScheduledPush = {
         push: ArrayPushNode;
+        value: ExpressionNode;
         ordinal: number;
         ordinalExpression?: ExpressionNode;
         condition?: ExpressionNode;
@@ -4743,15 +4744,19 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         widthExpression?: ExpressionNode;
         minimumWidth: number;
         pushes: ScheduledPush[];
+        values: Map<string, ExpressionNode>;
+        assigned: Set<string>;
       };
       const fixedPushSchedule = (
         candidate: BlockNode,
         arrayName: string,
+        values = new Map<string, ExpressionNode>(),
       ): FixedPushSchedule | undefined => {
         let width = 0;
         let widthExpression: ExpressionNode | undefined;
         let minimumWidth = 0;
         const pushes: ScheduledPush[] = [];
+        const assigned = new Set<string>();
         const expressionFor = (
           schedule: Pick<FixedPushSchedule, 'width' | 'widthExpression'>,
           location: Node,
@@ -4803,6 +4808,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               })();
             pushes.push({
               push: scheduled.push,
+              value: cloneNode(scheduled.value) as ExpressionNode,
               ordinal: width + scheduled.ordinal,
               ...((widthExpression || scheduled.ordinalExpression) && {
                 ordinalExpression: addExpressions(
@@ -4817,6 +4823,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (statement instanceof ArrayPushNode && statement.name === arrayName) {
             pushes.push({
               push: statement,
+              value: replaceSnapshots(statement.value, values),
               ordinal: width,
               ...(widthExpression && {
                 ordinalExpression: currentWidthExpression(statement),
@@ -4825,20 +4832,36 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             appendWidth({ width: 1, minimumWidth: 1 }, statement);
             continue;
           }
+          if (statement instanceof VariableDefinitionNode && statement.expression) {
+            values.set(statement.name, replaceSnapshots(statement.expression, values));
+            assigned.add(statement.name);
+            continue;
+          }
+          if (statement instanceof AssignNode && statement.identifier.name !== arrayName) {
+            values.set(
+              statement.identifier.name,
+              replaceSnapshots(statement.expression, values),
+            );
+            assigned.add(statement.identifier.name);
+            continue;
+          }
           if (statement instanceof BranchNode) {
-            const ifArm = fixedPushSchedule(statement.ifBlock, arrayName);
+            const branchPredicate = replaceSnapshots(statement.condition, values);
+            const ifArm = fixedPushSchedule(statement.ifBlock, arrayName, new Map(values));
             const elseArm = statement.elseBlock
-              ? fixedPushSchedule(statement.elseBlock, arrayName)
-              : { width: 0, minimumWidth: 0, pushes: [] };
+              ? fixedPushSchedule(statement.elseBlock, arrayName, new Map(values))
+              : {
+                width: 0, minimumWidth: 0, pushes: [], values: new Map(values), assigned: new Set<string>(),
+              };
             if (!ifArm || !elseArm) return undefined;
-            appendArm(ifArm, statement.condition);
-            appendArm(elseArm, statement.condition, true);
+            appendArm(ifArm, branchPredicate);
+            appendArm(elseArm, branchPredicate, true);
             const equalConstant = !ifArm.widthExpression && !elseArm.widthExpression
               && ifArm.width === elseArm.width;
             if (equalConstant) appendWidth(ifArm, statement);
             else {
               const selected = new TernaryOpNode(
-                cloneNode(statement.condition),
+                cloneNode(branchPredicate),
                 expressionFor(ifArm, statement), expressionFor(elseArm, statement),
               );
               selected.location = statement.location;
@@ -4848,18 +4871,37 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 minimumWidth: Math.min(ifArm.minimumWidth, elseArm.minimumWidth),
               }, statement);
             }
+            for (const name of new Set([...ifArm.assigned, ...elseArm.assigned])) {
+              const ifValue = ifArm.values.get(name);
+              const elseValue = elseArm.values.get(name);
+              if (!ifValue || !elseValue) {
+                values.delete(name);
+                assigned.add(name);
+                continue;
+              }
+              const selected = new TernaryOpNode(
+                cloneNode(branchPredicate), cloneNode(ifValue), cloneNode(elseValue),
+              );
+              selected.location = statement.location;
+              selected.type = ifValue.type ?? elseValue.type;
+              values.set(name, selected);
+              assigned.add(name);
+            }
             continue;
           }
           if (statement instanceof SwitchNode) {
+            const selectedValue = replaceSnapshots(statement.expression, values);
             const arms = statement.cases.map((switchCase) =>
-              fixedPushSchedule(switchCase.body, arrayName));
+              fixedPushSchedule(switchCase.body, arrayName, new Map(values)));
             const fallback = statement.defaultCase
-              ? fixedPushSchedule(statement.defaultCase, arrayName)
-              : { width: 0, minimumWidth: 0, pushes: [] };
+              ? fixedPushSchedule(statement.defaultCase, arrayName, new Map(values))
+              : {
+                width: 0, minimumWidth: 0, pushes: [], values: new Map(values), assigned: new Set<string>(),
+              };
             if (!fallback || arms.some((arm) => !arm)) return undefined;
             const caseConditions = statement.cases.map((switchCase) => {
               const condition = new BinaryOpNode(
-                cloneNode(statement.expression), BinaryOperator.EQ, cloneNode(switchCase.value),
+                cloneNode(selectedValue), BinaryOperator.EQ, cloneNode(switchCase.value),
               );
               condition.location = switchCase.location ?? statement.location;
               return condition;
@@ -4896,11 +4938,35 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 minimumWidth: Math.min(fallback.minimumWidth, ...arms.map((arm) => arm!.minimumWidth)),
               }, statement);
             }
+            const assignedInArms = new Set([
+              ...fallback.assigned, ...arms.flatMap((arm) => [...arm!.assigned]),
+            ]);
+            for (const name of assignedInArms) {
+              const fallbackValue = fallback.values.get(name);
+              if (!fallbackValue || arms.some((arm) => !arm!.values.has(name))) {
+                values.delete(name);
+                assigned.add(name);
+                continue;
+              }
+              let mergedValue: ExpressionNode = cloneNode(fallbackValue) as ExpressionNode;
+              for (let index = arms.length - 1; index >= 0; index -= 1) {
+                const selected: ExpressionNode = new TernaryOpNode(
+                  cloneNode(caseConditions[index]), cloneNode(arms[index]!.values.get(name)!), mergedValue,
+                );
+                selected.location = statement.location;
+                selected.type = arms[index]!.values.get(name)!.type ?? mergedValue.type;
+                mergedValue = selected;
+              }
+              values.set(name, mergedValue);
+              assigned.add(name);
+            }
             continue;
           }
           if (mutatedArrays(statement).has(arrayName)) return undefined;
         }
-        return { width, ...(widthExpression && { widthExpression }), minimumWidth, pushes };
+        return {
+          width, ...(widthExpression && { widthExpression }), minimumWidth, pushes, values, assigned,
+        };
       };
       const fixedPopSchedule = (
         candidate: BlockNode,
@@ -5033,13 +5099,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               && pushSchedule === undefined
               && mutationCount === scheduledPopCount && resizeCount === scheduledPopCount;
             // Preinstalling every push recipe lets a read between push sites observe all prior iterations while
-            // plan.length excludes later pushes from the current iteration. A push value which depends on another
-            // loop-assigned local has no single counter-only recipe, and a self-read would recursively depend on the
-            // array being reconstructed, so keep either form fenced.
+            // plan.length excludes later pushes from the current iteration. Straight-line and finite exhaustive
+            // local assignments have already been substituted into the scheduled value. Any loop-assigned name
+            // which remains has no closed counter-only recipe; a self-read would recursively depend on the array
+            // being reconstructed, so keep either form fenced.
             const unavailablePushNames = new Set(loopAssignedNames).add(name);
             unavailablePushNames.delete(canonical.logical);
-            if (fixedPushes && pushSchedule!.pushes.some(({ push, condition }) =>
-              containsNamedIdentifier(push.value, unavailablePushNames)
+            if (fixedPushes && pushSchedule!.pushes.some(({ value, condition }) =>
+              containsNamedIdentifier(value, unavailablePushNames)
               || (condition !== undefined
                 && containsNamedIdentifier(condition, unavailablePushNames)))) fixedPushes = false;
             const unavailablePushWidthNames = new Set(loopAssignedNames).add(name).add(canonical.logical);
@@ -5105,7 +5172,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   ),
                 }),
               };
-              pushSchedule!.pushes.forEach(({ push, ordinal, ordinalExpression, condition }) => {
+              pushSchedule!.pushes.forEach(({ push, value, ordinal, ordinalExpression, condition }) => {
                 const replayedOrdinal = ordinalExpression
                   ? replaceSnapshots(ordinalExpression, snapshots) : undefined;
                 const index = !replayedOrdinal && ordinal === 0
@@ -5117,7 +5184,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 index.location = push.location;
                 plan.writes.push({
                   index,
-                  value: replaceSnapshots(push.value, snapshots),
+                  value: replaceSnapshots(value, snapshots),
                   recurrence: {
                     ...plan.recurrence!, ordinal,
                     baseLength: cloneNode(plan.recurrence!.baseLength) as ExpressionNode,
@@ -5369,7 +5436,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             value: cloneNode(active.get(statement.name)!.defaultValue) as ExpressionNode,
           });
         } else if (statement instanceof ArrayPushNode && active.has(statement.name)
-          && replayedArrayValue !== undefined && !containsReassignedName(replayedArrayValue)) {
+          && replayedArrayValue !== undefined
+          && (active.get(statement.name)!.recurrence !== undefined
+            || !containsReassignedName(replayedArrayValue))) {
           const plan = active.get(statement.name)!;
           if (!plan.recurrence) {
             plan.writes.push({

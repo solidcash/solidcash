@@ -5093,6 +5093,27 @@ describe('kernel composite counter-key settlement', () => {
         }
         require(true);
       }
+      function locals(int n) public {
+        int[] xs = new int[](0);
+        int key = 0;
+        for (int i = 0; i < n; i = i + 1) {
+          key = i + 200;
+          bool high = i % 2 == 0;
+          if (high) xs.push(key + 10); else xs.push(key + 20);
+          this.slots[xs[i]] = i + 800;
+        }
+        require(true);
+      }
+      function joined(int n) public {
+        int[] xs = new int[](0);
+        int key = 0;
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) key = i + 300; else key = i + 400;
+          xs.push(key);
+          this.slots[xs[i]] = i + 900;
+        }
+        require(true);
+      }
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
@@ -5113,6 +5134,16 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.batch([{ function: 'historical', args: [4n] }]).send())
       .resolves.toBeDefined();
     for (const [key, expected] of [[130n, 701n], [141n, 702n], [132n, 703n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    await expect(contract.batch([{ function: 'locals', args: [3n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [[210n, 800n], [221n, 801n], [212n, 802n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    await expect(contract.batch([{ function: 'joined', args: [3n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [[300n, 900n], [401n, 901n], [302n, 902n]] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
   }, 180_000);

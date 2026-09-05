@@ -502,11 +502,13 @@ pop paths remain fenced because their prior length requires a prefix sum of earl
 Reads between push sites use the same recipes with the point-in-time symbolic length, so they see every prior
 iteration and only the pushes already executed in the current iteration; reads before the first push retain the
 original array prefix. A fixed positive number of unconditional top-level `pop` operations similarly shortens the
-known prefix on each iteration. Passing an element value to a helper does not escape the array, and passing the whole
-array through a transitively read-only `pure` helper preserves its symbolic plan. Mixed push/pop operations, a push
-value derived from another loop-assigned local or the array itself, a variable-width push schedule with a zero-width
-arm, a counter-dependent unequal-width resize schedule, passing the array to a mutating, external, ambiguous,
-or otherwise unprovable call, loop-dependent
+known prefix on each iteration. Push values and branch selectors may use straight-line loop-local definitions and
+assignments; exhaustive `if`/`else` and `switch` assignments are merged into source-order ternary recipes for later
+pushes. Passing an element value to a helper does not escape the array, and passing the whole array through a
+transitively read-only `pure` helper preserves its symbolic plan. Mixed push/pop operations, a push value derived
+from the array itself or from a loop-carried local without a closed current-counter recipe, a variable-width push
+schedule with a zero-width arm, a counter-dependent unequal-width resize schedule, passing the array to a mutating,
+external, ambiguous, or otherwise unprovable call, loop-dependent
 control assignments, and writes whose index/value cannot be replayed stay `KERNEL_UNBOUNDED_KEY` without aborting
 sibling handlers.
 

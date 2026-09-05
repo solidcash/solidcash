@@ -1180,6 +1180,41 @@ describe('required kernel admission', () => {
         }
         require(true);
       }
+      function pushLoopLocals(int n) public {
+        int[] xs = new int[](0);
+        int key = 0;
+        for (int i = 0; i < n; i = i + 1) {
+          key = i + 200;
+          bool high = i % 2 == 0;
+          if (high) xs.push(key + 10); else xs.push(key + 20);
+          this.slots[xs[i]] = i;
+        }
+        require(true);
+      }
+      function pushJoinedLocals(int n) public {
+        int[] xs = new int[](0);
+        int key = 0;
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) key = i + 300; else key = i + 400;
+          xs.push(key);
+          this.slots[xs[i]] = i;
+        }
+        require(true);
+      }
+      function pushSwitchLocals(int n) public {
+        int[] xs = new int[](0);
+        int key = 0;
+        for (int i = 0; i < n; i = i + 1) {
+          switch (i % 3) {
+            case 0: key = i + 500; break;
+            case 1: key = i + 600; break;
+            default: key = i + 700;
+          }
+          xs.push(key);
+          this.slots[xs[i]] = i;
+        }
+        require(true);
+      }
       function trimOptional(int n, bool shrink) public {
         int[] xs = new int[](8);
         xs[0] = 21; xs[1] = 22; xs[2] = 23; xs[3] = 24;
@@ -1216,6 +1251,12 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushVariableWidth'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushVariableSwitch'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushLoopLocals'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushJoinedLocals'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pushSwitchLocals'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'trimOptional'))
       .toMatchObject({ eligible: true });

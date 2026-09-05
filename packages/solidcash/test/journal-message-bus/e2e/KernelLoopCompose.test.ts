@@ -2973,6 +2973,10 @@ describe('kernel counter-key mapping loop compose', () => {
     const wrongTargetRecord = new Uint8Array(originalAccessStream);
     wrongTargetRecord[23] = 2;
     wrongTargetRecord[24] = 0;
+    const wrongPredecessorRecord = new Uint8Array(originalAccessStream);
+    // The second insertion's real predecessor is the first pending target (record 1), not the HEAD (record 0).
+    wrongPredecessorRecord[30] = 0;
+    wrongPredecessorRecord[31] = 0;
     const outOfRangePredecessor = new Uint8Array(originalAccessStream);
     outOfRangePredecessor[25] = journalRecords.length & 0xff;
     outOfRangePredecessor[26] = journalRecords.length >>> 8;
@@ -2982,6 +2986,7 @@ describe('kernel counter-key mapping loop compose', () => {
       ['unknown flags', unknownFlags], ['reserved target', reservedTarget],
       ['non-canonical predecessor', nonCanonicalPredecessor], ['aliased predecessor', aliasedPredecessor],
       ['wrong target record', wrongTargetRecord],
+      ['wrong predecessor record', wrongPredecessorRecord],
       ['out-of-range target', outOfRangeTarget], ['out-of-range predecessor', outOfRangePredecessor],
     ] as const) {
       const hostileRouteParams = [...routeUnlocker.params];
@@ -3016,6 +3021,7 @@ describe('kernel counter-key mapping loop compose', () => {
       if (index === 1) copy[22] ^= 0x01;
       return copy;
     });
+    const wrongPredecessorSlot = hostileRecord((record) => { record[22] ^= 0x01; return record; });
     const oversizedRecord = new Uint8Array(151);
     oversizedRecord.set(journalRecords[0].slice(0, Math.min(journalRecords[0].length, 151)));
     for (const [label, hostileRecords] of [
@@ -3023,6 +3029,7 @@ describe('kernel counter-key mapping loop compose', () => {
       ['wrong tag', hostileRecord((record) => { record[0] = 0x04; return record; })],
       ['wrong collection', hostileRecord((record) => { record[2] ^= 0x01; return record; })],
       ['wrong target slot', wrongTargetSlot],
+      ['wrong predecessor slot', wrongPredecessorSlot],
       ['truncated header', hostileRecord((record) => record.slice(0, 85))],
       ['oversized value', hostileRecord(() => oversizedRecord)],
       ['unknown flags', hostileRecord((record) => { record[1] |= 0x80; return record; })],

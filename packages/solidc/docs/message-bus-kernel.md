@@ -518,11 +518,14 @@ sorted-output view. Each source operation publishes the stable target and option
 plus its before/after presence state; predecessor selection follows the evolving pending topology rather than the
 immutable pre-state list. The record list can be encoded directly into the canonical `0x05` carrier. The covenant
 can therefore reproduce load/store selection and flush order without sorting dynamic slots on-chain.
-The topology planner now also emits the truthful initial `0x05` record vector in that same ordinal space. Existing
-nodes carry their exact authenticated pre-state slot, successor, and value; absent targets are represented only as
-clean synthetic tombstones, never as caller-asserted final values. The active transaction path does not yet carry
-that vector into the covenant or use it to relax overlap until the covenant implements the same load/store and
-final-flush transition.
+The topology planner emits the truthful initial `0x05` record vector in that same ordinal space. Existing nodes
+carry their exact authenticated pre-state slot, successor, and value; absent targets are represented only as clean
+synthetic tombstones, never as caller-asserted final values. The active transaction path now carries that vector
+into the covenant. Each row selects its target and optional predecessor ordinal, binds both records to the row's
+compile-owned collection and the exact slots used by its physical, pending, fixed-entry, or cached-read proof path,
+and consumes the stream with exact tag/count/framing checks. The remaining journal phase is to execute the pending
+record value transitions and final flush directly from this shared vector; until then, record overlap cannot be
+relaxed beyond the row loop's existing physical transition rules.
 Different key expressions over the same selected domain receive independent row-owned permutations. Separate
 disjoint loops use separate permutations and separate accumulated physical segments. Counter-keyed mapping-array
 element writes, pushes, and pops authenticate the complete old array through a typed row witness, perform the

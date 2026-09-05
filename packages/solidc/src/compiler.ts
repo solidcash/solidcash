@@ -926,7 +926,7 @@ function compileWithExternalAdmissionFallback(
     throw new Error('messageBus: required route generation did not produce a composable artifact');
   }
   // compileResolvedAst mutates the tree. Snapshot the resolved import graph before the first lowering pass so
-  // binder / admission retries clone instead of re-lexing Marketplace-scale Solidity (measured: 25ms clone vs
+  // binder / admission retries clone instead of re-lexing large Solidity sources (measured: 25ms clone vs
   // 650ms+ re-parse on the verifier-binder pass).
   const pristineBox = (mergedCompilerOptions as InternalCompilerOptions).__pristineAstBox;
   if (pristineBox !== undefined && mergedCompilerOptions.messageBus && pristineBox.ast === undefined) {
@@ -1065,7 +1065,7 @@ function compileWithExternalAdmissionFallback(
       } catch (error) {
         firstError ??= error;
         latestError = error;
-        // MarketplaceDataV1: every relaxResultRouteEffects=true public rung dies on the same generated
+        // Every relaxResultRouteEffects=true public rung can die on the same generated
         // journal-key gap. Later true-rungs cannot admit a key the earlier ones refused; skip to the
         // false-rungs that actually compile.
         const message = error instanceof Error ? error.message : String(error);
@@ -1295,7 +1295,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   }
   if (mergedCompilerOptions.__cheapAdmissionCodegen && !artifact.messageBus?.verifierProgram) {
     // Cheap (or search) admission produced a shippable artifact without a verifier continuation. Recompile
-    // THAT winning shape once. Replaying the whole admission ladder as full compiles is how MarketplaceDataV1
+    // THAT winning shape once. Replaying the whole admission ladder as full compiles otherwise
     // spent ~8s retrying rungs the first pass already refused.
     const fullOptions: InternalCompilerOptions = { ...mergedCompilerOptions };
     delete fullOptions.__cheapAdmissionCodegen;
@@ -3219,8 +3219,8 @@ function synthesizeMessageBusRoute(
           && bareEntryAccessOf(node, locallyBound) === undefined) {
           const bare = bareAccessOf(node)!;
           // Explicit message-bus mode is the authenticated graph/controller surface. Its later lowering owns a
-          // joint dynamic-state and collection journal, so an unrelated `jobs[id]` read must not hide a direct
-          // `whitelist[id][msg.sender]` mapping key from clone normalization. Auto mode retains X95's conservative
+          // joint dynamic-state and collection journal, so an unrelated dynamic-array read must not hide a direct
+          // nested-mapping key from clone normalization. Auto mode retains X95's conservative
           // refusal byte-for-byte; only a caller that explicitly requested the joint route gets this widening.
           const explicitDynamicJournal = explicitlyEnabledMessageBus && dynamicState.has(bare.name);
           if (!explicitDynamicJournal) bareShapeIsNormalizable = false;
@@ -6251,46 +6251,6 @@ function synthesizeMessageBusRoute(
             || __message_bus_journal_record_flags % 4 >= 2
             || __message_bus_journal_record_flags >= 8);
         }
-        for (int __message_bus_journal_row_index = 0;
-          __message_bus_journal_row_index < ${KERNEL_JOURNAL_ACCESS_STREAMS}.length;
-          __message_bus_journal_row_index = __message_bus_journal_row_index + 1) {
-          bytes[] __message_bus_journal_row_streams =
-            ${KERNEL_JOURNAL_ACCESS_STREAMS}[__message_bus_journal_row_index];
-          for (int __message_bus_journal_stream_index = 0;
-            __message_bus_journal_stream_index < __message_bus_journal_row_streams.length;
-            __message_bus_journal_stream_index = __message_bus_journal_stream_index + 1) {
-            bytes __message_bus_journal_stream =
-              __message_bus_journal_row_streams[__message_bus_journal_stream_index];
-            require(__message_bus_journal_stream.slice(0, 1) == hex"06");
-            bigint __message_bus_journal_access_count = int(bytes.concat(
-              __message_bus_journal_stream.slice(1, 2), hex"00"
-            ));
-            require(__message_bus_journal_stream.length
-              == 22 + __message_bus_journal_access_count * 5);
-            for (int __message_bus_journal_access_index = 0;
-              __message_bus_journal_access_index < __message_bus_journal_access_count;
-              __message_bus_journal_access_index = __message_bus_journal_access_index + 1) {
-              bigint __message_bus_journal_access_offset =
-                22 + __message_bus_journal_access_index * 5;
-              bigint __message_bus_journal_target = int(bytes.concat(
-                __message_bus_journal_stream.slice(
-                  __message_bus_journal_access_offset + 1, __message_bus_journal_access_offset + 3
-                ), hex"00"
-              ));
-              bigint __message_bus_journal_predecessor = int(bytes.concat(
-                __message_bus_journal_stream.slice(
-                  __message_bus_journal_access_offset + 3, __message_bus_journal_access_offset + 5
-                ), hex"00"
-              ));
-              require(${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_target].slice(2, 22)
-                == __message_bus_journal_stream.slice(2, 22));
-              if (__message_bus_journal_predecessor != 65535) {
-                require(${KERNEL_JOURNAL_RECORDS}[__message_bus_journal_predecessor].slice(2, 22)
-                  == __message_bus_journal_stream.slice(2, 22));
-              }
-            }
-          }
-        }
   `;
   const routeStructs = [...ast.structDefinitions, ...contract.structDefinitions]
     .filter((definition, index, all) =>
@@ -7139,7 +7099,7 @@ function stubFunctionBody(fn: FunctionDefinitionNode): void {
   fn.body = body;
 }
 
-/** Cheap admission never emits these clones. Skip deep-cloning Marketplace-scale handler bodies. */
+/** Cheap admission never emits these clones. Skip deep-cloning large handler bodies. */
 function cloneMessageBusHandler(
   source: FunctionDefinitionNode, cheap: boolean,
 ): FunctionDefinitionNode {
@@ -7644,7 +7604,7 @@ function compileResolvedAst(
     );
   }
   // Cheap admission does not emit user/clone/route bodies. Park them before survey/unroll so
-  // throwaway Marketplace entry points are not named-return/loop-lowered, then restore for prune.
+  // throwaway large-contract entry points are not named-return/loop-lowered, then restore for prune.
   const cheapAdmissionPark = parkCheapAdmissionUnkeptMessageBusFunctions(
     ast, mergedCompilerOptions.__cheapAdmissionCodegen === true && synthesizeBatchBeforeLowering,
   );
@@ -7721,8 +7681,8 @@ function compileResolvedAst(
   if (needsNestedBranchReturn) ast = ast.accept(new DesugarNestedBranchReturn()) as Ast;
 
   restoreParkedFunctions(ast, cheapAdmissionPark);
-  // Drop unused OZ low-level-call / assembly helpers before journal and memory lowering. Marketplace's
-  // public-only admission otherwise spends seconds lowering Address/SafeERC20 helpers the route will prune
+  // Drop unused compatibility-library low-level-call / assembly helpers before journal and memory lowering. A
+  // public-only admission otherwise spends seconds lowering unused library helpers the route will prune
   // later; the late prune after synthesis remains so a later pass can still root a helper.
   if (ast.freeFunctions.length > 0) ast = ast.accept(new PruneUnreachableFreeFunctions()) as Ast;
   // Throwaway admission still ran journal/memory lowering on those reachable helpers, then threw the
@@ -8431,7 +8391,7 @@ function compileResolvedAst(
   // X149. `artifact.bytecode` IS NOT BYTES. `generateArtifact` publishes it as `scriptToAsm(script)` - the
   // human-readable listing, in which one 1-byte opcode occupies `OP_CHECKSIGVERIFY ` - so `.length / 2` is
   // half a character count and OVERSTATES the script on every contract: 1,332 against a real 283 on a small
-  // stateful contract (4.7x), 32,432 against a real 30,981 on MarketplaceV1.
+  // stateful contract (4.7x), and 32,432 against a real 30,981 on a large compatibility contract.
   //
   // X136 read that overstatement as a SILENT BAND ("`debug.bytecode` is the shorter of the two on every row")
   // and took `Math.max` of the two to close it. There is no band: `debug.bytecode` is
@@ -8455,7 +8415,7 @@ function compileResolvedAst(
     // `error` and no consumer reads the field: not the SDK, not the benches, not the corpus probe. `solidc-cli`
     // prints its own warning, so a contract compiled through the CLI was told and a contract compiled through
     // `compileFile`/`compileString` - which is every bench, every test and every SDK user - was not. Measured
-    // on this corpus: MarketplaceV1 is 20,981 bytes over in ORDINARY DIRECT MODE and compiled silently.
+    // on the large-contract corpus, an ordinary direct-mode contract compiled while 20,981 bytes over.
     // This is not the refusal; a refusal belongs at the spend boundary, where a script length is fatal rather
     // than merely measurable. It is the compiler no longer being the quietest thing in the chain.
     console.warn(`Error: ${message}`);
@@ -9112,7 +9072,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
     // it. Calling the lower-level admission ladder here published route ABI from pass one beside bytecode that
     // could not select a participant-local verifier in an atomic graph.
     // The probe AST is the complete import graph. Cloning it (~25ms) is much cheaper than re-lexing
-    // Marketplace-scale Solidity for every imported primary (~650ms+). The last contract can consume the
+    // large Solidity sources for every imported primary (~650ms+). The last contract can consume the
     // probe itself; every other primary gets an isolated clone with itself selected.
     const contractStarted = Date.now();
     const parsedAst = contract === probe.contract ? probe : cloneAst(probe, 'multi-primary');
@@ -9409,7 +9369,7 @@ function compileStringSplitUnchecked(
 /**
  * X149. The SPLIT PLANNER'S RULER, in bytes. `artifact.bytecode` is `scriptToAsm(script)` - a listing, not a
  * script - so `.length / 2` was half a character count and every packing decision here was taken against an
- * OVERSTATED length: measured 32,432 against a real 30,981 on MarketplaceV1, and 1,332 against 283 on a small
+ * OVERSTATED length: measured 32,432 against a real 30,981 on a large contract, and 1,332 against 283 on a small
  * stateful contract. The direction is the one that hurts: a union whose real bytes fit was refused, `maxShardBytes`
  * bit early, and `estimatedRedeemBytes` was published to the deployer wrong. Nothing about the packing algorithm
  * changes; it is now measuring what it always meant to.
@@ -10901,7 +10861,7 @@ export function parseCode(
   if (solidityImportCompat) {
     const diagnosticTrailer = code.includes('// ----') ? code.search(/\n\/\/ ----/) : -1;
     const spdxSource = diagnosticTrailer >= 0 ? code.slice(0, diagnosticTrailer) : code;
-    // Marketplace/OZ sources have no bidi overrides. The token walk is linear in file size; skip it unless a
+    // Large compatibility sources normally have no bidi overrides. The token walk is linear in file size; skip it unless a
     // direction marker is actually present.
     if (/[\u202a\u202b\u202c\u202d\u202e]/.test(spdxSource)) {
       validateUnicodeDirectionMarkers(spdxSource);
@@ -11018,7 +10978,7 @@ export function parseCode(
     parser.removeErrorListeners();
     parser.addErrorListener(ThrowingErrorListener.INSTANCE);
     // Solidity's semantic predicates (e.g. `hasFunctionCallAhead`) routinely defeat SLL. Trying SLL first on
-    // `.sol` import graphs pays a full failed parse of MarketplaceV1 plus several OZ units before LL retries.
+    // `.sol` import graphs pays a full failed parse of the primary plus several library units before LL retries.
     // Native SolidCash and compiler-generated helpers still take the SLL fast path.
     const trySll = !solidityImportCompat;
     let parseTree: ReturnType<SolidCashParser['sourceFile']>;
@@ -11144,7 +11104,7 @@ function reresolveImportedStructTypes(ast: Ast): void {
     if (!root || seen.has(root)) return;
     seen.add(root);
     // Fix every placeholder type carried on a node: a declaration's `.type` (VariableDefinition / Parameter),
-    // a `new JobPost[](n)`'s `.elementType`, a cast's `.type`, and a function/interface-function's `returns`
+    // a dynamically allocated struct array's `.elementType`, a cast's `.type`, and a function/interface-function's `returns`
     // (`Escrow memory`) - all parse to named-AddressType placeholders that must resolve once imports merge, so
     // imported-struct locals, array constructions, and external-call return types all type-check. fix() is a
     // no-op on non-placeholder / non-Type values, so applying it broadly here is safe (only decl/construction

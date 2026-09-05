@@ -1145,6 +1145,22 @@ contract KernelDominatingLocalKeyArray() {
   function check(int key, int expected) public { require(this.slots[key] == expected); }
 }`;
 
+const RESIZED_LOCAL_KEY_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelResizedLocalKeyArray() {
+  mapping(int => int) slots;
+  function write(int count, int first, int second) public {
+    int[] keys = new int[](count);
+    count = count + 2;
+    keys.push(first);
+    keys.push(999);
+    keys.pop();
+    keys.push(second);
+    for (int i = 0; i < count; i = i + 1) { this.slots[keys[i]] = i + 1; }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.slots[key] == expected); }
+}`;
+
 const SAME_ITERATION_LOCAL_KEY_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelSameIterationLocalKeyArray() {
   mapping(int => int) slots;
@@ -4731,6 +4747,30 @@ describe('kernel composite counter-key settlement', () => {
     });
     await expect(contract.call.check(5n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.check(3n, 11n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('settles straight-line resized local key arrays on a kernel row', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(RESIZED_LOCAL_KEY_ARRAY_SOURCE, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'write', args: [0n, 17n, 29n] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(17n, 1n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(29n, 2n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles local array keys written earlier in the same logical iteration', async () => {

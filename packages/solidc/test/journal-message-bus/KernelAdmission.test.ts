@@ -955,6 +955,56 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('replays straight-line push and pop mutations of a runtime-constructed key array', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n, int first, int second) public {
+        int[] xs = new int[](n);
+        n = n + 2;
+        xs.push(first);
+        xs.push(999);
+        xs.pop();
+        xs.push(second);
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = i + 1; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0]
+      .varyingKeyExpressions).toEqual([expect.objectContaining({ kind: 'ternary' })]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('replays finite branch and switch joins of constructed-array pushes', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function branch(int n, bool take, int left, int right) public {
+        int[] xs = new int[](0);
+        if (take) { xs.push(left); } else { xs.push(right); }
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
+        require(true);
+      }
+      function choose(int n, int mode, int left, int right) public {
+        int[] xs = new int[](0);
+        switch (mode) {
+          case 0: xs.push(left); break;
+          default: xs.push(right);
+        }
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 2; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.filter((handler) => ['branch', 'choose'].includes(handler.name)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'branch', eligible: true }),
+        expect.objectContaining({ name: 'choose', eligible: true }),
+      ]));
+  });
+
   it('derives a straight-line same-iteration local array key', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

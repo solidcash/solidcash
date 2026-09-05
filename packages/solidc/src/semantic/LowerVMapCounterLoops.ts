@@ -4130,7 +4130,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
    * bounds checks and authenticating the symbolic form against the source memory value. Straight-line writes in
    * a canonical loop are available to later statements in that same iteration; writes crossing control-flow
    * joins, prior-iteration dependencies, and escaped arrays stay untouched and therefore fail closed at ordinary
-   * runtime-key admission. This is type-generic and independent of any contract schema.
+   * runtime-key admission. Straight-line push/pop operations advance a symbolic length, so their exact indices
+   * participate in the same replay without turning the source array into a route argument. This is type-generic
+   * and independent of any contract schema.
    */
   private normalizeImmutableDefaultArrayKeys(
     node: FunctionDefinitionNode,
@@ -4138,7 +4140,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
   ): void {
     if (!node.body) return;
     type ArrayWrite = { index: ExpressionNode; value: ExpressionNode; condition?: ExpressionNode };
-    type ArrayPlan = { elementType: Type; defaultValue: ExpressionNode; writes: ArrayWrite[] };
+    type ArrayPlan = {
+      elementType: Type;
+      defaultValue: ExpressionNode;
+      /** Symbolic source length at this point. It makes straight-line push/pop indices replayable. */
+      length: ExpressionNode;
+      writes: ArrayWrite[];
+    };
     const plans = new Map<string, ArrayPlan>();
     const walk = (root: Node, visit: (candidate: Node) => void): void => {
       visit(root);
@@ -4159,6 +4167,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       if (candidate instanceof VariableDefinitionNode) localTypes.set(candidate.name, candidate.type);
     });
     if (localNewArrayNames.size === 0) return;
+    const resizedLocalArrayNames = new Set<string>();
+    walk(node.body, (candidate) => {
+      if ((candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode)
+        && localNewArrayNames.has(candidate.name)) resizedLocalArrayNames.add(candidate.name);
+    });
 
     // Snapshot only assignments which can reach a constructed-array write. Counter-loop lowering also creates
     // temporary arrays, so snapshotting every assignment merely because one exists changes the physical stack
@@ -4341,6 +4354,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       [...source].map(([name, plan]) => [name, {
         elementType: plan.elementType,
         defaultValue: cloneNode(plan.defaultValue) as ExpressionNode,
+        length: cloneNode(plan.length) as ExpressionNode,
         writes: plan.writes.map((write) => ({
           index: cloneNode(write.index) as ExpressionNode,
           value: cloneNode(write.value) as ExpressionNode,
@@ -4394,6 +4408,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             condition: branchCondition(condition, write.condition, true),
           });
         }
+        const mergedLength = new TernaryOpNode(
+          cloneNode(condition), cloneNode(ifPlan.length), cloneNode(elsePlan.length),
+        );
+        mergedLength.location = condition.location;
+        mergedLength.type = ifPlan.length.type ?? elsePlan.length.type;
+        merged.length = mergedLength;
         active.set(name, merged);
       }
     };
@@ -4455,6 +4475,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             }),
           });
         }
+        let mergedLength = cloneNode(fallback.length) as ExpressionNode;
+        for (let index = arms.length - 1; index >= 0; index -= 1) {
+          const selectedLength = new TernaryOpNode(
+            cloneNode(caseConditions[index]), cloneNode(arms[index]!.length), mergedLength,
+          );
+          selectedLength.location = statement.location;
+          selectedLength.type = arms[index]!.length.type ?? mergedLength.type;
+          mergedLength = selectedLength;
+        }
+        merged.length = mergedLength;
         active.set(name, merged);
       }
     };
@@ -4626,11 +4656,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             snapshots.set(statement.identifier.name, identifier);
             return definition;
           })() : undefined;
-        const replayedArrayValue = statement instanceof ArrayAssignNode
+        const replayedArrayValue = statement instanceof ArrayAssignNode || statement instanceof ArrayPushNode
           ? replaceSnapshots(statement.value, snapshots) : undefined;
         const replayedArrayIndex = statement instanceof ArrayAssignNode
           ? replaceSnapshots(statement.index, snapshots) : undefined;
-        const keySnapshot = statement instanceof ArrayAssignNode && active.has(statement.name)
+        const keySnapshot = (statement instanceof ArrayAssignNode || statement instanceof ArrayPushNode)
+          && active.has(statement.name)
           && replayedArrayValue !== undefined && containsFutureReassignedName(replayedArrayValue)
           ? (() => {
             const name = `__internal__vmapKeySnapshot_${this.serial++}`;
@@ -4644,10 +4675,29 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             identifier.type = definition.type;
             return { definition, identifier };
           })() : undefined;
+        const lengthSnapshot = statement instanceof VariableDefinitionNode
+          && statement.expression instanceof NewArrayNode && resizedLocalArrayNames.has(statement.name)
+          ? (() => {
+            // An allocation captures its size at this statement. Use the same immutable value for both the real
+            // allocation and later symbolic push/pop indices, so a subsequent reassignment of a size parameter
+            // cannot retroactively move an earlier push.
+            const name = `${VMAP_KEY_SNAPSHOT_PREFIX}${this.serial++}`;
+            const definition = new VariableDefinitionNode(
+              statement.expression.size.type ?? new IntType(true, 256), [], name,
+              replaceSnapshots(statement.expression.size, snapshots),
+            );
+            definition.location = statement.location;
+            const identifier = new IdentifierNode(name);
+            identifier.location = statement.expression.size.location;
+            identifier.type = definition.type;
+            statement.expression.size = cloneNode(identifier);
+            return { definition, identifier };
+          })() : undefined;
         transformed.push(
           ...(assignmentSnapshot ? [assignmentSnapshot] : []),
           ...rewriteMappingKeys(statement, active),
-          ...(keySnapshot ? [keySnapshot.definition] : []), statement,
+          ...(keySnapshot ? [keySnapshot.definition] : []),
+          ...(lengthSnapshot ? [lengthSnapshot.definition] : []), statement,
         );
         const escaped = escapedPlanNames(statement, active);
         if (statement instanceof VariableDefinitionNode && statement.expression instanceof NewArrayNode) {
@@ -4656,6 +4706,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             defaultValue: createDefaultValueExpression(
               statement.expression.elementType, statement.location,
             ),
+            length: lengthSnapshot?.identifier
+              ?? replaceSnapshots(statement.expression.size, snapshots),
             writes: [],
           });
         } else if (statement instanceof ArrayAssignNode && active.has(statement.name)) {
@@ -4673,6 +4725,29 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             index: cloneNode(statement.index) as ExpressionNode,
             value: cloneNode(active.get(statement.name)!.defaultValue) as ExpressionNode,
           });
+        } else if (statement instanceof ArrayPushNode && active.has(statement.name)
+          && replayedArrayValue !== undefined && !containsReassignedName(replayedArrayValue)) {
+          const plan = active.get(statement.name)!;
+          plan.writes.push({
+            index: cloneNode(plan.length) as ExpressionNode,
+            value: keySnapshot?.identifier ?? cloneNode(replayedArrayValue) as ExpressionNode,
+          });
+          const one = new IntLiteralNode(1n);
+          one.location = statement.location;
+          one.type = plan.length.type ?? new IntType(true, 256);
+          const length = new BinaryOpNode(cloneNode(plan.length), BinaryOperator.PLUS, one);
+          length.location = statement.location;
+          length.type = plan.length.type;
+          plan.length = length;
+        } else if (statement instanceof ArrayPopNode && active.has(statement.name)) {
+          const plan = active.get(statement.name)!;
+          const one = new IntLiteralNode(1n);
+          one.location = statement.location;
+          one.type = plan.length.type ?? new IntType(true, 256);
+          const length = new BinaryOpNode(cloneNode(plan.length), BinaryOperator.MINUS, one);
+          length.location = statement.location;
+          length.type = plan.length.type;
+          plan.length = length;
         } else if (statement instanceof ArrayPushNode || statement instanceof ArrayPopNode
           || statement instanceof AssignNode) {
           active.delete(statement instanceof AssignNode ? statement.identifier.name : statement.name);

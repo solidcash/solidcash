@@ -4149,12 +4149,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       step: bigint;
       stepExpression?: ExpressionNode;
       baseLength: ExpressionNode;
+      pushesPerIteration: number;
     };
     type ArrayWrite = {
       index: ExpressionNode;
       value: ExpressionNode;
       condition?: ExpressionNode;
-      recurrence?: ArrayRecurrence;
+      recurrence?: ArrayRecurrence & { ordinal: number };
     };
     type ArrayPlan = {
       elementType: Type;
@@ -4162,7 +4163,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       /** Symbolic source length at this point. It makes straight-line push/pop indices replayable. */
       length: ExpressionNode;
       writes: ArrayWrite[];
-      /** One unconditional push per canonical source iteration, represented for every prior iteration. */
+      /** A fixed number of unconditional pushes per canonical source iteration. */
       recurrence?: ArrayRecurrence;
     };
     const plans = new Map<string, ArrayPlan>();
@@ -4401,7 +4402,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // Before the source push executes, the current loop iteration has not installed its recurrence recipe.
       // Leaving the array read untouched makes ordinary runtime-key admission reject that genuinely
       // loop-carried dependency instead of publishing a proof which only happens to work at iteration zero.
-      if (plan.recurrence && !plan.writes.some((write) => write.recurrence)) {
+      if (plan.recurrence && plan.writes.filter((write) => write.recurrence).length
+        < plan.recurrence.pushesPerIteration) {
         node.messageBusUnboundedConstructedArray = true;
         return undefined;
       }
@@ -4415,10 +4417,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             cloneNode(access.index), BinaryOperator.MINUS, cloneNode(recurrence.baseLength),
           );
           relative.location = access.location;
+          const occurrence = recurrence.pushesPerIteration === 1
+            ? cloneNode(relative)
+            : new BinaryOpNode(
+              cloneNode(relative), BinaryOperator.DIV,
+              new IntLiteralNode(BigInt(recurrence.pushesPerIteration)),
+            );
+          occurrence.location = access.location;
           const step = recurrence.stepExpression
             ? cloneNode(recurrence.stepExpression) : new IntLiteralNode(recurrence.step);
           step.location = access.location;
-          const logicalStep = new BinaryOpNode(relative, BinaryOperator.MUL, step);
+          const logicalStep = new BinaryOpNode(occurrence, BinaryOperator.MUL, step);
           logicalStep.location = access.location;
           const logicalCounter = new BinaryOpNode(
             new IntLiteralNode(recurrence.start), BinaryOperator.PLUS, logicalStep,
@@ -4435,6 +4444,20 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           beforeLength.location = access.location;
           matches = new BinaryOpNode(atOrAfter, BinaryOperator.AND, beforeLength);
           matches.location = access.location;
+          if (recurrence.pushesPerIteration > 1) {
+            const ordinal = new BinaryOpNode(
+              cloneNode(relative), BinaryOperator.MOD,
+              new IntLiteralNode(BigInt(recurrence.pushesPerIteration)),
+            );
+            ordinal.location = access.location;
+            const isThisPush = new BinaryOpNode(
+              ordinal, BinaryOperator.EQ, new IntLiteralNode(BigInt(recurrence.ordinal)),
+            );
+            isThisPush.location = access.location;
+            const selectedPush = new BinaryOpNode(matches, BinaryOperator.AND, isThisPush);
+            selectedPush.location = access.location;
+            matches = selectedPush;
+          }
         } else {
           matches = new BinaryOpNode(
             cloneNode(access.index), BinaryOperator.EQ, cloneNode(write.index),
@@ -4701,10 +4724,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 && candidate.name === name) resizeCount += 1;
               if (candidate instanceof AssignNode && candidate.identifier.name === name) mutationCount += 1;
             });
-            // A single unconditional push has a closed recurrence: before logical counter i, the array length is
-            // base + (i-start)/step. This describes every prior push without unrolling the runtime domain. More
-            // complicated schedules retain their ordinary array accesses and are refused by admission.
-            if (directPushes.length !== 1 || mutationCount !== 1) {
+            // A fixed number of unconditional pushes has a closed recurrence: before logical counter i, the array
+            // length is base + ((i-start)/step)*pushesPerIteration. This describes every prior push without
+            // unrolling the runtime domain. More complicated schedules retain their ordinary array accesses and
+            // are refused by admission.
+            if (directPushes.length === 0 || mutationCount !== directPushes.length
+              || resizeCount !== directPushes.length) {
               if (resizeCount > 0) {
                 node.messageBusUnboundedConstructedArray = true;
                 loopPlans.delete(name);
@@ -4722,7 +4747,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             step.location = statement.location;
             const occurrence = new BinaryOpNode(delta, BinaryOperator.DIV, step);
             occurrence.location = statement.location;
-            const length = new BinaryOpNode(cloneNode(plan.length), BinaryOperator.PLUS, occurrence);
+            const precedingPushes = directPushes.length === 1
+              ? occurrence
+              : new BinaryOpNode(
+                occurrence, BinaryOperator.MUL, new IntLiteralNode(BigInt(directPushes.length)),
+              );
+            precedingPushes.location = statement.location;
+            const length = new BinaryOpNode(cloneNode(plan.length), BinaryOperator.PLUS, precedingPushes);
             length.location = statement.location;
             length.type = plan.length.type;
             plan.recurrence = {
@@ -4733,6 +4764,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 stepExpression: cloneNode(canonical.stepExpression) as ExpressionNode,
               }),
               baseLength: cloneNode(plan.length) as ExpressionNode,
+              pushesPerIteration: directPushes.length,
             };
             plan.length = length;
           }
@@ -4966,11 +4998,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         } else if (statement instanceof ArrayPushNode && active.has(statement.name)
           && replayedArrayValue !== undefined && !containsReassignedName(replayedArrayValue)) {
           const plan = active.get(statement.name)!;
+          const recurrenceOrdinal = plan.writes.filter((write) => write.recurrence).length;
           plan.writes.push({
             index: cloneNode(plan.length) as ExpressionNode,
             value: keySnapshot?.identifier ?? cloneNode(replayedArrayValue) as ExpressionNode,
             ...(plan.recurrence && { recurrence: {
               ...plan.recurrence,
+              ordinal: recurrenceOrdinal,
               baseLength: cloneNode(plan.recurrence.baseLength) as ExpressionNode,
               ...(plan.recurrence.stepExpression && {
                 stepExpression: cloneNode(plan.recurrence.stepExpression) as ExpressionNode,

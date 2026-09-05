@@ -1095,9 +1095,30 @@ describe('required kernel admission', () => {
       })]);
   });
 
+  it('replays a fixed number of straight-line constructed-array pushes per canonical iteration', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n) public {
+        int[] xs = new int[](0);
+        for (int i = 1; i < n; i = i + 2) {
+          xs.push(i + 10);
+          xs.push(i + 20);
+          this.slots[xs[((i - 1) / 2) * 2]] = i;
+          this.slots[xs[((i - 1) / 2) * 2 + 1]] = i + 100;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toHaveLength(2);
+  });
+
   it.each([
     ['reads before its push', 'this.slots[xs[i]] = i; xs.push(i + 1);'],
-    ['has two pushes per iteration', 'xs.push(i + 1); xs.push(i + 2); this.slots[xs[i]] = i;'],
+    ['reads between two pushes', 'xs.push(i + 1); this.slots[xs[i]] = i; xs.push(i + 2);'],
     ['pops inside the loop', 'xs.pop(); this.slots[xs[i]] = i;'],
   ])('refuses a constructed array which %s', (_label, body) => {
     const artifact = compileString(`contract C() {

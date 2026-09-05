@@ -4788,7 +4788,7 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(0n, 7n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('settles a constructed-array push recurrence inside a ranged kernel loop', async () => {
+  it('settles fixed constructed-array push recurrences inside a ranged kernel loop', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelLoopArrayPush() {
       mapping(int => int) slots;
@@ -4796,10 +4796,13 @@ describe('kernel composite counter-key settlement', () => {
         int[] xs = new int[](0);
         for (int i = 1; i < n; i = i + 2) {
           xs.push(i + 10);
-          this.slots[xs[(i - 1) / 2]] = i;
+          xs.push(i + 20);
+          this.slots[xs[((i - 1) / 2) * 2]] = i;
+          this.slots[xs[((i - 1) / 2) * 2 + 1]] = i + 100;
         }
         require(true);
       }
+      function seed(int key) public { this.slots[key] = 0; require(true); }
       function check(int key, int expected) public { require(this.slots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
@@ -4809,6 +4812,9 @@ describe('kernel composite counter-key settlement', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
+    for (const key of [11n, 21n, 13n, 23n, 15n, 25n]) {
+      await contract.call.seed(key).send();
+    }
     const call = contract.batch([{ function: 'write', args: [6n] }]);
     const builder = await call.build();
     const vm = createVirtualMachineBch2026ForProvider(provider);
@@ -4819,7 +4825,9 @@ describe('kernel composite counter-key settlement', () => {
         .toBe(true);
     }
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    for (const [key, expected] of [[11n, 1n], [13n, 3n], [15n, 5n]] as const) {
+    for (const [key, expected] of [
+      [11n, 1n], [21n, 101n], [13n, 3n], [23n, 103n], [15n, 5n], [25n, 105n],
+    ] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
     }
   }, 180_000);

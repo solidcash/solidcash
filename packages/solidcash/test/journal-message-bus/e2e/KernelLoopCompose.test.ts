@@ -193,6 +193,22 @@ contract KernelCounterMappingRead() {
   function checkRaw(int key, bytes20 expected) public { require(this.rawDestination[key] == expected); }
 }`;
 
+const PARAMETER_ARRAY_MAPPING_READ_SOURCE = `pragma solidcash ^0.13.0;
+event Copied(int key);
+contract KernelParameterArrayMappingRead() {
+  mapping(int => int) source;
+  mapping(int => int) destination;
+  function seed(int key, int value) public { this.source[key] = value; require(true); }
+  function copy(int[] keys) public {
+    for (int i = 0; i < int(keys.length); i = i + 1) {
+      this.destination[keys[i]] = this.source[keys[i]];
+      emit Copied(keys[i]);
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.destination[key] == expected); }
+}`;
+
 const AFFINE_COUNTER_STATE_VALUE_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelAffineCounterStateValue() {
   int total;
@@ -4339,6 +4355,70 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toBeDefined();
     for (let key = 0; key < raw.length; key += 1) {
       await expect(contract.call.checkRaw(BigInt(key), raw[key]).send()).resolves.toBeDefined();
+    }
+  }, 180_000);
+
+  it('orders parameter-array journals without reordering public arguments or effects', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(PARAMETER_ARRAY_MAPPING_READ_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    const copyAbi = artifact.abi.find((handler) => handler.name === 'copy')!;
+    const sourceRead = copyAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'source');
+    const destinationWrite = copyAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'destination');
+    expect(sourceRead).toMatchObject({
+      op: 'read',
+      varyingArrayParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
+      varyingKeyExpressions: expect.any(Array),
+    });
+    expect(destinationWrite).toMatchObject({
+      op: 'set', varyingArrayParam: sourceRead!.varyingArrayParam,
+    });
+    expect(copyAbi.runtimeLoopEvents).toEqual([expect.objectContaining({
+      permutationParam: sourceRead!.varyingArrayParam,
+      eventSignatures: ['Copied(int256)'],
+    })]);
+
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const bySlot = (left: bigint, right: bigint): number => {
+      const leftSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(left)]));
+      const rightSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(right)]));
+      return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1 : 0;
+    };
+    const physical = [91n, 4n].sort(bySlot);
+    const keys = [...physical].reverse();
+    expect(physical).not.toEqual(keys);
+    for (const [index, key] of keys.entries()) await contract.call.seed(key, BigInt(index + 10)).send();
+
+    const directReceipt = await contract.call.copy(keys).send();
+    expect(directReceipt.events?.map((event) => [event.event, event.args.key])).toEqual(
+      keys.map((key) => ['Copied', key]),
+    );
+    for (const [index, key] of keys.entries()) {
+      await expect(contract.call.check(key, BigInt(index + 10)).send()).resolves.toBeDefined();
+    }
+
+    const call = contract.batch([{ function: 'copy', args: [keys] }]);
+    const builder = await call.build();
+    const routeInput = builder.inputs.find((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    if (!routeInput || !('params' in routeInput.unlocker)) throw new Error('message-bus route input is missing');
+    const permutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === sourceRead!.varyingArrayParam);
+    expect(permutationIndex).toBeGreaterThanOrEqual(0);
+    const logicalPermutation = (routeInput.unlocker.params[permutationIndex] as bigint[][])[0];
+    expect(logicalPermutation.map((logical) => keys[Number(logical)])).toEqual(physical);
+
+    const receipt = await call.send();
+    expect(receipt.events?.map((event) => [event.event, event.args.key])).toEqual(
+      keys.map((key) => ['Copied', key]),
+    );
+    for (const [index, key] of keys.entries()) {
+      await expect(contract.call.check(key, BigInt(index + 10)).send()).resolves.toBeDefined();
     }
   }, 180_000);
 

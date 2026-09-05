@@ -431,6 +431,11 @@ container rather than applying a route-wide flag. Events before or after the loo
 stream, including supported conditional sites. Fixed BCH and token-container effects remain supported before or
 after the loop.
 Nested counter keys `m[k][i]` permute the inner key only.
+Parameter-array keys use the same compiler-owned logical-index permutation: `m[keys[i]]` becomes
+`m[keys[perm[i]]]` only at journaled mapping accesses. The public `keys` array is never reordered or replaced;
+calls, events, transfers, and other source expressions continue to observe `keys[i]` in logical source order.
+The SDK sorts `perm` by the complete derived slot recipe, so cross-mapping reads and writes over the same
+`keys[i]` domain share one physical order without changing ABI-visible arguments.
 At transaction construction time, selected rows with independent pre-state journals may share one envelope. The
 compiler threads predecessor and output cursors across physical rows, and the SDK emits each row's collection and
 event segments in the same order. Disjoint keys may share one physical collection: the route authenticates its

@@ -125,8 +125,13 @@ contract Ledger() {
 `, 'create');
     const create = artifact.messageBus?.handlers.find((handler) => handler.name === 'create');
     expect(create?.batchKeyWitnesses).toBeUndefined();
-    expect(artifact.abi.find((fn) => fn.name === 'create')?.sortedUpsertLoopInfo?.some((info) =>
-      info.collection === 'seen' && info.varyingArrayParam === 'workers')).toBe(true);
+    expect(artifact.abi.find((fn) => fn.name === 'create')?.sortedUpsertLoopInfo).toContainEqual(
+      expect.objectContaining({
+        collection: 'seen',
+        varyingArrayParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
+        varyingKeyExpressions: expect.any(Array),
+      }),
+    );
   });
 
   it('dispatches an IERC20-shaped external call from the runtime row loop', () => {

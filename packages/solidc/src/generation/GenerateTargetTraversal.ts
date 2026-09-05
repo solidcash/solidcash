@@ -21801,14 +21801,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return undefined;
     };
     const varyingSourceName = (source: KeySourceInfo, index: number): string | undefined => {
-      const direct = (source.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/)?.[1];
-      if (direct) return direct;
       const key = writeKeys[index];
       // A complete derived key such as `base + perm[rank]` carries the compiler-owned permutation below its
       // root rather than on a direct ArrayAccess node. The array-name prefix is the authoritative marker here:
       // ordinary source arrays cannot use it, and requiring the root's legacy deterministic-array flag makes
       // the semantic lowering admit the row without publishing any settlement metadata.
-      return key ? deterministicArrayName(key) : undefined;
+      // Prefer it over the pre-lowering canonical source. For `m[keys[i]]`, semantic lowering deliberately
+      // rewrites only the mapping access to `m[keys[perm[i]]]`; retaining `keys` here asks the SDK to sort and
+      // replace a public argument, which changes calls/events that still consume `keys[i]` in source order.
+      // Publishing `perm` instead lets the planner order physical entries by the complete `keys[logical]`
+      // recipe while the public array remains immutable.
+      const deterministic = key ? deterministicArrayName(key) : undefined;
+      if (deterministic) return deterministic;
+      return (source.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/)?.[1];
     };
     const fixedCount = (sources: readonly KeySourceInfo[]): number => (
       sources.filter((src, index) => varyingSourceName(src, index) === undefined).length

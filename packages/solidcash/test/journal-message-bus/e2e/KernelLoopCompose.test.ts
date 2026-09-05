@@ -9,7 +9,9 @@ import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { getSatoshiContainerAddress, getTokenContainerAddress } from '../../../src/stateful/covenant-helpers.js';
+import {
+  getEntryNftAddress, getSatoshiContainerAddress, getTokenContainerAddress,
+} from '../../../src/stateful/covenant-helpers.js';
 import {
   createBareP2pkhFeeFunder, createTestProvider, genesisFtContainer, setupStatefulUtxos,
 } from '../../test-util.js';
@@ -4204,6 +4206,17 @@ describe('kernel composite counter-key settlement', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
+    const sourceCollection = artifact.stateLayout!.collections.find((collection) => collection.name === 'source')!;
+    const sourceAddress = getEntryNftAddress(inner, categoryId, sourceCollection.signature);
+    const emptySourceEntryCount = (await provider.getUtxos(sourceAddress)).filter((utxo) =>
+      utxo.token?.category === categoryId && utxo.token.nft?.capability === 'mutable').length;
+    await expect(contract.batch([{ function: 'copy', args: [1n] }]).send()).resolves.toBeDefined();
+    await expect(contract.call.checkDestination(0n, 0n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkSource(0n, 0n).send()).resolves.toBeDefined();
+    expect((await provider.getUtxos(sourceAddress)).filter((utxo) =>
+      utxo.token?.category === categoryId && utxo.token.nft?.capability === 'mutable'))
+      .toHaveLength(emptySourceEntryCount);
+
     const expected = [17n, 29n, 43n, 61n];
     for (let key = 0; key < expected.length; key += 1) {
       await contract.call.seed(BigInt(key), expected[key]).send();
@@ -4253,9 +4266,6 @@ describe('kernel composite counter-key settlement', () => {
       await expect(contract.call.checkDestination(BigInt(key), expected[key]).send()).resolves.toBeDefined();
       await expect(contract.call.checkSource(BigInt(key), expected[key]).send()).resolves.toBeDefined();
     }
-
-    await expect(contract.batch([{ function: 'copy', args: [BigInt(expected.length + 1)] }]).build())
-      .rejects.toThrow(/cannot read key .*it has no entry/);
 
     const second = [3n, 5n, 7n, 11n];
     for (let key = 0; key < second.length; key += 1) {

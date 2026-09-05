@@ -2325,9 +2325,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       const runtimeReadPlans: RuntimeReadPlan[] = [];
       const runtimeReadSignatures = new Set<string>();
       // A foreign read with the exact same counter-derived key shape can travel as an independent, read-only
-      // physical stream. Represent it as a compiler-owned no-op transition: the source entry is authenticated and
-      // reproduced byte-for-byte, while its typed old-value vector feeds the destination expression. Absent source
-      // entries remain a planning-time refusal until the read stream gains shared-predecessor absence proofs.
+      // physical stream. Represent it as a compiler-owned no-op transition: a present source entry is authenticated
+      // and reproduced byte-for-byte; an absent key authenticates the language default against its bracketing
+      // predecessor and reproduces that predecessor unchanged. The typed witness vector feeds the destination.
       for (const destination of [...keyed]) {
         if (!(destination instanceof MappingAssignNode || destination instanceof ArrayAssignNode)) continue;
         const destinationCollection = this.collectionsByName.get(destination.name);

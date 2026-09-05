@@ -16987,12 +16987,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         } else {
           // INSERT (a NEW recipient): co-spend the bracketing predecessor (from the ORIGINAL list) + mint P' then NEW.
           // 'delete'/'-' on an absent key fail closed (nothing to nullify/debit).
-          if (info.op === '-' || info.op === 'read' || isDelete) {
-            const operation = info.op === 'read' ? 'read' : isDelete ? 'delete' : 'debit';
+          if (info.op === '-' || isDelete) {
+            const operation = isDelete ? 'delete' : 'debit';
             throw new Error(`vmap upsert loop ${info.collection}: cannot ${operation} key ${i} - `
               + 'it has no entry');
           }
           const pred = list.predecessorOf(slot);
+          if (info.op === 'read') {
+            const predecessorId = uidOf(pred.utxo);
+            if (cospent.has(predecessorId)) {
+              throw new Error(`vmap read loop ${info.collection}: absent key ${i} shares an already co-spent `
+                + 'predecessor; a shared absence proof is required');
+            }
+            cospent.add(predecessorId);
+            appendRuntimeJournalInput({ ...pred.utxo, unlocker: wUnlocker }, info.collection);
+            commitments.push(binToHex(encodeEntryCommitment(pred.slot, pred.nextKey, pred.value)));
+            continue;
+          }
           const deferred: DeferredEntry | null = lastDeferred; // the covenant's pending; an insert never defers
           lastDeferred = null;
           // FOLD + CHAIN (checked BEFORE the debit-merge): is this new key in the DEFERRED entry's gap? Geometric check

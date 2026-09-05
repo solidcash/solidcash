@@ -502,6 +502,9 @@ context. The kernel route adds only its outer row dimension (`bytes[][]`) and se
 dispatcher, instead of adding one dynamic ABI band for every stream. The SDK initializes every handler vector as
 a dense ordinal-indexed set of canonical empty `0x06 0x00` programs; duplicate, missing, or out-of-range compiler
 ordinals fail before transaction construction rather than aliasing two logical streams.
+Each selected handler authenticates its stream tag and fixed-width framing, and requires its encoded operation
+count to equal the compiler-owned permutation length for that stream. This makes the access carrier part of the
+covenant boundary without granting its record ordinals authority before the shared record loader exists.
 The SDK's sorted-list model exposes ordered `planJournaledUpserts` / `planJournaledMutations` reference planners:
 repeated logical slots reduce against their pending values, delete/reinsert observes pending absence, original
 entries and shared predecessors are selected once, and the final linked-list commitments are emitted once. The

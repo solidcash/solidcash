@@ -77,6 +77,7 @@ import {
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
 import { hasEffectiveCallValue } from '../semantic/branchOps.js';
 import {
+  KERNEL_JOURNAL_ACCESS_STREAMS,
   VMAP_COUNTER_PERM_PREFIX,
   VMAP_RUNTIME_INPUT_COUNT_PREFIX,
   VMAP_RUNTIME_OUTPUT_COUNT_PREFIX,
@@ -709,6 +710,7 @@ interface SortedUpsertLoopContext {
   streamKey: string;
   collection: string;
   varyingArrayParam: string;
+  journalAccessStreamIndex?: number;
   inputCountParam?: string;
   outputCountParam?: string;
   grouped: boolean;
@@ -1366,6 +1368,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopContexts = new Map<string, SortedUpsertLoopContext>();
   private sortedUpsertLoopStreamKey = '';
   private sortedUpsertLoopVaryingArrayParam = '';
+  private sortedUpsertLoopJournalAccessStreamIndex: number | undefined;
   private sortedUpsertLoopInputCountParam: string | undefined;
   private sortedUpsertLoopOutputCountParam: string | undefined;
   private sortedUpsertGrouped = false;
@@ -21712,6 +21715,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       streamKey: this.sortedUpsertLoopStreamKey,
       collection: this.sortedUpsertLoopCollection!,
       varyingArrayParam: this.sortedUpsertLoopVaryingArrayParam,
+      journalAccessStreamIndex: this.sortedUpsertLoopJournalAccessStreamIndex,
       inputCountParam: this.sortedUpsertLoopInputCountParam,
       outputCountParam: this.sortedUpsertLoopOutputCountParam,
       grouped: this.sortedUpsertGrouped,
@@ -21738,6 +21742,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertLoopStreamKey = context.streamKey;
     this.sortedUpsertLoopCollection = context.collection;
     this.sortedUpsertLoopVaryingArrayParam = context.varyingArrayParam;
+    this.sortedUpsertLoopJournalAccessStreamIndex = context.journalAccessStreamIndex;
     this.sortedUpsertLoopInputCountParam = context.inputCountParam;
     this.sortedUpsertLoopOutputCountParam = context.outputCountParam;
     this.sortedUpsertGrouped = context.grouped;
@@ -22118,6 +22123,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         infos.at(-1)!.iterationBreakCondition = iteration.breakCondition;
       }
     }
+    this.sortedUpsertLoopJournalAccessStreamIndex = (existingInfo ?? infos.at(-1))
+      ?.journalAccessStreamIndex;
     this.sortedWrittenCollections.add(collection.name);
 
     // Entry NFT address (loop-invariant) = base(master category) wrapped in the collection's entry covenant.
@@ -22779,6 +22786,65 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Authenticate one row-owned `0x06` journal access program against the compiler-derived logical operation
+   * domain. The SDK may choose target/predecessor ordinals, but it cannot omit or add operations: the payload is
+   * exactly five bytes per selected key and the count must equal the hidden permutation length. Record-ordinal
+   * ownership is verified by the shared record loader/final flush rather than duplicated here.
+   */
+  private emitKernelJournalAccessStreamShape(loc: SingleLocationData): void {
+    const streamIndex = this.sortedUpsertLoopJournalAccessStreamIndex;
+    const accessVectorIndex = this.getStackIndex(KERNEL_JOURNAL_ACCESS_STREAMS, true);
+    if (streamIndex === undefined || accessVectorIndex < 0) return;
+    if (!Number.isSafeInteger(streamIndex) || streamIndex < 0) {
+      throw new Error(`Invalid kernel journal access stream ordinal ${String(streamIndex)}`);
+    }
+    const permutationParameter = this.currentFunction.parameters.find(
+      (parameter) => parameter.name === this.sortedUpsertLoopVaryingArrayParam,
+    );
+    if (!(permutationParameter?.type instanceof ArrayType)) {
+      throw new Error(
+        `Kernel journal stream ${streamIndex} has no array domain '${this.sortedUpsertLoopVaryingArrayParam}'`,
+      );
+    }
+
+    const vectors = new IdentifierNode(KERNEL_JOURNAL_ACCESS_STREAMS);
+    vectors.type = new ArrayType(new BytesType());
+    vectors.location = this.currentFunction.location;
+    const ordinal = new IntLiteralNode(BigInt(streamIndex));
+    ordinal.location = this.currentFunction.location;
+    const access = new ArrayAccessNode(vectors, ordinal);
+    access.type = new BytesType();
+    access.location = this.currentFunction.location;
+    this.visit(access);
+    this.stack[0] = '(kernel_journal_access_stream)';
+
+    // stream -> count. Validate tag, then require payload.length == count * 5.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(new Uint8Array([0x06]), loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(5n), loc); this.emit(Op.OP_MUL, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DROP, loc);
+    this.stack[0] = '(kernel_journal_access_count)';
+
+    const permutation = new IdentifierNode(this.sortedUpsertLoopVaryingArrayParam);
+    permutation.type = permutationParameter.type;
+    permutation.location = this.currentFunction.location;
+    const length = new UnaryOpNode(UnaryOperator.SIZE, permutation);
+    length.type = PrimitiveType.INT;
+    length.location = this.currentFunction.location;
+    this.visit(length);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
+  }
+
+  /**
    * Tear down a per-iteration vmap UPSERT loop after OP_UNTIL: pin the entry-INPUT count == iterCounter + nFixed (one
    * co-spend per recipient + the fixed debit) and the entry-OUTPUT count == outCounter + nFixed (updates mint 1,
    * inserts mint 2), so there are no orphan / extra entries. Then drop [outCounter, iterCounter, addr].
@@ -22790,6 +22856,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // CASE (b) FLUSH: the loop's last iteration DEFERS its update's mint into the pending registers; mint it now
     // (before the count pins, which read outCounter). No key follows, so it is always a normal (non-re-pointed) flush.
     if (this.sortedUpsertPendActive) this.emitSortedFlushPendingNormal(loc);
+    this.emitKernelJournalAccessStreamShape(loc);
     const collection = this.sortedUpsertLoopCollection;
     if (collection === null) throw new Error('Missing runtime-loop collection while settling cardinality');
     for (const [counterName, exactName] of [
@@ -22862,6 +22929,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertLoopCollection = null;
     this.sortedUpsertLoopStreamKey = '';
     this.sortedUpsertLoopVaryingArrayParam = '';
+    this.sortedUpsertLoopJournalAccessStreamIndex = undefined;
     this.sortedUpsertLoopInputCountParam = undefined;
     this.sortedUpsertLoopOutputCountParam = undefined;
   }

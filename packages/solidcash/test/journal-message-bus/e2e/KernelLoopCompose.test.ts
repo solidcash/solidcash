@@ -2941,6 +2941,24 @@ describe('kernel counter-key mapping loop compose', () => {
         inputIndex: routeInputIndex, sourceOutputs, transaction,
       })), `hostile permutation ${hostilePermutation.join(',')}`).not.toBe(true);
     }
+    const originalAccessStream = rowJournalVectors[0][0];
+    const wrongTag = new Uint8Array(originalAccessStream);
+    wrongTag[0] = 0x07;
+    const wrongCount = new Uint8Array(originalAccessStream);
+    wrongCount[1] = 2;
+    const truncated = originalAccessStream.slice(0, -1);
+    for (const [label, hostileStream] of [
+      ['wrong tag', wrongTag], ['wrong count', wrongCount], ['truncated payload', truncated],
+    ] as const) {
+      const hostileRouteParams = [...routeUnlocker.params];
+      hostileRouteParams[routeJournalIndex] = [[hostileStream]];
+      hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileRouteParams);
+      const transaction = hostileBuilder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(hostileBuilder.inputs);
+      expect(hostileVm.stateSuccess(hostileVm.evaluate({
+        inputIndex: routeInputIndex, sourceOutputs, transaction,
+      })), `hostile journal stream: ${label}`).not.toBe(true);
+    }
     hostileBuilder.inputs[routeInputIndex].unlocker = originalRouteUnlocker;
 
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });

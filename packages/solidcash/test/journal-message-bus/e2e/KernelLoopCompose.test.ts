@@ -143,6 +143,43 @@ contract KernelEffectfulHelperValue() {
   }
 }`;
 
+const DISJOINT_RUNTIME_VALUE_ROWS_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelDisjointRuntimeValueRows() {
+  struct Pair { int first; int second; }
+  mapping(int => Pair) left;
+  mapping(int => Pair) right;
+  function seedLeft(int key, int first, int second) public {
+    this.left[key] = Pair(first, second); require(true);
+  }
+  function seedRight(int key, int first, int second) public {
+    this.right[key] = Pair(first, second); require(true);
+  }
+  function updateLeft(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      Pair value = this.left[i];
+      value.first = value.first + 10;
+      value.second = value.second + 20;
+      this.left[i] = value;
+    }
+    require(true);
+  }
+  function updateRight(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      Pair value = this.right[i];
+      value.first = value.first + 30;
+      value.second = value.second + 40;
+      this.right[i] = value;
+    }
+    require(true);
+  }
+  function checkLeft(int key, int first, int second) public {
+    require(this.left[key].first == first); require(this.left[key].second == second); require(true);
+  }
+  function checkRight(int key, int first, int second) public {
+    require(this.right[key].first == first); require(this.right[key].second == second); require(true);
+  }
+}`;
+
 const TRACED_COUNTER_VALUE_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelTracedCounterValue() {
   mapping(int => int) m;
@@ -4235,6 +4272,38 @@ describe('kernel composite counter-key settlement', () => {
     for (let key = 0n; key < 4n; key += 1n) {
       await expect(contract.call.check(key, key + 10n, 4n).send()).resolves.toBeDefined();
     }
+  }, 180_000);
+
+  it('composes runtime-derived value rows over disjoint collection journals', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(DISJOINT_RUNTIME_VALUE_ROWS_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    for (const name of ['updateLeft', 'updateRight']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: true });
+    }
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    for (let key = 0n; key < 2n; key += 1n) {
+      await contract.call.seedLeft(key, key + 1n, key + 2n).send();
+      await contract.call.seedRight(key, key + 3n, key + 4n).send();
+    }
+    await expect(contract.batch([
+      { function: 'updateLeft', args: [2n] },
+      { function: 'updateRight', args: [2n] },
+    ]).send()).resolves.toBeDefined();
+    for (let key = 0n; key < 2n; key += 1n) {
+      await expect(contract.call.checkLeft(key, key + 11n, key + 22n).send()).resolves.toBeDefined();
+      await expect(contract.call.checkRight(key, key + 33n, key + 44n).send()).resolves.toBeDefined();
+    }
+    await expect(contract.batch([
+      { function: 'updateLeft', args: [2n] },
+      { function: 'updateLeft', args: [2n] },
+    ]).build()).rejects.toThrow(/same collection requires journalled predecessor planning/);
   }, 180_000);
 
   it('settles general loop-carried local values through an authenticated source-order trace', async () => {

@@ -15981,12 +15981,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const value = selectedRowArgument(row, info.varyingArrayParam);
       return !Array.isArray(value) || value.length > 0;
     }));
-    if (activeSelectedUpsertRows.length > 1 && activeSelectedUpsertRows.some((row) => (
+    const runtimeDerivedRows = activeSelectedUpsertRows.filter((row) => (
       row.handler.sortedUpsertLoopInfo ?? []
-    ).some((info) => info.valueRuntimeLocal || info.mutation !== undefined))) {
+    ).some((info) => info.valueRuntimeLocal || info.mutation !== undefined));
+    const runtimeDerivedCollections = new Set<string>();
+    const overlappingRuntimeDerivedCollection = runtimeDerivedRows.length > 1
+      && runtimeDerivedRows.some((row) => [...new Set(
+        (row.handler.sortedUpsertLoopInfo ?? []).map((info) => info.collection),
+      )].some((collection) => {
+        if (runtimeDerivedCollections.has(collection)) return true;
+        runtimeDerivedCollections.add(collection);
+        return false;
+      }));
+    if (overlappingRuntimeDerivedCollection) {
       throw new Error(
-        'A message-bus envelope with runtime-derived mapping values or mutations in multiple selected rows '
-        + 'requires journalled predecessor planning; split the rows into separate transactions.',
+        'A message-bus envelope with runtime-derived mapping values or mutations in multiple selected rows of '
+        + 'the same collection requires journalled predecessor planning; split the rows into separate transactions.',
       );
     }
     const plannedUpsertRows = selectedUpsertRows;

@@ -454,11 +454,14 @@ zero after the last row.
 If two rows require the same predecessor or existing-entry UTXO, construction
 fails closed: the later row needs a read-your-writes transition from the earlier row's pending output. This includes
 byte-identical absolute `set`/`delete` rows; executing both row segments cannot be represented by reusing one
-physical settlement. Multiple rows with runtime-derived values or mutations remain fenced for the same reason
-until the planner can build a complete journal from pending row transitions. Multiple collections in one admitted
-loop share a permutation only when their complete key expression and selected domain are identical. Different key
-expressions over the same selected domain receive independent row-owned permutations. Separate disjoint loops use
-separate permutations and separate accumulated physical segments.
+physical settlement. Multiple rows with runtime-derived values may compose when their collection journals are
+disjoint; each row owns its authenticated predecessor and output segment. Rows that touch the same collection
+remain fenced until the planner can build a complete journal from pending row transitions. Multiple collections in
+one admitted loop share a permutation only when their complete key expression and selected domain are identical.
+Different key expressions over the same selected domain receive independent row-owned permutations. Separate
+disjoint loops use separate permutations and separate accumulated physical segments. Counter-keyed mapping-array
+element writes, pushes, and pops remain `KERNEL_UNBOUNDED_KEY` until their old-array and mutated-value journal is
+represented by the row loop; fixed-key mapping-array mutations remain supported.
 Sidecars (indexed by live `row`) use the row loop (`__message_bus_handler_*` / `__message_bus_entry_*`
 DEFINE, not `__message_bus_graph_*`). A contract whose every handler is refused still publishes
 `messageBus.handlers` with `KERNEL_*` reasons. Runtime-constructed key arrays are admitted when their bounded

@@ -2573,6 +2573,15 @@ function synthesizeMessageBusRoute(
           if (!(collection?.type instanceof MappingType)) return;
           const occurrence = occurrenceInfoOf(candidate, node);
           if (occurrence.occurrence !== 'loop' || occurrence.maximumOccurrences !== undefined) return;
+          if (node instanceof MappingAssignNode
+            && (node.arrayIndex !== undefined || node.arrayPush || node.arrayPop)) {
+            // Counter-loop array mutations currently reach the generic sorted-value RMW path, whose loop guard
+            // deliberately emits a failing OP_VERIFY because no row-owned old-array/mutated-value journal is
+            // published. Refuse the source handler here instead of advertising an eligible row which can never
+            // execute. Ordinary fixed-key mapping-array mutations and whole-array counter writes are unaffected.
+            unsupported = true;
+            return;
+          }
           let varyingName: string | undefined;
           let varyingUnsupported = false;
           for (let index = access.keys.length - 1; index >= 0; index -= 1) {

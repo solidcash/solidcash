@@ -944,6 +944,23 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
+  it('refuses a counter-keyed mapping-array mutation instead of publishing a failing row', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int[]) values;
+      function denied(int n, int value) public {
+        for (int i = 0; i < n; i = i + 1) { this.values[i].push(value); }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('replays a finite conditional public bound before deriving the counter permutation', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;

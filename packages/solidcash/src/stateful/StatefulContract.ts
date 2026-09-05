@@ -16552,7 +16552,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
                 throw new Error('vmap runtime struct value chunks do not match the authenticated root');
               }
-              valueChunkGc.push({ collection: info.collection, slotHex: binToHex(slot), oldDigestHex: binToHex(root) });
+              if (info.op !== 'read') {
+                valueChunkGc.push({
+                  collection: info.collection, slotHex: binToHex(slot), oldDigestHex: binToHex(root),
+                });
+              }
             }
             // Chunkable entry tails store bytes/string payloads verbatim. Structs and arrays retain their
             // recursive pushdata framing, but feeding a raw string payload (for example `hello`) to the generic
@@ -17025,7 +17029,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const newVal: bigint | Uint8Array = isDelete ? 0n : info.op === 'set' || info.op === 'read' ? amt
             : info.op === '-' ? oldVal - (amt as bigint) : oldVal + (amt as bigint);
           appendRuntimeJournalInput({ ...entry.utxo, unlocker: wUnlocker }, info.collection);
-          if (collection.chunkableValue) {
+          if (collection.chunkableValue && info.op !== 'read') {
             const oldTail = entry.value;
             if (oldTail.length >= 36
               && (oldTail[0] | (oldTail[1] << 8) | (oldTail[2] << 16) | (oldTail[3] << 24)) > 60) {

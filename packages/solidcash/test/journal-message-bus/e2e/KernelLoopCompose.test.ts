@@ -167,11 +167,16 @@ contract KernelTracedCounterValue() {
 
 const COUNTER_MAPPING_READ_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelCounterMappingRead() {
+  struct Rec { int left; bytes payload; }
   mapping(int => int) source;
   mapping(int => int) second;
   mapping(int => int) destination;
   mapping(int => bytes20) rawSource;
   mapping(int => bytes20) rawDestination;
+  mapping(int => bytes) blobSource;
+  mapping(int => bytes) blobDestination;
+  mapping(int => Rec) recSource;
+  mapping(int => Rec) recDestination;
   function seed(int key, int value) public { this.source[key] = value; require(true); }
   function seedSecond(int key, int value) public { this.second[key] = value; require(true); }
   function copy(int n) public {
@@ -199,6 +204,26 @@ contract KernelCounterMappingRead() {
   function checkSecond(int key, int expected) public { require(this.second[key] == expected); }
   function checkDestination(int key, int expected) public { require(this.destination[key] == expected); }
   function checkRaw(int key, bytes20 expected) public { require(this.rawDestination[key] == expected); }
+  function seedBlob(int key, bytes value) public { this.blobSource[key] = value; require(true); }
+  function copyBlob(int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.blobDestination[i] = this.blobSource[i + 1]; }
+    require(true);
+  }
+  function checkBlob(int key, bytes expected) public {
+    require(this.blobDestination[key] == expected && this.blobSource[key + 1] == expected);
+  }
+  function seedRec(int key, int left, bytes payload) public {
+    this.recSource[key] = Rec(left, payload);
+    require(true);
+  }
+  function copyRec(int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.recDestination[i] = this.recSource[i + 1]; }
+    require(true);
+  }
+  function checkRec(int key, int left, bytes payload) public {
+    require(this.recDestination[key].left == left && this.recDestination[key].payload == payload);
+    require(this.recSource[key + 1].left == left && this.recSource[key + 1].payload == payload);
+  }
 }`;
 
 const PARAMETER_ARRAY_MAPPING_READ_SOURCE = `pragma solidcash ^0.13.0;
@@ -4423,6 +4448,31 @@ describe('kernel composite counter-key settlement', () => {
     for (let key = 0; key < raw.length; key += 1) {
       await expect(contract.call.checkRaw(BigInt(key), raw[key]).send()).resolves.toBeDefined();
     }
+
+    const blobs = [new Uint8Array([1, 2, 3]), new Uint8Array(96).fill(0x5a)];
+    for (let key = 0; key < blobs.length; key += 1) {
+      await contract.call.seedBlob(BigInt(key + 1), blobs[key]).send();
+    }
+    const blobAbi = artifact.abi.find((handler) => handler.name === 'copyBlob')!;
+    const blobSource = blobAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'blobSource');
+    const blobDestination = blobAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'blobDestination');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copyBlob'))
+      .toMatchObject({ eligible: true });
+    expect(blobSource).toMatchObject({ op: 'read' });
+    expect(blobSource?.varyingArrayParam).not.toBe(blobDestination?.varyingArrayParam);
+    await expect(contract.batch([{ function: 'copyBlob', args: [BigInt(blobs.length)] }]).send())
+      .resolves.toBeDefined();
+    for (let key = 0; key < blobs.length; key += 1) {
+      await expect(contract.call.checkBlob(BigInt(key), blobs[key]).send()).resolves.toBeDefined();
+    }
+
+    const recPayload = new Uint8Array(88).fill(0x3c);
+    await contract.call.seedRec(1n, 41n, recPayload).send();
+    const recAbi = artifact.abi.find((handler) => handler.name === 'copyRec')!;
+    expect(recAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'recSource'))
+      .toMatchObject({ op: 'read' });
+    await expect(contract.batch([{ function: 'copyRec', args: [1n] }]).send()).resolves.toBeDefined();
+    await expect(contract.call.checkRec(0n, 41n, recPayload).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('orders parameter-array journals without reordering public arguments or effects', async () => {

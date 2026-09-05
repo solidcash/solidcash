@@ -410,12 +410,13 @@ Direct same-entry struct expressions are authenticated through a typed old-value
 zero-valued struct for an absent key; the VM-derived output commitment therefore supports ordinary constructor and
 field expressions without requiring the source to spell a temporary read/rebuild/write sequence. Expressions that
 read another mapping at a counter-derived key use an independent authenticated read-only runtime journal when both
-mappings have the same supported scalar value type. The source and destination may use different key recipes (for
-example `destination[i] = source[i + 1]`); each recipe receives its own permutation and cursor. Present source nodes
-are reproduced unchanged.
+mappings have the same value type and that type has a complete state/ABI representation. This includes numeric and
+fixed-byte scalars, dynamic bytes and strings, arrays, and structs. The source and destination may use different key
+recipes (for example `destination[i] = source[i + 1]`); each recipe receives its own permutation and cursor. Present
+source nodes are reproduced unchanged. A long source value authenticates its existing digest without consuming or
+reminting its continuation chunks; a long destination value receives its own slot-pinned chunk family.
 For absent keys the first read reproduces its real predecessor unchanged, and later sorted keys in that authenticated
-predecessor's successor gap reuse the same proof without duplicate co-spends. Dynamic or structural cross-mapping
-values remain frozen until their own value-journal representations are available.
+predecessor's successor gap reuse the same proof without duplicate co-spends.
 An immutable, direct loop-local value definition is expanded into the mapping value before permutation, so
 `int value = i + 10; m[i] = value` has the same representation as the direct expression.
 

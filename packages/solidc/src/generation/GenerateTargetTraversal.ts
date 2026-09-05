@@ -22338,12 +22338,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (op === 'set' || op === 'read') { a.expression = this.visit(a.expression); } else { (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right); }
       this.stack[0] = '(credit_amt)';
       if (isChunkableVal) {
-        // Pin this iteration's continuation outputs by their slot-specific address, and derive insertion status
-        // from the runtime journal input rather than the fixed entry slot used by scalar writes.
-        this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)'))), loc);
-        this.emit(Op.OP_PICK, loc); this.emit(Op.OP_TOALTSTACK, loc);
-        this.emitSortedValueChunkPin(collection.name, node, loc);
-        this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
+        if (op !== 'read') {
+          // A write pins its newly created continuation outputs by their slot-specific address. A read-only
+          // transition keeps the authenticated source entry and its existing chunk family unchanged; it only
+          // needs the canonical tail below so the reproduced entry commitment remains byte-identical.
+          this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)'))), loc);
+          this.emit(Op.OP_PICK, loc); this.emit(Op.OP_TOALTSTACK, loc);
+          this.emitSortedValueChunkPin(collection.name, node, loc);
+          this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
+        }
         this.emitChunkableValueTail(loc);
       }
     }

@@ -2341,9 +2341,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const sourceCollection = this.collectionsByName.get(candidateAccess.name);
             const valueType = sourceCollection?.innermostValueType;
             const fixedBytes = valueType instanceof BytesType && valueType.bound !== undefined;
+            const structuredValue = valueType instanceof StructType || valueType instanceof ArrayType
+              || valueType === PrimitiveType.STRING
+              || (valueType instanceof BytesType && valueType.bound === undefined);
             const supportedValue = valueType instanceof IntType || valueType instanceof FixedType
               || valueType === PrimitiveType.BOOL || fixedBytes || valueType instanceof AddressType
-              || valueType === PrimitiveType.PUBKEY || valueType === PrimitiveType.DATASIG;
+              || valueType === PrimitiveType.PUBKEY || valueType === PrimitiveType.DATASIG
+              || structuredValue;
             if (sourceCollection?.sorted && supportedValue
               && valueType.toString() === destinationCollection.innermostValueType.toString()) {
               runtimeReadSignatures.add(`${candidateAccess.name}:${candidateAccess.keys.map(expressionShape).join('|')}`);

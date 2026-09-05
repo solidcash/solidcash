@@ -1409,6 +1409,31 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it.each([
+    ['dynamic bytes', 'bytes', ''],
+    ['string', 'string', ''],
+    ['struct', 'Rec', 'struct Rec { int left; bytes payload; }'],
+    ['dynamic array', 'int[]', ''],
+  ])('authenticates a shifted cross-mapping read of %s values', (_label, valueType, declaration) => {
+    const artifact = compileString(`contract C() {
+      ${declaration}
+      mapping(int => ${valueType}) source;
+      mapping(int => ${valueType}) destination;
+      function shifted(int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.destination[i] = this.source[i + 1];
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'shifted'))
+      .toMatchObject({ eligible: true });
+    const streams = artifact.abi.find((handler) => handler.name === 'shifted')?.sortedUpsertLoopInfo ?? [];
+    expect(streams.find((stream) => stream.collection === 'source')).toMatchObject({ op: 'read' });
+    expect(streams.find((stream) => stream.collection === 'destination')).toMatchObject({ op: 'set' });
+  });
+
   it('admits an affine loop-carried local mapping value', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) a;

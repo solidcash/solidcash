@@ -1,4 +1,10 @@
-import type { JournaledMutationAccess, JournaledMutationRecord } from './SortedList.js';
+import {
+  SortedList,
+  type JournaledMutationAccess,
+  type JournaledMutationPlan,
+  type JournaledMutationRecord,
+  type JournaledUpsert,
+} from './SortedList.js';
 
 /** Canonical record tag, distinct from runtime event/BCH/FT/NFT effect tags 0x01..0x04. */
 export const KERNEL_ENTRY_JOURNAL_TAG = 0x05;
@@ -42,6 +48,15 @@ export interface KernelEntryJournalRecord {
   tombstone: boolean;
   /** The node was introduced by this journal and has no physical pre-state input. */
   synthetic: boolean;
+}
+
+export interface KernelEntryJournalStreamPlan {
+  /** One collection-wide plan, preserving pending values and topology across row/loop stream boundaries. */
+  mutationPlan: JournaledMutationPlan;
+  /** Independently bounded record carriers, shared by every access stream in this collection plan. */
+  encodedRecords: Uint8Array[];
+  /** One compact access program for each source stream, in the same order as the input stream vector. */
+  encodedAccessStreams: Uint8Array[];
 }
 
 function requireIdentity(name: string, value: Uint8Array): void {
@@ -120,6 +135,33 @@ export function encodeKernelEntryJournalRecords(
     tombstone: record.tombstone,
     synthetic: record.synthetic,
   }));
+}
+
+/**
+ * Plan all row/loop streams for one collection as one ordered transition, then split only the compact access
+ * programs back at their source boundaries. Flattening before planning is essential: a later stream must observe
+ * the pending value and predecessor topology produced by every earlier stream, while all streams address one
+ * collection-wide first-touch record ordinal space.
+ */
+export function planKernelEntryJournalStreams<T>(
+  list: SortedList,
+  collectionHash: Uint8Array,
+  streams: readonly (readonly JournaledUpsert<T>[])[],
+  reduce: (current: Uint8Array | undefined, operation: T, slot: Uint8Array) => Uint8Array | undefined,
+): KernelEntryJournalStreamPlan {
+  const streamLengths = streams.map((stream) => stream.length);
+  const mutationPlan = list.planJournaledMutations(streams.flat(), reduce);
+  let accessOffset = 0;
+  const encodedAccessStreams = streamLengths.map((length) => {
+    const streamAccesses = mutationPlan.accesses.slice(accessOffset, accessOffset + length);
+    accessOffset += length;
+    return encodeKernelEntryJournalAccesses(streamAccesses);
+  });
+  return {
+    mutationPlan,
+    encodedRecords: encodeKernelEntryJournalRecords(collectionHash, mutationPlan.records),
+    encodedAccessStreams,
+  };
 }
 
 function requireRecordOrdinal(name: string, ordinal: number): void {

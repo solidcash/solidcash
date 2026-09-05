@@ -119,7 +119,8 @@ export {
   KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES, KERNEL_ENTRY_JOURNAL_MAX_ACCESSES,
   encodeKernelEntryJournalRecord, encodeKernelEntryJournalRecords, decodeKernelEntryJournalRecord,
   encodeKernelEntryJournalAccesses, decodeKernelEntryJournalAccesses,
-  type KernelEntryJournalRecord,
+  planKernelEntryJournalStreams,
+  type KernelEntryJournalRecord, type KernelEntryJournalStreamPlan,
 } from './KernelEntryJournal.js';
 export {
   registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,

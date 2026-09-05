@@ -10,6 +10,7 @@ import {
   encodeKernelEntryJournalAccesses,
   encodeKernelEntryJournalRecord,
   encodeKernelEntryJournalRecords,
+  planKernelEntryJournalStreams,
 } from '../../src/stateful/KernelEntryJournal.js';
 import { SortedList, encodeEntryCommitment, slotValueToBytes } from '../../src/stateful/SortedList.js';
 import type { Utxo } from '../../src/interfaces.js';
@@ -102,6 +103,49 @@ describe('kernel pending-entry journal codec', () => {
     expect(plan.accesses.map((access) => access.targetRecordOrdinal)).toEqual([1, 1]);
     expect(decodeKernelEntryJournalAccesses(encodeKernelEntryJournalAccesses(plan.accesses)))
       .toEqual(plan.accesses);
+  });
+
+  it('shares pending values and record ordinals across generically named source streams', () => {
+    const slot = (value: bigint): Uint8Array => slotValueToBytes(value);
+    const entry = (txidByte: string, value: bigint, next: bigint, tail = 0): Utxo => ({
+      txid: txidByte.repeat(64), vout: 0, satoshis: 1000n,
+      token: {
+        category: '11'.repeat(32), amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: binToHex(encodeEntryCommitment(slot(value), slot(next), Uint8Array.of(tail))),
+        },
+      },
+    });
+    const list = SortedList.fromUtxos([
+      entry('0', 0n, 10n),
+      entry('1', 10n, 0n, 4),
+    ]);
+    const plan = planKernelEntryJournalStreams(
+      list,
+      bytes(32, 0xaa),
+      [
+        [{ slot: slot(10n), operation: 3 }],
+        [{ slot: slot(10n), operation: 5 }, { slot: slot(20n), operation: 7 }],
+      ],
+      (current, delta) => Uint8Array.of((current?.[0] ?? 0) + delta),
+    );
+
+    expect(plan.encodedAccessStreams.map((stream) => decodeKernelEntryJournalAccesses(stream)))
+      .toEqual([
+        [{ targetRecordOrdinal: 0, presentBefore: true, presentAfter: true }],
+        [
+          { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true },
+          { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true },
+        ],
+      ]);
+    expect(plan.mutationPlan.records.map((record) => ({
+      slot: record.slot[0], value: record.value[0], synthetic: record.synthetic,
+    }))).toEqual([
+      { slot: 10, value: 12, synthetic: false },
+      { slot: 20, value: 7, synthetic: true },
+    ]);
+    expect(plan.encodedRecords).toHaveLength(2);
   });
 
   it('round-trips insert, update, delete, and absent-delete access states', () => {

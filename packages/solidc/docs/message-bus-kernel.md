@@ -502,6 +502,9 @@ dispatcher, instead of adding one dynamic ABI band for every stream.
 The SDK's sorted-list model exposes ordered `planJournaledUpserts` / `planJournaledMutations` reference planners:
 repeated logical slots reduce against their pending values, delete/reinsert observes pending absence, original
 entries and shared predecessors are selected once, and the final linked-list commitments are emitted once. The
+`planKernelEntryJournalStreams` adapter flattens every row/loop stream for one collection into that single ordered
+transition, then restores source stream boundaries only for the compact access programs. This gives later streams
+read-your-writes semantics without deriving behavior from contract, collection, or function names. The
 planner also publishes the final nodes and tombstones in first-touch record order, independently of its legacy
 sorted-output view. Each source operation publishes the stable target and optional predecessor record ordinals,
 plus its before/after presence state; predecessor selection follows the evolving pending topology rather than the

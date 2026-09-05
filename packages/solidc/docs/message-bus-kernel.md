@@ -476,11 +476,12 @@ disjoint key ranges in one physical collection; each row owns its authenticated 
 Rows whose physical inputs overlap remain fenced until the planner can build a complete journal from pending row
 transitions. Multiple collections in one admitted loop share a permutation only when their complete key expression
 and selected domain are identical.
-The runtime-entry closure now reserves one opaque packed pending-journal cell beside its input cursor and threads
-that cell through every `OP_INVOKE` copy-in/copy-out frame, including void, returning, and neutral shared-caller
-paths. Physical entries still use the canonical empty encoding and the SDK continues to reject overlap until the
-upsert verifier owns a complete record codec and final-flush pass; the carrier is not treated as evidence that an
-overlap has settled.
+The runtime-entry closure now reserves a pending-journal record count beside its input cursor and threads that count
+through every `OP_INVOKE` copy-in/copy-out frame, including void, returning, and neutral shared-caller paths.
+Individual bounded records will reside on the shared altstack rather than one concatenated byte item, so the legal
+row/iteration surface does not exceed BCH's per-item size limit. Physical entries still initialize the count to zero
+and the SDK continues to reject overlap until the upsert verifier owns the record codec and final-flush pass; the
+carrier is not treated as evidence that an overlap has settled.
 The SDK's sorted-list model exposes ordered `planJournaledUpserts` / `planJournaledMutations` reference planners:
 repeated logical slots reduce against their pending values, delete/reinsert observes pending absence, original
 entries and shared predecessors are selected once, and the final linked-list commitments are emitted once. The

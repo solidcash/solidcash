@@ -326,8 +326,9 @@ Conservative named or unnamed result tuples and void tail recursion are normaliz
 Homogeneous mutually tail-recursive functions—matching parameter and result frames, with no overloaded target—are
 lowered as one program-counter loop for each callable entry, including cycles longer than two. Self-recursive
 functions also support explicit value-returning and void base-case `return` statements nested in pre-existing source
-loops. The kernel therefore executes the finite source transition without cloning a recursive route frame. Non-tail recursion
-(including work performed after the recursive call), heterogeneous/overloaded recursion cycles, and result types the wrapper cannot encode
+loops. The kernel therefore executes the finite source transition without cloning a recursive route frame. Resource-free
+non-tail recursion remains an ordinary `OP_INVOKE` recursion and is also row-safe. Recursion which carries journal/layout
+resources after its recursive call, heterogeneous/overloaded recursion cycles, and result types the wrapper cannot encode
 stay `KERNEL_LAYOUT`. Enum scalar results
 and public enum getters use `int` locals; enum arrays encode each element as an unsigned ABI word.
 Counter-keyed mapping loops with zero or direction-mismatched steps, mutated bounds, or extra counter mutations

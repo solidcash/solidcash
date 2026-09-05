@@ -169,11 +169,11 @@ describe('required kernel admission', () => {
 
   it('normalizes a homogeneous mutual tail-recursion cycle before kernel closure admission', () => {
     const artifact = compileString(`contract C() {
-      function evenStep(int remaining, int total) internal returns (int) {
+      function evenStep(int remaining, int total) public returns (int) {
         if (remaining == 0) return total;
         return oddStep(remaining - 1, total + 1);
       }
-      function oddStep(int remaining, int total) internal returns (int) {
+      function oddStep(int remaining, int total) public returns (int) {
         if (remaining == 0) return total;
         return evenStep(remaining - 1, total + 1);
       }
@@ -183,6 +183,10 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'evenStep'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'oddStep'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
@@ -220,6 +224,18 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
     expect(artifact.abi.find((handler) => handler.name === 'pair')?.outputs)
       .toEqual([{ type: 'int256' }, { type: 'bool' }]);
+  });
+
+  it('keeps resource-free non-tail recursion on the kernel route', () => {
+    const artifact = compileString(`contract C() {
+      function sum(int remaining) internal pure returns (int) {
+        if (remaining == 0) return 0;
+        return remaining + sum(remaining - 1);
+      }
+      function total(int remaining) public pure returns (int) { return sum(remaining); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'total'))
+      .toMatchObject({ eligible: true });
   });
 
   it('normalizes explicit value and void base-case returns in tail recursion', () => {

@@ -1445,13 +1445,12 @@ describe('kernel loop message-bus compose', () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelMutualTailRecursion() {
       int calls;
-      function evenStep(int remaining, int total) internal returns (int) {
-        this.calls = this.calls + 1;
+      modifier counted() { this.calls = this.calls + 1; _; }
+      function evenStep(int remaining, int total) internal counted returns (int) {
         if (remaining == 0) return total;
         return oddStep(remaining - 1, total + 1);
       }
-      function oddStep(int remaining, int total) internal returns (int) {
-        this.calls = this.calls + 1;
+      function oddStep(int remaining, int total) internal counted returns (int) {
         if (remaining == 0) return total;
         return evenStep(remaining - 1, total + 1);
       }
@@ -1476,6 +1475,35 @@ describe('kernel loop message-bus compose', () => {
     }
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 5n });
+  }, 180_000);
+
+  it('executes resource-free non-tail recursion through one row', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelPureRecursion() {
+      function sum(int remaining) internal pure returns (int) {
+        if (remaining == 0) return 0;
+        return remaining + sum(remaining - 1);
+      }
+      function total(int remaining) public pure returns (int) { return sum(remaining); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'total'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'total', args: [5n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 
   it('executes an unnamed tail-recursive result through one row', async () => {

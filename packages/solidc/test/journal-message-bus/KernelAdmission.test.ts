@@ -654,17 +654,17 @@ describe('required kernel admission', () => {
   it('admits a literal local key array that unrolls to an expression-keyed write', () => {
     const artifact = compileString(`contract C() {
       mapping(int => mapping(bytes20 => int)) seen;
-      bytes20 worker;
-      function refund(int id) public {
+      bytes20 member;
+      function clear(int id) public {
         bytes20[] xs = new bytes20[](1);
-        xs[0] = this.worker;
+        xs[0] = this.member;
         for (int i = 0; i < xs.length; i = i + 1) {
           this.seen[id][xs[i]] = 0;
         }
         require(true);
       }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refund')).toMatchObject({
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'clear')).toMatchObject({
       eligible: true,
     });
   });

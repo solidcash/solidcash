@@ -287,7 +287,7 @@ Typed external calls, collection-plus-typed-call handlers (a mapping journal clo
 onto the graph `OP_INVOKE` frame), interface-typed state receivers (`this.data.userRegistered(..)`),
 literal `new T[](N)` key arrays, counter-keyed `m[i]` loops,
 cross-handler `msg.sender` / argument keys, public mapping getters, expression-keyed second
-alternatives, nested-branch / helper-inlined expression keys (`if (byWorker) m[id][job.worker]`),
+alternatives, nested-branch / helper-inlined expression keys (`if (byMember) m[id][record.member]`),
 mapping field writes, complete fixed-array `T[N]` identity sets, mapping-of-array values (`m[k][i]`,
 `m[k].push`; a `T[N]` value journals the entry `m[k]`, and `m[k][i]` is a whole-entry
 read-modify-write before clone/journal), packed and nested dynamic arrays, returning resizes,

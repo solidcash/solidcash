@@ -92,7 +92,7 @@ updates cannot be committed.
 - `atomic-message-bus-protocol.md` defines the canonical protocol.
 - `message-bus-kernel.md` defines the compiler calling convention for kernel-shaped contracts
   (handler as `OP_DEFINE`, route wrapper as the only layout owner, runtime row loop, frozen
-  `KERNEL_*` refusals). Marketplace-scale contracts that do not yet match it keep the legacy
+  `KERNEL_*` refusals). Large contracts that do not yet match it keep the legacy
   clone/unroll path in `synthesizeMessageBusRoute`.
 - `state-journal-protocol.md` defines normative journal semantics.
 - `message-bus-coverage-matrix.md` records stable acceptance and security coverage.

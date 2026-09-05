@@ -64,25 +64,25 @@ describe('message-bus compilation selection', () => {
   });
 
   it('keeps direct mapping keys visible beside dynamic-array reads in explicit graph mode', () => {
-    const artifact = compileString(`contract Marketplace {
-      struct Job { bool whitelistWorkers; }
-      Job[] jobs;
-      mapping(uint => mapping(address => bool)) whitelistWorkers;
-      function takeJob(uint jobId) public {
-        require(!jobs[jobId].whitelistWorkers || whitelistWorkers[jobId][msg.sender]);
-        jobs[jobId].whitelistWorkers = false;
-        require(jobs[jobId].whitelistWorkers == false);
+    const artifact = compileString(`contract Registry {
+      struct Record { bool restricted; }
+      Record[] records;
+      mapping(uint => mapping(address => bool)) permissions;
+      function consume(uint recordId) public {
+        require(!records[recordId].restricted || permissions[recordId][msg.sender]);
+        records[recordId].restricted = false;
+        require(records[recordId].restricted == false);
       }
     }`, { messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'takeJob')).toEqual(
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'consume')).toEqual(
       expect.objectContaining({ eligible: true }),
     );
     const routeInputs = artifact.messageBus?.route.inputs.map((input) => input.name) ?? [];
     expect(routeInputs.some((name) => name.includes('_sender_'))).toBe(false);
-    expect(routeInputs).toContain('__message_bus_key_whitelistWorkers_1');
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'takeJob')?.batchKeyWitnesses)
+    expect(routeInputs).toContain('__message_bus_key_permissions_1');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'consume')?.batchKeyWitnesses)
       .toContainEqual(expect.objectContaining({
-        routeInput: '__message_bus_key_whitelistWorkers_1',
+        routeInput: '__message_bus_key_permissions_1',
         source: 'msgSender',
       }));
   });

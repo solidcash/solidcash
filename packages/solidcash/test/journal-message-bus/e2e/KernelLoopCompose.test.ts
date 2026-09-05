@@ -184,6 +184,12 @@ contract KernelCounterMappingRead() {
     }
     require(true);
   }
+  function shifted(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.destination[i] = this.source[i + 1];
+    }
+    require(true);
+  }
   function seedRaw(int key, bytes20 value) public { this.rawSource[key] = value; require(true); }
   function copyRaw(int n) public {
     for (int i = 0; i < n; i = i + 1) { this.rawDestination[i] = this.rawSource[i]; }
@@ -4319,9 +4325,8 @@ describe('kernel composite counter-key settlement', () => {
     expect(witnessRouteIndex).toBeGreaterThanOrEqual(0);
     expect(permutationRouteIndex).toBeGreaterThanOrEqual(0);
     const rowPermutation = (routeUnlocker.params[permutationRouteIndex] as bigint[][])[0];
-    expect(routeUnlocker.params[witnessRouteIndex]).toEqual([
-      rowPermutation.map((key) => expected[Number(key)]),
-    ]);
+    expect(rowPermutation).toHaveLength(expected.length);
+    expect(routeUnlocker.params[witnessRouteIndex]).toEqual([expected]);
 
     const routeSelector = artifact.messageBus!.route.selector;
     if (!routeSelector) throw new Error('message-bus route has no selector');
@@ -4358,6 +4363,52 @@ describe('kernel composite counter-key settlement', () => {
         .resolves.toBeDefined();
       await expect(contract.call.checkSource(BigInt(key), expected[key]).send()).resolves.toBeDefined();
       await expect(contract.call.checkSecond(BigInt(key), second[key]).send()).resolves.toBeDefined();
+    }
+
+    await contract.call.seed(4n, 13n).send();
+    const shiftedAbi = artifact.abi.find((handler) => handler.name === 'shifted')!;
+    const shiftedSource = shiftedAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'source');
+    const shiftedDestination = shiftedAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'destination');
+    expect(shiftedSource).toMatchObject({ op: 'read', varyingKeyExpressions: expect.any(Array) });
+    expect(shiftedSource?.varyingArrayParam).not.toBe(shiftedDestination?.varyingArrayParam);
+    const shiftedExpected = [proofValues[1], proofValues[2], proofValues[3], 13n];
+    const shiftedCall = contract.batch([{ function: 'shifted', args: [4n] }]);
+    const shiftedBuilder = await shiftedCall.build();
+    const shiftedRouteInputIndex = shiftedBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(shiftedRouteInputIndex).toBeGreaterThanOrEqual(0);
+    const shiftedRouteUnlocker = shiftedBuilder.inputs[shiftedRouteInputIndex].unlocker;
+    if (!('params' in shiftedRouteUnlocker)) throw new Error('shifted route input has no contract parameters');
+    const shiftedWitnessIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === shiftedSource?.oldValuesWitnessParam);
+    const shiftedSourcePermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === shiftedSource?.varyingArrayParam);
+    const shiftedDestinationPermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === shiftedDestination?.varyingArrayParam);
+    expect(shiftedWitnessIndex).toBeGreaterThanOrEqual(0);
+    expect(shiftedSourcePermutationIndex).toBeGreaterThanOrEqual(0);
+    expect(shiftedDestinationPermutationIndex).toBeGreaterThanOrEqual(0);
+    expect(shiftedRouteUnlocker.params[shiftedWitnessIndex]).toEqual([shiftedExpected]);
+    expect(shiftedRouteUnlocker.params[shiftedSourcePermutationIndex])
+      .not.toEqual(shiftedRouteUnlocker.params[shiftedDestinationPermutationIndex]);
+    const shiftedSelector = artifact.messageBus!.route.selector;
+    if (!shiftedSelector) throw new Error('message-bus route has no selector');
+    const hostileShiftedParams = [...shiftedRouteUnlocker.params];
+    hostileShiftedParams[shiftedWitnessIndex] = [[999n, ...shiftedExpected.slice(1)]];
+    const recreateShiftedRouteUnlocker = shiftedRouteUnlocker.contract.createCompilerRouteUnlocker(
+      shiftedRouteUnlocker.abiFunction, hexToBin(shiftedSelector),
+    );
+    shiftedBuilder.inputs[shiftedRouteInputIndex].unlocker = recreateShiftedRouteUnlocker(...hostileShiftedParams);
+    const hostileShiftedVm = createVirtualMachineBch2026ForProvider(provider);
+    expect(hostileShiftedVm.stateSuccess(hostileShiftedVm.evaluate({
+      inputIndex: shiftedRouteInputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(shiftedBuilder.inputs),
+      transaction: shiftedBuilder.buildLibauthTransaction(),
+    }))).not.toBe(true);
+    shiftedBuilder.inputs[shiftedRouteInputIndex].unlocker = shiftedRouteUnlocker;
+    await expect(shiftedCall.send()).resolves.toBeDefined();
+    for (const [key, value] of shiftedExpected.entries()) {
+      await expect(contract.call.checkDestination(BigInt(key), value).send()).resolves.toBeDefined();
     }
 
     const raw = [

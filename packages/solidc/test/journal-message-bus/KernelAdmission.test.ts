@@ -1387,7 +1387,7 @@ describe('required kernel admission', () => {
       ]));
   });
 
-  it('refuses a foreign counter read with a different key domain', () => {
+  it('authenticates a foreign counter read with an independent key domain', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) source;
       mapping(int => int) destination;
@@ -1396,10 +1396,15 @@ describe('required kernel admission', () => {
         require(true);
       }
       function control() public { require(true); }
-    }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'shifted')).toMatchObject({
-      eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'shifted'))
+      .toMatchObject({ eligible: true });
+    const streams = artifact.abi.find((handler) => handler.name === 'shifted')?.sortedUpsertLoopInfo ?? [];
+    const source = streams.find((stream) => stream.collection === 'source');
+    const destination = streams.find((stream) => stream.collection === 'destination');
+    expect(source).toMatchObject({ op: 'read', varyingKeyExpressions: expect.any(Array) });
+    expect(destination).toMatchObject({ op: 'set' });
+    expect(source?.varyingArrayParam).not.toBe(destination?.varyingArrayParam);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });

@@ -2320,33 +2320,31 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         destination: ArrayAssignNode | MappingAssignNode;
         synthetic: MappingAssignNode;
         witnessParam: string;
-        reads: ArrayAccessNode[];
+        authenticatedReads: ArrayAccessNode[];
+        consumerReads: ArrayAccessNode[];
       };
       const runtimeReadPlans: RuntimeReadPlan[] = [];
       const runtimeReadSignatures = new Set<string>();
-      // A foreign read with the exact same counter-derived key shape can travel as an independent, read-only
-      // physical stream. Represent it as a compiler-owned no-op transition: a present source entry is authenticated
+      // A foreign counter-derived read can travel as an independent, read-only physical stream. Its key shape may
+      // differ from the destination: grouping below assigns each complete recipe its own authenticated permutation
+      // and cursor. Represent it as a compiler-owned no-op transition: a present source entry is authenticated
       // and reproduced byte-for-byte; an absent key authenticates the language default against its bracketing
       // predecessor and reproduces that predecessor unchanged. The typed witness vector feeds the destination.
       for (const destination of [...keyed]) {
         if (!(destination instanceof MappingAssignNode || destination instanceof ArrayAssignNode)) continue;
         const destinationCollection = this.collectionsByName.get(destination.name);
         if (!destinationCollection?.sorted) continue;
-        const destinationKeys = keyExpressions(destination);
         const plansByShape = new Map<string, RuntimeReadPlan>();
         const rewrite = (candidate: Node): Node => {
           const candidateAccess = collectionAccessOf(candidate);
           if (candidateAccess && candidateAccess.name !== destination.name && containsLogical(candidate)) {
             const sourceCollection = this.collectionsByName.get(candidateAccess.name);
-            const sameKeyShape = candidateAccess.keys.length === destinationKeys.length
-              && candidateAccess.keys.every((key, index) =>
-                expressionShape(key) === expressionShape(destinationKeys[index]));
             const valueType = sourceCollection?.innermostValueType;
             const fixedBytes = valueType instanceof BytesType && valueType.bound !== undefined;
             const supportedValue = valueType instanceof IntType || valueType instanceof FixedType
               || valueType === PrimitiveType.BOOL || fixedBytes || valueType instanceof AddressType
               || valueType === PrimitiveType.PUBKEY || valueType === PrimitiveType.DATASIG;
-            if (sourceCollection?.sorted && sameKeyShape && supportedValue
+            if (sourceCollection?.sorted && supportedValue
               && valueType.toString() === destinationCollection.innermostValueType.toString()) {
               runtimeReadSignatures.add(`${candidateAccess.name}:${candidateAccess.keys.map(expressionShape).join('|')}`);
               const shape = `${candidateAccess.name}\0${candidateAccess.keys.map(expressionShape).join('|')}`;
@@ -2373,7 +2371,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                   destination,
                   synthetic,
                   witnessParam,
-                  reads: [witnessRead, authenticatedRead],
+                  authenticatedReads: [witnessRead, authenticatedRead],
+                  consumerReads: [],
                 };
                 plansByShape.set(shape, plan);
                 runtimeReadPlans.push(plan);
@@ -2386,7 +2385,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const replacement = new ArrayAccessNode(witness, replacementIndex);
               replacement.location = candidate.location ?? destination.location;
               replacement.type = valueType;
-              plan.reads.push(replacement);
+              plan.consumerReads.push(replacement);
               return replacement;
             }
           }
@@ -3348,9 +3347,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         return false;
       };
       for (const plan of runtimeReadPlans) {
-        const group = groupByWrite.get(plan.synthetic);
-        if (!group) return false;
-        for (const read of plan.reads) read.index = physical(group);
+        const sourceGroup = groupByWrite.get(plan.synthetic);
+        const destinationGroup = groupByWrite.get(plan.destination);
+        if (!sourceGroup || !destinationGroup) return false;
+        const logicalRank = (group: typeof groups[number]): IdentifierNode =>
+          id(unitDomain ? group.logicalValue : group.logicalRank);
+        // The witness is indexed by source occurrence, not either stream's physical rank. The source permutation
+        // authenticates witness[logical(source)] while the destination permutation consumes witness[logical(dest)],
+        // allowing independent key recipes such as source[i + 1] -> destination[i].
+        for (const read of plan.authenticatedReads) read.index = logicalRank(sourceGroup);
+        for (const read of plan.consumerReads) read.index = logicalRank(destinationGroup);
         if (!insertBefore(block, plan.destination, plan.synthetic)) return false;
       }
       for (const write of keyed) {

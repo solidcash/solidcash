@@ -16295,23 +16295,36 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         keysArr = selected;
       }
-      const counterSpec = keyExpressions ? vmapCounterPermutationSpec(info.varyingArrayParam) : undefined;
-      const counterStep = counterSpec ? this._vmapCounterStep(
-        info,
-        counterSpec,
-        conditionArgs,
-        entryArtifact,
-        visibleInputs,
-        loopPredicateState,
-        executionSelfAddress,
-      ) : undefined;
+      // Bare counter keys (`m[i]`) deliberately omit `varyingKeyExpressions`; only derived/composite recipes need
+      // that metadata. Identify a counter stream from its compiler-owned permutation parameter so logical witness
+      // alignment also applies to the canonical bare-key form, while parameter-array permutations remain distinct.
+      const counterSpec = vmapCounterPermutationSpec(info.varyingArrayParam);
+      let counterStep: bigint | undefined;
+      let counterStepResolved = false;
+      const resolveCounterStep = (): bigint | undefined => {
+        if (!counterSpec) return undefined;
+        if (!counterStepResolved) {
+          counterStep = this._vmapCounterStep(
+            info,
+            counterSpec,
+            conditionArgs,
+            entryArtifact,
+            visibleInputs,
+            loopPredicateState,
+            executionSelfAddress,
+          );
+          counterStepResolved = true;
+        }
+        return counterStep;
+      };
       const occurrenceOf = (key: unknown): number => {
         if (!counterSpec) return 0;
-        if (counterStep === undefined || counterStep === 0n) {
+        const step = resolveCounterStep();
+        if (step === undefined || step === 0n) {
           throw new Error(`vmap upsert loop ${info.collection}: cannot resolve a non-zero counter step`);
         }
         const value = typeof key === 'bigint' ? key : BigInt(key as number | string);
-        const rank = (value - counterSpec.start) / counterStep;
+        const rank = (value - counterSpec.start) / step;
         const occurrence = Number(rank);
         if (!Number.isSafeInteger(occurrence) || occurrence < 0) {
           throw new Error(`vmap upsert loop ${info.collection}: invalid counter-derived key rank ${rank}`);
@@ -16555,7 +16568,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint
             : 0n;
         }));
-        replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
+        if (info.op === 'read' && counterSpec) {
+          // Cross-mapping reads may use a different physical permutation than their destination. Publish the
+          // authenticated values by logical source occurrence so each stream can select the same value through its
+          // own permutation. Unselected positions are never consumed, but must retain an ABI-encodable typed value.
+          const witnessLength = valueTraceDomain?.length
+            ?? keysArr.reduce<number>((length, key) => Math.max(length, occurrenceOf(key) + 1), 0);
+          const logicalValues = Array.from(
+            { length: witnessLength },
+            () => getDefaultStateValue(collection.valueType, stateLayout.structs),
+          );
+          keysArr.forEach((key, index) => { logicalValues[occurrenceOf(key)] = oldValues[index]; });
+          replaceLoopArgument(witnessIndex, logicalValues as FunctionArgument);
+        } else {
+          replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
+        }
         if (info.op === 'read') {
           valsArr = oldValues;
           perKey = true;

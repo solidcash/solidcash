@@ -1359,7 +1359,7 @@ describe('required kernel admission', () => {
     ['conditionally pushes inside the loop', 'if (i > 0) xs.push(i + 1); this.slots[xs[i]] = i;'],
     ['uses a counter-dependent unequal push width', `if (i > 0) { xs.push(i + 1); xs.push(i + 2); }
       else xs.push(i + 3); this.slots[xs[i]] = i;`],
-    ['mixes pushes and pops', 'xs.push(i + 1); xs.pop(); this.slots[xs[i]] = i;'],
+    ['pops into its pre-existing prefix before pushing', 'xs.pop(); xs.push(i + 1); this.slots[xs[i]] = i;'],
     ['conditionally pops inside the loop', 'if (i > 0) xs.pop(); this.slots[xs[i]] = i;'],
   ])('refuses a constructed array which %s', (_label, body) => {
     const artifact = compileString(`contract C() {
@@ -1374,6 +1374,26 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('replays a path-balanced transient push/pop schedule independently per iteration', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n, bool high) public {
+        int[] xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) {
+          if (high) {
+            xs.push(i + 100); this.slots[xs[n]] = i + 10; xs.pop();
+          } else {
+            xs.push(i + 200); this.slots[xs[n]] = i + 20; xs.pop();
+          }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
   });
 

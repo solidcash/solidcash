@@ -5073,6 +5073,68 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return { width, ...(widthExpression && { widthExpression }), sites };
       };
+      /**
+       * Prove that every path through one finite source block restores an array to its entry length without ever
+       * popping an element which existed at block entry. Such a schedule may freely expose newly-pushed values to
+       * statements between its resize sites, but it leaves no cross-iteration memory recurrence: the ordinary
+       * source-order transform below can therefore replay it independently for every logical counter value.
+       */
+      const balancedResizeSchedule = (
+        candidate: BlockNode,
+        arrayName: string,
+      ): { delta: number; minimum: number; sites: number } | undefined => {
+        let delta = 0;
+        let minimum = 0;
+        let sites = 0;
+        const append = (summary: { delta: number; minimum: number; sites: number }): void => {
+          minimum = Math.min(minimum, delta + summary.minimum);
+          delta += summary.delta;
+          sites += summary.sites;
+        };
+        for (const statement of candidate.statements ?? []) {
+          if (statement instanceof ArrayPushNode && statement.name === arrayName) {
+            append({ delta: 1, minimum: 0, sites: 1 });
+            continue;
+          }
+          if (statement instanceof ArrayPopNode && statement.name === arrayName) {
+            append({ delta: -1, minimum: -1, sites: 1 });
+            continue;
+          }
+          if ((statement instanceof ArrayAssignNode || statement instanceof ArrayDeleteNode)
+            && statement.name === arrayName) return undefined;
+          if (statement instanceof AssignNode && statement.identifier.name === arrayName) return undefined;
+          if (statement instanceof BranchNode) {
+            const ifArm = balancedResizeSchedule(statement.ifBlock, arrayName);
+            const elseArm = statement.elseBlock
+              ? balancedResizeSchedule(statement.elseBlock, arrayName)
+              : { delta: 0, minimum: 0, sites: 0 };
+            if (!ifArm || !elseArm || ifArm.delta !== elseArm.delta) return undefined;
+            append({
+              delta: ifArm.delta,
+              minimum: Math.min(ifArm.minimum, elseArm.minimum),
+              sites: ifArm.sites + elseArm.sites,
+            });
+            continue;
+          }
+          if (statement instanceof SwitchNode) {
+            const arms = statement.cases.map((switchCase) =>
+              balancedResizeSchedule(switchCase.body, arrayName));
+            const fallback = statement.defaultCase
+              ? balancedResizeSchedule(statement.defaultCase, arrayName)
+              : { delta: 0, minimum: 0, sites: 0 };
+            if (!fallback || arms.some((arm) => !arm)
+              || arms.some((arm) => arm!.delta !== fallback.delta)) return undefined;
+            append({
+              delta: fallback.delta,
+              minimum: Math.min(fallback.minimum, ...arms.map((arm) => arm!.minimum)),
+              sites: fallback.sites + arms.reduce((sum, arm) => sum + arm!.sites, 0),
+            });
+            continue;
+          }
+          if (mutatedArrays(statement).has(arrayName)) return undefined;
+        }
+        return { delta, minimum, sites };
+      };
       const replayFiniteArrayHelper = (
         statement: StatementNode,
       ): Set<string> => {
@@ -5306,6 +5368,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (canonical) for (const [name, plan] of loopPlans) {
             const pushSchedule = fixedPushSchedule(statement.block, name);
             const popSchedule = fixedPopSchedule(statement.block, name);
+            const balancedSchedule = balancedResizeSchedule(statement.block, name);
             let mutationCount = 0;
             let resizeCount = 0;
             const loopAssignedNames = new Set<string>();
@@ -5322,8 +5385,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             });
             // A fixed number of same-kind resizes has a closed length recurrence. An invariant conditional width is
             // closed too: occurrence * (condition ? A : B). Pushes additionally publish a symbolic ordinal and one
-            // conditionally selected value recipe per source site; pops only shorten the already-known prefix. Mixed
-            // schedules and counter-dependent variable widths remain fenced.
+            // conditionally selected value recipe per source site; pops only shorten the already-known prefix. A
+            // mixed schedule is also closed when every finite path restores the entry length and never reaches into
+            // its pre-existing prefix: only transient values exist, so no prior-iteration recurrence is required.
             const scheduledPushCount = pushSchedule?.pushes.length ?? 0;
             const scheduledPopCount = popSchedule?.sites ?? 0;
             const directResizeCount = scheduledPushCount + scheduledPopCount;
@@ -5357,6 +5421,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const unavailablePopNames = new Set(loopAssignedNames).add(name).add(canonical.logical);
             if (fixedPops && popSchedule!.widthExpression
               && containsNamedIdentifier(popSchedule!.widthExpression, unavailablePopNames)) fixedPops = false;
+            const balancedResizes = !!balancedSchedule && balancedSchedule.sites > 0
+              && balancedSchedule.delta === 0 && balancedSchedule.minimum >= 0;
+            if (balancedResizes) continue;
             if ((!fixedPushes && !fixedPops) || directResizeCount === 0) {
               if (resizeCount > 0) {
                 node.messageBusUnboundedConstructedArray = true;

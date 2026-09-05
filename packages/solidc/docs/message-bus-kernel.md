@@ -515,7 +515,9 @@ through an explicit `memory` parameter: scalar parameters and helper locals are 
 symbolic plan, and finite nested `if`/`else` and `switch` writes use the same path joins as direct source code,
 matching the compiler's pass-by-reference memory model. A helper which does not rebind that parameter may also
 push and pop through the shared alias; those operations advance the symbolic length at their exact source point.
-Mixed push/pop operations in a counter-dependent resize recurrence, a push value derived
+Mixed push/pop paths which restore their entry length without popping into the pre-existing prefix are replayed
+independently per logical iteration, including finite `if`/`else` and `switch` paths. Other mixed push/pop
+operations in a counter-dependent resize recurrence, a push value derived
 from the array itself or from a loop-carried local without a closed current-counter recipe, a counter-dependent
 unequal-width resize schedule, passing the array to a mutating, external, ambiguous, or otherwise unprovable call,
 loop-dependent control assignments, and writes whose index/value cannot be replayed stay `KERNEL_UNBOUNDED_KEY` without aborting

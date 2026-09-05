@@ -5259,6 +5259,36 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(700n, 10n).send()).resolves.toBeDefined();
   }, 180_000);
 
+  it('settles path-balanced transient constructed-array resizes in each logical iteration', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelBalancedResizeKeys() {
+      mapping(int => int) slots;
+      function write(int n, bool high) public {
+        int[] memory xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) {
+          if (high) {
+            xs.push(i + 100); this.slots[xs[n]] = i + 10; xs.pop();
+          } else {
+            xs.push(i + 200); this.slots[xs[n]] = i + 20; xs.pop();
+          }
+        }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.slots[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'write', args: [2n, true] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(100n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(101n, 11n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('settles local array keys written earlier in the same logical iteration', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SAME_ITERATION_LOCAL_KEY_ARRAY_SOURCE, KERNEL);

@@ -410,7 +410,11 @@ export class FunctionDefinitionNode extends Node implements Named {
     valueArrayOffset?: string;
     mutation?: 'push' | 'pop' | 'setAt';
     mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;
+    mutationValueArrayIndexParam?: string;
+    mutationValueExpression?: ExpressionNode;
     mutationIndexArrayParam?: string; mutationIndexScalarParam?: string; mutationIndexConst?: string;
+    mutationIndexArrayIndexParam?: string;
+    mutationIndexExpression?: ExpressionNode;
     oldValuesWitnessParam?: string;
 
     /** Compiler-owned exact physical widths for this independently sorted runtime stream. */
@@ -1264,6 +1268,10 @@ export class MappingAssignNode extends StatementNode implements Named {
   // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
   // before accepting the computed output commitment.
   messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  /** Source-order replay recipe for a counter-loop mapping-array mutation operand. */
+  messageBusRuntimeMutationValueExpression?: ExpressionNode;
+  /** Source-order replay recipe for a counter-loop mapping-array element index. */
+  messageBusRuntimeMutationIndexExpression?: ExpressionNode;
   /** Compiler-synthesized no-op transition authenticating a counter-keyed read from another mapping. */
   messageBusRuntimeReadOnly?: boolean;
   /** Hidden source-order value vector used when physical key sorting cannot replay a loop-carried local. */

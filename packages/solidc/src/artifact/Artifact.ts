@@ -1514,6 +1514,12 @@ function buildFunctionAbiMetadata(
         const iterationBound = info.iterationBound && serializeCondition(info.iterationBound);
         const iterationStep = info.iterationCounter?.stepExpression
           && serializeCondition(info.iterationCounter.stepExpression);
+        const mutationValueExpression = info.mutationValueExpression && serializeCondition(
+          info.mutationValueExpression, info.iterationCounter,
+        );
+        const mutationIndexExpression = info.mutationIndexExpression && serializeCondition(
+          info.mutationIndexExpression, info.iterationCounter,
+        );
         const traceLocals = info.valueTraceLocal ? new Set([info.valueTraceLocal]) : new Set<string>();
         const valueTraceInitial = info.valueTraceInitial && serializeCondition(
           info.valueTraceInitial, info.iterationCounter,
@@ -1549,6 +1555,12 @@ function buildFunctionAbiMetadata(
         if (info.iterationCounter?.stepExpression && !iterationStep) {
           throw new Error(`Runtime loop step in '${func.name}' cannot be represented in artifact metadata`);
         }
+        if (info.mutationValueExpression && !mutationValueExpression) {
+          throw new Error(`Runtime loop mutation value in '${func.name}' cannot be represented in artifact metadata`);
+        }
+        if (info.mutationIndexExpression && !mutationIndexExpression) {
+          throw new Error(`Runtime loop mutation index in '${func.name}' cannot be represented in artifact metadata`);
+        }
         if (varyingKeyExpressions?.some((expression) => expression === undefined)) {
           throw new Error(`Runtime loop key in '${func.name}' cannot be represented in artifact metadata`);
         }
@@ -1571,6 +1583,8 @@ function buildFunctionAbiMetadata(
           iterationBreakCondition,
           iterationBound,
           iterationStep,
+          mutationValueExpression,
+          mutationIndexExpression,
           valueTraceInitial,
           valueTraceUpdates: valueTraceUpdates as Array<{
             condition?: ExternalCallExpression; expression: ExternalCallExpression;

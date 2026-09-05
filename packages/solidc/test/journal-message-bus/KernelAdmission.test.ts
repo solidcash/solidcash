@@ -944,7 +944,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('refuses a counter-keyed mapping-array mutation instead of publishing a failing row', () => {
+  it('journals a counter-keyed mapping-array push through an authenticated old-value vector', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int[]) values;
       function denied(int n, int value) public {
@@ -953,12 +953,52 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({
+        collection: 'values',
+        mutation: 'push',
+        mutationValueScalarParam: 'value',
+        valueRuntimeExpression: true,
+        oldValuesWitnessParam: expect.stringMatching(/^__internal__vmapCounterOld_/),
+      });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
+  });
+
+  it('keeps counter-indexed mapping-array mutation operands in logical source order', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int[]) values;
+      function pushEach(int n, int[] additions) public {
+        for (int i = 0; i < n; i = i + 1) { this.values[i].push(additions[i]); }
+        require(true);
+      }
+      function setEach(int n, int[] indices, int[] replacements) public {
+        for (int i = 0; i < n; i = i + 1) { this.values[i][indices[i]] = replacements[i]; }
+        require(true);
+      }
+      function pushExpression(int n, int base) public {
+        for (int i = 0; i < n; i = i + 1) { this.values[i].push(base + i * 2); }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.abi.find((handler) => handler.name === 'pushEach')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({
+        mutation: 'push',
+        mutationValueArrayParam: 'additions',
+        mutationValueArrayIndexParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
+      });
+    expect(artifact.abi.find((handler) => handler.name === 'setEach')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({
+        mutation: 'setAt',
+        mutationValueArrayParam: 'replacements',
+        mutationValueArrayIndexParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
+        mutationIndexArrayParam: 'indices',
+        mutationIndexArrayIndexParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
+      });
+    expect(artifact.abi.find((handler) => handler.name === 'pushExpression')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({ mutation: 'push', mutationValueExpression: { kind: 'binary', operator: '+' } });
   });
 
   it('replays a finite conditional public bound before deriving the counter permutation', () => {

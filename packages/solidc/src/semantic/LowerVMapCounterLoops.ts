@@ -1493,8 +1493,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
       };
       collectWrites(block);
+      // Symbol resolution normally separates a mapping-of-array's final subscript into `arrayIndex`, but this
+      // lowering intentionally runs earlier so it can publish the runtime key permutation. Normalize the same
+      // shape here: the mapping key selects the physical journal entry while the final index is part of the
+      // authenticated whole-array mutation, never part of the sorted slot hash.
+      for (const write of writes) {
+        if (!(write instanceof MappingAssignNode) || write.arrayPush || write.arrayPop || write.arrayIndex) continue;
+        const collection = this.collectionsByName.get(write.name);
+        if (collection?.innermostValueType instanceof ArrayType
+          && write.keys.length === collection.depth + 1) {
+          write.arrayIndex = write.keys.pop();
+        }
+      }
       const keyed = writes.filter((write) =>
         this.collections.has(write.name) && counterKeyIndex(write, logical) >= 0);
+      for (const write of keyed) {
+        if (!(write instanceof MappingAssignNode)
+          || (!write.arrayPush && !write.arrayPop && write.arrayIndex === undefined)) continue;
+        if (!write.arrayPop) write.messageBusRuntimeMutationValueExpression = cloneNode(write.expression);
+        if (write.arrayIndex) write.messageBusRuntimeMutationIndexExpression = cloneNode(write.arrayIndex);
+      }
       // Collapse an exhaustive top-level local assignment join into the exact value produced for this source
       // iteration. The original branch remains in the executable body; this expression is metadata used wherever
       // physical key sorting requires replaying that value in logical counter order.
@@ -2249,6 +2267,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return false;
       };
+      // Mutation operands execute in logical source order even though the entry journal is sorted physically.
+      // Admit every expression the existing public/state replay model can serialize; effects and collection reads
+      // remain outside that model and therefore fail this loop transactionally before any AST rewrite is applied.
+      if (keyed.some((write) => write instanceof MappingAssignNode
+        && (write.arrayPush || write.arrayIndex !== undefined)
+        && (!runtimePathExpressionSupported(
+          write.expression, logical, new Set(), stateValues, loopCarriedLocalValues,
+        ) || (write.arrayIndex !== undefined && !runtimePathExpressionSupported(
+          write.arrayIndex, logical, new Set(), stateValues, loopCarriedLocalValues,
+        ))))) return false;
       // Writes whose complete key is independent of the counter keep their ordinary fixed authenticated journal
       // slot and execute in logical source order. A non-direct counter expression (`m[i + 1]`) is not invariant
       // and still needs its own physical permutation recipe.
@@ -2538,6 +2566,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       // A general scalar same-entry RMW can evaluate against an authenticated old-value array. Structural/array
       // element writes retain their specialized journal lowerings; reads of another entry remain fenced above.
       const generalOldEntryWrites = new Set<ArrayAssignNode | MappingAssignNode>();
+      // Mapping-array element writes and push/pop operations are whole-entry read/modify/write transitions.
+      // Give every runtime mutation the same authenticated old-value vector used by general structural RMWs.
+      // Code generation applies the array surgery to this witness and verifies it against the co-spent entry (or
+      // against the exact empty-array default for an insertion).
+      for (const write of keyed) {
+        if (write instanceof MappingAssignNode
+          && (write.arrayIndex !== undefined || write.arrayPush || write.arrayPop)
+          && this.collectionsByName.get(write.name)?.innermostValueType instanceof ArrayType) {
+          generalOldEntryWrites.add(write);
+        }
+      }
       const hasUnsupportedOldEntryExpression = keyed.some((write) => {
         const expression = write instanceof MappingAssignNode ? write.expression
           : write instanceof ArrayAssignNode ? write.value : undefined;
@@ -2577,8 +2616,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           || valueType === PrimitiveType.STRING
           || (valueType instanceof BytesType && valueType.bound === undefined);
         if (!(write instanceof MappingAssignNode || write instanceof ArrayAssignNode)
-          || (write instanceof MappingAssignNode && (write.arrayIndex !== undefined
-            || write.arrayPush || write.arrayPop)) || !collection
+          || !collection
           || (!(valueType instanceof IntType) && !(valueType instanceof FixedType)
             && valueType !== PrimitiveType.BOOL && !structured && !rawScalar)) return true;
         generalOldEntryWrites.add(write);
@@ -3479,6 +3517,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             : containsIdentifier(key, logical)
               ? (hasDirectCounterComponent ? replace(key, group) : replaceKey(key, group)) as ExpressionNode
               : key);
+          if (write instanceof MappingAssignNode && write.arrayIndex) {
+            write.arrayIndex = replace(write.arrayIndex, group) as ExpressionNode;
+          }
           write.expression = replace(write.expression, group) as ExpressionNode;
         } else {
           write.keys = write.keys.map((key) => key instanceof IdentifierNode && key.name === logical

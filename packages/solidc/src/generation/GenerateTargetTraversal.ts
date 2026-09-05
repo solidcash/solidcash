@@ -18611,7 +18611,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // Per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s existing entry.
       const upsertContext = this.sortedUpsertContextForWrite(node);
-      if (upsertContext && !node.arrayIndex && !node.arrayPush && !node.arrayPop) {
+      if (upsertContext) {
         this.activateSortedUpsertLoopContext(upsertContext);
         const emitted = this.emitSortedUpsertLoopBody(node);
         this.updateSortedUpsertLoopContext(upsertContext);
@@ -18824,7 +18824,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Handle array element assignment within a mapping value: this.scores[user][index] = value
    * Combines entry read (like visitMappingFieldAssign) + array surgery (like visitArrayAssign).
    */
-  private emitMappingArrayElementAssign(node: MappingAssignNode, sortedRmw = false): Node {
+  private emitMappingArrayElementAssign(
+    node: MappingAssignNode, sortedRmw = false, runtimeOldWitness = false,
+  ): Node {
     const slotIndex = node.entrySlotIndex;
     const collection = node.collection!;
     const locationData = { location: node.location, positionHint: PositionHint.END };
@@ -18862,7 +18864,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     let untrackedCount = 1;
 
-    if (sortedRmw) {
+    if (sortedRmw && runtimeOldWitness) {
+      const witness = node.messageBusRuntimeOldValueWitness;
+      if (!witness) throw new Error('Runtime mapping-array mutation is missing its old-value witness');
+      this.visit(witness);
+      // Phase 2 intentionally manages the materialized blob as untracked stack state.
+      this.popFromStack();
+    } else if (sortedRmw) {
       // Sorted vmap RMW: materialize the current array value (reassembling chunks if chunked),
       // then fall through to the shared Phase 2 surgery. Phase 3 leaves the blob for the upsert.
       this.emitSortedSetRead(node as unknown as MappingAccessNode);
@@ -21400,7 +21408,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       seen.add(n);
       if (n instanceof MappingAssignNode && n.collection?.sorted
         && !excludedStreams.has(this.sortedUpsertStreamKey(n))
-        && !n.arrayIndex && !n.arrayPush && !n.arrayPop && hasRuntimeVaryingKey(n)) {
+        && hasRuntimeVaryingKey(n)) {
+        const arrayMutation = n.arrayIndex !== undefined || n.arrayPush || n.arrayPop;
+        if (arrayMutation && n.messageBusRuntimeOldValueWitness
+          && n.collection.innermostValueType instanceof ArrayType) {
+          found = n; return;
+        }
+        if (arrayMutation) return;
         const upsertVk = this.sortedValueKind(n.collection.innermostValueType);
         const e = n.expression;
         // Absolute set to a loop-invariant PARAM `m[k[i]] = v` (v a fn param). The ONE form valid for a rawbytes value
@@ -21845,6 +21859,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let valueConst: string | undefined;         // loop-invariant int literal (e.g. `+= 100`)
     let valueRuntimeLocal: string | undefined;
     let valueArrayOffset: string | undefined;
+    let mutation: 'push' | 'pop' | 'setAt' | undefined;
+    let mutationValueArrayParam: string | undefined;
+    let mutationValueArrayIndexParam: string | undefined;
+    let mutationValueScalarParam: string | undefined;
+    let mutationValueConst: string | undefined;
+    let mutationValueExpression: ExpressionNode | undefined;
+    let mutationIndexArrayParam: string | undefined;
+    let mutationIndexArrayIndexParam: string | undefined;
+    let mutationIndexScalarParam: string | undefined;
+    let mutationIndexConst: string | undefined;
+    let mutationIndexExpression: ExpressionNode | undefined;
     const usesPermutedLogicalIndex = (root: Node, seen = new WeakSet<object>()): boolean => {
       if (seen.has(root)) return false;
       seen.add(root);
@@ -21866,6 +21891,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       op = 'delete'; // nullify to the type default; no per-key value array
     } else {
       const assign = writeNode as MappingAssignNode;
+      if (assign.arrayPush || assign.arrayPop || assign.arrayIndex !== undefined) {
+        mutation = assign.arrayPush ? 'push' : assign.arrayPop ? 'pop' : 'setAt';
+        const classifyMutationOperand = (
+          operand: ExpressionNode | undefined,
+        ): {
+          array?: string; arrayIndex?: string; scalar?: string; constant?: string; expression?: ExpressionNode;
+        } => {
+          if (!operand) return {};
+          if (operand instanceof ArrayAccessNode && operand.array instanceof IdentifierNode) {
+            return {
+              array: operand.array.name,
+              arrayIndex: deterministicArrayName(operand.index)
+                ?? (usesPermutedLogicalIndex(operand.index) ? varyingArrayParam : undefined),
+            };
+          }
+          if (operand instanceof IdentifierNode
+            && this.currentFunction.parameters.some((parameter) => parameter.name === operand.name)) {
+            return { scalar: operand.name };
+          }
+          if (operand instanceof IntLiteralNode) return { constant: operand.value.toString() };
+          if (operand instanceof BoolLiteralNode) return { constant: operand.value ? '1' : '0' };
+          return { expression: operand };
+        };
+        const valueSource = mutation === 'pop' ? {} : classifyMutationOperand(assign.expression);
+        const indexSource = mutation === 'setAt' ? classifyMutationOperand(assign.arrayIndex) : {};
+        mutationValueArrayParam = valueSource.array;
+        mutationValueArrayIndexParam = valueSource.arrayIndex;
+        mutationValueScalarParam = valueSource.scalar;
+        mutationValueConst = valueSource.constant;
+        mutationValueExpression = valueSource.expression;
+        mutationIndexArrayParam = indexSource.array;
+        mutationIndexArrayIndexParam = indexSource.arrayIndex;
+        mutationIndexScalarParam = indexSource.scalar;
+        mutationIndexConst = indexSource.constant;
+        mutationIndexExpression = indexSource.expression;
+        if (mutationValueExpression) {
+          mutationValueExpression = assign.messageBusRuntimeMutationValueExpression ?? mutationValueExpression;
+        }
+        if (mutationIndexExpression) {
+          mutationIndexExpression = assign.messageBusRuntimeMutationIndexExpression ?? mutationIndexExpression;
+        }
+        op = 'set';
+      }
       // Solidity <0.8 projects conventionally express checked mapping RMWs through SafeMath/BoringMath:
       // `m[k] = m[k].add(v)`. The resolved using-for call already carries its receiver as argument 0. SolidCash's
       // bounded integer operators are checked, so a PURE two-argument library add/sub is equivalent at this
@@ -21899,7 +21967,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // treating every non-minus operator as `+` silently changes their semantics.
       const isRmw = expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode
         && (expr.operator === BinaryOperator.PLUS || expr.operator === BinaryOperator.MINUS);
-      if (!valueRuntimeLocal) {
+      if (!valueRuntimeLocal && !mutation) {
         op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
       }
       let valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign
@@ -21913,7 +21981,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (src instanceof ArrayAccessNode || src instanceof IdentifierNode || src instanceof IntLiteralNode
           || src instanceof BoolLiteralNode) valueRight = src;
       }
-      if (valueTrace) {
+      if (mutation) {
+        // Mutation operands are published separately below. The complete new array is recomputed from the
+        // authenticated old-value witness by the covenant, not accepted as a caller-provided value.
+      } else if (valueTrace) {
         // The source-order witness is addressed by the permuted key's logical rank in script. It is not a
         // physically ordered value array and must not enter the ordinary SDK key/value zip-and-sort path.
       } else if (valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode) {
@@ -21937,11 +22008,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
-    const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined
+    const hasValue = !!mutation || !!valueArrayParam || !!valueScalarParam || valueConst !== undefined
       || !!valueRuntimeLocal || !!(writeNode instanceof MappingAssignNode
         && writeNode.messageBusRuntimeValueTrace);
     const valueRuntimeExpression = !isDelete && (
-      (!!decodedKeyRecipe && (!hasValue || decodedKeyRecipe.predicateEquals !== undefined))
+      !!mutation
+      || (!!decodedKeyRecipe && (!hasValue || decodedKeyRecipe.predicateEquals !== undefined))
       || (!hasValue && writeNode.entrySlotIndex >= 0
         && this.entrySlots[writeNode.entrySlotIndex]?.inLoop === true && !!varyingArrayParam)
     );
@@ -21985,6 +22057,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(valueScalarParam && { valueScalarParam }),
         ...(valueConst !== undefined && { valueConst }),
         ...(valueRuntimeLocal && { valueRuntimeLocal }),
+        ...(mutation && { mutation }),
+        ...(mutationValueArrayParam && { mutationValueArrayParam }),
+        ...(mutationValueArrayIndexParam && { mutationValueArrayIndexParam }),
+        ...(mutationValueScalarParam && { mutationValueScalarParam }),
+        ...(mutationValueConst !== undefined && { mutationValueConst }),
+        ...(mutationValueExpression && { mutationValueExpression }),
+        ...(mutationIndexArrayParam && { mutationIndexArrayParam }),
+        ...(mutationIndexArrayIndexParam && { mutationIndexArrayIndexParam }),
+        ...(mutationIndexScalarParam && { mutationIndexScalarParam }),
+        ...(mutationIndexConst !== undefined && { mutationIndexConst }),
+        ...(mutationIndexExpression && { mutationIndexExpression }),
         ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeValueTrace && {
           valueTraceWitnessParam: writeNode.messageBusRuntimeValueTrace.witnessParam,
           valueTraceLocal: writeNode.messageBusRuntimeValueTrace.local,
@@ -22335,7 +22418,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0, loc); this.pushToStack('(credit_amt)'); // default value tail (0 = empty for int)
     } else {
       const a = node as MappingAssignNode;
-      if (op === 'set' || op === 'read') { a.expression = this.visit(a.expression); } else { (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right); }
+      const arrayMutation = a.arrayIndex !== undefined || a.arrayPush || a.arrayPop;
+      if (arrayMutation) {
+        this.emitMappingArrayElementAssign(a, true, true);
+      } else if (op === 'set' || op === 'read') {
+        a.expression = this.visit(a.expression);
+      } else {
+        (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right);
+      }
       this.stack[0] = '(credit_amt)';
       if (isChunkableVal) {
         if (op !== 'read') {

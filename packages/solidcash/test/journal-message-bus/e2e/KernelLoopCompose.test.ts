@@ -64,6 +64,54 @@ contract KernelCounterMapping() {
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
+const COUNTER_MAPPING_ARRAY_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelCounterMappingArray() {
+  mapping(int => int[]) values;
+  function pushMany(int n, int value) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[i].push(value); }
+    require(true);
+  }
+  function setMany(int n, int index, int value) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[i][index] = value; }
+    require(true);
+  }
+}`;
+
+const COUNTER_MAPPING_ARRAY_POP_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelCounterMappingArrayPop() {
+  mapping(int => int[]) values;
+  function pushMany(int n, int value) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[i].push(value); }
+    require(true);
+  }
+  function popMany(int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[i].pop(); }
+    require(true);
+  }
+}`;
+
+const COUNTER_MAPPING_ARRAY_CHUNK_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelCounterMappingArrayChunk() {
+  mapping(int => bytes32[]) values;
+  function pushMany(int n, bytes32 value) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[i].push(value); }
+    require(true);
+  }
+}`;
+
+const COUNTER_MAPPING_ARRAY_VALUES_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelCounterMappingArrayValues() {
+  mapping(int => int[]) values;
+  function pushEach(int n, int[] additions) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[i].push(additions[i]); }
+    require(true);
+  }
+  function pushExpression(int n, int base) public {
+    for (int i = 0; i < n; i = i + 1) { this.values[i].push(base + i * 2); }
+    require(true);
+  }
+}`;
+
 const AFFINE_COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelAffineCounterMapping() {
   mapping(int => int) m;
@@ -2616,6 +2664,150 @@ describe('kernel counter-key mapping loop compose', () => {
       { function: 'clear', args: [3n] },
     ]);
     await expect(repeatedClear.build()).rejects.toThrow(/read-your-writes transition/);
+  }, 180_000);
+
+  it('authenticates and persists counter-keyed mapping-array pushes and element writes', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(COUNTER_MAPPING_ARRAY_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    for (const [name, mutation] of [['pushMany', 'push'], ['setMany', 'setAt']] as const) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: true });
+      expect(artifact.abi.find((handler) => handler.name === name)?.sortedUpsertLoopInfo?.[0])
+        .toMatchObject({ collection: 'values', mutation });
+    }
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+
+    await expect(contract.batch([{ function: 'pushMany', args: [3n, 7n] }]).send())
+      .resolves.toBeDefined();
+    const secondPush = contract.batch([{ function: 'pushMany', args: [3n, 8n] }]);
+    const hostileBuilder = await secondPush.build();
+    const routeInputIndex = hostileBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const routeUnlocker = hostileBuilder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no contract parameters');
+    const pushInfo = artifact.abi.find((handler) => handler.name === 'pushMany')!.sortedUpsertLoopInfo![0];
+    const witnessRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === pushInfo.oldValuesWitnessParam);
+    expect(witnessRouteIndex).toBeGreaterThanOrEqual(0);
+    expect(routeUnlocker.params[witnessRouteIndex]).toEqual([[[7n], [7n], [7n]]]);
+    const routeSelector = artifact.messageBus!.route.selector;
+    if (!routeSelector) throw new Error('message-bus route has no selector');
+    const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
+      routeUnlocker.abiFunction, hexToBin(routeSelector),
+    );
+    const hostileParams = [...routeUnlocker.params];
+    hostileParams[witnessRouteIndex] = [[[999n], [7n], [7n]]];
+    hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileParams);
+    const hostileVm = createVirtualMachineBch2026ForProvider(provider);
+    expect(hostileVm.stateSuccess(hostileVm.evaluate({
+      inputIndex: routeInputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(hostileBuilder.inputs),
+      transaction: hostileBuilder.buildLibauthTransaction(),
+    }))).not.toBe(true);
+    hostileBuilder.inputs[routeInputIndex].unlocker = routeUnlocker;
+    await expect(secondPush.send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'setMany', args: [3n, 0n, 9n] }]).send())
+      .resolves.toBeDefined();
+
+    const entries = await contract.getEntries('values');
+    const valueAt = (key: bigint): unknown => entries.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+    for (let key = 0n; key < 3n; key += 1n) expect(valueAt(key)).toEqual([9n, 8n]);
+  }, 180_000);
+
+  it('authenticates and persists counter-keyed mapping-array pops', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(COUNTER_MAPPING_ARRAY_POP_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'popMany'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'popMany')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({ collection: 'values', mutation: 'pop' });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+
+    await contract.batch([{ function: 'pushMany', args: [2n, 4n] }]).send();
+    await contract.batch([{ function: 'pushMany', args: [2n, 5n] }]).send();
+    await expect(contract.batch([{ function: 'popMany', args: [2n] }]).send())
+      .resolves.toBeDefined();
+
+    const entries = await contract.getEntries('values');
+    const valueAt = (key: bigint): unknown => entries.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+    for (let key = 0n; key < 2n; key += 1n) expect(valueAt(key)).toEqual([4n]);
+    await expect(contract.batch([{ function: 'popMany', args: [3n] }]).build())
+      .rejects.toThrow(/pop from empty array/);
+  }, 180_000);
+
+  it('moves counter-keyed mapping arrays across the inline/chunked boundary', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(COUNTER_MAPPING_ARRAY_CHUNK_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const first = hexToBin('11'.repeat(32));
+    const second = hexToBin('22'.repeat(32));
+
+    await expect(contract.batch([{ function: 'pushMany', args: [2n, first] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'pushMany', args: [2n, second] }]).send())
+      .resolves.toBeDefined();
+
+    const entries = await contract.getEntries('values');
+    for (let key = 0n; key < 2n; key += 1n) {
+      const value = entries.find((entry) =>
+        binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+      expect((value as Uint8Array[]).map(binToHex)).toEqual([binToHex(first), binToHex(second)]);
+    }
+  }, 180_000);
+
+  it('keeps public mutation operand arrays in logical source order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(COUNTER_MAPPING_ARRAY_VALUES_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.bytecode.length / 2).toBeLessThanOrEqual(10_000);
+    const push = artifact.abi.find((handler) => handler.name === 'pushEach')!;
+    expect(push.sortedUpsertLoopInfo?.[0]).toMatchObject({
+      mutation: 'push',
+      mutationValueArrayParam: 'additions',
+      mutationValueArrayIndexParam: expect.stringMatching(/^__internal__vmapCounterPerm_/),
+    });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const additions = [101n, 202n, 303n, 404n];
+    await expect(contract.batch([{ function: 'pushEach', args: [4n, additions] }]).send())
+      .resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'pushExpression', args: [4n, 500n] }]).send())
+      .resolves.toBeDefined();
+
+    const entries = await contract.getEntries('values');
+    for (let key = 0n; key < 4n; key += 1n) {
+      const value = entries.find((entry) =>
+        binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+      expect(value).toEqual([additions[Number(key)], 500n + key * 2n]);
+    }
   }, 180_000);
 });
 

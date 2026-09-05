@@ -577,11 +577,19 @@ export interface SortedUpsertLoopAbi {
   }[];
   mutation?: 'push' | 'pop' | 'setAt';
   mutationValueArrayParam?: string;
+  /** Compiler-owned logical indices selecting mutationValueArrayParam without reordering the public array. */
+  mutationValueArrayIndexParam?: string;
   mutationValueScalarParam?: string;
   mutationValueConst?: string;
+  /** Replayable source expression for a mutation value not reducible to one direct parameter/literal source. */
+  mutationValueExpression?: ExternalCallExpression;
   mutationIndexArrayParam?: string;
+  /** Compiler-owned logical indices selecting mutationIndexArrayParam without reordering the public array. */
+  mutationIndexArrayIndexParam?: string;
   mutationIndexScalarParam?: string;
   mutationIndexConst?: string;
+  /** Replayable source expression for a setAt index not reducible to one direct parameter/literal source. */
+  mutationIndexExpression?: ExternalCallExpression;
   oldValuesWitnessParam?: string;
   /** Exact physical widths of this independently sorted runtime stream. */
   inputCountParam?: string;

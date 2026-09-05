@@ -16749,8 +16749,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
           // Array-mutation operand arrays use the same loop index as the key array and must follow any covenant
           // adjacency reorder exactly.
-          for (const pname of [info.mutationValueArrayParam, info.mutationIndexArrayParam]) {
+          for (const [pname, indexName] of [
+            [info.mutationValueArrayParam, info.mutationValueArrayIndexParam],
+            [info.mutationIndexArrayParam, info.mutationIndexArrayIndexParam],
+          ]) {
             if (!pname) continue;
+            // A compiler-owned logical index keeps the public operand array in source order; the hidden key
+            // permutation selects the matching element during each physical iteration.
+            if (indexName) continue;
             const pi = loopAbiFunction.inputs.findIndex((p) => p.name === pname);
             const pv = pi >= 0 ? loopArgs[pi] : undefined;
             if (Array.isArray(pv)) {
@@ -16873,6 +16879,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         continue;
       }
       if (info.mutation) {
+        const mutationExpressions = [
+          info.mutationValueExpression, info.mutationIndexExpression,
+        ].filter((expression): expression is ExternalCallExpression => expression !== undefined);
+        if (mutationExpressions.length > 0) {
+          loopPredicateState = await this._hydrateExternalPredicateState(
+            mutationExpressions,
+            conditionArgs,
+            entryArtifact,
+            loopPredicateState,
+            visibleInputs,
+            executionSelfAddress,
+            keysArr.map(occurrenceOf),
+          );
+        }
         const readRawValue = async (slot: Uint8Array): Promise<Uint8Array> => {
           const entry = list.find(slot);
           if (!entry) return encodePushdataValue([], collection.valueType, stateLayout.structs);
@@ -16894,38 +16914,73 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           return raw;
         };
-        const operand = (arrayName: string | undefined, scalarName: string | undefined,
-          constant: string | undefined, i: number): unknown => {
+        const operand = (arrayName: string | undefined, arrayIndexName: string | undefined,
+          scalarName: string | undefined, constant: string | undefined,
+          expression: ExternalCallExpression | undefined, i: number): unknown => {
           const av = argOf(arrayName);
-          if (arrayName && Array.isArray(av)) return av[i];
+          if (arrayName && Array.isArray(av)) {
+            const indices = arrayIndexName === info.varyingArrayParam ? keysArr : argOf(arrayIndexName);
+            const rawIndex = Array.isArray(indices) ? indices[i] : i;
+            const index = Number(typeof rawIndex === 'bigint' ? rawIndex : BigInt(rawIndex as number | string));
+            if (!Number.isSafeInteger(index) || index < 0 || index >= av.length) {
+              throw new Error(`vmap array mutation ${info.collection}: operand index ${String(rawIndex)} out of bounds`);
+            }
+            return av[index];
+          }
           if (scalarName) return argOf(scalarName);
           if (constant !== undefined) return BigInt(constant);
+          if (expression) {
+            const value = this._evaluateExternalExpression(
+              expression,
+              conditionArgs,
+              entryArtifact,
+              loopPredicateState,
+              visibleInputs,
+              undefined,
+              occurrenceOf(keysArr[i]),
+              false,
+              executionSelfAddress,
+            );
+            if (value === undefined) {
+              throw new Error(`vmap array mutation ${info.collection}: could not resolve operand expression`);
+            }
+            return value;
+          }
           return undefined;
         };
-        const oldWitnesses: Uint8Array[] = [];
+        const oldWitnesses: StateValue[] = [];
         const mutated: StateValue[] = [];
         for (let i = 0; i < keysArr.length; i++) {
           const slot = slotForKey(keysArr[i]);
           const raw = await readRawValue(slot);
-          oldWitnesses.push(raw);
           const decoded = decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value;
           if (!Array.isArray(decoded)) throw new Error(`vmap mutation target ${info.collection} is not an array`);
+          oldWitnesses.push(decoded);
           const next = [...decoded] as StateValue[];
           if (info.mutation === 'push') {
-            next.push(operand(info.mutationValueArrayParam, info.mutationValueScalarParam,
-              info.mutationValueConst, i) as StateValue);
+            next.push(operand(
+              info.mutationValueArrayParam, info.mutationValueArrayIndexParam,
+              info.mutationValueScalarParam, info.mutationValueConst,
+              info.mutationValueExpression, i,
+            ) as StateValue);
           } else if (info.mutation === 'pop') {
             if (next.length === 0) throw new Error(`vmap array mutation ${info.collection}: pop from empty array`);
             next.pop();
           } else {
-            const rawIndex = operand(info.mutationIndexArrayParam, info.mutationIndexScalarParam,
-              info.mutationIndexConst, i);
+            const rawIndex = operand(
+              info.mutationIndexArrayParam, info.mutationIndexArrayIndexParam,
+              info.mutationIndexScalarParam, info.mutationIndexConst,
+              info.mutationIndexExpression, i,
+            );
             const index = Number(typeof rawIndex === 'bigint' ? rawIndex : BigInt(rawIndex as number | string));
             if (!Number.isSafeInteger(index) || index < 0 || index >= next.length) {
               throw new Error(`vmap array mutation ${info.collection}: index ${index} out of bounds`);
             }
-            next[index] = operand(info.mutationValueArrayParam, info.mutationValueScalarParam,
-              info.mutationValueConst, i) as StateValue;
+            next[index] = operand(
+              info.mutationValueArrayParam, info.mutationValueArrayIndexParam,
+              info.mutationValueScalarParam, info.mutationValueConst,
+              info.mutationValueExpression, i,
+            ) as StateValue;
           }
           mutated.push(next);
         }

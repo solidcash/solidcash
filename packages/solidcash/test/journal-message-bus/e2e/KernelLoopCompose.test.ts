@@ -1065,6 +1065,17 @@ contract KernelDynamicBytesScalar() {
   }
 }`;
 
+const MULTI_DYNAMIC_BYTES_SCALAR_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelMultiDynamicBytesScalar() {
+  mapping(int => bytes) left;
+  mapping(int => bytes) right;
+  function set(int key, bytes leftValue, bytes rightValue) public {
+    this.left[key] = leftValue;
+    this.right[key] = rightValue;
+    require(true);
+  }
+}`;
+
 const DYNAMIC_STRING_RMW_SOURCE = `pragma solidcash ^0.13.0;
 contract KernelDynamicStringRmw() {
   mapping(int => string) values;
@@ -4150,6 +4161,31 @@ describe('kernel composite counter-key settlement', () => {
       binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(7n)])))?.value).toEqual(value);
     expect(entries.find((entry) =>
       binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(8n)])))?.value).toEqual(directValue);
+  }, 180_000);
+
+  it('places multiple chunkable mapping witnesses by ABI identity', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(MULTI_DYNAMIC_BYTES_SCALAR_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const left = new Uint8Array(130).fill(0x71);
+    const right = new Uint8Array(190).fill(0x82);
+
+    await expect(contract.call.set(3n, left, right).send()).resolves.toBeDefined();
+
+    const [leftEntries, rightEntries] = await Promise.all([
+      contract.getEntries('left'), contract.getEntries('right'),
+    ]);
+    const slot = binToHex(keyToSlotMulti([bigIntToVmNumber(3n)]));
+    expect(leftEntries.find((entry) => binToHex(entry.slot) === slot)?.value).toEqual(left);
+    expect(rightEntries.find((entry) => binToHex(entry.slot) === slot)?.value).toEqual(right);
   }, 180_000);
 
   it('settles string same-entry expressions for present and absent keys', async () => {

@@ -238,6 +238,27 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('refuses journal-bearing non-tail mutual recursion without corrupting hidden call arity', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function left(int n, int key) public returns (int) {
+        if (n == 0) return this.values[key];
+        return right(n - 1, key) + this.values[key];
+      }
+      function right(int n, int key) internal returns (int) {
+        if (n == 0) return this.values[key];
+        return left(n - 1, key) + this.values[key];
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('normalizes explicit value and void base-case returns in tail recursion', () => {
     const artifact = compileString(`contract C() {
       int calls;

@@ -1322,7 +1322,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('refuses a canonical counter loop with a counter-dependent read from another mapping', () => {
+  it('authenticates a canonical counter loop read from another mapping', () => {
     const statement = 'this.a[i] = this.b[i];';
     const artifact = compileString(`contract C() {
       mapping(int => int) a;
@@ -1335,11 +1335,73 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'denied')?.sortedUpsertLoopInfo)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ collection: 'b', op: 'read' }),
+        expect.objectContaining({ collection: 'a', op: 'set' }),
+      ]));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it.each(['bool', 'fixed128x18'])(
+    'authenticates a canonical counter loop read of %s values', (type) => {
+      const artifact = compileString(`contract C() {
+        mapping(int => ${type}) source;
+        mapping(int => ${type}) destination;
+        function copy(int n) public {
+          for (int i = 0; i < n; i = i + 1) { this.destination[i] = this.source[i]; }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
+        .toMatchObject({ eligible: true });
+      const read = artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo
+        ?.find((info) => info.collection === 'source');
+      expect(read).toMatchObject({ op: 'read' });
+      expect(artifact.abi.find((handler) => handler.name === 'copy')?.inputs)
+        .toContainEqual(expect.objectContaining({ name: read!.oldValuesWitnessParam, type: `${type}[]` }));
+    },
+  );
+
+  it('authenticates several same-key foreign reads and nested invariant key prefixes', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) left;
+      mapping(int => mapping(int => int)) right;
+      mapping(int => mapping(int => int)) destination;
+      function combine(int account, int n) public {
+        for (int i = 0; i < n; i = i + 1) {
+          this.destination[account][i] = this.left[account][i] + this.right[account][i];
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'combine'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'combine')?.sortedUpsertLoopInfo)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ collection: 'left', op: 'read', fixedKeyParams: ['account'] }),
+        expect.objectContaining({ collection: 'right', op: 'read', fixedKeyParams: ['account'] }),
+        expect.objectContaining({ collection: 'destination', op: 'set', fixedKeyParams: ['account'] }),
+      ]));
+  });
+
+  it('refuses a foreign counter read with a different key domain', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) source;
+      mapping(int => int) destination;
+      function shifted(int n) public {
+        for (int i = 0; i < n; i = i + 1) { this.destination[i] = this.source[i + 1]; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'shifted')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
   });
 
   it('admits an affine loop-carried local mapping value', () => {
@@ -1836,6 +1898,28 @@ describe('required kernel admission', () => {
         valueTraceUpdates: expect.any(Array),
       });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('authenticates a loop-carried value at a conditionally selected mapping write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function write(int n) public {
+        int next = 1;
+        for (int i = 0; i < n; i = i + 1) {
+          if (i % 2 == 0) { next = next + 2; }
+          if (i % 3 != 0) { this.m[i] = next; }
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo?.[0])
+      .toMatchObject({
+        iterationCondition: expect.anything(),
+        valueTraceWitnessParam: expect.stringMatching(/^__internal__vmapCounterValue_/),
+        valueTraceLocal: 'next',
+      });
   });
 
   it('publishes site-specific loop-carried values observed on both sides of an assignment', () => {

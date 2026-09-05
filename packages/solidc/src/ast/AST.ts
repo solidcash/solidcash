@@ -431,7 +431,7 @@ export class FunctionDefinitionNode extends Node implements Named {
       name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
       exactBound?: boolean;
     };
-    op: '+' | '-' | 'set' | 'delete';
+    op: '+' | '-' | 'set' | 'delete' | 'read';
   }>;
 
   /** Source-path predicate keyed by the compiler-owned counter permutation parameter. */
@@ -1264,6 +1264,8 @@ export class MappingAssignNode extends StatementNode implements Named {
   // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
   // before accepting the computed output commitment.
   messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  /** Compiler-synthesized no-op transition authenticating a counter-keyed read from another mapping. */
+  messageBusRuntimeReadOnly?: boolean;
   /** Hidden source-order value vector used when physical key sorting cannot replay a loop-carried local. */
   messageBusRuntimeValueTrace?: {
     witnessParam: string;

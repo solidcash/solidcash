@@ -150,7 +150,37 @@ contract KernelTracedCounterValue() {
     }
     require(true);
   }
+  function writeSelected(int n) public {
+    int next = 1;
+    for (int i = 0; i < n; i = i + 1) {
+      if (i % 2 == 0) { next = next + 2; }
+      if (i % 3 != 0) { this.m[i] = next; }
+    }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.m[key] == expected); }
+}`;
+
+const COUNTER_MAPPING_READ_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelCounterMappingRead() {
+  mapping(int => int) source;
+  mapping(int => int) second;
+  mapping(int => int) destination;
+  function seed(int key, int value) public { this.source[key] = value; require(true); }
+  function seedSecond(int key, int value) public { this.second[key] = value; require(true); }
+  function copy(int n) public {
+    for (int i = 0; i < n; i = i + 1) { this.destination[i] = this.source[i]; }
+    require(true);
+  }
+  function combine(int n) public {
+    for (int i = 0; i < n; i = i + 1) {
+      this.destination[i] = this.source[i] + this.second[i];
+    }
+    require(true);
+  }
+  function checkSource(int key, int expected) public { require(this.source[key] == expected); }
+  function checkSecond(int key, int expected) public { require(this.second[key] == expected); }
+  function checkDestination(int key, int expected) public { require(this.destination[key] == expected); }
 }`;
 
 const AFFINE_COUNTER_STATE_VALUE_SOURCE = `pragma solidcash ^0.13.0;
@@ -4106,7 +4136,7 @@ describe('kernel composite counter-key settlement', () => {
     const artifact = compileString(TRACED_COUNTER_VALUE_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
-    for (const name of ['writeRetained', 'writeSelfDependent', 'writeAfter']) {
+    for (const name of ['writeRetained', 'writeSelfDependent', 'writeAfter', 'writeSelected']) {
       expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
         .toMatchObject({ eligible: true });
     }
@@ -4138,6 +4168,98 @@ describe('kernel composite counter-key settlement', () => {
       [0n, 2n], [1n, 5n], [2n, 5n], [3n, 8n], [4n, 8n],
     ] as const) {
       await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+
+    await expect(contract.batch([{ function: 'writeSelected', args: [6n] }]).send())
+      .resolves.toBeDefined();
+    for (const [key, expected] of [
+      [1n, 3n], [2n, 5n], [4n, 7n], [5n, 7n],
+    ] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+  }, 180_000);
+
+  it('authenticates counter-keyed reads from another mapping without mutating their source entries', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(COUNTER_MAPPING_READ_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ collection: 'source', op: 'read' }),
+        expect.objectContaining({ collection: 'destination', op: 'set' }),
+      ]));
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const expected = [17n, 29n, 43n, 61n];
+    for (let key = 0; key < expected.length; key += 1) {
+      await contract.call.seed(BigInt(key), expected[key]).send();
+    }
+
+    const copyCall = contract.batch([{ function: 'copy', args: [BigInt(expected.length)] }]);
+    const copyBuilder = await copyCall.build();
+    const routeInputIndex = copyBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const routeUnlocker = copyBuilder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no contract parameters');
+    const copyAbi = artifact.abi.find((handler) => handler.name === 'copy')!;
+    const sourceRead = copyAbi.sortedUpsertLoopInfo?.find((info) => info.collection === 'source');
+    expect(sourceRead).toMatchObject({ op: 'read' });
+    const witnessRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === sourceRead!.oldValuesWitnessParam);
+    const permutationRouteIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === sourceRead!.varyingArrayParam);
+    expect(witnessRouteIndex).toBeGreaterThanOrEqual(0);
+    expect(permutationRouteIndex).toBeGreaterThanOrEqual(0);
+    const rowPermutation = (routeUnlocker.params[permutationRouteIndex] as bigint[][])[0];
+    expect(routeUnlocker.params[witnessRouteIndex]).toEqual([
+      rowPermutation.map((key) => expected[Number(key)]),
+    ]);
+
+    const routeSelector = artifact.messageBus!.route.selector;
+    if (!routeSelector) throw new Error('message-bus route has no selector');
+    const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
+      routeUnlocker.abiFunction, hexToBin(routeSelector),
+    );
+    const hostileParams = [...routeUnlocker.params];
+    hostileParams[witnessRouteIndex] = [[999n, ...(routeUnlocker.params[witnessRouteIndex] as bigint[][])[0]
+      .slice(1)]];
+    copyBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileParams);
+    const hostileVm = createVirtualMachineBch2026ForProvider(provider);
+    expect(hostileVm.stateSuccess(hostileVm.evaluate({
+      inputIndex: routeInputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(copyBuilder.inputs),
+      transaction: copyBuilder.buildLibauthTransaction(),
+    }))).not.toBe(true);
+    copyBuilder.inputs[routeInputIndex].unlocker = routeUnlocker;
+
+    await expect(copyCall.send())
+      .resolves.toBeDefined();
+    for (let key = 0; key < expected.length; key += 1) {
+      await expect(contract.call.checkDestination(BigInt(key), expected[key]).send()).resolves.toBeDefined();
+      await expect(contract.call.checkSource(BigInt(key), expected[key]).send()).resolves.toBeDefined();
+    }
+
+    await expect(contract.batch([{ function: 'copy', args: [BigInt(expected.length + 1)] }]).build())
+      .rejects.toThrow(/cannot read key .*it has no entry/);
+
+    const second = [3n, 5n, 7n, 11n];
+    for (let key = 0; key < second.length; key += 1) {
+      await contract.call.seedSecond(BigInt(key), second[key]).send();
+    }
+    await expect(contract.batch([{ function: 'combine', args: [BigInt(expected.length)] }]).send())
+      .resolves.toBeDefined();
+    for (let key = 0; key < expected.length; key += 1) {
+      await expect(contract.call.checkDestination(BigInt(key), expected[key] + second[key]).send())
+        .resolves.toBeDefined();
+      await expect(contract.call.checkSource(BigInt(key), expected[key]).send()).resolves.toBeDefined();
+      await expect(contract.call.checkSecond(BigInt(key), second[key]).send()).resolves.toBeDefined();
     }
   }, 180_000);
 

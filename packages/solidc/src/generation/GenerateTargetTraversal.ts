@@ -717,7 +717,7 @@ interface SortedUpsertLoopContext {
   outCountName: string;
   inputBaseName: string;
   outputBaseName: string;
-  op: '+' | '-' | 'set' | 'delete';
+  op: '+' | '-' | 'set' | 'delete' | 'read';
   repointName: string;
   mergeDebitSlot: number;
   pendingRepoint: boolean;
@@ -1318,7 +1318,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopOutCounterName: string = '(sorted_upsert_outctr)'; // cumulative mints (update +1, insert +2)
   private sortedUpsertLoopActive: boolean = false;
   private sortedUpsertLoopCollection: string | null = null;
-  private sortedUpsertLoopOp: '+' | '-' | 'set' | 'delete' = '+'; // set=absolute m[k[i]]=v[i]; delete=nullify; +/- = RMW
+  private sortedUpsertLoopOp: '+' | '-' | 'set' | 'delete' | 'read' = '+'; // read=authenticated no-op; set/delete absolute; +/- RMW
   // MSG.SENDER MERGE (batch-upsert a-real): a new recipient whose bracketing predecessor is the DEBITED msg.sender.
   // On the merge iteration the credit loop records the new recipient's slot here (mints only the NEW node, no trailing
   // co-spend); the debit flush (emitSortedValueUpsert, runs AFTER the loop) reads it and re-points msg.sender.nextKey.
@@ -21836,13 +21836,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertLoopInputCountParam = streamCardinality?.input;
     this.sortedUpsertLoopOutputCountParam = streamCardinality?.output;
     const isDelete = writeNode instanceof MappingDeleteNode;
-    let op: '+' | '-' | 'set' | 'delete' = 'set';
+    let op: '+' | '-' | 'set' | 'delete' | 'read' = 'set';
     let valueArrayParam: string | undefined;    // per-key vs[i]
     let valueScalarParam: string | undefined;   // loop-invariant param (e.g. `+= amount` fixed-amount airdrop)
     let valueConst: string | undefined;         // loop-invariant int literal (e.g. `+= 100`)
     let valueRuntimeLocal: string | undefined;
     let valueArrayOffset: string | undefined;
-    if (isDelete) {
+    if (writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeReadOnly) {
+      op = 'read';
+      const witness = writeNode.messageBusRuntimeOldValueWitness;
+      if (witness?.array instanceof IdentifierNode) valueArrayParam = witness.array.name;
+    } else if (isDelete) {
       op = 'delete'; // nullify to the type default; no per-key value array
     } else {
       const assign = writeNode as MappingAssignNode;
@@ -22300,7 +22304,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0, loc); this.pushToStack('(credit_amt)'); // default value tail (0 = empty for int)
     } else {
       const a = node as MappingAssignNode;
-      if (op === 'set') { a.expression = this.visit(a.expression); } else { (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right); }
+      if (op === 'set' || op === 'read') { a.expression = this.visit(a.expression); } else { (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right); }
       this.stack[0] = '(credit_amt)';
       if (isChunkableVal) {
         // Pin this iteration's continuation outputs by their slot-specific address, and derive insertion status
@@ -22374,7 +22378,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
         }
       }
-      if (op === 'set' || op === 'delete') {
+      if (op === 'set' || op === 'delete' || op === 'read') {
         this.emit(Op.OP_DROP, loc);                                          // drop coValue -> [.., coSlot, coNext] U=2
         this.emit(encodeInt(BigInt(amtIdx() + 2)), loc); this.emit(Op.OP_PICK, loc);
         if (!isRawbytes) this.emit(Op.OP_BIN2NUM, loc);                      // rawbytes tail stored verbatim (no numeric normalize)
@@ -22402,7 +22406,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(Op.OP_ELSE, loc);
       // ---- INSERT (absent -> NEW recipient): only for `+=`; `-=`/`delete` fail closed (branch-balanced) ----
-      if (isMinus || op === 'delete') { this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc); }
+      if (isMinus || op === 'delete' || op === 'read') {
+        this.emit(Op.OP_0, loc); this.emit(Op.OP_VERIFY, loc);
+      }
       if (oldWitness) {
         // An absent mapping entry reads as the value-type default. The witness cannot manufacture a non-zero base.
         this.emit(encodeInt(BigInt(this.getStackIndex('(credit_old)') + 3)), loc);

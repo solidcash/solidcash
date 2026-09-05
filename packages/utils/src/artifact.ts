@@ -596,7 +596,8 @@ export interface SortedUpsertLoopAbi {
   iterationExactBound?: boolean;
   /** Public-argument expression computing the signed source-loop step. */
   iterationStep?: ExternalCallExpression;
-  op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default
+  /** `read` authenticates and exactly preserves an existing counter-keyed entry. */
+  op: '+' | '-' | 'set' | 'delete' | 'read';
 }
 
 export interface KeySourceAbi {

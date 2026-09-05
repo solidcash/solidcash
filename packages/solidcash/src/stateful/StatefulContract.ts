@@ -16097,6 +16097,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const index = loopAbiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
           return loopArgs[index];
         }) as FunctionArgument[];
+      let valueTraceDomain: bigint[] | undefined;
       if (info.condition || info.iterationCondition || info.iterationBreakCondition) {
         if (info.condition) {
           loopPredicateState = await this._hydrateExternalPredicateState(
@@ -16150,6 +16151,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           `Could not resolve runtime loop bound for '${loopAbiFunction.name}'.`,
         );
         const domain = resolvedDomain;
+        valueTraceDomain = domain;
         if (active && info.iterationCondition) {
           loopPredicateState = await this._hydrateExternalPredicateState(
             [info.iterationCondition, info.iterationBreakCondition],
@@ -16339,7 +16341,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           loopPredicateState,
           visibleInputs,
           executionSelfAddress,
-          keysArr.map(occurrenceOf),
+          valueTraceDomain?.map((_value, occurrence) => occurrence) ?? keysArr.map(occurrenceOf),
         );
         let current = this._evaluateExternalExpression(
           info.valueTraceInitial,
@@ -16380,7 +16382,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             current = next;
           }
         };
-        for (let occurrence = 0; occurrence < keysArr.length; occurrence += 1) {
+        const traceOccurrences = valueTraceDomain?.length ?? keysArr.length;
+        for (let occurrence = 0; occurrence < traceOccurrences; occurrence += 1) {
           applyUpdates(info.valueTraceUpdates ?? [], occurrence);
           valueTrace.push(current);
           applyUpdates(info.valueTraceAfterUpdates ?? [], occurrence);
@@ -16532,6 +16535,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             : 0n;
         }));
         replaceLoopArgument(witnessIndex, oldValues as FunctionArgument);
+        if (info.op === 'read') {
+          valsArr = oldValues;
+          perKey = true;
+        }
       }
       if (info.valueRuntimeExpression && collection.chunkableValue) {
         // One speculative run per concrete storage identity lets derivation distinguish several long values in
@@ -16581,7 +16588,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           slotHexes.forEach((h, i) => {
             if (!seen.has(h)) { seen.add(h); order.push(i); }
             // 'set' is last-wins (store the value VERBATIM - a rawbytes value has no toBig); '+'/'-' accumulate (int).
-            if (vArr) merged.set(h, info.op === 'set' ? vArr[i] : toBig(merged.get(h) ?? 0n) + toBig(vArr[i]));
+            if (vArr) merged.set(h, info.op === 'set' || info.op === 'read'
+              ? vArr[i] : toBig(merged.get(h) ?? 0n) + toBig(vArr[i]));
           });
           keysArr = order.map((i) => kArr[i]);
           const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
@@ -16954,7 +16962,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           cospent.add(uidOf(entry.utxo));
           const oldVal = info.op === '+' || info.op === '-'
             ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint : 0n;
-          const newVal: bigint | Uint8Array = isDelete ? 0n : info.op === 'set' ? amt
+          const newVal: bigint | Uint8Array = isDelete ? 0n : info.op === 'set' || info.op === 'read' ? amt
             : info.op === '-' ? oldVal - (amt as bigint) : oldVal + (amt as bigint);
           appendRuntimeJournalInput({ ...entry.utxo, unlocker: wUnlocker }, info.collection);
           if (collection.chunkableValue) {
@@ -16979,8 +16987,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         } else {
           // INSERT (a NEW recipient): co-spend the bracketing predecessor (from the ORIGINAL list) + mint P' then NEW.
           // 'delete'/'-' on an absent key fail closed (nothing to nullify/debit).
-          if (info.op === '-' || isDelete) {
-            throw new Error(`vmap upsert loop ${info.collection}: cannot ${isDelete ? 'delete' : 'debit'} key ${i} - `
+          if (info.op === '-' || info.op === 'read' || isDelete) {
+            const operation = info.op === 'read' ? 'read' : isDelete ? 'delete' : 'debit';
+            throw new Error(`vmap upsert loop ${info.collection}: cannot ${operation} key ${i} - `
               + 'it has no entry');
           }
           const pred = list.predecessorOf(slot);

@@ -60,8 +60,8 @@ const PURE_COUNTER_VALUE_BUILTINS = new Set([
  * `max(publicBound, 1)` entries. Multiple unconditional source-order loops may lower together when their
  * runtime keys are disjoint; each loop receives its own authenticated trailing input/output segment.
  * Finite pre-loop scalar-state assignments merge through if/else and switch into replayable path expressions.
- * Unsupported loop-carried predicates/values, counter-derived sibling reads of the mutated mapping, and nested-loop
- * control still need richer logical-journal or path metadata.
+ * Unsupported loop-carried predicates/values, unreplayable counter-derived reads, and nested-loop control still
+ * need richer logical-journal or path metadata.
  *
  * The permutation is an untrusted unlocking witness. Generated checks prove it has exactly the canonical domain's
  * number of distinct elements in that domain, hence it is a complete permutation rather than an SDK convention.
@@ -2353,9 +2353,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       };
       const runtimeReadPlans: RuntimeReadPlan[] = [];
       const runtimeReadSignatures = new Set<string>();
-      // A foreign counter-derived read can travel as an independent, read-only physical stream. Its key shape may
-      // differ from the destination: grouping below assigns each complete recipe its own authenticated permutation
-      // and cursor. Represent it as a compiler-owned no-op transition: a present source entry is authenticated
+      // A counter-derived read of another entry can travel as an independent, read-only physical stream. Its key
+      // shape may differ from the destination even when both entries share one collection: grouping below assigns
+      // each complete recipe its own authenticated permutation and cursor. Represent it as a compiler-owned no-op
+      // transition: a present source entry is authenticated
       // and reproduced byte-for-byte; an absent key authenticates the language default against its bracketing
       // predecessor and reproduces that predecessor unchanged. The typed witness vector feeds the destination.
       for (const destination of [...keyed]) {
@@ -2363,9 +2364,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const destinationCollection = this.collectionsByName.get(destination.name);
         if (!destinationCollection?.sorted) continue;
         const plansByShape = new Map<string, RuntimeReadPlan>();
+        const destinationShape = `${destination.name}:${writeKeyShape(destination)}`;
         const rewrite = (candidate: Node): Node => {
           const candidateAccess = collectionAccessOf(candidate);
-          if (candidateAccess && candidateAccess.name !== destination.name && containsLogical(candidate)) {
+          const candidateShape = candidateAccess
+            ? `${candidateAccess.name}:${candidateAccess.keys.map(expressionShape).join('|')}` : undefined;
+          if (candidateAccess && candidateShape !== undefined
+            && candidateShape !== destinationShape && containsLogical(candidate)) {
             const sourceCollection = this.collectionsByName.get(candidateAccess.name);
             const valueType = sourceCollection?.innermostValueType;
             const fixedBytes = valueType instanceof BytesType && valueType.bound !== undefined;
@@ -2378,7 +2383,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               || structuredValue;
             if (sourceCollection?.sorted && supportedValue
               && valueType.toString() === destinationCollection.innermostValueType.toString()) {
-              runtimeReadSignatures.add(`${candidateAccess.name}:${candidateAccess.keys.map(expressionShape).join('|')}`);
+              runtimeReadSignatures.add(candidateShape);
               const shape = `${candidateAccess.name}\0${candidateAccess.keys.map(expressionShape).join('|')}`;
               let plan = plansByShape.get(shape);
               if (!plan) {
@@ -2509,9 +2514,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (keyedSet.has(x)) return false;
         if (structRuntimeReads.has(x as MappingAccessNode)) return false;
         if (x instanceof MappingAccessNode && keyedCollections.has(x.name)) {
+          const signature = `${x.name}:${x.keys.map(expressionShape).join('|')}`;
+          if (runtimeReadSignatures.has(signature)) return false;
           // A stable fixed entry can share the collection's ordinary authenticated journal with the runtime
           // stream. Concrete overlap is a topology property: the SDK rejects a runtime slot which aliases this
-          // fixed co-spend. Counter-derived or otherwise unreplayable sibling reads still need their own stream.
+          // fixed co-spend. Counter-derived reads admitted above use their own authenticated runtime stream;
+          // otherwise unreplayable sibling reads remain fenced.
           return x.keys.some((key) => containsLogical(key)
             || !isFunctionEntryInvariantMappingKey(key, node.body, publicParameterNames));
         }

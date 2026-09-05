@@ -73,6 +73,10 @@ contract KernelSameMappingFixedRead() {
     for (int i = 0; i < n; i = i + 1) { this.m[i] = base + i; }
     require(true);
   }
+  function copy(int n, int offset) public {
+    for (int i = 0; i < n; i = i + 1) { this.m[i] = this.m[i + offset] + 1; }
+    require(true);
+  }
   function check(int key, int expected) public { require(this.m[key] == expected); }
 }`;
 
@@ -2719,13 +2723,15 @@ describe('kernel counter-key mapping loop compose', () => {
     await expect(repeatedClear.build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 
-  it('reads a disjoint fixed entry from the same mapping as a runtime write stream', async () => {
+  it('reads disjoint fixed and runtime entries from the same mapping as a write stream', async () => {
     const provider = createTestProvider();
     const artifact = compileString(SAME_MAPPING_FIXED_READ_SOURCE, {
       ...KERNEL, maximumInputBytes: 1_000_000,
     });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true, physicalEntrySlots: [0] });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
+      .toMatchObject({ eligible: true });
 
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -2744,6 +2750,24 @@ describe('kernel counter-key mapping loop compose', () => {
 
     const updated = StatefulContract.withCategory(inner, categoryId);
     await expect(updated.call.write(2n, 0n).build()).rejects
+      .toThrow(/read-your-writes transition/);
+
+    await contract.call.seed(101n, 8n).send();
+    await contract.call.seed(102n, 9n).send();
+    await expect(updated.call.copy(3n, 100n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    for (const [key, expected] of [[0n, 8n], [1n, 9n], [2n, 10n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toMatchObject({
+        txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+    }
+    // Logical key disjointness is not enough for an absent source: its authenticated predecessor may be one of
+    // the destination entries. Until pending-output journal transitions are available, that physical overlap
+    // must fail closed even though none of the requested source keys equals a destination key.
+    await expect(contract.call.copy(3n, 200n).build()).rejects
+      .toThrow(/read-your-writes transition/);
+    await expect(StatefulContract.withCategory(inner, categoryId).call.copy(2n, 1n).build()).rejects
       .toThrow(/read-your-writes transition/);
   }, 180_000);
 

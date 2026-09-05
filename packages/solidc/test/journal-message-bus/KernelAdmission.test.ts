@@ -944,9 +944,6 @@ describe('required kernel admission', () => {
     ['a bound assigned inside its loop', `for (int i = 0; i < n; i = i + 1) {
       n = n - 1; this.m[i] = i;
     }`],
-    ['a counter-derived sibling read of the mutated mapping', `for (int i = 0; i < n; i = i + 1) {
-      int before = this.m[i + 1]; this.m[i] = before + 1;
-    }`],
   ])('refuses %s as KERNEL_UNBOUNDED_KEY and preserves an eligible sibling', (_label, loop) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) m;
@@ -972,6 +969,26 @@ describe('required kernel admission', () => {
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('authenticates a counter-derived sibling read from the same mapping as an independent stream', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function copy(int n, int offset) public {
+        for (int i = 0; i < n; i = i + 1) { this.m[i] = this.m[i + offset] + 1; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'copy'))
+      .toMatchObject({ eligible: true });
+    const streams = artifact.abi.find((handler) => handler.name === 'copy')?.sortedUpsertLoopInfo ?? [];
+    expect(streams.filter((stream) => stream.collection === 'm')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ op: 'read', varyingKeyExpressions: expect.any(Array) }),
+      expect.objectContaining({ op: 'set' }),
+    ]));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });

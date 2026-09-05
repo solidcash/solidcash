@@ -1073,6 +1073,48 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('replays one straight-line constructed-array push per canonical loop iteration', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n) public {
+        int[] xs = new int[](0);
+        for (int i = 1; i < n; i = i + 2) {
+          xs.push(i + 10);
+          this.slots[xs[(i - 1) / 2]] = i;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({
+        collection: 'slots',
+        varyingKeyExpressions: [expect.objectContaining({ kind: 'ternary' })],
+      })]);
+  });
+
+  it.each([
+    ['reads before its push', 'this.slots[xs[i]] = i; xs.push(i + 1);'],
+    ['has two pushes per iteration', 'xs.push(i + 1); xs.push(i + 2); this.slots[xs[i]] = i;'],
+    ['pops inside the loop', 'xs.pop(); this.slots[xs[i]] = i;'],
+  ])('refuses a constructed array which %s', (_label, body) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function denied(int n) public {
+        int[] xs = new int[](n);
+        for (int i = 0; i < n; i = i + 1) { ${body} }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('derives a straight-line same-iteration local array key', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

@@ -2543,6 +2543,10 @@ function synthesizeMessageBusRoute(
       if (unsupported) break;
       for (const candidate of byName.get(name) ?? []) {
         if (unsupported) break;
+        if (candidate.messageBusUnboundedConstructedArray) {
+          unsupported = true;
+          break;
+        }
         const bound = locallyBoundNames(candidate);
         // walkInvocationAst is synchronous; `unsupported` is the intended accumulator for this scan.
         // eslint-disable-next-line @typescript-eslint/no-loop-func

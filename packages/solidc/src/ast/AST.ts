@@ -460,6 +460,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Physical stream widths keyed by the compiler-owned permutation parameter. */
   runtimeCounterLoopCardinalityParams?: Map<string, { input: string; output: string }>;
 
+  /** A locally constructed key array has a loop-carried resize/read schedule the bounded replay pass cannot
+   * represent. Kernel admission refuses only this handler rather than letting later route synthesis fail. */
+  messageBusUnboundedConstructedArray?: boolean;
+  /** Idempotence marker for the pre-admission constructed-array replay normalization. */
+  messageBusConstructedArrayKeysNormalized?: boolean;
+
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[]; linear?: boolean }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve

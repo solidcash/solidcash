@@ -685,7 +685,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
     findCanonicalLoops(node.body);
     this.normalizeImmutableDefaultArrayKeys(
       node,
-      new Set([...canonicalLoops.values()].map((loop) => loop.logical)),
+      canonicalLoops,
     );
     const isWrite = (s: Node): s is ArrayAssignNode | ArrayDeleteNode | MappingAssignNode | MappingDeleteNode
     | MappingFieldAssignNode =>
@@ -4136,16 +4136,34 @@ export default class LowerVMapCounterLoops extends AstTraversal {
    */
   private normalizeImmutableDefaultArrayKeys(
     node: FunctionDefinitionNode,
-    canonicalCounters: ReadonlySet<string> = new Set(),
+    canonicalLoops: ReadonlyMap<WhileNode | DoWhileNode, {
+      logical: string; start: bigint; step: bigint; stepExpression?: ExpressionNode;
+    }> = new Map(),
   ): void {
-    if (!node.body) return;
-    type ArrayWrite = { index: ExpressionNode; value: ExpressionNode; condition?: ExpressionNode };
+    if (!node.body || node.messageBusConstructedArrayKeysNormalized) return;
+    node.messageBusConstructedArrayKeysNormalized = true;
+    const canonicalCounters = new Set([...canonicalLoops.values()].map((loop) => loop.logical));
+    type ArrayRecurrence = {
+      counter: string;
+      start: bigint;
+      step: bigint;
+      stepExpression?: ExpressionNode;
+      baseLength: ExpressionNode;
+    };
+    type ArrayWrite = {
+      index: ExpressionNode;
+      value: ExpressionNode;
+      condition?: ExpressionNode;
+      recurrence?: ArrayRecurrence;
+    };
     type ArrayPlan = {
       elementType: Type;
       defaultValue: ExpressionNode;
       /** Symbolic source length at this point. It makes straight-line push/pop indices replayable. */
       length: ExpressionNode;
       writes: ArrayWrite[];
+      /** One unconditional push per canonical source iteration, represented for every prior iteration. */
+      recurrence?: ArrayRecurrence;
     };
     const plans = new Map<string, ArrayPlan>();
     const walk = (root: Node, visit: (candidate: Node) => void): void => {
@@ -4360,12 +4378,68 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       });
       return escaped;
     };
-    const symbolicRead = (access: ArrayAccessNode, plan: ArrayPlan): ExpressionNode => {
+    const replaceIdentifier = (
+      expression: ExpressionNode, name: string, replacement: ExpressionNode,
+    ): ExpressionNode => {
+      if (expression instanceof IdentifierNode && expression.name === name) return cloneNode(replacement);
+      const replaced = cloneNode(expression) as ExpressionNode;
+      for (const key of Object.keys(replaced)) {
+        if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+          || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+          || key === 'stateVariable' || key === 'identifier') continue;
+        const value = (replaced as unknown as Record<string, unknown>)[key];
+        if (value instanceof ExpressionNode) {
+          (replaced as unknown as Record<string, unknown>)[key] = replaceIdentifier(value, name, replacement);
+        } else if (Array.isArray(value)) {
+          (replaced as unknown as Record<string, unknown>)[key] = value.map((item) =>
+            item instanceof ExpressionNode ? replaceIdentifier(item, name, replacement) : item);
+        }
+      }
+      return replaced;
+    };
+    const symbolicRead = (access: ArrayAccessNode, plan: ArrayPlan): ExpressionNode | undefined => {
+      // Before the source push executes, the current loop iteration has not installed its recurrence recipe.
+      // Leaving the array read untouched makes ordinary runtime-key admission reject that genuinely
+      // loop-carried dependency instead of publishing a proof which only happens to work at iteration zero.
+      if (plan.recurrence && !plan.writes.some((write) => write.recurrence)) {
+        node.messageBusUnboundedConstructedArray = true;
+        return undefined;
+      }
       let value = cloneNode(plan.defaultValue) as ExpressionNode;
       for (const write of plan.writes) {
-        let matches: ExpressionNode = new BinaryOpNode(
-          cloneNode(access.index), BinaryOperator.EQ, cloneNode(write.index),
-        );
+        let selectedValue = cloneNode(write.value) as ExpressionNode;
+        let matches: ExpressionNode;
+        if (write.recurrence) {
+          const recurrence = write.recurrence;
+          const relative = new BinaryOpNode(
+            cloneNode(access.index), BinaryOperator.MINUS, cloneNode(recurrence.baseLength),
+          );
+          relative.location = access.location;
+          const step = recurrence.stepExpression
+            ? cloneNode(recurrence.stepExpression) : new IntLiteralNode(recurrence.step);
+          step.location = access.location;
+          const logicalStep = new BinaryOpNode(relative, BinaryOperator.MUL, step);
+          logicalStep.location = access.location;
+          const logicalCounter = new BinaryOpNode(
+            new IntLiteralNode(recurrence.start), BinaryOperator.PLUS, logicalStep,
+          );
+          logicalCounter.location = access.location;
+          selectedValue = replaceIdentifier(write.value, recurrence.counter, logicalCounter);
+          const atOrAfter = new BinaryOpNode(
+            cloneNode(access.index), BinaryOperator.GE, cloneNode(recurrence.baseLength),
+          );
+          atOrAfter.location = access.location;
+          const beforeLength = new BinaryOpNode(
+            cloneNode(access.index), BinaryOperator.LT, cloneNode(plan.length),
+          );
+          beforeLength.location = access.location;
+          matches = new BinaryOpNode(atOrAfter, BinaryOperator.AND, beforeLength);
+          matches.location = access.location;
+        } else {
+          matches = new BinaryOpNode(
+            cloneNode(access.index), BinaryOperator.EQ, cloneNode(write.index),
+          );
+        }
         matches.location = access.location;
         if (write.condition) {
           const active = new BinaryOpNode(
@@ -4374,7 +4448,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           active.location = access.location;
           matches = active;
         }
-        const selected = new TernaryOpNode(matches, cloneNode(write.value), value);
+        const selected = new TernaryOpNode(matches, selectedValue, value);
         selected.location = access.location;
         selected.type = access.type;
         selected.messageBusDeterministicArrayKey = true;
@@ -4391,6 +4465,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const plan = active.get(expression.array.name);
         if (plan) {
           const replacement = symbolicRead(expression, plan);
+          if (!replacement) return cloneNode(expression) as ExpressionNode;
           const equality = new BinaryOpNode(
             cloneNode(expression), BinaryOperator.EQ, cloneNode(replacement),
           );
@@ -4459,7 +4534,21 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           index: cloneNode(write.index) as ExpressionNode,
           value: cloneNode(write.value) as ExpressionNode,
           ...(write.condition && { condition: cloneNode(write.condition) as ExpressionNode }),
+          ...(write.recurrence && { recurrence: {
+            ...write.recurrence,
+            baseLength: cloneNode(write.recurrence.baseLength) as ExpressionNode,
+            ...(write.recurrence.stepExpression && {
+              stepExpression: cloneNode(write.recurrence.stepExpression) as ExpressionNode,
+            }),
+          } }),
         })),
+        ...(plan.recurrence && { recurrence: {
+          ...plan.recurrence,
+          baseLength: cloneNode(plan.recurrence.baseLength) as ExpressionNode,
+          ...(plan.recurrence.stepExpression && {
+            stepExpression: cloneNode(plan.recurrence.stepExpression) as ExpressionNode,
+          }),
+        } }),
       }]),
     );
     const branchCondition = (
@@ -4598,6 +4687,55 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       for (const statement of block.statements ?? []) {
         if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
           const loopPlans = copyPlans(active);
+          const canonical = canonicalLoops.get(statement);
+          if (canonical) for (const [name, plan] of loopPlans) {
+            const directPushes = (statement.block.statements ?? []).filter((candidate) =>
+              candidate instanceof ArrayPushNode && candidate.name === name);
+            let mutationCount = 0;
+            let resizeCount = 0;
+            walk(statement.block, (candidate) => {
+              if ((candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode
+                || candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode)
+                && candidate.name === name) mutationCount += 1;
+              if ((candidate instanceof ArrayPushNode || candidate instanceof ArrayPopNode)
+                && candidate.name === name) resizeCount += 1;
+              if (candidate instanceof AssignNode && candidate.identifier.name === name) mutationCount += 1;
+            });
+            // A single unconditional push has a closed recurrence: before logical counter i, the array length is
+            // base + (i-start)/step. This describes every prior push without unrolling the runtime domain. More
+            // complicated schedules retain their ordinary array accesses and are refused by admission.
+            if (directPushes.length !== 1 || mutationCount !== 1) {
+              if (resizeCount > 0) {
+                node.messageBusUnboundedConstructedArray = true;
+                loopPlans.delete(name);
+              }
+              continue;
+            }
+            const counter = new IdentifierNode(canonical.logical);
+            counter.location = statement.location;
+            const start = new IntLiteralNode(canonical.start);
+            start.location = statement.location;
+            const delta = new BinaryOpNode(counter, BinaryOperator.MINUS, start);
+            delta.location = statement.location;
+            const step = canonical.stepExpression
+              ? cloneNode(canonical.stepExpression) : new IntLiteralNode(canonical.step);
+            step.location = statement.location;
+            const occurrence = new BinaryOpNode(delta, BinaryOperator.DIV, step);
+            occurrence.location = statement.location;
+            const length = new BinaryOpNode(cloneNode(plan.length), BinaryOperator.PLUS, occurrence);
+            length.location = statement.location;
+            length.type = plan.length.type;
+            plan.recurrence = {
+              counter: canonical.logical,
+              start: canonical.start,
+              step: canonical.step,
+              ...(canonical.stepExpression && {
+                stepExpression: cloneNode(canonical.stepExpression) as ExpressionNode,
+              }),
+              baseLength: cloneNode(plan.length) as ExpressionNode,
+            };
+            plan.length = length;
+          }
           // A straight-line write followed by a key read in the same canonical iteration is replayable:
           // `xs[i] = f(i); m[xs[i]] = v` becomes the symbolic `f(i)` key plus the ordinary on-chain equality
           // check against `xs[i]`. Start the loop from the dominating pre-loop plan and let transformBlock add
@@ -4831,6 +4969,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           plan.writes.push({
             index: cloneNode(plan.length) as ExpressionNode,
             value: keySnapshot?.identifier ?? cloneNode(replayedArrayValue) as ExpressionNode,
+            ...(plan.recurrence && { recurrence: {
+              ...plan.recurrence,
+              baseLength: cloneNode(plan.recurrence.baseLength) as ExpressionNode,
+              ...(plan.recurrence.stepExpression && {
+                stepExpression: cloneNode(plan.recurrence.stepExpression) as ExpressionNode,
+              }),
+            } }),
           });
           const one = new IntLiteralNode(1n);
           one.location = statement.location;

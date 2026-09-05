@@ -1,7 +1,7 @@
 import {
   FunctionDefinitionNode, BlockNode, StatementNode, Node, WhileNode, DoWhileNode, BranchNode,
   ReturnNode, BreakNode, VariableDefinitionNode, AssignNode, IdentifierNode, BoolLiteralNode,
-  SourceFileNode, ContractNode,
+  SourceFileNode, ContractNode, FunctionCallNode,
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -28,6 +28,11 @@ const VAL = (k: number): string => `__internal__retval_${k}`;
 
 export default class DesugarReturnInLoop extends AstTraversal {
   private retCount = 0;
+  private returnNames: readonly string[] = [];
+
+  constructor(private readonly onlySelfRecursiveFunctions = false) {
+    super();
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -48,6 +53,7 @@ export default class DesugarReturnInLoop extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     if (!node.body) return node;
+    if (this.onlySelfRecursiveFunctions && !this.hasSelfCall(node.body, node.name)) return node;
     // Entry-points AND internal/private functions both need this: an in-loop raw return NIPs locals below the
     // value and corrupts the loop's balanced OP_BEGIN/OP_UNTIL stack. (The old entry-point "blob-stash" path was
     // broken - a public `for/while (..) { if (c) return X; }` crashed at runtime.) Desugaring to a flag + break +
@@ -55,6 +61,7 @@ export default class DesugarReturnInLoop extends AstTraversal {
     if (!this.hasReturnInLoop(node.body, false)) return node;
 
     this.retCount = node.returnTypes.length;
+    this.returnNames = node.returnNames;
     const decls: StatementNode[] = [new VariableDefinitionNode(
       PrimitiveType.BOOL, [], FLAG, new BoolLiteralNode(false),
     )];
@@ -65,6 +72,16 @@ export default class DesugarReturnInLoop extends AstTraversal {
     const [stmts] = this.transformStatements(node.body.statements ?? [], 0);
     node.body.statements = [...decls, ...stmts];
     return node;
+  }
+
+  private hasSelfCall(node: Node, name: string): boolean {
+    if (node instanceof FunctionCallNode && node.identifier.name === name) return true;
+    return Object.entries(node).some(([key, child]) => {
+      if (['resolvedFunction', 'definition', 'symbolTable', 'location'].includes(key)) return false;
+      if (child instanceof Node) return this.hasSelfCall(child, name);
+      return Array.isArray(child) && child.some((item) =>
+        item instanceof Node && this.hasSelfCall(item, name));
+    });
   }
 
   // Stamp a synthesized node subtree with a source location (only where missing - existing sub-expressions keep
@@ -105,11 +122,18 @@ export default class DesugarReturnInLoop extends AstTraversal {
     let had = false;
     for (const s of stmts) {
       // A 1:1 return inside a loop -> stash the values + set the flag + break the loop.
-      if (s instanceof ReturnNode && loopDepth > 0 && s.expressions.length === this.retCount) {
+      const returnedValues = s instanceof ReturnNode && loopDepth > 0
+        ? (s.expressions.length === this.retCount
+          ? s.expressions
+          : (s.expressions.length === 0 && this.returnNames.length === this.retCount
+            ? this.returnNames.map((name) => this.stampLoc(new IdentifierNode(name), s.location))
+            : undefined))
+        : undefined;
+      if (s instanceof ReturnNode && returnedValues) {
         // Splice the stash+flag+break directly into the statement list (not wrapped in a block) so the injected
         // `break` is recognised as in-loop by break/continue expansion.
-        for (let k = 0; k < s.expressions.length; k++) {
-          out.push(this.stampLoc(new AssignNode(new IdentifierNode(VAL(k)), s.expressions[k]), s.location));
+        for (let k = 0; k < returnedValues.length; k++) {
+          out.push(this.stampLoc(new AssignNode(new IdentifierNode(VAL(k)), returnedValues[k]), s.location));
         }
         out.push(this.stampLoc(new AssignNode(new IdentifierNode(FLAG), new BoolLiteralNode(true)), s.location));
         out.push(this.stampLoc(new BreakNode(), s.location));

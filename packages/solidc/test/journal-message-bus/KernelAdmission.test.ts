@@ -233,6 +233,23 @@ describe('required kernel admission', () => {
       .toEqual([{ type: 'int256' }, { type: 'bool' }]);
   });
 
+  it('normalizes tail-recursive base returns nested in a source loop', () => {
+    const artifact = compileString(`contract C() {
+      int calls;
+      function find(int remaining) public returns (int result) {
+        this.calls = this.calls + 1;
+        for (int i = 0; i < 2; i = i + 1) {
+          if (i == remaining) { result = this.calls * 10 + i; return; }
+        }
+        if (remaining == 0) return 99;
+        return find(remaining - 1);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'find'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('binds a transaction signature-array as a row-aligned nested route witness', () => {
     const artifact = compileString(`contract C() {
       function signed(sig[] signatures) public { require(true); }

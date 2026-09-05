@@ -323,7 +323,7 @@ oracle-backed `block.*` register publishes `__updateBlockOracle` as an ordinary 
 transaction-signature witness; it is not appended later as an unexamined ABI-only function. Public state getters
 follow the same synthesis boundary.
 Conservative named or unnamed result tuples and void tail recursion are normalized to their ordinary loop before closure admission,
-including explicit value-returning and void base-case `return` statements outside pre-existing source loops, so the
+including explicit value-returning and void base-case `return` statements nested in pre-existing source loops, so the
 kernel executes the same finite source transition without cloning a recursive route frame. Non-tail recursion
 (including work performed after the recursive call), mutual recursion, and result types the wrapper cannot encode
 stay `KERNEL_LAYOUT`. Enum scalar results

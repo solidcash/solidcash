@@ -1507,6 +1507,40 @@ describe('kernel loop message-bus compose', () => {
     await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 4n });
   }, 180_000);
 
+  it('executes a tail-recursive base return nested in a source loop', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelTailLoopReturn() {
+      int calls;
+      function find(int remaining) public returns (int result) {
+        this.calls = this.calls + 1;
+        for (int i = 0; i < 2; i = i + 1) {
+          if (i == remaining) { result = this.calls * 10 + i; return; }
+        }
+        if (remaining == 0) return 99;
+        return find(remaining - 1);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'find'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'find', args: [3n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 3n });
+  }, 180_000);
+
   it('executes a normalized void tail-recursive helper through one row', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelVoidTailRecursion() {

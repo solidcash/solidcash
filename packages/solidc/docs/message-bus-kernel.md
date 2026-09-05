@@ -505,9 +505,10 @@ original array prefix. A fixed positive number of unconditional top-level `pop` 
 known prefix on each iteration. Push values and branch selectors may use straight-line loop-local definitions and
 assignments; exhaustive `if`/`else` and `switch` assignments are merged into source-order ternary recipes for later
 pushes. Passing an element value to a helper does not escape the array, and passing the whole array through a
-transitively read-only `pure` helper preserves its symbolic plan. A unique straight-line `pure` helper may also
-write elements through an explicit `memory` parameter: scalar parameters and helper locals are substituted into
-the caller's symbolic plan, matching the compiler's pass-by-reference memory model. Mixed push/pop operations, a push value derived
+transitively read-only `pure` helper preserves its symbolic plan. A unique `pure` helper may also write elements
+through an explicit `memory` parameter: scalar parameters and helper locals are substituted into the caller's
+symbolic plan, and finite nested `if`/`else` and `switch` writes use the same path joins as direct source code,
+matching the compiler's pass-by-reference memory model. Mixed push/pop operations, a push value derived
 from the array itself or from a loop-carried local without a closed current-counter recipe, a counter-dependent
 unequal-width resize schedule, passing the array to a mutating, external, ambiguous, or otherwise unprovable call,
 resizing it across a helper boundary, loop-dependent

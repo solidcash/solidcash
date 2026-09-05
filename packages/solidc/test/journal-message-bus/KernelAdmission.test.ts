@@ -1057,16 +1057,21 @@ describe('required kernel admission', () => {
   it('replays straight-line constructed-key mutations through a pure helper alias', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
-      function mutate(int[] memory xs, int next) internal pure {
+      function mutate(int[] memory xs, int next, bool high, int mode) internal pure {
         int index = 0;
-        xs[index] = next;
-        xs[index + 1] = next + 1;
+        if (high) {
+          if (mode == 9) { xs[index] = next + 20; } else { xs[index] = next; }
+        } else { xs[index] = next + 10; }
+        switch (mode) {
+          case 0: xs[index + 1] = next + 1; break;
+          default: xs[index + 1] = next + 2;
+        }
       }
       function mutateValue(int[] xs, int next) internal pure { xs[0] = next; }
-      function write(int n, int first, int second) public {
+      function write(int n, int first, int second, bool high, int mode) public {
         int[] memory xs = new int[](n);
         xs[0] = first;
-        mutate(xs, second);
+        mutate(xs, second, high, mode);
         for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
         require(true);
       }

@@ -5073,7 +5073,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return { width, ...(widthExpression && { widthExpression }), sites };
       };
-      const replayStraightLineArrayHelper = (
+      const replayFiniteArrayHelper = (
         statement: StatementNode,
       ): Set<string> => {
         const replayed = new Set<string>();
@@ -5096,59 +5096,183 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const callerArray = call.parameters[arrayParameterIndex] as IdentifierNode;
         const sourcePlan = active.get(callerArray.name)!;
         if (sourcePlan.recurrence) return replayed;
-        const plan = copyPlans(new Map([[callerArray.name, sourcePlan]])).get(callerArray.name)!;
-        const values = new Map<string, ExpressionNode>();
+        const initialPlan = copyPlans(new Map([[callerArray.name, sourcePlan]])).get(callerArray.name)!;
+        const initialValues = new Map<string, ExpressionNode>();
         target.parameters.forEach((candidate, index) => {
           if (index === arrayParameterIndex) return;
-          values.set(candidate.name, replaceSnapshots(call.parameters[index], snapshots));
+          initialValues.set(candidate.name, replaceSnapshots(call.parameters[index], snapshots));
         });
         const arrayNames = new Set(target.parameters
           .filter((candidate) => candidate.type instanceof ArrayType).map((candidate) => candidate.name));
-        const replay = (expression: ExpressionNode): ExpressionNode => replaceSnapshots(expression, values);
         const safe = (expression: ExpressionNode): boolean => !containsNamedIdentifier(expression, arrayNames);
-        const body = target.body.statements ?? [];
-        for (let index = 0; index < body.length; index += 1) {
-          const helperStatement = body[index];
-          if (helperStatement instanceof VariableDefinitionNode && helperStatement.expression) {
-            const expression = replay(helperStatement.expression);
-            if (!safe(expression)) return replayed;
-            values.set(helperStatement.name, expression);
-            continue;
+        const clonePlan = (plan: ArrayPlan): ArrayPlan => copyPlans(
+          new Map([[callerArray.name, plan]]),
+        ).get(callerArray.name)!;
+        const mergePlans = (
+          base: ArrayPlan,
+          arms: readonly { plan: ArrayPlan; condition?: ExpressionNode }[],
+        ): ArrayPlan => {
+          const merged = clonePlan(base);
+          for (const { plan, condition } of arms) {
+            for (const write of plan.writes.slice(base.writes.length)) {
+              merged.writes.push({
+                index: cloneNode(write.index) as ExpressionNode,
+                value: cloneNode(write.value) as ExpressionNode,
+                ...(condition && { condition: branchCondition(condition, write.condition, false) }),
+                ...(!condition && write.condition && {
+                  condition: cloneNode(write.condition) as ExpressionNode,
+                }),
+              });
+            }
           }
-          if (helperStatement instanceof AssignNode
-            && helperStatement.identifier.name !== arrayParameter.name) {
-            const expression = replay(helperStatement.expression);
-            if (!safe(expression)) return replayed;
-            values.set(helperStatement.identifier.name, expression);
-            continue;
+          let length = cloneNode(arms[arms.length - 1].plan.length) as ExpressionNode;
+          for (let index = arms.length - 2; index >= 0; index -= 1) {
+            const selected = new TernaryOpNode(
+              cloneNode(arms[index].condition!), cloneNode(arms[index].plan.length), length,
+            );
+            selected.location = arms[index].condition!.location;
+            selected.type = arms[index].plan.length.type ?? length.type;
+            length = selected;
           }
-          if (helperStatement instanceof ArrayAssignNode && helperStatement.name === arrayParameter.name) {
-            const assignedIndex = replay(helperStatement.index);
-            const assignedValue = replay(helperStatement.value);
-            if (!safe(assignedIndex) || !safe(assignedValue)) return replayed;
-            plan.writes.push({ index: assignedIndex, value: assignedValue });
-            continue;
+          merged.length = length;
+          return merged;
+        };
+        const mergeValues = (
+          base: ReadonlyMap<string, ExpressionNode>,
+          arms: readonly { values: ReadonlyMap<string, ExpressionNode>; condition?: ExpressionNode }[],
+        ): Map<string, ExpressionNode> => {
+          const merged = new Map<string, ExpressionNode>();
+          const names = new Set([
+            ...base.keys(),
+            ...[...arms[0].values.keys()].filter((name) =>
+              arms.every((arm) => arm.values.has(name))),
+          ]);
+          for (const name of names) {
+            const fallback = arms[arms.length - 1].values.get(name) ?? base.get(name);
+            if (!fallback) continue;
+            let value = cloneNode(fallback) as ExpressionNode;
+            for (let index = arms.length - 2; index >= 0; index -= 1) {
+              const armValue = arms[index].values.get(name) ?? base.get(name);
+              if (!armValue) continue;
+              const selected = new TernaryOpNode(
+                cloneNode(arms[index].condition!), cloneNode(armValue), value,
+              );
+              selected.location = arms[index].condition!.location;
+              selected.type = armValue.type ?? value.type;
+              value = selected;
+            }
+            merged.set(name, value);
           }
-          if (helperStatement instanceof ArrayDeleteNode && helperStatement.name === arrayParameter.name) {
-            const deletedIndex = replay(helperStatement.index);
-            if (!safe(deletedIndex)) return replayed;
-            plan.writes.push({
-              index: deletedIndex,
-              value: cloneNode(plan.defaultValue) as ExpressionNode,
-            });
-            continue;
+          return merged;
+        };
+        type HelperSummary = { plan: ArrayPlan; values: Map<string, ExpressionNode> };
+        const summarize = (
+          helperBlock: BlockNode,
+          source: HelperSummary,
+          allowTerminalReturn: boolean,
+        ): HelperSummary | undefined => {
+          let plan = clonePlan(source.plan);
+          let values = new Map(source.values);
+          const replay = (expression: ExpressionNode): ExpressionNode => replaceSnapshots(expression, values);
+          const body = helperBlock.statements ?? [];
+          for (let index = 0; index < body.length; index += 1) {
+            const helperStatement = body[index];
+            if (helperStatement instanceof VariableDefinitionNode && helperStatement.expression) {
+              const expression = replay(helperStatement.expression);
+              if (!safe(expression)) return undefined;
+              values.set(helperStatement.name, expression);
+              continue;
+            }
+            if (helperStatement instanceof AssignNode
+              && helperStatement.identifier.name !== arrayParameter.name) {
+              const expression = replay(helperStatement.expression);
+              if (!safe(expression)) return undefined;
+              values.set(helperStatement.identifier.name, expression);
+              continue;
+            }
+            if (helperStatement instanceof ArrayAssignNode && helperStatement.name === arrayParameter.name) {
+              const assignedIndex = replay(helperStatement.index);
+              const assignedValue = replay(helperStatement.value);
+              if (!safe(assignedIndex) || !safe(assignedValue)) return undefined;
+              plan.writes.push({ index: assignedIndex, value: assignedValue });
+              continue;
+            }
+            if (helperStatement instanceof ArrayDeleteNode && helperStatement.name === arrayParameter.name) {
+              const deletedIndex = replay(helperStatement.index);
+              if (!safe(deletedIndex)) return undefined;
+              plan.writes.push({
+                index: deletedIndex,
+                value: cloneNode(plan.defaultValue) as ExpressionNode,
+              });
+              continue;
+            }
+            if (helperStatement instanceof BranchNode) {
+              const condition = replay(helperStatement.condition);
+              if (!safe(condition)) return undefined;
+              const base = { plan: clonePlan(plan), values: new Map(values) };
+              const ifSummary = summarize(helperStatement.ifBlock, base, false);
+              const elseSummary = helperStatement.elseBlock
+                ? summarize(helperStatement.elseBlock, base, false) : base;
+              if (!ifSummary || !elseSummary) return undefined;
+              const otherwise = new UnaryOpNode(UnaryOperator.NOT, cloneNode(condition));
+              otherwise.location = condition.location;
+              const arms = [
+                { ...ifSummary, condition },
+                { ...elseSummary, condition: otherwise as ExpressionNode },
+              ];
+              plan = mergePlans(base.plan, arms);
+              values = mergeValues(base.values, arms);
+              continue;
+            }
+            if (helperStatement instanceof SwitchNode) {
+              const selectedValue = replay(helperStatement.expression);
+              if (!safe(selectedValue)) return undefined;
+              const base = { plan: clonePlan(plan), values: new Map(values) };
+              const conditions = helperStatement.cases.map((candidate) => {
+                const condition = new BinaryOpNode(
+                  cloneNode(selectedValue), BinaryOperator.EQ, replay(candidate.value),
+                );
+                condition.location = candidate.location ?? helperStatement.location;
+                return condition;
+              });
+              let anyCase: ExpressionNode | undefined;
+              for (const condition of conditions) {
+                const combined = anyCase
+                  ? new BinaryOpNode(anyCase, BinaryOperator.OR, cloneNode(condition)) : condition;
+                combined.location = helperStatement.location;
+                anyCase = combined;
+              }
+              const fallbackCondition = new UnaryOpNode(UnaryOperator.NOT, anyCase!);
+              fallbackCondition.location = helperStatement.location;
+              const summaries = helperStatement.cases.map((candidate) =>
+                summarize(candidate.body, base, false));
+              const fallback = helperStatement.defaultCase
+                ? summarize(helperStatement.defaultCase, base, false) : base;
+              if (!fallback || summaries.some((candidate) => !candidate)) return undefined;
+              const arms = [
+                ...summaries.map((summary, armIndex) => ({
+                  ...summary!, condition: conditions[armIndex] as ExpressionNode,
+                })),
+                { ...fallback, condition: fallbackCondition as ExpressionNode },
+              ];
+              plan = mergePlans(base.plan, arms);
+              values = mergeValues(base.values, arms);
+              continue;
+            }
+            // Resizing across an internal array-call boundary needs a separately authenticated length/alias model.
+            // Keep it opaque even though finite element-write control flow is replayable.
+            if ((helperStatement instanceof ArrayPushNode || helperStatement instanceof ArrayPopNode)
+              && helperStatement.name === arrayParameter.name) return undefined;
+            if (helperStatement instanceof RequireNode) continue;
+            if (helperStatement instanceof BreakNode && index === body.length - 1) continue;
+            if (helperStatement instanceof ReturnNode && allowTerminalReturn && index === body.length - 1) continue;
+            return undefined;
           }
-          // Resizing across an internal array-call boundary needs a separately authenticated length/alias model.
-          // Keep it opaque even though straight-line element writes are replayable.
-          if ((helperStatement instanceof ArrayPushNode || helperStatement instanceof ArrayPopNode)
-            && helperStatement.name === arrayParameter.name) return replayed;
-          // Requirements do not alter the memory alias. A final return is also harmless, but an early return
-          // would make the remaining summary path-dependent.
-          if (helperStatement instanceof RequireNode) continue;
-          if (helperStatement instanceof ReturnNode && index === body.length - 1) continue;
-          return replayed;
-        }
-        active.set(callerArray.name, plan);
+          return { plan, values };
+        };
+        const summary = summarize(target.body, { plan: initialPlan, values: initialValues }, true);
+        if (!summary) return replayed;
+        active.set(callerArray.name, summary.plan);
         replayed.add(callerArray.name);
         return replayed;
       };
@@ -5500,7 +5624,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ...(keySnapshot ? [keySnapshot.definition] : []),
           ...(lengthSnapshot ? [lengthSnapshot.definition] : []), statement,
         );
-        const replayedHelperArrays = replayStraightLineArrayHelper(statement);
+        const replayedHelperArrays = replayFiniteArrayHelper(statement);
         const escaped = escapedPlanNames(statement, active);
         for (const name of replayedHelperArrays) escaped.delete(name);
         if (statement instanceof VariableDefinitionNode && statement.expression instanceof NewArrayNode) {

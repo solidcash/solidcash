@@ -5193,14 +5193,19 @@ describe('kernel composite counter-key settlement', () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelHelperLocalKeys() {
       mapping(int => int) slots;
-      function mutate(int[] memory xs, int next) internal pure {
+      function mutate(int[] memory xs, int next, bool high, int mode) internal pure {
         int index = 0;
-        xs[index] = next;
-        xs[index + 1] = next + 1;
+        if (high) {
+          if (mode == 9) { xs[index] = next + 20; } else { xs[index] = next; }
+        } else { xs[index] = next + 10; }
+        switch (mode) {
+          case 0: xs[index + 1] = next + 1; break;
+          default: xs[index + 1] = next + 2;
+        }
       }
-      function write(int n, int next) public {
+      function write(int n, int next, bool high, int mode) public {
         int[] memory xs = new int[](n);
-        mutate(xs, next);
+        mutate(xs, next, high, mode);
         for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = i + 10; }
         require(true);
       }
@@ -5213,10 +5218,18 @@ describe('kernel composite counter-key settlement', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    await expect(contract.batch([{ function: 'write', args: [2n, 700n] }]).send())
+    await expect(contract.batch([{ function: 'write', args: [2n, 700n, true, 0n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.check(700n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.check(701n, 11n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'write', args: [2n, 800n, false, 1n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(810n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(802n, 11n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'write', args: [2n, 900n, true, 9n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(920n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(902n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('settles local array keys written earlier in the same logical iteration', async () => {

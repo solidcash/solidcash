@@ -1054,20 +1054,33 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('invalidates a constructed-key plan when a pure helper mutates the array alias', () => {
+  it('replays straight-line constructed-key mutations through a pure helper alias', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
-      function mutate(int[] xs, int next) internal pure { xs[0] = next; }
-      function denied(int n, int first, int second) public {
-        int[] xs = new int[](n);
+      function mutate(int[] memory xs, int next) internal pure {
+        int index = 0;
+        xs[index] = next;
+        xs[index + 1] = next + 1;
+      }
+      function mutateValue(int[] xs, int next) internal pure { xs[0] = next; }
+      function write(int n, int first, int second) public {
+        int[] memory xs = new int[](n);
         xs[0] = first;
         mutate(xs, second);
         for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
         require(true);
       }
+      function deniedValue(int n, int next) public {
+        int[] xs = new int[](n);
+        mutateValue(xs, next);
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
+        require(true);
+      }
       function control() public { require(true); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied'))
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'deniedValue'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });

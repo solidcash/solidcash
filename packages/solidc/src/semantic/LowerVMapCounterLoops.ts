@@ -5073,6 +5073,85 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         }
         return { width, ...(widthExpression && { widthExpression }), sites };
       };
+      const replayStraightLineArrayHelper = (
+        statement: StatementNode,
+      ): Set<string> => {
+        const replayed = new Set<string>();
+        if (!(statement instanceof FunctionCallStatementNode)) return replayed;
+        const call = statement.call;
+        const targets = (this.functionsByName.get(call.identifier.name) ?? [])
+          .filter((candidate) => candidate.parameters.length === call.parameters.length);
+        if (targets.length !== 1) return replayed;
+        const target = targets[0];
+        if (!target.body || !target.modifiers.includes(FunctionModifier.PURE)) return replayed;
+        const arrayParameters = target.parameters.map((parameter, index) => ({ parameter, index }))
+          .filter(({ parameter, index }) => parameter.type instanceof ArrayType
+            && parameter.modifier.includes('memory')
+            && call.parameters[index] instanceof IdentifierNode
+            && active.has((call.parameters[index] as IdentifierNode).name));
+        // Summarize one memory alias at a time. Multiple array aliases can interact through reads or writes and
+        // need an alias-aware summary rather than independent plan updates.
+        if (arrayParameters.length !== 1) return replayed;
+        const { parameter: arrayParameter, index: arrayParameterIndex } = arrayParameters[0];
+        const callerArray = call.parameters[arrayParameterIndex] as IdentifierNode;
+        const sourcePlan = active.get(callerArray.name)!;
+        if (sourcePlan.recurrence) return replayed;
+        const plan = copyPlans(new Map([[callerArray.name, sourcePlan]])).get(callerArray.name)!;
+        const values = new Map<string, ExpressionNode>();
+        target.parameters.forEach((candidate, index) => {
+          if (index === arrayParameterIndex) return;
+          values.set(candidate.name, replaceSnapshots(call.parameters[index], snapshots));
+        });
+        const arrayNames = new Set(target.parameters
+          .filter((candidate) => candidate.type instanceof ArrayType).map((candidate) => candidate.name));
+        const replay = (expression: ExpressionNode): ExpressionNode => replaceSnapshots(expression, values);
+        const safe = (expression: ExpressionNode): boolean => !containsNamedIdentifier(expression, arrayNames);
+        const body = target.body.statements ?? [];
+        for (let index = 0; index < body.length; index += 1) {
+          const helperStatement = body[index];
+          if (helperStatement instanceof VariableDefinitionNode && helperStatement.expression) {
+            const expression = replay(helperStatement.expression);
+            if (!safe(expression)) return replayed;
+            values.set(helperStatement.name, expression);
+            continue;
+          }
+          if (helperStatement instanceof AssignNode
+            && helperStatement.identifier.name !== arrayParameter.name) {
+            const expression = replay(helperStatement.expression);
+            if (!safe(expression)) return replayed;
+            values.set(helperStatement.identifier.name, expression);
+            continue;
+          }
+          if (helperStatement instanceof ArrayAssignNode && helperStatement.name === arrayParameter.name) {
+            const assignedIndex = replay(helperStatement.index);
+            const assignedValue = replay(helperStatement.value);
+            if (!safe(assignedIndex) || !safe(assignedValue)) return replayed;
+            plan.writes.push({ index: assignedIndex, value: assignedValue });
+            continue;
+          }
+          if (helperStatement instanceof ArrayDeleteNode && helperStatement.name === arrayParameter.name) {
+            const deletedIndex = replay(helperStatement.index);
+            if (!safe(deletedIndex)) return replayed;
+            plan.writes.push({
+              index: deletedIndex,
+              value: cloneNode(plan.defaultValue) as ExpressionNode,
+            });
+            continue;
+          }
+          // Resizing across an internal array-call boundary needs a separately authenticated length/alias model.
+          // Keep it opaque even though straight-line element writes are replayable.
+          if ((helperStatement instanceof ArrayPushNode || helperStatement instanceof ArrayPopNode)
+            && helperStatement.name === arrayParameter.name) return replayed;
+          // Requirements do not alter the memory alias. A final return is also harmless, but an early return
+          // would make the remaining summary path-dependent.
+          if (helperStatement instanceof RequireNode) continue;
+          if (helperStatement instanceof ReturnNode && index === body.length - 1) continue;
+          return replayed;
+        }
+        active.set(callerArray.name, plan);
+        replayed.add(callerArray.name);
+        return replayed;
+      };
       const transformed: StatementNode[] = [];
       for (const statement of block.statements ?? []) {
         if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
@@ -5421,7 +5500,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           ...(keySnapshot ? [keySnapshot.definition] : []),
           ...(lengthSnapshot ? [lengthSnapshot.definition] : []), statement,
         );
+        const replayedHelperArrays = replayStraightLineArrayHelper(statement);
         const escaped = escapedPlanNames(statement, active);
+        for (const name of replayedHelperArrays) escaped.delete(name);
         if (statement instanceof VariableDefinitionNode && statement.expression instanceof NewArrayNode) {
           active.set(statement.name, {
             elementType: statement.expression.elementType,

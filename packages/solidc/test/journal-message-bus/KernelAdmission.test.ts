@@ -191,6 +191,48 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('normalizes an unnamed tail-recursive result without naming its public ABI output', () => {
+    const artifact = compileString(`contract C() {
+      function value(int remaining) public returns (int) {
+        if (remaining == 0) return 7;
+        return value(remaining - 1);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'value'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'value')?.outputs)
+      .toEqual([{ type: 'int256' }]);
+  });
+
+  it('normalizes unnamed tail-recursive result tuples', () => {
+    const artifact = compileString(`contract C() {
+      function pair(int remaining) public returns (int, bool) {
+        if (remaining == 0) return (7, true);
+        return pair(remaining - 1);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pair'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'pair')?.outputs)
+      .toEqual([{ type: 'int256' }, { type: 'bool' }]);
+  });
+
+  it('normalizes named tail-recursive result tuples', () => {
+    const artifact = compileString(`contract C() {
+      function pair(int remaining) public returns (int left, bool complete) {
+        if (remaining == 0) return (7, true);
+        return pair(remaining - 1);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pair'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'pair')?.outputs)
+      .toEqual([{ type: 'int256' }, { type: 'bool' }]);
+  });
+
   it('binds a transaction signature-array as a row-aligned nested route witness', () => {
     const artifact = compileString(`contract C() {
       function signed(sig[] signatures) public { require(true); }

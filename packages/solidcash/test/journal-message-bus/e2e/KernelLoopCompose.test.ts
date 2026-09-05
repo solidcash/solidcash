@@ -1441,6 +1441,72 @@ describe('kernel loop message-bus compose', () => {
     await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 4n });
   }, 180_000);
 
+  it('executes an unnamed tail-recursive result through one row', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelUnnamedTailRecursion() {
+      int calls;
+      function countDown(int value) public returns (int) {
+        this.calls = this.calls + 1;
+        if (value == 0) return this.calls;
+        return countDown(value - 1);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'countDown'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((fn) => fn.name === 'countDown')?.outputs)
+      .toEqual([{ type: 'int256' }]);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'countDown', args: [3n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 4n });
+  }, 180_000);
+
+  it('executes unnamed tail-recursive result tuples through one row', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelUnnamedTailTuple() {
+      int calls;
+      function pair(int value) public returns (int, bool) {
+        this.calls = this.calls + 1;
+        if (value == 0) return (this.calls, true);
+        return pair(value - 1);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pair'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((fn) => fn.name === 'pair')?.outputs)
+      .toEqual([{ type: 'int256' }, { type: 'bool' }]);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
+    );
+    const call = StatefulContract.withCategory(inner, categoryId).batch([
+      { function: 'pair', args: [3n] },
+    ]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 4n });
+  }, 180_000);
+
   it('executes a normalized void tail-recursive helper through one row', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelVoidTailRecursion() {

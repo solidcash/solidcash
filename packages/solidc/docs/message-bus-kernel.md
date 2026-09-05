@@ -322,7 +322,7 @@ Compiler-owned public entry points are finalized before kernel admission. In par
 oracle-backed `block.*` register publishes `__updateBlockOracle` as an ordinary eligible row with its detached
 transaction-signature witness; it is not appended later as an unexamined ABI-only function. Public state getters
 follow the same synthesis boundary.
-Conservative single-result and void tail recursion is normalized to its ordinary loop before closure admission,
+Conservative named or unnamed result tuples and void tail recursion are normalized to their ordinary loop before closure admission,
 including explicit value-returning and void base-case `return` statements outside pre-existing source loops, so the
 kernel executes the same finite source transition without cloning a recursive route frame. Non-tail recursion
 (including work performed after the recursive call), mutual recursion, and result types the wrapper cannot encode

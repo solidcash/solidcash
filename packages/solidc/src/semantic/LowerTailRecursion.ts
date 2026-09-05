@@ -48,18 +48,26 @@ export default class LowerTailRecursion extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const voidFunction = node.returnTypes.length === 0;
-    const singleNamedResult = node.returnTypes.length === 1 && node.returnNames.length === 1;
-    if (!node.body || (!voidFunction && !singleNamedResult)) return node;
-    const returnName = node.returnNames[0];
+    const namedResults = node.returnTypes.length > 0 && node.returnNames.length === node.returnTypes.length;
+    const unnamedResults = node.returnTypes.length > 0 && node.returnNames.length === 0;
+    if (!node.body || (!voidFunction && !namedResults && !unnamedResults)) return node;
+    const frame = this.counter;
+    // Kernel admission runs before NamedReturnTransformation. Give unnamed results private locals so base-case
+    // returns and the final loop tuple have the same ordinary control-flow representation as named results,
+    // without changing the source ABI's intentionally empty output names.
+    const returnNames = unnamedResults
+      ? node.returnTypes.map((_type, index) => `__tail_result_${frame}_${index}`)
+      : node.returnNames;
     const selfCalls = this.countSelfCalls(node.body, node.name);
     if (selfCalls === 0 || !this.selfCallsHaveArity(node.body, node.name, node.parameters.length)
+      || !this.baseReturnsHaveArity(node.body, node.name, node.returnTypes.length, namedResults)
       || this.hasBaseReturnInSourceLoop(node.body, node.name)
-      || !this.validTailBlock(node.body, node.name, returnName)) return node;
+      || !this.validTailBlock(node.body, node.name, returnNames)) return node;
+    this.counter += 1;
 
-    const frame = this.counter++;
     const iterationName = `__tail_iteration_${frame}`;
     const repeatName = `__tail_repeat_${frame}`;
-    const transformed = this.transformBlock(node.body, node, returnName, iterationName, repeatName);
+    const transformed = this.transformBlock(node.body, node, returnNames, iterationName, repeatName);
     const clearRepeat = this.stamp(new AssignNode(
       this.stamp(new IdentifierNode(repeatName), node.location),
       this.stamp(new BoolLiteralNode(false), node.location),
@@ -74,7 +82,18 @@ export default class LowerTailRecursion extends AstTraversal {
     const repeat = this.stamp(new VariableDefinitionNode(
       PrimitiveType.BOOL, [], repeatName, this.stamp(new BoolLiteralNode(true), node.location),
     ), node.location);
-    node.body = this.stamp(new BlockNode([iteration, repeat, loop]), node.location);
+    const results = unnamedResults
+      ? returnNames.map((name, index) => this.stamp(
+        new VariableDefinitionNode(node.returnTypes[index], [], name), node.location,
+      ))
+      : [];
+    const finalReturn = unnamedResults
+      ? this.stamp(new ReturnNode(returnNames.map((name) =>
+        this.stamp(new IdentifierNode(name), node.location))), node.location)
+      : undefined;
+    node.body = this.stamp(new BlockNode([
+      ...results, iteration, repeat, loop, ...(finalReturn ? [finalReturn] : []),
+    ]), node.location);
     return node;
   }
 
@@ -104,6 +123,22 @@ export default class LowerTailRecursion extends AstTraversal {
     });
   }
 
+  private baseReturnsHaveArity(
+    node: Node, name: string, arity: number, allowBareResultReturn: boolean,
+  ): boolean {
+    if (node instanceof ReturnNode
+      && !(node.expressions.length === 1 && this.isSelfCall(node.expressions[0], name))) {
+      return node.expressions.length === arity
+        || (arity > 0 && allowBareResultReturn && node.expressions.length === 0);
+    }
+    return Object.entries(node).every(([key, child]) => {
+      if (['resolvedFunction', 'definition', 'symbolTable', 'location'].includes(key)) return true;
+      if (child instanceof Node) return this.baseReturnsHaveArity(child, name, arity, allowBareResultReturn);
+      return !Array.isArray(child) || child.every((item) => !(item instanceof Node)
+        || this.baseReturnsHaveArity(item, name, arity, allowBareResultReturn));
+    });
+  }
+
   private hasBaseReturnInSourceLoop(node: Node, name: string, insideLoop = false): boolean {
     if (insideLoop && node instanceof ReturnNode
       && !(node.expressions.length === 1 && this.isSelfCall(node.expressions[0], name))) return true;
@@ -116,54 +151,54 @@ export default class LowerTailRecursion extends AstTraversal {
     });
   }
 
-  private validTailBlock(block: BlockNode, name: string, returnName: string | undefined): boolean {
+  private validTailBlock(block: BlockNode, name: string, returnNames: readonly string[]): boolean {
     const statements = block.statements ?? [];
     for (let index = 0; index < statements.length; index += 1) {
       const statement = statements[index];
       const calls = this.countSelfCalls(statement, name);
       if (calls === 0) continue;
-      if (index !== statements.length - 1 || !this.validTailStatement(statement, name, returnName)) return false;
+      if (index !== statements.length - 1 || !this.validTailStatement(statement, name, returnNames)) return false;
     }
     return true;
   }
 
-  private validTailStatement(statement: StatementNode, name: string, returnName: string | undefined): boolean {
+  private validTailStatement(statement: StatementNode, name: string, returnNames: readonly string[]): boolean {
     if (statement instanceof AssignNode) {
-      return returnName !== undefined && statement.identifier.name === returnName
+      return returnNames.length === 1 && statement.identifier.name === returnNames[0]
         && this.isSelfCall(statement.expression, name);
     }
     if (statement instanceof ReturnNode) {
-      return returnName !== undefined && statement.expressions.length === 1
+      return returnNames.length > 0 && statement.expressions.length === 1
         && this.isSelfCall(statement.expressions[0], name);
     }
     if (statement instanceof FunctionCallStatementNode) {
-      return returnName === undefined && this.isSelfCall(statement.call, name);
+      return returnNames.length === 0 && this.isSelfCall(statement.call, name);
     }
     if (statement instanceof BranchNode) {
       if (this.countSelfCalls(statement.condition, name) > 0) return false;
-      return this.validTailBlock(statement.ifBlock, name, returnName)
-        && (!statement.elseBlock || this.validTailBlock(statement.elseBlock, name, returnName));
+      return this.validTailBlock(statement.ifBlock, name, returnNames)
+        && (!statement.elseBlock || this.validTailBlock(statement.elseBlock, name, returnNames));
     }
-    if (statement instanceof BlockNode) return this.validTailBlock(statement, name, returnName);
+    if (statement instanceof BlockNode) return this.validTailBlock(statement, name, returnNames);
     // A recursive call nested in an existing loop has different break/continue ownership and is not lowered.
     if (statement instanceof WhileNode || statement instanceof DoWhileNode) return false;
     return false;
   }
 
   private transformBlock(
-    block: BlockNode, fn: FunctionDefinitionNode, returnName: string | undefined,
+    block: BlockNode, fn: FunctionDefinitionNode, returnNames: readonly string[],
     iterationName: string, repeatName: string,
   ): BlockNode {
     block.statements = (block.statements ?? []).flatMap((statement) =>
-      this.transformStatement(statement, fn, returnName, iterationName, repeatName));
+      this.transformStatement(statement, fn, returnNames, iterationName, repeatName));
     return block;
   }
 
   private transformStatement(
-    statement: StatementNode, fn: FunctionDefinitionNode, returnName: string | undefined,
+    statement: StatementNode, fn: FunctionDefinitionNode, returnNames: readonly string[],
     iterationName: string, repeatName: string,
   ): StatementNode[] {
-    if (returnName !== undefined && statement instanceof AssignNode && statement.identifier.name === returnName
+    if (returnNames.length === 1 && statement instanceof AssignNode && statement.identifier.name === returnNames[0]
       && this.isSelfCall(statement.expression, fn.name)) {
       return this.recur(statement.expression, fn, iterationName, repeatName, statement.location);
     }
@@ -172,25 +207,25 @@ export default class LowerTailRecursion extends AstTraversal {
         return this.recur(statement.expressions[0], fn, iterationName, repeatName, statement.location);
       }
       const exit = this.stamp(new BreakNode(), statement.location);
-      if (returnName === undefined || statement.expressions.length === 0) return [exit];
-      const result = this.stamp(new AssignNode(
-        this.stamp(new IdentifierNode(returnName), statement.location), statement.expressions[0],
-      ), statement.location);
-      return [result, exit];
+      if (returnNames.length === 0 || statement.expressions.length === 0) return [exit];
+      const results = returnNames.map((returnName, index) => this.stamp(new AssignNode(
+        this.stamp(new IdentifierNode(returnName), statement.location), statement.expressions[index],
+      ), statement.location));
+      return [...results, exit];
     }
-    if (returnName === undefined && statement instanceof FunctionCallStatementNode
+    if (returnNames.length === 0 && statement instanceof FunctionCallStatementNode
       && this.isSelfCall(statement.call, fn.name)) {
       return this.recur(statement.call, fn, iterationName, repeatName, statement.location);
     }
     if (statement instanceof BranchNode) {
-      statement.ifBlock = this.transformBlock(statement.ifBlock, fn, returnName, iterationName, repeatName);
+      statement.ifBlock = this.transformBlock(statement.ifBlock, fn, returnNames, iterationName, repeatName);
       if (statement.elseBlock) {
         statement.elseBlock = this.transformBlock(
-          statement.elseBlock, fn, returnName, iterationName, repeatName,
+          statement.elseBlock, fn, returnNames, iterationName, repeatName,
         );
       }
     } else if (statement instanceof BlockNode) {
-      return [this.transformBlock(statement, fn, returnName, iterationName, repeatName)];
+      return [this.transformBlock(statement, fn, returnNames, iterationName, repeatName)];
     }
     return [statement];
   }

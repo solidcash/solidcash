@@ -491,11 +491,12 @@ default. Straight-line `push` and `pop` mutations advance a symbolic array lengt
 at that exact point-in-time index. A fixed positive number of unconditional top-level `push` operations per canonical
 runtime-loop iteration is also represented as a closed recurrence: reads after all pushes derive the selected push
 and its value from the logical source counter, including non-zero starts and non-unit constant or replayable runtime
-steps. Passing an element value to a helper does not escape the array, and passing the whole array through a
-transitively read-only `pure` helper preserves its symbolic plan. A read before all of the current iteration's pushes,
-a `pop`, a conditional or nested resize schedule, passing the array to a mutating, external, ambiguous, or otherwise
-unprovable call, loop-dependent control assignments, and writes whose index/value cannot be replayed stay
-`KERNEL_UNBOUNDED_KEY` without aborting sibling handlers.
+steps. A fixed positive number of unconditional top-level `pop` operations similarly shortens the known prefix on
+each iteration. Passing an element value to a helper does not escape the array, and passing the whole array through
+a transitively read-only `pure` helper preserves its symbolic plan. A read before all of the current iteration's
+pushes, mixed push/pop operations, a conditional or nested resize schedule, passing the array to a mutating,
+external, ambiguous, or otherwise unprovable call, loop-dependent control assignments, and writes whose index/value
+cannot be replayed stay `KERNEL_UNBOUNDED_KEY` without aborting sibling handlers.
 
 The legacy convention is intentionally unchanged: it does not acquire this runtime event family and continues to
 refuse the corresponding bus handler with its historical route-generation diagnostic. The same function remains

@@ -4714,6 +4714,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           if (canonical) for (const [name, plan] of loopPlans) {
             const directPushes = (statement.block.statements ?? []).filter((candidate) =>
               candidate instanceof ArrayPushNode && candidate.name === name);
+            const directPops = (statement.block.statements ?? []).filter((candidate) =>
+              candidate instanceof ArrayPopNode && candidate.name === name);
             let mutationCount = 0;
             let resizeCount = 0;
             walk(statement.block, (candidate) => {
@@ -4724,12 +4726,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 && candidate.name === name) resizeCount += 1;
               if (candidate instanceof AssignNode && candidate.identifier.name === name) mutationCount += 1;
             });
-            // A fixed number of unconditional pushes has a closed recurrence: before logical counter i, the array
-            // length is base + ((i-start)/step)*pushesPerIteration. This describes every prior push without
-            // unrolling the runtime domain. More complicated schedules retain their ordinary array accesses and
-            // are refused by admission.
-            if (directPushes.length === 0 || mutationCount !== directPushes.length
-              || resizeCount !== directPushes.length) {
+            // A fixed number of unconditional same-kind resizes has a closed length recurrence. Pushes additionally
+            // publish one value recipe per source site; pops only shorten the already-known prefix. Mixed or nested
+            // schedules retain their ordinary array accesses and are refused by admission.
+            const directResizeCount = directPushes.length + directPops.length;
+            const fixedPushes = directPushes.length > 0 && directPops.length === 0
+              && mutationCount === directPushes.length && resizeCount === directPushes.length;
+            const fixedPops = directPops.length > 0 && directPushes.length === 0
+              && mutationCount === directPops.length && resizeCount === directPops.length;
+            if ((!fixedPushes && !fixedPops) || directResizeCount === 0) {
               if (resizeCount > 0) {
                 node.messageBusUnboundedConstructedArray = true;
                 loopPlans.delete(name);
@@ -4747,25 +4752,30 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             step.location = statement.location;
             const occurrence = new BinaryOpNode(delta, BinaryOperator.DIV, step);
             occurrence.location = statement.location;
-            const precedingPushes = directPushes.length === 1
+            const resizeWidth = fixedPushes ? directPushes.length : directPops.length;
+            const precedingResizes = resizeWidth === 1
               ? occurrence
               : new BinaryOpNode(
-                occurrence, BinaryOperator.MUL, new IntLiteralNode(BigInt(directPushes.length)),
+                occurrence, BinaryOperator.MUL, new IntLiteralNode(BigInt(resizeWidth)),
               );
-            precedingPushes.location = statement.location;
-            const length = new BinaryOpNode(cloneNode(plan.length), BinaryOperator.PLUS, precedingPushes);
+            precedingResizes.location = statement.location;
+            const length = new BinaryOpNode(
+              cloneNode(plan.length), fixedPushes ? BinaryOperator.PLUS : BinaryOperator.MINUS, precedingResizes,
+            );
             length.location = statement.location;
             length.type = plan.length.type;
-            plan.recurrence = {
-              counter: canonical.logical,
-              start: canonical.start,
-              step: canonical.step,
-              ...(canonical.stepExpression && {
-                stepExpression: cloneNode(canonical.stepExpression) as ExpressionNode,
-              }),
-              baseLength: cloneNode(plan.length) as ExpressionNode,
-              pushesPerIteration: directPushes.length,
-            };
+            if (fixedPushes) {
+              plan.recurrence = {
+                counter: canonical.logical,
+                start: canonical.start,
+                step: canonical.step,
+                ...(canonical.stepExpression && {
+                  stepExpression: cloneNode(canonical.stepExpression) as ExpressionNode,
+                }),
+                baseLength: cloneNode(plan.length) as ExpressionNode,
+                pushesPerIteration: directPushes.length,
+              };
+            }
             plan.length = length;
           }
           // A straight-line write followed by a key read in the same canonical iteration is replayable:

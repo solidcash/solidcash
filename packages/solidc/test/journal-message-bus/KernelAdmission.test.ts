@@ -1116,10 +1116,28 @@ describe('required kernel admission', () => {
       .toHaveLength(2);
   });
 
+  it('replays a fixed number of straight-line constructed-array pops per canonical iteration', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) slots;
+      function write(int n) public {
+        int[] xs = new int[](4);
+        xs[0] = 11; xs[1] = 12; xs[2] = 13; xs[3] = 14;
+        for (int i = 0; i < n; i = i + 1) {
+          xs.pop();
+          this.slots[xs[2 - i]] = i;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+  });
+
   it.each([
     ['reads before its push', 'this.slots[xs[i]] = i; xs.push(i + 1);'],
     ['reads between two pushes', 'xs.push(i + 1); this.slots[xs[i]] = i; xs.push(i + 2);'],
-    ['pops inside the loop', 'xs.pop(); this.slots[xs[i]] = i;'],
+    ['conditionally pops inside the loop', 'if (i > 0) xs.pop(); this.slots[xs[i]] = i;'],
   ])('refuses a constructed array which %s', (_label, body) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

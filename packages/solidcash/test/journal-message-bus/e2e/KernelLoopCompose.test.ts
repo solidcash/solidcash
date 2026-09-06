@@ -1651,15 +1651,18 @@ describe('kernel loop message-bus compose', () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelScalarRecursiveFold() {
       int calls;
+      int cleared;
       int result;
       mapping(int => int) values;
       function left(int remaining, int key) internal returns (int) {
         this.calls = this.calls + 1;
+        delete this.cleared;
         if (remaining == 0) return this.values[key];
         return ${leftExpression};
       }
       function right(int remaining, int key) internal returns (int) {
         this.calls = this.calls + 1;
+        delete this.cleared;
         if (remaining == 0) return this.values[key];
         return ${rightExpression};
       }
@@ -1672,7 +1675,7 @@ describe('kernel loop message-bus compose', () => {
       .toMatchObject({ eligible: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, { calls: 0n, result: 0n }, { saltContract: true },
+      provider, inner, artifact.stateLayout!, { calls: 0n, cleared: 9n, result: 0n }, { saltContract: true },
     );
     const call = StatefulContract.withCategory(inner, categoryId).batch([
       { function: 'run', args: [3n, 7n] },
@@ -1687,7 +1690,7 @@ describe('kernel loop message-bus compose', () => {
     }
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(StatefulContract.withCategory(inner, categoryId).getState())
-      .resolves.toMatchObject({ calls: 4n, result: 6n });
+      .resolves.toMatchObject({ calls: 4n, cleared: 0n, result: 6n });
   }, 180_000);
 
   it('executes an unnamed tail-recursive result through one row', async () => {

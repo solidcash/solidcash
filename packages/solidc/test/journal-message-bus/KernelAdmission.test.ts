@@ -289,17 +289,20 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
   });
 
-  it('lowers a scalar-state mutual recursion fold whose continuation precedes descent', () => {
+  it('lowers scalar assignments and deletes whose continuation precedes descent', () => {
     const artifact = compileString(`contract C() {
       int calls;
+      int cleared;
       mapping(int => int) values;
       function left(int n, int key) public returns (int) {
         this.calls = this.calls + 1;
+        delete this.cleared;
         if (n == 0) return this.values[key];
         return n + right(n - 1, key);
       }
       function right(int n, int key) internal returns (int) {
         this.calls = this.calls + 1;
+        delete this.cleared;
         if (n == 0) return this.values[key];
         return n + left(n - 1, key);
       }

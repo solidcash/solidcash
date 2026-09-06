@@ -1,7 +1,7 @@
 import {
   ArrayAccessNode, ArrayPopNode, ArrayPushNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode,
   BranchNode, BreakNode, ContractNode,
-  DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
+  DeleteStateNode, DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
   ExpressionNode, NewArrayNode, Node, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
   StateAccessNode, StateAssignNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
@@ -255,8 +255,8 @@ export default class LowerTailRecursion extends AstTraversal {
     const continuationSteps: RecursiveFoldStep[] = [];
     let valid = true;
     const persistentEffects = new Set([
-      'DeleteStateNode', 'StateArrayPushNode', 'StateArrayPopNode',
-      'StateArrayAssignNode', 'StateArrayDeleteNode', 'MappingAssignNode', 'MappingFieldAssignNode',
+      'StateArrayPushNode', 'StateArrayPopNode', 'StateArrayAssignNode', 'StateArrayDeleteNode',
+      'MappingAssignNode', 'MappingFieldAssignNode',
       'MappingDeleteNode', 'EmitStatementNode', 'ExternalFunctionCallNode', 'LowLevelCallNode',
       'LowLevelCallStatementNode', 'TransferStatementNode', 'AddressTransferStatementNode',
       'AddressSendExpressionNode', 'TokenContainerMethodStatementNode', 'SelfdestructStatementNode',
@@ -265,7 +265,7 @@ export default class LowerTailRecursion extends AstTraversal {
     ]);
     group.forEach((fn) => {
       this.walkNodes(fn.body!, (candidate) => {
-        if (candidate instanceof StateAssignNode) {
+        if (candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode) {
           if (!this.fixedScalarStateNames.has(candidate.name)) valid = false;
           else scalarStateWrites.add(candidate.name);
         } else if (persistentEffects.has(candidate.constructor.name)) valid = false;

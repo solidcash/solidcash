@@ -97,6 +97,25 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'all'))
       .toMatchObject({ eligible: true });
   });
+
+  it('admits one helper which directly combines dynamic state and a collection entry', () => {
+    const artifact = compileString(`contract C() {
+      string note;
+      mapping(bytes20 => bigint) balances;
+      function apply(bytes20 key, bigint delta, string value) public {
+        update(key, delta, value);
+        require(true);
+      }
+      function update(bytes20 key, bigint delta, string value) internal {
+        this.note = value;
+        this.balances[key] = this.balances[key] + delta;
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+  });
+
   it('refuses lifecycle handlers as KERNEL_LIFECYCLE', () => {
     expect(denied(`contract C() {
       int value;

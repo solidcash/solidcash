@@ -1,5 +1,8 @@
 import {
   AssignNode,
+  ArrayAccessNode,
+  ArrayAssignNode,
+  ArrayDeleteNode,
   BlockNode,
   ContractNode,
   DeleteStateNode,
@@ -9,6 +12,9 @@ import {
   FunctionDefinitionNode,
   FunctionModifier,
   IdentifierNode,
+  MappingAccessNode,
+  MappingAssignNode,
+  MappingDeleteNode,
   Node,
   ParameterNode,
   ReturnNode,
@@ -54,6 +60,7 @@ export default class LowerDynamicStateJournalHelpers extends AstTraversal {
       if (candidate instanceof FunctionCallNode) constructorCalls.add(candidate.identifier.name);
     });
     const nameCounts = new Map<string, number>();
+    const collectionNames = new Set(node.collections.map((collection) => collection.name));
     for (const fn of node.functions) nameCounts.set(fn.name, (nameCounts.get(fn.name) ?? 0) + 1);
     for (const fn of node.functions) {
       if (!fn.body || fn.returnTypes.length !== 0
@@ -66,6 +73,18 @@ export default class LowerDynamicStateJournalHelpers extends AstTraversal {
       let unsupported = false;
       this.walk(fn.body, (candidate) => {
         if (candidate instanceof FunctionCallNode && candidate.identifier.name === fn.name) unsupported = true;
+        // A helper which owns both a dynamic-state write and a collection entry already has a sound physical
+        // lowering: keep the dynamic write in the ordinary wrapper frame and let LowerCollectionJournalHelpers
+        // value-thread the entry. Turning the dynamic leg into an OP_INVOKE return first strands the collection
+        // access in that subroutine with no block layout. This is a structural journal-composition choice, not a
+        // contract-name exception; helpers which reach a collection only through another call remain fail-closed
+        // in the following collection pass until their transitive exits can be composed too.
+        if ((candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
+          || candidate instanceof MappingDeleteNode) && collectionNames.has(candidate.name)) unsupported = true;
+        if (candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
+          && collectionNames.has(candidate.array.name)) unsupported = true;
+        if ((candidate instanceof ArrayAssignNode || candidate instanceof ArrayDeleteNode)
+          && collectionNames.has(candidate.name)) unsupported = true;
         if (candidate instanceof StateAccessNode && dynamics.has(candidate.name)) names.add(candidate.name);
         if ((candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode)
           && dynamics.has(candidate.name)) {

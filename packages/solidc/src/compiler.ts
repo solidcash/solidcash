@@ -7691,7 +7691,10 @@ function compileResolvedAst(
   }
 
   // Break/continue expansion (before semantic analysis)
-  if (needsBreakContinue) ast = expandBreakContinue(ast);
+  // DesugarReturnInLoop introduces a synthetic break after this survey was taken. Expand control flow whenever
+  // that lowering ran as well as when the source already contained break/continue; otherwise a direct compile of
+  // `for (...) { state++; if (done) return state; }` leaves the synthetic break raw and executes the loop tail.
+  if (needsBreakContinue || needsReturnInLoop) ast = expandBreakContinue(ast);
 
   // Prove legacy checked-math wrapper shapes before named-return desugaring changes their minimal source form.
   if (mergedCompilerOptions.solidityImportCompat) ast = ast.accept(new MarkLegacyCheckedMath()) as Ast;

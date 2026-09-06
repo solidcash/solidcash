@@ -175,14 +175,13 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       });
       return touches;
     };
-    // `LowerDynamicStateJournalHelpers` runs immediately before this pass and converts a helper which writes
-    // exactly one chunk-backed bytes/string state variable into a returning value handler. This pass then
-    // declines that same helper, because its return arity is no longer zero, so its collection accesses stay
-    // raw inside an OP_INVOKE body: code generation reaches them with no block layout, and a synthesized
-    // batch clone reaches them with vmap witness parameters its call site never forwards. Both produced an
-    // internal compiler error rather than a diagnostic - 'Block layout not available while compiling ...' and
-    // a parameter-arity mismatch on '__message_bus_resource_...'. The two journals do not yet share one exit, so
-    // reject the combination with a stable message.
+    // `LowerDynamicStateJournalHelpers` runs immediately before this pass. A helper which directly combines one
+    // chunk-backed bytes/string write with a collection entry is deliberately left on the ordinary dynamic frame,
+    // and this pass value-threads its collection entry; those two physical journals compose and settle. A helper
+    // which reaches the collection only through another call can still arrive here already dynamic-journalled:
+    // lifting the callee's pending entry through every intermediate OP_INVOKE exit is not implemented yet. Its
+    // collection access would otherwise remain in a subroutine with no block layout (or leave a clone call at the
+    // wrong synthetic arity), so keep that transitive shape behind a stable diagnostic.
     //
     // The access does not have to be written in the handler. A state-touching callee is inlined into its
     // caller, and this pass's own call-site rewrite puts the entry read and the write-back in the CALLER, so
@@ -1063,18 +1062,18 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     }
     const writes = caches.flatMap((cache) => cache.locals.filter(({ mutates }) => mutates)
       .map(({ entry, name, keys, index }) => {
-      const write = this.at(new MappingAssignNode(
-        entry.collection,
-        keys.map((key) => cloneNode(key) as ExpressionNode),
-        this.at(new IdentifierNode(name), body),
-      ), body);
-      write.fromModifier = entry.sourceScope;
-      const flush = this.at(new BranchNode(
-        this.cacheMaskIsSet(COLLECTION_CACHE_DIRTY_MASK, index, body),
-        this.at(new BlockNode([write]), body),
-      ), body);
-      flush.preserveConditionalEntryWrites = true;
-      return flush;
+        const write = this.at(new MappingAssignNode(
+          entry.collection,
+          keys.map((key) => cloneNode(key) as ExpressionNode),
+          this.at(new IdentifierNode(name), body),
+        ), body);
+        write.fromModifier = entry.sourceScope;
+        const flush = this.at(new BranchNode(
+          this.cacheMaskIsSet(COLLECTION_CACHE_DIRTY_MASK, index, body),
+          this.at(new BlockNode([write]), body),
+        ), body);
+        flush.preserveConditionalEntryWrites = true;
+        return flush;
       }));
     const statements = body.statements ?? [];
     // Keep a top-level tail return structurally visible to the later all-paths-return analysis. Its flush is

@@ -18,7 +18,7 @@ import {
 import {
   createBareP2pkhFeeFunder, createTestProvider, genesisFtContainer, setupStatefulUtxos,
 } from '../../test-util.js';
-import { alicePriv, alicePub, bobPriv, bobPub } from '../../fixture/vars.js';
+import { alicePkh, alicePriv, alicePub, bobPriv, bobPub } from '../../fixture/vars.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
@@ -46,6 +46,26 @@ contract KernelAcc() {
     require(true);
   }
   function check(int expected) public { require(this.x == expected); }
+}`;
+
+const MIXED_JOURNAL_SOURCE = `pragma solidcash ^0.13.0;
+contract KernelMixedJournal() {
+  string note;
+  mapping(bytes20 => bigint) balances;
+  function apply(bytes20 key, bigint delta, string value) public {
+    update(key, delta, value);
+    require(true);
+  }
+  function update(bytes20 key, bigint delta, string value) internal {
+    this.note = value;
+    add(key, delta);
+  }
+  function add(bytes20 key, bigint delta) internal {
+    this.balances[key] = this.balances[key] + delta;
+  }
+  function check(bytes20 key, bigint expected, string value) public {
+    require(this.note == value && this.balances[key] == expected);
+  }
 }`;
 
 const COUNTER_MAPPING_SOURCE = `pragma solidcash ^0.13.0;
@@ -2039,6 +2059,27 @@ describe('kernel signature-array rows', () => {
         .toBe(true);
     }
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 180_000);
+});
+
+describe('kernel mixed journal compose', () => {
+  it('settles dynamic state and a collection update through a general helper chain', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(MIXED_JOURNAL_SOURCE, {
+      ...KERNEL, maximumInputBytes: 1_000_000,
+    });
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { note: '' }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{
+      function: 'apply', args: [alicePkh, 7n, 'first'],
+    }]).send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(alicePkh, 7n, 'first').send()).resolves.toBeDefined();
   }, 180_000);
 });
 

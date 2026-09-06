@@ -230,6 +230,10 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
       { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true },
       { targetRecordOrdinal: 2, presentBefore: true, presentAfter: true, mutates: true },
     ]);
+    expect(plan.physicalAuthentications).toEqual([
+      { accessOrdinal: 0, recordOrdinal: 0 },
+      { accessOrdinal: 1, recordOrdinal: 1 },
+    ]);
   });
 
   it('co-spends one original predecessor and flushes one final same-gap chain', () => {
@@ -275,6 +279,10 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     ]);
     expect(plan.accesses).toEqual([
       { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: true, presentAfter: false, mutates: true },
+    ]);
+    expect(plan.physicalAuthentications).toEqual([
+      { accessOrdinal: 0, recordOrdinal: 0 },
+      { accessOrdinal: 0, recordOrdinal: 1 },
     ]);
   });
 
@@ -340,6 +348,10 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
 
     expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
     expect(plan.outputs).toEqual([]);
+    expect(plan.physicalAuthentications).toEqual([
+      { accessOrdinal: 0, recordOrdinal: 0 },
+      { accessOrdinal: 1, recordOrdinal: 1 },
+    ]);
     expect(plan.records.map((record) => ({
       slot: Number(bytesToSlotValue(record.slot)),
       authenticated: record.authenticated,

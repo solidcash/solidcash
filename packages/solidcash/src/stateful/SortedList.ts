@@ -153,6 +153,8 @@ export interface JournaledMutationPlan extends BatchUpsertPlan {
   records: JournaledMutationRecord[];
   /** One target/predecessor record selection per source operation, in source order. */
   accesses: JournaledMutationAccess[];
+  /** First accesses which consume authenticated pre-state records; synthetic and cached uses are absent. */
+  physicalAuthentications: Array<{ accessOrdinal: number; recordOrdinal: number }>;
 }
 
 /** One logical write in an ordered owner-local journal. */
@@ -295,7 +297,9 @@ export class SortedList {
       slot: Uint8Array,
     ) => Uint8Array | undefined | JournaledMutationResult,
   ): JournaledMutationPlan {
-    if (writes.length === 0) return { inputs: [], outputs: [], records: [], accesses: [] };
+    if (writes.length === 0) {
+      return { inputs: [], outputs: [], records: [], accesses: [], physicalAuthentications: [] };
+    }
 
     const finalValues = new Map<string, {
       slot: Uint8Array;
@@ -330,6 +334,8 @@ export class SortedList {
       return best;
     };
     const accesses: JournaledMutationAccess[] = [];
+    const physicalAuthentications: JournaledMutationPlan['physicalAuthentications'] = [];
+    const consumedPhysicalRecords = new Set<number>();
     for (const write of writes) {
       const numericSlot = bytesToSlotValue(write.slot);
       if (numericSlot === 0n) throw new Error('slot 0 is reserved for the sorted-list HEAD sentinel');
@@ -368,6 +374,13 @@ export class SortedList {
         presentAfter: value !== undefined,
         mutates: dirty,
       });
+      for (const recordOrdinal of [targetRecordOrdinal, predecessorRecordOrdinal]) {
+        if (recordOrdinal === undefined || consumedPhysicalRecords.has(recordOrdinal)) continue;
+        const recordSlot = recordOrder[recordOrdinal];
+        if (recordSlot === undefined || this.find(slotValueToBytes(BigInt(recordSlot))) === undefined) continue;
+        consumedPhysicalRecords.add(recordOrdinal);
+        physicalAuthentications.push({ accessOrdinal: accesses.length - 1, recordOrdinal });
+      }
       if (dirty) {
         if (value === undefined) liveSlots.delete(key);
         else liveSlots.set(key, write.slot);
@@ -446,7 +459,7 @@ export class SortedList {
       const av = bytesToSlotValue(a.slot); const bv = bytesToSlotValue(b.slot);
       return av < bv ? -1 : av > bv ? 1 : 0;
     });
-    return { inputs, outputs, records, accesses };
+    return { inputs, outputs, records, accesses, physicalAuthentications };
   }
 
   planDelete(slot: Uint8Array): DeletePlan {

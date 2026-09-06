@@ -525,6 +525,10 @@ sorted-output view. Each source operation publishes the stable target and option
 plus its before/after presence state and mutation intent; predecessor selection follows the evolving pending topology
 rather than the immutable pre-state list. The record list can be encoded directly into the canonical `0x05` carrier. The covenant
 can therefore reproduce load/store selection and flush order without sorting dynamic slots on-chain.
+The reference plan separately identifies the first source access which consumes each authenticated physical record.
+Synthetic insertions and later cached or pending uses have no physical-authentication entry; a deletion may authenticate
+both its target and predecessor in the same access. This schedule is derived solely from record identity and evolving
+topology and provides an unambiguous input for route-wide record-body authentication.
 The topology planner emits the truthful initial `0x05` record vector in that same ordinal space. Existing nodes
 carry their exact authenticated pre-state slot, successor, and value; absent targets are represented only as clean
 synthetic tombstones, never as caller-asserted final values. The active transaction path now carries that vector

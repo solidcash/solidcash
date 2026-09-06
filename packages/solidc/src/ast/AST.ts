@@ -2616,6 +2616,14 @@ export interface RuntimeLoopEventInfo {
   permutationParam?: string;
   /** Exact repeat count for a source-ordered event outside the loop. */
   repeatCount?: number;
+  /** Exact do-while affine recurrence domain. Mutually exclusive with permutationParam and repeatCount. */
+  iterationDomain?: {
+    counterName: string;
+    initialValue: ExternalCallExpression;
+    stepValue: ExternalCallExpression;
+    continueCondition: ExternalCallExpression;
+    maximumIterations: number;
+  };
   /** Function-local execution segment shared by every runtime effect produced at this source position. */
   effectSequence?: number;
 }

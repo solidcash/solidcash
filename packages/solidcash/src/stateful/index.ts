@@ -37,6 +37,13 @@ export {
   type RouteExpressionKeyRow,
   type SoftStateSnapshot,
 } from './StatefulContract.js';
+export {
+  RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
+  runtimeLoopEventIterationValues,
+  runtimeLoopEventRepeatSource,
+  type RuntimeLoopDomainEvaluator,
+  type RuntimeLoopEventRepeatSource,
+} from './runtime-loop-event-domain.js';
 
 export {
   StatefulTransactionBuilder,

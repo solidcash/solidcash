@@ -132,6 +132,9 @@ export interface EmitAbi {
 export interface RuntimeLoopEventAbi {
   permutationParam?: string;
   repeatCount?: number;
+  /** Exact do-while recurrence domain for a compiler-lowered affine loop. This is mutually exclusive with
+   * permutationParam and repeatCount. Expressions may reference counterName through an `identifier` node. */
+  iterationDomain?: RuntimeLoopIterationDomainAbi;
   eventSignatures: readonly string[];
   /** Per-site runtime predicates, aligned with eventSignatures. Missing entries are unconditional. */
   conditions?: readonly (ExternalCallExpression | null)[];
@@ -139,6 +142,15 @@ export interface RuntimeLoopEventAbi {
   effectSequence?: number;
   /** Per-site order among all event and transfer effects in this segment. */
   effectOrder?: readonly number[];
+}
+
+export interface RuntimeLoopIterationDomainAbi {
+  counterName: string;
+  initialValue: ExternalCallExpression;
+  stepValue: ExternalCallExpression;
+  continueCondition: ExternalCallExpression;
+  /** Compiler-proven frame ceiling. Consumers must additionally enforce their own hard resource ceiling. */
+  maximumIterations: number;
 }
 
 /** One repeated BCH-transfer segment produced by a runtime counter loop. */

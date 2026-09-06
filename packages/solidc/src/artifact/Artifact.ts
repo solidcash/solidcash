@@ -1132,6 +1132,7 @@ function buildFunctionAbiMetadata(
       return {
         ...(loop.permutationParam !== undefined && { permutationParam: loop.permutationParam }),
         ...(loop.repeatCount !== undefined && { repeatCount: loop.repeatCount }),
+        ...(loop.iterationDomain !== undefined && { iterationDomain: loop.iterationDomain }),
         eventSignatures: eventSites.map((emit) => emit.eventDefinition!.signature),
         ...(conditions.some((condition) => condition !== null) && { conditions }),
         ...(loop.effectSequence !== undefined && { effectSequence: loop.effectSequence }),

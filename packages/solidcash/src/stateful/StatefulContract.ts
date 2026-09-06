@@ -77,6 +77,11 @@ import {
   bytecodeToScript,
   scriptToAsm,
 } from '@solidcash/utils';
+import {
+  RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
+  runtimeLoopEventIterationValues,
+  runtimeLoopEventRepeatSource,
+} from './runtime-loop-event-domain.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit,
@@ -24723,6 +24728,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         [
           ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.conditions ?? [])
             .filter((condition): condition is ExternalCallExpression => condition !== null),
+          ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.iterationDomain
+            ? [
+              loop.iterationDomain.initialValue,
+              loop.iterationDomain.stepValue,
+              loop.iterationDomain.continueCondition,
+            ] : []),
           ...(source.sortedUpsertLoopInfo ?? []).flatMap((info) => [
             info.condition, info.iterationBreakCondition,
           ]).filter((condition): condition is ExternalCallExpression => condition !== undefined),
@@ -24734,18 +24745,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         executionSelfAddress,
       );
       for (const loop of source.runtimeLoopEvents ?? []) {
-        const hasFixedRepeat = loop.repeatCount !== undefined;
-        const hasPermutationRepeat = loop.permutationParam !== undefined;
-        if (hasFixedRepeat === hasPermutationRepeat) {
-          throw new Error(
-            `Runtime-loop event metadata for '${source.name}' must have exactly one repeat source`,
-          );
-        }
-        let repeatCount = loop.repeatCount ?? (() => {
-          if (loop.permutationParam === undefined) return undefined;
-          const permutation = argumentFor(loop.permutationParam);
-          return Array.isArray(permutation) ? permutation.length : undefined;
-        })();
+        const repeatSource = runtimeLoopEventRepeatSource(loop);
+        let iterationValues: bigint[] | undefined;
+        let repeatCount = repeatSource.kind === 'fixed' ? repeatSource.count
+          : repeatSource.kind === 'permutation' ? (() => {
+            const permutation = argumentFor(repeatSource.parameter);
+            if (!Array.isArray(permutation)) return undefined;
+            if (permutation.length > RUNTIME_LOOP_EVENT_ITERATION_LIMIT) throw new Error(
+              `Runtime-loop event permutation for '${source.name}' exceeds ${RUNTIME_LOOP_EVENT_ITERATION_LIMIT} iterations`,
+            );
+            return permutation.length;
+          })()
+            : (() => {
+              iterationValues = runtimeLoopEventIterationValues(repeatSource.domain, (expression, bindings) => (
+                this._evaluateExternalExpression(
+                  expression,
+                  functionArgs,
+                  sourceArtifact,
+                  runtimePredicateState,
+                  visibleHandlerInputs(source.inputs),
+                  undefined,
+                  0,
+                  false,
+                  executionSelfAddress,
+                  bindings,
+                )
+              ));
+              return iterationValues.length;
+            })();
         const loopInfo = loop.permutationParam === undefined ? undefined
           : source.sortedUpsertLoopInfo?.find((info) => info.varyingArrayParam === loop.permutationParam);
         if (loopInfo && (loopInfo.iterationCondition || loopInfo.iterationBreakCondition)) {
@@ -24813,6 +24840,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const eventSignature = loop.eventSignatures[siteIndex];
             const condition = loop.conditions?.[siteIndex];
             if (condition) {
+              const iterationBindings = loop.iterationDomain && iterationValues
+                ? new Map([[loop.iterationDomain.counterName, iterationValues[iteration]]])
+                : undefined;
               const active = this._evaluateExternalExpression(
                 condition,
                 functionArgs,
@@ -24823,6 +24853,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 iteration,
                 false,
                 executionSelfAddress,
+                iterationBindings,
               );
               if (typeof active !== 'boolean') {
                 throw new Error(

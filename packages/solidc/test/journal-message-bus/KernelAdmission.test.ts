@@ -1121,6 +1121,7 @@ describe('required kernel admission', () => {
         left[0] = right[0];
       }
       function copyLength(int[] memory left, int[] memory right) internal pure {
+        right.push(7);
         left[0] = right.length;
       }
       function write(int n, int a, int b) public {

@@ -5438,6 +5438,7 @@ describe('kernel composite counter-key settlement', () => {
         left[0] = right[0] + a;
       }
       function copyLength(int[] memory left, int[] memory right) internal pure {
+        right.push(7);
         left[0] = right.length;
       }
       function write(int n, int a, int b) public {
@@ -5486,7 +5487,7 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.checkLeft(1500n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1900n, 30n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(2n, 50n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(3n, 50n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(0n, 51n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(800n, 20n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(1000n, 40n).send()).resolves.toBeDefined();

@@ -1034,6 +1034,34 @@ const valueChunkWriteIdentity = (write: ValueChunkWriteDescriptor): string => [
   write.categoryId.toLowerCase(), write.collectionHash.toLowerCase(), write.keySlot.toLowerCase(),
 ].join(':');
 
+export type ValueChunkWriteCategorySelection =
+  | { status: 'absent' }
+  | { status: 'exact'; categoryId: string; write: ValueChunkWriteDescriptor }
+  | { status: 'ambiguous' };
+
+/** Select one compiler-described chunkable-value resource identity; duplicate route/logical views collapse. */
+export function selectValueChunkWriteCategory(
+  writes: ReadonlyArray<ValueChunkWriteDescriptor>,
+): ValueChunkWriteCategorySelection {
+  if (writes.length === 0) return { status: 'absent' };
+  const identities = new Map<string, ValueChunkWriteDescriptor>();
+  for (const write of writes) {
+    if (!/^[0-9a-f]{64}$/i.test(write.categoryId) || !/^[0-9a-f]{64}$/i.test(write.keySlot)) {
+      return { status: 'ambiguous' };
+    }
+    try {
+      if (binToHex(computeCollectionHash(write.collectionSignature))
+        !== write.collectionHash.toLowerCase()) return { status: 'ambiguous' };
+    } catch {
+      return { status: 'ambiguous' };
+    }
+    identities.set(valueChunkWriteIdentity(write), write);
+  }
+  if (identities.size !== 1) return { status: 'ambiguous' };
+  const write = [...identities.values()][0];
+  return { status: 'exact', categoryId: write.categoryId, write };
+}
+
 /** Bind an observed value and redeem lock to one exact compiler-described collection write. */
 export function rememberValueChunkUnlockRecipe(
   write: ValueChunkWriteDescriptor,
@@ -5473,6 +5501,51 @@ export class StatefulTransactionBuilder {
     ]);
   }
 
+  private _hasChunkableValueWriteMetadata(): boolean {
+    return [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups].some((group) =>
+      (group.valueChunkWrites?.length ?? 0) > 0
+      || groupChunkableArrayWriteCollections(group).length > 0);
+  }
+
+  /** Physical/logical group views of the one compiler-described chunkable-value writer. */
+  private _chunkableValueWriteGroups(): {
+    external?: ExternalCallUtxoGroup; externalIndex: number;
+    lowLevel?: ExternalCallUtxoGroup; lowLevelIndex: number;
+  } {
+    const structural = this._chunkableValueWriteExecution();
+    if (structural) {
+      const lowLevelIndex = this.lowLevelCallUtxoGroups.findIndex((group, index) => (
+        this.getLowLevelCallMasterInputIndex(index) === structural.inputIndex
+        && groupChunkableValueWriteIdentity(group) === structural.collection
+      ));
+      const externalIndex = this.externalCallUtxoGroups.findIndex((group, index) => (
+        group.delegateCallGroupIndex === undefined
+        && this.getExternalCallMasterInputIndex(index) === structural.inputIndex
+        && groupChunkableValueWriteIdentity(group) === structural.collection
+      ));
+      return {
+        external: externalIndex >= 0 ? this.externalCallUtxoGroups[externalIndex] : undefined,
+        externalIndex,
+        lowLevel: lowLevelIndex >= 0 ? this.lowLevelCallUtxoGroups[lowLevelIndex] : undefined,
+        lowLevelIndex,
+      };
+    }
+    if (this._hasChunkableValueWriteMetadata()) {
+      return { externalIndex: -1, lowLevelIndex: -1 };
+    }
+    // Compatibility only for plans predating compiler-authored valueChunkWrites.
+    const externalIndex = this.externalCallUtxoGroups.findIndex((group) =>
+      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent');
+    const lowLevelIndex = this.lowLevelCallUtxoGroups.findIndex((group) =>
+      group.functionName === 'publishJobEvent');
+    return {
+      external: externalIndex >= 0 ? this.externalCallUtxoGroups[externalIndex] : undefined,
+      externalIndex,
+      lowLevel: lowLevelIndex >= 0 ? this.lowLevelCallUtxoGroups[lowLevelIndex] : undefined,
+      lowLevelIndex,
+    };
+  }
+
   private _chunkableValueWriteAbi(): AbiFunction | undefined {
     const structural = this._chunkableValueWriteExecution();
     if (structural) return structural.abiFunction;
@@ -5686,26 +5759,10 @@ export class StatefulTransactionBuilder {
    * Occupancy, view tails, and FakeToken rotation all share this range.
    */
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined {
-    const structural = this._chunkableValueWriteExecution();
-    const structuralLlcIndex = structural === undefined ? -1
-      : this.lowLevelCallUtxoGroups.findIndex((group, index) => (
-        this.getLowLevelCallMasterInputIndex(index) === structural.inputIndex
-        && groupChunkableValueWriteIdentity(group) === structural.collection
-      ));
-    const structuralExternalIndex = structural === undefined ? -1
-      : this.externalCallUtxoGroups.findIndex((group, index) => (
-        group.delegateCallGroupIndex === undefined
-        && this.getExternalCallMasterInputIndex(index) === structural.inputIndex
-        && groupChunkableValueWriteIdentity(group) === structural.collection
-      ));
-    // Compatibility only for artifacts predating collection/write metadata.
-    const publishLlcIndex = structuralLlcIndex >= 0 ? structuralLlcIndex
-      : this.lowLevelCallUtxoGroups.findIndex((group) => group.functionName === 'publishJobEvent');
-    const publishExternalIndex = structuralExternalIndex >= 0 ? structuralExternalIndex
-      : this.externalCallUtxoGroups.findIndex((group) =>
-        (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent');
-    const publishExternal = publishExternalIndex < 0
-      ? undefined : this.externalCallUtxoGroups[publishExternalIndex];
+    const selected = this._chunkableValueWriteGroups();
+    const publishLlcIndex = selected.lowLevelIndex;
+    const publishExternalIndex = selected.externalIndex;
+    const publishExternal = selected.external;
     if (publishLlcIndex < 0 && !publishExternal) return undefined;
     const publishFn = publishLlcIndex >= 0
       ? (this.lowLevelCallUtxoGroups[publishLlcIndex].compilerRoute?.abiFunction
@@ -5756,8 +5813,7 @@ export class StatefulTransactionBuilder {
       this.getLoopEntryCommitments(activeCollection)
         .filter((commitment) => !isEmptyValueChunkCommitment(commitment)),
     )].length;
-    const publishCategory = publishExternal?.categoryId
-      ?? (publishLlcIndex >= 0 ? this.lowLevelCallUtxoGroups[publishLlcIndex].categoryId : undefined);
+    const publishCategory = this._jobEventsPublishCategory();
     const persistWidth = isPersistedJobEventsReady() && !this._rootIsPublishJobPost()
       ? persistedJobEventsWidth(publishCategory) : 0;
     const plannedInserts = Math.max(
@@ -6024,13 +6080,31 @@ export class StatefulTransactionBuilder {
   }
 
   private _jobEventsPublishCategory(): string | undefined {
-    return this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')?.categoryId
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent')?.categoryId;
+    const writes = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+      .flatMap((group) => group.valueChunkWrites ?? []);
+    const selection = selectValueChunkWriteCategory(writes);
+    if (selection.status === 'exact') return selection.categoryId;
+    if (selection.status !== 'absent') return undefined;
+    const selected = this._chunkableValueWriteGroups();
+    const categories = new Set([selected.external?.categoryId, selected.lowLevel?.categoryId]
+      .filter((category): category is string => category !== undefined));
+    return categories.size === 1 ? [...categories][0] : undefined;
   }
 
   /** Persist chunks are proxy-category; the LLC master is the impl minting category. */
   private _persistJobEventsTokenCategory(): string | undefined {
+    const writes = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+      .flatMap((group) => group.valueChunkWrites ?? []);
+    const selection = selectValueChunkWriteCategory(writes);
+    if (selection.status === 'exact') return selection.categoryId;
+    if (selection.status !== 'absent') return undefined;
+    const selected = this._chunkableValueWriteGroups();
+    const selectedCategories = new Set([selected.external?.categoryId, selected.lowLevel?.categoryId]
+      .filter((category): category is string => category !== undefined));
+    if (this._hasChunkableValueWriteMetadata()) {
+      return selectedCategories.size === 1 ? [...selectedCategories][0] : undefined;
+    }
+    // Compatibility only for artifacts/plans predating compiler-authored valueChunkWrites.
     const impl = this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent')?.categoryId;
     for (const categoryId of persistedJobEventsLocks.keys()) {
       if (categoryId && categoryId !== impl) return categoryId;
@@ -6196,9 +6270,8 @@ export class StatefulTransactionBuilder {
       ?? latestPersisted(persistedJobEventsSpends, categoryId)
       ?? [];
     const extras: UnlockableUtxo[] = [];
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
+    const selectedWriter = this._chunkableValueWriteGroups();
+    const publish = selectedWriter.external ?? selectedWriter.lowLevel;
     const contract = publish?.externalContract?.inner;
     const write = this._persistedValueChunkWrite(categoryId);
     if (persistValue && persistLock) {
@@ -7028,16 +7101,9 @@ export class StatefulTransactionBuilder {
   private _reassertNestedEmitEvents(builder: TransactionBuilder): void {
     const publishFn = this._chunkableValueWriteAbi();
     const eventOffset = publishFn?.blockLayout?.slots.find((slot) => slot.kind === 'event')?.offset ?? 4;
-    const proxyGroup = this.externalCallUtxoGroups.find((candidate) => {
-      const candidateNames = [
-        candidate.logicalFunctionName, candidate.functionName, candidate.compilerRoute?.abiFunction?.name,
-      ];
-      return candidateNames.includes('publishJobEvent');
-    });
-    const llcIndex = this.lowLevelCallUtxoGroups.findIndex((group) => {
-      const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
-      return names.includes('publishJobEvent');
-    });
+    const selectedWriter = this._chunkableValueWriteGroups();
+    const proxyGroup = selectedWriter.external;
+    const llcIndex = selectedWriter.lowLevelIndex;
     const impl = this._chunkableValueWriteInputIndex();
     const dest = this._scaledEmitOutputIndex(builder.outputs.length)
       ?? publishJobEventOutputIndex(impl, eventOffset);
@@ -7052,8 +7118,7 @@ export class StatefulTransactionBuilder {
       }
       return;
     }
-    const categoryId = proxyGroup?.categoryId
-      ?? (llcIndex >= 0 ? this.lowLevelCallUtxoGroups[llcIndex].categoryId : undefined);
+    const categoryId = this._jobEventsPublishCategory();
     const emitInfo = publishFn?.emits?.[0];
     const derived = proxyGroup?.eventOutputs?.[0]
       ?? (llcIndex >= 0 ? this.lowLevelCallUtxoGroups[llcIndex].eventOutputs?.[0] : undefined);
@@ -8123,8 +8188,7 @@ export class StatefulTransactionBuilder {
     }
     const suffixLen = (this.delegateDynamicChunksAtSuffix ? this._dynamicChunkOutputCount() : 0) + 1;
     const last = builder.outputs.length - suffixLen;
-    const category = this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent')
-      ?.categoryId
+    const category = this._jobEventsPublishCategory()
       ?? builder.outputs.slice(after + 1, last).find((output) =>
         output.token?.nft?.capability === 'none'
         && output.token.category !== swapCategoryId)?.token?.category;
@@ -9117,10 +9181,7 @@ export class StatefulTransactionBuilder {
     if (!this._shouldRematerializePersistUpdate()) return 0;
     const band = this.getPublishJobEventsBand();
     if (!band) return 0;
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
-    const categoryId = publish?.categoryId;
+    const categoryId = this._jobEventsPublishCategory();
     const value = categoryId ? persistedJobEventsValue(categoryId) : undefined;
     const lock = persistUpdateRedeemLock(
       categoryId, this.jobEventsRedeemLock, this._persistedValueChunkWrite(categoryId),
@@ -9389,10 +9450,7 @@ export class StatefulTransactionBuilder {
     if (tokenWriterPresent) return;
     const band = this.getPublishJobEventsBand();
     if (!band) return;
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
-    const categoryId = publish?.categoryId;
+    const categoryId = this._jobEventsPublishCategory();
     const fromDerived = [...this.derivedChunkOutputs.entries()]
       .sort(([left], [right]) => left - right)
       .map(([, chunk]) => chunk)
@@ -9548,10 +9606,7 @@ export class StatefulTransactionBuilder {
   private _ensureLiveJobEventsBand(builder: TransactionBuilder): void {
     const band = this.getPublishJobEventsBand();
     if (!band) return;
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
-    const categoryId = publish?.categoryId;
+    const categoryId = this._jobEventsPublishCategory();
     const fromDerived = [...this.derivedChunkOutputs.entries()]
       .sort(([left], [right]) => left - right)
       .map(([, chunk]) => chunk)
@@ -9688,10 +9743,7 @@ export class StatefulTransactionBuilder {
   private _persistPlacedJobEventsBand(builder: TransactionBuilder, txid?: string): void {
     const band = this.getPublishJobEventsBand();
     if (!band) return;
-    const publish = this.externalCallUtxoGroups.find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
-      ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
-    const categoryId = publish?.categoryId;
+    const categoryId = this._jobEventsPublishCategory();
     if (!categoryId) return;
     const liveLocks = new Map<string, { lock: Uint8Array; n: number }>();
     for (let index = band.start; index <= band.end; index++) {
@@ -13662,12 +13714,9 @@ export class StatefulTransactionBuilder {
     if (isPersistedJobEventsReady()) this._packJobsSuffix(builder);
     debugAtomicOutputStage('conservation-repairs');
     const chunkBand = this.getPublishJobEventsBand();
+    const publishCategory = this._jobEventsPublishCategory();
     const chunkLock = this.jobEventsRedeemLock
-      ?? (this.externalCallUtxoGroups.find((group) =>
-        (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')?.categoryId
-        ? persistedJobEventsLock(this.externalCallUtxoGroups.find((group) =>
-          (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')!.categoryId!)
-        : undefined);
+      ?? (publishCategory ? persistedJobEventsLock(publishCategory) : undefined);
     if (chunkBand && chunkLock) {
       stripSurplusValueChunkLocks(builder.outputs, chunkBand, chunkLock, this.allInputs);
     }

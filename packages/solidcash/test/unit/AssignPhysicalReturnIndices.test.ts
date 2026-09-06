@@ -130,6 +130,7 @@ import {
   persistedJobEventsLock,
   persistedValueChunkWriteState,
   selectPersistedValueChunkWrite,
+  selectValueChunkWriteCategory,
   StatefulTransactionBuilder,
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
@@ -204,6 +205,29 @@ describe('generic persisted value-chunk write identity', () => {
     ])).toMatchObject({
       inputIndex: 17, collection: 'notices', abiFunction: { name: 'appendNotice' },
     });
+  });
+
+  it('selects publish ownership by renamed resource identity and collapses duplicate route views', () => {
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    expect(selectValueChunkWriteCategory([renamed])).toEqual({
+      status: 'exact', categoryId, write: renamed,
+    });
+    expect(selectValueChunkWriteCategory([renamed, { ...renamed }])).toEqual({
+      status: 'exact', categoryId, write: { ...renamed },
+    });
+    expect(selectValueChunkWriteCategory([])).toEqual({ status: 'absent' });
+  });
+
+  it('fails closed on same-category resource ambiguity or malformed compiler identity', () => {
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const [independent] = describeValueChunkWrites(makeGroup(
+      'appendAudit', 'audit:mapping(int => Notice[])',
+    ));
+    expect(independent.categoryId).toBe(renamed.categoryId);
+    expect(selectValueChunkWriteCategory([renamed, independent])).toEqual({ status: 'ambiguous' });
+    expect(selectValueChunkWriteCategory([
+      { ...renamed, collectionHash: '00'.repeat(32) },
+    ])).toEqual({ status: 'ambiguous' });
   });
 
   it('fails closed when independent chunkable writers claim different physical inputs', () => {

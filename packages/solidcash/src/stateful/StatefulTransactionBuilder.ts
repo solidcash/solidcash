@@ -925,11 +925,27 @@ export function persistedJobEventsUnlockRecipe(categoryId: string): {
 export function persistValueChunkLock(
   categoryId: string | undefined,
   value?: Uint8Array,
+  write?: ValueChunkWriteDescriptor | null,
 ): Uint8Array | undefined {
   if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId) || !value || value.length === 0) {
     return undefined;
   }
   const root = sha256Sync(value);
+  if (write === null) return undefined;
+  if (write) {
+    if (write.categoryId.toLowerCase() !== categoryId.toLowerCase()
+      || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return undefined;
+    try {
+      if (binToHex(computeCollectionHash(write.collectionSignature))
+        !== write.collectionHash.toLowerCase()) return undefined;
+      return getValueChunkLockingBytecode(
+        categoryId, write.collectionSignature, hexToBin(write.keySlot), root,
+      );
+    } catch {
+      return undefined;
+    }
+  }
+  // Compatibility only for artifacts predating exact collection-write descriptors.
   const slot = keyToSlot(new Uint8Array());
   for (const collection of [
     'jobEvents',
@@ -1018,6 +1034,39 @@ const valueChunkWriteIdentity = (write: ValueChunkWriteDescriptor): string => [
   write.categoryId.toLowerCase(), write.collectionHash.toLowerCase(), write.keySlot.toLowerCase(),
 ].join(':');
 
+/** Bind an observed value and redeem lock to one exact compiler-described collection write. */
+export function rememberValueChunkUnlockRecipe(
+  write: ValueChunkWriteDescriptor,
+  value = persistedJobEventsValues.get(write.categoryId),
+  lockingBytecode = persistedJobEventsLocks.get(write.categoryId),
+): boolean {
+  if (!value || !lockingBytecode || !/^[0-9a-f]{64}$/i.test(write.categoryId)
+    || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return false;
+  try {
+    const computedHash = binToHex(computeCollectionHash(write.collectionSignature));
+    if (computedHash !== write.collectionHash.toLowerCase()) return false;
+    const slot = hexToBin(write.keySlot);
+    const root = sha256Sync(value);
+    const expected = getValueChunkLockingBytecode(
+      write.categoryId, write.collectionSignature, slot, root,
+    );
+    if (binToHex(expected) !== binToHex(lockingBytecode)) return false;
+    const recipe = {
+      slot, root, collection: write.collectionSignature, categoryId: write.categoryId,
+    };
+    persistedJobEventsRecipes.set(write.categoryId, recipe);
+    persistedValueChunkWrites.set(valueChunkWriteIdentity(write), {
+      value,
+      lockingBytecode,
+      width: valueChunkCountFor(value),
+      recipe,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Authenticate a legacy observed continuation against an exact compiler/planner write identity. */
 export function persistedValueChunkWriteState(
   write: ValueChunkWriteDescriptor,
@@ -1032,10 +1081,9 @@ export function persistedValueChunkWriteState(
   if (!value || !lockingBytecode || !/^[0-9a-f]{64}$/i.test(write.categoryId)
     || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return undefined;
   try {
+    if (!rememberValueChunkUnlockRecipe(write, value, lockingBytecode)) return undefined;
     const slot = hexToBin(write.keySlot);
     const root = sha256Sync(value);
-    const expected = getValueChunkLockingBytecode(write.categoryId, write.collectionSignature, slot, root);
-    if (binToHex(expected) !== binToHex(lockingBytecode)) return undefined;
     const state = {
       value, lockingBytecode,
       width: persistedJobEventsWidth(write.categoryId),
@@ -1068,8 +1116,9 @@ export function selectPersistedValueChunkWrite(
 export function persistUpdateRedeemLock(
   categoryId: string | undefined,
   sessionLock?: Uint8Array,
-  write?: ValueChunkWriteDescriptor,
+  write?: ValueChunkWriteDescriptor | null,
 ): Uint8Array | undefined {
+  if (write === null) return undefined;
   if (write) {
     const exact = persistedValueChunkWriteState(write)?.lockingBytecode;
     if (!exact) return undefined;
@@ -3429,12 +3478,19 @@ function paramToStateValue(param: unknown, abiType: string): StateValue | undefi
 export function persistUpdateDigestLock(
   categoryId?: string,
   _extraCategories: readonly string[] = [],
+  write?: ValueChunkWriteDescriptor | null,
 ): Uint8Array | undefined {
   if (!categoryId || !/^[0-9a-f]{64}$/i.test(categoryId)) return undefined;
+  if (write === null) return undefined;
   try {
-    const collectionHash = computeCollectionHash(
-      computeCollectionSignature('jobEvents', 'mapping(uint256 => JobEventData[])'),
-    );
+    if (write && write.categoryId.toLowerCase() !== categoryId.toLowerCase()) return undefined;
+    const collectionHash = write
+      ? computeCollectionHash(write.collectionSignature)
+      // Compatibility only for artifacts predating exact collection-write descriptors.
+      : computeCollectionHash(
+        computeCollectionSignature('jobEvents', 'mapping(uint256 => JobEventData[])'),
+      );
+    if (write && binToHex(collectionHash) !== write.collectionHash.toLowerCase()) return undefined;
     return scriptToLockingBytecode(
       buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash),
       'p2sh32',
@@ -6144,8 +6200,14 @@ export class StatefulTransactionBuilder {
       (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')
       ?? this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent');
     const contract = publish?.externalContract?.inner;
-    if (persistValue && persistLock) rememberJobEventsUnlockRecipe(categoryId);
-    const recipe = persistedJobEventsUnlockRecipe(categoryId);
+    const write = this._persistedValueChunkWrite(categoryId);
+    if (persistValue && persistLock) {
+      if (write) rememberValueChunkUnlockRecipe(write, persistValue, persistLock);
+      else if (write === undefined) rememberJobEventsUnlockRecipe(categoryId);
+    }
+    const recipe = write === null
+      ? undefined
+      : (write ? persistedValueChunkWriteState(write)?.recipe : persistedJobEventsUnlockRecipe(categoryId));
     const unlockCategory = recipe?.categoryId ?? categoryId;
     const unlockMaster = this.findMintingInputIndex(unlockCategory);
     const unlocker = contract && unlockMaster >= 0 && recipe
@@ -7212,6 +7274,7 @@ export class StatefulTransactionBuilder {
     const persistRecipeLock = persistUpdateDigestLock(
       this._persistJobEventsTokenCategory() ?? categoryId,
       this._persistDigestCategories(),
+      this._persistedValueChunkWrite(this._persistJobEventsTokenCategory() ?? categoryId),
     );
     for (const [index, input] of this.allInputs.entries()) {
       const commit = String(input?.token?.nft?.commitment ?? '');
@@ -7264,9 +7327,18 @@ export class StatefulTransactionBuilder {
             ?? (persistCat ? persistedJobEventsValue(persistCat) : undefined);
           const destOffset = [...persistDests].sort((left, right) => left - right).indexOf(index);
           const inputLock = input.unlocker?.generateLockingBytecode();
-          const persistVLock = persistValueChunkLock(this._jobEventsPublishCategory(), persistValue)
-            ?? persistValueChunkLock(persistLockCategory, persistValue)
-            ?? persistValueChunkLock(input.token?.category ?? persistCat, persistValue)
+          const publishCategory = this._jobEventsPublishCategory();
+          const inputCategory = input.token?.category ?? persistCat;
+          const persistVLock = persistValueChunkLock(
+            publishCategory, persistValue, this._persistedValueChunkWrite(publishCategory),
+          )
+            ?? persistValueChunkLock(
+              persistLockCategory, persistValue,
+              this._persistedValueChunkWrite(persistLockCategory),
+            )
+            ?? persistValueChunkLock(
+              inputCategory, persistValue, this._persistedValueChunkWrite(inputCategory),
+            )
             ?? persistLock;
           const destLock = index === chunk0Dest
             ? (persistVLock ?? persistLock)
@@ -7338,6 +7410,9 @@ export class StatefulTransactionBuilder {
         ? persistUpdateDigestLock(
           this._persistJobEventsTokenCategory() ?? input.token?.category ?? categoryId,
           this._persistDigestCategories(),
+          this._persistedValueChunkWrite(
+            this._persistJobEventsTokenCategory() ?? input.token?.category ?? categoryId,
+          ),
         )
         : persistRecipeLock;
       const lock = ((persistDests.has(index) && persistRecipeLock)
@@ -9421,7 +9496,11 @@ export class StatefulTransactionBuilder {
     const stampDigest = this._shouldStampPersistUpdateDigestLock();
     const persistTokenCategory = stateOwnerCategory;
     const recipeLock = stampDigest
-      ? persistUpdateDigestLock(persistTokenCategory, this._persistDigestCategories())
+      ? persistUpdateDigestLock(
+        persistTokenCategory,
+        this._persistDigestCategories(),
+        this._persistedValueChunkWrite(persistTokenCategory),
+      )
       : undefined;
     const redeemLock = chunks[0]?.lockingBytecode
       ?? recipeLock
@@ -9483,7 +9562,11 @@ export class StatefulTransactionBuilder {
       ?? this._persistJobEventsTokenCategory()
       ?? categoryId;
     const persistDigestLock = this._shouldStampPersistUpdateDigestLock()
-      ? persistUpdateDigestLock(persistTokenCategory, this._persistDigestCategories())
+      ? persistUpdateDigestLock(
+        persistTokenCategory,
+        this._persistDigestCategories(),
+        this._persistedValueChunkWrite(persistTokenCategory),
+      )
       : (this._shouldRematerializePersistUpdate()
         ? persistUpdateRedeemLock(
           persistTokenCategory, this.jobEventsRedeemLock,
@@ -9495,8 +9578,13 @@ export class StatefulTransactionBuilder {
     const persistValue = stagedValue
       ?? (persistTokenCategory ? persistedJobEventsValue(persistTokenCategory) : undefined)
       ?? latestPersisted(persistedJobEventsValues);
-    const persistVLock = persistValueChunkLock(persistTokenCategory, persistValue)
-      ?? persistValueChunkLock(this._jobEventsPublishCategory(), persistValue);
+    const publishCategory = this._jobEventsPublishCategory();
+    const persistVLock = persistValueChunkLock(
+      persistTokenCategory, persistValue, this._persistedValueChunkWrite(persistTokenCategory),
+    )
+      ?? persistValueChunkLock(
+        publishCategory, persistValue, this._persistedValueChunkWrite(publishCategory),
+      );
 
     const redeemLock = persistVLock
       ?? persistDigestLock
@@ -10761,13 +10849,13 @@ export class StatefulTransactionBuilder {
     return this.externalCallUtxoGroups;
   }
 
-  /** Exact active persisted continuation, or undefined when the transaction owns an ambiguous set. */
-  private _persistedValueChunkWrite(categoryId?: string): ValueChunkWriteDescriptor | undefined {
-    return selectPersistedValueChunkWrite(
-      [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
-        .flatMap((group) => group.valueChunkWrites ?? []),
-      categoryId,
-    );
+  /** Exact active persisted continuation; null means compiler metadata was present but ambiguous/hostile. */
+  private _persistedValueChunkWrite(categoryId?: string): ValueChunkWriteDescriptor | null | undefined {
+    const writes = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+      .flatMap((group) => group.valueChunkWrites ?? [])
+      .filter((write) => categoryId === undefined || write.categoryId === categoryId);
+    if (writes.length === 0) return undefined;
+    return selectPersistedValueChunkWrite(writes, categoryId) ?? null;
   }
 
   getLowLevelCallMasterInputIndex(groupIdx: number): number {

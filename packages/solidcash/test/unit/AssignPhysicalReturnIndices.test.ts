@@ -126,6 +126,7 @@ import {
   shouldStampPersistUpdateDigestLock,
   rememberJobEventsLock,
   rememberJobEventsValue,
+  rememberValueChunkUnlockRecipe,
   persistedJobEventsLock,
   persistedValueChunkWriteState,
   selectPersistedValueChunkWrite,
@@ -239,6 +240,13 @@ describe('generic persisted value-chunk write identity', () => {
     });
     expect(binToHex(persistUpdateRedeemLock(categoryId, undefined, renamed)!))
       .toBe(binToHex(getValueChunkLockingBytecode(categoryId, signature, slot, sha256Sync(value))));
+    expect(rememberValueChunkUnlockRecipe(renamed, value, exact?.lockingBytecode)).toBe(true);
+    expect(binToHex(persistValueChunkLock(categoryId, value, renamed)!)).toBe(
+      binToHex(getValueChunkLockingBytecode(categoryId, signature, slot, sha256Sync(value))),
+    );
+    const digestLock = persistUpdateDigestLock(categoryId, [], renamed);
+    expect(digestLock?.length).toBe(35);
+    expect(binToHex(digestLock!)).not.toBe(binToHex(persistUpdateDigestLock(categoryId)!));
     const otherLock = getValueChunkLockingBytecode(
       categoryId, 'other:mapping(int => Notice[])', slot, sha256Sync(value),
     );
@@ -247,6 +255,14 @@ describe('generic persisted value-chunk write identity', () => {
 
     const [decoy] = describeValueChunkWrites(makeGroup('publishJobEvent', 'other:mapping(int => Notice[])'));
     expect(persistedValueChunkWriteState(decoy)).toBeUndefined();
+    expect(rememberValueChunkUnlockRecipe(decoy, value, exact?.lockingBytecode)).toBe(false);
+    expect(persistValueChunkLock(categoryId, value, decoy)).not.toEqual(exact?.lockingBytecode);
+    const malformedDescriptor = { ...renamed, collectionHash: '00'.repeat(32) };
+    expect(persistValueChunkLock(categoryId, value, malformedDescriptor)).toBeUndefined();
+    expect(persistUpdateDigestLock(categoryId, [], malformedDescriptor)).toBeUndefined();
+    expect(persistValueChunkLock(categoryId, value, null)).toBeUndefined();
+    expect(persistUpdateRedeemLock(categoryId, exact?.lockingBytecode, null)).toBeUndefined();
+    expect(persistUpdateDigestLock(categoryId, [], null)).toBeUndefined();
     expect(selectPersistedValueChunkWrite([decoy], categoryId)).toBeUndefined();
     expect(selectPersistedValueChunkWrite([decoy, renamed], categoryId)).toEqual(renamed);
     // The route and logical group may both describe one physical write; identity de-duplication keeps it exact.

@@ -286,6 +286,11 @@ export interface ChildDeploymentSiteAbi {
   siteIndex: number;
   contractName: string;
   occurrence: 'once' | 'conditional' | 'loop' | 'recursive';
+  /** Offset and width of this source occurrence inside its route row's compiler-owned deployment frame. */
+  spanOffset?: number;
+  spanWidth?: number;
+  /** Exact pure row expression deciding whether a conditional occurrence executes. */
+  activation?: ChildDeploymentValueRecipe;
   genesisInputCount: 1;
   masterOutputCount: 1;
   dataNftOutputCount: number;

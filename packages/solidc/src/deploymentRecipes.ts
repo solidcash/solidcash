@@ -294,6 +294,18 @@ export function analyzeChildDeploymentRecipes(
         priorReturn ||= containsReturn(statement);
         continue;
       }
+      if (statement instanceof BranchNode) {
+        // The branch predicate is authenticated separately as a deployment activation recipe. A `new` in an
+        // arm may still use immutable row inputs and dominating aliases; do not poison those value recipes merely
+        // because their physical occurrence is conditional. Branch-local aliases and joined assignments remain
+        // unresolved here and therefore fail closed as before.
+        snapshotExpression(statement.condition, statementUnsafe);
+        snapshotExpression(statement.ifBlock, statementUnsafe);
+        if (statement.elseBlock) snapshotExpression(statement.elseBlock, statementUnsafe);
+        invalidateAssignments(statement);
+        priorReturn ||= containsReturn(statement);
+        continue;
+      }
       const controlFlow = statement instanceof BranchNode || statement instanceof WhileNode
         || statement instanceof DoWhileNode || statement instanceof SwitchNode || statement instanceof TryCatchNode
         || statement instanceof UncheckedNode || statement instanceof CollectionIterationNode;

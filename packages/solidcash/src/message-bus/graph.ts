@@ -271,7 +271,7 @@ export interface FinalizedAtomicInvocationGraph {
 export interface AtomicEventSlotEffect {
   participant: number;
   offset: number;
-  active: boolean;
+  active?: boolean;
   lockingBytecodeHex: string;
   commitmentHex: string;
   /** Exact local invocation row for a runtime-sized event occurrence in the participant trailing band. */
@@ -341,8 +341,10 @@ export interface AtomicDeploymentSlotEffect {
   siteIndex: number;
   /** Participant-local balanced slot occupied by the token-free vout-0 genesis input and child master output. */
   offset: number;
-  genesisTransactionHashHex: string;
-  genesisOutputIndex: number;
+  /** False reserves and authenticates the site's canonical neutral balanced span. */
+  active: boolean;
+  genesisTransactionHashHex?: string;
+  genesisOutputIndex?: number;
   /** Child master first, followed by every mutable child data NFT in compiler-published order. */
   outputs: readonly AtomicDeploymentOutputEffect[];
 }
@@ -386,6 +388,9 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
       siteIndex: site.siteIndex,
       contractName: site.contractName,
       occurrence: site.occurrence,
+      ...(site.spanOffset !== undefined && { spanOffset: site.spanOffset }),
+      ...(site.spanWidth !== undefined && { spanWidth: site.spanWidth }),
+      ...(site.activation !== undefined && { activation: site.activation }),
       genesisInputCount: site.genesisInputCount,
       masterOutputCount: site.masterOutputCount,
       dataNftOutputCount: site.dataNftOutputCount,
@@ -782,10 +787,19 @@ export function finalizeAtomicInvocationGraph(
       candidate.name === invocation.function
       && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
     const sites = handler?.childDeployments ?? [];
-    if (sites.some((site, index) => site.siteIndex !== index || site.occurrence !== 'once'
-      || site.genesisInputCount !== 1 || site.masterOutputCount !== 1
-      || !Number.isSafeInteger(site.dataNftOutputCount) || site.dataNftOutputCount < 0
-      || site.totalOutputCount !== 1 + site.dataNftOutputCount)) {
+    let expectedSpanOffset = 0;
+    if (sites.some((site, index) => {
+      const spanWidth = site.spanWidth ?? site.totalOutputCount;
+      const spanOffset = site.spanOffset ?? expectedSpanOffset;
+      const valid = site.siteIndex === index
+        && (site.occurrence === 'once' || (site.occurrence === 'conditional' && site.activation !== undefined))
+        && site.genesisInputCount === 1 && site.masterOutputCount === 1
+        && Number.isSafeInteger(site.dataNftOutputCount) && site.dataNftOutputCount >= 0
+        && site.totalOutputCount === 1 + site.dataNftOutputCount
+        && spanWidth === site.totalOutputCount && spanOffset === expectedSpanOffset;
+      expectedSpanOffset += site.totalOutputCount;
+      return !valid;
+    })) {
       throw new Error(`messageBus: invocation ${invocationIndex} has a non-canonical deployment topology`);
     }
     return sites;
@@ -838,8 +852,8 @@ export function finalizeAtomicInvocationGraph(
           `messageBus: participant ${effect.participant} row ${invocation.localRow} has a non-canonical deployment window`,
         );
       }
-      const siteOffset = sites.slice(0, effect.siteIndex)
-        .reduce((offset, prior) => offset + prior.totalOutputCount, rowBase.offset);
+      const siteOffset = rowBase.offset + (site.spanOffset
+        ?? sites.slice(0, effect.siteIndex).reduce((offset, prior) => offset + prior.totalOutputCount, 0));
       const usedWidth = sites.reduce((width, candidate) => width + candidate.totalOutputCount, 0);
       if (usedWidth > rowSlots.length || siteOffset !== effect.offset
         || effect.offset + site.totalOutputCount > rowBase.offset + rowSlots.length) {
@@ -847,12 +861,26 @@ export function finalizeAtomicInvocationGraph(
           `messageBus: participant ${effect.participant} deployment site ${effect.siteIndex} has a non-canonical output span`,
         );
       }
-      if (effect.outputs.length !== 1 + site.dataNftOutputCount) {
+      const active = effect.active !== false;
+      if (active && effect.outputs.length !== 1 + site.dataNftOutputCount) {
         throw new Error(
           `messageBus: deployment site ${effect.siteIndex} requires ${1 + site.dataNftOutputCount} exact outputs`,
         );
       }
-      const genesis = effect.genesisTransactionHashHex.toLowerCase();
+      if (!active && (site.occurrence !== 'conditional' || effect.outputs.length !== 0)) {
+        throw new Error(`messageBus: deployment site ${effect.siteIndex} has a non-canonical inactive span`);
+      }
+      if (!active) {
+        return {
+          kind: 5, owner: effect.participant, consumer: effect.participant,
+          slot: effect.offset, mode: 1, sourceOffset: effect.offset, targetOffset: effect.offset,
+          selectorHex: '00000000', position: effect.offset, parent: effect.invocation, depth: invocation.depth,
+          subtreeEnd: effect.invocation, subjectHex: '',
+          argsHex: uint16LeHex(effect.siteIndex, 'deployment site index'),
+          resultHex: '', effectHex: uint16LeHex(site.totalOutputCount, 'inactive deployment span width'),
+        };
+      }
+      const genesis = effect.genesisTransactionHashHex?.toLowerCase() ?? '';
       if (!/^[0-9a-f]{64}$/.test(genesis) || effect.genesisOutputIndex !== 0) {
         throw new Error(`messageBus: deployment site ${effect.siteIndex} genesis must be a 32-byte vout-0 transaction`);
       }

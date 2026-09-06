@@ -268,7 +268,7 @@ function isFoldableCreationCodeHash(node: FunctionCallNode): boolean {
     && arg.contractName !== undefined;
 }
 
-function getMaxPushdataEncodedSizeForType(
+export function getMaxPushdataEncodedSizeForType(
   type: Type, seen: Set<string> = new Set(), addressBytes: number = ADDRESS_MAX_ENCODED_BYTES,
 ): number {
   if (type === PrimitiveType.BOOL) return 1;

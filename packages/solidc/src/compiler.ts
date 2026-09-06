@@ -17,7 +17,7 @@ import {
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   ChildDeploymentSiteAbi, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
-  ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType,
   messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString,
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact, occurrenceInfoOf } from './artifact/Artifact.js';
@@ -40,7 +40,7 @@ import {
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
   WhileNode, DoWhileNode, UnaryOpNode, BreakNode, ContinueNode,
-  BranchNode, UncheckedNode, SwitchNode,
+  BranchNode, UncheckedNode, SwitchNode, StateVariableVisibility,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
@@ -48,7 +48,9 @@ import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener 
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
-import SymbolTableTraversal from './semantic/SymbolTableTraversal.js';
+import SymbolTableTraversal, {
+  getMaxPushdataEncodedSizeForType,
+} from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import EnsureFinalRequireTraversal, {
   rejectFreeFunctionMissingReturns,
@@ -2052,6 +2054,32 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
  * Publish typed child-genesis geometry independently of kernel admission. The resolved deployment node and
  * compiled child body are the authority; no contract, function, or application name participates.
  */
+function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number): number {
+  let nftIndex = 0;
+  let currentNftUsed = 0;
+  for (const state of contract.stateVariables) {
+    let maxSize = getMaxPushdataEncodedSizeForType(state.type);
+    if (state.isDynamic || isDynamicStorageType(state.type)) {
+      maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
+    }
+    const isolated = state.isolatedNft || state.visibility === StateVariableVisibility.EXTERNAL;
+    const terminal = state.type instanceof StructType
+      || (state.isPacked && state.type instanceof ArrayType);
+    if (isolated) {
+      if (currentNftUsed > 0) { nftIndex += 1; currentNftUsed = 0; }
+      nftIndex += 1;
+    } else {
+      if (currentNftUsed + maxSize > commitmentLimit && currentNftUsed > 0) {
+        nftIndex += 1;
+        currentNftUsed = 0;
+      }
+      currentNftUsed += maxSize;
+      if (terminal) { nftIndex += 1; currentNftUsed = 0; }
+    }
+  }
+  return nftIndex + (currentNftUsed > 0 ? 1 : 0);
+}
+
 function childDeploymentSites(
   root: FunctionDefinitionNode,
   compiledBytecodes: ReadonlyMap<string, Uint8Array>,
@@ -2063,6 +2091,7 @@ function childDeploymentSites(
   const inputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
   const recipeAnalysis = analyzeChildDeploymentRecipes(root);
   const active: Array<{ fn: FunctionDefinitionNode; siteStart: number }> = [{ fn: root, siteStart: 0 }];
+  let spanOffset = 0;
 
   const source = (expression: ExpressionNode): ChildDeploymentSiteAbi['constructorArgs'][number] =>
     childDeploymentValueRecipe(expression, inputIndex, false, inputTypes) ?? { kind: 'expression' };
@@ -2078,9 +2107,10 @@ function childDeploymentSites(
     value: unknown,
     occurrence: ChildDeploymentSiteAbi['occurrence'],
     seen: WeakSet<object>,
+    activation?: ChildDeploymentSiteAbi['activation'],
   ): void => {
     if (Array.isArray(value)) {
-      for (const item of value) walk(item, occurrence, seen);
+      for (const item of value) walk(item, occurrence, seen, activation);
       return;
     }
     if (!(value instanceof Node) || seen.has(value)) return;
@@ -2089,8 +2119,7 @@ function childDeploymentSites(
     if (value instanceof InstantiationNode && value.referencedContract) {
       const analyzed = recipeAnalysis.get(value);
       const child = value.referencedContract;
-      const dataNftOutputCount = child.stateVariables.length === 0 ? 0
-        : Math.max(...child.stateVariables.map((state) => state.nftIndex ?? 0)) + 1;
+      const dataNftOutputCount = packedStateDataNftCount(child, commitmentLimit);
       const creationBytecode = compiledBytecodes.get(child.name);
       if (!creationBytecode) throw new Error(`Missing compiled child body for deployment topology '${child.name}'`);
       const genesisState = value.constructorStateFoldComplete === true
@@ -2112,10 +2141,14 @@ function childDeploymentSites(
         dataNftCount: dataNftOutputCount,
         commitmentLimit,
       });
+      const spanWidth = 1 + dataNftOutputCount;
       sites.push({
         siteIndex: sites.length,
         contractName: child.name,
         occurrence,
+        spanOffset,
+        spanWidth,
+        ...(activation && { activation }),
         genesisInputCount: 1,
         masterOutputCount: 1,
         dataNftOutputCount,
@@ -2137,6 +2170,28 @@ function childDeploymentSites(
         childLayoutDigest,
         ...(genesisState && { genesisState }),
       });
+      spanOffset += spanWidth;
+    }
+
+    if (value instanceof BranchNode) {
+      const condition = childDeploymentValueRecipe(value.condition, inputIndex, true, inputTypes);
+      const nestedOccurrence = occurrence === 'loop' || occurrence === 'recursive' ? occurrence : 'conditional';
+      const combine = (
+        outer: ChildDeploymentSiteAbi['activation'],
+        inner: ChildDeploymentSiteAbi['activation'],
+      ): ChildDeploymentSiteAbi['activation'] => outer === undefined ? inner
+        : inner === undefined ? outer : {
+          kind: 'binary', operator: '&&', resultType: 'bool', left: outer, right: inner,
+        };
+      const positive = condition ? combine(activation, condition) : undefined;
+      walk(value.ifBlock, nestedOccurrence, new WeakSet<object>(), positive);
+      if (value.elseBlock) {
+        const negative = condition ? combine(activation, {
+          kind: 'unary', operator: '!', resultType: 'bool', operand: condition,
+        }) : undefined;
+        walk(value.elseBlock, nestedOccurrence, new WeakSet<object>(), negative);
+      }
+      return;
     }
 
     // Source `for` loops are represented by WhileNode with a non-zero forLoopUpdateCount.
@@ -2148,7 +2203,7 @@ function childDeploymentSites(
     for (const [key, child] of Object.entries(value)) {
       if (key === 'referencedContract' || key === 'resolvedFunction' || key === 'definition'
         || key === 'symbolTable') continue;
-      walk(child, nestedOccurrence, seen);
+      walk(child, nestedOccurrence, seen, activation);
     }
 
     if (value instanceof FunctionCallNode && value.resolvedFunction
@@ -2164,7 +2219,7 @@ function childDeploymentSites(
       }
       active.push({ fn: target, siteStart: sites.length });
       // A helper called twice represents two physical sites, so each expansion receives a fresh seen-set.
-      walk(target.body, nestedOccurrence, new WeakSet<object>());
+      walk(target.body, nestedOccurrence, new WeakSet<object>(), activation);
       active.pop();
     }
   };
@@ -2509,6 +2564,8 @@ function synthesizeMessageBusRoute(
   const graphMsgValueHandlers = new Set<FunctionDefinitionNode>();
   const kernelDeploymentHandlers = new Set<FunctionDefinitionNode>();
   const kernelDeploymentSiteCounts = new Map<FunctionDefinitionNode, number>();
+  const kernelDeploymentSiteWidths = new Map<FunctionDefinitionNode, number[]>();
+  const kernelConditionalDeploymentHandlers = new Set<FunctionDefinitionNode>();
   const logicalMsgSenderHandlers = new Set<FunctionDefinitionNode>();
   const localEffectFrameHandlers = new Set<FunctionDefinitionNode>();
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
@@ -3927,18 +3984,26 @@ function synthesizeMessageBusRoute(
       let deploySites = 0;
       let unsupportedInstantiation = false;
       let deployUnderControlFlow = false;
+      let conditionalDeploySites = 0;
+      let deploymentInLoop = false;
+      let conditionalActivationUnsupported = false;
       let deployWithValue = false;
       let valueDeployTransferIndex = -1;
       let hasAnotherValueTransfer = false;
       let deploymentValueRecipeUnsupported = false;
       let deploymentStateInitializationUnsupported = false;
       let deploymentRecipeUnsupported = false;
+      const deploymentSiteWidths: number[] = [];
       const deployedLocalNames = new Set<string>();
       const lockingBytecode = new Set<string>(Object.values(Class));
       const statefulChildren = new Map(ast.importedContracts.filter((child) =>
         child.stateVariables.length > 0 || child.collections.length > 0).map((child) => [child.name, child]));
       const closureNames = collectNamedFunctionClosure(fn, byName);
       const deploymentRecipeAnalysis = analyzeChildDeploymentRecipes(fn);
+      const deploymentInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+      const deploymentInputIndex = new Map(deploymentInputs.map((parameter, index) => [parameter.name, index]));
+      const deploymentInputTypes = new Map(deploymentInputs.map((parameter) =>
+        [parameter.name, abiTypeString(parameter.type)]));
       // Physical-effect helpers have already been inlined. Inspect this exact overload's normalized body;
       // walking every function with the same source name would make an unrelated overload inherit its sibling's
       // deployment topology. A remaining named helper keeps closureNames wider than one and is fenced below.
@@ -3962,6 +4027,10 @@ function synthesizeMessageBusRoute(
             if (statefulChildren.has(node.identifier.name)) {
               deploySites += 1;
               const child = statefulChildren.get(node.identifier.name)!;
+              const dataNftCount = packedStateDataNftCount(
+                child, compilerOptions.commitmentLimit ?? 128,
+              );
+              deploymentSiteWidths.push(1 + dataNftCount);
               if (!analyzed?.supported) deploymentRecipeUnsupported = true;
               if (node.hasFoldedChildCall) {
                 deploymentStateInitializationUnsupported = true;
@@ -4027,8 +4096,16 @@ function synthesizeMessageBusRoute(
         });
         // The closure mutates only the admission accumulators for this synchronous candidate scan.
         // eslint-disable-next-line @typescript-eslint/no-loop-func
-        const nestedDeploy = (value: unknown, nested = false, seen = new WeakSet<object>()): void => {
-          if (Array.isArray(value)) { value.forEach((item) => nestedDeploy(item, nested, seen)); return; }
+        const nestedDeploy = (
+          value: unknown,
+          control: 'straight' | 'conditional' | 'loop' = 'straight',
+          activationSupported = true,
+          seen = new WeakSet<object>(),
+        ): void => {
+          if (Array.isArray(value)) {
+            value.forEach((item) => nestedDeploy(item, control, activationSupported, seen));
+            return;
+          }
           if (!(value instanceof Node) || seen.has(value)) return;
           seen.add(value);
           if (value instanceof VariableDefinitionNode
@@ -4036,8 +4113,14 @@ function synthesizeMessageBusRoute(
               && statefulChildren.has(value.expression.identifier.name)) {
             deployedLocalNames.add(value.name);
           }
-          if (value instanceof InstantiationNode && !lockingBytecode.has(value.identifier.name) && nested) {
+          if (value instanceof InstantiationNode && !lockingBytecode.has(value.identifier.name)
+            && control !== 'straight') {
             deployUnderControlFlow = true;
+            if (statefulChildren.has(value.identifier.name)) {
+              if (control === 'loop') deploymentInLoop = true;
+              else conditionalDeploySites += 1;
+              if (!activationSupported) conditionalActivationUnsupported = true;
+            }
           }
           // Folded deploy calls are deliberately omitted from the ordinary invocation walk. Inspect the
           // normalized tree directly so their constructor-state mutation cannot be mistaken for defaults.
@@ -4057,11 +4140,27 @@ function synthesizeMessageBusRoute(
                 && deployedLocalNames.has(value.identifier.name.slice(0, value.identifier.name.indexOf('.'))))) {
             deploymentStateInitializationUnsupported = true;
           }
-          const childNested = nested || value instanceof WhileNode || value instanceof DoWhileNode
-              || value instanceof BranchNode || value instanceof SwitchNode || value instanceof TryCatchNode;
+          if (value instanceof BranchNode) {
+            const conditionSupported = childDeploymentValueRecipe(
+              value.condition, deploymentInputIndex, true, deploymentInputTypes,
+            ) !== undefined;
+            nestedDeploy(value.ifBlock, control === 'loop' ? 'loop' : 'conditional',
+              activationSupported && conditionSupported, new WeakSet<object>());
+            if (value.elseBlock) {
+              nestedDeploy(value.elseBlock, control === 'loop' ? 'loop' : 'conditional',
+                activationSupported && conditionSupported, new WeakSet<object>());
+            }
+            return;
+          }
+          const childControl = value instanceof WhileNode || value instanceof DoWhileNode
+            ? 'loop'
+            : value instanceof SwitchNode || value instanceof TryCatchNode
+              ? (control === 'loop' ? 'loop' : 'conditional') : control;
+          const childActivationSupported = activationSupported
+            && !(value instanceof SwitchNode || value instanceof TryCatchNode);
           for (const [key, child] of Object.entries(value)) {
             if (['referencedContract', 'resolvedFunction', 'definition', 'symbolTable'].includes(key)) continue;
-            nestedDeploy(child, childNested, seen);
+            nestedDeploy(child, childControl, childActivationSupported, seen);
           }
         };
         nestedDeploy(candidate.body);
@@ -4069,12 +4168,17 @@ function synthesizeMessageBusRoute(
       const supportedValueDeploy = !deployWithValue || (deploySites === 1
         && !hasAnotherValueTransfer && valueDeployTransferIndex === 0
         && !deploymentValueRecipeUnsupported);
+      const supportedConditionalDeploy = !deployUnderControlFlow
+        || (deploySites === 1 && conditionalDeploySites === 1 && !deploymentInLoop
+          && !conditionalActivationUnsupported && !deployWithValue);
       const kernelDeploySupported = deploys && deploySites >= 1 && !unsupportedInstantiation
-        && !deployUnderControlFlow && supportedValueDeploy && !deploymentStateInitializationUnsupported
+        && supportedConditionalDeploy && supportedValueDeploy && !deploymentStateInitializationUnsupported
         && !deploymentRecipeUnsupported && closureNames.size === 1;
       if (kernelDeploySupported) {
         kernelDeploymentHandlers.add(fn);
         kernelDeploymentSiteCounts.set(fn, deploySites);
+        kernelDeploymentSiteWidths.set(fn, deploymentSiteWidths);
+        if (conditionalDeploySites > 0) kernelConditionalDeploymentHandlers.add(fn);
       }
       // Expression keys (including nested `if` / helper-inlined writes), parameter-array loops, literal
       // `new T[](N)` locals (N<=64, unrolled to scalar writes), and canonical counter-keyed `m[i]` / `m[k][i]`
@@ -4559,12 +4663,30 @@ function synthesizeMessageBusRoute(
       .filter((parameter) => !parameter.name.startsWith('__internal__'))
       .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
+  const routeMaximumRows = resourceShapedHandler
+    ? (compilerOptions.maximumInputBytes !== undefined
+      && compilerOptions.maximumInputBytes > MAX_INPUT_BYTESIZE
+      ? MAX_MESSAGE_BUS_ROWS : RESOURCE_SHAPED_BATCH_ROWS)
+    : MAX_MESSAGE_BUS_ROWS;
+  const kernelDeploymentFrameWidth = Math.max(0, ...eligible.map((fn) =>
+    (kernelDeploymentSiteWidths.get(fn) ?? []).reduce((total, width) => total + width, 0)));
   const kernelDeploymentSelectorRegistration = eligible
     .filter((fn) => kernelDeploymentHandlers.has(fn))
     .map((fn) => {
       const siteCount = kernelDeploymentSiteCounts.get(fn) ?? 0;
-      const pairs = Array.from({ length: siteCount }, (_, siteIndex) =>
-        `activeDeploymentParents = bytes.concat(activeDeploymentParents, toPaddedBytes(row, 2), toPaddedBytes(${siteIndex}, 2));`)
+      const conditional = kernelConditionalDeploymentHandlers.has(fn);
+      const widths = kernelDeploymentSiteWidths.get(fn) ?? [];
+      let spanOffset = 0;
+      const pairs = Array.from({ length: siteCount }, (_, siteIndex) => {
+        const width = widths[siteIndex] ?? 0;
+        const offset = spanOffset;
+        spanOffset += width;
+        return `activeDeploymentParents = bytes.concat(activeDeploymentParents,
+                toPaddedBytes(row, 2), toPaddedBytes(${siteIndex}, 2), bytes1(${conditional ? 1 : 0}),
+                toPaddedBytes(activeFixedSize - ${routeMaximumRows * kernelDeploymentFrameWidth}
+                  + consumedLocalRows * ${kernelDeploymentFrameWidth} + ${offset}, 2),
+                toPaddedBytes(${width}, 2));`;
+      })
         .join('\n              ');
       return `if (callManifest.slice(rowStart + 10, rowStart + 14) == hex"${selector(fn)}") {
               ${pairs}
@@ -4574,11 +4696,6 @@ function synthesizeMessageBusRoute(
   // The production 10KB profile keeps the compact two-row resource route. Permissive development/compatibility
   // profiles can afford the fully unrolled row band, which is required when one physical collection owner is
   // reached repeatedly through a deeper call DAG (approve -> balanceOf -> transferFrom -> balanceOf).
-  const routeMaximumRows = resourceShapedHandler
-    ? (compilerOptions.maximumInputBytes !== undefined
-      && compilerOptions.maximumInputBytes > MAX_INPUT_BYTESIZE
-      ? MAX_MESSAGE_BUS_ROWS : RESOURCE_SHAPED_BATCH_ROWS)
-    : MAX_MESSAGE_BUS_ROWS;
   // message-bus batch graph handlers share one physical route. Plan blockhash reads before SynthesizeBlockOracle runs:
   // every row gets a fixed band whose width is the widest selectable handler, so a different selector cannot
   // shift any later owner's inputs. Computed reads retain the same stable per-call-site keys as the oracle pass.
@@ -6290,7 +6407,7 @@ function synthesizeMessageBusRoute(
             } else if (kind == 5) {
               require(targetSlot > previousDeploymentTarget);
               previousDeploymentTarget = targetSlot;
-              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) == 0);
+              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 1);
               require(parent < invocationRows
                 && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
               require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
@@ -6443,19 +6560,35 @@ function synthesizeMessageBusRoute(
             if (__message_bus_row_owner == activeParticipant) { activeTokenRows = activeTokenRows + 1; }
           }` : ''}
           if (kind == 5 && __message_bus_row_owner == activeParticipant) {
-            require(rowSubject.length == 0 && rowArguments.length == 34 && rowResult.length == 0
-              && rowEffect.length >= 15);
+            bigint deploymentMode = int(bytes.concat(
+              callManifest.slice(rowStart + 5, rowStart + 6), hex"00"
+            ));
+            require(rowSubject.length == 0 && rowResult.length == 0
+              && ((deploymentMode == 0 && rowArguments.length == 34 && rowEffect.length >= 15)
+                || (deploymentMode == 1 && rowArguments.length == 2 && rowEffect.length == 2)));
             bigint deploymentSite = int(bytes.concat(rowArguments.slice(0, 2), hex"00"));
             bigint expectedDeploymentParentMatches = 0;
+            bigint expectedConditionalDeployment = 0;
+            bigint expectedDeploymentTarget = 65535;
+            bigint expectedDeploymentWidth = 0;
             bigint settledDeploymentParentMatches = 0;
             for (bigint deploymentParent = 0; deploymentParent < activeDeploymentParents.length;
-              deploymentParent = deploymentParent + 4) {
+              deploymentParent = deploymentParent + 9) {
               if (int(bytes.concat(activeDeploymentParents.slice(
                 deploymentParent, deploymentParent + 2
               ), hex"00")) == parent && int(bytes.concat(activeDeploymentParents.slice(
                 deploymentParent + 2, deploymentParent + 4
               ), hex"00")) == deploymentSite) {
                 expectedDeploymentParentMatches = expectedDeploymentParentMatches + 1;
+                expectedConditionalDeployment = int(bytes.concat(activeDeploymentParents.slice(
+                  deploymentParent + 4, deploymentParent + 5
+                ), hex"00"));
+                expectedDeploymentTarget = int(bytes.concat(activeDeploymentParents.slice(
+                  deploymentParent + 5, deploymentParent + 7
+                ), hex"00"));
+                expectedDeploymentWidth = int(bytes.concat(activeDeploymentParents.slice(
+                  deploymentParent + 7, deploymentParent + 9
+                ), hex"00"));
               }
             }
             for (bigint deploymentParent = 0; deploymentParent < settledDeploymentParents.length;
@@ -6468,20 +6601,41 @@ function synthesizeMessageBusRoute(
                 settledDeploymentParentMatches = settledDeploymentParentMatches + 1;
               }
             }
-            require(expectedDeploymentParentMatches == 1 && settledDeploymentParentMatches == 0);
+            require(expectedDeploymentParentMatches == 1 && settledDeploymentParentMatches == 0
+              && (deploymentMode == 0 || expectedConditionalDeployment == 1)
+              && targetOffset == expectedDeploymentTarget);
             settledDeploymentParents = bytes.concat(
               settledDeploymentParents, toPaddedBytes(parent, 2), toPaddedBytes(deploymentSite, 2)
             );
             activeDeploymentRows = activeDeploymentRows + 1;
+            bigint deploymentOutputCount = int(bytes.concat(rowEffect.slice(0, 2), hex"00"));
+            require(deploymentOutputCount == expectedDeploymentWidth
+              && deploymentOutputCount >= 1 && targetOffset + deploymentOutputCount <= participantSize);
+            activeDeploymentTargets = bytes.concat(
+              activeDeploymentTargets, toPaddedBytes(targetSlot, 2), toPaddedBytes(deploymentOutputCount, 2)
+            );
+            for (bigint deploymentInput = 0; deploymentInput < deploymentOutputCount;
+              deploymentInput = deploymentInput + 1) {
+              if (deploymentMode == 1 || deploymentInput > 0) {
+                require(tx.inputs[sourceSlot + deploymentInput].lockingBytecode
+                    == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}"
+                  && tx.inputs[sourceSlot + deploymentInput].tokenCategory.length == 0);
+              }
+            }
+            if (deploymentMode == 1) {
+              for (bigint deploymentOutput = 0; deploymentOutput < deploymentOutputCount;
+                deploymentOutput = deploymentOutput + 1) {
+                require(tx.outputs[targetSlot + deploymentOutput].lockingBytecode == hex"51"
+                  && tx.outputs[targetSlot + deploymentOutput].tokenCategory.length == 0
+                  && tx.outputs[targetSlot + deploymentOutput].nftCommitment.length == 0
+                  && tx.outputs[targetSlot + deploymentOutput].tokenAmount == 0
+                  && tx.outputs[targetSlot + deploymentOutput].value == 1000);
+              }
+            } else {
             bytes deploymentCategory = rowArguments.slice(2, 34);
             require(tx.inputs[sourceSlot].tokenCategory.length == 0);
             require(tx.inputs[sourceSlot].outpointIndex == 0);
             require(tx.inputs[sourceSlot].outpointTransactionHash == deploymentCategory);
-            bigint deploymentOutputCount = int(bytes.concat(rowEffect.slice(0, 2), hex"00"));
-            require(deploymentOutputCount >= 1 && targetOffset + deploymentOutputCount <= participantSize);
-            activeDeploymentTargets = bytes.concat(
-              activeDeploymentTargets, toPaddedBytes(targetSlot, 2), toPaddedBytes(deploymentOutputCount, 2)
-            );
             bigint deploymentCursor = 2;
             for (bigint deploymentOutput = 0; deploymentOutput < deploymentOutputCount;
               deploymentOutput = deploymentOutput + 1) {
@@ -6530,6 +6684,7 @@ function synthesizeMessageBusRoute(
               }
             }
             require(deploymentCategoryOutputs == deploymentOutputCount);
+            }
           }
           ${sidecarVerificationMode ? `if (kind == 6 && __message_bus_row_owner == activeParticipant) {
             require(rowSubject.length > 0 && rowArguments.length >= 32 && rowResult.length == 0
@@ -6733,7 +6888,7 @@ function synthesizeMessageBusRoute(
         require(activeValueRows == physicalValueOutputs);
         require(activeTokenRows == physicalTokenOutputs);
         require(activeDeploymentRows == activeDeploymentInvocations
-          && settledDeploymentParents.length == activeDeploymentParents.length);
+          && settledDeploymentParents.length * 9 == activeDeploymentParents.length * 4);
         require(activeSidecarRows * 2 == activeSidecarTargets.length);
         require(cursor == callManifest.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);

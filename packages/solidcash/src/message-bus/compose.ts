@@ -1419,19 +1419,50 @@ export class AtomicMessageBusComposition {
           candidate.selector === plan.invocations[invocationIndex].selectorHex);
         const sites = handler?.childDeployments ?? [];
         if (sites.length === 0) return [];
-        if (sites.some((site, index) => site.occurrence !== 'once' || site.siteIndex !== index)) {
-          throw new Error(`messageBus: invocation ${invocationIndex} has no canonical straight-line deployment sequence`);
+        let expectedSpanOffset = 0;
+        if (sites.some((site, index) => {
+          const valid = site.siteIndex === index
+            && (site.occurrence === 'once'
+              || (site.occurrence === 'conditional' && site.activation !== undefined))
+            && (site.spanOffset ?? expectedSpanOffset) === expectedSpanOffset
+            && (site.spanWidth ?? site.totalOutputCount) === site.totalOutputCount;
+          expectedSpanOffset += site.totalOutputCount;
+          return !valid;
+        })) {
+          throw new Error(`messageBus: invocation ${invocationIndex} has no canonical deployment sequence`);
         }
         const deploymentSlot = deploymentSlots[row];
         if (deploymentSlot?.slotIndex === undefined) {
           throw new Error(`messageBus: compiler layout has no deployment slot for selected row ${row}`);
         }
-        let siteOffset = 0;
         return sites.map((site) => {
-          const offset = deploymentSlot.offset + siteOffset;
-          siteOffset += 1 + site.dataNftOutputCount;
+          const offset = deploymentSlot.offset + (site.spanOffset ?? sites.slice(0, site.siteIndex)
+            .reduce((width, prior) => width + prior.totalOutputCount, 0));
+          const inputTypes = handler?.inputs.map((input) => input.type) ?? [];
+          const solidityAbi = artifactUsesSolidityAbi(participant.artifact);
+          const activation = site.activation === undefined ? true
+            : evaluateChildDeploymentRecipe(site.activation, descriptor.args, inputTypes, solidityAbi);
+          if (typeof activation !== 'boolean') {
+            throw new Error(`messageBus: child deployment activation at site ${site.siteIndex} is not boolean`);
+          }
           const suppliedIndex = suppliedDeployments.findIndex((candidate) =>
             candidate.invocationIndex === invocationIndex && candidate.siteIndex === site.siteIndex);
+          if (!activation) {
+            if (suppliedIndex >= 0) {
+              throw new Error(
+                `messageBus: inactive child deployment at invocation ${invocationIndex}, site ${site.siteIndex} must not supply genesis`,
+              );
+            }
+            return {
+              participant: participant.participant,
+              invocation: invocationIndex,
+              siteIndex: site.siteIndex,
+              offset,
+              slotOffset: offset,
+              active: false as const,
+              outputs: [] as Output[],
+            };
+          }
           if (suppliedIndex < 0) {
             throw new Error(`messageBus: missing child genesis for invocation ${invocationIndex}, site ${site.siteIndex}`);
           }
@@ -1470,8 +1501,6 @@ export class AtomicMessageBusComposition {
               );
             }
           }
-          const inputTypes = handler?.inputs.map((input) => input.type) ?? [];
-          const solidityAbi = artifactUsesSolidityAbi(participant.artifact);
           const constructorArgs = site.constructorArgs.slice(0, childArtifact.constructorInputs.length).map((source) => {
             if (source.kind === 'expression') {
               throw new Error(`messageBus: child constructor expression at site ${site.siteIndex} is not materializable`);
@@ -1560,6 +1589,7 @@ export class AtomicMessageBusComposition {
             siteIndex: site.siteIndex,
             offset,
             slotOffset: offset,
+            active: true as const,
             genesis,
             outputs,
             ...(valueTransfer && { valueTransfer }),
@@ -1570,9 +1600,10 @@ export class AtomicMessageBusComposition {
     if (usedDeployments.size !== suppliedDeployments.length) {
       throw new Error('messageBus: child genesis input does not name a selected compiler-published deployment site');
     }
-    const genesisOutpoints = new Set(materializedDeployments.map((deployment) =>
-      `${deployment.genesis.txid.toLowerCase()}:${deployment.genesis.vout}`));
-    if (genesisOutpoints.size !== materializedDeployments.length) {
+    const activeDeployments = materializedDeployments.filter((deployment) => deployment.active);
+    const genesisOutpoints = new Set(activeDeployments.map((deployment) =>
+      `${deployment.genesis!.txid.toLowerCase()}:${deployment.genesis!.vout}`));
+    if (genesisOutpoints.size !== activeDeployments.length) {
       throw new Error('messageBus: child deployment genesis outpoints must be unique');
     }
     const deploymentEffects: AtomicDeploymentSlotEffect[] = materializedDeployments.map((deployment) => ({
@@ -1580,8 +1611,11 @@ export class AtomicMessageBusComposition {
       invocation: deployment.invocation,
       siteIndex: deployment.siteIndex,
       offset: deployment.offset,
-      genesisTransactionHashHex: deployment.genesis.txid,
-      genesisOutputIndex: deployment.genesis.vout,
+      active: deployment.active,
+      ...(deployment.active && {
+        genesisTransactionHashHex: deployment.genesis!.txid,
+        genesisOutputIndex: deployment.genesis!.vout,
+      }),
       outputs: deployment.outputs.map((output) => {
         if (!output.token?.nft) throw new Error('messageBus: child deployment output is missing its NFT');
         return {
@@ -1750,8 +1784,9 @@ export class AtomicMessageBusComposition {
           }),
           logicalIdentities.get(participant.participant),
         );
-        for (const deployment of materializedDeployments.filter((candidate) =>
-          candidate.participant === participant.participant)) {
+        for (const deployment of materializedDeployments) {
+          if (deployment.participant !== participant.participant || !deployment.active
+            || !('genesis' in deployment)) continue;
           localCall._withChildDeployment(
             deployment.slotOffset, deployment.genesis, deployment.outputs,
           );

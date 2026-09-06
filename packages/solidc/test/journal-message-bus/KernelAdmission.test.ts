@@ -2273,7 +2273,7 @@ describe('required kernel admission', () => {
     expect(byInput.get('bytes')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
-  it('inlines a straight-line helper deployment and keeps conditional deployment fenced', () => {
+  it('inlines a straight-line helper deployment and admits one pure conditional deployment', () => {
     const artifact = compileString(`contract Unit() { int marker; }
       contract Coordinator() {
         function helper() internal { Unit child = new Unit(); }
@@ -2283,7 +2283,13 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'throughHelper'))
       .toMatchObject({ eligible: true, childDeployments: [{ occurrence: 'once', siteIndex: 0 }] });
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'conditional'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{
+          occurrence: 'conditional', siteIndex: 0, spanOffset: 0, spanWidth: 2,
+          activation: { kind: 'handlerInput', inputIndex: 0, resultType: 'bool' },
+        }],
+      });
   });
 
   it('keeps straight-line, conditional, and loop child sites as separate topology occurrences', () => {

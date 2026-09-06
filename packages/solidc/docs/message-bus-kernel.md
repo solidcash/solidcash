@@ -581,10 +581,10 @@ transitively read-only `pure` helper preserves its symbolic plan. A unique `pure
 through explicit `memory` parameters: scalar parameters and helper locals are substituted into each caller
 array's symbolic plan, and finite nested `if`/`else` and `switch` writes use the same path joins as direct source
 code, matching the compiler's pass-by-reference memory model. Several array parameters are replayable when the
-caller supplies distinct constructed arrays and no mutation expression reads another array; caller aliasing or
-cross-array reads remain fenced until a joint alias model can preserve their shared history. A helper which does
-not rebind a replayed parameter may also push and pop through the shared alias; those operations advance the
-symbolic length at their exact source point.
+caller supplies distinct constructed arrays; element reads across those parameters resolve against a
+joint source-order history. Caller aliasing remains fenced because two formal names can then mutate the same
+storage without an explicit may-alias relation. A helper which does not rebind a replayed parameter may also push
+and pop through the shared alias; those operations advance the symbolic length at their exact source point.
 Mixed push/pop paths which restore their entry length without popping into the pre-existing prefix are replayed
 independently per logical iteration, including finite `if`/`else` and `switch` paths. Other mixed push/pop
 operations in a counter-dependent resize recurrence, a push value derived

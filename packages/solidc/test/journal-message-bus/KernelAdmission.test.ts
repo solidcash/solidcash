@@ -1108,15 +1108,16 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('replays independent constructed-key mutations through distinct memory aliases', () => {
+  it('replays distinct memory aliases with source-ordered cross-array reads', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) leftSlots;
       mapping(int => int) rightSlots;
       function mutate(int[] memory left, int[] memory right, int a, int b) internal pure {
-        left[0] = a;
         right[0] = b;
+        left[0] = right[0] + a;
       }
       function copyKey(int[] memory left, int[] memory right) internal pure {
+        right[0] = 9;
         left[0] = right[0];
       }
       function write(int n, int a, int b) public {
@@ -1153,7 +1154,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'aliased'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'crossRead'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+      .toMatchObject({ eligible: true });
   });
 
   it('replays helper-side constructed-key resizing through the shared memory alias', () => {

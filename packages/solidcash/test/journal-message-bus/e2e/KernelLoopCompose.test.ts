@@ -5428,14 +5428,14 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(902n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
-  it('settles independent constructed-key mutations through distinct memory aliases', async () => {
+  it('settles source-ordered cross-array reads through distinct memory aliases', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelDistinctHelperAliases() {
       mapping(int => int) leftSlots;
       mapping(int => int) rightSlots;
       function mutate(int[] memory left, int[] memory right, int a, int b) internal pure {
-        left[0] = a;
         right[0] = b;
+        left[0] = right[0] + a;
       }
       function write(int n, int a, int b) public {
         int[] memory left = new int[](n);
@@ -5459,7 +5459,7 @@ describe('kernel composite counter-key settlement', () => {
     const contract = StatefulContract.withCategory(inner, categoryId);
     await expect(contract.batch([{ function: 'write', args: [2n, 700n, 800n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    await expect(contract.call.checkLeft(700n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(1500n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(0n, 11n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(800n, 20n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(0n, 21n).send()).resolves.toBeDefined();

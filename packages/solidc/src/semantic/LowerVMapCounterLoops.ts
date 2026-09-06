@@ -5218,134 +5218,207 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && call.parameters[index] instanceof IdentifierNode
             && active.has((call.parameters[index] as IdentifierNode).name));
         if (arrayParameters.length === 0) return replayed;
-        // Replaying each parameter independently is sound only when the caller supplies distinct arrays and no
-        // mutation expression reads an array object. The summary below enforces the latter for every parameter;
-        // reject caller aliasing here so two formal names cannot conceal one shared mutation history.
+        // Formal parameters may share a source-order summary only when the caller supplies distinct arrays.
+        // Duplicate caller names require a true may-alias model: reject them so two formal names cannot conceal
+        // one shared mutation history.
         const callerArrayNames = arrayParameters.map(({ index }) =>
           (call.parameters[index] as IdentifierNode).name);
         if (new Set(callerArrayNames).size !== callerArrayNames.length) return replayed;
-        const summarizedPlans = new Map<string, ArrayPlan>();
-        for (const { parameter: arrayParameter, index: arrayParameterIndex } of arrayParameters) {
-          const callerArray = call.parameters[arrayParameterIndex] as IdentifierNode;
+        const arrayNames = new Set(target.parameters
+          .filter((candidate) => candidate.type instanceof ArrayType).map((candidate) => candidate.name));
+        const callerNamesByParameter = new Map<string, string>();
+        const initialPlans = new Map<string, ArrayPlan>();
+        for (const { parameter, index } of arrayParameters) {
+          const callerArray = call.parameters[index] as IdentifierNode;
           const sourcePlan = active.get(callerArray.name)!;
           if (sourcePlan.recurrence) return new Set();
-          const initialPlan = copyPlans(new Map([[callerArray.name, sourcePlan]])).get(callerArray.name)!;
-          const initialValues = new Map<string, ExpressionNode>();
-          target.parameters.forEach((candidate, index) => {
-            // Keep every array formal visible to `safe`: substituting another array's caller name first could
-            // hide a cross-array read whenever the caller chose a different identifier spelling.
-            if (index === arrayParameterIndex || candidate.type instanceof ArrayType) return;
-            initialValues.set(candidate.name, replaceSnapshots(call.parameters[index], snapshots));
-          });
-          const arrayNames = new Set(target.parameters
-            .filter((candidate) => candidate.type instanceof ArrayType).map((candidate) => candidate.name));
-          const safe = (expression: ExpressionNode): boolean => !containsNamedIdentifier(expression, arrayNames);
-          const clonePlan = (plan: ArrayPlan): ArrayPlan => copyPlans(
-            new Map([[callerArray.name, plan]]),
-          ).get(callerArray.name)!;
-          const mergePlans = (
-            base: ArrayPlan,
-            arms: readonly { plan: ArrayPlan; condition?: ExpressionNode }[],
-          ): ArrayPlan => {
-            const merged = clonePlan(base);
-            for (const { plan, condition } of arms) {
-              for (const write of plan.writes.slice(base.writes.length)) {
-                merged.writes.push({
-                  index: cloneNode(write.index) as ExpressionNode,
-                  value: cloneNode(write.value) as ExpressionNode,
-                  ...(condition && { condition: branchCondition(condition, write.condition, false) }),
-                  ...(!condition && write.condition && {
-                    condition: cloneNode(write.condition) as ExpressionNode,
-                  }),
-                });
-              }
+          callerNamesByParameter.set(parameter.name, callerArray.name);
+          initialPlans.set(parameter.name, copyPlans(
+            new Map([[parameter.name, sourcePlan]]),
+          ).get(parameter.name)!);
+        }
+        const initialValues = new Map<string, ExpressionNode>();
+        target.parameters.forEach((candidate, index) => {
+          if (candidate.type instanceof ArrayType) return;
+          initialValues.set(candidate.name, replaceSnapshots(call.parameters[index], snapshots));
+        });
+        const clonePlan = (name: string, plan: ArrayPlan): ArrayPlan => copyPlans(
+          new Map([[name, plan]]),
+        ).get(name)!;
+        const mergePlan = (
+          name: string,
+          base: ArrayPlan,
+          arms: readonly { plan: ArrayPlan; condition?: ExpressionNode }[],
+        ): ArrayPlan => {
+          const merged = clonePlan(name, base);
+          for (const { plan, condition } of arms) {
+            for (const write of plan.writes.slice(base.writes.length)) {
+              merged.writes.push({
+                index: cloneNode(write.index) as ExpressionNode,
+                value: cloneNode(write.value) as ExpressionNode,
+                ...(condition && { condition: branchCondition(condition, write.condition, false) }),
+                ...(!condition && write.condition && {
+                  condition: cloneNode(write.condition) as ExpressionNode,
+                }),
+              });
             }
-            let length = cloneNode(arms[arms.length - 1].plan.length) as ExpressionNode;
+          }
+          let length = cloneNode(arms[arms.length - 1].plan.length) as ExpressionNode;
+          for (let index = arms.length - 2; index >= 0; index -= 1) {
+            const selected = new TernaryOpNode(
+              cloneNode(arms[index].condition!), cloneNode(arms[index].plan.length), length,
+            );
+            selected.location = arms[index].condition!.location;
+            selected.type = arms[index].plan.length.type ?? length.type;
+            length = selected;
+          }
+          merged.length = length;
+          return merged;
+        };
+        const mergeValues = (
+          base: ReadonlyMap<string, ExpressionNode>,
+          arms: readonly { values: ReadonlyMap<string, ExpressionNode>; condition?: ExpressionNode }[],
+        ): Map<string, ExpressionNode> => {
+          const merged = new Map<string, ExpressionNode>();
+          const names = new Set([
+            ...base.keys(),
+            ...[...arms[0].values.keys()].filter((name) =>
+              arms.every((arm) => arm.values.has(name))),
+          ]);
+          for (const name of names) {
+            const fallback = arms[arms.length - 1].values.get(name) ?? base.get(name);
+            if (!fallback) continue;
+            let value = cloneNode(fallback) as ExpressionNode;
             for (let index = arms.length - 2; index >= 0; index -= 1) {
+              const armValue = arms[index].values.get(name) ?? base.get(name);
+              if (!armValue) continue;
               const selected = new TernaryOpNode(
-                cloneNode(arms[index].condition!), cloneNode(arms[index].plan.length), length,
+                cloneNode(arms[index].condition!), cloneNode(armValue), value,
               );
               selected.location = arms[index].condition!.location;
-              selected.type = arms[index].plan.length.type ?? length.type;
-              length = selected;
+              selected.type = armValue.type ?? value.type;
+              value = selected;
             }
-            merged.length = length;
-            return merged;
-          };
-          const mergeValues = (
-            base: ReadonlyMap<string, ExpressionNode>,
-            arms: readonly { values: ReadonlyMap<string, ExpressionNode>; condition?: ExpressionNode }[],
-          ): Map<string, ExpressionNode> => {
-            const merged = new Map<string, ExpressionNode>();
-            const names = new Set([
-              ...base.keys(),
-              ...[...arms[0].values.keys()].filter((name) =>
-                arms.every((arm) => arm.values.has(name))),
-            ]);
-            for (const name of names) {
-              const fallback = arms[arms.length - 1].values.get(name) ?? base.get(name);
-              if (!fallback) continue;
-              let value = cloneNode(fallback) as ExpressionNode;
-              for (let index = arms.length - 2; index >= 0; index -= 1) {
-                const armValue = arms[index].values.get(name) ?? base.get(name);
-                if (!armValue) continue;
-                const selected = new TernaryOpNode(
-                  cloneNode(arms[index].condition!), cloneNode(armValue), value,
-                );
-                selected.location = arms[index].condition!.location;
-                selected.type = armValue.type ?? value.type;
-                value = selected;
+            merged.set(name, value);
+          }
+          return merged;
+        };
+        type HelperSummary = {
+          plans: Map<string, ArrayPlan>;
+          values: Map<string, ExpressionNode>;
+        };
+        const replayExpression = (
+          expression: ExpressionNode,
+          values: ReadonlyMap<string, ExpressionNode>,
+          helperPlans: ReadonlyMap<string, ArrayPlan>,
+        ): ExpressionNode | undefined => {
+          const resolve = (candidate: ExpressionNode): ExpressionNode | undefined => {
+            // Numeric-literal indexing parses as tuple extraction before type resolution, including for arrays.
+            // Normalize that representation into the same symbolic array read used by runtime indices.
+            if (candidate instanceof TupleIndexOpNode && candidate.tuple instanceof IdentifierNode
+              && arrayNames.has(candidate.tuple.name)) {
+              const plan = helperPlans.get(candidate.tuple.name);
+              if (!plan) return undefined;
+              const index = new IntLiteralNode(BigInt(candidate.index));
+              index.location = candidate.location;
+              const access = new ArrayAccessNode(cloneNode(candidate.tuple), index);
+              access.location = candidate.location;
+              access.type = candidate.type;
+              return symbolicRead(access, plan);
+            }
+            if (candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
+              && arrayNames.has(candidate.array.name)) {
+              const plan = helperPlans.get(candidate.array.name);
+              if (!plan) return undefined;
+              const index = resolve(candidate.index);
+              if (!index) return undefined;
+              const access = cloneNode(candidate) as ArrayAccessNode;
+              access.index = index;
+              return symbolicRead(access, plan);
+            }
+            if (candidate instanceof FieldAccessNode && candidate.name === 'length'
+              && candidate.expression instanceof IdentifierNode
+              && arrayNames.has(candidate.expression.name)) {
+              const plan = helperPlans.get(candidate.expression.name);
+              return plan ? cloneNode(plan.length) as ExpressionNode : undefined;
+            }
+            if (candidate instanceof IdentifierNode && arrayNames.has(candidate.name)) return undefined;
+            const replaced = cloneNode(candidate) as ExpressionNode;
+            for (const key of Object.keys(replaced)) {
+              if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
+                || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
+                || key === 'stateVariable' || key === 'identifier') continue;
+              const value = (replaced as unknown as Record<string, unknown>)[key];
+              if (value instanceof ExpressionNode) {
+                const child = resolve(value);
+                if (!child) return undefined;
+                (replaced as unknown as Record<string, unknown>)[key] = child;
+              } else if (Array.isArray(value)) {
+                const children: unknown[] = [];
+                for (const item of value) {
+                  if (!(item instanceof ExpressionNode)) { children.push(item); continue; }
+                  const child = resolve(item);
+                  if (!child) return undefined;
+                  children.push(child);
+                }
+                (replaced as unknown as Record<string, unknown>)[key] = children;
               }
-              merged.set(name, value);
             }
-            return merged;
+            return replaced;
           };
-        type HelperSummary = { plan: ArrayPlan; values: Map<string, ExpressionNode> };
+          return resolve(replaceSnapshots(expression, values));
+        };
         const summarize = (
           helperBlock: BlockNode,
           source: HelperSummary,
           allowTerminalReturn: boolean,
         ): HelperSummary | undefined => {
-          let plan = clonePlan(source.plan);
+          let helperPlans = copyPlans(source.plans);
           let values = new Map(source.values);
-          const replay = (expression: ExpressionNode): ExpressionNode => replaceSnapshots(expression, values);
+          const replay = (expression: ExpressionNode): ExpressionNode | undefined =>
+            replayExpression(expression, values, helperPlans);
           const body = helperBlock.statements ?? [];
           for (let index = 0; index < body.length; index += 1) {
             const helperStatement = body[index];
             if (helperStatement instanceof VariableDefinitionNode && helperStatement.expression) {
               const expression = replay(helperStatement.expression);
-              if (!safe(expression)) return undefined;
+              if (!expression) return undefined;
               values.set(helperStatement.name, expression);
               continue;
             }
             if (helperStatement instanceof AssignNode
               && arrayNames.has(helperStatement.identifier.name)) return undefined;
-            if (helperStatement instanceof AssignNode
-              && helperStatement.identifier.name !== arrayParameter.name) {
+            if (helperStatement instanceof AssignNode) {
               const expression = replay(helperStatement.expression);
-              if (!safe(expression)) return undefined;
+              if (!expression) return undefined;
               values.set(helperStatement.identifier.name, expression);
               continue;
             }
-            if (helperStatement instanceof ArrayAssignNode && helperStatement.name === arrayParameter.name) {
+            if (helperStatement instanceof ArrayAssignNode && arrayNames.has(helperStatement.name)) {
+              const plan = helperPlans.get(helperStatement.name);
+              if (!plan) return undefined;
               const assignedIndex = replay(helperStatement.index);
               const assignedValue = replay(helperStatement.value);
-              if (!safe(assignedIndex) || !safe(assignedValue)) return undefined;
+              if (!assignedIndex || !assignedValue) return undefined;
               plan.writes.push({ index: assignedIndex, value: assignedValue });
               continue;
             }
-            if (helperStatement instanceof ArrayDeleteNode && helperStatement.name === arrayParameter.name) {
+            if (helperStatement instanceof ArrayDeleteNode && arrayNames.has(helperStatement.name)) {
+              const plan = helperPlans.get(helperStatement.name);
+              if (!plan) return undefined;
               const deletedIndex = replay(helperStatement.index);
-              if (!safe(deletedIndex)) return undefined;
+              if (!deletedIndex) return undefined;
               plan.writes.push({
                 index: deletedIndex,
                 value: cloneNode(plan.defaultValue) as ExpressionNode,
               });
               continue;
             }
-            if (helperStatement instanceof ArrayPushNode && helperStatement.name === arrayParameter.name) {
+            if (helperStatement instanceof ArrayPushNode && arrayNames.has(helperStatement.name)) {
+              const plan = helperPlans.get(helperStatement.name);
+              if (!plan) return undefined;
               const pushedValue = replay(helperStatement.value);
-              if (!safe(pushedValue)) return undefined;
+              if (!pushedValue) return undefined;
               plan.writes.push({
                 index: cloneNode(plan.length) as ExpressionNode,
                 value: pushedValue,
@@ -5359,7 +5432,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               plan.length = length;
               continue;
             }
-            if (helperStatement instanceof ArrayPopNode && helperStatement.name === arrayParameter.name) {
+            if (helperStatement instanceof ArrayPopNode && arrayNames.has(helperStatement.name)) {
+              const plan = helperPlans.get(helperStatement.name);
+              if (!plan) return undefined;
               const one = new IntLiteralNode(1n);
               one.location = helperStatement.location;
               one.type = plan.length.type ?? new IntType(true, 256);
@@ -5369,28 +5444,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               plan.length = length;
               continue;
             }
-            // Mutations of another distinct memory parameter are summarized by its own pass. Validate their
-            // operands here as well: an array-derived index/value would couple the two summaries and requires a
-            // joint alias model rather than independent symbolic plans.
-            if (helperStatement instanceof ArrayAssignNode && arrayNames.has(helperStatement.name)) {
-              const assignedIndex = replay(helperStatement.index);
-              const assignedValue = replay(helperStatement.value);
-              if (!safe(assignedIndex) || !safe(assignedValue)) return undefined;
-              continue;
-            }
-            if (helperStatement instanceof ArrayDeleteNode && arrayNames.has(helperStatement.name)) {
-              if (!safe(replay(helperStatement.index))) return undefined;
-              continue;
-            }
-            if (helperStatement instanceof ArrayPushNode && arrayNames.has(helperStatement.name)) {
-              if (!safe(replay(helperStatement.value))) return undefined;
-              continue;
-            }
-            if (helperStatement instanceof ArrayPopNode && arrayNames.has(helperStatement.name)) continue;
             if (helperStatement instanceof BranchNode) {
               const condition = replay(helperStatement.condition);
-              if (!safe(condition)) return undefined;
-              const base = { plan: clonePlan(plan), values: new Map(values) };
+              if (!condition) return undefined;
+              const base = { plans: copyPlans(helperPlans), values: new Map(values) };
               const ifSummary = summarize(helperStatement.ifBlock, base, false);
               const elseSummary = helperStatement.elseBlock
                 ? summarize(helperStatement.elseBlock, base, false) : base;
@@ -5401,21 +5458,28 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 { ...ifSummary, condition },
                 { ...elseSummary, condition: otherwise as ExpressionNode },
               ];
-              plan = mergePlans(base.plan, arms);
+              helperPlans = new Map([...base.plans].map(([name, plan]) => [name, mergePlan(
+                name,
+                plan,
+                arms.map((arm) => ({ plan: arm.plans.get(name)!, condition: arm.condition })),
+              )]));
               values = mergeValues(base.values, arms);
               continue;
             }
             if (helperStatement instanceof SwitchNode) {
               const selectedValue = replay(helperStatement.expression);
-              if (!safe(selectedValue)) return undefined;
-              const base = { plan: clonePlan(plan), values: new Map(values) };
-              const conditions = helperStatement.cases.map((candidate) => {
+              if (!selectedValue) return undefined;
+              const base = { plans: copyPlans(helperPlans), values: new Map(values) };
+              const conditions: ExpressionNode[] = [];
+              for (const candidate of helperStatement.cases) {
+                const caseValue = replay(candidate.value);
+                if (!caseValue) return undefined;
                 const condition = new BinaryOpNode(
-                  cloneNode(selectedValue), BinaryOperator.EQ, replay(candidate.value),
+                  cloneNode(selectedValue), BinaryOperator.EQ, caseValue,
                 );
                 condition.location = candidate.location ?? helperStatement.location;
-                return condition;
-              });
+                conditions.push(condition);
+              }
               let anyCase: ExpressionNode | undefined;
               for (const condition of conditions) {
                 const combined = anyCase
@@ -5436,7 +5500,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 })),
                 { ...fallback, condition: fallbackCondition as ExpressionNode },
               ];
-              plan = mergePlans(base.plan, arms);
+              helperPlans = new Map([...base.plans].map(([name, plan]) => [name, mergePlan(
+                name,
+                plan,
+                arms.map((arm) => ({ plan: arm.plans.get(name)!, condition: arm.condition })),
+              )]));
               values = mergeValues(base.values, arms);
               continue;
             }
@@ -5445,15 +5513,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             if (helperStatement instanceof ReturnNode && allowTerminalReturn && index === body.length - 1) continue;
             return undefined;
           }
-          return { plan, values };
+          return { plans: helperPlans, values };
         };
-        const summary = summarize(target.body, { plan: initialPlan, values: initialValues }, true);
+        const summary = summarize(target.body, { plans: initialPlans, values: initialValues }, true);
         if (!summary) return new Set();
-        summarizedPlans.set(callerArray.name, summary.plan);
-        }
-        for (const [name, plan] of summarizedPlans) {
-          active.set(name, plan);
-          replayed.add(name);
+        for (const [parameterName, plan] of summary.plans) {
+          const callerName = callerNamesByParameter.get(parameterName)!;
+          active.set(callerName, plan);
+          replayed.add(callerName);
         }
         return replayed;
       };

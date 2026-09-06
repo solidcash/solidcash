@@ -2984,6 +2984,12 @@ describe('kernel counter-key mapping loop compose', () => {
     falsePresentAfter[22] &= ~0x02;
     const falseMutationIntent = new Uint8Array(originalAccessStream);
     falseMutationIntent[22] &= ~0x08;
+    const missingPhysicalAuthentication = new Uint8Array(originalAccessStream);
+    missingPhysicalAuthentication[22] &= ~0x20;
+    const wrongPhysicalAuthentication = new Uint8Array(originalAccessStream);
+    wrongPhysicalAuthentication[22] = (wrongPhysicalAuthentication[22] & ~0x20) | 0x10;
+    const duplicatePhysicalAuthentication = new Uint8Array(originalAccessStream);
+    duplicatePhysicalAuthentication[27] |= 0x20;
     const outOfRangePredecessor = new Uint8Array(originalAccessStream);
     outOfRangePredecessor[25] = journalRecords.length & 0xff;
     outOfRangePredecessor[26] = journalRecords.length >>> 8;
@@ -2996,6 +3002,9 @@ describe('kernel counter-key mapping loop compose', () => {
       ['wrong predecessor record', wrongPredecessorRecord],
       ['false present-before state', falsePresentBefore], ['false present-after state', falsePresentAfter],
       ['false mutation intent', falseMutationIntent],
+      ['missing physical authentication', missingPhysicalAuthentication],
+      ['wrong physical authentication', wrongPhysicalAuthentication],
+      ['duplicate physical authentication', duplicatePhysicalAuthentication],
       ['out-of-range target', outOfRangeTarget], ['out-of-range predecessor', outOfRangePredecessor],
     ] as const) {
       const hostileRouteParams = [...routeUnlocker.params];
@@ -3038,6 +3047,10 @@ describe('kernel counter-key mapping loop compose', () => {
     const nonzeroAbsentSuccessor = hostileRecord((record) => {
       record[1] = 0x0c; record[54] = 1; return record;
     });
+    const wrongPhysicalSuccessor = hostileRecord((record) => { record[54] ^= 0x01; return record; });
+    const wrongPhysicalValue = hostileRecord((record) => {
+      const copy = new Uint8Array(record.length + 1); copy.set(record); copy[copy.length - 1] = 1; return copy;
+    });
     for (const [label, hostileRecords] of [
       ['missing records', []],
       ['extra records', [...journalRecords, new Uint8Array(journalRecords[0] as Uint8Array)]],
@@ -3050,10 +3063,13 @@ describe('kernel counter-key mapping loop compose', () => {
       ['unknown flags', hostileRecord((record) => { record[1] |= 0x80; return record; })],
       ['authenticated synthetic', hostileRecord((record) => { record[1] = 0x09; return record; })],
       ['unauthenticated non-synthetic', hostileRecord((record) => { record[1] = 0; return record; })],
+      ['physical record relabeled synthetic', hostileRecord((record) => { record[1] = 0x0a; return record; })],
       ['clean synthetic live', hostileRecord((record) => { record[1] = 0x08; return record; })],
       ['clean tombstone', hostileRecord((record) => { record[1] = 0x04; return record; })],
       ['value-bearing tombstone', hostileRecord(() => valueTombstone)],
       ['nonzero absent successor', nonzeroAbsentSuccessor],
+      ['wrong physical successor', wrongPhysicalSuccessor],
+      ['wrong physical value', wrongPhysicalValue],
     ] as const) {
       const hostileRouteParams = [...routeUnlocker.params];
       hostileRouteParams[routeRecordIndex] = hostileRecords;

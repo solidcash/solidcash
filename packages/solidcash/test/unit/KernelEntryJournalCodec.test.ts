@@ -317,6 +317,10 @@ describe('kernel pending-entry journal codec', () => {
       targetRecordOrdinal: 1, presentBefore: true, presentAfter: true, mutates: false,
       authenticatesPredecessor: true,
     }])).toThrow('cannot authenticate an absent predecessor');
+    expect(() => encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
+      targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
+      presentBefore: false, presentAfter: true, mutates: true, authenticatesTarget: true,
+    }])).toThrow('cannot authenticate an absent target');
     expect(() => encodeKernelEntryJournalAccesses(bytes(19, 0), [])).toThrow('exactly 20');
     expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06))).toThrow('truncated');
     const valid = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
@@ -342,6 +346,13 @@ describe('kernel pending-entry journal codec', () => {
     falseAuthenticatedPredecessor[22] |= 0x20;
     expect(() => decodeKernelEntryJournalAccesses(falseAuthenticatedPredecessor))
       .toThrow('cannot authenticate an absent predecessor');
+    const falseAuthenticatedTarget = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
+      targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
+      presentBefore: false, presentAfter: true, mutates: true,
+    }]);
+    falseAuthenticatedTarget[22] |= 0x10;
+    expect(() => decodeKernelEntryJournalAccesses(falseAuthenticatedTarget))
+      .toThrow('cannot authenticate an absent target');
     const falseCleanTransition = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
       targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
       presentBefore: false, presentAfter: true, mutates: true,

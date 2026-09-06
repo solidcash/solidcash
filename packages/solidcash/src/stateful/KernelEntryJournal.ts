@@ -315,6 +315,9 @@ export function encodeKernelEntryJournalAccesses(
     if (access.authenticatesPredecessor && access.predecessorRecordOrdinal === undefined) {
       throw new Error('journal access cannot authenticate an absent predecessor');
     }
+    if (access.authenticatesTarget && !access.presentBefore) {
+      throw new Error('journal access cannot authenticate an absent target');
+    }
     let flags = 0;
     if (access.presentBefore) flags |= ACCESS_FLAG_PRESENT_BEFORE;
     if (access.presentAfter) flags |= ACCESS_FLAG_PRESENT_AFTER;
@@ -375,6 +378,9 @@ export function decodeKernelEntryJournalAccesses(encoded: Uint8Array): Journaled
     }
     if ((flags & ACCESS_FLAG_AUTHENTICATES_PREDECESSOR) !== 0 && !hasPredecessor) {
       throw new Error('journal access cannot authenticate an absent predecessor');
+    }
+    if ((flags & ACCESS_FLAG_AUTHENTICATES_TARGET) !== 0 && !presentBefore) {
+      throw new Error('journal access cannot authenticate an absent target');
     }
     return {
       targetRecordOrdinal,

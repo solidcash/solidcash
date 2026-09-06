@@ -5225,8 +5225,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         statement: StatementNode,
       ): Set<string> => {
         const replayed = new Set<string>();
-        if (!(statement instanceof FunctionCallStatementNode)) return replayed;
-        const call = statement.call;
+        const call = statement instanceof FunctionCallStatementNode
+          ? statement.call
+          : (statement instanceof VariableDefinitionNode || statement instanceof AssignNode)
+            && statement.expression instanceof FunctionCallNode
+            ? statement.expression : undefined;
+        if (!call) return replayed;
         const targets = (this.functionsByName.get(call.identifier.name) ?? [])
           .filter((candidate) => candidate.parameters.length === call.parameters.length);
         if (targets.length !== 1) return replayed;

@@ -1140,6 +1140,10 @@ describe('required kernel admission', () => {
       function outerCopy(int[] memory values, int next) internal pure {
         mutateCopy(values, values, next);
       }
+      function mutateReturning(int[] memory values, int next) internal pure returns (int) {
+        values[0] = next;
+        return next + 1;
+      }
       function write(int n, int a, int b) public {
         int[] memory left = new int[](n);
         int[] memory right = new int[](n);
@@ -1197,6 +1201,12 @@ describe('required kernel admission', () => {
         for (int i = 0; i < n; i = i + 1) { this.leftSlots[values[i]] = i; }
         require(true);
       }
+      function capturedReturn(int n, int next) public {
+        int[] memory values = new int[](n);
+        int observed = mutateReturning(values, next);
+        for (int i = 0; i < n; i = i + 1) { this.leftSlots[values[i]] = i; }
+        require(observed == next + 1);
+      }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
@@ -1221,6 +1231,8 @@ describe('required kernel admission', () => {
         expect.objectContaining({ collection: 'rightSlots' }),
       ]));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'transitiveCopy'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'capturedReturn'))
       .toMatchObject({ eligible: true });
   });
 

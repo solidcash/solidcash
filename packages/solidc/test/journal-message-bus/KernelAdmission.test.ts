@@ -1820,14 +1820,77 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['two value sites', `Unit first = new Unit{value: amount}(); Unit second = new Unit{value: amount}();`],
-    ['another BCH transfer', `Unit child = new Unit{value: amount}(); this.transfer(hex"51", 1);`],
-    ['conditional value site', `if (amount > 0) { Unit child = new Unit{value: amount}(); }`],
+    ['two value sites', 'Unit first = new Unit{value: amount}(); Unit second = new Unit{value: amount}();'],
+    ['another BCH transfer', 'Unit child = new Unit{value: amount}(); this.transfer(hex"51", 1);'],
   ])('keeps non-singular value-bearing deployment shape fenced: %s', (_label, body) => {
     expect(denied(`contract Unit() { int marker; }
       contract Factory() {
         int created;
         function create(int amount) public { ${body} this.created = 1; require(true); }
+      }`, 'create')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('admits one value-bearing child deployment behind a materializable pure predicate', () => {
+    const artifact = compileString(`contract Child() { int marker; }
+      contract Parent() {
+        int created;
+        function create(bool take, int amount) public {
+          if (take && amount > 0) { Child child = new Child{value: amount + 1000}(); }
+          this.created = 1;
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'create');
+    expect(handler).toMatchObject({
+      eligible: true,
+      childDeployments: [{
+        occurrence: 'conditional', siteIndex: 0, spanOffset: 0, spanWidth: 2,
+        activation: {
+          kind: 'binary', operator: '&&', resultType: 'bool',
+          left: { kind: 'handlerInput', inputIndex: 0, resultType: 'bool' },
+          right: {
+            kind: 'binary', operator: '>', resultType: 'bool',
+            left: { kind: 'handlerInput', inputIndex: 1, resultType: 'int256' },
+            right: { kind: 'intLiteral', value: '0', resultType: 'int' },
+          },
+        },
+        value: {
+          transferIndex: 0,
+          amount: {
+            kind: 'binary', operator: '+', resultType: 'int',
+            left: { kind: 'handlerInput', inputIndex: 1, resultType: 'int256' },
+            right: { kind: 'intLiteral', value: '1000', resultType: 'int' },
+          },
+        },
+      }],
+    });
+    expect(handler?.transfers ?? []).toHaveLength(0);
+    const direct = artifact.abi.find((candidate) => candidate.name === 'create');
+    expect(direct?.transferCount).toBe(1);
+    expect(direct?.blockLayout?.slots.filter((slot) => slot.kind === 'transfer')).toEqual([
+      expect.objectContaining({ slotIndex: 0, conditional: true }),
+    ]);
+  });
+
+  it.each([
+    ['another BCH transfer', `
+      if (take) { Child child = new Child{value: amount}(); }
+      this.transfer(hex"51", 1);`],
+    ['a loop occurrence', `
+      while (take) { Child child = new Child{value: amount}(); break; }`],
+    ['an unmaterializable predicate', `
+      if (sha256(seed) == hex"0000000000000000000000000000000000000000000000000000000000000000") {
+        Child child = new Child{value: amount}();
+      }`],
+  ])('keeps conditional value-bearing deployment fenced for %s', (_label, body) => {
+    expect(denied(`contract Child() { int marker; }
+      contract Parent() {
+        int created;
+        function create(bool take, int amount, bytes seed) public {
+          ${body}
+          this.created = 1;
+          require(true);
+        }
       }`, 'create')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
@@ -4984,6 +5047,51 @@ describe('required kernel admission', () => {
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('reserves a conditional graph BCH transfer as a balanced false-path slot', () => {
+    const artifact = compileString(`contract C() {
+      int calls;
+      function pay(bool take, bytes recipient, int amount) public {
+        if (take) { this.transfer(recipient, amount); }
+        this.calls = this.calls + 1;
+        require(true);
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay');
+    expect(handler).toMatchObject({
+      eligible: true,
+      transfers: [{
+        transferIndex: 0,
+        recipient: { kind: 'forward', paramIndex: 1 },
+        amount: { kind: 'forward', paramIndex: 2 },
+      }],
+    });
+    const direct = artifact.abi.find((candidate) => candidate.name === 'pay');
+    expect(direct?.blockLayout?.slots.filter((slot) => slot.kind === 'transfer')).toEqual([
+      expect.objectContaining({ slotIndex: 0, conditional: true }),
+    ]);
+  });
+
+  it('admits heterogeneous graph BCH widths with a narrower conditional handler', () => {
+    const artifact = compileString(`contract C() {
+      int calls;
+      function narrow(bool take, bytes recipient, int amount) public {
+        if (take) { this.transfer(recipient, amount); }
+        this.calls = this.calls + 1;
+        require(true);
+      }
+      function wide(bytes first, bytes second, int amount) public {
+        this.transfer(first, amount);
+        this.transfer(second, amount);
+        this.calls = this.calls + 1;
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'narrow'))
+      .toMatchObject({ eligible: true, transfers: [{ transferIndex: 0 }] });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'wide'))
+      .toMatchObject({ eligible: true, transfers: [{ transferIndex: 0 }, { transferIndex: 1 }] });
   });
 
   it('admits address.transfer inside an internal helper', () => {

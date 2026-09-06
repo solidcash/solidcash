@@ -5929,6 +5929,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitTransferCovenantVerification(node);
           this.emitTransferCleanup(node);
         }
+        // A heterogeneous graph frame uses the largest handler transfer count as every row's width. The
+        // reached handler owns only its declared prefix; bind all remaining capacity to canonical balanced
+        // slots while its authenticated row ordinal is still live. This also covers a transfer-free sibling.
+        for (let unused = this.pendingTransfers.length;
+          unused < node.graphEffectFrame.transferWidth; unused += 1) {
+          this.emitNotTakenGraphTransferSlotBinding(unused, {
+            location: node.body.location, positionHint: PositionHint.END,
+          });
+        }
         if (this.pendingEmits.length > 0) this.emitEventCovenantVerification(node);
         if (this.pendingTokenContainerTransfers.length > 0) {
           this.emitTokenContainerTransferCovenantVerification(node);
@@ -10357,7 +10366,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           const ordinal = node.graphEffectSite! * frame.transferWidth + slot;
           this.emitBlockSlotIndex('transfer', ordinal, locationData);
         }
+        // Every inactive conditional BCH slot is the canonical balanced OP_TRUE output. It is physical padding,
+        // not value spent by the handler, so it must contribute zero to the route's satoshi-container debit.
+        // Active value rows cannot use OP_TRUE (the manifest verifier rejects that subject), making this test a
+        // generic activity discriminator for direct, nested, and deployment-owned conditional transfers alike.
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+        this.emit(new Uint8Array([Op.OP_1]), locationData);
+        this.emit(Op.OP_EQUAL, locationData);
+        this.emit(Op.OP_IF, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.emit(Op.OP_0, locationData);
+        this.emit(Op.OP_ELSE, locationData);
         this.emit(Op.OP_OUTPUTVALUE, locationData);
+        this.emit(Op.OP_ENDIF, locationData);
         this.emit(Op.OP_ADD, locationData);
       }
       this.emitReplaceCompilerRouteFrameValue(GRAPH_TRANSFER_REACHED, node);
@@ -25793,6 +25815,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.popFromStack();
       }
 
+      if (node.graphEmissionHandler && node.graphEffectFrame) {
+        // OP_TRUE is the authenticated inactive-slot sentinel and the route accumulator maps it to zero. Keep
+        // active recipients disjoint at runtime (including dynamically computed bytecode), then the ordinary
+        // equality check below proves the output is disjoint too. Direct-call transfer semantics are unchanged.
+        const activeLbIdx = this.getStackIndex(lockingBytecodeStackName);
+        this.emit(encodeInt(BigInt(activeLbIdx)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(new Uint8Array([Op.OP_1]), locationData);
+        this.emit(Op.OP_EQUAL, locationData);
+        this.emit(Op.OP_NOT, locationData);
+        this.emit(Op.OP_VERIFY, locationData);
+      }
+
       // 1. Verify output locking bytecode
       const lbIdx = this.getStackIndex(lockingBytecodeStackName);
       this.emit(encodeInt(BigInt(lbIdx)), locationData);
@@ -25830,11 +25865,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
 
       if (isConditional) {
+        if (node.graphEmissionHandler && node.graphEffectFrame) {
+          this.emit(Op.OP_ELSE, locationData);
+          this.emitNotTakenGraphTransferSlotBinding(transferIndex, locationData);
+        }
         this.emit(Op.OP_ENDIF, locationData);
       }
     }
 
     // Note: cleanup deferred to emitTransferCleanup() (called after emitValuePreservation)
+  }
+
+  /**
+   * Bind the false arm of a graph-handler BCH transfer to its canonical balanced slot. Graph participant blocks
+   * are 1:1, so an inactive output has a same-offset dummy funding input. Proving both sides prevents an
+   * unexecuted conditional from hiding an arbitrary input or output in reserved transfer capacity.
+   */
+  private emitNotTakenGraphTransferSlotBinding(
+    transferIndex: number, locationData: SingleLocationData,
+  ): void {
+    this.emitBlockSlotIndex('transfer', transferIndex, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    this.emit(hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.emit(new Uint8Array([Op.OP_1]), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_OUTPUTVALUE, locationData);
+    this.emit(encodeInt(1000n), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
   }
 
   /**

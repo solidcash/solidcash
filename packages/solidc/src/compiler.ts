@@ -4173,7 +4173,7 @@ function synthesizeMessageBusRoute(
         && !deploymentValueRecipeUnsupported);
       const supportedConditionalDeploy = !deployUnderControlFlow
         || (conditionalDeploySites >= 1 && !deploymentInLoop
-          && !conditionalActivationUnsupported && !deployWithValue);
+          && !conditionalActivationUnsupported);
       const kernelDeploySupported = deploys && deploySites >= 1 && !unsupportedInstantiation
         && supportedConditionalDeploy && supportedValueDeploy && !deploymentStateInitializationUnsupported
         && !deploymentRecipeUnsupported && closureNames.size === 1;

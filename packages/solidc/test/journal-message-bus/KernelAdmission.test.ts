@@ -1074,6 +1074,9 @@ describe('required kernel admission', () => {
         }
       }
       function mutateValue(int[] xs, int next) internal pure { xs[0] = next; }
+      function mutateOpaqueMemory(int[] memory xs, int next) internal pure {
+        while (next > 0) { xs[0] = next; next = next - 1; }
+      }
       function write(int n, int first, int second, bool high, int mode) public {
         int[] memory xs = new int[](n);
         xs[0] = first;
@@ -1081,9 +1084,15 @@ describe('required kernel admission', () => {
         for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
         require(true);
       }
-      function deniedValue(int n, int next) public {
+      function writeValueCopy(int n, int next) public {
         int[] xs = new int[](n);
         mutateValue(xs, next);
+        for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
+        require(true);
+      }
+      function deniedMemoryAlias(int n, int next) public {
+        int[] memory xs = new int[](n);
+        mutateOpaqueMemory(xs, next);
         for (int i = 0; i < n; i = i + 1) { this.slots[xs[i]] = 1; }
         require(true);
       }
@@ -1091,7 +1100,9 @@ describe('required kernel admission', () => {
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'deniedValue'))
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'writeValueCopy'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'deniedMemoryAlias'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });

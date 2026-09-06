@@ -4430,8 +4430,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && passedArrays.size === 1 && passedArrays.has(parameter.name)) {
             const targets = (this.functionsByName.get(candidate.identifier.name) ?? [])
               .filter((target) => target.parameters.length === candidate.parameters.length);
-            if (targets.length > 0 && targets.every((target) =>
-              readOnlyArrayParameter(target, parameterIndex))) continue;
+            if (targets.length > 0 && targets.every((target) => {
+              const targetParameter = target.parameters[parameterIndex];
+              // Only an explicit memory parameter aliases the caller's local array. The language's ordinary
+              // array parameter is value-copied, so even a mutating helper cannot invalidate the caller plan.
+              return targetParameter.type instanceof ArrayType
+                && (!targetParameter.modifier.includes('memory')
+                  || readOnlyArrayParameter(target, parameterIndex));
+            })) continue;
           }
           for (const name of passedArrays) escaped.add(name);
         }

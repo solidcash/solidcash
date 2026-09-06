@@ -1362,9 +1362,6 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['conditionally pushes inside the loop', 'if (i > 0) xs.push(i + 1); this.slots[xs[i]] = i;'],
-    ['uses a counter-dependent unequal push width', `if (i > 0) { xs.push(i + 1); xs.push(i + 2); }
-      else xs.push(i + 3); this.slots[xs[i]] = i;`],
     ['pops into its pre-existing prefix before pushing', 'xs.pop(); xs.push(i + 1); this.slots[xs[i]] = i;'],
     ['conditionally pops inside the loop', 'if (i > 0) xs.pop(); this.slots[xs[i]] = i;'],
   ])('refuses a constructed array which %s', (_label, body) => {
@@ -1401,6 +1398,47 @@ describe('required kernel admission', () => {
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
+  });
+
+  it.each([
+    ['a conditional append', 'count', 'if (cursor > 0) buffer.push(cursor + 1);'],
+    ['a counter-dependent append width', 'count', `if (cursor > 0) {
+      buffer.push(cursor + 1); buffer.push(cursor + 2);
+    } else buffer.push(cursor + 3);`],
+    ['a larger affine allocation prefix', 'count + 2', 'if (cursor > 0) buffer.push(cursor + 1);'],
+  ])(
+    'keeps reads in the stable allocation prefix replayable across %s',
+    (_label, allocation, resize) => {
+      const artifact = compileString(`contract Registry() {
+        mapping(int => int) records;
+        function apply(int count) public {
+          int[] buffer = new int[](${allocation});
+          for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+            ${resize}
+            this.records[buffer[cursor]] = cursor;
+          }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+        .toMatchObject({ eligible: true });
+    },
+  );
+
+  it('refuses an opaque append suffix read without an invertible resize recurrence', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function apply(int count) public {
+        int[] buffer = new int[](count);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          if (cursor > 0) buffer.push(cursor + 1);
+          this.records[buffer[count]] = cursor;
+        }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
   });
 
   it('derives a straight-line same-iteration local array key', () => {

@@ -19,6 +19,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { canonicalizeUpsertKeyExpression } from '../generation/upsertKeySources.js';
 import {
   AddressType, ArrayType, BytesType, FixedType, IntType, PrimitiveType, StructType, Type,
 } from '@solidcash/utils';
@@ -4153,7 +4154,14 @@ export default class LowerVMapCounterLoops extends AstTraversal {
   private normalizeImmutableDefaultArrayKeys(
     node: FunctionDefinitionNode,
     canonicalLoops: ReadonlyMap<WhileNode | DoWhileNode, {
-      logical: string; start: bigint; step: bigint; stepExpression?: ExpressionNode;
+      logical: string;
+      count: string;
+      boundOffset: bigint;
+      boundExpression?: ExpressionNode;
+      start: bigint;
+      step: bigint;
+      stepExpression?: ExpressionNode;
+      postTest: boolean;
     }> = new Map(),
   ): void {
     if (!node.body || node.messageBusConstructedArrayKeysNormalized) return;
@@ -4179,6 +4187,10 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       defaultValue: ExpressionNode;
       /** Symbolic source length at this point. It makes straight-line push/pop indices replayable. */
       length: ExpressionNode;
+      /** Allocation prefix source which no observed pop has shortened. */
+      stablePrefixSource?: ExpressionNode;
+      /** An append history may be opaque while reads of this counter remain inside the stable prefix. */
+      opaqueSuffixCounter?: string;
       writes: ArrayWrite[];
       /** A fixed number of unconditional pushes per canonical source iteration. */
       recurrence?: ArrayRecurrence;
@@ -4287,6 +4299,29 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         if (candidate instanceof IdentifierNode && names.has(candidate.name)) found = true;
       });
       return found;
+    };
+    const constantOffsetForm = (
+      expression: ExpressionNode,
+    ): { base: string; offset: bigint } | undefined => {
+      if (expression instanceof BinaryOpNode && expression.right instanceof IntLiteralNode
+        && (expression.operator === BinaryOperator.PLUS
+          || expression.operator === BinaryOperator.MINUS)) {
+        const inner = constantOffsetForm(expression.left);
+        if (!inner) return undefined;
+        return {
+          base: inner.base,
+          offset: inner.offset + (expression.operator === BinaryOperator.PLUS
+            ? expression.right.value : -expression.right.value),
+        };
+      }
+      if (expression instanceof BinaryOpNode && expression.operator === BinaryOperator.PLUS
+        && expression.left instanceof IntLiteralNode) {
+        const inner = constantOffsetForm(expression.right);
+        if (!inner) return undefined;
+        return { base: inner.base, offset: inner.offset + expression.left.value };
+      }
+      const base = canonicalizeUpsertKeyExpression(expression, new Set());
+      return base ? { base, offset: 0n } : undefined;
     };
     const readOnlyArrayParameterCache = new Map<FunctionDefinitionNode, Map<number, boolean>>();
     const readOnlyArrayParameter = (
@@ -4423,6 +4458,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       return replaced;
     };
     const symbolicRead = (access: ArrayAccessNode, plan: ArrayPlan): ExpressionNode | undefined => {
+      if (plan.opaqueSuffixCounter !== undefined
+        && (!(access.index instanceof IdentifierNode)
+          || access.index.name !== plan.opaqueSuffixCounter)) return undefined;
       let value = cloneNode(plan.defaultValue) as ExpressionNode;
       for (const write of plan.writes) {
         let selectedValue = cloneNode(write.value) as ExpressionNode;
@@ -4599,6 +4637,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         elementType: plan.elementType,
         defaultValue: cloneNode(plan.defaultValue) as ExpressionNode,
         length: cloneNode(plan.length) as ExpressionNode,
+        ...(plan.stablePrefixSource && {
+          stablePrefixSource: cloneNode(plan.stablePrefixSource) as ExpressionNode,
+        }),
+        ...(plan.opaqueSuffixCounter !== undefined && {
+          opaqueSuffixCounter: plan.opaqueSuffixCounter,
+        }),
         writes: plan.writes.map((write) => ({
           index: cloneNode(write.index) as ExpressionNode,
           value: cloneNode(write.value) as ExpressionNode,
@@ -5440,6 +5484,41 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             const balancedResizes = !!balancedSchedule && balancedSchedule.sites > 0
               && balancedSchedule.delta === 0 && balancedSchedule.minimum >= 0;
             if (balancedResizes) continue;
+            // Appends never alter the array's pre-existing prefix. Even when their per-iteration width depends on
+            // the counter and therefore has no invertible suffix recurrence, a canonical ascending pre-test loop
+            // may still read its counter from that prefix when the allocation size is the loop's exclusive bound.
+            // Keep this as a structural range proof: arbitrary suffix reads remain opaque and fail closed.
+            const exclusiveBound = canonical.boundExpression
+              ? cloneNode(canonical.boundExpression) as ExpressionNode
+              : (() => {
+                const count = new IdentifierNode(canonical.count);
+                count.location = statement.location;
+                if (canonical.boundOffset === 0n) return count;
+                const offset = new IntLiteralNode(canonical.boundOffset < 0n
+                  ? -canonical.boundOffset : canonical.boundOffset);
+                offset.location = statement.location;
+                const adjusted = new BinaryOpNode(
+                  count,
+                  canonical.boundOffset > 0n ? BinaryOperator.PLUS : BinaryOperator.MINUS,
+                  offset,
+                );
+                adjusted.location = statement.location;
+                return adjusted;
+              })();
+            const appendOnlySchedule = !!pushSchedule && popSchedule === undefined
+              && mutationCount === scheduledPushCount && resizeCount === scheduledPushCount;
+            const stablePrefix = plan.stablePrefixSource
+              ? constantOffsetForm(plan.stablePrefixSource) : undefined;
+            const exclusiveLimit = constantOffsetForm(exclusiveBound);
+            const stablePrefixContainsDomain = stablePrefix !== undefined && exclusiveLimit !== undefined
+              && stablePrefix.base === exclusiveLimit.base
+              && stablePrefix.offset >= exclusiveLimit.offset;
+            if (!fixedPushes && appendOnlySchedule && stablePrefixContainsDomain
+              && canonical.stepExpression === undefined && canonical.step > 0n
+              && canonical.start >= 0n && !canonical.postTest) {
+              plan.opaqueSuffixCounter = canonical.logical;
+              continue;
+            }
             if ((!fixedPushes && !fixedPops) || directResizeCount === 0) {
               if (resizeCount > 0) {
                 node.messageBusUnboundedConstructedArray = true;
@@ -5733,6 +5812,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         const escaped = escapedPlanNames(statement, active);
         for (const name of replayedHelperArrays) escaped.delete(name);
         if (statement instanceof VariableDefinitionNode && statement.expression instanceof NewArrayNode) {
+          const stablePrefixSource = lengthSnapshot?.definition.expression
+            ?? replaceSnapshots(statement.expression.size, snapshots);
           active.set(statement.name, {
             elementType: statement.expression.elementType,
             defaultValue: createDefaultValueExpression(
@@ -5740,6 +5821,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             ),
             length: lengthSnapshot?.identifier
               ?? replaceSnapshots(statement.expression.size, snapshots),
+            stablePrefixSource: cloneNode(stablePrefixSource) as ExpressionNode,
             writes: [],
           });
         } else if (statement instanceof ArrayAssignNode && active.has(statement.name)) {
@@ -5777,6 +5859,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           plan.length = length;
         } else if (statement instanceof ArrayPopNode && active.has(statement.name)) {
           const plan = active.get(statement.name)!;
+          delete plan.stablePrefixSource;
+          delete plan.opaqueSuffixCounter;
           const one = new IntLiteralNode(1n);
           one.location = statement.location;
           one.type = plan.length.type ?? new IntType(true, 256);

@@ -378,6 +378,19 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
     transfers: (handler.transfers ?? []).map((transfer) => [transfer.transferIndex, transfer.callOption ?? '']),
     tokenOperations: (handler.tokenContainerAccesses ?? []).map((access) =>
       [access.keyParam, ...access.operations, access.transferCount ?? 0, access.transferNftCount ?? 0]),
+    childDeployments: (handler.childDeployments ?? []).map((site) => ({
+      siteIndex: site.siteIndex,
+      contractName: site.contractName,
+      occurrence: site.occurrence,
+      genesisInputCount: site.genesisInputCount,
+      masterOutputCount: site.masterOutputCount,
+      dataNftOutputCount: site.dataNftOutputCount,
+      totalOutputCount: site.totalOutputCount,
+      categorySource: site.categorySource,
+      constructorArgs: site.constructorArgs,
+      ...(site.salt && { salt: site.salt }),
+      creationBytecode: site.creationBytecode.toLowerCase(),
+    })),
   }));
   return binToHex(sha256.hash(utf8ToBin(JSON.stringify(policy))));
 }
@@ -741,17 +754,26 @@ export function finalizeAtomicInvocationGraph(
     throw new Error('messageBus: atomic deployment effects contain a duplicate invocation site');
   }
   const expectedDeploymentKeys = new Set<string>();
-  for (const invocation of plan.invocations) {
-    const participant = plan.participants[invocation.callee];
-    const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+  const canonicalDeploymentSites = (invocationIndex: number) => {
+    const invocation = plan.invocations[invocationIndex];
+    const participant = invocation === undefined ? undefined : plan.participants[invocation.callee];
+    const handler = participant?.artifact.messageBus?.handlers.find((candidate) =>
       candidate.name === invocation.function
       && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
     const sites = handler?.childDeployments ?? [];
-    if (sites.length === 0) continue;
-    if (sites.length !== 1 || sites[0].siteIndex !== 0 || sites[0].occurrence !== 'once') {
-      throw new Error(`messageBus: invocation ${invocation.index} has no canonical single deployment site`);
+    if (sites.some((site, index) => site.siteIndex !== index || site.occurrence !== 'once'
+      || site.genesisInputCount !== 1 || site.masterOutputCount !== 1
+      || !Number.isSafeInteger(site.dataNftOutputCount) || site.dataNftOutputCount < 0
+      || site.totalOutputCount !== 1 + site.dataNftOutputCount)) {
+      throw new Error(`messageBus: invocation ${invocationIndex} has a non-canonical deployment topology`);
     }
-    expectedDeploymentKeys.add(`${invocation.callee}:${invocation.index}:0`);
+    return sites;
+  };
+  for (const invocation of plan.invocations) {
+    const sites = canonicalDeploymentSites(invocation.index);
+    for (const site of sites) {
+      expectedDeploymentKeys.add(`${invocation.callee}:${invocation.index}:${site.siteIndex}`);
+    }
   }
   if (expectedDeploymentKeys.size !== deploymentKeys.size
     || [...expectedDeploymentKeys].some((key) => !deploymentKeys.has(key))) {
@@ -772,25 +794,34 @@ export function finalizeAtomicInvocationGraph(
           `messageBus: deployment participant ${effect.participant} does not own invocation ${effect.invocation}`,
         );
       }
-      const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-        candidate.name === invocation.function
-        && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
-      const sites = handler?.childDeployments ?? [];
-      const site = sites[0];
-      if (sites.length !== 1 || !site || site.siteIndex !== 0
-        || site.siteIndex !== effect.siteIndex || site.occurrence !== 'once') {
+      const sites = canonicalDeploymentSites(effect.invocation);
+      const site = sites[effect.siteIndex];
+      if (!site || site.siteIndex !== effect.siteIndex) {
         throw new Error(
           `messageBus: invocation ${effect.invocation} has no straight-line deployment site ${effect.siteIndex}`,
         );
       }
-      const masterSlot = participant.blockLayout!.slots.find((candidate) =>
-        candidate.kind === 'deploy' && candidate.slotIndex === invocation.localRow
-        && candidate.offset === effect.offset);
-      const dataSlots = participant.blockLayout!.slots.filter((candidate) =>
-        candidate.kind === 'deployDataNft' && candidate.slotIndex === invocation.localRow)
+      // The compiler publishes one physical deployment window per route row: its first member is the
+      // token-free genesis input/child-master pair (`deploy`), and every remaining member is output-only
+      // (`deployDataNft`). Multiple logical source sites partition that window in source order; later child
+      // masters remain members of the same physical window rather than introducing another `deploy` slot.
+      const rowSlots = participant.blockLayout!.slots.filter((candidate) =>
+        (candidate.kind === 'deploy' || candidate.kind === 'deployDataNft')
+        && candidate.slotIndex === invocation.localRow)
         .sort((left, right) => left.offset - right.offset);
-      if (!masterSlot || dataSlots.length < site.dataNftOutputCount
-        || dataSlots.some((slot, index) => slot.offset !== effect.offset + index + 1 || slot.nftIndex !== index)) {
+      const rowBase = rowSlots[0];
+      if (!rowBase || rowBase.kind !== 'deploy'
+        || rowSlots.some((slot, index) => slot.offset !== rowBase.offset + index
+          || (index > 0 && slot.kind !== 'deployDataNft'))) {
+        throw new Error(
+          `messageBus: participant ${effect.participant} row ${invocation.localRow} has a non-canonical deployment window`,
+        );
+      }
+      const siteOffset = sites.slice(0, effect.siteIndex)
+        .reduce((offset, prior) => offset + prior.totalOutputCount, rowBase.offset);
+      const usedWidth = sites.reduce((width, candidate) => width + candidate.totalOutputCount, 0);
+      if (usedWidth > rowSlots.length || siteOffset !== effect.offset
+        || effect.offset + site.totalOutputCount > rowBase.offset + rowSlots.length) {
         throw new Error(
           `messageBus: participant ${effect.participant} deployment site ${effect.siteIndex} has a non-canonical output span`,
         );

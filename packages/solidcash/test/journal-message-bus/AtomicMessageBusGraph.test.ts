@@ -753,7 +753,7 @@ describe('atomic compiled invocation graph', () => {
       ...deploymentPlan,
       participants: [{ ...deploymentPlan.participants[0], artifact: ambiguousArtifact }, base.participants[1]],
     };
-    expect(() => finalize([effect], ambiguousPlan)).toThrow(/no canonical single deployment site/);
+    expect(() => finalize([effect], ambiguousPlan)).toThrow(/exactly cover reached deployment invocations/);
 
     const malformedSpan: messageBus.CompiledGraphPlan = {
       ...deploymentPlan,
@@ -766,6 +766,124 @@ describe('atomic compiled invocation graph', () => {
         },
       }, base.participants[1]],
     };
-    expect(() => finalize([effect], malformedSpan)).toThrow(/non-canonical output span/);
+    expect(() => finalize([effect], malformedSpan)).toThrow(/non-canonical deployment window/);
+  });
+
+  it('orders and exactly covers multiple heterogeneous deployment sites in one row window', () => {
+    const base = plan();
+    const site = (siteIndex: number, contractName: string, dataNftOutputCount: number) => ({
+      siteIndex, contractName, occurrence: 'once' as const,
+      genesisInputCount: 1 as const, masterOutputCount: 1 as const,
+      dataNftOutputCount, totalOutputCount: 1 + dataNftOutputCount,
+      categorySource: 'genesis-input-outpoint-txhash' as const,
+      constructorArgs: [], creationBytecode: '51',
+    });
+    const deploymentArtifact = {
+      ...base.participants[0].artifact,
+      messageBus: {
+        ...base.participants[0].artifact.messageBus!,
+        handlers: [{
+          ...base.participants[0].artifact.messageBus!.handlers[0],
+          childDeployments: [site(0, 'WideChild', 2), site(1, 'NarrowChild', 0)],
+        }],
+      },
+    } as Artifact;
+    const deploymentPlan: messageBus.CompiledGraphPlan = {
+      ...base,
+      participants: [{
+        ...base.participants[0], artifact: deploymentArtifact,
+        blockLayout: {
+          blockSize: 5,
+          slots: [
+            { kind: 'master', offset: 0 },
+            { kind: 'deploy', offset: 1, slotIndex: 0 },
+            { kind: 'deployDataNft', offset: 2, slotIndex: 0, nftIndex: 0 },
+            { kind: 'deployDataNft', offset: 3, slotIndex: 0, nftIndex: 1 },
+            { kind: 'deployDataNft', offset: 4, slotIndex: 0, nftIndex: 2 },
+          ],
+        },
+      }, base.participants[1]],
+    };
+    const wideCategory = 'cc'.repeat(32);
+    const narrowCategory = 'dd'.repeat(32);
+    const changedTopology = {
+      ...deploymentArtifact,
+      messageBus: {
+        ...deploymentArtifact.messageBus!,
+        handlers: [{
+          ...deploymentArtifact.messageBus!.handlers[0],
+          childDeployments: deploymentArtifact.messageBus!.handlers[0].childDeployments!.map((candidate) =>
+            candidate.siteIndex === 1 ? { ...candidate, creationBytecode: '52' } : candidate),
+        }],
+      },
+    } as Artifact;
+    expect(messageBus.atomicParticipantPolicyHash(changedTopology))
+      .not.toBe(messageBus.atomicParticipantPolicyHash(deploymentArtifact));
+    const wide: messageBus.AtomicDeploymentSlotEffect = {
+      participant: 0, invocation: 0, siteIndex: 0, offset: 1,
+      genesisTransactionHashHex: wideCategory, genesisOutputIndex: 0,
+      outputs: [
+        {
+          lockingBytecodeHex: '51', tokenCategoryHex: wideCategory, capability: 'minting',
+          commitmentHex: '', tokenAmount: 0n, value: 1200n,
+        },
+        {
+          lockingBytecodeHex: '52', tokenCategoryHex: wideCategory, capability: 'mutable',
+          commitmentHex: 'aa', tokenAmount: 0n, value: 1200n,
+        },
+        {
+          lockingBytecodeHex: '52', tokenCategoryHex: wideCategory, capability: 'mutable',
+          commitmentHex: 'bb', tokenAmount: 0n, value: 1200n,
+        },
+      ],
+    };
+    const narrow: messageBus.AtomicDeploymentSlotEffect = {
+      participant: 0, invocation: 0, siteIndex: 1, offset: 4,
+      genesisTransactionHashHex: narrowCategory, genesisOutputIndex: 0,
+      outputs: [{
+        lockingBytecodeHex: '53', tokenCategoryHex: narrowCategory, capability: 'minting',
+        commitmentHex: '', tokenAmount: 0n, value: 1200n,
+      }],
+    };
+    const finalize = (
+      effects: readonly messageBus.AtomicDeploymentSlotEffect[], selectedPlan = deploymentPlan,
+    ) => messageBus.finalizeAtomicInvocationGraph(
+      selectedPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [], [], [], [], [], undefined, effects,
+    );
+
+    // Caller order is irrelevant: the wire is canonical physical/source order.
+    const finalized = finalize([narrow, wide]);
+    expect(finalized.callManifest.rows.slice(2).map((row) => ({
+      kind: row.kind, slot: row.slot, parent: row.parent, argsHex: row.argsHex,
+    }))).toEqual([
+      { kind: 5, slot: 1, parent: 0, argsHex: `0000${wideCategory}` },
+      { kind: 5, slot: 4, parent: 0, argsHex: `0100${narrowCategory}` },
+    ]);
+
+    expect(() => finalize([wide])).toThrow(/exactly cover reached deployment invocations/);
+    expect(() => finalize([narrow])).toThrow(/exactly cover reached deployment invocations/);
+    expect(() => finalize([wide, wide])).toThrow(/duplicate invocation site/);
+    expect(() => finalize([wide, { ...narrow, siteIndex: 0 }])).toThrow(/duplicate invocation site/);
+    expect(() => finalize([wide, { ...narrow, siteIndex: 2 }]))
+      .toThrow(/exactly cover reached deployment invocations/);
+    expect(() => finalize([{ ...wide, offset: narrow.offset }, { ...narrow, offset: wide.offset }]))
+      .toThrow(/non-canonical output span/);
+    expect(() => finalize([{ ...wide, outputs: wide.outputs.slice(0, 2) }, narrow]))
+      .toThrow(/requires 3 exact outputs/);
+    expect(() => finalize([wide, { ...narrow, outputs: [...narrow.outputs, narrow.outputs[0]] }]))
+      .toThrow(/requires 1 exact outputs/);
+
+    const sparseWindow: messageBus.CompiledGraphPlan = {
+      ...deploymentPlan,
+      participants: [{
+        ...deploymentPlan.participants[0],
+        blockLayout: {
+          ...deploymentPlan.participants[0].blockLayout!,
+          slots: deploymentPlan.participants[0].blockLayout!.slots.map((slot) =>
+            slot.kind === 'deployDataNft' && slot.offset === 3 ? { ...slot, offset: 5 } : slot),
+        },
+      }, base.participants[1]],
+    };
+    expect(() => finalize([wide, narrow], sparseWindow)).toThrow(/non-canonical deployment window/);
   });
 });

@@ -14088,22 +14088,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Step 5: If {value: expr} specified, register transfer output
     if (hasEffectiveCallValue(node.callOptions?.value)) {
-      // Rename lbc as transfer lockingBytecode
       const lbStackName = `__internal__transfer_lb_${node.transferIndex}`;
-      this.popFromStack();
-      this.pushToStack(lbStackName);
-
-      // Visit amount expression and register as transfer amount
-      this.visit(node.callOptions.value);
-      this.popFromStack();
       const amtStackName = `__internal__transfer_amt_${node.transferIndex}`;
-      this.pushToStack(amtStackName);
 
-      this.pendingTransfers.push({
-        transferIndex: node.transferIndex,
-        lockingBytecodeStackName: lbStackName,
-        amountStackName: amtStackName,
-      });
+      if (this.preAllocatedTransfers.has(node.transferIndex)) {
+        // Function entry already registered this semantic transfer and reserved its two stack slots. Fill those
+        // registers in place; appending another pendingTransfers record would make value preservation count the
+        // same transfer twice even though the block layout contains only one transfer output.
+        this.emitReplace(this.getStackIndex(lbStackName), node);
+        this.popFromStack();
+        this.visit(node.callOptions.value);
+        this.emitReplace(this.getStackIndex(amtStackName), node);
+        this.popFromStack();
+      } else {
+        // Rename lbc as transfer lockingBytecode.
+        this.popFromStack();
+        this.pushToStack(lbStackName);
+
+        // Visit amount expression and register as transfer amount.
+        this.visit(node.callOptions.value);
+        this.popFromStack();
+        this.pushToStack(amtStackName);
+        this.pendingTransfers.push({
+          transferIndex: node.transferIndex,
+          lockingBytecodeStackName: lbStackName,
+          amountStackName: amtStackName,
+        });
+      }
 
       // Copy lbc back to top as the expression result via OP_PICK
       const lbIdx = this.getStackIndex(lbStackName);

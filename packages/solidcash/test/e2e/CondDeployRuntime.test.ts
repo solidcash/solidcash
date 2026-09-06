@@ -420,6 +420,12 @@ describe('deploy with value (new Child{value: x}())', () => {
   const childArtifact = compileString(CHILD);
 
   it('co-spends the factory satoshi container + materializes the 5000-sat transfer to the child', async () => {
+    const make = valueArtifact.abi.find((candidate) => candidate.name === 'make');
+    expect(make?.transferCount).toBe(1);
+    expect(make?.blockLayout?.slots.filter((slot) => slot.kind === 'transfer')).toEqual([
+      expect.objectContaining({ kind: 'transfer', slotIndex: 0 }),
+    ]);
+
     const fu: Utxo = { txid: '6a01'.repeat(16), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, fu);
     // The factory holds a balance (initialBalance) - the value source for new Child{value:}().
@@ -453,7 +459,7 @@ describe('deploy with value (new Child{value: x}())', () => {
     // child genesis
     expect(outs.some((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting')).toBe(true);
     // the 5000-sat value transfer to the child (a plain, non-token output)
-    expect(outs.some((o) => o.amount === 5000n && !o.token)).toBe(true);
+    expect(outs.filter((o) => o.amount === 5000n && !o.token)).toHaveLength(1);
     // the factory's satoshi container recreated (20000 - 5000 = 15000)
     expect(outs.some((o) => o.amount === 15000n && !o.token)).toBe(true);
   });

@@ -397,6 +397,36 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
   });
 
+  it('lowers whole-struct state assignments in a recursion fold', () => {
+    const artifact = compileString(`contract C() {
+      struct Record { int value; bool active; }
+      Record record;
+      function sum(int n) public returns (int) {
+        this.record = Record(n, n > 0);
+        if (n == 0) return this.record.value;
+        return n + sum(n - 1);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
+  });
+
+  it('keeps a deferred struct-state dependency on the recursive-state path', () => {
+    const artifact = compileString(`contract C() {
+      struct Record { int value; bool active; }
+      Record record;
+      function sum(int n) public returns (int) {
+        this.record = Record(n, n > 0);
+        if (n == 0) return 0;
+        return sum(n - 1) + this.record.value;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBe(true);
+  });
+
   it('keeps a deferred dynamic-state dependency on the recursive-state path', () => {
     const artifact = compileString(`contract C() {
       string note;

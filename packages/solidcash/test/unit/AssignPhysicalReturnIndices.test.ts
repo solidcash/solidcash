@@ -125,7 +125,8 @@ import {
   rememberJobEventsLock,
   persistedJobEventsLock,
   StatefulTransactionBuilder,
-  groupWritesPublishedJobEvents,
+  groupChunkableArrayWriteCollection,
+  groupWritesSingleChunkableArrayCollection,
   placeSameIndexTwin,
   placeInsertNewAt,
   shouldOverwriteForSameIndexTwin,
@@ -2411,34 +2412,34 @@ describe('assignPhysicalReturnIndices', () => {
     const lock = new Uint8Array(35);
     lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
     const placeholder = 'e3b0c442' + '00'.repeat(60);
-    const created = '00004cb42000437265617465' + '11'.repeat(20);
-    const whitelist = '0100' + '22'.repeat(20);
+    const firstValue = '31'.repeat(37);
+    const secondValue = '92'.repeat(21);
     const outputs = [
       { to: lock, token: { nft: { capability: 'mutable' as const, commitment: placeholder } } },
-      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: created } } },
-      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: whitelist } } },
+      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: firstValue } } },
+      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: secondValue } } },
       { to: Uint8Array.of(0x51), token: { nft: { capability: 'none' as const, commitment: '51' } } },
     ];
     expect(stripSurplusEmptyCollectionEntries(outputs, lock, 2)).toBe(1);
     expect(outputs[0].token).toBeUndefined();
     expect(outputs[0].amount).toBe(1000n);
-    expect(outputs[1].token?.nft?.commitment).toBe(created);
-    expect(outputs[2].token?.nft?.commitment).toBe(whitelist);
+    expect(outputs[1].token?.nft?.commitment).toBe(firstValue);
+    expect(outputs[2].token?.nft?.commitment).toBe(secondValue);
     expect(outputs[3].token?.nft?.commitment).toBe('51');
   });
 
-  it('strips a 32-byte H(0) leftover beside Created and a short next row', () => {
+  it('strips a 32-byte empty hash without depending on neighboring payload bytes', () => {
     const lock = new Uint8Array(35);
     lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
     const outputs = [
       { to: lock, token: { nft: { capability: 'mutable' as const, commitment: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } } },
-      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: '00004cb42000437265617465' + '11'.repeat(50) } } },
-      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: '01000000000000000000' } } },
+      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: 'b7'.repeat(61) } } },
+      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: '4d'.repeat(9) } } },
     ];
     expect(stripSurplusEmptyCollectionEntries(outputs, lock, 2)).toBe(1);
     expect(outputs[0].token).toBeUndefined();
-    expect(outputs[1].token?.nft?.commitment.startsWith('00004cb4')).toBe(true);
-    expect(outputs[2].token?.nft?.commitment).toBe('01000000000000000000');
+    expect(outputs[1].token?.nft?.commitment).toBe('b7'.repeat(61));
+    expect(outputs[2].token?.nft?.commitment).toBe('4d'.repeat(9));
   });
 
   it('does not strip mixed empty+real entries without a planned count', () => {
@@ -2532,10 +2533,6 @@ describe('assignPhysicalReturnIndices', () => {
     expect(predNew).toBe('00'.repeat(32) + newSlot);
     expect(isSortedEntryNodeCommitment(dumpedNew)).toBe(true);
     expect(isSortedEntryHeadCommitment(emptyHead)).toBe(true);
-    expect(groupWritesPublishedJobEvents({
-      functionName: '__forward',
-      logicalFunctionName: 'publishJobEvent',
-    })).toBe(true);
     expect(shouldOverwriteForSameIndexTwin(outputs[21], headLock, md, predNew)).toBe(true);
     expect(placeSameIndexTwin(outputs, 21, {
       to: headLock,
@@ -2625,24 +2622,85 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[3].token?.nft?.commitment).toBe('51');
   });
 
-  it('does not treat proxy __forward as a publishJobEvent write', () => {
-    expect(groupWritesPublishedJobEvents({ functionName: '__forward' })).toBe(false);
-    expect(groupWritesPublishedJobEvents({
-      functionName: '__forward',
-      logicalFunctionName: 'initialize',
+  it('detects one active chunkable array writer independently of function and collection names', () => {
+    expect(groupWritesSingleChunkableArrayCollection({
+      functionName: 'append', logicalFunctionName: 'append',
     })).toBe(false);
-    expect(groupWritesPublishedJobEvents({
+    const groupFor = (
+      functionName: string,
+      collectionName: string,
+    ): Parameters<typeof groupChunkableArrayWriteCollection>[0] => ({
       functionName: '__forward',
-      logicalFunctionName: 'publishJobEvent',
-    })).toBe(true);
-    expect(groupWritesPublishedJobEvents({
-      functionName: '__forward',
-      compilerRoute: { abiFunction: { name: 'publishJobEvent', entryLoopWrites: ['jobEvents'] } },
-    })).toBe(true);
-    expect(groupWritesPublishedJobEvents({
-      functionName: '__forward',
-      compilerRoute: { abiFunction: { name: 'registerUser', entryLoopWrites: ['jobEvents'] } },
-    })).toBe(false);
+      logicalFunctionName: functionName,
+      stateLayout: {
+        variables: [], dataNftCount: 0, commitmentLimit: 128,
+        collections: [{
+          name: collectionName,
+          signature: `${collectionName}:mapping(int => bytes[])`,
+          kind: 'mapping' as const,
+          keyType: 'int256',
+          valueType: 'bytes[]',
+          chunkableValue: true,
+        }],
+      },
+      compilerRoute: {
+        abiFunction: { name: '__route', inputs: [] },
+        rowArguments: [{
+          handler: {
+            name: functionName,
+            inputs: [],
+            entryAccesses: [{
+              collection: collectionName, keyParams: ['key'], operations: ['write'],
+            }],
+          },
+        }],
+      },
+    });
+    expect(groupChunkableArrayWriteCollection(groupFor('append', 'records'))).toBe('records');
+    expect(groupChunkableArrayWriteCollection(groupFor('store', 'segments'))).toBe('segments');
+    expect(groupWritesSingleChunkableArrayCollection(groupFor('store', 'segments'))).toBe(true);
+    const signatureAddressed = groupFor('replace', 'payloads');
+    signatureAddressed.compilerRoute!.rowArguments![0].handler.entryAccesses![0].collection =
+      signatureAddressed.stateLayout!.collections![0].signature;
+    expect(groupChunkableArrayWriteCollection(signatureAddressed)).toBe('payloads');
+  });
+
+  it('honors active route writes and refuses ambiguous chunkable array collections', () => {
+    const stateLayout = {
+      variables: [], dataNftCount: 0, commitmentLimit: 128,
+      collections: ['first', 'second'].map((name) => ({
+        name,
+        signature: `${name}:mapping(int => bytes[])`,
+        kind: 'mapping' as const,
+        keyType: 'int256',
+        valueType: 'bytes[]',
+        chunkableValue: true,
+      })),
+    };
+    const handler = {
+      name: 'writeBoth',
+      inputs: [],
+      entryAccesses: ['first', 'second'].map((collection) => ({
+        collection, keyParams: ['key'], operations: ['write'],
+      })),
+    };
+    const ambiguous = {
+      functionName: '__forward', stateLayout,
+      compilerRoute: { abiFunction: { name: '__route', inputs: [] }, rowArguments: [{ handler }] },
+    };
+    expect(groupChunkableArrayWriteCollection(ambiguous)).toBeUndefined();
+    expect(groupWritesSingleChunkableArrayCollection(ambiguous)).toBe(false);
+
+    const selected = {
+      ...ambiguous,
+      compilerRoute: {
+        ...ambiguous.compilerRoute,
+        abiFunction: {
+          name: '__route', inputs: [], messageBusActiveWriteCollections: ['second'],
+        },
+      },
+    };
+    expect(groupChunkableArrayWriteCollection(selected)).toBe('second');
   });
 
   it('rewrites transferFrom NEW at master+4 to the P\' collection lock', () => {

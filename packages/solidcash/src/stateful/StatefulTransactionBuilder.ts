@@ -2212,13 +2212,12 @@ export function clearMutableCollectionOutputsOutsideAuthoritativeRun(
 /** Token-free OP_TRUE or P2PKH pads used only to keep TXOUTPUTCOUNT aligned. */
 /**
  * Same-collection empty-value placeholders (128-byte slot||next||64-zero) inflate
- * insert-loop output counts (jobEvents teardown: expected P'+NEW=2, leftover
- * e3b0c442 placeholder makes the scan 3). Convert extras to token-free pads
- * in place so view tails and the jobs suffix do not move.
+ * insert-loop output counts when a provisional empty node remains beside the
+ * authenticated predecessor and new node. Convert extras to token-free pads
+ * in place so unrelated assigned output coordinates do not move.
  *
  * `plannedCount` is required. Without it this must not guess: initialize and
- * FakeToken.transfer also emit mixed empty+real mutables, and stripping those
- * breaks deploy / token-amount decoding.
+ * other collection operations can also emit mixed empty and real mutables.
  */
 export function stripSurplusEmptyCollectionEntries(
   outputs: Array<{
@@ -2271,18 +2270,62 @@ export function stripSurplusEmptyCollectionEntries(
   return stripped;
 }
 
-/** True when a composed group is the Solidity publishJobEvent write, not a proxy `__forward`. */
-export function groupWritesPublishedJobEvents(group: {
+/** Resolve the one active chunkable dynamic-array collection written by a composed group.
+ * Route rows are authoritative when present; a route-level active-write filter narrows union-shaped handlers.
+ * Ambiguous metadata fails closed rather than selecting a collection by source-level name. */
+type ChunkableArrayWriteGroup = {
   functionName?: string;
   logicalFunctionName?: string;
-  compilerRoute?: { abiFunction?: { name?: string; entryLoopWrites?: readonly string[] } };
-}): boolean {
-  const names = [
-    group.logicalFunctionName,
-    group.compilerRoute?.abiFunction?.name,
-    group.functionName,
-  ].filter((name): name is string => !!name && name !== '__forward');
-  return names.includes('publishJobEvent');
+  stateLayout?: StateLayout;
+  logicalArtifact?: Artifact;
+  externalContract?: { inner?: { artifact?: Artifact } };
+  compilerRoute?: {
+    abiFunction?: AbiFunction;
+    rowArguments?: readonly { handler: AbiFunction }[];
+  };
+};
+
+function groupChunkableArrayWriteCollections(group: ChunkableArrayWriteGroup): string[] {
+  const route = group.compilerRoute;
+  const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+  const directName = group.logicalFunctionName ?? group.functionName;
+  const direct = artifact?.abi.find((candidate) => candidate.name === directName);
+  const activeFunctions = route?.rowArguments?.length
+    ? route.rowArguments.map((row) => row.handler)
+    : route?.abiFunction ? [route.abiFunction] : direct ? [direct] : [];
+  const activeWriteCollections = (route?.abiFunction as (AbiFunction & {
+    messageBusActiveWriteCollections?: readonly string[];
+  }) | undefined)?.messageBusActiveWriteCollections;
+  const collections = group.stateLayout?.collections ?? artifact?.stateLayout?.collections ?? [];
+  const matches = new Set<string>();
+  for (const handler of activeFunctions) {
+    for (const access of handler.entryAccesses ?? []) {
+      const collection = collections.find((candidate) => (
+        candidate.name === access.collection || candidate.signature === access.collection
+      ));
+      const active = activeWriteCollections === undefined || activeWriteCollections.some((candidate) => (
+        candidate === access.collection || candidate === collection?.name || candidate === collection?.signature
+      ));
+      if (!access.operations.includes('write') || !active) continue;
+      if (collection?.chunkableValue === true && collection.valueType.endsWith('[]')) {
+        matches.add(collection.name);
+      }
+    }
+  }
+  return [...matches];
+}
+
+export function groupChunkableArrayWriteCollection(
+  group: ChunkableArrayWriteGroup,
+): string | undefined {
+  const matches = groupChunkableArrayWriteCollections(group);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function groupWritesSingleChunkableArrayCollection(group: Parameters<
+  typeof groupChunkableArrayWriteCollection
+>[0]): boolean {
+  return groupChunkableArrayWriteCollection(group) !== undefined;
 }
 
 /** Same-index mutable jobEvents entry UTXOs. View tails must not replace these. */
@@ -6396,10 +6439,27 @@ export class StatefulTransactionBuilder {
 
   /** Drop leftover empty-value entry placeholders that share a live collection lock. */
   private _stripSurplusEmptyCollectionEntries(builder: TransactionBuilder): void {
-    const writesJobEvents = this.externalCallUtxoGroups.some(groupWritesPublishedJobEvents)
-      || this.lowLevelCallUtxoGroups.some(groupWritesPublishedJobEvents)
-      || this.loopEntryVars.some((variable) => variable.collection === 'jobEvents');
-    if (!writesJobEvents) return;
+    const activeGroups = [
+      ...this.externalCallUtxoGroups,
+      ...this.lowLevelCallUtxoGroups,
+    ];
+    const groupCollections = activeGroups.map(groupChunkableArrayWriteCollections);
+    if (groupCollections.some((collections) => collections.length > 1)) return;
+    const selectedCollections = new Set(groupCollections.flat());
+    for (const variable of this.loopEntryVars) {
+      const collection = this.stateLayout.collections?.find((candidate) => (
+        candidate.name === variable.collection || candidate.signature === variable.collection
+      ));
+      if (variable.chunkable === true && collection?.chunkableValue === true
+        && collection.valueType.endsWith('[]')) selectedCollections.add(collection.name);
+    }
+    // Several active chunkable array writers can own different locks and widths. Until each run is tied to its
+    // compiler-published collection identity, selecting among them would be heuristic.
+    if (selectedCollections.size !== 1) return;
+    const [selectedCollection] = selectedCollections;
+    const selectedLayoutCollection = this.stateLayout.collections?.find((candidate) => (
+      candidate.name === selectedCollection || candidate.signature === selectedCollection
+    ));
     const plannedByLock = new Map<string, { lock: Uint8Array; planned: number }>();
     const remember = (lock: Uint8Array, planned: number): void => {
       if (lock.length === 0 || planned <= 0) return;
@@ -6408,34 +6468,13 @@ export class StatefulTransactionBuilder {
       plannedByLock.set(key, { lock, planned: Math.max(existing?.planned ?? 0, planned) });
     };
     for (const variable of this.loopEntryVars) {
-      if (variable.collection !== 'jobEvents' && variable.chunkable !== true) continue;
+      if (variable.collection !== selectedCollection
+        && variable.collection !== selectedLayoutCollection?.signature) continue;
       const required = this.getRequiredLoopEntryCount(variable.collection);
-      remember(variable.lockingBytecode, required > 0 ? required : 2);
-    }
-    // Nested MarketplaceData jobEvents often live on the data-NFT category while the
-    // executing group is the implementation minting category. Key by lockscript, and
-    // only the collection whose values carry a JobEvent payload — never every p2sh32
-    // (users/arbitrator inserts also mix empty+real mutables).
-    if (writesJobEvents) {
-      const byLock = new Map<string, { lock: Uint8Array; commitments: string[] }>();
-      for (const output of builder.outputs) {
-        const lock = output.to instanceof Uint8Array ? output.to : undefined;
-        if (!lock || lock.length !== 35 || lock[0] !== 0xaa || lock[1] !== 0x20) continue;
-        if (output.token?.nft?.capability !== 'mutable') continue;
-        const key = binToHex(lock);
-        const raw = output.token.nft?.commitment as Uint8Array | string | undefined;
-        const commitment = raw instanceof Uint8Array ? binToHex(raw) : (raw ?? '');
-        const group = byLock.get(key) ?? { lock, commitments: [] };
-        group.commitments.push(commitment);
-        byLock.set(key, group);
-      }
-      for (const { lock, commitments } of byLock.values()) {
-        const eventPayload = commitments.some((commitment) => {
-          const hex = commitment.toLowerCase();
-          return hex.includes('437265617465') || hex.includes('57686974656c697374');
-        });
-        if (eventPayload) remember(lock, 2);
-      }
+      const materialized = this.getLoopEntryCommitments(variable.collection).length;
+      // Both counts are compiler/planner-owned. With neither, the exact physical width is unknown and this
+      // cleanup must leave every output untouched.
+      remember(variable.lockingBytecode, required > 0 ? required : materialized);
     }
     for (const { lock, planned } of plannedByLock.values()) {
       stripSurplusEmptyCollectionEntries(builder.outputs, lock, planned);

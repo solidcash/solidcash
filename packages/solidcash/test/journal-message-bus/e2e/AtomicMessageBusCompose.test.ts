@@ -713,19 +713,19 @@ describe('messageBus.compose atomic transaction', () => {
         int marker;
         function keep() public { require(true); }
       }
-      interface IFactory { function create(int base); }
+      interface IFactory { function create(fixed128x2 base, fixed128x2 factor, fixed128x2 divisor); }
       contract Factory() {
         int created;
-        function create(int base) public {
-          Unit child = new Unit{value: base + 1000}();
+        function create(fixed128x2 base, fixed128x2 factor, fixed128x2 divisor) public {
+          Unit child = new Unit{value: int(base * factor / divisor)}();
           this.created = this.created + 1;
           require(true);
         }
       }
       contract Driver(address factory) {
-        function run(int first, int second) public {
-          IFactory(factory).create(first);
-          IFactory(factory).create(second);
+        function run(fixed128x2 first, fixed128x2 second, fixed128x2 factor, fixed128x2 divisor) public {
+          IFactory(factory).create(first, factor, divisor);
+          IFactory(factory).create(second, factor, divisor);
           require(true);
         }
       }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
@@ -744,9 +744,9 @@ describe('messageBus.compose atomic transaction', () => {
     const secondGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
     const compose = (first: bigint, second: bigint) => messageBus.compose({
       preparedCalls: [
-        { contract: driver, functionName: 'run', args: [first, second] },
-        { contract: factory, functionName: 'create', args: [first] },
-        { contract: factory, functionName: 'create', args: [second] },
+        { contract: driver, functionName: 'run', args: [first, second, 2_000n, 100n] },
+        { contract: factory, functionName: 'create', args: [first, 2_000n, 100n] },
+        { contract: factory, functionName: 'create', args: [second, 2_000n, 100n] },
       ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
@@ -756,7 +756,7 @@ describe('messageBus.compose atomic transaction', () => {
       ],
     });
 
-    const canonical = await compose(3_000n, 5_000n).build();
+    const canonical = await compose(20_000n, 30_000n).build();
     expect(vmRejects(canonical)).toBe(false);
     const transferOutputs = canonical.outputs.map((output, index) => ({ output, index }))
       .filter(({ output }) => !output.token && (output.amount === 4_000n || output.amount === 6_000n));
@@ -781,18 +781,18 @@ describe('messageBus.compose atomic transaction', () => {
         { parent: 2, subject: binToHex(childLocks[1] as Uint8Array), effect: '7017000000000000' },
       ]);
 
-    const wrongRecipient = await compose(3_000n, 5_000n).build();
+    const wrongRecipient = await compose(20_000n, 30_000n).build();
     wrongRecipient.outputs[transferOutputs[0].index].to = Uint8Array.of(0x52);
     expect(vmRejects(wrongRecipient)).toBe(true);
-    const wrongAmount = await compose(3_000n, 5_000n).build();
+    const wrongAmount = await compose(20_000n, 30_000n).build();
     wrongAmount.outputs[transferOutputs[1].index].amount += 1n;
     expect(vmRejects(wrongAmount)).toBe(true);
-    const wrongContainer = await compose(3_000n, 5_000n).build();
+    const wrongContainer = await compose(20_000n, 30_000n).build();
     wrongContainer.outputs[containerIndex].amount += 1n;
     expect(vmRejects(wrongContainer)).toBe(true);
 
-    await expect(compose(-1_000n, 5_000n).build()).rejects.toThrow(/positive uint64/);
-    await expect(compose(0x1_0000_0000_0000_0000n, 5_000n).build()).rejects.toThrow(/positive uint64/);
+    await expect(compose(0n, 30_000n).build()).rejects.toThrow(/positive uint64/);
+    await expect(compose(0x8_0000_0000_0000_0000n, 30_000n).build()).rejects.toThrow(/positive uint64/);
   }, 120_000);
 
   it('forwards detached signatures in composite arrays through a typed graph edge', async () => {

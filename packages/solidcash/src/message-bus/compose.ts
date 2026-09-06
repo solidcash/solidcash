@@ -240,23 +240,58 @@ export const evaluateChildDeploymentRecipe = (
   }
   if (recipe.kind === 'unary') {
     const operand = evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi);
-    const numeric = numericRecipeValue(operand, recipeType(recipe.operand, inputTypes), solidityAbi);
-    if (recipe.operator === '!') return coerceRecipeValue(numeric === 0n, 'bool', resultType, solidityAbi);
-    if (recipe.operator === '-') return coerceRecipeValue(-numeric, 'bigint', resultType, solidityAbi);
+    const operandTypeName = recipeType(recipe.operand, inputTypes);
+    const operandType = parseTypeStrict(operandTypeName);
+    const result = parseTypeStrict(resultType);
+    const numeric = numericRecipeValue(operand, operandTypeName, solidityAbi);
+    if (recipe.operator === '!') {
+      if (operandType instanceof FixedType) {
+        throw new Error('messageBus: fixed deployment recipe does not support logical negation');
+      }
+      return coerceRecipeValue(numeric === 0n, 'bool', resultType, solidityAbi);
+    }
+    if (recipe.operator === '-') {
+      if ((operandType instanceof FixedType || result instanceof FixedType)
+        && (!(operandType instanceof FixedType) || !(result instanceof FixedType)
+          || operandType.decimals !== result.decimals)) {
+        throw new Error('messageBus: fixed deployment recipe unary operands must use one scale');
+      }
+      return coerceRecipeValue(-numeric, operandTypeName, resultType, solidityAbi);
+    }
     throw new Error(`messageBus: unsupported deployment recipe unary operator ${recipe.operator}`);
   }
   const leftValue = evaluateChildDeploymentRecipe(recipe.left, args, inputTypes, solidityAbi);
   const leftType = recipeType(recipe.left, inputTypes);
   if (recipe.operator === '&&' || recipe.operator === '||') {
+    const rightType = recipeType(recipe.right, inputTypes);
+    if (parseTypeStrict(leftType) instanceof FixedType || parseTypeStrict(rightType) instanceof FixedType) {
+      throw new Error('messageBus: fixed deployment recipe does not support logical operators');
+    }
     const left = numericRecipeValue(leftValue, leftType, solidityAbi) !== 0n;
     if (recipe.operator === '&&' && !left) return false;
     if (recipe.operator === '||' && left) return true;
     const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi);
-    const right = numericRecipeValue(rightValue, recipeType(recipe.right, inputTypes), solidityAbi) !== 0n;
+    const right = numericRecipeValue(rightValue, rightType, solidityAbi) !== 0n;
     return recipe.operator === '&&' ? left && right : left || right;
   }
   const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi);
   const rightType = recipeType(recipe.right, inputTypes);
+  const leftParsedType = parseTypeStrict(leftType);
+  const rightParsedType = parseTypeStrict(rightType);
+  const resultParsedType = parseTypeStrict(resultType);
+  const hasFixedOperand = leftParsedType instanceof FixedType || rightParsedType instanceof FixedType;
+  if (hasFixedOperand || resultParsedType instanceof FixedType) {
+    if (!(leftParsedType instanceof FixedType) || !(rightParsedType instanceof FixedType)
+      || leftParsedType.decimals !== rightParsedType.decimals) {
+      throw new Error('messageBus: fixed deployment recipe binary operands must use one scale');
+    }
+    const booleanResult = ['==', '!=', '<', '<=', '>', '>='].includes(recipe.operator);
+    if (booleanResult ? resultParsedType !== PrimitiveType.BOOL
+      : !(resultParsedType instanceof FixedType)
+        || resultParsedType.decimals !== leftParsedType.decimals) {
+      throw new Error('messageBus: fixed deployment recipe result must preserve operand scale');
+    }
+  }
   if (recipe.operator === '==' || recipe.operator === '!=') {
     const equal = canonicalRecipeEqualityValue(leftValue, leftType, solidityAbi)
       === canonicalRecipeEqualityValue(rightValue, rightType, solidityAbi);
@@ -265,13 +300,14 @@ export const evaluateChildDeploymentRecipe = (
   const left = numericRecipeValue(leftValue, leftType, solidityAbi);
   const right = numericRecipeValue(rightValue, rightType, solidityAbi);
   let value: bigint | boolean;
+  const fixedScale = resultParsedType instanceof FixedType ? resultParsedType.scaleFactor : undefined;
   switch (recipe.operator) {
     case '+': value = left + right; break;
     case '-': value = left - right; break;
-    case '*': value = left * right; break;
+    case '*': value = fixedScale === undefined ? left * right : left * right / fixedScale; break;
     case '/':
       if (right === 0n) throw new Error('messageBus: division by zero in deployment recipe');
-      value = left / right; break;
+      value = fixedScale === undefined ? left / right : left * fixedScale / right; break;
     case '%':
       if (right === 0n) throw new Error('messageBus: modulo by zero in deployment recipe');
       value = left % right; break;
@@ -281,7 +317,12 @@ export const evaluateChildDeploymentRecipe = (
     case '>=': value = left >= right; break;
     default: throw new Error(`messageBus: unsupported deployment recipe binary operator ${recipe.operator}`);
   }
-  return coerceRecipeValue(value, typeof value === 'boolean' ? 'bool' : 'bigint', resultType, solidityAbi);
+  return coerceRecipeValue(
+    value,
+    typeof value === 'boolean' ? 'bool' : fixedScale === undefined ? 'bigint' : resultType,
+    resultType,
+    solidityAbi,
+  );
 };
 
 interface CallDescriptor extends PreparedAtomicMessageBusCall {

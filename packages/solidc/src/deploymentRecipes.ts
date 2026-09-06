@@ -22,9 +22,14 @@ const unaryOperators = new Set<UnaryOperator>([
 
 // eslint-disable-next-line max-len
 const materializableCastType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?)$/;
-const fixedRecipeType = /^(?:u?fixed)(?:\d+x\d+)?$/;
 // eslint-disable-next-line max-len
 const numericRecipeType = /^(?:bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)$/;
+
+const fixedRecipeDecimals = (type: string | undefined): number | undefined => {
+  if (!type) return undefined;
+  const match = /^(?:u?fixed)(?:\d+x(\d+))?$/.exec(type);
+  return match ? Number(match[1] ?? 18) : undefined;
+};
 
 const recipeType = (expression: ExpressionNode): string | undefined => {
   if (expression.type instanceof EnumType) return undefined;
@@ -76,8 +81,12 @@ export function childDeploymentValueRecipe(
       expression.expression, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
     );
     const resultType = declaredType ?? (expression.operator === UnaryOperator.NOT ? 'bool' : operand?.resultType);
-    return operand && resultType && !fixedRecipeType.test(resultType)
-      && !(operand.resultType && fixedRecipeType.test(operand.resultType)) ? {
+    const operandFixedDecimals = fixedRecipeDecimals(operand?.resultType);
+    const resultFixedDecimals = fixedRecipeDecimals(resultType);
+    const fixedSupported = operandFixedDecimals === undefined && resultFixedDecimals === undefined
+      || expression.operator === UnaryOperator.NEGATE
+        && operandFixedDecimals !== undefined && operandFixedDecimals === resultFixedDecimals;
+    return operand && resultType && fixedSupported ? {
         kind: 'unary', operator: expression.operator as '!' | '-', resultType: resultType!, operand,
       } : undefined;
   }
@@ -90,15 +99,25 @@ export function childDeploymentValueRecipe(
     );
     const booleanResult = [BinaryOperator.LT, BinaryOperator.LE, BinaryOperator.GT, BinaryOperator.GE,
       BinaryOperator.EQ, BinaryOperator.NE, BinaryOperator.AND, BinaryOperator.OR].includes(expression.operator);
+    const fixedBooleanResult = [BinaryOperator.LT, BinaryOperator.LE, BinaryOperator.GT, BinaryOperator.GE,
+      BinaryOperator.EQ, BinaryOperator.NE].includes(expression.operator);
     const resultType = declaredType ?? (booleanResult ? 'bool' : left?.resultType);
     const equality = expression.operator === BinaryOperator.EQ || expression.operator === BinaryOperator.NE;
     const logical = expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR;
-    const supportedOperands = equality || (logical
+    let supportedOperands = equality || (logical
       ? left?.resultType === 'bool' && right?.resultType === 'bool'
       : !!left?.resultType && !!right?.resultType
         && numericRecipeType.test(left.resultType) && numericRecipeType.test(right.resultType));
-    return left && right && resultType && supportedOperands && ![resultType, left.resultType, right.resultType]
-      .some((type) => type !== undefined && fixedRecipeType.test(type)) ? {
+    const leftFixedDecimals = fixedRecipeDecimals(left?.resultType);
+    const rightFixedDecimals = fixedRecipeDecimals(right?.resultType);
+    const resultFixedDecimals = fixedRecipeDecimals(resultType);
+    if (leftFixedDecimals !== undefined || rightFixedDecimals !== undefined || resultFixedDecimals !== undefined) {
+      const fixedOperandsShareScale = leftFixedDecimals !== undefined && leftFixedDecimals === rightFixedDecimals;
+      supportedOperands = fixedOperandsShareScale && (fixedBooleanResult
+        ? resultType === 'bool'
+        : !logical && resultFixedDecimals === leftFixedDecimals);
+    }
+    return left && right && resultType && supportedOperands ? {
         kind: 'binary',
         operator: expression.operator as Extract<ChildDeploymentValueRecipe, { kind: 'binary' }>['operator'],
         resultType,

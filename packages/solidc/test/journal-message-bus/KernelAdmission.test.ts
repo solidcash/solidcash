@@ -2065,16 +2065,74 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false });
   });
 
-  it('keeps fixed-point constructor arithmetic fenced until recipe scaling is modeled', () => {
+  it('publishes scaled fixed-point constructor arithmetic', () => {
     const artifact = compileString(`contract Unit() {
         fixed128x18 marker;
-        constructor(fixed128x18 seed) { this.marker = seed * 2; }
+        constructor(fixed128x18 seed) { this.marker = seed; }
       }
       contract Coordinator() {
-        function materialize(fixed128x18 seed) public { Unit unit = new Unit(seed); require(true); }
+        function materialize(fixed128x18 seed, fixed128x18 factor) public {
+          Unit unit = new Unit(seed * factor);
+          require(true);
+        }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{
+          genesisState: { fields: [{
+            name: 'marker', type: 'fixed128x18',
+            value: {
+              kind: 'binary', operator: '*', resultType: 'fixed128x18',
+              left: { kind: 'handlerInput', inputIndex: 0, resultType: 'fixed128x18' },
+              right: { kind: 'handlerInput', inputIndex: 1, resultType: 'fixed128x18' },
+            },
+          }] },
+        }],
+      });
+  });
+
+  it('publishes fixed arithmetic nested in a value recipe', () => {
+    const artifact = compileString(`contract Unit() { int marker; }
+      contract Coordinator() {
+        int created;
+        function materialize(fixed128x2 rate, fixed128x2 factor) public {
+          Unit unit = new Unit{value: int(rate * factor)}();
+          this.created = this.created + 1;
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ value: { amount: {
+          kind: 'cast', resultType: 'int256', operand: {
+            kind: 'binary', operator: '*', resultType: 'fixed128x2',
+            left: { kind: 'handlerInput', inputIndex: 0, resultType: 'fixed128x2' },
+            right: { kind: 'handlerInput', inputIndex: 1, resultType: 'fixed128x2' },
+          },
+        } } }],
+      });
+  });
+
+  it('publishes an explicit fixed constructor cross-scale cast', () => {
+    const artifact = compileString(`contract Unit(fixed128x2 marker) { fixed128x2 stored;
+        constructor() { this.stored = marker; }
+      }
+      contract Coordinator() {
+        function materialize(fixed128x2 left, fixed128x3 right) public {
+          Unit unit = new Unit(left + fixed128x2(right));
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: true });
+    const recipe = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize')
+      ?.childDeployments?.[0].constructorArgs[0];
+    expect(recipe).toMatchObject({
+      kind: 'binary', resultType: 'fixed128x2',
+      right: { kind: 'cast', resultType: 'fixed128x2' },
+    });
   });
 
   it('publishes every unconditional child site in source order with heterogeneous row geometry', () => {

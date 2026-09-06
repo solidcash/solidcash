@@ -4,8 +4,9 @@ import {
 } from '@solidcash/utils';
 import {
   AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, BranchNode, CastNode, CollectionIterationNode,
-  DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode, InstantiationNode,
-  IntLiteralNode, Node, SwitchNode, TryCatchNode, UnaryOpNode, UncheckedNode, VariableDefinitionNode, WhileNode,
+  DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
+  InstantiationNode, IntLiteralNode, Node, ReturnNode, SwitchNode, TryCatchNode, TupleAssignmentNode, UnaryOpNode,
+  UncheckedNode, VariableDefinitionNode, WhileNode,
 } from './ast/AST.js';
 import { BinaryOperator, UnaryOperator } from './ast/Operator.js';
 
@@ -22,6 +23,8 @@ const unaryOperators = new Set<UnaryOperator>([
 // eslint-disable-next-line max-len
 const materializableCastType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?|(?:u?fixed)(?:\d+x\d+)?|bytes(?:[1-9]|[12]\d|3[0-2])?)$/;
 const fixedRecipeType = /^(?:u?fixed)(?:\d+x\d+)?$/;
+// eslint-disable-next-line max-len
+const numericRecipeType = /^(?:bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)$/;
 
 const recipeType = (expression: ExpressionNode): string | undefined => {
   if (expression.type instanceof EnumType) return undefined;
@@ -88,7 +91,13 @@ export function childDeploymentValueRecipe(
     const booleanResult = [BinaryOperator.LT, BinaryOperator.LE, BinaryOperator.GT, BinaryOperator.GE,
       BinaryOperator.EQ, BinaryOperator.NE, BinaryOperator.AND, BinaryOperator.OR].includes(expression.operator);
     const resultType = declaredType ?? (booleanResult ? 'bool' : left?.resultType);
-    return left && right && resultType && ![resultType, left.resultType, right.resultType]
+    const equality = expression.operator === BinaryOperator.EQ || expression.operator === BinaryOperator.NE;
+    const logical = expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR;
+    const supportedOperands = equality || (logical
+      ? left?.resultType === 'bool' && right?.resultType === 'bool'
+      : !!left?.resultType && !!right?.resultType
+        && numericRecipeType.test(left.resultType) && numericRecipeType.test(right.resultType));
+    return left && right && resultType && supportedOperands && ![resultType, left.resultType, right.resultType]
       .some((type) => type !== undefined && fixedRecipeType.test(type)) ? {
         kind: 'binary',
         operator: expression.operator as Extract<ChildDeploymentValueRecipe, { kind: 'binary' }>['operator'],
@@ -150,6 +159,18 @@ export function analyzeChildDeploymentRecipes(
   ]));
   let aliasDefinitions = new Map<string, object>(visibleInputs.map((parameter) => [parameter.name, parameter]));
   const result = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
+  let hasReturn = false;
+  const findReturn = (value: unknown, seen = new WeakSet<object>()): void => {
+    if (Array.isArray(value)) { value.forEach((item) => findReturn(item, seen)); return; }
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof ReturnNode) { hasReturn = true; return; }
+    for (const [key, child] of Object.entries(value)) {
+      if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
+      findReturn(child, seen);
+    }
+  };
+  findReturn(fn.body);
 
   const snapshotExpression = (value: unknown, unsafe: boolean, seen = new WeakSet<object>()): void => {
     if (Array.isArray(value)) { value.forEach((item) => snapshotExpression(item, unsafe, seen)); return; }
@@ -189,6 +210,16 @@ export function analyzeChildDeploymentRecipes(
     if (value instanceof AssignNode) {
       const definition = definitionOf(value.identifier) ?? aliasDefinitions.get(value.identifier.name);
       if (definition) aliases.delete(definition);
+    } else if (value instanceof DeleteLocalNode) {
+      const definition = definitionOf(value.identifier) ?? aliasDefinitions.get(value.identifier.name);
+      if (definition) aliases.delete(definition);
+    } else if (value instanceof TupleAssignmentNode) {
+      for (const element of value.elements) {
+        if (element.skip || !element.name) continue;
+        const definition = aliasDefinitions.get(element.name);
+        if (definition) aliases.delete(definition);
+        if (!element.existing) aliasDefinitions.set(element.name, element);
+      }
     }
     for (const [key, child] of Object.entries(value)) {
       if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
@@ -241,7 +272,9 @@ export function analyzeChildDeploymentRecipes(
       invalidateAssignments(statement);
     }
   };
-  processBlock(fn.body);
+  // Early-return lowering runs after admission and can wrap a later deployment in synthetic control flow.
+  // Until recipes are analyzed on that post-transform tree, refuse every deployment in such a function.
+  processBlock(fn.body, hasReturn);
   return result;
 }
 

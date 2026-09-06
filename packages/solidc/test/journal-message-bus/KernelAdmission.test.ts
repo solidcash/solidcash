@@ -1957,10 +1957,43 @@ describe('required kernel admission', () => {
     'if (seed > 0) { int adjusted = seed + 1; Unit unit = new Unit(adjusted); }',
     'int adjusted = seed; if (seed > 0) { adjusted = seed + 1; } Unit unit = new Unit(adjusted);',
     'int[] values = new int[](1); Unit unit = new Unit(values[0]);',
+    'int adjusted = seed + 1; delete adjusted; Unit unit = new Unit(adjusted);',
+    // Tuple writes are conservatively invalidated until per-slot recipes are modeled.
+    'int adjusted = seed + 1; int other = seed; (adjusted, other) = (seed + 2, seed); '
+      + 'Unit unit = new Unit(adjusted);',
   ])('keeps non-SSA deployment aliases fenced: %s', (body) => {
     const artifact = compileString(`contract Unit(int marker) { int stored; constructor() { this.stored = marker; } }
       contract Coordinator() {
         function materialize(int seed) public { ${body} require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: false });
+  });
+
+  it('keeps deployment recipes fenced across the later early-return lowering boundary', () => {
+    const artifact = compileString(`contract Unit(int marker) { int stored; constructor() { this.stored = marker; } }
+      contract Coordinator() {
+        function materialize(bool skip, int seed) public {
+          if (skip) { require(true); return; }
+          int adjusted = seed + 1;
+          Unit unit = new Unit(adjusted);
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: false });
+  });
+
+  it('keeps byte concatenation aliases fenced until nonnumeric recipe arithmetic is modeled', () => {
+    const artifact = compileString(`contract Unit(bytes4 marker) { bytes4 stored; constructor() {
+        this.stored = marker;
+      } }
+      contract Coordinator() {
+        function materialize(bytes2 left, bytes2 right) public {
+          bytes4 joined = left + right;
+          Unit unit = new Unit(joined);
+          require(true);
+        }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
       .toMatchObject({ eligible: false });

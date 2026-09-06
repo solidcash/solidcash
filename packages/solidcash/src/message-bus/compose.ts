@@ -1,10 +1,10 @@
-import { bigIntToVmNumber, binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, hexToBin, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
   MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, buildEventNftCovenantScript,
   buildAnonymousEventNftCovenantScript, computeEventNameHash, parseArrayTypeString,
-  buildInitialStateCommitments, bytecodeToScript, scriptToAsm, BytesType, FixedType, IntType, parseTypeStrict,
-  PrimitiveType,
+  buildInitialStateCommitments, bytecodeToScript, scriptToAsm, AddressType, BytesType, FixedType, IntType,
+  parseTypeStrict, PrimitiveType,
   childStateLayoutDigest,
   validateChildDeploymentGenesisState,
 } from '@solidcash/utils';
@@ -183,6 +183,39 @@ const coerceRecipeValue = (
   throw new Error(`messageBus: deployment recipe type ${resultTypeName} is not materializable`);
 };
 
+const canonicalRecipeEqualityValue = (
+  value: FunctionArgument,
+  typeName: string,
+  solidityAbi: boolean,
+): bigint | string => {
+  const type = parseTypeStrict(typeName);
+  if (type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT
+    || type instanceof IntType || type instanceof FixedType) {
+    return numericRecipeValue(value, typeName, solidityAbi);
+  }
+  if (type === PrimitiveType.STRING) {
+    if (typeof value === 'string') return binToHex(utf8ToBin(value));
+    if (value instanceof Uint8Array) return binToHex(value);
+    throw new Error('messageBus: deployment recipe expected string');
+  }
+  if (type instanceof AddressType || type instanceof BytesType
+    || type === PrimitiveType.PUBKEY || type === PrimitiveType.DATASIG) {
+    let bytesValue = value;
+    if (typeof bytesValue === 'string' && type instanceof AddressType && bytesValue.includes(':')) {
+      bytesValue = addressToLockScript(bytesValue);
+    } else if (typeof bytesValue === 'string' && type instanceof AddressType && /^(?:0x)?0*$/i.test(bytesValue)) {
+      bytesValue = new Uint8Array(0);
+    } else if (typeof bytesValue === 'string') {
+      bytesValue = hexToBin(bytesValue.startsWith('0x') ? bytesValue.slice(2) : bytesValue);
+    }
+    if (!(bytesValue instanceof Uint8Array)) {
+      throw new Error(`messageBus: deployment recipe expected byte sequence ${typeName}`);
+    }
+    return binToHex(bytesValue);
+  }
+  throw new Error(`messageBus: deployment recipe equality type ${typeName} is not materializable`);
+};
+
 export const evaluateChildDeploymentRecipe = (
   recipe: ChildDeploymentValueRecipe,
   args: readonly FunctionArgument[],
@@ -225,8 +258,8 @@ export const evaluateChildDeploymentRecipe = (
   const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi);
   const rightType = recipeType(recipe.right, inputTypes);
   if (recipe.operator === '==' || recipe.operator === '!=') {
-    const equal = leftValue instanceof Uint8Array && rightValue instanceof Uint8Array
-      ? binToHex(leftValue) === binToHex(rightValue) : leftValue === rightValue;
+    const equal = canonicalRecipeEqualityValue(leftValue, leftType, solidityAbi)
+      === canonicalRecipeEqualityValue(rightValue, rightType, solidityAbi);
     return recipe.operator === '==' ? equal : !equal;
   }
   const left = numericRecipeValue(leftValue, leftType, solidityAbi);

@@ -3845,8 +3845,10 @@ function synthesizeMessageBusRoute(
       const statefulChildren = new Map(ast.importedContracts.filter((child) =>
         child.stateVariables.length > 0 || child.collections.length > 0).map((child) => [child.name, child]));
       const closureNames = collectNamedFunctionClosure(fn, byName);
-      for (const name of closureNames) {
-        for (const candidate of byName.get(name) ?? []) {
+      // Physical-effect helpers have already been inlined. Inspect this exact overload's normalized body;
+      // walking every function with the same source name would make an unrelated overload inherit its sibling's
+      // deployment topology. A remaining named helper keeps closureNames wider than one and is fenced below.
+      for (const candidate of [fn]) {
           // Synchronous traversal; `deploys` is the accumulator for this immediately enclosing handler scan.
           // eslint-disable-next-line @typescript-eslint/no-loop-func
           walkInvocationAst(candidate.body, (node) => {
@@ -3924,7 +3926,6 @@ function synthesizeMessageBusRoute(
             }
           };
           nestedDeploy(candidate.body);
-        }
       }
       const kernelDeploySupported = deploys && deploySites >= 1 && !unsupportedInstantiation
         && !deployUnderControlFlow && !deployWithValue && !deploymentStateInitializationUnsupported

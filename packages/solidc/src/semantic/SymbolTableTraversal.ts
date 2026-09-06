@@ -13265,23 +13265,34 @@ export default class SymbolTableTraversal extends AstTraversal {
         || deployWidth(fn) > 0)
       && this.framesSettleEveryTransfer(fn));
     if (handlers.length === 0) return;
-    const byName = new Map(handlers.map((fn) => [fn.name, fn]));
-    const siteCounts = new Map<string, number>();
+    const handlerSet = new Set(handlers);
+    const handlersByName = new Map<string, FunctionDefinitionNode[]>();
+    for (const handler of handlers) {
+      const named = handlersByName.get(handler.name) ?? [];
+      named.push(handler);
+      handlersByName.set(handler.name, named);
+    }
+    const resolvedHandler = (call: FunctionCallNode): FunctionDefinitionNode | undefined => {
+      if (call.resolvedFunction && handlerSet.has(call.resolvedFunction)) return call.resolvedFunction;
+      const named = handlersByName.get(call.identifier.name) ?? [];
+      return named.length === 1 ? named[0] : undefined;
+    };
+    const siteCounts = new Map<FunctionDefinitionNode, number>();
     let loopDispatch = false;
     walkInvocationAst(route.body, (candidate) => {
       if (!(candidate instanceof WhileNode)) return;
       walkInvocationAst(candidate.block, (inner) => {
-        if (inner instanceof FunctionCallNode && byName.has(inner.identifier.name)) loopDispatch = true;
+        if (inner instanceof FunctionCallNode && resolvedHandler(inner)) loopDispatch = true;
       });
     });
     walkInvocationAst(route.body, (candidate) => {
       if (!(candidate instanceof FunctionCallNode)) return;
-      const target = byName.get(candidate.identifier.name);
+      const target = resolvedHandler(candidate);
       if (!target) return;
-      const ordinal = siteCounts.get(target.name) ?? 0;
+      const ordinal = siteCounts.get(target) ?? 0;
       candidate.graphEffectSite = ordinal;
       if (loopDispatch) candidate.graphEffectSiteFromRow = true;
-      siteCounts.set(target.name, ordinal + 1);
+      siteCounts.set(target, ordinal + 1);
     });
     const sites = loopDispatch
       ? (route.messageBusMaximumRows ?? Math.max(0, ...siteCounts.values()))
@@ -13291,11 +13302,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     // under a LOOP parser that does not thread the runtime `row` as the effect-site ordinal: one syntactic
     // call would then share one frame across rows. Kernel dispatch sets `graphEffectSiteFromRow` and sizes
     // the frame to `messageBusMaximumRows` so each reached row owns a distinct window.
-    for (const [name, count] of siteCounts) {
+    for (const [handler, count] of siteCounts) {
       if (loopDispatch || count >= (route.messageBusMaximumRows ?? count)) continue;
       throw new GraphEmissionEffectError(
-        contract.functions.find((fn) => fn.name === name) ?? route,
-        name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
+        handler,
+        handler.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
         'an effect on a route with fewer dispatch sites than rows',
       );
     }

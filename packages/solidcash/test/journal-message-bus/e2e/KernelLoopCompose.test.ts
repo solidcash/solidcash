@@ -5450,6 +5450,11 @@ describe('kernel composite counter-key settlement', () => {
         second.push(next + 2);
         first[1] = second.length;
       }
+      function mutateCopy(int[] values, int next) internal pure { values[0] = next; }
+      function outerCopy(int[] memory values, int next) internal pure {
+        mutateCopy(values, next);
+        values[0] = next + 1;
+      }
       function write(int n, int a, int b) public {
         int[] memory left = new int[](n);
         int[] memory right = new int[](n);
@@ -5494,6 +5499,12 @@ describe('kernel composite counter-key settlement', () => {
         }
         require(true);
       }
+      function writeTransitiveCopy(int n, int next) public {
+        int[] memory values = new int[](n);
+        outerCopy(values, next);
+        for (int i = 0; i < n; i = i + 1) { this.leftSlots[values[i]] = i + 90; }
+        require(true);
+      }
       function checkLeft(int key, int expected) public { require(this.leftSlots[key] == expected); }
       function checkRight(int key, int expected) public { require(this.rightSlots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
@@ -5514,12 +5525,15 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.batch([{ function: 'writeTransitive', args: [2n, 1300n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.batch([{ function: 'writeTransitiveCopy', args: [2n, 1400n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.checkLeft(1500n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1900n, 30n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(2300n, 60n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(0n, 61n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(0n, 91n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1301n, 70n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(3n, 71n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(1401n, 90n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(800n, 20n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(1000n, 40n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(1300n, 80n).send()).resolves.toBeDefined();

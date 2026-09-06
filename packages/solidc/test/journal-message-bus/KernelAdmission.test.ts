@@ -1133,6 +1133,11 @@ describe('required kernel admission', () => {
         second.push(next + 2);
         first[1] = second.length;
       }
+      function mutateCopy(int[] values, int next) internal pure { values[0] = next; }
+      function outerCopy(int[] memory values, int next) internal pure {
+        mutateCopy(values, next);
+        values[0] = next + 1;
+      }
       function write(int n, int a, int b) public {
         int[] memory left = new int[](n);
         int[] memory right = new int[](n);
@@ -1184,6 +1189,12 @@ describe('required kernel admission', () => {
         }
         require(true);
       }
+      function transitiveCopy(int n, int next) public {
+        int[] memory values = new int[](n);
+        outerCopy(values, next);
+        for (int i = 0; i < n; i = i + 1) { this.leftSlots[values[i]] = i; }
+        require(true);
+      }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
@@ -1207,6 +1218,8 @@ describe('required kernel admission', () => {
         expect.objectContaining({ collection: 'leftSlots' }),
         expect.objectContaining({ collection: 'rightSlots' }),
       ]));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'transitiveCopy'))
+      .toMatchObject({ eligible: true });
   });
 
   it('replays helper-side constructed-key resizing through the shared memory alias', () => {

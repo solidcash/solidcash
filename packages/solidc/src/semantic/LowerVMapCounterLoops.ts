@@ -5562,6 +5562,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const nestedArrayNames = new Set(nestedTarget.parameters
                 .filter((candidate) => candidate.type instanceof ArrayType)
                 .map((candidate) => candidate.name));
+              const hasMemoryArrayParameter = nestedTarget.parameters.some((candidate) =>
+                candidate.type instanceof ArrayType && candidate.modifier.includes('memory'));
+              // Ordinary array parameters are value-copied. When every array formal has value semantics, the
+              // nested call operates on private copies and cannot change any caller plan, even if its body mutates
+              // those copies or forwards them again. The real source call remains in place for its own checks.
+              if (!hasMemoryArrayParameter) continue;
               const nestedPlanNames = new Map<string, string>();
               const nestedValues = new Map<string, ExpressionNode>();
               for (let parameterIndex = 0;

@@ -4461,6 +4461,78 @@ describe('kernel composite counter-key settlement', () => {
     ]).build()).rejects.toThrow(/read-your-writes transition/);
   }, 180_000);
 
+  it('replays affine recursive events at each current-frame value across source renaming', async () => {
+    const variants = [
+      { contractName: 'DescendingStream', functionName: 'descend', counterName: 'cursor', eventName: 'Seen' },
+      { contractName: 'RenamedStream', functionName: 'advance', counterName: 'index', eventName: 'Observed' },
+    ];
+    for (const variant of variants) {
+      const provider = createTestProvider();
+      const artifact = compileString(`contract ${variant.contractName}() {
+        event ${variant.eventName}(bigint value);
+        event Pulse();
+        function ${variant.functionName}(bigint ${variant.counterName}, bigint delta) public returns (bigint) {
+          emit ${variant.eventName}(${variant.counterName});
+          if (${variant.counterName} == 0 || delta / ${variant.counterName} > 0) emit Pulse();
+          if (${variant.counterName} <= 0) return ${variant.counterName};
+          return ${variant.functionName}(${variant.counterName} - delta, delta);
+        }
+      }`, KERNEL);
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === variant.functionName))
+        .toMatchObject({ eligible: true });
+      const inner = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+      );
+      const contract = StatefulContract.withCategory(inner, categoryId);
+      const call = contract.call[variant.functionName](6n, 2n);
+      const builder = await call.build();
+      const vm = createVirtualMachineBch2026ForProvider(provider);
+      const transaction = builder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+          `${variant.functionName}, input ${inputIndex}`).toBe(true);
+      }
+      const receipt = await call.send();
+      expect(receipt.events?.map((event) => [event.event, event.args.value])).toEqual([
+        [variant.eventName, 6n],
+        [variant.eventName, 4n],
+        [variant.eventName, 2n], ['Pulse', undefined],
+        [variant.eventName, 0n], ['Pulse', undefined],
+      ]);
+    }
+  }, 180_000);
+
+  it('enforces the recursive event domain step and 64-frame resource bound', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract BoundedStream() {
+      event Seen(bigint value);
+      function descend(bigint cursor, bigint delta) public returns (bigint) {
+        emit Seen(cursor);
+        if (cursor <= 0) return cursor;
+        return descend(cursor - delta, delta);
+      }
+    }`, KERNEL);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const accepted = contract.call.descend(63n, 1n);
+    await expect(accepted.build()).resolves.toBeDefined();
+    await expect(contract.call.descend(1n, 0n).build())
+      .rejects.toThrow(/step must be non-zero/);
+    await expect(contract.call.descend(64n, 1n).build())
+      .rejects.toThrow(/exceeds its compiler-published maximum/);
+    const loop = artifact.messageBus?.handlers.find((handler) => handler.name === 'descend')
+      ?.runtimeLoopEvents?.[0];
+    expect(loop).toBeDefined();
+    (loop as unknown as { arguments?: readonly unknown[][] }).arguments = [];
+    await expect(contract.call.descend(1n, 1n).build())
+      .rejects.toThrow(/metadata.*does not match its event sites/);
+  }, 180_000);
+
   it('evaluates an effectful repeated-event argument once in logical source order', async () => {
     const provider = createTestProvider();
     const artifact = compileString(EFFECTFUL_EVENT_ARGUMENT_SOURCE, KERNEL);

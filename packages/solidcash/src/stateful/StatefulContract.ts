@@ -56,6 +56,7 @@ import {
   ExternalLibraryAbi,
   isComputedBlockhashKey,
   encodePushdataValue,
+  encodeEventCommitment,
   getDefaultStateValue,
   preferZeroPrefixedEventBlob,
   keccakComputeLockingBytecode,
@@ -12971,6 +12972,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const commitment = commitmentMap.get(outputIndex)
                 ?? extractExpectedOutputCommitmentFromTrace(fullTrace2, outputIndex, actual);
               if (commitment === undefined || commitment === runtimeLoopEvents[eventIndex].commitment) continue;
+              if (runtimeLoopEvents[eventIndex].commitment.length > 0) {
+                throw new Error(`Runtime event ${eventIndex} trace commitment does not match compiler metadata`);
+              }
               stb.setRuntimeLoopEventRawCommitment(eventIndex, commitment);
               commitmentProgress += 1;
             }
@@ -24719,7 +24723,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const selectedRuntimeEventRows = (entryRouteRows?.some((row) =>
       (row.handler.runtimeLoopEvents?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
     const runtimeLoopEventOutputs: Array<{
-      eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string;
+      eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
     }> = [];
     const runtimeLoopEventSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
     const runtimeLoopEffectOccurrences: Array<{
@@ -24737,6 +24741,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         [
           ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.conditions ?? [])
             .filter((condition): condition is ExternalCallExpression => condition !== null),
+          ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.arguments ?? []).flat(),
           ...(source.runtimeLoopEvents ?? []).flatMap((loop) => loop.iterationDomain
             ? [
               loop.iterationDomain.initialValue,
@@ -24754,6 +24759,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         executionSelfAddress,
       );
       for (const loop of source.runtimeLoopEvents ?? []) {
+        if ((loop.iterationDomain && loop.arguments?.length !== loop.eventSignatures.length)
+          || (loop.conditions !== undefined && loop.conditions.length !== loop.eventSignatures.length)
+          || (loop.effectOrder !== undefined && loop.effectOrder.length !== loop.eventSignatures.length)) {
+          throw new Error(`Runtime event metadata for '${source.name}' does not match its event sites.`);
+        }
         const repeatSource = runtimeLoopEventRepeatSource(loop);
         let iterationValues: bigint[] | undefined;
         let repeatCount = repeatSource.kind === 'fixed' ? repeatSource.count
@@ -24847,11 +24857,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         for (let iteration = 0; iteration < repeatCount; iteration += 1) {
           for (let siteIndex = 0; siteIndex < loop.eventSignatures.length; siteIndex += 1) {
             const eventSignature = loop.eventSignatures[siteIndex];
+            const iterationBindings = loop.iterationDomain && iterationValues
+              ? new Map([[loop.iterationDomain.counterName, iterationValues[iteration]]])
+              : undefined;
             const condition = loop.conditions?.[siteIndex];
             if (condition) {
-              const iterationBindings = loop.iterationDomain && iterationValues
-                ? new Map([[loop.iterationDomain.counterName, iterationValues[iteration]]])
-                : undefined;
               const active = this._evaluateExternalExpression(
                 condition,
                 functionArgs,
@@ -24875,8 +24885,47 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (!lockingBytecode) {
               throw new Error(`No locking bytecode provided for runtime-loop event: ${eventSignature}`);
             }
+            let commitment: string | undefined;
+            if (loop.iterationDomain) {
+              const argumentExpressions = loop.arguments?.[siteIndex];
+              const eventDefinition = eventDefs.find((candidate) => candidate.signature === eventSignature);
+              if (!argumentExpressions || !eventDefinition
+                || argumentExpressions.length !== eventDefinition.parameters.length) {
+                throw new Error(
+                  `Runtime event arguments for '${eventSignature}' in '${source.name}' are unresolved or have invalid arity.`,
+                );
+              }
+              const values = argumentExpressions.map((expression, argumentIndex) => {
+                const value = this._evaluateExternalExpression(
+                  expression,
+                  functionArgs,
+                  sourceArtifact,
+                  runtimePredicateState,
+                  visibleHandlerInputs(source.inputs),
+                  undefined,
+                  iteration,
+                  false,
+                  executionSelfAddress,
+                  iterationBindings,
+                );
+                if (value === undefined) throw new Error(
+                  `Could not resolve runtime event argument ${argumentIndex} for '${eventSignature}' in '${source.name}'.`,
+                );
+                return value as StateValue;
+              });
+              const encoded = eventDefinition.parameters.length === 0
+                ? Uint8Array.of(1)
+                : encodeEventCommitment(
+                  eventDefinition.parameters,
+                  values,
+                  sourceArtifact.structs ?? sourceArtifact.stateLayout?.structs ?? stateLayout.structs,
+                );
+              commitment = binToHex(encoded);
+            }
             const outputIndex = runtimeLoopEventOutputs.length;
-            runtimeLoopEventOutputs.push({ eventSignature, lockingBytecode });
+            runtimeLoopEventOutputs.push({
+              eventSignature, lockingBytecode, ...(commitment !== undefined && { commitment }),
+            });
             if (loop.effectSequence !== undefined && loop.effectOrder?.[siteIndex] !== undefined) {
               runtimeLoopEffectOccurrences.push({
                 rowIndex, kind: 'events', outputIndex,
@@ -25518,10 +25567,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       timing('funder-entry-infos');
       const tcInfos = builder.getTokenContainerInfos();
       timing('funder-token-infos');
-      // Delegate upsert/insert loops address trailing predecessors at INPUTINDEX+blockSize. blockSize includes
-      // output-only returnEvent even when no return blob is emitted; skipping that funder lands the predecessor
-      // one input early (marketplace publishJobPost whitelist insert then OP_VERIFYs a P2PKH pad at 11).
-      const delegateLoopNeedsReturnSlot = insertLoopPredecessors.length > 0 || sortedLoopCommitments.size > 0;
+      // Dynamic trailing outputs are addressed after the compiler's complete fixed block. If that block includes
+      // an inactive returnEvent slot, compacting it shifts every predecessor or runtime event one position left.
+      const trailingGeometryNeedsReturnSlot = insertLoopPredecessors.length > 0
+        || sortedLoopCommitments.size > 0
+        || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0;
       let neededFunders = effectiveBlockLayout.slots.filter(
         (s) => outputOnlyKinds.has(s.kind)
           // An atomic participant is assembled against its published fixed-width block. Even when this
@@ -25529,12 +25579,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // executor/identity inputs following the route cannot shift left. The composition replaces all local
           // fee tails with one global tail, but it must not compact compiler-authored block geometry.
           && (s.kind !== 'returnEvent' || returnEmitOutputIndex >= 0
-            || delegateLoopNeedsReturnSlot || overrides?.omitLocalFeeTail),
+            || trailingGeometryNeedsReturnSlot || overrides?.omitLocalFeeTail),
       ).length;
       // Composed proxy+callee transactions build inputs as prefix+funders+predecessors, not slot-positioned
       // blocks. The satoshi container UTXO is appended at the tail, so the implementation's satoshi slot still
       // needs a funder pad or the whitelist predecessor lands at INPUTINDEX+blockSize-1.
-      if (delegateLoopNeedsReturnSlot
+      if (trailingGeometryNeedsReturnSlot
         && effectiveBlockLayout.slots.some((slot) => slot.kind === 'satoshiContainer')) {
         neededFunders += 1;
       }
@@ -28239,10 +28289,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     if (expression.kind === 'binary' && expression.left && expression.right) {
       const left = evaluate(expression.left);
+      if (left === undefined) return undefined;
+      if (expression.operator === '&&') {
+        if (!Boolean(left)) return false;
+        const right = evaluate(expression.right);
+        return right === undefined ? undefined : Boolean(right);
+      }
+      if (expression.operator === '||') {
+        if (Boolean(left)) return true;
+        const right = evaluate(expression.right);
+        return right === undefined ? undefined : Boolean(right);
+      }
       const right = evaluate(expression.right);
-      if (left === undefined || right === undefined) return undefined;
-      if (expression.operator === '&&') return Boolean(left) && Boolean(right);
-      if (expression.operator === '||') return Boolean(left) || Boolean(right);
+      if (right === undefined) return undefined;
       if (expression.operator === '==') return valuesEqual(left, right, expression.left, expression.right);
       if (expression.operator === '!=') return !valuesEqual(left, right, expression.left, expression.right);
       if ((typeof left === 'bigint' || typeof left === 'number')

@@ -60,6 +60,20 @@ const source = (paramIndex: number): ExternalCallExpression => ({
 });
 
 describe('compiler-published external-call predicate evaluation', () => {
+  it('short-circuits logical predicates but fails closed when an unresolved branch is required', () => {
+    const literal = (value: boolean): ExternalCallExpression => ({ kind: 'literal', type: 'bool', value });
+    const logical = (operator: '&&' | '||', left: boolean): ExternalCallExpression => ({
+      kind: 'binary', operator, left: literal(left), right: { kind: 'identifier', name: 'missing' },
+    });
+    const evaluate = (expression: ExternalCallExpression): FunctionArgument | undefined =>
+      evaluator._evaluateExternalExpression(expression, [], artifact, undefined, []);
+
+    expect(evaluate(logical('&&', false))).toBe(false);
+    expect(evaluate(logical('||', true))).toBe(true);
+    expect(evaluate(logical('&&', true))).toBeUndefined();
+    expect(evaluate(logical('||', false))).toBeUndefined();
+  });
+
   it('rebases owner-relative batch proofs across an embedded proxy prefix', () => {
     const rebased = rebaseRoutedBatchProofOffsets({
       __internal__vmapBatchProof_0: 3n,

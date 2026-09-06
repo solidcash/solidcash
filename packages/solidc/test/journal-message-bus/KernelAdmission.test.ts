@@ -807,6 +807,89 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('publishes an exact affine domain for replayable pre-recursion events', () => {
+    const artifact = compileString(`contract C() {
+      event Seen(int value);
+      event Even(int value);
+      function descend(int cursor, int offset) public returns (int) {
+        emit Seen(cursor + offset);
+        if (cursor % 2 == 0) emit Even(cursor);
+        if (cursor == 0) return offset;
+        return descend(cursor - 1, offset);
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'descend');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(128);
+    expect(handler?.runtimeLoopEvents).toEqual([{
+      iterationDomain: {
+        counterName: 'cursor',
+        initialValue: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+        stepValue: { kind: 'unary', operator: '-', expression: {
+          kind: 'literal', type: 'bigint', value: '1',
+        } },
+        continueCondition: { kind: 'unary', operator: '!', expression: {
+          kind: 'binary', operator: '==', left: { kind: 'identifier', name: 'cursor' },
+          right: { kind: 'literal', type: 'bigint', value: '0' },
+        } },
+        maximumIterations: 64,
+      },
+      eventSignatures: ['Seen(int256)', 'Even(int256)'],
+      arguments: [[{
+        kind: 'binary', operator: '+', left: { kind: 'identifier', name: 'cursor' },
+        right: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+      }], [{ kind: 'identifier', name: 'cursor' }]],
+      conditions: [null, {
+        kind: 'binary', operator: '==',
+        left: {
+          kind: 'binary', operator: '%', left: { kind: 'identifier', name: 'cursor' },
+          right: { kind: 'literal', type: 'bigint', value: '2' },
+        },
+        right: { kind: 'literal', type: 'bigint', value: '0' },
+      }],
+      effectOrder: [0, 1],
+    }]);
+  });
+
+  it('keeps recursive event-domain admission invariant under source renaming', () => {
+    const compile = (
+      contractName: string, functionName: string, counterName: string, eventName: string,
+    ): ReturnType<typeof compileString> =>
+      compileString(`contract ${contractName}() {
+        event ${eventName}(int value);
+        function ${functionName}(int ${counterName}) public returns (int) {
+          emit ${eventName}(${counterName});
+          if (${counterName} == 0) return 0;
+          return ${functionName}(${counterName} - 1);
+        }
+      }`, KERNEL);
+    const first = compile('First', 'descend', 'cursor', 'Seen');
+    const second = compile('Second', 'advance', 'index', 'Observed');
+    const firstHandler = first.messageBus?.handlers.find((candidate) => candidate.name === 'descend');
+    const secondHandler = second.messageBus?.handlers.find((candidate) => candidate.name === 'advance');
+    expect(firstHandler?.eligible).toBe(true);
+    expect(secondHandler?.eligible).toBe(true);
+    expect(firstHandler?.runtimeLoopEvents?.[0].iterationDomain).toMatchObject({ maximumIterations: 64 });
+    expect(secondHandler?.runtimeLoopEvents?.[0].iterationDomain).toMatchObject({ maximumIterations: 64 });
+  });
+
+  it.each([
+    ['multiple varying parameters', 'return descend(cursor - 1, other - 1);'],
+    ['a non-affine step', 'return descend(cursor / 2, other);'],
+  ])('refuses recursive event metadata for %s', (_label, recursiveReturn) => {
+    const artifact = compileString(`contract C() {
+      event Seen(int value);
+      function descend(int cursor, int other) public returns (int) {
+        emit Seen(cursor);
+        if (cursor == 0) return other;
+        ${recursiveReturn}
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'descend'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('refuses an event-bearing recursive closure without an exact occurrence plan', () => {
     const artifact = compileString(`contract C() {
       event Hit(int value);

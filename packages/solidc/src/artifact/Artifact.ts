@@ -1123,17 +1123,31 @@ function buildFunctionAbiMetadata(
     walk(func.body);
     return func.runtimeLoopEvents.map((loop) => {
       const eventSites = sites.get(loop.loopIndex) ?? [];
+      const preservedLocals = new Set(loop.iterationDomain ? [loop.iterationDomain.counterName] : []);
       const conditions = eventSites.map((emit) => emit.runtimeLoopEventCondition
-        ? serializeCondition(emit.runtimeLoopEventCondition, emit.runtimeLoopEventCounter) ?? null
+        ? serializeCondition(
+          emit.runtimeLoopEventCondition, emit.runtimeLoopEventCounter, new Set(), preservedLocals,
+        ) ?? null
         : null);
+      const serializedArguments = loop.iterationDomain === undefined ? undefined : eventSites.map((emit) =>
+        emit.args.map((argument) => serializeCondition(
+          argument, emit.runtimeLoopEventCounter, new Set(), preservedLocals,
+        )),
+      );
       if (eventSites.some((emit, index) => emit.runtimeLoopEventCondition && conditions[index] === null)) {
         throw new Error(`Runtime event condition in '${func.name}' cannot be represented in artifact metadata`);
+      }
+      if (serializedArguments?.some((site) => site.some((argument) => argument === undefined))) {
+        throw new Error(`Runtime event arguments in '${func.name}' cannot be represented in artifact metadata`);
       }
       return {
         ...(loop.permutationParam !== undefined && { permutationParam: loop.permutationParam }),
         ...(loop.repeatCount !== undefined && { repeatCount: loop.repeatCount }),
         ...(loop.iterationDomain !== undefined && { iterationDomain: loop.iterationDomain }),
         eventSignatures: eventSites.map((emit) => emit.eventDefinition!.signature),
+        ...(serializedArguments !== undefined && {
+          arguments: serializedArguments as ExternalCallExpression[][],
+        }),
         ...(conditions.some((condition) => condition !== null) && { conditions }),
         ...(loop.effectSequence !== undefined && { effectSequence: loop.effectSequence }),
         ...(eventSites.some((emit) => emit.runtimeLoopEffectOrder !== undefined) && {

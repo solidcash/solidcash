@@ -1,8 +1,10 @@
 import {
   ArrayAccessNode, ArrayPopNode, ArrayPushNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, CastNode,
   BranchNode, BreakNode, ContractNode,
-  DeleteStateNode, DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
-  ExpressionNode, FieldAccessNode, LiteralNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
+  DeleteStateNode, DoWhileNode, EmitStatementNode, FunctionCallNode, FunctionCallStatementNode,
+  FunctionDefinitionNode, IdentifierNode,
+  ExpressionNode, ExternalCallExpression, FieldAccessNode, LiteralNode, MappingAssignNode, MappingDeleteNode,
+  MappingFieldAssignNode,
   NewArrayNode, Node, RequireNode, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
   StateAccessNode, StateAssignNode, TernaryOpNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
@@ -33,6 +35,13 @@ interface RecursiveFoldShape {
 interface AffineMappingRecursion {
   inductionIndex: number;
   baseIndex: number;
+}
+
+interface AffineEventRecursion {
+  inductionIndex: number;
+  stepValue: ExternalCallExpression;
+  continueCondition: ExternalCallExpression;
+  emits: Array<{ node: EmitStatementNode; condition?: ExpressionNode }>;
 }
 
 /**
@@ -900,6 +909,190 @@ export default class LowerTailRecursion extends AstTraversal {
     return unsupported ? undefined : { inductionIndex, baseIndex: bases[0].index };
   }
 
+  /** Serialize only expressions whose value can be reconstructed from the public call frame and current
+   * induction value. In particular, state reads and local temporaries are excluded: replaying either would need
+   * an authenticated per-frame trace rather than an affine domain. */
+  private isAffineIntegralExpression(expression: ExpressionNode, node: FunctionDefinitionNode): boolean {
+    if (expression.type === PrimitiveType.INT || expression.type === PrimitiveType.BIGINT
+      || expression.type instanceof IntType || expression instanceof IntLiteralNode) return true;
+    if (expression instanceof IdentifierNode) {
+      const parameter = node.parameters.find((candidate) => candidate.name === expression.name);
+      return parameter?.type === PrimitiveType.INT || parameter?.type === PrimitiveType.BIGINT
+        || parameter?.type instanceof IntType;
+    }
+    if (expression instanceof CastNode) return /^(?:u?int)(?:\d+)?$/.test(expression.type.toString());
+    if (expression instanceof FieldAccessNode && expression.name === 'length') return true;
+    if (expression instanceof UnaryOpNode && expression.operator === UnaryOperator.NEGATE) {
+      return this.isAffineIntegralExpression(expression.expression, node);
+    }
+    if (expression instanceof BinaryOpNode && ['+', '-', '*', '/', '%'].includes(expression.operator)) {
+      return this.isAffineIntegralExpression(expression.left, node)
+        && this.isAffineIntegralExpression(expression.right, node);
+    }
+    if (expression instanceof TernaryOpNode) return this.isAffineIntegralExpression(expression.ifTrue, node)
+      && this.isAffineIntegralExpression(expression.ifFalse, node);
+    return false;
+  }
+
+  private affineEventExpression(
+    expression: ExpressionNode, node: FunctionDefinitionNode, inductionName: string,
+    allowInduction: boolean,
+  ): ExternalCallExpression | undefined {
+    if (expression instanceof LiteralNode) {
+      if (typeof expression.value === 'bigint') {
+        return { kind: 'literal', type: 'bigint', value: expression.value.toString() };
+      }
+      if (typeof expression.value === 'boolean') return { kind: 'literal', type: 'bool', value: expression.value };
+      if (typeof expression.value === 'string') {
+        return { kind: 'literal', type: 'string', value: expression.value };
+      }
+      return undefined;
+    }
+    if (expression instanceof IdentifierNode) {
+      if (expression.name === inductionName) {
+        return allowInduction ? { kind: 'identifier', name: expression.name } : undefined;
+      }
+      const visible = node.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+      const index = visible.findIndex((parameter) => parameter.name === expression.name);
+      return index < 0 ? undefined : { kind: 'source', source: { kind: 'forward', paramIndex: index } };
+    }
+    if (expression instanceof CastNode) {
+      const target = expression.type.toString();
+      if (target !== 'bytes' && !/^(?:u?int)(?:\d+)?$/.test(target)) return undefined;
+      const inner = this.affineEventExpression(expression.expression, node, inductionName, allowInduction);
+      return inner && { kind: 'cast', type: target, expression: inner };
+    }
+    if (expression instanceof UnaryOpNode) {
+      if (!['!', '-'].includes(expression.operator)) return undefined;
+      const inner = this.affineEventExpression(expression.expression, node, inductionName, allowInduction);
+      return inner && { kind: 'unary', operator: expression.operator, expression: inner };
+    }
+    if (expression instanceof BinaryOpNode) {
+      if (!['&&', '||', '==', '!=', '+', '-', '*', '/', '%', '<', '<=', '>', '>=']
+        .includes(expression.operator)) return undefined;
+      if (['+', '-', '*', '/', '%', '<', '<=', '>', '>='].includes(expression.operator)) {
+        if (!this.isAffineIntegralExpression(expression.left, node)
+          || !this.isAffineIntegralExpression(expression.right, node)) return undefined;
+      }
+      const left = this.affineEventExpression(expression.left, node, inductionName, allowInduction);
+      const right = this.affineEventExpression(expression.right, node, inductionName, allowInduction);
+      return left && right && { kind: 'binary', operator: expression.operator, left, right };
+    }
+    if (expression instanceof TernaryOpNode) {
+      const condition = this.affineEventExpression(expression.condition, node, inductionName, allowInduction);
+      const ifTrue = this.affineEventExpression(expression.ifTrue, node, inductionName, allowInduction);
+      const ifFalse = this.affineEventExpression(expression.ifFalse, node, inductionName, allowInduction);
+      return condition && ifTrue && ifFalse && { kind: 'ternary', condition, ifTrue, ifFalse };
+    }
+    if (expression instanceof FieldAccessNode && expression.name === 'length') {
+      const inner = this.affineEventExpression(expression.expression, node, inductionName, allowInduction);
+      return inner && { kind: 'unary', operator: '.length', expression: inner };
+    }
+    return undefined;
+  }
+
+  /** Recognize a direct do-while-shaped recursive event stream. Keeping the prefix grammar to emits and branches
+   * makes every accepted event argument and predicate independently replayable, and rules out hidden effects or
+   * state mutations between frames. */
+  private affineEventRecursion(node: FunctionDefinitionNode): AffineEventRecursion | undefined {
+    if (!node.body || node.returnTypes.length === 0 || node.customModifiers.length > 0) return undefined;
+    const statements = node.body.statements ?? [];
+    if (statements.length < 2) return undefined;
+    const recursiveReturn = statements.at(-1)!;
+    const base = statements.at(-2)!;
+    if (!(recursiveReturn instanceof ReturnNode) || recursiveReturn.expressions.length !== 1
+      || !this.isSelfCall(recursiveReturn.expressions[0], node.name)
+      || !(base instanceof BranchNode) || base.elseBlock !== undefined
+      || (base.ifBlock.statements ?? []).length !== 1
+      || !(base.ifBlock.statements![0] instanceof ReturnNode)) return undefined;
+    const call = recursiveReturn.expressions[0];
+    const varying = call.parameters.flatMap((argument, index) =>
+      argument instanceof IdentifierNode && argument.name === node.parameters[index]?.name ? [] : [index]);
+    if (varying.length !== 1) return undefined;
+    const inductionIndex = varying[0];
+    const induction = node.parameters[inductionIndex];
+    if (!induction || (!(induction.type instanceof IntType)
+      && induction.type !== PrimitiveType.INT && induction.type !== PrimitiveType.BIGINT)) return undefined;
+    const next = call.parameters[inductionIndex];
+    let stepExpression: ExpressionNode | undefined;
+    let negateStep = false;
+    if (next instanceof BinaryOpNode && next.operator === BinaryOperator.PLUS) {
+      if (next.left instanceof IdentifierNode && next.left.name === induction.name) stepExpression = next.right;
+      else if (next.right instanceof IdentifierNode && next.right.name === induction.name) stepExpression = next.left;
+    } else if (next instanceof BinaryOpNode && next.operator === BinaryOperator.MINUS
+      && next.left instanceof IdentifierNode && next.left.name === induction.name) {
+      stepExpression = next.right;
+      negateStep = true;
+    }
+    if (!stepExpression) return undefined;
+    const serializedStep = this.affineEventExpression(stepExpression, node, induction.name, false);
+    const serializedBase = this.affineEventExpression(base.condition, node, induction.name, true);
+    if (!serializedStep || !serializedBase) return undefined;
+
+    const emits: AffineEventRecursion['emits'] = [];
+    const conjunction = (left: ExpressionNode | undefined, right: ExpressionNode): ExpressionNode => left
+      ? this.stamp(new BinaryOpNode(left, BinaryOperator.AND, right), right.location) : right;
+    const collect = (block: BlockNode, path?: ExpressionNode): boolean => (block.statements ?? []).every((statement) => {
+      if (statement instanceof EmitStatementNode) {
+        if (statement.args.some((argument) =>
+          !this.affineEventExpression(argument, node, induction.name, true))) return false;
+        emits.push({ node: statement, condition: path });
+        return true;
+      }
+      if (statement instanceof BlockNode) return collect(statement, path);
+      if (statement instanceof BranchNode) {
+        if (!this.affineEventExpression(statement.condition, node, induction.name, true)) return false;
+        const ifPath = conjunction(path, statement.condition);
+        if (!collect(statement.ifBlock, ifPath)) return false;
+        if (!statement.elseBlock) return true;
+        const inverse = this.stamp(new UnaryOpNode(UnaryOperator.NOT, statement.condition), statement.condition.location);
+        return collect(statement.elseBlock, conjunction(path, inverse));
+      }
+      return false;
+    });
+    if (!collect(this.stamp(new BlockNode(statements.slice(0, -2)), node.body.location)) || emits.length === 0) {
+      return undefined;
+    }
+    return {
+      inductionIndex,
+      stepValue: negateStep
+        ? { kind: 'unary', operator: UnaryOperator.NEGATE, expression: serializedStep }
+        : serializedStep,
+      continueCondition: { kind: 'unary', operator: UnaryOperator.NOT, expression: serializedBase },
+      emits,
+    };
+  }
+
+  private publishAffineEventRecursion(
+    node: FunctionDefinitionNode, plan: AffineEventRecursion, iterationName: string,
+  ): RequireNode {
+    const loopIndex = node.runtimeLoopEvents?.length ?? 0;
+    const induction = node.parameters[plan.inductionIndex];
+    const visibleIndex = node.parameters.slice(0, plan.inductionIndex)
+      .filter((parameter) => !parameter.name.startsWith('__internal__')).length;
+    node.runtimeLoopEvents = [...(node.runtimeLoopEvents ?? []), {
+      loopIndex,
+      iterationDomain: {
+        counterName: induction.name,
+        initialValue: { kind: 'source', source: { kind: 'forward', paramIndex: visibleIndex } },
+        stepValue: plan.stepValue,
+        continueCondition: plan.continueCondition,
+        maximumIterations: 64,
+      },
+    }];
+    node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
+      + plan.emits.length * 64;
+    plan.emits.forEach(({ node: emit, condition }, siteIndex) => {
+      emit.runtimeLoopEvent = { loopIndex, siteIndex };
+      emit.runtimeLoopEventCondition = condition;
+      emit.runtimeLoopEffectOrder = siteIndex;
+    });
+    return this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
+      this.stamp(new IdentifierNode(iterationName), node.location), BinaryOperator.LT,
+      this.stamp(new IntLiteralNode(64n), node.location),
+    ), node.location), 'recursive event limit'), node.location);
+  }
+
   private hasVaryingRecursiveMappingWrite(node: FunctionDefinitionNode): boolean {
     if (!node.body) return false;
     const varying = new Set<string>();
@@ -1033,6 +1226,7 @@ export default class LowerTailRecursion extends AstTraversal {
       this.lowerAffineMappingRecursion(node, affineMapping, returnNames, frame);
       return node;
     }
+    const affineEvent = selfCalls === 1 ? this.affineEventRecursion(node) : undefined;
     // A varying entry cannot use the invariant-entry cache, and the ordinary repeat loop publishes no key stream.
     // Leave every shape outside the exact rank proof above recursive so kernel admission fails closed.
     if (this.hasVaryingRecursiveMappingWrite(node)) return node;
@@ -1054,6 +1248,8 @@ export default class LowerTailRecursion extends AstTraversal {
       this.stamp(new IdentifierNode(repeatName), node.location),
       this.stamp(new BoolLiteralNode(false), node.location),
     ), node.location);
+    const eventFrameBound = affineEvent
+      ? this.publishAffineEventRecursion(node, affineEvent, iterationName) : undefined;
     transformed.statements = [clearRepeat, ...(transformed.statements ?? [])];
     const loop = this.stamp(new WhileNode(
       this.stamp(new IdentifierNode(repeatName), node.location), transformed,
@@ -1088,7 +1284,8 @@ export default class LowerTailRecursion extends AstTraversal {
       : undefined;
     node.body = this.stamp(new BlockNode([
       ...results, ...(continuation ? [continuation, continuationTags!] : []), iteration, repeat, loop,
-      ...(unwind ? [unwind] : []), ...(finalReturn ? [finalReturn] : []),
+      ...(eventFrameBound ? [eventFrameBound] : []), ...(unwind ? [unwind] : []),
+      ...(finalReturn ? [finalReturn] : []),
     ]), node.location);
     return node;
   }

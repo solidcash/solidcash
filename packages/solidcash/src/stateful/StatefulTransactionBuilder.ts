@@ -4072,7 +4072,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   /** Ordered event plan produced by a lowered counter-keyed mapping loop, including exact-count event peers
    * before and after it. These live after runtime mapping entries and before dynamic-storage chunks. */
   runtimeLoopEventOutputs?: Array<{
-    eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string;
+    eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
   }>;
   /** Plain-BCH outputs produced by lowered runtime counter loops. Recipient and amount begin as probe
    * placeholders and are replaced from the covenant trace before the transaction is returned. */
@@ -4439,7 +4439,7 @@ export class StatefulTransactionBuilder {
     this.loopEntryVars = options.loopEntryVars ?? [];
     this.runtimeLoopEventOutputs = (options.runtimeLoopEventOutputs ?? []).map((output) => ({
       ...output,
-      commitment: '',
+      commitment: output.commitment ?? '',
     }));
     this.runtimeLoopTransferOutputs = (options.runtimeLoopTransferOutputs ?? []).map((output) => ({
       ...output, lockingBytecode: Uint8Array.from(output.lockingBytecode), amount: output.amount,
@@ -10101,12 +10101,13 @@ export class StatefulTransactionBuilder {
     let base = this.blockLayout?.trailingBase
       ?? this.blockLayout?.blockSize
       ?? this.getEventOutputBase() + this.getEventOutputCount();
-    // blockSize reserves the returnEvent slot, but a plain send does NOT materialize it (only .emitReturn(), which
-    // populates pendingReturnEventOutputs), so the trailing chunks sit one output lower. Match the covenant's
-    // runtime returnOutputIdx<0 adjustment in emitDynamicWriteVerification.
+    // blockSize reserves the returnEvent slot, but an ordinary plain send compacts it. Runtime loop effects are
+    // different: their authenticated trailing indices begin after the complete fixed block, so they keep the
+    // inactive slot and the padding pass below materializes it before the effect stream.
     const hasReturnEventSlot = this.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
     if (this.blockLayout?.trailingBase === undefined
-      && hasReturnEventSlot && this.pendingReturnEventOutputs.length === 0) base -= 1;
+      && hasReturnEventSlot && this.pendingReturnEventOutputs.length === 0
+      && this.runtimeLoopEventOutputs.length === 0 && this.runtimeLoopTransferOutputs.length === 0) base -= 1;
     // build() preserves low-level-call UTXOs before the trailing dynamic region.
     // Delegate bytecode likewise anchors trailing storage after its own co-spent
     // implementation block rather than overlapping that block's outputs.

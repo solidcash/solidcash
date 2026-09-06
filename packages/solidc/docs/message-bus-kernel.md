@@ -536,7 +536,10 @@ consumes the stream with exact tag/count/framing checks. The SDK assigns carrier
 the covenant advances one shared dense first-touch prefix through every row invocation and finally requires that
 prefix to cover the complete record vector. Coherent carrier reordering, skipped ordinals, and unused record
 suffixes therefore fail even when every rewritten reference still names the expected slot. The remaining journal
-phase is to execute the pending record value transitions and final flush directly from this authenticated vector;
+phase receives the exact physical entry commitment through a tracked per-iteration register; pending duplicates and
+cached absence proofs instead carry an explicit empty marker. This avoids retaining data across branch-sensitive
+altstack operations and provides the stable input needed to bind record bodies before executing pending record value
+transitions and the final flush directly from this authenticated vector;
 until then, record overlap cannot be relaxed beyond the row loop's existing physical transition rules.
 Different key expressions over the same selected domain receive independent row-owned permutations. Separate
 disjoint loops use separate permutations and separate accumulated physical segments. Counter-keyed mapping-array

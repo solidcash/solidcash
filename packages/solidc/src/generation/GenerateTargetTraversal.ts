@@ -22583,7 +22583,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   /**
    * Consume and verify [count || collection || access tuple cursor, encoded records, expected target slot,
-   * actual predecessor slot, expected access flags, loaded record count], returning
+   * actual predecessor slot, physical commitment (or empty for a pending-only path), expected access flags,
+   * loaded record count], returning
    * [count || collection || cursor tail, updated loaded record count]. The
    * predecessor is empty for a present target and otherwise names the exact record used by the physical-input,
    * pending-node, fixed-entry, or cached-read path selected by this iteration.
@@ -22624,6 +22625,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitKernelJournalTargetSlotHelperInline(loc: SingleLocationData): void {
     this.emit(Op.OP_TOALTSTACK, loc); // loaded record count
     this.emit(Op.OP_TOALTSTACK, loc); // expected access flags
+    this.emit(Op.OP_DROP, loc); // physical commitment (consumed by the content-binding phase)
     this.emit(Op.OP_TOALTSTACK, loc); // actual predecessor slot
     this.emit(Op.OP_ROT, loc); // encoded records, expected target slot, header || cursor
     this.emit(encodeInt(21n), loc); this.emit(Op.OP_SPLIT, loc);
@@ -22747,9 +22749,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.sortedUpsertLoopOp !== 'read') {
       this.emit(encodeInt(8n), loc); this.emit(Op.OP_ADD, loc);
     }
+    const physicalCommitment = `(kernel_physical_commitment_${this.sortedUpsertLoopJournalAccessStreamIndex})`;
+    this.emit(encodeInt(BigInt(this.getStackIndex(physicalCommitment) + 1)), loc);
+    this.emit(Op.OP_PICK, loc); this.emit(Op.OP_SWAP, loc);
     this.emit(encodeInt(BigInt(this.getStackIndex(
       GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
-    ) + 4)), loc);
+    ) + 5)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emitKernelJournalTargetSlotHelper(loc);
     this.pushToStack('(kernel_journal_loaded_count)');
@@ -22782,6 +22787,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const addrIdx = (): number => this.getStackIndex(this.sortedUpsertLoopAddrName);
     const hkIdx = (): number => this.getStackIndex('(credit_hk)');
     const amtIdx = (): number => this.getStackIndex('(credit_amt)');
+    const physicalCommitment = `(kernel_physical_commitment_${this.sortedUpsertLoopJournalAccessStreamIndex})`;
     // Emit `master + blockSize + <persistent counter> + add`, leaving an output/input index on top (U untracked above).
     const pushIdx = (counterName: string, add: number, u: number): void => {
       if (counterName === this.sortedUpsertLoopOutCounterName) {
@@ -22837,6 +22843,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitChunkableValueTail(loc);
       }
     }
+    this.emit(Op.OP_0, loc); this.pushToStack(physicalCommitment);
     // tracked: [credit_amt(0), credit_hk(1), outCounter(2), iterCounter(3), addr(4), ..]
 
     // NORMAL per-recipient step: co-spend k[i]'s entry (UPDATE) or its bracketing predecessor (INSERT), mint, bump
@@ -22851,6 +22858,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_1, loc); this.emit(Op.OP_EQUALVERIFY, loc);
       this.emitVerifyCatBaseEqMaster(loc, 2);
       this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emitReplace(this.getStackIndex(physicalCommitment) + 2, node);
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [.., coSlot(u), coNext(u), coValue(u)]  U=3
 
@@ -23137,7 +23146,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // predecessor, then bind both selected journal records to the target/proof identities used by this iteration.
     this.emit(Op.OP_TOALTSTACK, loc); this.emit(Op.OP_2DROP, loc);
     this.emitKernelJournalTargetSlotCheck(node, loc);
-    // common cleanup: drop [credit_amt, optional credit_old, credit_hk].
+    // common cleanup: drop [physical commitment, credit_amt, optional credit_old, credit_hk].
+    this.emit(Op.OP_DROP, loc); this.popFromStack(); // physical commitment
     this.emit(Op.OP_DROP, loc); this.popFromStack(); // credit_amt
     if (oldWitness) { this.emit(Op.OP_DROP, loc); this.popFromStack(); }
     this.emit(Op.OP_DROP, loc); this.popFromStack(); // credit_hk

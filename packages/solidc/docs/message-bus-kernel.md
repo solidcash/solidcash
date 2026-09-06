@@ -592,7 +592,9 @@ parameters receive isolated plan histories, so their callee mutations can feed l
 writes within the call without leaking into the caller. This also covers mixed value/reference formals which receive
 the same caller array. A direct pure-helper call used as a variable initializer or assignment replays these array
 effects too; capturing its ordinary return value does not invalidate the constructed-array plan. Nested helpers
-also carry a replayed scalar return tuple into subsequent scalar and array expressions in their caller.
+also carry a replayed scalar return tuple into subsequent scalar and array expressions in their caller. Pure memory
+helpers with several branch returns are normalized to one flag-backed terminal return before kernel admission, so
+the planner and executable row share the same continuation form.
 Direct source assignments use the same point-in-time resolver, including literal and runtime array indices.
 Mixed push/pop paths which restore their entry length without popping into the pre-existing prefix are replayed
 independently per logical iteration, including finite `if`/`else` and `switch` paths. Other mixed push/pop

@@ -7480,6 +7480,13 @@ function compileResolvedAst(
   if (earlyEntryFeatures?.needsTailRecursion) {
     ast = ast.accept(new LowerTailRecursion()) as Ast;
   }
+  if (mergedCompilerOptions.messageBusKernel === true
+    && earlyEntryFeatures?.needsNestedBranchReturn) {
+    // Kernel key replay must inspect the same single-return continuation shape which later code generation sees.
+    // Limit this early, idempotent pass to pure memory helpers; the ordinary broad pass remains after named-return
+    // and loop-return normalization below.
+    ast = ast.accept(new DesugarNestedBranchReturn(true)) as Ast;
+  }
   if (earlyEntryFeatures?.needsBlockOracle) {
     ast = ast.accept(new SynthesizeBlockOracle(
       mergedCompilerOptions.solidityImportCompat ?? false,

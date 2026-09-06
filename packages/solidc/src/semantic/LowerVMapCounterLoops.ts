@@ -5480,6 +5480,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           const body = helperBlock.statements ?? [];
           for (let index = 0; index < body.length; index += 1) {
             const helperStatement = body[index];
+            if (helperStatement instanceof VariableDefinitionNode && !helperStatement.expression
+              && !(helperStatement.type instanceof ArrayType)) {
+              values.set(helperStatement.name, createDefaultValueExpression(
+                helperStatement.type, helperStatement.location,
+              ));
+              continue;
+            }
             if (helperStatement instanceof VariableDefinitionNode && helperStatement.expression) {
               if (helperStatement.expression instanceof FunctionCallNode) {
                 const nestedSummary = replayNestedCall(helperStatement.expression);

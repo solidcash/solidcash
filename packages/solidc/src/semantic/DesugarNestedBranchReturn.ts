@@ -3,9 +3,9 @@ import {
   ReturnNode, RevertNode, VariableDefinitionNode, AssignNode, IdentifierNode, BoolLiteralNode,
   UnaryOpNode, SourceFileNode, ContractNode, ConsoleStatementNode, SwitchNode, TryCatchNode,
   MappingAccessNode, ArrayAccessNode,
-  FunctionCallNode, MethodCallNode, LowLevelCallNode, LowLevelCallStatementNode,
+  FunctionCallNode, MethodCallNode, LowLevelCallNode, LowLevelCallStatementNode, FunctionModifier,
 } from '../ast/AST.js';
-import { PrimitiveType } from '@solidcash/utils';
+import { ArrayType, PrimitiveType } from '@solidcash/utils';
 import { UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 
@@ -34,6 +34,10 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
   private retCount = 0;
   private collectionNames = new Set<string>();
 
+  constructor(private readonly normalizePureMemoryHelpers = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     node.importedContracts = node.importedContracts.map((c) => this.visit(c) as ContractNode);
@@ -57,9 +61,20 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
     // return so InlineReturningStateHelpers can splice those internal calls into their caller. Its dispatched
     // definition remains intact.
     const covenantRewrite = this.needsReturningCovenantRewrite(node.body);
-    if (node.isEntryPoint && !covenantRewrite) return node;
-    if (!this.needsFlagRewrite(node.body) && !this.needsReturningStateRewrite(node.body)
-      && !covenantRewrite) return node;
+    const pureMemoryRewrite = this.normalizePureMemoryHelpers && !node.isEntryPoint
+      && node.returnNames.length === 0
+      && node.modifiers.includes(FunctionModifier.PURE)
+      && node.parameters.some((parameter) => parameter.type instanceof ArrayType
+        && parameter.modifier.includes('memory'))
+      && this.countReturns(node.body) > 1
+      && !this.hasReturnInsideLoop(node.body);
+    if (this.normalizePureMemoryHelpers) {
+      if (!pureMemoryRewrite) return node;
+    } else {
+      if (node.isEntryPoint && !covenantRewrite) return node;
+      if (!this.needsFlagRewrite(node.body) && !this.needsReturningStateRewrite(node.body)
+        && !covenantRewrite) return node;
+    }
 
     this.retCount = node.returnTypes.length;
     const decls: StatementNode[] = [new VariableDefinitionNode(PrimitiveType.BOOL, [], FLAG, new BoolLiteralNode(false))];
@@ -72,6 +87,38 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
     node.body.statements = [...decls, ...stmts, new ReturnNode(rets)];
     for (const statement of node.body.statements) this.stampMissingLocations(statement, node.location);
     return node;
+  }
+
+  private countReturns(node: Node | undefined): number {
+    if (!node) return 0;
+    let count = node instanceof ReturnNode ? 1 : 0;
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'definition'
+        || key === 'symbol' || key === 'resolvedFunction' || key === 'functionReference'
+        || key === 'referencedContract' || key === 'collection' || key === 'stateVariable') continue;
+      const value = (node as unknown as Record<string, unknown>)[key];
+      if (value instanceof Node) count += this.countReturns(value);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) count += this.countReturns(item);
+      }
+    }
+    return count;
+  }
+
+  private hasReturnInsideLoop(node: Node | undefined, inLoop = false): boolean {
+    if (!node) return false;
+    if (node instanceof ReturnNode) return inLoop;
+    const nestedLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'definition'
+        || key === 'symbol' || key === 'resolvedFunction' || key === 'functionReference'
+        || key === 'referencedContract' || key === 'collection' || key === 'stateVariable') continue;
+      const value = (node as unknown as Record<string, unknown>)[key];
+      if (value instanceof Node && this.hasReturnInsideLoop(value, nestedLoop)) return true;
+      if (Array.isArray(value) && value.some((item) =>
+        item instanceof Node && this.hasReturnInsideLoop(item, nestedLoop))) return true;
+    }
+    return false;
   }
 
   private stampMissingLocations(root: Node, location: Node['location']): void {

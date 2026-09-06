@@ -8,7 +8,7 @@ import {
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
-import { ArrayType, BytesType, PrimitiveType, StructType } from '@solidcash/utils';
+import { ArrayType, PrimitiveType, StructType } from '@solidcash/utils';
 
 type RecursiveFoldVariant =
   | { kind: 'binary'; operator: BinaryOperator; recursiveOnLeft: boolean }
@@ -44,7 +44,7 @@ interface RecursiveFoldShape { variants: RecursiveFoldVariant[]; }
  */
 export default class LowerTailRecursion extends AstTraversal {
   private counter = 0;
-  private fixedScalarStateNames = new Set<string>();
+  private scalarStateNames = new Set<string>();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.lowerMutualGroups(node.freeFunctions);
@@ -55,18 +55,16 @@ export default class LowerTailRecursion extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
-    const parentStateNames = this.fixedScalarStateNames;
-    this.fixedScalarStateNames = new Set(node.stateVariables.filter((state) =>
-      !state.isDynamic && state.type !== PrimitiveType.STRING
-      && !(state.type instanceof ArrayType) && !(state.type instanceof StructType)
-      && !(state.type instanceof BytesType && state.type.bound === undefined))
+    const parentStateNames = this.scalarStateNames;
+    this.scalarStateNames = new Set(node.stateVariables.filter((state) =>
+      !(state.type instanceof ArrayType) && !(state.type instanceof StructType))
       .map((state) => state.name));
     this.lowerMutualGroups(node.functions);
     node.functions = node.functions.map((fn) => this.visit(fn) as FunctionDefinitionNode);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
-    this.fixedScalarStateNames = parentStateNames;
+    this.scalarStateNames = parentStateNames;
     return node;
   }
 
@@ -74,9 +72,9 @@ export default class LowerTailRecursion extends AstTraversal {
    * Lower a strongly-connected group of homogeneous mutual tail calls to a small program-counter loop. Each
    * public/internal entry keeps its own ABI and starts the shared state machine at its corresponding body. This
    * covers cycles of any length while deliberately excluding overloads, heterogeneous frames, and calls nested in
-   * source loops. A single-result binary fold may use the continuation stack implemented below. Fixed-width
-   * scalar writes are supported only where source evaluation captures the continuation before descent; other
-   * non-tail work still requires a more general continuation representation.
+   * source loops. A single-result binary fold may use the continuation stack implemented below. Scalar state
+   * writes are supported where source evaluation captures the continuation before descent; collection and struct
+   * work still requires a more general continuation representation.
    */
   private lowerMutualGroups(functions: FunctionDefinitionNode[]): void {
     const overloads = new Map<string, FunctionDefinitionNode[]>();
@@ -266,7 +264,7 @@ export default class LowerTailRecursion extends AstTraversal {
     group.forEach((fn) => {
       this.walkNodes(fn.body!, (candidate) => {
         if (candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode) {
-          if (!this.fixedScalarStateNames.has(candidate.name)) valid = false;
+          if (!this.scalarStateNames.has(candidate.name)) valid = false;
           else scalarStateWrites.add(candidate.name);
         } else if (persistentEffects.has(candidate.constructor.name)) valid = false;
         if (candidate instanceof FunctionCallNode && !names.has(candidate.identifier.name)) valid = false;

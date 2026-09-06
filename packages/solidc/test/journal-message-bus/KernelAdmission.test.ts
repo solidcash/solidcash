@@ -381,7 +381,40 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((entry) => entry.name === 'toggle')?.recursiveStateHandler).toBeUndefined();
   });
 
-  it('keeps a dynamic-state recursion fold behind KERNEL_LAYOUT', () => {
+  it('lowers dynamic scalar-state assignments and deletes in a recursion fold', () => {
+    const artifact = compileString(`contract C() {
+      string note;
+      bytes scratch;
+      function sum(int n) public returns (int) {
+        this.note = "frame";
+        delete this.scratch;
+        if (n == 0) return 0;
+        return n + sum(n - 1);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
+  });
+
+  it('keeps a deferred dynamic-state dependency on the recursive-state path', () => {
+    const artifact = compileString(`contract C() {
+      string note;
+      function sum(int n) public returns (string) {
+        this.note = "frame";
+        if (n == 0) return "";
+        return sum(n - 1) + this.note;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('lowers a dynamic-state recursion fold with a read-only mapping base', () => {
     const artifact = compileString(`contract C() {
       string note;
       mapping(int => int) values;
@@ -398,7 +431,8 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'left')?.recursiveStateHandler).toBeUndefined();
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });

@@ -160,13 +160,14 @@ describe('generic persisted value-chunk write identity', () => {
   const slot = new Uint8Array(32).fill(7);
   const signature = 'notices:mapping(int => Notice[])';
   const makeGroup = (name: string, collectionSignature = signature, insert = false) => {
+    const collectionName = collectionSignature.slice(0, collectionSignature.indexOf(':'));
     const collection = {
-      name: 'notices', signature: collectionSignature, kind: 'mapping' as const,
+      name: collectionName, signature: collectionSignature, kind: 'mapping' as const,
       keyType: 'int', valueType: 'Notice[]', chunkableValue: true,
     };
     const fn = {
       name, inputs: [], outputs: [], entryAccesses: [{
-        slotIndex: 0, collection: 'notices', keyParams: ['id'], operations: ['write'],
+        slotIndex: 0, collection: collectionName, keyParams: ['id'], operations: ['write'],
       }],
       blockLayout: {
         blockSize: 2,
@@ -199,13 +200,22 @@ describe('generic persisted value-chunk write identity', () => {
     expect(selectChunkableValueWriteExecution([
       { group: renamed, inputIndex: 17 },
       { group: decoy, inputIndex: 9 },
-    ])).toMatchObject({ inputIndex: 17, abiFunction: { name: 'appendNotice' } });
+    ])).toMatchObject({
+      inputIndex: 17, collection: 'notices', abiFunction: { name: 'appendNotice' },
+    });
   });
 
   it('fails closed when independent chunkable writers claim different physical inputs', () => {
     expect(selectChunkableValueWriteExecution([
       { group: makeGroup('appendNotice'), inputIndex: 17 },
       { group: makeGroup('appendAudit'), inputIndex: 23 },
+    ])).toBeUndefined();
+  });
+
+  it('fails closed when one physical input ambiguously claims independent collections', () => {
+    expect(selectChunkableValueWriteExecution([
+      { group: makeGroup('appendNotice'), inputIndex: 17 },
+      { group: makeGroup('appendAudit', 'audit:mapping(int => Notice[])'), inputIndex: 17 },
     ])).toBeUndefined();
   });
 

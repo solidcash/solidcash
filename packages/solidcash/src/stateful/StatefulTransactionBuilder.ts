@@ -2429,25 +2429,30 @@ export function groupWritesSingleChunkableArrayCollection(group: Parameters<
   return groupChunkableArrayWriteCollection(group) !== undefined;
 }
 
+function groupChunkableValueWriteIdentity(group: ChunkableArrayWriteGroup): string | undefined {
+  return groupChunkableArrayWriteCollection(group)
+    ?? (group.valueChunkWrites?.length === 1 ? group.valueChunkWrites[0].collection : undefined);
+}
+
 /** Resolve a single physical chunkable-value writer from compiler metadata, independent of ABI names. */
 export function selectChunkableValueWriteExecution(
   candidates: ReadonlyArray<{ group: ChunkableArrayWriteGroup; inputIndex: number }>,
-): { inputIndex: number; abiFunction: AbiFunction } | undefined {
-  const executions = new Map<number, AbiFunction>();
+): { inputIndex: number; abiFunction: AbiFunction; collection: string } | undefined {
+  const executions = new Map<string, {
+    inputIndex: number; abiFunction: AbiFunction; collection: string;
+  }>();
   for (const { group, inputIndex } of candidates) {
     if (inputIndex < 0) continue;
-    const ownsWrite = (group.valueChunkWrites?.length ?? 0) > 0
-      || groupWritesSingleChunkableArrayCollection(group);
-    if (!ownsWrite) continue;
+    const collection = groupChunkableValueWriteIdentity(group);
+    if (collection === undefined) continue;
     const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
     const logicalName = group.logicalFunctionName ?? group.functionName;
     const abiFunction = group.compilerRoute?.abiFunction
       ?? artifact?.abi.find((candidate) => candidate.name === logicalName);
-    if (abiFunction) executions.set(inputIndex, abiFunction);
+    if (abiFunction) executions.set(`${inputIndex}:${collection}`, { inputIndex, abiFunction, collection });
   }
   if (executions.size !== 1) return undefined;
-  const [inputIndex, abiFunction] = [...executions.entries()][0];
-  return { inputIndex, abiFunction };
+  return [...executions.values()][0];
 }
 
 /** Same-index mutable jobEvents entry UTXOs. View tails must not replace these. */
@@ -5396,7 +5401,9 @@ export class StatefulTransactionBuilder {
   }
 
   /** One physical executor for the active chunkable array write. Duplicate logical rows collapse by input. */
-  private _chunkableValueWriteExecution(): { inputIndex: number; abiFunction: AbiFunction } | undefined {
+  private _chunkableValueWriteExecution(): {
+    inputIndex: number; abiFunction: AbiFunction; collection: string;
+  } | undefined {
     return selectChunkableValueWriteExecution([
       ...this.lowLevelCallUtxoGroups.map((group, index) => ({
         group, inputIndex: this.getLowLevelCallMasterInputIndex(index),
@@ -5410,7 +5417,7 @@ export class StatefulTransactionBuilder {
     ]);
   }
 
-  private _publishJobEventAbi(): AbiFunction | undefined {
+  private _chunkableValueWriteAbi(): AbiFunction | undefined {
     const structural = this._chunkableValueWriteExecution();
     if (structural) return structural.abiFunction;
     // Compatibility only for artifacts predating chunkable collection/write metadata.
@@ -5426,7 +5433,12 @@ export class StatefulTransactionBuilder {
 
   /** The input that actually evaluates publishJobEvent (`OP_INPUTINDEX`). */
   getPublishJobEventInputIndex(): number {
-    return this._publishJobEventInputIndex();
+    return this._chunkableValueWriteInputIndex();
+  }
+
+  /** The physical executor for the active compiler-described chunkable-value write. */
+  getChunkableValueWriteInputIndex(): number {
+    return this._chunkableValueWriteInputIndex();
   }
 
   isRootPublishJobPost(): boolean {
@@ -5461,7 +5473,7 @@ export class StatefulTransactionBuilder {
       persistReady: isPersistedJobEventsReady(),
       firstPublish: this._rootIsPublishJobPost(),
       hasTokenWriter: this.hasMintingBandTokenWriter(),
-      implIndex: this._publishJobEventInputIndex(),
+      implIndex: this._chunkableValueWriteInputIndex(),
       band: this.getPublishJobEventsBand(),
       tokenMaster,
       outputs,
@@ -5469,7 +5481,7 @@ export class StatefulTransactionBuilder {
   }
 
   /** The input that actually evaluates publishJobEvent (`OP_INPUTINDEX`). */
-  private _publishJobEventInputIndex(): number {
+  private _chunkableValueWriteInputIndex(): number {
     const structural = this._chunkableValueWriteExecution();
     if (structural) return structural.inputIndex;
     // Dest is INPUTINDEX+4 of the earliest executing publishJobEvent. Occupied
@@ -5497,11 +5509,11 @@ export class StatefulTransactionBuilder {
   private _scaledEmitOutputIndex(outputCount: number): number | undefined {
     // First publish already fills Created in the callee walk at layout dest.
     if (!isPersistedJobEventsReady() || this._rootIsPublishJobPost()) return undefined;
-    const impl = this._publishJobEventInputIndex();
+    const impl = this._chunkableValueWriteInputIndex();
     // No executing publishJobEvent: do not invent dest as preserve-range-1
     // (that clobbered registerArbitrator dest 7 after persist became ready).
     if (impl < 0) return undefined;
-    const offset = this._publishJobEventAbi()?.blockLayout?.slots
+    const offset = this._chunkableValueWriteAbi()?.blockLayout?.slots
       .find((slot) => slot.kind === 'event')?.offset ?? 4;
     const dest = publishJobEventOutputIndex(impl, offset);
     if (dest >= 0 && (outputCount <= 0 || dest < outputCount)) return dest;
@@ -5617,11 +5629,25 @@ export class StatefulTransactionBuilder {
    * Live publishJobEvent value-chunk band (`impl + blockSize` for `nNew` slots).
    * Occupancy, view tails, and FakeToken rotation all share this range.
    */
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined {
-    const publishLlcIndex = this.lowLevelCallUtxoGroups.findIndex((group) =>
-      group.functionName === 'publishJobEvent');
-    const publishExternalIndex = this.externalCallUtxoGroups.findIndex((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent');
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined {
+    const structural = this._chunkableValueWriteExecution();
+    const structuralLlcIndex = structural === undefined ? -1
+      : this.lowLevelCallUtxoGroups.findIndex((group, index) => (
+        this.getLowLevelCallMasterInputIndex(index) === structural.inputIndex
+        && groupChunkableValueWriteIdentity(group) === structural.collection
+      ));
+    const structuralExternalIndex = structural === undefined ? -1
+      : this.externalCallUtxoGroups.findIndex((group, index) => (
+        group.delegateCallGroupIndex === undefined
+        && this.getExternalCallMasterInputIndex(index) === structural.inputIndex
+        && groupChunkableValueWriteIdentity(group) === structural.collection
+      ));
+    // Compatibility only for artifacts predating collection/write metadata.
+    const publishLlcIndex = structuralLlcIndex >= 0 ? structuralLlcIndex
+      : this.lowLevelCallUtxoGroups.findIndex((group) => group.functionName === 'publishJobEvent');
+    const publishExternalIndex = structuralExternalIndex >= 0 ? structuralExternalIndex
+      : this.externalCallUtxoGroups.findIndex((group) =>
+        (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent');
     const publishExternal = publishExternalIndex < 0
       ? undefined : this.externalCallUtxoGroups[publishExternalIndex];
     if (publishLlcIndex < 0 && !publishExternal) return undefined;
@@ -5661,12 +5687,17 @@ export class StatefulTransactionBuilder {
     const plannedWidth = Math.max(
       0,
       liveChunkWidthForGroup(this.externalCallUtxoGroups, publishExternalIndex),
-      ...this.lowLevelCallUtxoGroups
-        .filter((group) => group.functionName === 'publishJobEvent')
-        .map((group) => group.valueChunkOutputCount ?? 0),
+      ...(publishLlcIndex >= 0
+        ? [this.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0]
+        : []),
     );
+    const activeCollection = groupChunkableArrayWriteCollection(
+      publishLlcIndex >= 0
+        ? this.lowLevelCallUtxoGroups[publishLlcIndex]
+        : publishExternal as ExternalCallUtxoGroup,
+    ) ?? 'jobEvents';
     const jobEventsCount = [...new Set(
-      this.getLoopEntryCommitments('jobEvents')
+      this.getLoopEntryCommitments(activeCollection)
         .filter((commitment) => !isEmptyValueChunkCommitment(commitment)),
     )].length;
     const publishCategory = publishExternal?.categoryId
@@ -5677,9 +5708,9 @@ export class StatefulTransactionBuilder {
       0,
       ...(publishExternal?.plannedEntryInserts?.length !== undefined
         ? [publishExternal.plannedEntryInserts.length] : []),
-      ...this.lowLevelCallUtxoGroups
-        .filter((group) => group.functionName === 'publishJobEvent')
-        .map((group) => group.plannedEntryInserts?.length ?? 0),
+      ...(publishLlcIndex >= 0
+        ? [this.lowLevelCallUtxoGroups[publishLlcIndex].plannedEntryInserts?.length ?? 0]
+        : []),
     );
     const insertShift = persistWidth > 0 ? 0
       : (plannedInserts > 0 || jobEventsCount === 0 ? 1 : 0);
@@ -5687,14 +5718,14 @@ export class StatefulTransactionBuilder {
     // The value-chunk band is impl+blockSize. If those disagree, dest can land
     // on a persist predecessor (output 20/21) and mutable conservation fails.
     if (persistWidth > 0) {
-      const emitImpl = this._publishJobEventInputIndex();
+      const emitImpl = this._chunkableValueWriteInputIndex();
       const emitOffset = (publishFn as AbiFunction | undefined)?.blockLayout?.slots
         .find((slot) => slot.kind === 'event')?.offset ?? 4;
       if (emitImpl >= 0) bases.push(emitImpl + emitOffset + 1);
     }
     const layoutStart = bases.length > 0 ? Math.max(...bases) + insertShift : undefined;
     const forcedStart = this.forcedJobEventsBandStart;
-    const publishImpl = this._publishJobEventInputIndex();
+    const publishImpl = this._chunkableValueWriteInputIndex();
     const tokenWriter = this.externalCallUtxoGroups.find((group) =>
       isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
         ?? group.logicalFunctionName));
@@ -5730,20 +5761,33 @@ export class StatefulTransactionBuilder {
     });
   }
 
-  /** Grow publishJobEvent `valueChunkOutputCount` to the extracted continuation width. */
-  bumpPublishJobEventsWidth(nNew: number): boolean {
+  /** @deprecated Compatibility name for callers predating compiler-described chunkable writes. */
+  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined {
+    return this.getChunkableValueWriteBand();
+  }
+
+  /** Grow the selected chunkable writer's continuation width. */
+  bumpChunkableValueWriteWidth(nNew: number): boolean {
     if (nNew <= 0) return false;
     let changed = false;
-    for (const group of this.externalCallUtxoGroups) {
-      if ((group.functionName ?? group.logicalFunctionName) !== 'publishJobEvent') continue;
-      const next = Math.max(group.valueChunkOutputCount ?? 0, nNew);
-      if (next !== group.valueChunkOutputCount) {
-        group.valueChunkOutputCount = next;
-        changed = true;
-      }
-    }
-    for (const group of this.lowLevelCallUtxoGroups) {
-      if (group.functionName !== 'publishJobEvent') continue;
+    const structural = this._chunkableValueWriteExecution();
+    const structuralGroups = structural === undefined ? [] : [
+      ...this.externalCallUtxoGroups.filter((group, index) => (
+        group.delegateCallGroupIndex === undefined
+        && this.getExternalCallMasterInputIndex(index) === structural.inputIndex
+        && groupChunkableValueWriteIdentity(group) === structural.collection
+      )),
+      ...this.lowLevelCallUtxoGroups.filter((group, index) => (
+        this.getLowLevelCallMasterInputIndex(index) === structural.inputIndex
+        && groupChunkableValueWriteIdentity(group) === structural.collection
+      )),
+    ];
+    const groups = structuralGroups.length > 0 ? structuralGroups : [
+      ...this.externalCallUtxoGroups.filter((group) =>
+        (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'),
+      ...this.lowLevelCallUtxoGroups.filter((group) => group.functionName === 'publishJobEvent'),
+    ];
+    for (const group of groups) {
       const next = Math.max(group.valueChunkOutputCount ?? 0, nNew);
       if (next !== group.valueChunkOutputCount) {
         group.valueChunkOutputCount = next;
@@ -5752,6 +5796,11 @@ export class StatefulTransactionBuilder {
     }
     if (changed) this.dynamicLayoutRevision += 1;
     return changed;
+  }
+
+  /** @deprecated Compatibility name for callers predating compiler-described chunkable writes. */
+  bumpPublishJobEventsWidth(nNew: number): boolean {
+    return this.bumpChunkableValueWriteWidth(nNew);
   }
 
   /** @internal Snapshot to detect when a VM probe discovers wider transaction geometry. */
@@ -5783,7 +5832,7 @@ export class StatefulTransactionBuilder {
       layoutDestOccupiedByMintingWriter: this.hasMintingBandTokenWriter(),
     });
     const persistDests = persistUpdatePredecessorDests({
-      implIndex: this._publishJobEventInputIndex(),
+      implIndex: this._chunkableValueWriteInputIndex(),
       persistUpdate,
       keepAtLayout,
       bandStart: jobEventsStart,
@@ -5993,7 +6042,7 @@ export class StatefulTransactionBuilder {
       layoutDestOccupiedByMintingWriter: this.hasMintingBandTokenWriter(),
     });
     const dests = persistUpdatePredecessorDests({
-      implIndex: this._publishJobEventInputIndex(),
+      implIndex: this._chunkableValueWriteInputIndex(),
       persistUpdate,
       keepAtLayout,
       bandStart: band.start,
@@ -6008,7 +6057,7 @@ export class StatefulTransactionBuilder {
         persistReady: isPersistedJobEventsReady(),
         firstPublish: this._rootIsPublishJobPost(),
         hasTokenWriter: this.hasMintingBandTokenWriter(),
-        impl: this._publishJobEventInputIndex(),
+        impl: this._chunkableValueWriteInputIndex(),
         band,
         dests,
         dest18cap: dest18?.token?.nft?.capability ?? 'plain',
@@ -6017,7 +6066,7 @@ export class StatefulTransactionBuilder {
       });
     }
     const placements = assignPersistPredecessors(
-      dests, candidates, this._publishJobEventInputIndex(), persistUpdate,
+      dests, candidates, this._chunkableValueWriteInputIndex(), persistUpdate,
     );
     for (const { dest, candidate: wanted } of placements) {
       if (dest < 0 || dest >= this.allInputs.length) continue;
@@ -6915,7 +6964,7 @@ export class StatefulTransactionBuilder {
    * data-NFT clones there; the emit pin still names that coordinate.
    */
   private _reassertNestedEmitEvents(builder: TransactionBuilder): void {
-    const publishFn = this._publishJobEventAbi();
+    const publishFn = this._chunkableValueWriteAbi();
     const eventOffset = publishFn?.blockLayout?.slots.find((slot) => slot.kind === 'event')?.offset ?? 4;
     const proxyGroup = this.externalCallUtxoGroups.find((candidate) => {
       const candidateNames = [
@@ -6927,7 +6976,7 @@ export class StatefulTransactionBuilder {
       const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
       return names.includes('publishJobEvent');
     });
-    const impl = this._publishJobEventInputIndex();
+    const impl = this._chunkableValueWriteInputIndex();
     const dest = this._scaledEmitOutputIndex(builder.outputs.length)
       ?? publishJobEventOutputIndex(impl, eventOffset);
     const persistEmitEarly = this._shouldRematerializePersistUpdate();
@@ -7045,7 +7094,7 @@ export class StatefulTransactionBuilder {
     }
     const executingDest = dest >= 0
       ? dest
-      : publishJobEventOutputIndex(this._publishJobEventInputIndex(), eventOffset);
+      : publishJobEventOutputIndex(this._chunkableValueWriteInputIndex(), eventOffset);
     if (executingDest >= 0) {
       relocateJobEventEmitToDest(builder.outputs, executingDest, {
         consumedMutableOk: persistEmit,
@@ -7150,7 +7199,7 @@ export class StatefulTransactionBuilder {
       (candidate): candidate is string => candidate !== undefined,
     ));
     const persistDests = new Set(persistUpdatePredecessorDests({
-      implIndex: this._publishJobEventInputIndex(),
+      implIndex: this._chunkableValueWriteInputIndex(),
       persistUpdate: isPersistedJobEventsReady() && !this._rootIsPublishJobPost(),
       keepAtLayout: shouldKeepPersistAtLayoutBase({
         persistReady: isPersistedJobEventsReady(),
@@ -7198,7 +7247,7 @@ export class StatefulTransactionBuilder {
       // live band is the layout authority; derivation caches can be cleared or
       // re-keyed by a later participant repair without vacating that band.
       if (liveBand && index >= liveBand.start && index <= liveBand.end) continue;
-      const chunk0Dest = persistValueChunkBase(this._publishJobEventInputIndex(), 5);
+      const chunk0Dest = persistValueChunkBase(this._chunkableValueWriteInputIndex(), 5);
       const forceChunk0 = index === chunk0Dest
         && !this._rootIsPublishJobPost()
         && isPersistValueChunkCommitment(commit);
@@ -13105,7 +13154,7 @@ export class StatefulTransactionBuilder {
       const addressType = proxyGroup?.externalContract?.inner?.addressType
         ?? llc.externalContract?.inner?.addressType ?? 'p2sh32';
       for (let eventIndex = 0; eventIndex < eventSlots.length; eventIndex++) {
-        const namedImpl = this._publishJobEventInputIndex();
+        const namedImpl = this._chunkableValueWriteInputIndex();
         const outputIndex = namedImpl >= 0
           ? publishJobEventOutputIndex(namedImpl, eventSlots[eventIndex].offset)
           : implIndex + eventSlots[eventIndex].offset;

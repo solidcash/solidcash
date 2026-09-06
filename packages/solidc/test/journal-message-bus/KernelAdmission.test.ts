@@ -1377,6 +1377,110 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('replays a counter-selected switch continue in a literal-bounded pure helper loop', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fillFixed(int[] memory values, int base) internal pure {
+        for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
+          switch (cursor) {
+            case 0: continue;
+            default: values[cursor] = base + cursor;
+          }
+        }
+      }
+      function apply(int count, int base) public {
+        int[] memory values = new int[](count);
+        fillFixed(values, base);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('refuses a runtime-selected switch continue in a literal-bounded pure helper loop', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fillFixed(int[] memory values, int base, int mode) internal pure {
+        for (int cursor = 0; cursor < 2; cursor = cursor + 1) {
+          switch (mode) {
+            case 0: continue;
+            default: values[cursor] = base + cursor;
+          }
+        }
+      }
+      function apply(int count, int base, int mode) public {
+        int[] memory values = new int[](count);
+        fillFixed(values, base, mode);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('replays a counter-selected break in a literal-bounded pure helper loop', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fillFixed(int[] memory values, int base) internal pure {
+        for (int cursor = 0; cursor < 3; cursor = cursor + 1) {
+          if (cursor == 2) { break; }
+          values[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base) public {
+        int[] memory values = new int[](count);
+        fillFixed(values, base);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('refuses a runtime-selected break in a literal-bounded pure helper loop', () => {
+    const artifact = compileString(`contract Registry() {
+      mapping(int => int) records;
+      function fillFixed(int[] memory values, int base, bool stop) internal pure {
+        for (int cursor = 0; cursor < 3; cursor = cursor + 1) {
+          if (stop) { break; }
+          values[cursor] = base + cursor;
+        }
+      }
+      function apply(int count, int base, bool stop) public {
+        int[] memory values = new int[](count);
+        fillFixed(values, base, stop);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('refuses a pure helper loop with an exhausted symbolic replay budget', () => {
     const helperLoop = `for (int cursor = 0; cursor < 257; cursor = cursor + 1) {
       values[cursor] = base + cursor;

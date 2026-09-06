@@ -5332,7 +5332,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           plans: Map<string, ArrayPlan>;
           values: Map<string, ExpressionNode>;
           returnValues?: ExpressionNode[];
-          loopControl?: 'continue';
+          loopControl?: 'break' | 'continue';
         };
         type HelperScope = {
           arrayNames: ReadonlySet<string>;
@@ -5657,7 +5657,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const loopBody = new BlockNode(statements.slice(0, -1));
               loopBody.location = helperStatement.block.location;
               const hasEscape = (candidate: Node): boolean => {
-                if (candidate instanceof ReturnNode || candidate instanceof BreakNode) return true;
+                if (candidate instanceof ReturnNode) return true;
                 for (const key of Object.keys(candidate)) {
                   if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
                     || key === 'resolvedFunction' || key === 'functionReference' || key === 'collection'
@@ -5699,6 +5699,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 if (!iteration || iteration.returnValues) return undefined;
                 loopPlans = iteration.plans;
                 loopValues = iteration.values;
+                if (iteration.loopControl === 'break') break;
                 counter += step;
               }
               const finalCounter = new IntLiteralNode(counter);
@@ -5748,9 +5749,11 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               if (!selectedValue) return undefined;
               const base: HelperSummary = { plans: copyPlans(helperPlans), values: new Map(values) };
               const conditions: ExpressionNode[] = [];
+              const caseValues: ExpressionNode[] = [];
               for (const candidate of helperStatement.cases) {
                 const caseValue = replay(candidate.value);
                 if (!caseValue) return undefined;
+                caseValues.push(caseValue);
                 const condition = new BinaryOpNode(
                   cloneNode(selectedValue), BinaryOperator.EQ, caseValue,
                 );
@@ -5764,19 +5767,38 @@ export default class LowerVMapCounterLoops extends AstTraversal {
                 combined.location = helperStatement.location;
                 anyCase = combined;
               }
+              const selectedLiteral = literalValue(selectedValue);
+              if (selectedLiteral !== undefined) {
+                const selectedIndex = caseValues.findIndex((candidate) =>
+                  literalValue(candidate) === selectedLiteral);
+                const selectedBody = selectedIndex >= 0
+                  ? helperStatement.cases[selectedIndex]?.body : helperStatement.defaultCase;
+                const selectedSummary = selectedBody
+                  ? summarize(selectedBody, base, false, scope, visiting) : base;
+                if (!selectedSummary) return undefined;
+                if (selectedSummary.loopControl === 'continue') return selectedSummary;
+                helperPlans = selectedSummary.plans;
+                values = selectedSummary.values;
+                continue;
+              }
               const fallbackCondition = new UnaryOpNode(UnaryOperator.NOT, anyCase!);
               fallbackCondition.location = helperStatement.location;
               const summaries = helperStatement.cases.map((candidate) =>
                 summarize(candidate.body, base, false, scope, visiting));
               const fallback = helperStatement.defaultCase
                 ? summarize(helperStatement.defaultCase, base, false, scope, visiting) : base;
-              if (!fallback || fallback.loopControl
-                || summaries.some((candidate) => !candidate || candidate.loopControl)) return undefined;
+              if (!fallback || fallback.loopControl === 'continue'
+                || summaries.some((candidate) => !candidate
+                  || candidate.loopControl === 'continue')) return undefined;
+              const normalizedSummaries = summaries.map((candidate) => ({
+                ...candidate!, loopControl: undefined,
+              }));
+              const normalizedFallback = { ...fallback, loopControl: undefined };
               const arms = [
-                ...summaries.map((summary, armIndex) => ({
+                ...normalizedSummaries.map((summary, armIndex) => ({
                   ...summary!, condition: conditions[armIndex] as ExpressionNode,
                 })),
-                { ...fallback, condition: fallbackCondition as ExpressionNode },
+                { ...normalizedFallback, condition: fallbackCondition as ExpressionNode },
               ];
               helperPlans = new Map([...base.plans].map(([name, plan]) => [name, mergePlan(
                 name,
@@ -5796,7 +5818,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             if (helperStatement instanceof ContinueNode) {
               return { plans: helperPlans, values, loopControl: 'continue' };
             }
-            if (helperStatement instanceof BreakNode && index === body.length - 1) continue;
+            if (helperStatement instanceof BreakNode) {
+              return { plans: helperPlans, values, loopControl: 'break' };
+            }
             if (helperStatement instanceof ReturnNode && allowTerminalReturn && index === body.length - 1) {
               const returnValues = helperStatement.expressions.map(replay);
               if (returnValues.some((value) => value === undefined)) return undefined;

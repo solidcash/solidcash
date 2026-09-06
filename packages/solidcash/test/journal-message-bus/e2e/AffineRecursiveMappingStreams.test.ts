@@ -18,6 +18,94 @@ const KERNEL = {
 } as const;
 
 describe('affine recursive mapping streams', () => {
+  it('authenticates false predicates and outputs in post-recursion unwind order', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract UnwindStreams() {
+      mapping(int => int) selected;
+      function apply(int cursor, int threshold) public returns (int) {
+        if (cursor == 0) return threshold;
+        int result = apply(cursor - 1, threshold);
+        if (cursor > threshold) this.selected[cursor] = result + cursor;
+        return result;
+      }
+    }`, KERNEL);
+    const stream = artifact.abi.find((candidate) => candidate.name === 'apply')!
+      .sortedUpsertLoopInfo![0];
+    expect(stream).toMatchObject({ collection: 'selected', op: 'set' });
+    expect(stream.iterationCondition).toBeDefined();
+    const inner = new Contract(artifact, [], { provider });
+    const zero = slotValueToBytes(0n);
+    const { categoryId } = await provider.addTokenUtxosDynamic((category) => {
+      const pinned = inner.withCategory(hexToBin(category));
+      return [
+        { address: pinned.tokenAddress, satoshis: 10_000n,
+          token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+        { address: getEntryNftAddress(pinned, category, 'selected'), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(zero, zero)) } } },
+        { address: getMessageBusVerifierAddress(pinned, category), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(messageBusVerifierCommitment(0)) } } },
+      ];
+    });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'apply', args: [4n, 2n] }]);
+    const builder = await call.build();
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
+    if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no parameters');
+    const permutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === stream.varyingArrayParam);
+    const permutations = routeUnlocker.params[permutationIndex] as bigint[][];
+    expect(permutations).toHaveLength(1);
+    expect(permutations[0]).toHaveLength(2); // unwind frames 1 and 2 are false; only 3 and 4 are selected.
+
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const recreateRouteUnlocker = routeUnlocker.contract.createCompilerRouteUnlocker(
+      routeUnlocker.abiFunction, hexToBin(artifact.messageBus!.route.selector!),
+    );
+    const hostileParams = [...routeUnlocker.params];
+    hostileParams[permutationIndex] = [permutations[0].slice(1)];
+    builder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...hostileParams);
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+      transaction: builder.buildLibauthTransaction(),
+    })), 'omitted unwind frame').not.toBe(true);
+    builder.inputs[routeInputIndex].unlocker = routeUnlocker;
+
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const selectedLock = addressToLockScript(getEntryNftAddress(
+      inner.withCategory(hexToBin(categoryId)), categoryId, 'selected',
+    ));
+    const selectedOutput = transaction.outputs.findIndex((output) => output.token?.nft
+      && binToHex(output.lockingBytecode) === binToHex(selectedLock));
+    expect(selectedOutput).toBeGreaterThanOrEqual(0);
+    const hostileOutput = {
+      ...transaction,
+      outputs: transaction.outputs.map((output, index) => index !== selectedOutput ? output : ({
+        ...output,
+        token: { ...output.token!, nft: { ...output.token!.nft!,
+          commitment: Uint8Array.from(output.token!.nft!.commitment, (byte, offset) =>
+            offset === output.token!.nft!.commitment.length - 1 ? byte ^ 1 : byte) } },
+      })),
+    };
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInputIndex, sourceOutputs, transaction: hostileOutput,
+    })), 'altered unwind output').not.toBe(true);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+        `honest input ${inputIndex}`).toBe(true);
+    }
+    await call.send();
+    const selected = await contract.getEntries('selected');
+    const valueAt = (key: bigint): unknown => selected.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+    expect([1n, 2n, 3n, 4n].map(valueAt)).toEqual([undefined, undefined, 5n, 6n]);
+  }, 60_000);
+
   it('settles source-ordered set and affine-key delete streams across two collections', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract RecursiveStreams() {

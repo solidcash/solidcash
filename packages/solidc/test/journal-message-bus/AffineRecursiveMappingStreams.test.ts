@@ -6,6 +6,51 @@ const KERNEL = {
 } as const;
 
 describe('affine recursive mapping streams', () => {
+  it('lowers post-recursion sets and deletes in call-stack unwind order', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) selected;
+      mapping(int => int) removed;
+      function apply(int cursor, int threshold) public returns (int) {
+        if (cursor == 0) return threshold;
+        int result = apply(cursor - 1, threshold);
+        if (cursor > threshold) this.selected[cursor + 1] = result + cursor;
+        else delete this.removed[cursor - 1];
+        return result;
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+
+    expect(handler).toMatchObject({ eligible: true });
+    expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
+      ['selected', 'set'], ['removed', 'delete'],
+    ]);
+    expect(operationInfo?.every((info) => info.iterationCondition !== undefined)).toBe(true);
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 64 + 2);
+  });
+
+  it.each([
+    ['a non-unit recursive step', 'apply(cursor - 2, threshold)', 'this.selected[cursor] = result;'],
+    ['a post-recursion mapping read', 'apply(cursor - 1, threshold)',
+      'this.selected[cursor] = this.removed[cursor];'],
+    ['two post-recursion streams for one collection', 'apply(cursor - 1, threshold)',
+      'this.selected[cursor] = result; delete this.selected[cursor + 1];'],
+  ])('keeps %s outside the unwind stream', (_label, recursiveCall, operations) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) selected;
+      mapping(int => int) removed;
+      function apply(int cursor, int threshold) public returns (int) {
+        if (cursor == 0) return threshold;
+        int result = ${recursiveCall};
+        ${operations}
+        return result;
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('lowers source-ordered sets and deletes across independent collections', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) left;

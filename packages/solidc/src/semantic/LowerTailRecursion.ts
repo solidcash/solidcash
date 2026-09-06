@@ -37,6 +37,13 @@ interface AffineMappingRecursion {
   baseIndex: number;
 }
 
+interface AffinePostMappingRecursion {
+  inductionIndex: number;
+  resultDefinition: VariableDefinitionNode;
+  baseReturn: ReturnNode;
+  effects: StatementNode[];
+}
+
 interface AffineEventRecursion {
   inductionIndex: number;
   stepValue: ExternalCallExpression;
@@ -932,6 +939,93 @@ export default class LowerTailRecursion extends AstTraversal {
     return unsupported ? undefined : { inductionIndex, baseIndex: bases[0].index };
   }
 
+  /** Recognize the call-stack-ordered counterpart of the pre-recursion stream above:
+   *
+   *   if (counter == 0) return base;
+   *   T result = recur(counter - 1, invariant...);
+   *   mapping[counter] = value; // optionally below replayable branches
+   *   return result;
+   *
+   * Frames unwind from 1 through the public counter, so this exact shape is an ordinary ascending affine loop.
+   * Keeping the recursive result unchanged avoids needing a general statement-continuation bytecode/trace. */
+  private affinePostMappingRecursion(node: FunctionDefinitionNode): AffinePostMappingRecursion | undefined {
+    if (!node.body || node.returnTypes.length !== 1 || node.customModifiers.length > 0) return undefined;
+    const statements = node.body.statements ?? [];
+    if (statements.length < 4) return undefined;
+    const [base, resultDefinition, ...tail] = statements;
+    const finalReturn = tail.at(-1);
+    const effects = tail.slice(0, -1);
+    if (!(base instanceof BranchNode) || base.elseBlock !== undefined
+      || (base.ifBlock.statements ?? []).length !== 1
+      || !(base.ifBlock.statements![0] instanceof ReturnNode)
+      || base.ifBlock.statements![0].expressions.length !== 1
+      || !(resultDefinition instanceof VariableDefinitionNode)
+      || !this.isSelfCall(resultDefinition.expression, node.name)
+      || !(finalReturn instanceof ReturnNode) || finalReturn.expressions.length !== 1
+      || !(finalReturn.expressions[0] instanceof IdentifierNode)
+      || finalReturn.expressions[0].name !== resultDefinition.name) return undefined;
+
+    const condition = base.condition;
+    if (!(condition instanceof BinaryOpNode) || condition.operator !== BinaryOperator.EQ) return undefined;
+    const zeroSide = condition.left instanceof IntLiteralNode && condition.left.value === 0n
+      ? condition.right : condition.right instanceof IntLiteralNode && condition.right.value === 0n
+        ? condition.left : undefined;
+    if (!(zeroSide instanceof IdentifierNode)) return undefined;
+    const inductionIndex = node.parameters.findIndex((parameter) =>
+      parameter.name === zeroSide.name && parameter.type instanceof IntType);
+    if (inductionIndex < 0) return undefined;
+    const call = resultDefinition.expression;
+    const next = call.parameters[inductionIndex];
+    if (!(next instanceof BinaryOpNode) || next.operator !== BinaryOperator.MINUS
+      || !(next.left instanceof IdentifierNode) || next.left.name !== zeroSide.name
+      || !(next.right instanceof IntLiteralNode) || next.right.value !== 1n
+      || call.parameters.some((argument, index) => index !== inductionIndex
+        && (!(argument instanceof IdentifierNode) || argument.name !== node.parameters[index].name))) return undefined;
+
+    const mappingWrites: Array<MappingAssignNode | MappingDeleteNode> = [];
+    const affineKey = (key: ExpressionNode): boolean => {
+      if (key instanceof IdentifierNode) return key.name === zeroSide.name;
+      return key instanceof BinaryOpNode && key.right instanceof IntLiteralNode
+        && (key.operator === BinaryOperator.PLUS || key.operator === BinaryOperator.MINUS)
+        && key.left instanceof IdentifierNode && key.left.name === zeroSide.name;
+    };
+    const collectEffectTree = (statement: StatementNode): boolean => {
+      if (statement instanceof MappingAssignNode || statement instanceof MappingDeleteNode) {
+        mappingWrites.push(statement);
+        return true;
+      }
+      if (statement instanceof BlockNode) return (statement.statements ?? []).every(collectEffectTree);
+      if (statement instanceof BranchNode) {
+        if (!this.affineEventExpression(statement.condition, node, zeroSide.name, true)) return false;
+        return collectEffectTree(statement.ifBlock)
+          && (!statement.elseBlock || collectEffectTree(statement.elseBlock));
+      }
+      return false;
+    };
+    if (effects.length === 0 || !effects.every(collectEffectTree)
+      || mappingWrites.length === 0
+      || mappingWrites.some((write) => !this.sortedMappingNames.has(write.name)
+        || write.keys.length !== 1 || !affineKey(write.keys[0]))
+      || new Set(mappingWrites.map((write) => write.name)).size !== mappingWrites.length) return undefined;
+
+    // Calls, collection reads, or additional persistent effects inside base/value expressions need a genuine
+    // authenticated frame environment. The accepted mapping statements themselves are the only effects here.
+    let unsupported = false;
+    const allowedWrites = new Set<Node>(mappingWrites);
+    this.walkNodes(node.body, (candidate) => {
+      if (allowedWrites.has(candidate) || candidate === call) return;
+      if (candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode
+        || candidate instanceof MappingFieldAssignNode || candidate instanceof MappingAccessNode
+        || candidate instanceof ArrayAccessNode || candidate instanceof StateAssignNode
+        || candidate instanceof DeleteStateNode || candidate instanceof WhileNode
+        || candidate instanceof DoWhileNode || candidate instanceof FunctionCallNode
+        || candidate instanceof EmitStatementNode) unsupported = true;
+    });
+    return unsupported ? undefined : {
+      inductionIndex, resultDefinition, baseReturn: base.ifBlock.statements![0] as ReturnNode, effects,
+    };
+  }
+
   /** Serialize only expressions whose value can be reconstructed from the public call frame and current
    * induction value. In particular, state reads and local temporaries are excluded: replaying either would need
    * an authenticated per-frame trace rather than an affine domain. */
@@ -1166,6 +1260,78 @@ export default class LowerTailRecursion extends AstTraversal {
     return node;
   }
 
+  private replaceIdentifier(
+    node: Node, identifierName: string, replacement: () => ExpressionNode,
+  ): Node {
+    if (node instanceof IdentifierNode && node.name === identifierName) return replacement();
+    for (const [key, child] of Object.entries(node)) {
+      if (['resolvedFunction', 'definition', 'symbolTable', 'location', 'type'].includes(key)
+        || (node instanceof FunctionCallNode && key === 'identifier')) continue;
+      if (child instanceof Node) {
+        (node as unknown as Record<string, unknown>)[key] = this.replaceIdentifier(
+          child, identifierName, replacement,
+        );
+      } else if (Array.isArray(child)) {
+        (node as unknown as Record<string, unknown>)[key] = child.map((item) => item instanceof Node
+          ? this.replaceIdentifier(item, identifierName, replacement) : item);
+      }
+    }
+    return node;
+  }
+
+  private lowerAffinePostMappingRecursion(
+    node: FunctionDefinitionNode, plan: AffinePostMappingRecursion, frame: number,
+  ): void {
+    const induction = node.parameters[plan.inductionIndex];
+    const rankName = `__tail_unwind_rank_${frame}`;
+    const baseExpression = this.replaceIdentifier(
+      cloneNode(plan.baseReturn.expressions[0]) as ExpressionNode, induction.name,
+      () => this.stamp(new IntLiteralNode(0n), plan.baseReturn.location),
+    ) as ExpressionNode;
+    const result = this.stamp(new VariableDefinitionNode(
+      plan.resultDefinition.type, [...plan.resultDefinition.modifier], plan.resultDefinition.name, baseExpression,
+    ), plan.resultDefinition.location);
+    const effects = plan.effects.map((effect) => this.replaceIdentifier(
+      cloneNode(effect) as StatementNode, induction.name,
+      () => this.stamp(new IdentifierNode(rankName), effect.location),
+    ) as StatementNode);
+    const increment = this.stamp(new AssignNode(
+      this.stamp(new IdentifierNode(rankName), node.location),
+      this.stamp(new BinaryOpNode(
+        this.stamp(new IdentifierNode(rankName), node.location), BinaryOperator.PLUS,
+        this.stamp(new IntLiteralNode(1n), node.location),
+      ), node.location),
+    ), node.location);
+    const loop = this.stamp(new WhileNode(
+      this.stamp(new BinaryOpNode(
+        this.stamp(new IdentifierNode(rankName), node.location), BinaryOperator.LE,
+        this.stamp(new IdentifierNode(induction.name), node.location),
+      ), node.location),
+      this.stamp(new BlockNode([...effects, increment]), node.location),
+    ), node.location);
+    loop.forLoopUpdateCount = 1;
+    const rank = this.stamp(new VariableDefinitionNode(
+      induction.type, [], rankName, this.stamp(new IntLiteralNode(1n), node.location),
+    ), node.location);
+    rank.isLoopVariable = true;
+    rank.loopInitialValue = 1n;
+    rank.loopStepValue = 1n;
+    const nonNegative = this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
+      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.GE,
+      this.stamp(new IntLiteralNode(0n), node.location),
+    ), node.location), 'recursive unwind frame count must be between 0 and 64'), node.location);
+    const bounded = this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
+      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.LE,
+      this.stamp(new IntLiteralNode(64n), node.location),
+    ), node.location), 'recursive unwind frame count must be between 0 and 64'), node.location);
+    const finalReturn = this.stamp(new ReturnNode([
+      this.stamp(new IdentifierNode(result.name), node.location),
+    ]), node.location);
+    node.body = this.stamp(new BlockNode([
+      nonNegative, bounded, result, rank, loop, finalReturn,
+    ]), node.location);
+  }
+
   private lowerAffineMappingRecursion(
     node: FunctionDefinitionNode, plan: AffineMappingRecursion, returnNames: readonly string[], frame: number,
   ): void {
@@ -1243,6 +1409,12 @@ export default class LowerTailRecursion extends AstTraversal {
     const sourceSelfCalls = this.countSelfCalls(node.body, node.name);
     if (sourceSelfCalls > 0) this.normalizeRightShortCircuitReturns(node.body, selfNames);
     const selfCalls = this.countSelfCalls(node.body, node.name);
+    const affinePostMapping = selfCalls === 1 ? this.affinePostMappingRecursion(node) : undefined;
+    if (affinePostMapping) {
+      this.counter += 1;
+      this.lowerAffinePostMappingRecursion(node, affinePostMapping, frame);
+      return node;
+    }
     const affineMapping = selfCalls === 1 ? this.affineMappingRecursion(node) : undefined;
     if (affineMapping) {
       this.counter += 1;

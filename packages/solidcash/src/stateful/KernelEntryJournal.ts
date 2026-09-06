@@ -31,8 +31,11 @@ const ACCESS_FLAG_PRESENT_BEFORE = 1 << 0;
 const ACCESS_FLAG_PRESENT_AFTER = 1 << 1;
 const ACCESS_FLAG_HAS_PREDECESSOR = 1 << 2;
 const ACCESS_FLAG_MUTATES = 1 << 3;
+const ACCESS_FLAG_AUTHENTICATES_TARGET = 1 << 4;
+const ACCESS_FLAG_AUTHENTICATES_PREDECESSOR = 1 << 5;
 const KNOWN_ACCESS_FLAGS = ACCESS_FLAG_PRESENT_BEFORE
-  | ACCESS_FLAG_PRESENT_AFTER | ACCESS_FLAG_HAS_PREDECESSOR | ACCESS_FLAG_MUTATES;
+  | ACCESS_FLAG_PRESENT_AFTER | ACCESS_FLAG_HAS_PREDECESSOR | ACCESS_FLAG_MUTATES
+  | ACCESS_FLAG_AUTHENTICATES_TARGET | ACCESS_FLAG_AUTHENTICATES_PREDECESSOR;
 const NO_PREDECESSOR = 0xffff;
 /** `tag || count || N * (flags || target-u16le || predecessor-u16le)` must remain one BCH item. */
 export const KERNEL_ENTRY_JOURNAL_MAX_ACCESSES = Math.floor((520 - ACCESS_HEADER_BYTES) / ACCESS_BYTES);
@@ -309,11 +312,16 @@ export function encodeKernelEntryJournalAccesses(
     if (!access.mutates && access.presentBefore !== access.presentAfter) {
       throw new Error('a non-mutating journal access must preserve target presence');
     }
+    if (access.authenticatesPredecessor && access.predecessorRecordOrdinal === undefined) {
+      throw new Error('journal access cannot authenticate an absent predecessor');
+    }
     let flags = 0;
     if (access.presentBefore) flags |= ACCESS_FLAG_PRESENT_BEFORE;
     if (access.presentAfter) flags |= ACCESS_FLAG_PRESENT_AFTER;
     if (access.predecessorRecordOrdinal !== undefined) flags |= ACCESS_FLAG_HAS_PREDECESSOR;
     if (access.mutates) flags |= ACCESS_FLAG_MUTATES;
+    if (access.authenticatesTarget) flags |= ACCESS_FLAG_AUTHENTICATES_TARGET;
+    if (access.authenticatesPredecessor) flags |= ACCESS_FLAG_AUTHENTICATES_PREDECESSOR;
     const offset = ACCESS_HEADER_BYTES + index * ACCESS_BYTES;
     const predecessor = access.predecessorRecordOrdinal ?? NO_PREDECESSOR;
     encoded[offset] = flags;
@@ -365,12 +373,18 @@ export function decodeKernelEntryJournalAccesses(encoded: Uint8Array): Journaled
     if (!mutates && presentBefore !== presentAfter) {
       throw new Error('a non-mutating journal access must preserve target presence');
     }
+    if ((flags & ACCESS_FLAG_AUTHENTICATES_PREDECESSOR) !== 0 && !hasPredecessor) {
+      throw new Error('journal access cannot authenticate an absent predecessor');
+    }
     return {
       targetRecordOrdinal,
       ...(hasPredecessor && { predecessorRecordOrdinal: predecessor }),
       presentBefore,
       presentAfter,
       mutates,
+      ...((flags & ACCESS_FLAG_AUTHENTICATES_TARGET) !== 0 && { authenticatesTarget: true as const }),
+      ...((flags & ACCESS_FLAG_AUTHENTICATES_PREDECESSOR) !== 0
+        && { authenticatesPredecessor: true as const }),
     };
   });
 }

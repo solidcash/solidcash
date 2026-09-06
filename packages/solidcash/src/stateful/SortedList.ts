@@ -146,6 +146,10 @@ export interface JournaledMutationAccess {
   presentAfter: boolean;
   /** Whether this operation is permitted to change the target value or pending topology. */
   mutates: boolean;
+  /** This access is the unique physical authentication of its target record. */
+  authenticatesTarget?: true;
+  /** This access is the unique physical authentication of its predecessor record. */
+  authenticatesPredecessor?: true;
 }
 
 export interface JournaledMutationPlan extends BatchUpsertPlan {
@@ -380,6 +384,10 @@ export class SortedList {
         if (recordSlot === undefined || this.find(slotValueToBytes(BigInt(recordSlot))) === undefined) continue;
         consumedPhysicalRecords.add(recordOrdinal);
         physicalAuthentications.push({ accessOrdinal: accesses.length - 1, recordOrdinal });
+        if (recordOrdinal === targetRecordOrdinal) accesses[accesses.length - 1].authenticatesTarget = true;
+        if (recordOrdinal === predecessorRecordOrdinal) {
+          accesses[accesses.length - 1].authenticatesPredecessor = true;
+        }
       }
       if (dirty) {
         if (value === undefined) liveSlots.delete(key);

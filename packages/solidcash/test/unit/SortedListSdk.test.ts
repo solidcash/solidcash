@@ -225,8 +225,10 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
       { authenticated: false, synthetic: true, tombstone: false },
     ]);
     expect(plan.accesses).toEqual([
-      { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true },
-      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true },
+      { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true,
+        authenticatesTarget: true },
+      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true,
+        authenticatesPredecessor: true },
       { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true },
       { targetRecordOrdinal: 2, presentBefore: true, presentAfter: true, mutates: true },
     ]);
@@ -249,7 +251,8 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
     expect(decoded.map((entry) => binToHex(entry.value))).toEqual(['', '03', '04']);
     expect(plan.records.map((record) => Number(bytesToSlotValue(record.slot)))).toEqual([10, 20, 30]);
     expect(plan.accesses).toEqual([
-      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true },
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true,
+        authenticatesPredecessor: true },
       { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true },
       { targetRecordOrdinal: 1, presentBefore: true, presentAfter: true, mutates: true },
     ]);
@@ -278,7 +281,8 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
       { slot: 10, next: 90, tombstone: false },
     ]);
     expect(plan.accesses).toEqual([
-      { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: true, presentAfter: false, mutates: true },
+      { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: true, presentAfter: false, mutates: true,
+        authenticatesTarget: true, authenticatesPredecessor: true },
     ]);
     expect(plan.physicalAuthentications).toEqual([
       { accessOrdinal: 0, recordOrdinal: 0 },
@@ -316,7 +320,8 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
       slot: Number(bytesToSlotValue(record.slot)), tombstone: record.tombstone,
     }))).toEqual([{ slot: 50, tombstone: false }, { slot: 10, tombstone: false }]);
     expect(reinserted.accesses).toEqual([
-      { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: true, presentAfter: false, mutates: true },
+      { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: true, presentAfter: false, mutates: true,
+        authenticatesTarget: true, authenticatesPredecessor: true },
       { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true },
     ]);
 
@@ -335,7 +340,8 @@ describe('SortedList SDK: ordered pending-output journal planning', () => {
       { slot: 20, tombstone: true, synthetic: true },
     ]);
     expect(cancelledInsert.accesses).toEqual([
-      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true },
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true,
+        authenticatesPredecessor: true },
       { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: true, presentAfter: false, mutates: true },
     ]);
   });

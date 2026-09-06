@@ -2911,7 +2911,8 @@ describe('kernel counter-key mapping loop compose', () => {
       throw new Error('expected compiler-derived journal records');
     }
     expect(decodeKernelEntryJournalAccesses(rowJournalVectors[0][0])).toEqual([
-      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true },
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true,
+        authenticatesPredecessor: true },
       { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true },
       { targetRecordOrdinal: 3, predecessorRecordOrdinal: 2, presentBefore: false, presentAfter: true, mutates: true },
     ]);
@@ -5835,8 +5836,17 @@ describe('kernel composite counter-key settlement', () => {
     const absentReadStream = Array.isArray(absentRowStreams)
       ? absentRowStreams[absentRead.journalAccessStreamIndex] : undefined;
     if (!(absentReadStream instanceof Uint8Array)) throw new Error('missing absent-read journal stream');
-    expect(decodeKernelEntryJournalAccesses(absentReadStream)
-      .every((access) => access.mutates === false)).toBe(true);
+    const absentReadAccesses = decodeKernelEntryJournalAccesses(absentReadStream);
+    expect(absentReadAccesses.every((access) => access.mutates === false)).toBe(true);
+    expect(absentReadAccesses.map((access) => ({
+      authenticatesTarget: access.authenticatesTarget,
+      authenticatesPredecessor: access.authenticatesPredecessor,
+    }))).toEqual([
+      { authenticatesTarget: undefined, authenticatesPredecessor: true },
+      { authenticatesTarget: undefined, authenticatesPredecessor: undefined },
+      { authenticatesTarget: undefined, authenticatesPredecessor: undefined },
+      { authenticatesTarget: undefined, authenticatesPredecessor: undefined },
+    ]);
     const falseReadIntent = new Uint8Array(absentReadStream);
     falseReadIntent[22] |= 0x08;
     const hostileJournalParams = [...absentRouteUnlocker.params];

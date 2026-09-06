@@ -491,8 +491,10 @@ tombstones, and non-canonical clean synthetic records. A clean synthetic tombsto
 only canonical initial record for an absent read target: it proves no physical input existed and requests no final delete.
 Each logical mutation stream has one compact access program
 `0x06 || count8 || count * (flags8 || targetRecordOrdinal16le || predecessorRecordOrdinal16le)`.
-The access flags publish presence-before, presence-after, whether the predecessor ordinal is present, and whether
-the compiler-derived operation may mutate the value or topology; `0xffff` is the canonical absent-predecessor
+The access flags publish presence-before, presence-after, whether the predecessor ordinal is present, whether
+the compiler-derived operation may mutate the value or topology, and whether this access first consumes the
+physical target and/or predecessor record. The low topology/mutation nibble is covenant-bound now; the two physical
+first-consumption bits are carried for the record-body authentication phase. `0xffff` is the canonical absent-predecessor
 sentinel. At five bytes per operation, a canonical 64-iteration stream is 322
 bytes and remains one BCH stack item. The codec rejects oversized programs, unknown flags, reserved ordinals,
 non-canonical predecessor sentinels, topology/predecessor disagreement, presence-changing reads, and

@@ -22638,7 +22638,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc);
     this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(16n), loc); this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(64n), loc); this.emit(Op.OP_LESSTHAN, loc);
     this.emit(Op.OP_VERIFY, loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); // cursor tail, flags, target, predecessor
@@ -22694,7 +22694,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Bind the access program's topology state to the branch which actually ran. At this point the decoded flags
     // are the fourth item beneath the retained header, while the compiler-derived expectation is atop altstack.
     this.emit(Op.OP_FROMALTSTACK, loc);
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_ROLL, loc);
+    // Bits 4..5 publish the SDK's physical first-consumption schedule. The record-body phase binds those bits;
+    // topology and mutation authority remain independently compiler-derived in the low nibble here.
+    this.emit(encodeInt(15n), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.emit(Op.OP_FROMALTSTACK, loc); // cursor tail, predecessor, target, header, count
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // retain header
     this.emit(Op.OP_ROT, loc);
@@ -23235,7 +23239,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_SWAP, loc); // count, rest, flags
     this.emit(Op.OP_BIN2NUM, loc);
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(15n), loc); this.emit(Op.OP_AND, loc);
+    this.emit(encodeInt(63n), loc); this.emit(Op.OP_AND, loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc); // reject unknown flag bits
     this.emit(Op.OP_SWAP, loc); // count, flags, rest
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_SWAP, loc);

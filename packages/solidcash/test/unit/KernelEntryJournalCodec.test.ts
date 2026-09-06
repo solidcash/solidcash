@@ -200,7 +200,8 @@ describe('kernel pending-entry journal codec', () => {
 
     expect(plan.encodedAccessStreams.map((stream) => decodeKernelEntryJournalAccesses(stream)))
       .toEqual([
-        [{ targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true }],
+        [{ targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true,
+          authenticatesTarget: true }],
         [
           { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true },
           { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true },
@@ -256,12 +257,14 @@ describe('kernel pending-entry journal codec', () => {
     ]);
     expect(plan.encodedAccessStreams.map((stream) => decodeKernelEntryJournalAccesses(stream))).toEqual([
       [
-        { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: false },
+        { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: false,
+          authenticatesTarget: true },
         { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: false, mutates: false },
       ],
       [
         { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true },
-        { targetRecordOrdinal: 0, predecessorRecordOrdinal: 2, presentBefore: true, presentAfter: false, mutates: true },
+        { targetRecordOrdinal: 0, predecessorRecordOrdinal: 2, presentBefore: true, presentAfter: false, mutates: true,
+          authenticatesPredecessor: true },
       ],
     ]);
   });
@@ -310,6 +313,10 @@ describe('kernel pending-entry journal codec', () => {
       targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
       presentBefore: false, presentAfter: true, mutates: false,
     }])).toThrow('must preserve target presence');
+    expect(() => encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
+      targetRecordOrdinal: 1, presentBefore: true, presentAfter: true, mutates: false,
+      authenticatesPredecessor: true,
+    }])).toThrow('cannot authenticate an absent predecessor');
     expect(() => encodeKernelEntryJournalAccesses(bytes(19, 0), [])).toThrow('exactly 20');
     expect(() => decodeKernelEntryJournalAccesses(Uint8Array.of(0x06))).toThrow('truncated');
     const valid = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
@@ -331,6 +338,10 @@ describe('kernel pending-entry journal codec', () => {
     falseTopologyPredecessor[25] = 1; falseTopologyPredecessor[26] = 0;
     expect(() => decodeKernelEntryJournalAccesses(falseTopologyPredecessor))
       .toThrow('match its topology transition');
+    const falseAuthenticatedPredecessor = new Uint8Array(valid);
+    falseAuthenticatedPredecessor[22] |= 0x20;
+    expect(() => decodeKernelEntryJournalAccesses(falseAuthenticatedPredecessor))
+      .toThrow('cannot authenticate an absent predecessor');
     const falseCleanTransition = encodeKernelEntryJournalAccesses(ACCESS_COLLECTION_HASH, [{
       targetRecordOrdinal: 1, predecessorRecordOrdinal: 0,
       presentBefore: false, presentAfter: true, mutates: true,

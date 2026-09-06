@@ -1,10 +1,10 @@
 import {
-  ArrayAccessNode, ArrayPopNode, ArrayPushNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode,
+  ArrayAccessNode, ArrayPopNode, ArrayPushNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, CastNode,
   BranchNode, BreakNode, ContractNode,
   DeleteStateNode, DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
-  ExpressionNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
+  ExpressionNode, FieldAccessNode, LiteralNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
   NewArrayNode, Node, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
-  StateAccessNode, StateAssignNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
+  StateAccessNode, StateAssignNode, TernaryOpNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -12,14 +12,23 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { ArrayType, PrimitiveType } from '@solidcash/utils';
 
 type RecursiveFoldVariant =
-  | { kind: 'binary'; operator: BinaryOperator; recursiveOnLeft: boolean }
+  | {
+    kind: 'binary';
+    operator: BinaryOperator;
+    recursiveOnLeft: boolean;
+    deferredOperandKey?: string;
+    deferredOperand?: ExpressionNode;
+  }
   | { kind: 'unary'; operator: UnaryOperator };
 
 type RecursiveFoldStep =
   | (Extract<RecursiveFoldVariant, { kind: 'binary' }> & { operand: ExpressionNode })
   | Extract<RecursiveFoldVariant, { kind: 'unary' }>;
 
-interface RecursiveFoldShape { variants: RecursiveFoldVariant[]; }
+interface RecursiveFoldShape {
+  variants: RecursiveFoldVariant[];
+  deferredOperandKeys: ReadonlySet<string>;
+}
 
 /**
  * Lower conservative self- or mutually tail-recursive helpers to ordinary loops before helper inlining:
@@ -257,7 +266,6 @@ export default class LowerTailRecursion extends AstTraversal {
     group: readonly FunctionDefinitionNode[], names: ReadonlySet<string>,
   ): RecursiveFoldShape | undefined {
     if (group[0].returnTypes.length !== 1) return undefined;
-    const variants: RecursiveFoldShape['variants'] = [];
     let sawFold = false;
     const scalarStateWrites = new Set<string>();
     let writesMapping = false;
@@ -318,28 +326,28 @@ export default class LowerTailRecursion extends AstTraversal {
           valid = false;
           return;
         }
-        for (const step of extracted.steps) {
-          if (!variants.some((variant) => variant.kind === step.kind && variant.operator === step.operator
-            && (variant.kind === 'unary' || (step.kind === 'binary'
-              && variant.recursiveOnLeft === step.recursiveOnLeft)))) {
-            variants.push(step.kind === 'binary'
-              ? { kind: 'binary', operator: step.operator, recursiveOnLeft: step.recursiveOnLeft }
-              : { kind: 'unary', operator: step.operator });
-          }
-          continuationSteps.push(step);
-        }
+        continuationSteps.push(...extracted.steps);
         sawFold = true;
       });
     });
     // `recur(...) OP operand` reaches operand after the deeper call in source. Capturing it before descent remains
     // equivalent unless deeper frames can mutate scalar state read by that operand.
+    const deferredOperands = new Map<string, ExpressionNode>();
     if (scalarStateWrites.size > 0) {
       continuationSteps.filter((step): step is Extract<RecursiveFoldStep, { kind: 'binary' }> =>
-        step.kind === 'binary' && step.recursiveOnLeft).forEach((step) =>
+        step.kind === 'binary' && step.recursiveOnLeft).forEach((step) => {
+        let overlaps = false;
         this.walkNodes(step.operand, (candidate) => {
           if ((candidate instanceof StateAccessNode || candidate instanceof IdentifierNode)
-            && scalarStateWrites.has(candidate.name)) valid = false;
-        }));
+            && scalarStateWrites.has(candidate.name)) overlaps = true;
+        });
+        if (!overlaps) return;
+        const key = this.deferredStateExpressionKey(step.operand);
+        if (key === undefined) valid = false;
+        else if (!deferredOperands.has(key)) {
+          deferredOperands.set(key, cloneNode(step.operand) as ExpressionNode);
+        }
+      });
     }
     // A recursive-first continuation is evaluated after deeper frames in source. Mapping writes can change an
     // authenticated entry during those frames, so do not capture any such operand before descent until mapping
@@ -347,7 +355,81 @@ export default class LowerTailRecursion extends AstTraversal {
     if (writesMapping && continuationSteps.some((step) => step.kind === 'binary' && step.recursiveOnLeft)) {
       valid = false;
     }
-    return valid && sawFold ? { variants } : undefined;
+    const variants: RecursiveFoldShape['variants'] = [];
+    for (const step of continuationSteps) {
+      const key = step.kind === 'binary' && step.recursiveOnLeft
+        ? this.deferredStateExpressionKey(step.operand) : undefined;
+      const deferredOperandKey = key !== undefined && deferredOperands.has(key) ? key : undefined;
+      if (variants.some((variant) => variant.kind === step.kind && variant.operator === step.operator
+        && (variant.kind === 'unary' || (step.kind === 'binary'
+          && variant.recursiveOnLeft === step.recursiveOnLeft
+          && variant.deferredOperandKey === deferredOperandKey)))) continue;
+      variants.push(step.kind === 'binary'
+        ? {
+          kind: 'binary', operator: step.operator, recursiveOnLeft: step.recursiveOnLeft,
+          ...(deferredOperandKey !== undefined && {
+            deferredOperandKey,
+            deferredOperand: deferredOperands.get(deferredOperandKey),
+          }),
+        }
+        : { kind: 'unary', operator: step.operator });
+    }
+    return valid && sawFold ? {
+      variants, deferredOperandKeys: new Set(deferredOperands.keys()),
+    } : undefined;
+  }
+
+  /**
+   * Canonicalize the deliberately small expression class that can be evaluated after recursive descent without
+   * retaining a source frame. Every leaf is persistent scalar/struct state or a literal; the admitted composites
+   * are pure. Parameters, locals, collection reads, calls, and transaction-context expressions fail closed.
+   */
+  private deferredStateExpressionKey(expression: ExpressionNode): string | undefined {
+    let sawState = false;
+    const keyOf = (candidate: ExpressionNode): unknown[] | undefined => {
+      if (candidate instanceof StateAccessNode) {
+        if (!this.scalarStateNames.has(candidate.name)) return undefined;
+        sawState = true;
+        return ['state', candidate.name];
+      }
+      if (candidate instanceof LiteralNode) {
+        const value = candidate.value instanceof Uint8Array
+          ? [...candidate.value].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+          : String(candidate.value);
+        return ['literal', candidate.constructor.name, value];
+      }
+      if (candidate instanceof FieldAccessNode) {
+        const nested = keyOf(candidate.expression);
+        return nested === undefined ? undefined : ['field', candidate.name, nested];
+      }
+      if (candidate instanceof CastNode) {
+        const nested = keyOf(candidate.expression);
+        return nested === undefined
+          ? undefined : ['cast', candidate.type.toString(), candidate.isUnsafe, nested];
+      }
+      if (candidate instanceof UnaryOpNode) {
+        if (![UnaryOperator.NOT, UnaryOperator.NEGATE, UnaryOperator.INVERT,
+          UnaryOperator.SIZE, UnaryOperator.REVERSE].includes(candidate.operator)) return undefined;
+        const nested = keyOf(candidate.expression);
+        return nested === undefined ? undefined : ['unary', candidate.operator, nested];
+      }
+      if (candidate instanceof BinaryOpNode) {
+        const left = keyOf(candidate.left);
+        const right = keyOf(candidate.right);
+        return left === undefined || right === undefined
+          ? undefined : ['binary', candidate.operator, left, right];
+      }
+      if (candidate instanceof TernaryOpNode) {
+        const condition = keyOf(candidate.condition);
+        const ifTrue = keyOf(candidate.ifTrue);
+        const ifFalse = keyOf(candidate.ifFalse);
+        return condition === undefined || ifTrue === undefined || ifFalse === undefined
+          ? undefined : ['ternary', condition, ifTrue, ifFalse];
+      }
+      return undefined;
+    };
+    const key = keyOf(expression);
+    return key !== undefined && sawState ? JSON.stringify(key) : undefined;
   }
 
   private foldedRecursiveReturn(
@@ -356,12 +438,19 @@ export default class LowerTailRecursion extends AstTraversal {
     if (!fold || !expression) return undefined;
     const extracted = this.extractRecursiveFold(expression, names);
     if (!extracted || extracted.steps.length === 0) return undefined;
-    const steps = extracted.steps.map((step) => ({
-      ...step,
-      variantIndex: fold.variants.findIndex((variant) => variant.kind === step.kind
-        && variant.operator === step.operator && (variant.kind === 'unary'
-          || (step.kind === 'binary' && variant.recursiveOnLeft === step.recursiveOnLeft))),
-    }));
+    const steps = extracted.steps.map((step) => {
+      const key = step.kind === 'binary' && step.recursiveOnLeft
+        ? this.deferredStateExpressionKey(step.operand) : undefined;
+      const deferredOperandKey = key !== undefined && fold.deferredOperandKeys.has(key) ? key : undefined;
+      return {
+        ...step,
+        ...(deferredOperandKey !== undefined && { deferredOperandKey }),
+        variantIndex: fold.variants.findIndex((variant) => variant.kind === step.kind
+          && variant.operator === step.operator && (variant.kind === 'unary'
+            || (step.kind === 'binary' && variant.recursiveOnLeft === step.recursiveOnLeft
+              && variant.deferredOperandKey === deferredOperandKey))),
+      };
+    });
     if (steps.some((step) => step.variantIndex < 0)) return undefined;
     return { call: extracted.call, steps };
   }
@@ -421,12 +510,15 @@ export default class LowerTailRecursion extends AstTraversal {
     let dispatch: BranchNode | undefined;
     for (let variantIndex = fold.variants.length - 1; variantIndex >= 0; variantIndex -= 1) {
       const variant = fold.variants[variantIndex];
+      const selectedOperand = variant.kind === 'binary' && variant.deferredOperand !== undefined
+        ? cloneNode(variant.deferredOperand) as ExpressionNode
+        : cloneNode(operand) as ExpressionNode;
       const combined = variant.kind === 'unary'
         ? this.stamp(new UnaryOpNode(variant.operator, result()), root.location)
         : this.stamp(new BinaryOpNode(
-          variant.recursiveOnLeft ? result() : cloneNode(operand) as ExpressionNode,
+          variant.recursiveOnLeft ? result() : selectedOperand,
           variant.operator,
-          variant.recursiveOnLeft ? cloneNode(operand) as ExpressionNode : result(),
+          variant.recursiveOnLeft ? selectedOperand : result(),
         ), root.location);
       const assign = this.stamp(new AssignNode(result(), combined), root.location);
       dispatch = this.stamp(new BranchNode(
@@ -648,7 +740,7 @@ export default class LowerTailRecursion extends AstTraversal {
         if (folded && continuationName && continuationTagName) {
           const pushes = folded.steps.flatMap((step) => [
             this.stamp(new ArrayPushNode(
-              continuationName, step.kind === 'binary' ? step.operand
+              continuationName, step.kind === 'binary' && step.deferredOperandKey === undefined ? step.operand
                 : this.stamp(new IdentifierNode(resultNames[0]), statement.location),
             ), statement.location),
             this.stamp(new ArrayPushNode(
@@ -923,7 +1015,7 @@ export default class LowerTailRecursion extends AstTraversal {
       if (folded && continuationName && continuationTagName) {
         const pushes = folded.steps.flatMap((step) => [
           this.stamp(new ArrayPushNode(
-            continuationName, step.kind === 'binary' ? step.operand
+            continuationName, step.kind === 'binary' && step.deferredOperandKey === undefined ? step.operand
               : this.stamp(new IdentifierNode(returnNames[0]), statement.location),
           ), statement.location),
           this.stamp(new ArrayPushNode(

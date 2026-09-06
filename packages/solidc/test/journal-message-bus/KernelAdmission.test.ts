@@ -330,7 +330,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('keeps an overlapping scalar-state continuation behind KERNEL_LAYOUT', () => {
+  it('lowers an overlapping scalar-state continuation by reevaluating it during unwind', () => {
     const artifact = compileString(`contract C() {
       int calls;
       mapping(int => int) values;
@@ -347,7 +347,8 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'left')?.recursiveStateHandler).toBeUndefined();
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
@@ -412,19 +413,19 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
   });
 
-  it('keeps a deferred struct-state dependency on the recursive-state path', () => {
+  it('lowers a deferred struct-state projection by reevaluating it during unwind', () => {
     const artifact = compileString(`contract C() {
       struct Record { int value; bool active; }
       Record record;
       function sum(int n) public returns (int) {
         this.record = Record(n, n > 0);
-        if (n == 0) return 0;
+        if (n == 0) return 5;
         return sum(n - 1) + this.record.value;
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
       .toMatchObject({ eligible: true });
-    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
   });
 
   it('lowers an invariant-key mapping assignment in a recursion fold', () => {
@@ -567,11 +568,11 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('keeps a deferred dynamic-state dependency on the recursive-state path', () => {
+  it('lowers a deferred dynamic-state projection by reevaluating it during unwind', () => {
     const artifact = compileString(`contract C() {
       string note;
       function sum(int n) public returns (string) {
-        this.note = "frame";
+        this.note = n == 0 ? "z" : "x";
         if (n == 0) return "";
         return sum(n - 1) + this.note;
       }
@@ -579,9 +580,56 @@ describe('required kernel admission', () => {
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
       .toMatchObject({ eligible: true });
-    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBe(true);
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
+  });
+
+  it('keeps a deferred state expression with a frame-local dependency on the recursive-state path', () => {
+    const artifact = compileString(`contract C() {
+      struct Record { int value; bool active; }
+      Record record;
+      function sum(int n) public returns (int) {
+        this.record = Record(n, n > 0);
+        if (n == 0) return 5;
+        return sum(n - 1) + (this.record.value + n);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBe(true);
+  });
+
+  it('keeps a transaction projection indexed by mutable state on the recursive-state path', () => {
+    const artifact = compileString(`contract C() {
+      int cursor;
+      function sum(int n) public returns (int) {
+        this.cursor = n;
+        if (n == 0) return 0;
+        return sum(n - 1) + tx.inputs[this.cursor].value;
+      }
+    }`, KERNEL);
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBe(true);
+  });
+
+  it('assigns distinct continuation tags to deferred state expressions across a mutual cycle', () => {
+    const artifact = compileString(`contract C() {
+      int leftValue;
+      int rightValue;
+      function left(int n) public returns (int) {
+        this.leftValue = n;
+        if (n == 0) return 1;
+        return right(n - 1) + this.leftValue;
+      }
+      function right(int n) internal returns (int) {
+        this.rightValue = n * 10;
+        if (n == 0) return 1;
+        return left(n - 1) + this.rightValue;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'left')?.recursiveStateHandler).toBeUndefined();
   });
 
   it('lowers a dynamic-state recursion fold with a read-only mapping base', () => {

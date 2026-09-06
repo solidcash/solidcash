@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { hash160 } from '@solidcash/utils';
 import type {
-  ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression, FunctionArgument,
+  ArgSource, Artifact, ExternalCallExpression, FunctionArgument,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/index.js';
@@ -270,6 +270,108 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(helperEvaluator._evaluateExternalExpression(
       expression!, [['DV']], helperArtifact, undefined, [{ type: 'string[]' }],
     )).toEqual(Uint8Array.of(1, 2, 0x44, 0x56));
+  });
+
+  it.each([
+    ['scalar state', 'Record current;', '',
+      'current.enabled = flags.length > 0;', 'current.enabled'],
+    ['mapping state', 'mapping(uint => Record) records;', '',
+      'records[7].enabled = flags.length > 0;', 'records[7].enabled'],
+    ['state-array storage alias', 'Record[] records;', `records.push();
+      uint id = records.length - 1;
+      Record storage record = records[id];`,
+    'record.enabled = flags.length > 0;', 'record.enabled'],
+  ])('resolves a field from its dominating %s struct write without application names',
+    (_label, declaration, setup, assignment, read) => {
+      const snapshotArtifact = compileString(`
+        pragma solidity ^0.8.0;
+        interface ISink { function accept(bytes calldata value) external; }
+        contract Registry {
+          struct Record { bool enabled; }
+          ${declaration}
+          address sink;
+          function publish(bool[] calldata flags) public {
+            ${setup}
+            ${assignment}
+            ISink(sink).accept(abi.encodePacked(${read}));
+            require(true);
+          }
+        }
+      `, {
+        solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+        maximumInputBytes: 1_000_000,
+      });
+      const publish = snapshotArtifact.abi.find((candidate) => candidate.name === 'publish')!;
+      const sources = publish.externalCalls?.[0].argSources;
+      expect(sources).toBeDefined();
+      expect(JSON.stringify(sources)).not.toContain('stateAccess');
+
+      const snapshotEvaluator = new StatefulContract(
+        '00'.repeat(32), snapshotArtifact, createTestProvider(),
+      ) as unknown as PredicateEvaluator;
+      expect(snapshotEvaluator._resolveExternalArgs(
+        sources!, [[]], snapshotArtifact, {}, publish.inputs,
+      )).toEqual([Uint8Array.of(0)]);
+      expect(snapshotEvaluator._resolveExternalArgs(
+        sources!, [[true]], snapshotArtifact, {}, publish.inputs,
+      )).toEqual([Uint8Array.of(1)]);
+    });
+
+  it('preserves a dominating field type for packed external-call arguments', () => {
+    const typedArtifact = compileString(`
+      pragma solidity ^0.8.0;
+      interface ISink { function accept(bytes calldata value) external; }
+      contract Registry {
+        struct Record { uint16 number; }
+        mapping(uint => Record) records;
+        address sink;
+        function publish(uint id, uint16 number) public {
+          records[id].number = number;
+          ISink(sink).accept(abi.encodePacked(records[id].number));
+          require(true);
+        }
+      }
+    `, {
+      solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+    });
+    const publish = typedArtifact.abi.find((candidate) => candidate.name === 'publish')!;
+    const sources = publish.externalCalls?.[0].argSources;
+    const typedEvaluator = new StatefulContract(
+      '00'.repeat(32), typedArtifact, createTestProvider(),
+    ) as unknown as PredicateEvaluator;
+    expect(typedEvaluator._resolveExternalArgs(
+      sources!, [7n, 2n], typedArtifact, {}, publish.inputs,
+    )).toEqual([Uint8Array.of(0, 2)]);
+  });
+
+  it('does not snapshot a conditional state-array struct write as unconditional', () => {
+    const conditionalArtifact = compileString(`
+      pragma solidity ^0.8.0;
+      interface ISink { function accept(bytes calldata value) external; }
+      contract Registry {
+        struct Record { bool enabled; }
+        Record[] records;
+        address sink;
+        function publish(bool[] calldata flags, bool update) public {
+          records.push();
+          uint id = records.length - 1;
+          Record storage record = records[id];
+          record.enabled = flags.length > 0;
+          if (update) record.enabled = false;
+          ISink(sink).accept(abi.encodePacked(record.enabled));
+          require(true);
+        }
+      }
+    `, {
+      solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+    });
+    const sources = conditionalArtifact.abi.find((candidate) => candidate.name === 'publish')
+      ?.externalCalls?.[0].argSources;
+    expect(sources).toBeDefined();
+    expect(JSON.stringify(sources)).toContain('arrayAccess');
+    expect(JSON.stringify(sources)).not.toContain('"name":"Record"');
   });
 
   it('packs a zero address cast to uint160 as the compiler zero value', () => {

@@ -4298,8 +4298,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           e, keys, coll.keyTypes ?? [coll.keyType],
         ));
         if (match) return match.value;
-        // Solidity reads a missing mapping key as the type's zero value. Bool marketplace getters
-        // (`whitelistWorkers(jobId, worker)`) therefore return false, not undefined.
+        // Solidity reads a missing mapping key as the value type's zero value, so a bool getter returns false
+        // rather than an SDK-level missing value.
         const valueType = coll.valueType ?? '';
         if (valueType === 'bool') return false;
         if (/^u?int/.test(valueType) || valueType === 'bigint') return 0n;
@@ -27964,6 +27964,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     const inferredType = (candidate: ExternalCallExpression): string => {
       if (candidate.type) return candidate.type;
+      if (candidate.kind === 'call' && candidate.name
+        && (artifact.structs ?? artifact.stateLayout?.structs)
+          ?.some((struct) => struct.name === candidate.name)) return candidate.name;
       if (candidate.kind === 'source' && candidate.source) {
         const { source } = candidate;
         if (source.kind === 'literal') return source.type ?? '';
@@ -28172,21 +28175,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const fieldIndex = fields?.findIndex((field) => field.name === expression.name) ?? -1;
         if (fieldIndex >= 0 && fieldIndex < base.length) {
           return base[fieldIndex] as FunctionArgument;
-        }
-      }
-      // publishJobPost assigns jobPost.whitelistWorkers = allowedWorkers_.length > 0 then immediately
-      // packs that flag. The job is not in pre-tx state, so the field read would default to false.
-      if (expression.name === 'whitelistWorkers') {
-        const callerFn = artifact.abi.find((candidate) => {
-          const visible = candidate.inputs.filter((input) => !input.name.startsWith('__internal__'));
-          return visible.length === functionArgs.length
-            && visible.some((input) => input.name === 'allowedWorkers_' || input.name === 'allowedWorkers');
-        });
-        const visible = callerFn?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
-        const workersIndex = visible.findIndex((input) =>
-          input.name === 'allowedWorkers_' || input.name === 'allowedWorkers');
-        if (workersIndex >= 0 && Array.isArray(functionArgs[workersIndex])) {
-          return functionArgs[workersIndex].length > 0;
         }
       }
       if (expression.type === 'bool') return false;

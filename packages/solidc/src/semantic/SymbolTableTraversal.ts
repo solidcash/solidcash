@@ -6428,6 +6428,57 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         return expression;
       };
+      const containsNode = (root: Node, target: Node, ancestors = new Set<Node>()): boolean => {
+        if (root === target) return true;
+        if (ancestors.has(root)) return false;
+        ancestors = new Set(ancestors).add(root);
+        for (const [key, value] of Object.entries(root)) {
+          if ([
+            'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+            'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+          ].includes(key)) continue;
+          if (value instanceof Node && containsNode(value, target, ancestors)) return true;
+          if (Array.isArray(value)
+            && value.some((item) => item instanceof Node && containsNode(item, target, ancestors))) return true;
+        }
+        return false;
+      };
+      // Return statements which are guaranteed to execute before this call. This deliberately follows only the
+      // branch/loop arm which contains the call; earlier conditional statements remain opaque to the field-write
+      // resolver below. The result is metadata-only and never changes executable source order.
+      const dominatingStatements = (): StatementNode[] | undefined => {
+        if (!this.currentFunction?.body) return undefined;
+        const prior: StatementNode[] = [];
+        const visitBlock = (block: BlockNode): boolean => {
+          for (const statement of block.statements ?? []) {
+            if (!containsNode(statement, node)) {
+              prior.push(statement);
+              continue;
+            }
+            if (statement instanceof BlockNode) return visitBlock(statement);
+            if (statement instanceof UncheckedNode) return visitBlock(statement.block);
+            if (statement instanceof BranchNode) {
+              if (containsNode(statement.ifBlock, node)) return visitBlock(statement.ifBlock);
+              if (statement.elseBlock && containsNode(statement.elseBlock, node)) {
+                return visitBlock(statement.elseBlock);
+              }
+            }
+            if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
+              return visitBlock(statement.block);
+            }
+            if (statement instanceof TryCatchNode) {
+              if (containsNode(statement.tryBlock, node)) return visitBlock(statement.tryBlock);
+              for (const clause of statement.catchClauses) {
+                if (containsNode(clause.block, node)) return visitBlock(clause.block);
+              }
+            }
+            return true;
+          }
+          return false;
+        };
+        return visitBlock(this.currentFunction.body) ? prior : undefined;
+      };
+      const priorStatements = dominatingStatements();
       let serializedProgramLocals: ReadonlySet<string> | undefined;
       const serializingPureHelpers = new Set<FunctionDefinitionNode>();
       const serializeExpression = (
@@ -6542,6 +6593,133 @@ export default class SymbolTableTraversal extends AstTraversal {
             ?? (expression.expression.type instanceof StructType
               ? expression.expression.type.fields.find((field) => field.name === expression.name)?.type
               : undefined);
+          // A typed call may consume a field immediately after the source assigns it through a local struct or
+          // storage-pointer alias. Publish the dominating RHS directly so SDK planning does not have to guess the
+          // value from application names. Conditional/repeated writes conservatively invalidate this shortcut.
+          const directBase = expression.expression instanceof IdentifierNode
+            ? expression.expression.name : undefined;
+          const sameTarget = (
+            candidate: MappingFieldAssignNode | MappingAssignNode | MappingDeleteNode,
+          ): boolean => {
+            if (candidate.name === directBase && candidate.keys.length === 0) return true;
+            if (inner?.kind !== 'stateAccess' || inner.name !== candidate.name
+              || inner.args?.length !== candidate.keys.length) return false;
+            const keys = candidate.keys.map((key) => serializeExpression(key, new Set()));
+            return keys.every((key): key is ExternalCallExpression => key !== undefined)
+              && JSON.stringify(keys) === JSON.stringify(inner.args);
+          };
+          const sameArrayTarget = (
+            candidate: StateArrayAssignNode | StateArrayDeleteNode,
+          ): boolean => {
+            if (inner?.kind !== 'stateAccess' || inner.name !== candidate.name
+              || inner.args?.length !== 1) return false;
+            const index = serializeExpression(candidate.index, new Set());
+            return index !== undefined && JSON.stringify(index) === JSON.stringify(inner.args[0]);
+          };
+          let assignedField: ExpressionNode | undefined;
+          let assignedWhole: ExpressionNode | undefined;
+          let fieldWriteAmbiguous = false;
+          const observePrior = (statement: Node, conditional = false): void => {
+            if (statement instanceof MappingFieldAssignNode
+              && statement.fieldName === expression.name && sameTarget(statement)) {
+              if (conditional || (statement.trailingMembers?.length ?? 0) > 0) {
+                fieldWriteAmbiguous = true;
+              } else {
+                assignedField = statement.expression;
+                assignedWhole = undefined;
+              }
+              return;
+            }
+            if (statement instanceof MappingAssignNode && sameTarget(statement)) {
+              if (conditional) fieldWriteAmbiguous = true;
+              else {
+                assignedField = undefined;
+                assignedWhole = statement.expression;
+              }
+              return;
+            }
+            if (statement instanceof MappingDeleteNode && sameTarget(statement)) {
+              assignedField = undefined;
+              assignedWhole = undefined;
+              fieldWriteAmbiguous = true;
+              return;
+            }
+            if (statement instanceof StateArrayAssignNode && sameArrayTarget(statement)) {
+              if (conditional) fieldWriteAmbiguous = true;
+              else {
+                assignedField = undefined;
+                assignedWhole = statement.value;
+              }
+              return;
+            }
+            if (statement instanceof StateArrayDeleteNode && sameArrayTarget(statement)) {
+              assignedField = undefined;
+              assignedWhole = undefined;
+              fieldWriteAmbiguous = true;
+              return;
+            }
+            if ((statement instanceof StateArrayPushNode || statement instanceof StateArrayPopNode)
+              && inner?.kind === 'stateAccess' && inner.name === statement.name
+              && (assignedField || assignedWhole)) {
+              fieldWriteAmbiguous = true;
+              return;
+            }
+            if (statement instanceof StateAssignNode && inner?.kind === 'state'
+              && inner.name === statement.name) {
+              if (conditional) fieldWriteAmbiguous = true;
+              else {
+                assignedField = undefined;
+                assignedWhole = statement.expression;
+              }
+              return;
+            }
+            if (statement instanceof DeleteStateNode && inner?.kind === 'state'
+              && inner.name === statement.name) {
+              assignedField = undefined;
+              assignedWhole = undefined;
+              fieldWriteAmbiguous = true;
+              return;
+            }
+            if (statement instanceof AssignNode && statement.identifier.name === directBase) {
+              assignedField = undefined;
+              fieldWriteAmbiguous = true;
+              return;
+            }
+            if (statement instanceof BlockNode || statement instanceof UncheckedNode) {
+              const block = statement instanceof BlockNode ? statement : statement.block;
+              for (const child of block.statements ?? []) observePrior(child, conditional);
+              return;
+            }
+            if (statement instanceof BranchNode || statement instanceof WhileNode
+              || statement instanceof DoWhileNode || statement instanceof TryCatchNode
+              || statement instanceof SwitchNode) {
+              for (const value of Object.values(statement)) {
+                if (value instanceof Node) observePrior(value, true);
+                else if (Array.isArray(value)) {
+                  for (const item of value) if (item instanceof Node) observePrior(item, true);
+                }
+              }
+            }
+          };
+          for (const statement of priorStatements ?? []) observePrior(statement);
+          if (!fieldWriteAmbiguous && assignedField) {
+            const assigned = serializeExpression(assignedField, seen);
+            if (assigned) return fieldType
+              ? { ...assigned, type: fieldType.toString() } : assigned;
+          }
+          if (!fieldWriteAmbiguous && assignedWhole) {
+            const assigned = serializeExpression(assignedWhole, seen);
+            if (assigned) {
+              const assignedStruct = assigned.kind === 'call' && assigned.name
+                ? this.structMap.get(assigned.name) : undefined;
+              const assignedFieldType = fieldType
+                ?? assignedStruct?.fields.find((field) => field.name === expression.name)?.type;
+              return {
+                kind: 'field', name: expression.name, expression: assigned,
+                ...(assignedFieldType && { type: assignedFieldType.toString() }),
+              };
+            }
+          }
           return inner && {
             kind: 'field',
             name: expression.name,

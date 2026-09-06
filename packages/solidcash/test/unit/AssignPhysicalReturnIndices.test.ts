@@ -570,12 +570,12 @@ describe('assignPhysicalReturnIndices', () => {
     expect(logicalReturnGroupIndex(groups, 0)).toBe(0);
   });
 
-  it('does not give a proxy-master view the in-block slot', () => {
+  it('gives a standalone proxy-dispatched view its declared in-block slot', () => {
     const groups: PhysicalReturnGroup[] = [
       group({
-        categoryId: 'md',
+        categoryId: 'state-holder',
         functionName: '__forward',
-        logicalFunctionName: 'arbitratorRegistered',
+        logicalFunctionName: 'readFlag',
         returnEventInBlock: true,
         blockLayout: tokenLayout,
         externalContract: {
@@ -583,14 +583,17 @@ describe('assignPhysicalReturnIndices', () => {
             artifact: {
               abi: [
                 { name: '__forward', writesState: true },
-                { name: 'arbitratorRegistered', writesState: false, outputs: [{ type: 'bool' }] },
+                { name: 'readFlag', writesState: false, outputs: [{ type: 'bool' }] },
               ],
             },
           },
         },
       }),
     ];
-    expect(groupOwnsInBlockReturnEvent(groups, 0)).toBe(false);
+    expect(groupOwnsInBlockReturnEvent(groups, 0)).toBe(true);
+    expect(assignPhysicalReturnIndices(groups, (categoryId) => (
+      categoryId === 'state-holder' ? 4 : -1
+    )).get(0)).toBe(11);
   });
 
   it('packs view tails after a writer in-block slot past master+blockSize', () => {

@@ -739,6 +739,22 @@ export function finalizeAtomicInvocationGraph(
   if (deploymentKeys.size !== deploymentEffects.length) {
     throw new Error('messageBus: atomic deployment effects contain a duplicate invocation site');
   }
+  const expectedDeploymentKeys = new Set<string>();
+  for (const invocation of plan.invocations) {
+    const participant = plan.participants[invocation.callee];
+    const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+      candidate.name === invocation.function);
+    const sites = handler?.childDeployments ?? [];
+    if (sites.length === 0) continue;
+    if (sites.length !== 1 || sites[0].siteIndex !== 0 || sites[0].occurrence !== 'once') {
+      throw new Error(`messageBus: invocation ${invocation.index} has no canonical single deployment site`);
+    }
+    expectedDeploymentKeys.add(`${invocation.callee}:${invocation.index}:0`);
+  }
+  if (expectedDeploymentKeys.size !== deploymentKeys.size
+    || [...expectedDeploymentKeys].some((key) => !deploymentKeys.has(key))) {
+    throw new Error('messageBus: atomic deployment effects do not exactly cover reached deployment invocations');
+  }
   const deploymentOffsets = new Set(deploymentEffects.map((effect) => `${effect.participant}:${effect.offset}`));
   if (deploymentOffsets.size !== deploymentEffects.length) {
     throw new Error('messageBus: atomic deployment effects contain a duplicate participant slot');

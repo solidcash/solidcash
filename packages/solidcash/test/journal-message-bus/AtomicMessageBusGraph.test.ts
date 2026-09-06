@@ -677,6 +677,8 @@ describe('atomic compiled invocation graph', () => {
     expect(messageBus.decodeAtomicMessageBusCallManifest(finalized.bytes).rows[2])
       .toEqual(finalized.callManifest.rows[2]);
 
+    expect(() => finalize([])).toThrow(/exactly cover reached deployment invocations/);
+    expect(() => finalize([{ ...effect, invocation: 1 }])).toThrow(/exactly cover reached deployment invocations/);
     expect(() => finalize([{ ...effect, genesisOutputIndex: 1 }])).toThrow(/vout-0/);
     expect(() => finalize([{ ...effect, genesisTransactionHashHex: 'cc'.repeat(31) }])).toThrow(/32-byte vout-0/);
     expect(() => finalize([{ ...effect, outputs: effect.outputs.slice(0, 1) }])).toThrow(/requires 2 exact outputs/);
@@ -713,7 +715,7 @@ describe('atomic compiled invocation graph', () => {
       ...deploymentPlan,
       participants: [{ ...deploymentPlan.participants[0], artifact: ambiguousArtifact }, base.participants[1]],
     };
-    expect(() => finalize([effect], ambiguousPlan)).toThrow(/no straight-line deployment site/);
+    expect(() => finalize([effect], ambiguousPlan)).toThrow(/no canonical single deployment site/);
 
     const malformedSpan: messageBus.CompiledGraphPlan = {
       ...deploymentPlan,

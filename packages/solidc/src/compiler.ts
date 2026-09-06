@@ -4725,6 +4725,20 @@ function synthesizeMessageBusRoute(
       && allGraphEmissionHandlersRuntime;
     localEffectFrameHandlers.add(source);
   };
+  type MessageBusClone = FunctionDefinitionNode & { messageBusCloneSourceKey?: string };
+  const overloadedHandlerNames = new Set(eligible
+    .map((handler) => handler.name)
+    .filter((name, index, names) => names.indexOf(name) !== index));
+  const nameMessageBusClone = (
+    handler: FunctionDefinitionNode, family: string, source: FunctionDefinitionNode,
+  ): void => {
+    // Keep established helper names byte-for-byte for ordinary handlers. An overload needs a selector-qualified
+    // compiler identity: hidden route operands are deliberately excluded from source overload matching, so two
+    // same-name clones cannot safely rely on the ordinary overload resolver after those operands are appended.
+    handler.name = `__message_bus_${family}_${source.name}`
+      + (overloadedHandlerNames.has(source.name) ? `_${selector(source)}` : '');
+    (handler as MessageBusClone).messageBusCloneSourceKey = externalHandlerKey(source);
+  };
   const existingClone = (source: FunctionDefinitionNode): FunctionDefinitionNode | undefined => {
     const name = siblingHandlerInvokeNames.get(source);
     return name === undefined
@@ -4733,7 +4747,7 @@ function synthesizeMessageBusRoute(
   };
   if (resourceShapedHandler) {
     const handler = cloneMessageBusHandler(resourceShapedHandler, cheapAdmission);
-    handler.name = `__message_bus_resource_${resourceShapedHandler.name}`;
+    nameMessageBusClone(handler, 'resource', resourceShapedHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -4847,7 +4861,7 @@ function synthesizeMessageBusRoute(
     for (const sourceHandler of eligible) {
       if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)) continue;
       const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
-      handler.name = `__message_bus_handler_${sourceHandler.name}`;
+      nameMessageBusClone(handler, 'handler', sourceHandler);
       handler.modifiers = [FunctionModifier.INTERNAL];
       handler.functionId = undefined;
       handler.functionSelector = undefined;
@@ -4884,7 +4898,7 @@ function synthesizeMessageBusRoute(
     });
     if (!deletesEntry) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
-    handler.name = `__message_bus_handler_${sourceHandler.name}`;
+    nameMessageBusClone(handler, 'handler', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -4949,7 +4963,7 @@ function synthesizeMessageBusRoute(
       continue;
     }
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
-    handler.name = `__message_bus_entry_${sourceHandler.name}`;
+    nameMessageBusClone(handler, 'entry', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -5001,7 +5015,7 @@ function synthesizeMessageBusRoute(
       continue;
     }
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
-    handler.name = `__message_bus_handler_${sourceHandler.name}`;
+    nameMessageBusClone(handler, 'handler', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -5019,7 +5033,7 @@ function synthesizeMessageBusRoute(
     if (kernelLoopDispatch) continue;
     if (!eligible.includes(sourceHandler) || sourceHandler === resourceShapedHandler) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
-    handler.name = `__message_bus_graph_${sourceHandler.name}`;
+    nameMessageBusClone(handler, 'graph', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -5133,7 +5147,7 @@ function synthesizeMessageBusRoute(
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)));
     if (!touchesDynamic) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
-    handler.name = `__message_bus_dynamic_${sourceHandler.name}`;
+    nameMessageBusClone(handler, 'dynamic', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -5159,7 +5173,7 @@ function synthesizeMessageBusRoute(
     });
     if (!touchesFixedArray && !fixedArrayRouteHandlers.has(sourceHandler)) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
-    handler.name = `__message_bus_array_${sourceHandler.name}`;
+    nameMessageBusClone(handler, 'array', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -5180,7 +5194,7 @@ function synthesizeMessageBusRoute(
       || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
       || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
-    handler.name = `__message_bus_handler_${sourceHandler.name}`;
+    nameMessageBusClone(handler, 'handler', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -5202,7 +5216,7 @@ function synthesizeMessageBusRoute(
       || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
       || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
     const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
-    handler.name = `__message_bus_external_${sourceHandler.name}`;
+    nameMessageBusClone(handler, 'external', sourceHandler);
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -8523,9 +8537,15 @@ function compileResolvedAst(
   }
   if (messageBusRoute?.blockLayout) {
     const handlerManagedEntrySlots = new Set<number>();
-    const graphCloneBySource = new Map(ast.contract.functions
-      .filter((fn) => fn.graphEmissionHandler && fn.name.startsWith('__message_bus_graph_'))
-      .map((fn) => [fn.name.slice('__message_bus_graph_'.length), fn] as const));
+    type MessageBusClone = FunctionDefinitionNode & { messageBusCloneSourceKey?: string };
+    const graphCloneBySource = new Map<FunctionDefinitionNode, FunctionDefinitionNode>();
+    for (const clone of ast.contract.functions.filter((fn) =>
+      fn.graphEmissionHandler && fn.name.startsWith('__message_bus_graph_'))) {
+      const sourceKey = (clone as MessageBusClone).messageBusCloneSourceKey;
+      const source = sourceKey === undefined ? undefined : ast.contract.functions.find((fn) =>
+        fn.isEntryPoint && externalHandlerKey(fn) === sourceKey);
+      if (source) graphCloneBySource.set(source, clone);
+    }
     for (const fn of ast.contract.functions) {
       const routeClone = fn.graphEmissionHandler
         || MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => fn.name.startsWith(prefix));
@@ -8537,7 +8557,7 @@ function compileResolvedAst(
         fn.messageBusPhysicalEntrySlots ??= [];
       }
       const fixedHandlerEntries = fn.entryAccesses?.filter((entry) => !entry.inLoop) ?? [];
-      const directlyDispatchedSource = fn.messageBusEligible && !graphCloneBySource.has(fn.name);
+      const directlyDispatchedSource = fn.messageBusEligible && !graphCloneBySource.has(fn);
       if ((routeClone || directlyDispatchedSource)
         && fixedHandlerEntries.length > 0 && messageBusRoute.entryAccesses?.length) {
         fn.messageBusPhysicalEntrySlots = fixedHandlerEntries.map((entry) => {
@@ -8616,9 +8636,7 @@ function compileResolvedAst(
     // through its compiler-owned clone. Copy the clone's exact fixed-slot projection instead of independently
     // remapping the unused direct body (whose post-inline constant folding may legitimately have a different
     // fixed-vs-runtime collection shape).
-    for (const [sourceName, clone] of graphCloneBySource) {
-      const source = ast.contract.functions.find((fn) => fn.name === sourceName && fn.isEntryPoint);
-      if (!source) continue;
+    for (const [source, clone] of graphCloneBySource) {
       source.messageBusPhysicalEntrySlots = clone.messageBusPhysicalEntrySlots;
     }
     messageBusRoute.messageBusHandlerManagedEntrySlots = [...handlerManagedEntrySlots];

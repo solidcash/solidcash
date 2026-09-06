@@ -1762,6 +1762,27 @@ describe('required kernel admission', () => {
       .toHaveLength(1);
   });
 
+  it('gives two deployment-bearing overloads distinct compiler handler identities', () => {
+    const artifact = compileString(`contract Unit() { int marker; }
+      contract Coordinator() {
+        int marker;
+        function make(int next) public {
+          Unit child = new Unit();
+          this.marker = next;
+          require(true);
+        }
+        function make(bool enabled) public {
+          Unit child = new Unit();
+          if (enabled) { this.marker = 1; }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const overloads = artifact.messageBus?.handlers.filter((candidate) => candidate.name === 'make') ?? [];
+    expect(overloads).toHaveLength(2);
+    expect(overloads.every((candidate) => candidate.eligible)).toBe(true);
+    expect(overloads.every((candidate) => candidate.childDeployments?.length === 1)).toBe(true);
+  });
+
   it('keeps unpublished child initialization and address recipes fenced', () => {
     const computed = compileString(`contract Unit(bytes32 seed) { int marker; function configure(int next) public {
         this.marker = next; require(true);

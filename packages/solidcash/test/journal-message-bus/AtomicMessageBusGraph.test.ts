@@ -390,6 +390,36 @@ describe('atomic compiled invocation graph', () => {
     expect(categoryChanged.bytes).not.toEqual(first.bytes);
   });
 
+  it('authenticates a participant output identity independently of its consumed identity', () => {
+    const upgraded = plan();
+    upgraded.participants[0] = {
+      ...upgraded.participants[0], outputLockingBytecode: '54'.repeat(64),
+    };
+    const finalized = messageBus.finalizeAtomicInvocationGraph(
+      upgraded, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    );
+    expect(finalized.callManifest.version).toBe(2);
+    expect(finalized.callManifest.participants[0]).toMatchObject({
+      lockingBytecode: '51'.repeat(64),
+      outputLockingBytecode: '54'.repeat(64),
+    });
+    expect(finalized.callManifest.participants[1]).toMatchObject({
+      lockingBytecode: '52'.repeat(64),
+    });
+    // Once one participant selects V2, preservation participants are also encoded with an authenticated
+    // output identity equal to their input identity.
+    expect(messageBus.decodeAtomicMessageEnvelope(finalized.messageEnvelope).participants[1])
+      .toMatchObject({ lockingBytecode: '52'.repeat(64), outputLockingBytecode: '52'.repeat(64) });
+
+    const changedTarget = plan();
+    changedTarget.participants[0] = {
+      ...changedTarget.participants[0], outputLockingBytecode: '55'.repeat(64),
+    };
+    expect(messageBus.finalizeAtomicInvocationGraph(
+      changedTarget, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    ).bytes).not.toEqual(finalized.bytes);
+  });
+
   it('admits canonical event, value, token-container, and token-settlement rows', () => {
     expect(() => messageBus.finalizeAtomicInvocationGraph(
       plan(), ['aa'.repeat(32), 'bb'.repeat(32)],

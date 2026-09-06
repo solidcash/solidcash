@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { binToHex } from '@bitauth/libauth';
 import { messageBus } from '../../src/index.js';
 
 const sample = (): messageBus.AtomicMessageBusCallManifest => ({
@@ -35,6 +36,50 @@ describe('atomic single-transaction codec', () => {
       ...value,
       participants: value.participants.map((participant) => ({ ...participant, lockingBytecode: '51' })),
     })).toThrow(/at least 256 bytes/);
+  });
+
+  it('keeps ordinary participants on V1 and round-trips separate output identities on V2', () => {
+    const ordinary = sample();
+    const v1 = messageBus.encodeAtomicMessageBusCallManifest(ordinary);
+    expect(binToHex(v1.slice(0, 8))).toBe(messageBus.ATOMIC_MESSAGE_BUS_DOMAIN);
+    expect(messageBus.decodeAtomicMessageBusCallManifest(v1)).toEqual(ordinary);
+
+    const upgraded: messageBus.AtomicMessageBusCallManifest = {
+      ...ordinary,
+      participants: ordinary.participants.map((participant, index) => ({
+        ...participant,
+        outputLockingBytecode: index === 0 ? '53'.repeat(64) : participant.lockingBytecode,
+      })),
+    };
+    const v2 = messageBus.encodeAtomicMessageBusCallManifest(upgraded);
+    expect(binToHex(v2.slice(0, 8))).toBe(messageBus.ATOMIC_MESSAGE_BUS_DOMAIN_V2);
+    expect(messageBus.decodeAtomicMessageBusCallManifest(v2)).toEqual({ ...upgraded, version: 2 });
+    expect(v2).not.toEqual(v1);
+
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({
+      ...upgraded, version: 1,
+    })).toThrow(/V1 cannot authenticate a distinct participant output/);
+  });
+
+  it('rejects malformed or truncated V2 output identities', () => {
+    const value: messageBus.AtomicMessageBusCallManifest = {
+      ...sample(),
+      version: 2,
+      participants: sample().participants.map((participant) => ({
+        ...participant, outputLockingBytecode: participant.lockingBytecode,
+      })),
+    };
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({
+      ...value,
+      participants: [{ ...value.participants[0], outputLockingBytecode: '' }, value.participants[1]],
+    })).toThrow(/output locking bytecode is empty/);
+    const encoded = messageBus.encodeAtomicMessageBusCallManifest(value);
+    // V2's first output-identity frame begins after domain/length/count, sizes, and the input-identity frame.
+    const outputLengthOffset = 13 + 4 + 2 + value.participants[0].lockingBytecode.length / 2;
+    const malformed = encoded.slice();
+    malformed[outputLengthOffset] = 0xff;
+    malformed[outputLengthOffset + 1] = 0xff;
+    expect(() => messageBus.decodeAtomicMessageBusCallManifest(malformed)).toThrow(/truncated/);
   });
 
   it('places complete blocks contiguously before the fee tail', () => {

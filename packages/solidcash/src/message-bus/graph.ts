@@ -16,6 +16,8 @@ export interface CompiledGraphParticipant {
   artifact: Artifact;
   /** Physical covenant identity used to intern and position the participant's state-owner block. */
   lockingBytecode: string;
+  /** Replacement covenant identity created at master offset zero; omitted preserves the input identity. */
+  outputLockingBytecode?: string;
   /**
    * Authenticated public target identity when it differs from the physical state owner, as it does for a
    * proxy/delegate execution or a contract with a published logical CREATE identity. This is the address a
@@ -110,6 +112,8 @@ export interface CompiledParticipantExecution {
   /** Exact artifact whose route and state layout this physical owner executes. */
   artifact: Artifact;
   lockingBytecode: string;
+  /** Authenticated output identity; omitted is the canonical preservation case. */
+  outputLockingBytecode?: string;
   logicalLockingBytecode?: string;
   /** Local balanced-block offset of the authenticated public call target. */
   logicalIdentityOffset: number;
@@ -425,6 +429,9 @@ export function finalizeAtomicInvocationGraph(
     return actualSize;
   });
   const layout = atomicMessageBusPhysicalLayout(spans);
+  const outputIdentityV2 = plan.participants.some((participant) =>
+    participant.outputLockingBytecode !== undefined
+    && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
   const unsupported = plan.participants.find((participant) => {
     const slots = participant.blockLayout!.slots;
     return slots.some((slot) => ![
@@ -453,9 +460,11 @@ export function finalizeAtomicInvocationGraph(
     const publishesResult = participant.invocations.some((invocation) =>
       plan.invocations[invocation].resultTypes.length > 0);
     const lockingBytecode = participant.lockingBytecode.toLowerCase();
+    const outputLockingBytecode = (participant.outputLockingBytecode ?? participant.lockingBytecode).toLowerCase();
     const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
       lockingBytecode, stateCategory: internalCategory,
+      ...(outputIdentityV2 && { outputLockingBytecode }),
       fixedSize, actualSize, maximumSize,
       trailingUsed: actualSize - fixedSize,
       // Route layouts publish the union of every eligible handler, so a void selected batch can retain a physical
@@ -904,7 +913,7 @@ export function finalizeAtomicInvocationGraph(
     ...invocationRows, ...resourceRows, ...eventRows, ...valueRows, ...tokenRows,
     ...deploymentRows, ...sidecarRows,
   ];
-  const callManifest = { participants, rows };
+  const callManifest = { ...(outputIdentityV2 && { version: 2 as const }), participants, rows };
   const bytes = encodeAtomicMessageBusCallManifest(callManifest);
   return Object.freeze({ plan, layout, callManifest, bytes, messageEnvelope: encodeAtomicMessageEnvelope(callManifest) });
 }
@@ -1597,6 +1606,10 @@ export function planCompiledGraph(
       && !/^([0-9a-f]{2})+$/.test(participant.logicalLockingBytecode.toLowerCase())) {
       throw new Error(`messageBus: participant ${index} logical locking bytecode must be hex bytes`);
     }
+    if (participant.outputLockingBytecode !== undefined
+      && !/^([0-9a-f]{2})+$/.test(participant.outputLockingBytecode.toLowerCase())) {
+      throw new Error(`messageBus: participant ${index} output locking bytecode must be non-empty hex bytes`);
+    }
     if (identities.has(lbc)) {
       throw new Error('messageBus: two participant rows name the same physical locking bytecode');
     }
@@ -1801,6 +1814,9 @@ export function planCompiledGraph(
       participant: owner,
       artifact: participant.artifact,
       lockingBytecode: participant.lockingBytecode.toLowerCase(),
+      ...(participant.outputLockingBytecode !== undefined && {
+        outputLockingBytecode: participant.outputLockingBytecode.toLowerCase(),
+      }),
       ...(participant.logicalLockingBytecode !== undefined && {
         logicalLockingBytecode: participant.logicalLockingBytecode.toLowerCase(),
       }),

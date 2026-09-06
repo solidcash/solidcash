@@ -5,6 +5,8 @@ import {
 
 /** Atomic single-transaction bus wire domain: ASCII `L3BUS1\0\0`. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN = ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
+/** Upgrade-capable wire domain: ASCII `L3BUS2\0\0`. V1 remains byte-for-byte stable for ordinary graphs. */
+export const ATOMIC_MESSAGE_BUS_DOMAIN_V2 = '4c33425553320000';
 export { ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS };
 
 /** Atomic envelopes must use Bitcoin Script OP_PUSHDATA2 in every verifier unlocking bytecode. */
@@ -51,7 +53,13 @@ const frame = (bytes: Uint8Array, field: string): Uint8Array =>
   concat(uint(bytes.length, 2, `${field}.length`), bytes);
 
 export interface AtomicParticipant {
+  /** Covenant identity consumed by this participant. */
   lockingBytecode: string;
+  /**
+   * Covenant identity created by this participant. Omitted is the canonical V1 spelling and means
+   * `lockingBytecode`. A distinct value selects the V2 manifest, where both identities are authenticated.
+   */
+  outputLockingBytecode?: string;
   stateCategory: string;
   /** Compiler-authored non-variable prefix, including the master at local offset zero. */
   fixedSize: number;
@@ -95,6 +103,8 @@ export interface AtomicRow {
 }
 
 export interface AtomicMessageBusCallManifest {
+  /** Omitted/1 retains the deployed V1 wire. Version 2 authenticates separate participant output identities. */
+  version?: 1 | 2;
   participants: readonly AtomicParticipant[];
   rows: readonly AtomicRow[];
 }
@@ -110,6 +120,12 @@ const checkedHex = (value: string, bytes: number | undefined, field: string): Ui
 
 export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBusCallManifest): Uint8Array {
   const { participants, rows } = callManifest;
+  const requiresV2 = participants.some((participant) => participant.outputLockingBytecode !== undefined
+    && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
+  const version = callManifest.version ?? (requiresV2 ? 2 : 1);
+  if (version === 1 && requiresV2) {
+    throw new Error('messageBus: atomic V1 cannot authenticate a distinct participant output locking bytecode');
+  }
   if (participants.length < 2 || participants.length > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS) {
     throw new Error(`messageBus: participant count must be in [2, ${ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS}]`);
   }
@@ -137,6 +153,14 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
     }
     const lbc = checkedHex(participant.lockingBytecode, undefined, `participant ${index} locking bytecode`);
     if (lbc.length === 0) throw new Error(`messageBus: participant ${index} locking bytecode is empty`);
+    const outputLbc = checkedHex(
+      participant.outputLockingBytecode ?? participant.lockingBytecode,
+      undefined,
+      `participant ${index} output locking bytecode`,
+    );
+    if (outputLbc.length === 0) {
+      throw new Error(`messageBus: participant ${index} output locking bytecode is empty`);
+    }
     const category = checkedHex(participant.stateCategory, 32, `participant ${index} master category`);
     if (participant.returnOffset !== 0xffff && participant.returnOffset >= participant.fixedSize) {
       throw new Error(`messageBus: participant ${index} has an out-of-block return output`);
@@ -144,7 +168,9 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
     return concat(
       uint(participant.fixedSize, 2, 'participant fixed size'),
       uint(participant.actualSize, 2, 'participant actual size'),
-      frame(lbc, 'locking bytecode'), category,
+      frame(lbc, 'locking bytecode'),
+      ...(version === 2 ? [frame(outputLbc, 'output locking bytecode')] : []),
+      category,
       uint(participant.maximumSize, 2, 'participant maximum size'),
       uint(participant.trailingUsed, 2, 'participant trailing use'),
       uint(participant.returnOffset, 2, 'return output offset'),
@@ -174,7 +200,8 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
     );
   });
   const body = concat(
-    hexToBin(ATOMIC_MESSAGE_BUS_DOMAIN), uint(participants.length, 1, 'participant count'), ...participantParts,
+    hexToBin(version === 2 ? ATOMIC_MESSAGE_BUS_DOMAIN_V2 : ATOMIC_MESSAGE_BUS_DOMAIN),
+    uint(participants.length, 1, 'participant count'), ...participantParts,
     uint(rows.length, 2, 'row count'), ...rowParts,
   );
   return concat(body.slice(0, 8), uint(body.length + 4, 4, 'total length'), body.slice(8));
@@ -182,7 +209,10 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
 
 export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMessageBusCallManifest {
   const reader = new Reader(bytes);
-  if (binToHex(reader.take(8, 'domain')) !== ATOMIC_MESSAGE_BUS_DOMAIN) {
+  const domain = binToHex(reader.take(8, 'domain'));
+  const version = domain === ATOMIC_MESSAGE_BUS_DOMAIN ? 1
+    : domain === ATOMIC_MESSAGE_BUS_DOMAIN_V2 ? 2 : undefined;
+  if (version === undefined) {
     throw new Error('messageBus: invalid atomic callManifest domain');
   }
   if (reader.uint(4, 'total length') !== bytes.length) {
@@ -197,12 +227,14 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     const fixedSize = reader.uint(2, `participant ${index}.fixedSize`);
     const actualSize = reader.uint(2, `participant ${index}.actualSize`);
     const lockingBytecode = binToHex(reader.frame(`participant ${index}.lockingBytecode`));
+    const outputLockingBytecode = version === 2
+      ? binToHex(reader.frame(`participant ${index}.outputLockingBytecode`)) : undefined;
     const stateCategory = binToHex(reader.take(32, `participant ${index}.stateCategory`));
     const maximumSize = reader.uint(2, `participant ${index}.maximumSize`);
     const trailingUsed = reader.uint(2, `participant ${index}.trailingUsed`);
     const returnOffset = reader.uint(2, `participant ${index}.returnOffset`);
     if (fixedSize < 1 || actualSize !== fixedSize + trailingUsed || actualSize > maximumSize
-      || lockingBytecode.length === 0) {
+      || lockingBytecode.length === 0 || (version === 2 && outputLockingBytecode!.length === 0)) {
       throw new Error(`messageBus: participant ${index} has a non-canonical variable span`);
     }
     if (returnOffset !== 0xffff && returnOffset >= fixedSize) {
@@ -211,6 +243,7 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     participants.push({
       fixedSize, actualSize, maximumSize, lockingBytecode, stateCategory,
       trailingUsed, returnOffset,
+      ...(version === 2 && { outputLockingBytecode }),
     });
   }
   const rowCount = reader.uint(2, 'row count');
@@ -243,7 +276,7 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     });
   }
   if (!reader.eof()) throw new Error('messageBus: trailing bytes after atomic callManifest');
-  return { participants, rows };
+  return { ...(version === 2 && { version: 2 as const }), participants, rows };
 }
 
 export interface AtomicPhysicalLayout {

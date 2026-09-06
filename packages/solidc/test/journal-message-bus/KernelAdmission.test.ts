@@ -257,7 +257,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('refuses journal-bearing non-tail mutual recursion without corrupting hidden call arity', () => {
+  it('lowers a read-only journal-bearing mutual recursion fold before kernel admission', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       function left(int n, int key) public returns (int) {
@@ -270,12 +270,56 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
+  });
+
+  it.each([
+    ['a persistent effect',
+      'this.calls = this.calls + 1;',
+      'return left(n - 1, key) + this.values[key];'],
+    ['different continuation operators',
+      '',
+      'return left(n - 1, key) - this.values[key];'],
+  ])('keeps a mutual recursion fold with %s behind KERNEL_LAYOUT', (_label, effect, rightReturn) => {
+    const artifact = compileString(`contract C() {
+      int calls;
+      mapping(int => int) values;
+      function left(int n, int key) public returns (int) {
+        ${effect}
+        if (n == 0) return this.values[key];
+        return right(n - 1, key) + this.values[key];
+      }
+      function right(int n, int key) internal returns (int) {
+        ${effect}
+        if (n == 0) return this.values[key];
+        ${rightReturn}
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('does not turn a short-circuited recursive operand into an unconditional loop step', () => {
+    const artifact = compileString(`contract C() {
+      function left(int n) public pure returns (bool) {
+        if (n == 0) return true;
+        return false && right(n - 1);
+      }
+      function right(int n) internal pure returns (bool) {
+        if (n == 0) return true;
+        return false && left(n - 1);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'left')?.recursiveStateHandler).toBe(true);
   });
 
   it('normalizes explicit value and void base-case returns in tail recursion', () => {

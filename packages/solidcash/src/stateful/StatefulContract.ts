@@ -3702,6 +3702,52 @@ export function selectVisibleCallArguments<T>(
     ? logicalArguments : fallbackArguments;
 }
 
+export interface DirectMappingReadPlan {
+  collection: string;
+  keyArgumentIndices: readonly number[];
+  keyTypes: readonly string[];
+}
+
+const canonicalIntegerAbiType = (type: string): string | undefined => {
+  if (type === 'uint') return 'uint256';
+  if (type === 'int') return 'int256';
+  return /^(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)|bigint)$/.test(type)
+    ? type : undefined;
+};
+
+/** Resolve the narrowly supported direct mapping-return shortcut from compiler proof, never source names. */
+export function directMappingReadPlan(
+  artifact: Pick<Artifact, 'abi' | 'stateLayout'>,
+  functionName: string,
+): DirectMappingReadPlan | undefined {
+  const functions = artifact.abi.filter((candidate) => candidate.name === functionName);
+  if (functions.length !== 1) return undefined;
+  const [fn] = functions;
+  const proof = fn?.directMappingReturn;
+  if (!fn || !proof || fn.writesState !== false || fn.outputs?.length !== 1) return undefined;
+  const access = fn.entryAccesses;
+  if (access?.length !== 1 || access[0].collection !== proof.collection
+    || access[0].operations.length !== 1 || access[0].operations[0] !== 'read') {
+    return undefined;
+  }
+  if (proof.keyParams.length < 1 || proof.keyParams.length > 2
+    || access[0].keyParams.length !== proof.keyParams.length
+    || access[0].keyParams.some((name, index) => name !== proof.keyParams[index])) return undefined;
+  const collection = artifact.stateLayout?.collections?.find((candidate) => candidate.name === proof.collection);
+  if (!collection || collection.kind !== 'mapping') return undefined;
+  const keyTypes = collection.keyTypes ?? [collection.keyType];
+  if (keyTypes.length !== proof.keyParams.length || keyTypes.some((type) => type !== 'address')) return undefined;
+  const outputType = canonicalIntegerAbiType(fn.outputs[0].type);
+  const valueType = canonicalIntegerAbiType(collection.valueType);
+  if (!outputType || outputType !== valueType) return undefined;
+  const visibleInputs = visibleHandlerInputs(fn.inputs);
+  const keyArgumentIndices = proof.keyParams.map((name) => visibleInputs.findIndex((input) => input.name === name));
+  if (keyArgumentIndices.some((index) => index < 0) || new Set(keyArgumentIndices).size !== keyArgumentIndices.length) {
+    return undefined;
+  }
+  return { collection: collection.name, keyArgumentIndices, keyTypes };
+}
+
 /** Resolve a fixed entry access by its compiler-owned physical slot, including pre-slotIndex artifacts. */
 function entryAccessAt(fn: Pick<AbiFunction, 'entryAccesses'> | undefined, slotIndex: number): EntryAccessAbi | undefined {
   return fn?.entryAccesses?.find((access, denseIndex) => (access.slotIndex ?? denseIndex) === slotIndex);
@@ -14125,8 +14171,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /** @internal - compute total output count for sentinel index when draining */
   /** @internal */
-  /** @internal Mock overlay: current ERC20 `_balances[owner]`, overlay first. */
-  private _erc20AddressKeys(owner: unknown): Array<string | Uint8Array> {
+  /** @internal Address representations accepted by address-keyed mapping storage. */
+  private _addressMappingKeyCandidates(addressValue: unknown): Array<string | Uint8Array> {
     const keys: Array<string | Uint8Array> = [];
     const add = (value: unknown): void => {
       if (typeof value === 'string' || value instanceof Uint8Array) {
@@ -14137,21 +14183,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
     };
-    add(owner);
-    if (typeof owner === 'string') {
-      try { add(addressToLockScript(owner)); } catch { /* not a cashaddr */ }
-      for (const variant of logicalIdentityAddressVariants(owner)) {
+    add(addressValue);
+    if (typeof addressValue === 'string') {
+      try { add(addressToLockScript(addressValue)); } catch { /* not a cashaddr */ }
+      for (const variant of logicalIdentityAddressVariants(addressValue)) {
         add(variant);
         try { add(addressToLockScript(variant)); } catch { /* */ }
       }
-      const deployment = findDeploymentByAddress(this.inner.provider, owner);
+      const deployment = findDeploymentByAddress(this.inner.provider, addressValue);
       const deployed = deployment?.contract as StatefulContract | undefined;
       if (deployment) {
         add(deployment.address);
         if (deployment.lockingBytecode) add(hexToBin(deployment.lockingBytecode));
         // The Hardhat-compatible proxy facade exposes its stable logical address, while native SolidCash
         // `address(this)` is the exact active delegate input's OP_UTXOBYTECODE. Include that authenticated
-        // execution address as a read alias so an ethers-style balanceOf(proxy.getAddress()) observes assets
+        // execution address as a read alias so a facade read using its stable address observes values
         // deliberately held by the delegate executor without changing native call or storage semantics.
         const executionLockingBytecode = (deployment.contract as {
           implementation?: { inner?: { lockingBytecode?: string } };
@@ -27473,22 +27519,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   async _deriveReturnValue(
     functionName: string, args: FunctionArgument[], calls?: CallInfo[],
   ): Promise<StateValue> {
-    if ((functionName === 'balanceOf' || functionName === 'allowance')
-      && (this.inner.stateLayout?.collections ?? []).some((collection) =>
-        collection.name === (functionName === 'balanceOf' ? '_balances' : '_allowances'))) {
-      const collection = functionName === 'balanceOf' ? '_balances' : '_allowances';
-      const keyCandidates = functionName === 'balanceOf'
-        ? this._erc20AddressKeys(args[0]).map((owner) => [owner])
-        : this._erc20AddressKeys(args[0]).flatMap((owner) =>
-          this._erc20AddressKeys(args[1]).map((spender) => [owner, spender]));
+    const directMappingRead = directMappingReadPlan(this.inner.artifact, functionName);
+    if (directMappingRead) {
+      const keyCandidates = directMappingRead.keyArgumentIndices.reduce<Array<Array<string | Uint8Array>>>(
+        (rows, argumentIndex) => rows.flatMap((row) =>
+          this._addressMappingKeyCandidates(args[argumentIndex]).map((key) => [...row, key])),
+        [[]],
+      );
       for (const candidate of keyCandidates) {
-        const overlay = this._getSoftMapping(collection, candidate);
+        const overlay = this._getSoftMapping(directMappingRead.collection, candidate);
         if (overlay !== undefined) return overlay as StateValue;
       }
-      const entries = await this.getEntries(collection);
-      const keyTypes = functionName === 'balanceOf' ? ['address'] : ['address', 'address'];
+      const entries = await this.getEntries(directMappingRead.collection);
       for (const candidate of keyCandidates) {
-        const match = entries.find((entry) => StatefulContract._entryMatchesKeys(entry, candidate, keyTypes));
+        const match = entries.find((entry) => StatefulContract._entryMatchesKeys(
+          entry, candidate, directMappingRead.keyTypes,
+        ));
         if (match) return match.value as StateValue;
       }
       return 0n;

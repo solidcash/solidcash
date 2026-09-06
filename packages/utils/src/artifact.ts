@@ -324,6 +324,12 @@ export interface AbiFunction {
     tokenNftTransfers: boolean;
   };
   entryAccesses?: readonly EntryAccessAbi[];
+  /** Compiler proof that the complete function body is exactly `return mapping[keys...]`, with each key a
+   * direct visible parameter. SDKs may use this to answer the read without executing a derivation transaction. */
+  directMappingReturn?: {
+    collection: string;
+    keyParams: readonly string[];
+  };
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];
   /** Local call-result values forwarded as arguments into later external callsites. */

@@ -1288,6 +1288,22 @@ function buildFunctionAbiMetadata(
     visit(func.body);
     return sites.sort((left, right) => left.transferIndex - right.transferIndex);
   })();
+  const directMappingReturn = (() => {
+    const statements = func.body?.statements;
+    if (!statements || statements.length !== 1 || !(statements[0] instanceof ReturnNode)) return undefined;
+    const returned = statements[0].expressions;
+    if (returned.length !== 1 || !(returned[0] instanceof MappingAccessNode) || returned[0].arrayIndex) {
+      return undefined;
+    }
+    const keyParams: string[] = [];
+    for (const key of returned[0].keys) {
+      if (!(key instanceof IdentifierNode)) return undefined;
+      const parameter = visibleParameters.find((candidate) => candidate.name === key.name);
+      if (!parameter || key.definition?.definition !== parameter) return undefined;
+      keyParams.push(key.name);
+    }
+    return keyParams.length > 0 ? { collection: returned[0].name, keyParams } : undefined;
+  })();
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -1325,6 +1341,7 @@ function buildFunctionAbiMetadata(
         ...(ea.valueSource !== undefined && { valueSource: ea.valueSource }),
       })),
     }),
+    ...(directMappingReturn && { directMappingReturn }),
     ...(func.emitInfos && func.emitInfos.length > 0 && {
       emits: func.emitInfos.map((ei) => ({
         eventName: ei.eventName,

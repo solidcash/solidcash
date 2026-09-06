@@ -319,6 +319,29 @@ export interface AtomicSidecarSlotEffect {
   value: bigint;
 }
 
+export interface AtomicDeploymentOutputEffect {
+  lockingBytecodeHex: string;
+  /** Display-order category id (the vout-0 genesis transaction id), without a capability suffix. */
+  tokenCategoryHex: string;
+  capability: 'minting' | 'mutable';
+  commitmentHex: string;
+  tokenAmount: bigint;
+  value: bigint;
+}
+
+/** Exact child-genesis output span selected by one compiler-published deployment occurrence. */
+export interface AtomicDeploymentSlotEffect {
+  participant: number;
+  invocation: number;
+  siteIndex: number;
+  /** Participant-local balanced slot occupied by the token-free vout-0 genesis input and child master output. */
+  offset: number;
+  genesisTransactionHashHex: string;
+  genesisOutputIndex: number;
+  /** Child master first, followed by every mutable child data NFT in compiler-published order. */
+  outputs: readonly AtomicDeploymentOutputEffect[];
+}
+
 const uint8Hex = (value: number): string => value.toString(16).padStart(2, '0');
 
 const uint16LeHex = (value: number, field: string): string => {
@@ -358,7 +381,7 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
   return binToHex(sha256.hash(utf8ToBin(JSON.stringify(policy))));
 }
 
-/** Freeze the currently admitted invocation, state-resource, and event families into the atomic wire. */
+/** Freeze the currently admitted invocation and typed effect families into the atomic wire. */
 export function finalizeAtomicInvocationGraph(
   plan: CompiledGraphPlan, stateCategories: readonly string[],
   results: Readonly<Record<number, string>> = {},
@@ -368,6 +391,7 @@ export function finalizeAtomicInvocationGraph(
   tokenEffects: readonly AtomicTokenSlotEffect[] = [],
   sidecarEffects: readonly AtomicSidecarSlotEffect[] = [],
   actualSizes?: readonly number[],
+  deploymentEffects: readonly AtomicDeploymentSlotEffect[] = [],
 ): FinalizedAtomicInvocationGraph {
   if (stateCategories.length !== plan.participants.length) {
     throw new Error('messageBus: atomic master categories must align with participants');
@@ -392,7 +416,7 @@ export function finalizeAtomicInvocationGraph(
     return slots.some((slot) => ![
       'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer',
       'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'keccakSideCar',
-      'ecrecoverSideCar', 'trailing', 'lowLevelCall', 'identityAnchor',
+      'ecrecoverSideCar', 'deploy', 'deployDataNft', 'trailing', 'lowLevelCall', 'identityAnchor',
     ].includes(slot.kind));
   });
   if (unsupported) {
@@ -710,6 +734,90 @@ export function finalizeAtomicInvocationGraph(
           : effect.commitmentHex.toLowerCase(),
       };
     });
+  const deploymentKeys = new Set(deploymentEffects.map((effect) =>
+    `${effect.participant}:${effect.invocation}:${effect.siteIndex}`));
+  if (deploymentKeys.size !== deploymentEffects.length) {
+    throw new Error('messageBus: atomic deployment effects contain a duplicate invocation site');
+  }
+  const deploymentOffsets = new Set(deploymentEffects.map((effect) => `${effect.participant}:${effect.offset}`));
+  if (deploymentOffsets.size !== deploymentEffects.length) {
+    throw new Error('messageBus: atomic deployment effects contain a duplicate participant slot');
+  }
+  const deploymentRows = [...deploymentEffects]
+    .sort((a, b) => a.participant - b.participant || a.offset - b.offset)
+    .map((effect) => {
+      const participant = plan.participants[effect.participant];
+      const invocation = plan.invocations[effect.invocation];
+      if (!participant || !invocation || invocation.callee !== effect.participant
+        || !participant.invocations.includes(effect.invocation)) {
+        throw new Error(
+          `messageBus: deployment participant ${effect.participant} does not own invocation ${effect.invocation}`,
+        );
+      }
+      const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+        candidate.name === invocation.function);
+      const sites = handler?.childDeployments ?? [];
+      const site = sites[0];
+      if (sites.length !== 1 || !site || site.siteIndex !== 0
+        || site.siteIndex !== effect.siteIndex || site.occurrence !== 'once') {
+        throw new Error(
+          `messageBus: invocation ${effect.invocation} has no straight-line deployment site ${effect.siteIndex}`,
+        );
+      }
+      const masterSlot = participant.blockLayout!.slots.find((candidate) =>
+        candidate.kind === 'deploy' && candidate.slotIndex === invocation.localRow
+        && candidate.offset === effect.offset);
+      const dataSlots = participant.blockLayout!.slots.filter((candidate) =>
+        candidate.kind === 'deployDataNft' && candidate.slotIndex === invocation.localRow)
+        .sort((left, right) => left.offset - right.offset);
+      if (!masterSlot || dataSlots.length !== site.dataNftOutputCount
+        || dataSlots.some((slot, index) => slot.offset !== effect.offset + index + 1 || slot.nftIndex !== index)) {
+        throw new Error(
+          `messageBus: participant ${effect.participant} deployment site ${effect.siteIndex} has a non-canonical output span`,
+        );
+      }
+      if (effect.outputs.length !== 1 + site.dataNftOutputCount) {
+        throw new Error(
+          `messageBus: deployment site ${effect.siteIndex} requires ${1 + site.dataNftOutputCount} exact outputs`,
+        );
+      }
+      const genesis = effect.genesisTransactionHashHex.toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(genesis) || effect.genesisOutputIndex !== 0) {
+        throw new Error(`messageBus: deployment site ${effect.siteIndex} genesis must be a 32-byte vout-0 transaction`);
+      }
+      effect.outputs.forEach((output, index) => {
+        const expectedCapability = index === 0 ? 'minting' : 'mutable';
+        if (!/^(?:[0-9a-fA-F]{2})+$/.test(output.lockingBytecodeHex)
+          || !/^(?:[0-9a-fA-F]{2})*$/.test(output.commitmentHex)
+          || output.tokenCategoryHex.toLowerCase() !== genesis
+          || output.capability !== expectedCapability || output.tokenAmount !== 0n
+          || output.value < 0n || output.value > 0xffff_ffff_ffff_ffffn) {
+          throw new Error(
+            `messageBus: deployment site ${effect.siteIndex} output ${index} does not match its child-genesis shape`,
+          );
+        }
+      });
+      const internalCategory = (genesis.match(/../g) as string[]).reverse().join('');
+      const effectHex = uint16LeHex(effect.outputs.length, 'deployment output count')
+        + effect.outputs.map((output, index) => {
+          const lockingBytecode = output.lockingBytecodeHex.toLowerCase();
+          const commitment = output.commitmentHex.toLowerCase();
+          return uint64LeHex(output.value, `deployment output ${index} value`)
+            + uint8Hex(output.capability === 'minting' ? 2 : 1)
+            + uint16LeHex(lockingBytecode.length / 2, `deployment output ${index} locking bytecode length`)
+            + lockingBytecode
+            + uint16LeHex(commitment.length / 2, `deployment output ${index} commitment length`)
+            + commitment;
+        }).join('');
+      return {
+        kind: 5, owner: effect.participant, consumer: effect.participant,
+        slot: effect.offset, mode: 0, sourceOffset: effect.offset, targetOffset: effect.offset,
+        selectorHex: '00000000', position: effect.offset, parent: effect.invocation, depth: invocation.depth,
+        subtreeEnd: effect.invocation, subjectHex: '',
+        argsHex: uint16LeHex(effect.siteIndex, 'deployment site index') + internalCategory,
+        resultHex: '', effectHex,
+      };
+    });
   const sidecarKeys = new Set(sidecarEffects.map((effect) => `${effect.participant}:${effect.offset}`));
   if (sidecarKeys.size !== sidecarEffects.length) {
     throw new Error('messageBus: atomic sidecar effects contain a duplicate participant slot');
@@ -743,7 +851,8 @@ export function finalizeAtomicInvocationGraph(
       };
     });
   const rows = [
-    ...invocationRows, ...resourceRows, ...eventRows, ...valueRows, ...tokenRows, ...sidecarRows,
+    ...invocationRows, ...resourceRows, ...eventRows, ...valueRows, ...tokenRows,
+    ...deploymentRows, ...sidecarRows,
   ];
   const callManifest = { participants, rows };
   const bytes = encodeAtomicMessageBusCallManifest(callManifest);

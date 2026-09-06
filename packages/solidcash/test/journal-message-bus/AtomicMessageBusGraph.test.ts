@@ -616,4 +616,116 @@ describe('atomic compiled invocation graph', () => {
       }],
     )).toThrow(/not a mutable NFT/);
   });
+
+  it('binds a compiler-published child deployment to one exact genesis output span', () => {
+    const base = plan();
+    const deploymentArtifact = {
+      ...base.participants[0].artifact,
+      messageBus: {
+        ...base.participants[0].artifact.messageBus!,
+        handlers: [{
+          ...base.participants[0].artifact.messageBus!.handlers[0],
+          childDeployments: [{
+            siteIndex: 0, contractName: 'NeutralChild', occurrence: 'once',
+            genesisInputCount: 1, masterOutputCount: 1, dataNftOutputCount: 1, totalOutputCount: 2,
+            categorySource: 'genesis-input-outpoint-txhash', constructorArgs: [], creationBytecode: '51',
+          }],
+        }],
+      },
+    } as Artifact;
+    const deploymentPlan: messageBus.CompiledGraphPlan = {
+      ...base,
+      participants: [{
+        ...base.participants[0], artifact: deploymentArtifact,
+        blockLayout: {
+          blockSize: 3,
+          slots: [
+            { kind: 'master', offset: 0 },
+            { kind: 'deploy', offset: 1, slotIndex: 0 },
+            { kind: 'deployDataNft', offset: 2, slotIndex: 0, nftIndex: 0 },
+          ],
+        },
+      }, base.participants[1]],
+    };
+    const category = 'cc'.repeat(32);
+    const effect: messageBus.AtomicDeploymentSlotEffect = {
+      participant: 0, invocation: 0, siteIndex: 0, offset: 1,
+      genesisTransactionHashHex: category, genesisOutputIndex: 0,
+      outputs: [
+        {
+          lockingBytecodeHex: '51', tokenCategoryHex: category, capability: 'minting',
+          commitmentHex: '', tokenAmount: 0n, value: 1200n,
+        },
+        {
+          lockingBytecodeHex: '52', tokenCategoryHex: category, capability: 'mutable',
+          commitmentHex: 'aa', tokenAmount: 0n, value: 1200n,
+        },
+      ],
+    };
+    const finalize = (
+      selected: readonly messageBus.AtomicDeploymentSlotEffect[], selectedPlan = deploymentPlan,
+    ) => messageBus.finalizeAtomicInvocationGraph(
+      selectedPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [], [], [], [], [], undefined, selected,
+    );
+    const finalized = finalize([effect]);
+    expect(finalized.callManifest.rows[2]).toEqual({
+      kind: 5, owner: 0, consumer: 0, slot: 1, mode: 0, sourceOffset: 1, targetOffset: 1,
+      selectorHex: '00000000', position: 1, parent: 0, depth: 0, subtreeEnd: 0,
+      subjectHex: '', argsHex: `0000${category}`, resultHex: '',
+      effectHex: `0200b004000000000000020100510000b004000000000000010100520100aa`,
+    });
+    expect(messageBus.decodeAtomicMessageBusCallManifest(finalized.bytes).rows[2])
+      .toEqual(finalized.callManifest.rows[2]);
+
+    expect(() => finalize([{ ...effect, genesisOutputIndex: 1 }])).toThrow(/vout-0/);
+    expect(() => finalize([{ ...effect, genesisTransactionHashHex: 'cc'.repeat(31) }])).toThrow(/32-byte vout-0/);
+    expect(() => finalize([{ ...effect, outputs: effect.outputs.slice(0, 1) }])).toThrow(/requires 2 exact outputs/);
+    expect(() => finalize([{ ...effect, outputs: [effect.outputs[0], {
+      ...effect.outputs[1], tokenCategoryHex: 'dd'.repeat(32),
+    }] }])).toThrow(/child-genesis shape/);
+    expect(() => finalize([{ ...effect, outputs: [{
+      ...effect.outputs[0], capability: 'mutable',
+    }, effect.outputs[1]] }])).toThrow(/child-genesis shape/);
+    expect(() => finalize([{ ...effect, outputs: [{
+      ...effect.outputs[0], lockingBytecodeHex: '',
+    }, effect.outputs[1]] }])).toThrow(/child-genesis shape/);
+    expect(() => finalize([{ ...effect, outputs: [effect.outputs[0], {
+      ...effect.outputs[1], tokenAmount: 1n,
+    }] }])).toThrow(/child-genesis shape/);
+    expect(() => finalize([{ ...effect, outputs: [{
+      ...effect.outputs[0], value: 0x1_0000_0000_0000_0000n,
+    }, effect.outputs[1]] }])).toThrow(/child-genesis shape/);
+
+    const ambiguousArtifact = {
+      ...deploymentArtifact,
+      messageBus: {
+        ...deploymentArtifact.messageBus!,
+        handlers: [{
+          ...deploymentArtifact.messageBus!.handlers[0],
+          childDeployments: [
+            ...deploymentArtifact.messageBus!.handlers[0].childDeployments!,
+            { ...deploymentArtifact.messageBus!.handlers[0].childDeployments![0], siteIndex: 1 },
+          ],
+        }],
+      },
+    } as Artifact;
+    const ambiguousPlan: messageBus.CompiledGraphPlan = {
+      ...deploymentPlan,
+      participants: [{ ...deploymentPlan.participants[0], artifact: ambiguousArtifact }, base.participants[1]],
+    };
+    expect(() => finalize([effect], ambiguousPlan)).toThrow(/no straight-line deployment site/);
+
+    const malformedSpan: messageBus.CompiledGraphPlan = {
+      ...deploymentPlan,
+      participants: [{
+        ...deploymentPlan.participants[0],
+        blockLayout: {
+          ...deploymentPlan.participants[0].blockLayout!,
+          slots: deploymentPlan.participants[0].blockLayout!.slots.map((slot) =>
+            slot.kind === 'deployDataNft' ? { ...slot, offset: 3 } : slot),
+        },
+      }, base.participants[1]],
+    };
+    expect(() => finalize([effect], malformedSpan)).toThrow(/non-canonical output span/);
+  });
 });

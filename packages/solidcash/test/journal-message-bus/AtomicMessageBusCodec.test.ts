@@ -73,7 +73,7 @@ describe('atomic single-transaction codec', () => {
     ] })).toThrow(/unknown kind/);
     expect(() => messageBus.encodeAtomicMessageBusCallManifest({ ...decoded, rows: [
       { ...decoded.rows[0], kind: 5 }, ...decoded.rows.slice(1),
-    ] })).toThrow(/reserved/);
+    ] })).not.toThrow();
     expect(() => messageBus.encodeAtomicMessageBusCallManifest({ ...decoded, rows: [
       { ...decoded.rows[0], owner: 2 }, ...decoded.rows.slice(1),
     ] })).toThrow(/unknown participant/);

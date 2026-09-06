@@ -66,7 +66,7 @@ export interface AtomicParticipant {
 }
 
 export interface AtomicRow {
-  /** Stable row kind. 0 invocation, 1 resource, 2 event, 3 value, 4 token, 6 sidecar. Kind 5 is reserved. */
+  /** Stable row kind. 0 invocation, 1 resource, 2 event, 3 value, 4 token, 5 deployment, 6 sidecar. */
   kind: number;
   owner: number;
   consumer: number;
@@ -119,7 +119,8 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
       return counts;
     }, {});
     const breakdown = [
-      ['invocations', 0], ['resources', 1], ['events', 2], ['values', 3], ['tokens', 4], ['sidecars', 6],
+      ['invocations', 0], ['resources', 1], ['events', 2], ['values', 3], ['tokens', 4],
+      ['deployments', 5], ['sidecars', 6],
     ].map(([label, kind]) => `${label}=${rowCounts[kind as number] ?? 0}`).join(', ');
     throw new Error(
       `messageBus: callManifest row count ${rows.length} exceeds ${ATOMIC_MESSAGE_BUS_MAX_ROWS} (${breakdown})`,
@@ -150,8 +151,8 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
     );
   });
   const rowParts = rows.map((row, index) => {
-    if (row.kind < 0 || row.kind > 6 || row.kind === 5) {
-      throw new Error(`messageBus: row ${index} has an unknown kind (5 is reserved)`);
+    if (row.kind < 0 || row.kind > 6) {
+      throw new Error(`messageBus: row ${index} has an unknown kind`);
     }
     if (row.owner >= participants.length || row.consumer >= participants.length) {
       throw new Error(`messageBus: row ${index} names an unknown participant`);
@@ -232,7 +233,7 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
     const argsHex = binToHex(reader.frame(`row ${index}.arguments`));
     const resultHex = binToHex(reader.frame(`row ${index}.result`));
     const effectHex = binToHex(reader.frame(`row ${index}.effect`));
-    if (kind > 6 || kind === 5 || owner >= participantCount || consumer >= participantCount) {
+    if (kind > 6 || owner >= participantCount || consumer >= participantCount) {
       throw new Error(`messageBus: row ${index} has an invalid kind or participant`);
     }
     rows.push({

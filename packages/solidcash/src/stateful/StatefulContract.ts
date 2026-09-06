@@ -90,7 +90,7 @@ import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit,
 } from '../ecrecover/ecrecoverComputeSidecar.js';
 import {
-  encodeMessageBatch, encodeMessageBusArguments, inactiveMessageBusRouteWitness,
+  encodeMessageBatch, encodeMessageBusArguments, evaluateFixedEffectPredicate, inactiveMessageBusRouteWitness,
 } from '../message-bus/message-bus.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
@@ -8884,6 +8884,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   async getFullState(): Promise<OnChainState> {
     await this._ensureResolved();
     return getContractState(this.inner, this.categoryId);
+  }
+
+  /** @internal Resolve one compiler-published fixed-effect activation predicate against authenticated state. */
+  async _resolveCompilerEffectPredicate(
+    expression: ExternalCallExpression,
+    args: readonly FunctionArgument[],
+    handler: AbiFunction,
+    executionArtifact: Artifact = this.inner.artifact,
+  ): Promise<boolean> {
+    void executionArtifact;
+    const result = evaluateFixedEffectPredicate(expression, args);
+    if (typeof result !== 'boolean') {
+      throw new Error(`Could not resolve fixed BCH-transfer predicate in '${handler.name}'.`);
+    }
+    return result;
   }
 
   /**

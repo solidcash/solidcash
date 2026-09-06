@@ -311,6 +311,8 @@ export interface ChildDeploymentSiteAbi {
   childLayoutDigest?: string;
   /** Present only when the complete constructor transition was folded into pure row recipes. */
   genesisState?: ChildDeploymentGenesisStateAbi;
+  /** This site's genesis includes one compiler-folded call on the freshly created child. */
+  hasFoldedChildCall?: true;
 }
 
 /**
@@ -419,6 +421,8 @@ export interface AbiFunction {
     recipient: ArgSource;
     amount: ArgSource;
     callOption?: 'value';
+    /** Exact source-path predicate for this physical effect recipe. Null means unsupported. */
+    condition?: ExternalCallExpression | null;
   }[];
   deployTargets?: readonly {
     contractName: string; dataNftCount: number;
@@ -1127,6 +1131,7 @@ export interface Artifact {
         recipient: ArgSource;
         amount: ArgSource;
         callOption?: 'value';
+        condition?: ExternalCallExpression | null;
       }[];
       /** Typed child-creation sites in source execution order. Presence is topology only, not admission. */
       childDeployments?: readonly ChildDeploymentSiteAbi[];

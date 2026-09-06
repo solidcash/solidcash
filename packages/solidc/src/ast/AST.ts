@@ -1404,6 +1404,8 @@ export class CastNode extends ExpressionNode implements Typed {
 
 export class FunctionCallNode extends ExpressionNode {
   resolvedFunction?: FunctionDefinitionNode;
+  /** A raw address transfer/send call cloned from an inline library helper. */
+  inlinedLibraryEffect?: boolean;
   fieldNames?: string[];
   // Call options are retained here for calls through a function-pointer identifier, then transferred to the
   // MethodCallNode synthesized by the external-function-pointer lowering.
@@ -2745,6 +2747,8 @@ export class SelfdestructStatementNode extends StatementNode {
 
 export class AddressTransferStatementNode extends StatementNode {
   transferIndex: number = 0;
+  /** The intrinsic came from an inlined library helper and already follows the ordinary BCH transfer lowering. */
+  inlinedLibraryEffect: boolean = false;
 
   constructor(
     public addressExpression: ExpressionNode,  // payable address or connected address
@@ -2760,6 +2764,8 @@ export class AddressTransferStatementNode extends StatementNode {
 
 export class AddressSendExpressionNode extends ExpressionNode {
   transferIndex: number = 0;
+  /** The intrinsic came from an inlined library helper and already follows the ordinary BCH transfer lowering. */
+  inlinedLibraryEffect: boolean = false;
 
   constructor(
     public addressExpression: ExpressionNode,  // payable address or connected address

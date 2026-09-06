@@ -7232,6 +7232,7 @@ export default class AstBuilder
         );
       }
       const node = new AddressSendExpressionNode(object, parameters[0]);
+      node.inlinedLibraryEffect = this.parsingLibraryFunction;
       node.location = Location.fromCtx(ctx);
       return node;
     }
@@ -9187,6 +9188,7 @@ export default class AstBuilder
       }
       if (recvCtx.getText() !== 'this' && callArgs.length === 1 && ctx.callOptions() === null) {
         const node = new AddressTransferStatementNode(this.visit(recvCtx) as ExpressionNode, callArgs[0]);
+        node.inlinedLibraryEffect = this.parsingLibraryFunction;
         node.location = loc; return node;
       }
     }

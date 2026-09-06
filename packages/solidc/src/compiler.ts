@@ -2080,6 +2080,94 @@ function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number
   return nftIndex + (currentNftUsed > 0 ? 1 : 0);
 }
 
+interface FoldedChildInitializationProof {
+  deployment: InstantiationNode;
+  call: Node;
+  proof: InstantiationNode;
+}
+
+/**
+ * Prove the deliberately small finite post-new initialization form before kernel route synthesis:
+ *
+ *     Child local = new Child(args);
+ *     local.method(args);
+ *
+ * Discovery is restricted to adjacent statements in the handler's top-level block. The child transition itself
+ * is evaluated by SymbolTableTraversal's canonical constructor/call folder, so proof and production lowering do
+ * not carry competing expression semantics. Names are resolved only as lexical local/method identities.
+ */
+function proveStraightLineChildInitializations(
+  root: FunctionDefinitionNode, statefulChildren: ReadonlyMap<string, ContractNode>,
+  compilerOptions: CompilerOptions,
+): FoldedChildInitializationProof[] {
+  const statements = root.body instanceof BlockNode ? (root.body.statements ?? []) : [];
+  const proofs: FoldedChildInitializationProof[] = [];
+  const fixedScalarChild = (child: ContractNode): boolean => child.collections.length === 0
+    && child.stateVariables.every((state) => !state.isDynamic && !isDynamicStorageType(state.type)
+      && !(state.type instanceof ArrayType) && !(state.type instanceof MappingType)
+      && !(state.type instanceof StructType) && !(state.type instanceof EnumType));
+  const directCall = (statement: StatementNode): {
+    receiver: string; method: string; args: ExpressionNode[]; node: Node;
+  } | undefined => {
+    if (statement instanceof MethodCallStatementNode
+      && statement.call.object instanceof IdentifierNode) {
+      return {
+        receiver: statement.call.object.name,
+        method: statement.call.methodName,
+        args: statement.call.parameters,
+        node: statement.call,
+      };
+    }
+    if (statement instanceof FunctionCallStatementNode) {
+      const qualified = statement.call.identifier.name;
+      const separator = qualified.indexOf('.');
+      if (separator > 0 && separator === qualified.lastIndexOf('.')) {
+        return {
+          receiver: qualified.slice(0, separator),
+          method: qualified.slice(separator + 1),
+          args: statement.call.parameters,
+          node: statement.call,
+        };
+      }
+    }
+    return undefined;
+  };
+
+  for (let i = 0; i + 1 < statements.length; i += 1) {
+    const declaration = statements[i];
+    if (!(declaration instanceof VariableDefinitionNode)
+      || !(declaration.expression instanceof InstantiationNode)) continue;
+    const child = statefulChildren.get(declaration.expression.identifier.name);
+    if (!child || !fixedScalarChild(child)) continue;
+    const call = directCall(statements[i + 1]);
+    if (!call || call.receiver !== declaration.name) continue;
+    const candidates = child.functions.filter((fn) => fn.name === call.method
+      && fn.parameters.length === call.args.length
+      && fn.returnTypes.length === 0
+      && (fn.visibility === 'public' || fn.visibility === 'external'));
+    // Pre-semantic proof has no overload resolution authority. A unique source signature is the only sound
+    // choice; production semantic analysis will independently resolve and fold that same method.
+    if (candidates.length !== 1) continue;
+    const deployment = declaration.expression;
+    const proof = Object.assign(
+      Object.create(Object.getPrototypeOf(deployment)) as InstantiationNode,
+      deployment,
+      {
+        referencedContract: child,
+        parameters: deployment.parameters.map((parameter) => cloneNode(parameter)),
+        foldedStateInit: undefined,
+        hasFoldedChildCall: undefined,
+        constructorStateFoldComplete: undefined,
+        ctorFoldFailed: undefined,
+      },
+    );
+    const folder = new SymbolTableTraversal(compilerOptions);
+    if (!folder.tryFoldChildInitializationProof(proof, candidates[0], call.args)) continue;
+    proofs.push({ deployment, call: call.node, proof });
+  }
+  return proofs;
+}
+
 function childDeploymentSites(
   root: FunctionDefinitionNode,
   compiledBytecodes: ReadonlyMap<string, Uint8Array>,
@@ -2123,12 +2211,14 @@ function childDeploymentSites(
       const creationBytecode = compiledBytecodes.get(child.name);
       if (!creationBytecode) throw new Error(`Missing compiled child body for deployment topology '${child.name}'`);
       const genesisState = value.constructorStateFoldComplete === true
-        && analyzed?.supported === true
         ? childDeploymentGenesisState(
           value.foldedStateInit, child.stateVariables, inputIndex, inputTypes, false, analyzed?.aliases,
           analyzed?.aliasDefinitions,
         )
         : undefined;
+      if (root.messageBusEligible === true && value.hasFoldedChildCall && !genesisState) {
+        throw new Error(`Kernel folded child initialization at site ${sites.length} has no complete genesis proof`);
+      }
       const childLayoutDigest = childStateLayoutDigest({
         variables: child.stateVariables.map((state) => ({
           name: state.name,
@@ -2168,6 +2258,7 @@ function childDeploymentSites(
         }),
         creationBytecode: binToHex(creationBytecode),
         childLayoutDigest,
+        ...(value.hasFoldedChildCall && { hasFoldedChildCall: true as const }),
         ...(genesisState && { genesisState }),
       });
       spanOffset += spanWidth;
@@ -3775,12 +3866,74 @@ function synthesizeMessageBusRoute(
         resource === `state:${name}` || resource === `collection:${name}`
         || resource.startsWith(`collection:${name}:`)));
     let hasTokenContainerEffect = false;
+    let hasSolidityAddressValueEffect = false;
+    let hasUnsupportedFixedTransferActivation = false;
     let consumesLowLevelReturn = false;
     let resizesDynamicArrayState = false;
     let writesArrayStructElement = false;
     const minimumResultBytes = fn.returnTypes.reduce<number>(
       (total, type) => total + (staticAbiByteSize(type) ?? 32), 0,
     );
+    if (compilerOptions.messageBusKernel === true) {
+      const activationInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+      const activationInputIndex = new Map(activationInputs.map((parameter, index) => [parameter.name, index]));
+      const activationInputTypes = new Map(activationInputs.map((parameter) =>
+        [parameter.name, abiTypeString(parameter.type)]));
+      const auditActivation = (
+        value: unknown, supported = true, conditional = false, seen = new WeakSet<object>(),
+      ): void => {
+        if (Array.isArray(value)) {
+          value.forEach((item) => auditActivation(item, supported, conditional, seen));
+          return;
+        }
+        if (!(value instanceof Node) || seen.has(value)) return;
+        seen.add(value);
+        if ((value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode)
+          && !value.inlinedLibraryEffect
+          || (value instanceof FunctionCallNode && !value.inlinedLibraryEffect
+            && /\.(?:transfer|send)$/.test(value.identifier.name)
+            && fn.parameters.some((parameter) => parameter.type instanceof AddressType
+              && value.identifier.name.startsWith(`${parameter.name}.`)))
+          || (value instanceof MethodCallNode && value.object.type instanceof AddressType
+            && ['transfer', 'send'].includes(value.methodName))
+          || (value instanceof MethodCallNode && value.object instanceof IdentifierNode
+            && ['transfer', 'send'].includes(value.methodName)
+            && fn.parameters.some((parameter) => parameter.name === (value.object as IdentifierNode).name
+              && parameter.type instanceof AddressType))) {
+          hasSolidityAddressValueEffect = true;
+        }
+        if ((value instanceof TransferStatementNode && value.runtimeLoopTransfer === undefined)
+          || value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode) {
+          if (conditional && !supported) hasUnsupportedFixedTransferActivation = true;
+          return;
+        }
+        if (value instanceof BranchNode) {
+          const branchSupported = childDeploymentValueRecipe(
+            value.condition, activationInputIndex, true, activationInputTypes,
+          ) !== undefined;
+          auditActivation(value.ifBlock, supported && branchSupported, true, new WeakSet<object>());
+          if (value.elseBlock) {
+            auditActivation(value.elseBlock, supported && branchSupported, true, new WeakSet<object>());
+          }
+          return;
+        }
+        if (value instanceof SwitchNode) {
+          // Switch activation has no published fixed-effect recipe yet.
+          for (const arm of value.cases) auditActivation(arm.body, false, true, new WeakSet<object>());
+          if (value.defaultCase) auditActivation(value.defaultCase, false, true, new WeakSet<object>());
+          return;
+        }
+        if (value instanceof TryCatchNode) {
+          auditActivation(value.tryBlock, false, true, new WeakSet<object>());
+          return;
+        }
+        for (const [key, child] of Object.entries(value)) {
+          if (['referencedContract', 'resolvedFunction', 'definition', 'symbolTable'].includes(key)) continue;
+          auditActivation(child, supported, conditional, seen);
+        }
+      };
+      auditActivation(fn.body);
+    }
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
         const candidateLocals = locallyBoundNames(candidate);
@@ -3810,6 +3963,27 @@ function synthesizeMessageBusRoute(
           if (node instanceof IdentifierNode && dynamicState.has(node.name)
             && !candidateLocals.has(node.name)) reachesDynamicState = true;
           if (node instanceof TokenContainerMethodStatementNode) hasTokenContainerEffect = true;
+          if ((node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode)
+            && !node.inlinedLibraryEffect) {
+            hasSolidityAddressValueEffect = true;
+          }
+          if (!candidate.isLibraryFunction
+            && node instanceof FunctionCallNode && !node.inlinedLibraryEffect
+            && /\.(?:transfer|send)$/.test(node.identifier.name)
+            && candidate.parameters.some((parameter) => parameter.type instanceof AddressType
+              && node.identifier.name.startsWith(`${parameter.name}.`))) {
+            hasSolidityAddressValueEffect = true;
+          }
+          if (node instanceof MethodCallNode && node.object.type instanceof AddressType
+            && ['transfer', 'send'].includes(node.methodName)) {
+            hasSolidityAddressValueEffect = true;
+          }
+          if (node instanceof MethodCallNode && node.object instanceof IdentifierNode
+            && ['transfer', 'send'].includes(node.methodName)
+            && candidate.parameters.some((parameter) => parameter.name === (node.object as IdentifierNode).name
+              && parameter.type instanceof AddressType)) {
+            hasSolidityAddressValueEffect = true;
+          }
           if (node instanceof StateArrayAssignNode) {
             const state = contract.stateVariables.find((candidateState) => candidateState.name === node.name);
             if (state?.type instanceof ArrayType && state.type.elementType instanceof StructType) {
@@ -3967,6 +4141,13 @@ function synthesizeMessageBusRoute(
       && footprint.effects.includes('events')
       && (!namedClosureShape.acyclic || hasUnplannedRuntimeEvent(fn))) {
       reason = 'KERNEL_LAYOUT';
+    } else if (!reason && compilerOptions.messageBusKernel === true && hasSolidityAddressValueEffect) {
+      // These intrinsics currently reach a graph recipient representation which is not byte-identical to the
+      // handler's transfer covenant. Their direct ABI recipe remains useful, but advertising the kernel route
+      // would publish a surface whose honest composition fails preflight.
+      reason = 'KERNEL_LAYOUT';
+    } else if (!reason && compilerOptions.messageBusKernel === true && hasUnsupportedFixedTransferActivation) {
+      reason = 'KERNEL_LAYOUT';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
     // Result-consuming effect handlers remain behind their authenticated graph OP_INVOKE frame. X29's
@@ -3999,6 +4180,10 @@ function synthesizeMessageBusRoute(
       const lockingBytecode = new Set<string>(Object.values(Class));
       const statefulChildren = new Map(ast.importedContracts.filter((child) =>
         child.stateVariables.length > 0 || child.collections.length > 0).map((child) => [child.name, child]));
+      const foldedInitializationProofs = proveStraightLineChildInitializations(fn, statefulChildren, compilerOptions);
+      const foldedProofByDeployment = new Map(foldedInitializationProofs
+        .map((proof) => [proof.deployment, proof.proof] as const));
+      const foldedProofCalls = new Set(foldedInitializationProofs.map((proof) => proof.call));
       const closureNames = collectNamedFunctionClosure(fn, byName);
       const deploymentRecipeAnalysis = analyzeChildDeploymentRecipes(fn);
       const deploymentInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
@@ -4028,10 +4213,8 @@ function synthesizeMessageBusRoute(
             if (statefulChildren.has(node.identifier.name)) {
               deploySites += 1;
               const child = statefulChildren.get(node.identifier.name)!;
+              const foldedProof = foldedProofByDeployment.get(node);
               if (!analyzed?.supported) deploymentRecipeUnsupported = true;
-              if (node.hasFoldedChildCall) {
-                deploymentStateInitializationUnsupported = true;
-              }
               const visibleInputs = new Map(fn.parameters
                 .filter((parameter) => !parameter.name.startsWith('__internal__'))
                 .map((parameter, index) => [parameter.name, index] as const));
@@ -4039,21 +4222,21 @@ function synthesizeMessageBusRoute(
                 .filter((parameter) => !parameter.name.startsWith('__internal__'))
                 .map((parameter) => [parameter.name, abiTypeString(parameter.type)] as const));
               const constructorStatements = child.constructorDef?.body.statements ?? [];
-              if (constructorStatements.length > 0) {
+              if (constructorStatements.length > 0 || foldedProof) {
                 if (child.stateVariables.some((state) => state.type instanceof StructType
                   || state.type instanceof EnumType)) {
                   deploymentStateInitializationUnsupported = true;
                 }
                 // Admission precedes the full symbol pass. Run the canonical folder on a clone so proof
                 // construction cannot mutate or erase the production node's later deploy-then-call state.
-                const admissionNode = Object.assign(
+                const admissionNode = foldedProof ?? Object.assign(
                   Object.create(Object.getPrototypeOf(node)) as InstantiationNode,
                   node,
                   { referencedContract: child,
                     parameters: node.parameters.map((parameter) => cloneNode(parameter)), foldedStateInit: undefined,
                     constructorStateFoldComplete: undefined, ctorFoldFailed: undefined },
                 );
-                if (!node.hasFoldedChildCall) {
+                if (!foldedProof) {
                   new SymbolTableTraversal(compilerOptions).tryFoldChildConstructor(admissionNode);
                 }
                 const genesisState = analyzed && childDeploymentGenesisState(
@@ -4127,20 +4310,22 @@ function synthesizeMessageBusRoute(
           }
           // Folded deploy calls are deliberately omitted from the ordinary invocation walk. Inspect the
           // normalized tree directly so their constructor-state mutation cannot be mistaken for defaults.
-          if ((value instanceof InstantiationNode && value.hasFoldedChildCall)
-              || (value instanceof ExternalFunctionCallNode && value.foldedIntoDeploy)) {
+          if ((value instanceof InstantiationNode && value.hasFoldedChildCall
+                && !foldedProofByDeployment.has(value))
+              || (value instanceof ExternalFunctionCallNode && value.foldedIntoDeploy
+                && !foldedProofCalls.has(value))) {
             deploymentStateInitializationUnsupported = true;
           }
           // Admission runs before every deploy-fold annotation is guaranteed to survive normalization.
           // Preserve the same semantic boundary structurally: a method called on a local initialized by a
           // stateful `new` is constructor-state initialization, not an independent typed graph edge.
-          if ((value instanceof ExternalFunctionCallNode
+          if (!foldedProofCalls.has(value) && ((value instanceof ExternalFunctionCallNode
                 && value.addressExpression instanceof IdentifierNode
                 && deployedLocalNames.has(value.addressExpression.name))
               || (value instanceof MethodCallNode && value.object instanceof IdentifierNode
                 && deployedLocalNames.has(value.object.name))
               || (value instanceof FunctionCallNode && value.identifier.name.includes('.')
-                && deployedLocalNames.has(value.identifier.name.slice(0, value.identifier.name.indexOf('.'))))) {
+                && deployedLocalNames.has(value.identifier.name.slice(0, value.identifier.name.indexOf('.')))))) {
             deploymentStateInitializationUnsupported = true;
           }
           if (value instanceof BranchNode) {
@@ -4880,7 +5065,7 @@ function synthesizeMessageBusRoute(
   ): void => {
     const runtimeLoopCollections = runtimeLoopCollectionsByHandler.get(source) ?? new Set<string>();
     normalizeBareEntryAccesses(handler);
-    if (process.env.SOLIDC_DEBUG_ROUTE === '1' && source.name === 'transferFrom') {
+    if (process.env.SOLIDC_DEBUG_ROUTE === '1') {
       const mappings: Array<{ kind: string; name: string; keys: string[] }> = [];
       walkInvocationAst(handler.body, (node) => {
         if (!isMappingNode(node)) return;
@@ -4891,7 +5076,7 @@ function synthesizeMessageBusRoute(
             : key instanceof NullaryOpNode ? `nullary:${key.operator}` : key.constructor.name),
         });
       });
-      console.error('transferFrom-entry-keys-before-bind', mappings);
+      console.error('entry-keys-before-bind', { handler: source.name, mappings });
     }
     // Alternative order per collection decides which entry is shared by every row and which is row-local; it
     // must match the witness naming above exactly, so it is derived the same way from encounter order.

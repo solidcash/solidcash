@@ -2037,7 +2037,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     const contract = deployNode.referencedContract;
     const ctor = contract?.constructorDef;
     const statements = (ctor?.body as BlockNode | undefined)?.statements ?? [];
-    if (!contract || !ctor || statements.length === 0) return;
+    if (!contract) return;
+    // An implicit or implemented empty constructor is a complete zero-write transition. Mark it explicitly:
+    // kernel proof mode must distinguish this sound default genesis from a constructor that was never surveyed.
+    if (!ctor || statements.length === 0) {
+      deployNode.ctorFoldFailed = false;
+      deployNode.constructorStateFoldComplete = true;
+      return;
+    }
     const fieldType = (name: string): Type | undefined => contract.stateVariables
       .find((sv) => sv.name === name)?.type;
     const subs = new Map<string, ExpressionNode>();
@@ -2112,6 +2119,31 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (res.returnValue) this.protectFoldedExprVars([res.returnValue]);
     return { returnValue: res.returnValue };
+  }
+
+  /**
+   * Apply the canonical constructor + same-transaction call folder to a deployment proof clone.
+   *
+   * This intentionally contains no source-shape discovery: callers decide which finite, straight-line call
+   * occurrence they are proving, while this method remains the single authority for the state transition.
+   * Production semantic lowering invokes the same constructor/call folders below. Returning false means that
+   * the complete post-call genesis is not representable and admission must remain closed.
+   */
+  public tryFoldChildInitializationProof(
+    deployNode: InstantiationNode, callee: FunctionDefinitionNode, parentArgs: ExpressionNode[],
+  ): boolean {
+    const statements = (callee.body as BlockNode | undefined)?.statements ?? [];
+    // Deploy folding does not execute child-side guards. Kernel admission may therefore retain only the
+    // syntactic final-require placeholder required by an externally visible void function, never a predicate
+    // whose failure would change whether the source call succeeds.
+    if (statements.some((statement) => statement instanceof RequireNode
+      && (!(statement.expression instanceof BoolLiteralNode) || statement.expression.value !== true))) return false;
+    this.tryFoldChildConstructor(deployNode);
+    if (deployNode.constructorStateFoldComplete !== true) return false;
+    const folded = this.tryFoldDeployCall(deployNode, callee, parentArgs);
+    if (!folded || folded.returnValue) return false;
+    deployNode.hasFoldedChildCall = true;
+    return true;
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {

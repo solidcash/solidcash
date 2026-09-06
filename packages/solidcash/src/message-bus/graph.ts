@@ -1754,10 +1754,11 @@ export function planCompiledGraph(
     perOwner[invocation.callee].push({
       function: invocation.function,
       args: invocation.args,
-      // Graph admission rejects every unbound `{value: ...}` call option. A nested payable row therefore has
-      // exactly zero logical BCH value; publish that proof explicitly so a handler which conditionally reads
-      // msg.value (ERC20-vs-native payment) does not ask the SDK for a witness it already constrained to zero.
-      ...(invocation.parent !== null && rowHandler?.usesMsgValue && { msgValue: 0n }),
+      // Graph admission rejects every unbound incoming `{value: ...}` call option. A nested payable row with
+      // no compiler-authored transfer therefore has exactly zero logical BCH value. Transfer-bearing rows derive
+      // their (possibly conditional) negative delta from the same authenticated recipes used by composition.
+      ...(invocation.parent !== null && rowHandler?.usesMsgValue
+        && (rowHandler.transfers?.length ?? 0) === 0 && { msgValue: 0n }),
       ...(invocation.parent !== null && { callMode: encodedCallMode(invocation) }),
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })

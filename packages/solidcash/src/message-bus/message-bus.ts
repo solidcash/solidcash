@@ -1,7 +1,7 @@
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import {
   ArrayType, decodePushdataValue, parseArrayTypeString, parseType, type Artifact, type StateValue, scriptToBytecode,
-  type StructDefinitionInfo,
+  type StructDefinitionInfo, type ExternalCallExpression,
 } from '@solidcash/utils';
 import {
   encodeFunctionArgument, isSignatureTemplateArgumentForType, type ConstructorArgument, type FunctionArgument,
@@ -41,6 +41,68 @@ export interface EncodedMessageBatch {
     /** Exact pushdata-encoded ABI argument vector parsed by message-bus batch. */
     argsHex: string;
   }[];
+}
+
+/** Evaluate the immutable argument/literal predicate language used by fixed effect recipes. */
+export function evaluateFixedEffectPredicate(
+  expression: ExternalCallExpression, args: readonly FunctionArgument[],
+): unknown {
+  if (expression.kind === 'literal') {
+    if (expression.type === 'bigint' && typeof expression.value === 'string') return BigInt(expression.value);
+    if (expression.type === 'bool' && typeof expression.value === 'boolean') return expression.value;
+    if (expression.type === 'string' && typeof expression.value === 'string') return expression.value;
+    if (expression.type?.startsWith('bytes') && typeof expression.value === 'string') {
+      return hexToBin(expression.value);
+    }
+    return undefined;
+  }
+  if (expression.kind === 'source' && expression.source?.kind === 'forward'
+    && expression.source.paramIndex !== undefined) return args[expression.source.paramIndex];
+  if (expression.kind === 'cast') return expression.expression
+    ? evaluateFixedEffectPredicate(expression.expression, args) : undefined;
+  if (expression.kind === 'unary' && expression.expression) {
+    const value = evaluateFixedEffectPredicate(expression.expression, args);
+    if (expression.operator === '!') return typeof value === 'boolean' ? !value : undefined;
+    if (expression.operator === '-' && typeof value === 'bigint') return -value;
+    if (expression.operator === '.length' && (typeof value === 'string' || value instanceof Uint8Array
+      || Array.isArray(value))) return BigInt(value.length);
+    return undefined;
+  }
+  if (expression.kind === 'binary' && expression.left && expression.right) {
+    const left = evaluateFixedEffectPredicate(expression.left, args);
+    if (left === undefined) return undefined;
+    if (expression.operator === '&&' && typeof left === 'boolean' && !left) return false;
+    if (expression.operator === '||' && typeof left === 'boolean' && left) return true;
+    const right = evaluateFixedEffectPredicate(expression.right, args);
+    if (right === undefined) return undefined;
+    const equal = left instanceof Uint8Array && right instanceof Uint8Array
+      ? left.length === right.length && left.every((byte, index) => byte === right[index])
+      : (typeof left === 'bigint' || typeof left === 'number')
+        && (typeof right === 'bigint' || typeof right === 'number')
+        ? BigInt(left) === BigInt(right) : left === right;
+    switch (expression.operator) {
+      case '&&': return typeof left === 'boolean' && typeof right === 'boolean' ? left && right : undefined;
+      case '||': return typeof left === 'boolean' && typeof right === 'boolean' ? left || right : undefined;
+      case '==': return equal;
+      case '!=': return !equal;
+      case '<': return typeof left === 'bigint' && typeof right === 'bigint' ? left < right : undefined;
+      case '<=': return typeof left === 'bigint' && typeof right === 'bigint' ? left <= right : undefined;
+      case '>': return typeof left === 'bigint' && typeof right === 'bigint' ? left > right : undefined;
+      case '>=': return typeof left === 'bigint' && typeof right === 'bigint' ? left >= right : undefined;
+      case '+': return typeof left === 'bigint' && typeof right === 'bigint' ? left + right : undefined;
+      case '-': return typeof left === 'bigint' && typeof right === 'bigint' ? left - right : undefined;
+      case '*': return typeof left === 'bigint' && typeof right === 'bigint' ? left * right : undefined;
+      case '/': return typeof left === 'bigint' && typeof right === 'bigint' && right !== 0n ? left / right : undefined;
+      case '%': return typeof left === 'bigint' && typeof right === 'bigint' && right !== 0n ? left % right : undefined;
+      default: return undefined;
+    }
+  }
+  if (expression.kind === 'ternary' && expression.condition && expression.ifTrue && expression.ifFalse) {
+    const selected = evaluateFixedEffectPredicate(expression.condition, args);
+    return typeof selected === 'boolean'
+      ? evaluateFixedEffectPredicate(selected ? expression.ifTrue : expression.ifFalse, args) : undefined;
+  }
+  return undefined;
 }
 
 export interface DecodedMessageBusResult {
@@ -577,6 +639,16 @@ export function encodeMessageBatch(
     if (handler.usesMsgValue && (handler.transfers?.length ?? 0) > 0) {
       let outgoing = 0n;
       for (const transfer of handler.transfers!) {
+        if (transfer.condition === null) {
+          throw new Error(`message-bus batch BCH transfer in '${handler.name}' has no canonical predicate`);
+        }
+        if (transfer.condition !== undefined) {
+          const active = evaluateFixedEffectPredicate(transfer.condition, args);
+          if (typeof active !== 'boolean') {
+            throw new Error(`message-bus batch BCH transfer in '${handler.name}' has an unresolved predicate`);
+          }
+          if (!active) continue;
+        }
         const source = transfer.amount;
         let amount: bigint;
         if (source.kind === 'forward' && source.paramIndex !== undefined

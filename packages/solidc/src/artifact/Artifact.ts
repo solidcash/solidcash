@@ -10,7 +10,8 @@ import { version } from '../index.js';
 import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
-  ExpressionNode, TransferStatementNode, BlockNode, WhileNode, VariableDefinitionNode,
+  ExpressionNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
+  BlockNode, WhileNode, VariableDefinitionNode,
   BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
@@ -283,18 +284,38 @@ const expressionSource = (
 
 const transferEffects = (
   fn: FunctionDefinitionNode, contract: ContractNode,
+  serializeCondition: (expression: ExpressionNode) => ExternalCallExpression | undefined,
 ): readonly { transferIndex: number; recipient: ReturnType<typeof expressionSource>;
-  amount: ReturnType<typeof expressionSource>; callOption?: 'value' }[] => {
+  amount: ReturnType<typeof expressionSource>; callOption?: 'value';
+  condition?: ExternalCallExpression | null }[] => {
   const transfers: {
     transferIndex: number; recipient: ExpressionNode; amount: ExpressionNode; callOption?: 'value';
+    condition?: ExpressionNode; conditionUnsupported?: true;
   }[] = [];
   const seen = new Set<object>();
-  const visit = (value: unknown): void => {
+  const combine = (
+    outer: ExpressionNode | undefined, inner: ExpressionNode, negate: boolean,
+  ): ExpressionNode => {
+    const selected = negate ? new UnaryOpNode(UnaryOperator.NOT, inner) : inner;
+    return outer ? new BinaryOpNode(outer, BinaryOperator.AND, selected) : selected;
+  };
+  const visit = (value: unknown, condition?: ExpressionNode, conditionUnsupported = false): void => {
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
-    if (value instanceof TransferStatementNode) transfers.push({
-      transferIndex: value.transferIndex, recipient: value.lockingBytecode, amount: value.amount,
-    });
+    if (value instanceof TransferStatementNode && !value.runtimeLoopTransfer) {
+      transfers.push({
+        transferIndex: value.transferIndex, recipient: value.lockingBytecode, amount: value.amount,
+        condition, ...(conditionUnsupported && { conditionUnsupported: true }),
+      });
+      return;
+    }
+    if (value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode) {
+      transfers.push({
+        transferIndex: value.transferIndex, recipient: value.addressExpression, amount: value.amount,
+        condition, ...(conditionUnsupported && { conditionUnsupported: true }),
+      });
+      return;
+    }
     if (value instanceof ExternalFunctionCallNode && value.interfaceName === '__raw__'
       && value.callOptions?.value
       && value.valueTransferIndex >= 0) {
@@ -305,13 +326,39 @@ const transferEffects = (
         callOption: 'value',
       });
     }
+    if (value instanceof BranchNode) {
+      visit(value.condition, condition, conditionUnsupported);
+      visit(value.ifBlock, combine(condition, value.condition, false), conditionUnsupported);
+      if (value.elseBlock) {
+        visit(value.elseBlock, combine(condition, value.condition, true), conditionUnsupported);
+      }
+      return;
+    }
+    if (value instanceof SwitchNode) {
+      let defaultCondition = condition;
+      for (const arm of value.cases) {
+        const matches = new BinaryOpNode(value.expression, BinaryOperator.EQ, arm.value);
+        visit(arm.body, combine(condition, matches, false), conditionUnsupported);
+        const misses = new BinaryOpNode(value.expression, BinaryOperator.NE, arm.value);
+        defaultCondition = defaultCondition
+          ? new BinaryOpNode(defaultCondition, BinaryOperator.AND, misses) : misses;
+      }
+      if (value.defaultCase) visit(value.defaultCase, defaultCondition, conditionUnsupported);
+      return;
+    }
+    if (value instanceof TryCatchNode) {
+      // A transfer in the try arm is active only when the foreign operation succeeds. That result is not part
+      // of the fixed predicate language, so never publish it as unconditional metadata.
+      visit(value.tryBlock, condition, true);
+      return;
+    }
     for (const [key, child] of Object.entries(value)) {
       if ([
         'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
         'referencedContract', 'stateVariable', 'collection',
       ].includes(key)) continue;
-      if (child instanceof Node) visit(child);
-      else if (Array.isArray(child)) for (const item of child) visit(item);
+      if (child instanceof Node) visit(child, condition, conditionUnsupported);
+      else if (Array.isArray(child)) for (const item of child) visit(item, condition, conditionUnsupported);
     }
   };
   visit(fn.body);
@@ -320,6 +367,9 @@ const transferEffects = (
     recipient: expressionSource(transfer.recipient, fn, contract),
     amount: expressionSource(transfer.amount, fn, contract),
     ...(transfer.callOption && { callOption: transfer.callOption }),
+    ...(transfer.conditionUnsupported
+      ? { condition: null }
+      : transfer.condition ? { condition: serializeCondition(transfer.condition) ?? null } : {}),
   }));
 };
 
@@ -1093,6 +1143,42 @@ function buildFunctionAbiMetadata(
     }
     return undefined;
   };
+  // Fixed-effect planning happens before the handler executes. Publish only predicates whose value is immutable
+  // for the whole invocation (arguments and literals composed by pure operators). A state read or unresolved
+  // local could observe a value written earlier in the same handler, which the SDK's authenticated pre-state
+  // snapshot must never guess.
+  const serializeFixedEffectCondition = (
+    expression: ExpressionNode,
+  ): ExternalCallExpression | undefined => {
+    let observesMutableLocal = false;
+    const inspect = (candidate: Node, seen = new Set<Node>()): void => {
+      if (seen.has(candidate)) return;
+      seen.add(candidate);
+      if (candidate instanceof IdentifierNode && reassignedLocals.has(candidate.name)) {
+        observesMutableLocal = true;
+        return;
+      }
+      for (const [key, value] of Object.entries(candidate)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'type'].includes(key)) continue;
+        if (value instanceof Node) inspect(value, seen);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) inspect(item, seen);
+      }
+    };
+    inspect(expression);
+    if (observesMutableLocal) return undefined;
+    const serialized = serializeCondition(expression);
+    const immutable = (candidate: ExternalCallExpression | undefined): boolean => {
+      if (!candidate) return false;
+      if (candidate.kind === 'state' || candidate.kind === 'stateAccess'
+        || candidate.kind === 'identifier' || candidate.kind === 'externalCall') return false;
+      if (candidate.source && !['forward', 'literal'].includes(candidate.source.kind)) return false;
+      return [candidate.target, candidate.expression, candidate.left, candidate.right,
+        candidate.condition, candidate.ifTrue, candidate.ifFalse, ...(candidate.args ?? [])]
+        .every((child) => child === undefined || immutable(child));
+    };
+    return immutable(serialized) ? serialized : undefined;
+  };
   const runtimeLoopEvents = (() => {
     if (!func.runtimeLoopEvents?.length || !func.body) return [];
     const sites = new Map<number, EmitStatementNode[]>();
@@ -1346,7 +1432,7 @@ function buildFunctionAbiMetadata(
     ...(tokenContainerTransferSites.length > 0 && { tokenContainerTransferSites }),
     ...(func.transferInfos && func.transferInfos.length > 0 && {
       transferCount: func.transferInfos.length,
-      ...(contract && { transfers: transferEffects(func, contract) }),
+      ...(contract && { transfers: transferEffects(func, contract, serializeFixedEffectCondition) }),
     }),
     ...(func.deployTargets && func.deployTargets.length > 0 && {
       deployTargets: func.deployTargets.map((dt) => ({

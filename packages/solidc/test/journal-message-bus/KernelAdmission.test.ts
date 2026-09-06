@@ -2272,7 +2272,7 @@ describe('required kernel admission', () => {
     expect(overloads.every((candidate) => candidate.childDeployments?.length === 1)).toBe(true);
   });
 
-  it('admits typed row-local constructor and CREATE2 recipes while keeping post-new calls fenced', () => {
+  it('admits typed row-local constructor, CREATE2, and straight-line post-new recipes', () => {
     const computed = compileString(`contract Unit(bytes32 seed) { int marker; function configure(int next) public {
         this.marker = next; require(true);
       } }
@@ -2288,7 +2288,15 @@ describe('required kernel admission', () => {
         }
       }`, KERNEL);
     expect(computed.messageBus?.handlers.find((candidate) => candidate.name === 'folded'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{
+          hasFoldedChildCall: true,
+          genesisState: {
+            fields: [{ name: 'marker', value: { kind: 'handlerInput', inputIndex: 1 } }],
+          },
+        }],
+      });
     expect(computed.messageBus?.handlers.find((candidate) => candidate.name === 'computed'))
       .toMatchObject({
         eligible: true,
@@ -5017,23 +5025,27 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('admits Solidity address.transfer as a satoshi-transfer effect', () => {
+  it('fences Solidity address.transfer until its graph recipient lowering is sound', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C {
         function denied(address payable to) public { to.transfer(1); require(true); }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
-  it('admits Solidity address.send as a satoshi-transfer effect', () => {
+  it('fences Solidity address.send until its graph recipient lowering is sound', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C {
         function denied(address payable to) public { require(to.send(1)); }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
@@ -5046,7 +5058,39 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.transfers).toEqual([
+      expect.objectContaining({
+        transferIndex: 0,
+        recipient: { kind: 'forward', paramIndex: 1 },
+        condition: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      }),
+      expect.objectContaining({
+        transferIndex: 0,
+        recipient: { kind: 'forward', paramIndex: 2 },
+        condition: {
+          kind: 'unary', operator: '!',
+          expression: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+        },
+      }),
+    ]);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
+  });
+
+  it('publishes name-neutral fixed recipes for Solidity address transfer forms', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract C {
+        function pay(bool useSend, address payable to, uint amount) public {
+          if (useSend) require(to.send(amount)); else to.transfer(amount);
+          require(true);
+        }
+      }`, { ...KERNEL, solidityImportCompat: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.abi.find((handler) => handler.name === 'pay')?.transfers).toEqual([
+      expect.objectContaining({ transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 } }),
+      expect.objectContaining({ transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 } }),
+    ]);
   });
 
   it('reserves a conditional graph BCH transfer as a balanced false-path slot', () => {
@@ -5073,6 +5117,40 @@ describe('required kernel admission', () => {
     ]);
   });
 
+  it('rejects a fixed transfer predicate which can observe an earlier state write', () => {
+    const artifact = compileString(`contract C() {
+      bool enabled;
+      function pay(bytes recipient, int amount) public {
+        this.enabled = true;
+        if (this.enabled) this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers).toEqual([
+      expect.objectContaining({ transferIndex: 0, condition: null }),
+    ]);
+  });
+
+  it('rejects a fixed transfer predicate through a mutable local alias', () => {
+    const artifact = compileString(`contract C() {
+      function pay(bool take, bytes recipient, int amount) public {
+        bool selected = take;
+        selected = !selected;
+        if (selected) this.transfer(recipient, amount);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'pay')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
+    expect(artifact.abi.find((candidate) => candidate.name === 'pay')?.transfers).toEqual([
+      expect.objectContaining({ transferIndex: 0, condition: null }),
+    ]);
+  });
+
   it('admits heterogeneous graph BCH widths with a narrower conditional handler', () => {
     const artifact = compileString(`contract C() {
       int calls;
@@ -5094,14 +5172,16 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true, transfers: [{ transferIndex: 0 }, { transferIndex: 1 }] });
   });
 
-  it('admits address.transfer inside an internal helper', () => {
+  it('fences address.transfer reached through an internal helper', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract C {
         function _pay(address payable to) internal { to.transfer(1); }
         function denied(address payable to) public { _pay(to); require(true); }
         function control() public { require(true); }
       }`, { ...KERNEL, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')?.eligible).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LAYOUT',
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 

@@ -1211,7 +1211,8 @@ export class AtomicMessageBusComposition {
         function: supplied.functionName,
         args: supplied.args,
         callMode: invocation.callMode,
-        ...(invocation.caller !== null && handler?.usesMsgValue && { msgValue: 0n }),
+        ...(invocation.caller !== null && handler?.usesMsgValue
+          && (handler.transfers?.length ?? 0) === 0 && { msgValue: 0n }),
         logicalCaller: invocation.caller === null
           ? rootCaller : hexToBin(graphInvocationCallerIdentity(
             plan.participants, plan.invocations, invocation,
@@ -1489,6 +1490,11 @@ export class AtomicMessageBusComposition {
             && childStateLayoutDigest(childArtifact.stateLayout) !== site.childLayoutDigest.toLowerCase()) {
             throw new Error(
               `messageBus: registered child artifact '${site.contractName}' does not match deployment state layout`,
+            );
+          }
+          if (site.hasFoldedChildCall && !site.genesisState) {
+            throw new Error(
+              `messageBus: folded child initialization at site ${site.siteIndex} has no authenticated genesis state`,
             );
           }
           if (site.genesisState) {
@@ -1802,6 +1808,7 @@ export class AtomicMessageBusComposition {
         // absolute coordinate space. Forward/literal BCH transfers are already compiler-authenticated in the
         // invocation manifest, so materialize them directly instead of asking the isolated probe to discover an
         // output at a shifted absolute index. The final covenant still verifies recipient and amount in-place.
+        const occupiedCompilerTransferSlots = new Set<number>();
         for (const invocationIndex of participant.invocations) {
           const invocation = plan.invocations[invocationIndex];
           const handler = participant.artifact.messageBus?.handlers.find(
@@ -1809,6 +1816,14 @@ export class AtomicMessageBusComposition {
           );
           const supplied = descriptors[invocationIndex];
           for (const transfer of handler?.transfers ?? []) {
+            if (transfer.condition === null) {
+              throw new Error(
+                `messageBus: BCH transfer predicate in '${invocation.function}' is not a canonical recipe`,
+              );
+            }
+            if (transfer.condition !== undefined && !(await contract._resolveCompilerEffectPredicate(
+              transfer.condition, supplied.args, handler!, supplied.executionArtifact ?? participant.artifact,
+            ))) continue;
             const recipient = transfer.recipient.kind === 'forward'
               && transfer.recipient.paramIndex !== undefined
               ? supplied.args[transfer.recipient.paramIndex] : undefined;
@@ -1831,6 +1846,12 @@ export class AtomicMessageBusComposition {
               || !transferSlots.some((slot) => slot.slotIndex === outputSlot)) {
               throw new Error(`messageBus: BCH transfer in '${invocation.function}' has no canonical slot`);
             }
+            if (occupiedCompilerTransferSlots.has(outputSlot)) {
+              throw new Error(
+                `messageBus: multiple BCH transfer recipes selected physical slot ${outputSlot}`,
+              );
+            }
+            occupiedCompilerTransferSlots.add(outputSlot);
             localCall._withCompilerTransfer(outputSlot, recipient, amountValue);
           }
         }
@@ -2324,10 +2345,9 @@ export class AtomicMessageBusComposition {
             args: row.argsHex,
             result: row.resultHex,
           })),
-          userKeyWitnesses: plan.participants.flatMap((participant) => participant.routeInputs
+          keyWitnesses: plan.participants.flatMap((participant) => participant.routeInputs
             .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'))
             .map((input, index) => ({ input, value: participant.batch.routeWitnesses[index] }))
-            .filter(({ input }) => input.name.includes('__message_bus_key_users_'))
             .map(({ input, value }) => ({
               participant: participant.participant,
               name: input.name,

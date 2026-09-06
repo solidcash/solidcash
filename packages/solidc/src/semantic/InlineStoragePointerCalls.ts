@@ -780,6 +780,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       cloned.body, collectionPaths, flattenedStructPaths,
     ) as BlockNode;
     this.walk(cloned.body, (node) => {
+      if ((callee.isLibraryFunction || callee.name.includes('.'))
+        && (node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode)) {
+        node.inlinedLibraryEffect = true;
+      }
+      if ((callee.isLibraryFunction || callee.name.includes('.')) && node instanceof FunctionCallNode
+        && /\.(?:transfer|send)$/.test(node.identifier.name)) node.inlinedLibraryEffect = true;
       if (node instanceof VariableDefinitionNode && !rename.has(node.name) && !subs.has(node.name)) {
         rename.set(node.name, `${PREFIX}${n}_${node.name}`);
       } else if (node instanceof TupleAssignmentNode) {

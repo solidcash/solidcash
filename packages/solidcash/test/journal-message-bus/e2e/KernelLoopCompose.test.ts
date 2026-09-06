@@ -1785,6 +1785,40 @@ describe('kernel loop message-bus compose', () => {
       .resolves.toBeDefined();
   }, 180_000);
 
+  it('executes an invariant-key mapping assignment in a recursion fold', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelInvariantEntryRecursiveFold() {
+      mapping(int => int) values;
+      function sum(int remaining, int key) public returns (int) {
+        this.values[key] = remaining + 10;
+        if (remaining == 0) return 0;
+        return remaining + sum(remaining - 1, key);
+      }
+      function check(int key, int expectedEntry) public {
+        require(this.values[key] == expectedEntry);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'sum', args: [3n, 7n] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.check(7n, 10n).send())
+      .resolves.toBeDefined();
+  }, 180_000);
+
   it('executes an unnamed tail-recursive result through one row', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelUnnamedTailRecursion() {

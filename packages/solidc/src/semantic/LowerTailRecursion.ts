@@ -2,7 +2,8 @@ import {
   ArrayAccessNode, ArrayPopNode, ArrayPushNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode,
   BranchNode, BreakNode, ContractNode,
   DeleteStateNode, DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
-  ExpressionNode, NewArrayNode, Node, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
+  ExpressionNode, MappingAccessNode, MappingAssignNode, MappingFieldAssignNode,
+  NewArrayNode, Node, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
   StateAccessNode, StateAssignNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -254,11 +255,34 @@ export default class LowerTailRecursion extends AstTraversal {
     const variants: RecursiveFoldShape['variants'] = [];
     let sawFold = false;
     const scalarStateWrites = new Set<string>();
+    let writesMapping = false;
+    let readsMapping = false;
     const continuationSteps: RecursiveFoldStep[] = [];
     let valid = true;
+    const invariantParameters = new Map(group.map((fn) => {
+      const invariant = new Set(fn.parameters.map((parameter) => parameter.name));
+      this.walkNodes(fn.body!, (candidate) => {
+        if (!(candidate instanceof FunctionCallNode) || !names.has(candidate.identifier.name)) return;
+        fn.parameters.forEach((parameter, index) => {
+          const argument = candidate.parameters[index];
+          if (!(argument instanceof IdentifierNode) || argument.name !== parameter.name) {
+            invariant.delete(parameter.name);
+          }
+        });
+      });
+      return [fn, invariant] as const;
+    }));
+    const stableMappingKey = (expression: ExpressionNode, stableNames: ReadonlySet<string>): boolean => {
+      let stable = true;
+      this.walkNodes(expression, (candidate) => {
+        if (candidate instanceof IdentifierNode && !stableNames.has(candidate.name)) stable = false;
+        if (candidate instanceof StateAccessNode || candidate instanceof ArrayAccessNode
+          || candidate instanceof FunctionCallNode) stable = false;
+      });
+      return stable;
+    };
     const persistentEffects = new Set([
       'StateArrayPushNode', 'StateArrayPopNode', 'StateArrayAssignNode', 'StateArrayDeleteNode',
-      'MappingAssignNode', 'MappingFieldAssignNode',
       'MappingDeleteNode', 'EmitStatementNode', 'ExternalFunctionCallNode', 'LowLevelCallNode',
       'LowLevelCallStatementNode', 'TransferStatementNode', 'AddressTransferStatementNode',
       'AddressSendExpressionNode', 'TokenContainerMethodStatementNode', 'SelfdestructStatementNode',
@@ -270,6 +294,11 @@ export default class LowerTailRecursion extends AstTraversal {
         if (candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode) {
           if (!this.scalarStateNames.has(candidate.name)) valid = false;
           else scalarStateWrites.add(candidate.name);
+        } else if (candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode) {
+          writesMapping = true;
+          if (!candidate.keys.every((key) => stableMappingKey(key, invariantParameters.get(fn)!))) valid = false;
+        } else if (candidate instanceof MappingAccessNode) {
+          readsMapping = true;
         } else if (persistentEffects.has(candidate.constructor.name)) valid = false;
         if (candidate instanceof FunctionCallNode && !names.has(candidate.identifier.name)
           && !this.structConstructorNames.has(candidate.identifier.name)) valid = false;
@@ -309,6 +338,16 @@ export default class LowerTailRecursion extends AstTraversal {
             && scalarStateWrites.has(candidate.name)) valid = false;
         }));
     }
+    // A recursive-first continuation is evaluated after deeper frames in source. Mapping writes can change an
+    // authenticated entry during those frames, so do not capture any such operand before descent until mapping
+    // dependency analysis can prove the operand disjoint.
+    if (writesMapping && continuationSteps.some((step) => step.kind === 'binary' && step.recursiveOnLeft)) {
+      valid = false;
+    }
+    // The invariant-entry cache currently publishes write-only recursion loops. A read in the same generated
+    // loop still asks codegen for an unallocated entry input slot, so retain the recursive-state path until the
+    // cache can bind read/write recursion as one authenticated transition.
+    if (writesMapping && readsMapping) valid = false;
     return valid && sawFold ? { variants } : undefined;
   }
 

@@ -427,6 +427,68 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBe(true);
   });
 
+  it('lowers an invariant-key mapping assignment in a recursion fold', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function sum(int n, int key) public returns (int) {
+        this.values[key] = n;
+        if (n == 0) return 0;
+        return n + sum(n - 1, key);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
+  });
+
+  it('keeps an invariant-key mapping delete out of recursion-fold lowering', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function sum(int n, int key) public returns (int) {
+        delete this.values[key];
+        if (n == 0) return 0;
+        return n + sum(n - 1, key);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps a mapping read/write transition out of recursion-fold lowering', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function sum(int n, int key) public returns (int) {
+        this.values[key] = n;
+        if (n == 0) return this.values[key];
+        return n + sum(n - 1, key);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps a varying-key mapping write out of recursion-fold lowering', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function sum(int n) public returns (int) {
+        this.values[n] = n;
+        if (n == 0) return 0;
+        return n + sum(n - 1);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('keeps a deferred dynamic-state dependency on the recursive-state path', () => {
     const artifact = compileString(`contract C() {
       string note;

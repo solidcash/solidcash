@@ -473,6 +473,23 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('keeps an invariant mapping-field update out of recursion-fold lowering', () => {
+    const artifact = compileString(`contract C() {
+      struct Record { int value; bool active; }
+      mapping(int => Record) values;
+      function sum(int n, int key) public returns (int) {
+        this.values[key].value = n;
+        if (n == 0) return 0;
+        return n + sum(n - 1, key);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('keeps a varying-key mapping write out of recursion-fold lowering', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;

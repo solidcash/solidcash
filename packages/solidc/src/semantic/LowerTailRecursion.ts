@@ -2,7 +2,7 @@ import {
   ArrayAccessNode, ArrayPopNode, ArrayPushNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode,
   BranchNode, BreakNode, ContractNode,
   DeleteStateNode, DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
-  ExpressionNode, MappingAccessNode, MappingAssignNode, MappingFieldAssignNode,
+  ExpressionNode, MappingAccessNode, MappingAssignNode,
   NewArrayNode, Node, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
   StateAccessNode, StateAssignNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
@@ -283,7 +283,8 @@ export default class LowerTailRecursion extends AstTraversal {
     };
     const persistentEffects = new Set([
       'StateArrayPushNode', 'StateArrayPopNode', 'StateArrayAssignNode', 'StateArrayDeleteNode',
-      'MappingDeleteNode', 'EmitStatementNode', 'ExternalFunctionCallNode', 'LowLevelCallNode',
+      'MappingDeleteNode', 'MappingFieldAssignNode',
+      'EmitStatementNode', 'ExternalFunctionCallNode', 'LowLevelCallNode',
       'LowLevelCallStatementNode', 'TransferStatementNode', 'AddressTransferStatementNode',
       'AddressSendExpressionNode', 'TokenContainerMethodStatementNode', 'SelfdestructStatementNode',
       'MethodCallNode', 'MethodCallStatementNode', 'IndirectCallNode', 'InstantiationNode',
@@ -294,7 +295,7 @@ export default class LowerTailRecursion extends AstTraversal {
         if (candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode) {
           if (!this.scalarStateNames.has(candidate.name)) valid = false;
           else scalarStateWrites.add(candidate.name);
-        } else if (candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode) {
+        } else if (candidate instanceof MappingAssignNode) {
           writesMapping = true;
           if (!candidate.keys.every((key) => stableMappingKey(key, invariantParameters.get(fn)!))) valid = false;
         } else if (candidate instanceof MappingAccessNode) {

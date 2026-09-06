@@ -2960,6 +2960,46 @@ describe('kernel counter-key mapping loop compose', () => {
         .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     }
 
+    // The kernel permutation is the sorted physical order of the iterations which reach the write, not a
+    // caller-selected skip set. Exercise the row-loop route itself (the direct call above has a one-dimensional
+    // witness) and then replace only its detached witness: omitting a reached odd iteration or adding a continued
+    // even iteration must fail the covenant's source-predicate replay/selection-length proof.
+    const routedContinue = StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'writeOdds', args: [6n] }]);
+    const routedContinueBuilder = await routedContinue.build();
+    const routedContinueInputIndex = routedContinueBuilder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker
+      && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    const routedContinueInput = routedContinueBuilder.inputs[routedContinueInputIndex];
+    if (!routedContinueInput || !('params' in routedContinueInput.unlocker)) {
+      throw new Error('routed writeOdds input is missing');
+    }
+    const routedOddsPermutationIndex = artifact.messageBus!.route.inputs.findIndex((input) =>
+      input.name === oddsHandler.inputs[oddsPermutationIndex].name);
+    const routedOddsPermutation = routedContinueInput.unlocker
+      .params[routedOddsPermutationIndex] as bigint[][];
+    expect(routedOddsPermutation).toEqual([[1n, 3n, 5n]]);
+    const routedContinueUnlocker = routedContinueInput.unlocker;
+    const recreateRoutedContinueUnlocker = routedContinueUnlocker.contract.createCompilerRouteUnlocker(
+      routedContinueUnlocker.abiFunction, hexToBin(artifact.messageBus!.route.selector!),
+    );
+    const routedContinueVm = createVirtualMachineBch2026ForProvider(provider);
+    for (const hostile of [[1n, 3n], [0n, 1n, 3n, 5n]]) {
+      const hostileParams = [...routedContinueUnlocker.params];
+      hostileParams[routedOddsPermutationIndex] = [hostile];
+      routedContinueBuilder.inputs[routedContinueInputIndex].unlocker =
+        recreateRoutedContinueUnlocker(...hostileParams);
+      const transaction = routedContinueBuilder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(routedContinueBuilder.inputs);
+      expect(routedContinueVm.stateSuccess(routedContinueVm.evaluate({
+        inputIndex: routedContinueInputIndex, sourceOutputs, transaction,
+      })), `hostile continue-domain witness ${hostile.join(',')}`).not.toBe(true);
+    }
+    routedContinueBuilder.inputs[routedContinueInputIndex].unlocker = routedContinueUnlocker;
+    await expect(routedContinue.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+
     const whileContinued = StatefulContract.withCategory(inner, categoryId)
       .batch([{ function: 'writeWhileSplit', args: [6n] }]);
     const whileBuilder = await whileContinued.build();

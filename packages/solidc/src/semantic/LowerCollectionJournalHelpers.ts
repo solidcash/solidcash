@@ -13,6 +13,7 @@ import {
   ArrayPopNode,
   ArrayPushNode,
   ContractNode,
+  DeleteStateNode,
   EmitStatementNode,
   ExpressionNode,
   FunctionCallNode,
@@ -32,6 +33,12 @@ import {
   RequireNode,
   ReturnNode,
   SourceFileNode,
+  StateAccessNode,
+  StateArrayAssignNode,
+  StateArrayDeleteNode,
+  StateArrayPopNode,
+  StateArrayPushNode,
+  StateAssignNode,
   StatementNode,
   TupleAssignmentNode,
   VariableDefinitionNode,
@@ -40,7 +47,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { BinaryOperator } from '../ast/Operator.js';
-import { IntType, Type } from '@solidcash/utils';
+import { ArrayType, IntType, Type } from '@solidcash/utils';
 
 interface Candidate {
   fn: FunctionDefinitionNode;
@@ -64,8 +71,21 @@ interface JournalEntry {
 interface MultiCandidate {
   fn: FunctionDefinitionNode;
   entries: JournalEntry[];
+  /** Chunk-backed state arrays threaded through the same row invocation as the entry journals. */
+  dynamicEntries: DynamicJournalEntry[];
   /** Source ABI results carried after the pending journal values in the helper's combined return tuple. */
   resultTypes: Type[];
+}
+
+interface DynamicJournalEntry {
+  state: string;
+  journalName: string;
+  valueType: ArrayType;
+}
+
+interface ActiveDynamicCache {
+  entry: DynamicJournalEntry;
+  name: string;
 }
 
 /** Strip the compiler's synthetic batch-clone prefix so a diagnostic names the handler the user wrote. */
@@ -147,8 +167,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   private current?: Candidate;
   private currentMulti?: MultiCandidate;
   private activeMultiCaches = new Map<FunctionDefinitionNode, ActiveMultiCache>();
+  /** One whole-array value per route, shared by every selected row touching that state array. */
+  private activeDynamicCaches = new Map<string, ActiveDynamicCache>();
   /** Route dispatchers load only selected-row caches; selected compiler handlers already own their resources. */
   private lazyMultiCaches = true;
+
+  constructor(private readonly enablePooledDynamicArrays = false) { super(); }
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -157,6 +181,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     const collections = new Map(node.collections.map((collection) => [collection.name, collection]));
+    const dynamicArrays = new Map(node.stateVariables.filter((state) =>
+      state.isDynamic && state.type instanceof ArrayType)
+      .map((state) => [state.name, state.type as ArrayType]));
     const constructorCalls = new Set<string>();
     this.walk(node.constructorDef?.body, (candidate) => {
       if (candidate instanceof FunctionCallNode) constructorCalls.add(candidate.identifier.name);
@@ -258,6 +285,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         if (candidate instanceof FunctionCallNode && candidate.identifier.name === fn.name) unsupported = true;
         if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
           || candidate instanceof MappingDeleteNode) {
+          if (candidate instanceof MappingAccessNode && dynamicArrays.has(candidate.name)) return;
           if (runtimeLoopSlots.has(candidate.entrySlotIndex) || isRuntimeCounterEntry(candidate)) return;
           if ((candidate instanceof MappingAccessNode && candidate.arrayIndex)
             || (candidate instanceof MappingAssignNode && candidate.arrayIndex)) unsupported = true;
@@ -309,6 +337,29 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         }
       }
       if (unsupported || distinct.size === 0) continue;
+      // A compiler-owned row clone can combine an independently indexed chunk-backed state array with its
+      // fixed entry journal. A raw StateArrayAssign inside the OP_INVOKE body would re-open the persisted array
+      // for every row, so row two observes the transaction pre-state and the final pending write no longer
+      // matches the source-order execution. Thread the whole array value through the clone beside the entry
+      // tuple instead. The wrapper installs one shared cache and flushes it once after the row loop.
+      const dynamicNames = new Set<string>();
+      if (this.enablePooledDynamicArrays && fn.forceCollectionJournalPool) {
+        this.walk(fn.body, (candidate) => {
+          if ((candidate instanceof StateAccessNode || candidate instanceof StateAssignNode
+            || candidate instanceof DeleteStateNode
+            || candidate instanceof StateArrayAssignNode || candidate instanceof StateArrayDeleteNode
+            || candidate instanceof StateArrayPushNode || candidate instanceof StateArrayPopNode)
+            && dynamicArrays.has(candidate.name)) dynamicNames.add(candidate.name);
+          if (candidate instanceof MappingAccessNode && dynamicArrays.has(candidate.name)) {
+            dynamicNames.add(candidate.name);
+          }
+        });
+      }
+      const dynamicEntries: DynamicJournalEntry[] = [...dynamicNames].map((state, index) => ({
+        state,
+        journalName: `__dcj_${fn.name}_${index}`,
+        valueType: dynamicArrays.get(state)!,
+      }));
       // Every journalled entry value leaves through the single exit this pass appends below. A bare early
       // `return;` in the helper leaves before that exit, so it cannot carry the pending values back. The
       // wrapper-level check further down already rejects an early return in the CALLER for the same reason;
@@ -327,7 +378,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       }
       if (distinct.size > 1 || fn.forceCollectionJournalPool) {
         this.multiCandidates.set(`${fn.name}/${fn.parameters.length}`, {
-          fn, entries: [...distinct.values()], resultTypes: pooledTerminalResult ? [...fn.returnTypes] : [],
+          fn, entries: [...distinct.values()], dynamicEntries,
+          resultTypes: pooledTerminalResult ? [...fn.returnTypes] : [],
         });
         continue;
       }
@@ -362,13 +414,18 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.activeMultiCaches = this.currentMulti
         ? new Map()
         : this.prepareMultiCaches(fn.body, new Set(fn.parameters.map(({ name }) => name)));
+      this.activeDynamicCaches = this.currentMulti
+        ? new Map()
+        : this.prepareDynamicCaches(fn.body);
       this.lazyMultiCaches = !(fn.graphEmissionHandler || fn.forceCollectionJournalPool);
       fn.body = this.rewriteBlock(fn.body);
       if (this.activeMultiCaches.size > 0) this.installMultiCaches(fn.body);
+      if (this.activeDynamicCaches.size > 0) this.installDynamicCaches(fn.body);
     }
     this.current = undefined;
     this.currentMulti = undefined;
     this.activeMultiCaches = new Map();
+    this.activeDynamicCaches = new Map();
     this.lazyMultiCaches = true;
 
     // Turn each selected helper into a state-independent value handler. It is
@@ -392,8 +449,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     for (const candidate of this.multiCandidates.values()) {
       const sourceReturn = candidate.resultTypes.length > 0
         ? candidate.fn.body!.statements!.pop() as ReturnNode : undefined;
-      candidate.fn.parameters.unshift(...candidate.entries.map((entry) =>
-        this.at(new ParameterNode(entry.valueType, entry.journalName, []), candidate.fn)));
+      candidate.fn.parameters.unshift(
+        ...candidate.dynamicEntries.map((entry) =>
+          this.at(new ParameterNode(entry.valueType, entry.journalName, []), candidate.fn)),
+        ...candidate.entries.map((entry) =>
+          this.at(new ParameterNode(entry.valueType, entry.journalName, []), candidate.fn)));
       for (const parameter of candidate.fn.parameters) {
         // Graph handlers may use an ordinary argument again inside a conditional effect after the journal
         // assignment (OZ ERC20 `_approve`: assign `value`, then emit Approval(..., value)). The pre-lowering
@@ -407,6 +467,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         }
       }
       candidate.fn.returnTypes = [
+        ...candidate.dynamicEntries.map((entry) => entry.valueType),
         ...candidate.entries.map((entry) => entry.valueType),
         ...candidate.resultTypes,
       ];
@@ -414,6 +475,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const body = candidate.fn.body!;
       body.statements ??= [];
       body.statements.push(this.at(new ReturnNode([
+        ...candidate.dynamicEntries.map((entry) =>
+          this.at(new IdentifierNode(entry.journalName), candidate.fn)),
         ...candidate.entries.map((entry) => this.at(new IdentifierNode(entry.journalName), candidate.fn)),
         ...(sourceReturn?.expressions ?? []),
       ]), sourceReturn ?? candidate.fn));
@@ -490,6 +553,48 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (target && target.resultTypes.length === statement.elements.length) {
         return this.rewriteMultiResultCall(statement.tuple, target, statement.elements);
       }
+    }
+    if (this.currentMulti && statement instanceof StateArrayAssignNode) {
+      const entry = this.dynamicEntry(statement.name);
+      if (entry) return this.at(new ArrayAssignNode(
+        entry.journalName,
+        this.rewriteExpression(statement.index),
+        this.rewriteExpression(statement.value),
+      ), statement);
+    }
+    if (this.currentMulti && statement instanceof StateArrayDeleteNode) {
+      const entry = this.dynamicEntry(statement.name);
+      if (entry) return this.at(new ArrayDeleteNode(
+        entry.journalName, this.rewriteExpression(statement.index),
+      ), statement);
+    }
+    if (this.currentMulti && statement instanceof StateArrayPushNode) {
+      const entry = this.dynamicEntry(statement.name);
+      if (entry) {
+        const push = this.at(new ArrayPushNode(
+          entry.journalName, this.rewriteExpression(statement.value),
+        ), statement);
+        push.noArg = statement.noArg;
+        return push;
+      }
+    }
+    if (this.currentMulti && statement instanceof StateArrayPopNode) {
+      const entry = this.dynamicEntry(statement.name);
+      if (entry) return this.at(new ArrayPopNode(entry.journalName), statement);
+    }
+    if (this.currentMulti && statement instanceof StateAssignNode) {
+      const entry = this.dynamicEntry(statement.name);
+      if (entry) return this.at(new AssignNode(
+        this.at(new IdentifierNode(entry.journalName), statement),
+        this.rewriteExpression(statement.expression),
+      ), statement);
+    }
+    if (this.currentMulti && statement instanceof DeleteStateNode) {
+      const entry = this.dynamicEntry(statement.name);
+      if (entry) return this.at(new AssignNode(
+        this.at(new IdentifierNode(entry.journalName), statement),
+        createDefaultValueExpression(entry.valueType, statement.location),
+      ), statement);
     }
     if (this.currentMulti && statement instanceof MappingAssignNode) {
       const entry = this.multiEntry(statement.name, statement.keys);
@@ -610,6 +715,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   }
 
   visitMappingAccess(node: MappingAccessNode): Node {
+    const dynamic = this.dynamicEntry(node.name);
+    if (dynamic) {
+      let read: ExpressionNode = this.at(new IdentifierNode(dynamic.journalName), node);
+      for (const key of node.keys) {
+        read = this.at(new ArrayAccessNode(read, this.rewriteExpression(key)), node);
+      }
+      return read;
+    }
     const multi = this.multiEntry(node.name, node.keys);
     if (multi) return this.at(new IdentifierNode(multi.journalName), node);
     if (this.current && node.name === this.current.collection) {
@@ -712,6 +825,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     return super.visitArrayDelete(node);
   }
 
+  visitStateAccess(node: StateAccessNode): Node {
+    const dynamic = this.dynamicEntry(node.name);
+    if (dynamic) return this.at(new IdentifierNode(dynamic.journalName), node);
+    return super.visitStateAccess(node);
+  }
+
   private rewriteExpression(expression: ExpressionNode): ExpressionNode {
     return this.visit(expression) as ExpressionNode;
   }
@@ -763,9 +882,15 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const callLocals = cache.calls.get(call);
     if (!callLocals) throw new Error(`Missing call-scoped collection journal for '${target.fn.name}'`);
     const originalArgs = call.parameters.map((argument) => cloneNode(argument) as ExpressionNode);
+    const dynamicLocals = target.dynamicEntries.map((entry) => {
+      const dynamicCache = this.activeDynamicCaches.get(entry.state);
+      if (!dynamicCache) throw new Error(`Missing dynamic-state journal for '${target.fn.name}:${entry.state}'`);
+      return dynamicCache;
+    });
     const invoked = this.at(new FunctionCallNode(
       this.at(new IdentifierNode(call.identifier.name), call),
       [
+        ...dynamicLocals.map(({ name }) => this.at(new IdentifierNode(name), call)),
         ...callLocals.map(({ local, runtimeValueName }) =>
           this.at(new IdentifierNode(runtimeValueName ?? local.name), call)),
         ...originalArgs,
@@ -831,7 +956,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const loads = this.lazyMultiCaches ? ordinaryLocals.map(loadLocal) : [];
     // A void pooled handler touching one entry still returns a single journal value, not a one-element tuple.
     let capture: StatementNode;
-    if (callLocals.length === 1 && resultElements.length === 0) {
+    if (dynamicLocals.length === 0 && callLocals.length === 1 && resultElements.length === 0) {
       capture = this.at(new AssignNode(
         this.at(new IdentifierNode(
           callLocals[0].runtimeValueName ?? callLocals[0].local.name,
@@ -840,6 +965,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     } else {
       capture = this.at(new TupleAssignmentNode(
         [
+          ...dynamicLocals.map(({ entry, name }) => ({
+            name, type: entry.valueType, existing: true,
+          })),
           ...callLocals.map(({ entry, local, mutates, runtimeValueName }) => ({
             name: runtimeValueName ?? local.name, type: entry.valueType, existing: true,
             // A read-only helper returns the cache solely because every pooled helper shares one physical tuple
@@ -993,6 +1121,39 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       }, (_key, value) => typeof value === 'bigint' ? value.toString() : value));
     }
     return caches;
+  }
+
+  private prepareDynamicCaches(body: BlockNode): Map<string, ActiveDynamicCache> {
+    const caches = new Map<string, ActiveDynamicCache>();
+    this.walk(body, (node) => {
+      if (!(node instanceof FunctionCallNode)) return;
+      const target = this.resolveMulti(node.identifier.name, node.parameters.length);
+      if (!target) return;
+      for (const entry of target.dynamicEntries) {
+        if (!caches.has(entry.state)) caches.set(entry.state, {
+          entry,
+          name: `__dcj_cache_${entry.state}`,
+        });
+      }
+    });
+    return caches;
+  }
+
+  private installDynamicCaches(body: BlockNode): void {
+    const caches = [...this.activeDynamicCaches.values()];
+    if (caches.length === 0) return;
+    const declarations = caches.map(({ entry, name }) => this.at(new VariableDefinitionNode(
+      entry.valueType, [], name, this.at(new StateAccessNode(entry.state), body),
+    ), body));
+    const writes = caches.map(({ entry, name }) => this.at(new StateAssignNode(
+      entry.state, this.at(new IdentifierNode(name), body),
+    ), body));
+    const statements = body.statements ?? [];
+    const tail: StatementNode[] = [];
+    if (statements.length > 0 && statements[statements.length - 1] instanceof RequireNode) {
+      tail.unshift(statements.pop()!);
+    }
+    body.statements = [...declarations, ...statements, ...writes, ...tail];
   }
 
   /**
@@ -1163,6 +1324,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       && entry.keyParameters.length === keys.length
       && keys.every((key, index) =>
         key instanceof IdentifierNode && key.name === entry.keyParameters[index]));
+  }
+
+  private dynamicEntry(state: string): DynamicJournalEntry | undefined {
+    return this.currentMulti?.dynamicEntries.find((entry) => entry.state === state);
   }
 
   private flattenArrayAccess(node: ArrayAccessNode): {

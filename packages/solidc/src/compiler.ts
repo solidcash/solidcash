@@ -7874,7 +7874,9 @@ function compileResolvedAst(
     ast = ast.accept(new LowerDynamicStateJournalHelpers()) as Ast;
   }
   if (needsCollectionJournal && !cheapAdmissionCodegen) {
-    ast = ast.accept(new LowerCollectionJournalHelpers()) as Ast;
+    ast = ast.accept(new LowerCollectionJournalHelpers(
+      mergedCompilerOptions.messageBusKernel === true,
+    )) as Ast;
   }
 
   // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
@@ -9916,7 +9918,9 @@ function compileReferencedContracts(
       compilerOptions.solidityImportCompat ?? false,
     )) as Ast;
     singleAst = singleAst.accept(new LowerDynamicStateJournalHelpers()) as Ast;
-    singleAst = singleAst.accept(new LowerCollectionJournalHelpers()) as Ast;
+    singleAst = singleAst.accept(new LowerCollectionJournalHelpers(
+      compilerOptions.messageBusKernel === true,
+    )) as Ast;
     singleAst = singleAst.accept(new InlineStoragePointerCalls(compilerOptions.solidityImportCompat ?? false)) as Ast;
     singleAst = singleAst.accept(new InlineMappingReturnFunctions()) as Ast;
     singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;

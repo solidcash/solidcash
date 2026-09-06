@@ -78,6 +78,7 @@ import {
   bytecodeToScript,
   scriptToAsm,
   childStateLayoutDigest,
+  validateChildDeploymentGenesisState,
 } from '@solidcash/utils';
 import {
   RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
@@ -858,7 +859,10 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   childArtifact?: T;                         // child artifact; else resolved via factory.registerChild()
   childConstructorArgs?: ConstructorArgument[]; // else derived from the deploy args (new C(param) mapping)
   childSalt?: Uint8Array;                    // create2 salt; else derived from the recorded new C{salt}() mapping
-  childInitialState?: Record<string, StateValueType>; // optional initial state for child
+  /** Optional initial values for fields the constructor descriptor does not authenticate. Attempts to override
+   * authenticated constructor fields are rejected; non-default values for other fields must still satisfy the
+   * factory's on-chain genesis covenant. */
+  childInitialState?: Record<string, StateValueType>;
   // `new Child{value: x}()` transfers x sats from the factory's OWN satoshi container (the value source, like any
   // scash value transfer - EVM-faithful "from the deployer's balance") to the child's address. deployFrom then
   // co-spends the factory container (input) + recreates it (output, minus x) + adds the x-sat transfer output.
@@ -6186,6 +6190,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       throw new Error(
         `Child artifact '${childArtifact.contractName}' does not match the compiler-authenticated deployment state layout.`,
       );
+    }
+    if (deployTarget?.genesisState) {
+      try {
+        validateChildDeploymentGenesisState(childLayout, deployTarget.genesisState);
+      } catch (error) {
+        throw new Error(
+          `Invalid constructor genesis for child '${childArtifact.contractName}': `
+          + `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      for (const field of deployTarget.genesisState.fields) {
+        if (Object.prototype.hasOwnProperty.call(options.childInitialState ?? {}, field.name)) {
+          throw new Error(
+            `childInitialState cannot override authenticated constructor-genesis field '${field.name}'`,
+          );
+        }
+      }
     }
 
     // Compute child's initial state commitments

@@ -1,4 +1,6 @@
-import { AbiFunction, Artifact, StateLayout, StateVariableInfo, StructDefinitionInfo } from './artifact.js';
+import {
+  AbiFunction, Artifact, ChildDeploymentGenesisStateAbi, StateLayout, StateVariableInfo, StructDefinitionInfo,
+} from './artifact.js';
 import { bytecodeToAsm, Op, Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
@@ -29,6 +31,44 @@ export function childStateLayoutDigest(layout: Pick<StateLayout, 'variables' | '
       })),
   };
   return binToHex(sha256(utf8ToBin(JSON.stringify(canonical))));
+}
+
+/** Fail closed unless every published constructor-genesis field names one exact physical layout coordinate. */
+export function validateChildDeploymentGenesisState(
+  layout: Pick<StateLayout, 'variables'>,
+  genesisState: ChildDeploymentGenesisStateAbi,
+): void {
+  if (genesisState.kind !== 'constructor') {
+    throw new Error(`unsupported child-genesis descriptor kind '${String(genesisState.kind)}'`);
+  }
+  const seenNames = new Set<string>();
+  const seenCoordinates = new Set<string>();
+  for (const field of genesisState.fields) {
+    if (seenNames.has(field.name)) {
+      throw new Error(`duplicate constructor-genesis field '${field.name}'`);
+    }
+    seenNames.add(field.name);
+    const coordinate = `${field.nftIndex}:${field.fieldIndex}`;
+    if (seenCoordinates.has(coordinate)) {
+      throw new Error(`duplicate constructor-genesis coordinate ${coordinate}`);
+    }
+    seenCoordinates.add(coordinate);
+    const variable = layout.variables.find((candidate) => candidate.name === field.name);
+    if (!variable) throw new Error(`unknown constructor-genesis field '${field.name}'`);
+    if (variable.nftIndex !== field.nftIndex || variable.fieldIndex !== field.fieldIndex) {
+      throw new Error(
+        `constructor-genesis field '${field.name}' has coordinate ${coordinate}, expected `
+        + `${variable.nftIndex}:${variable.fieldIndex}`,
+      );
+    }
+    const expectedType = variable.type.replace(/address payable/g, 'address');
+    const actualType = field.type.replace(/address payable/g, 'address');
+    if (actualType !== expectedType) {
+      throw new Error(
+        `constructor-genesis field '${field.name}' has type '${field.type}', expected '${variable.type}'`,
+      );
+    }
+  }
 }
 
 /** A primitive pushdata value: integer, boolean, byte array, or string (UTF-8 encoded). */

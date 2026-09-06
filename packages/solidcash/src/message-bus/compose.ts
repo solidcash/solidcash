@@ -6,6 +6,7 @@ import {
   buildInitialStateCommitments, bytecodeToScript, scriptToAsm, BytesType, FixedType, IntType, parseTypeStrict,
   PrimitiveType,
   childStateLayoutDigest,
+  validateChildDeploymentGenesisState,
 } from '@solidcash/utils';
 import type { Artifact, ChildDeploymentValueRecipe } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
@@ -1379,6 +1380,16 @@ export class AtomicMessageBusComposition {
             throw new Error(
               `messageBus: registered child artifact '${site.contractName}' does not match deployment state layout`,
             );
+          }
+          if (site.genesisState) {
+            try {
+              validateChildDeploymentGenesisState(childArtifact.stateLayout, site.genesisState);
+            } catch (error) {
+              throw new Error(
+                `messageBus: invalid constructor genesis for '${site.contractName}': `
+                + `${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
           }
           const inputTypes = handler?.inputs.map((input) => input.type) ?? [];
           const solidityAbi = artifactUsesSolidityAbi(participant.artifact);

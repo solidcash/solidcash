@@ -38,6 +38,7 @@ import {
   scriptToBytecode,
   StructDefinitionInfo,
 } from '../src/index.js';
+import { validateChildDeploymentGenesisState } from '../src/state.ts';
 import { binToHex, hexToBin, lockingBytecodeToCashAddress, utf8ToBin } from '@bitauth/libauth';
 
 describe('getDefaultStateValue', () => {
@@ -217,6 +218,40 @@ describe('buildPushdataCommitment / parsePushdataCommitment', () => {
     const parsed = parsePushdataCommitment(commitment, layout, 0);
     expect(parsed.counter).toBe(0n);
     expect(parsed.label).toEqual(new Uint8Array(4));
+  });
+});
+
+describe('validateChildDeploymentGenesisState', () => {
+  const layout: StateLayout = {
+    variables: [
+      { name: 'count', type: 'int256', nftIndex: 0, fieldIndex: 0 },
+      { name: 'tag', type: 'bytes4', nftIndex: 1, fieldIndex: 0 },
+    ],
+    dataNftCount: 2,
+    commitmentLimit: 128,
+  };
+  const field = {
+    name: 'count', type: 'int256', nftIndex: 0, fieldIndex: 0,
+    value: { kind: 'intLiteral', value: '1', resultType: 'int256' } as const,
+  };
+  const validate = (fields: readonly any[]): void => validateChildDeploymentGenesisState(
+    layout, { kind: 'constructor', fields },
+  );
+
+  it('accepts fields which exactly identify their registered layout coordinates', () => {
+    expect(() => validate([field])).not.toThrow();
+  });
+
+  it('rejects duplicate fields and duplicate physical coordinates', () => {
+    expect(() => validate([field, field])).toThrow(/duplicate constructor-genesis field 'count'/);
+    expect(() => validate([field, { ...field, name: 'tag', type: 'bytes4' }]))
+      .toThrow(/duplicate constructor-genesis coordinate 0:0/);
+  });
+
+  it('rejects unknown fields, wrong coordinates, and wrong types', () => {
+    expect(() => validate([{ ...field, name: 'missing' }])).toThrow(/unknown constructor-genesis field/);
+    expect(() => validate([{ ...field, nftIndex: 1 }])).toThrow(/coordinate 1:0, expected 0:0/);
+    expect(() => validate([{ ...field, type: 'uint256' }])).toThrow(/type 'uint256', expected 'int256'/);
   });
 });
 

@@ -22621,7 +22621,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitKernelJournalRecordIdentitySelect(loc: SingleLocationData): void {
     this.emitKernelJournalRecordExtract(loc);
-    // A record identity is its authenticated collection hash and slot: skip tag/flags, retain bytes [2, 54).
+    // Preserve the complete carrier below its authenticated collection-hash/slot identity. The caller reuses it
+    // for physical-body authentication rather than scanning the variable record array a second time.
+    this.emit(Op.OP_DUP, loc);
     this.emit(encodeInt(54n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
   }
@@ -22667,9 +22669,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
     // The variable-element scan fails closed if the untrusted record ordinal is out of range.
     this.emitKernelJournalRecordIdentitySelect(loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); // target identity, encoded records
-    this.emit(Op.OP_FROMALTSTACK, loc); // target identity, encoded records, target slot
-    this.emit(Op.OP_FROMALTSTACK, loc); // target identity, encoded records, target slot, header
+    this.emit(Op.OP_FROMALTSTACK, loc); // target carrier, identity, encoded records
+    this.emit(Op.OP_FROMALTSTACK, loc); // target carrier, identity, encoded records, target slot
+    this.emit(Op.OP_FROMALTSTACK, loc); // target carrier, identity, encoded records, target slot, header
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_TOALTSTACK, loc);
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc); // retain header for predecessor and tail
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_SWAP, loc);
@@ -22677,13 +22680,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ROT, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
 
-    // Preserve one record-vector copy below the header retained on altstack. The ordinary predecessor check
-    // consumes the remaining copy; this one is reserved for authenticating the complete physical record body.
+    // Keep the target carrier below the actual predecessor while the predecessor identity is checked.
     this.emit(Op.OP_FROMALTSTACK, loc); // retained header
+    this.emit(Op.OP_FROMALTSTACK, loc); // target carrier
     this.emit(Op.OP_FROMALTSTACK, loc); // actual predecessor
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_TOALTSTACK, loc);
-    this.emit(Op.OP_TOALTSTACK, loc); // actual predecessor above the body copy
-    this.emit(Op.OP_TOALTSTACK, loc); // retained header remains topmost
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // target carrier
+    this.emit(Op.OP_TOALTSTACK, loc); // actual predecessor
+    this.emit(Op.OP_TOALTSTACK, loc); // retained header
 
     // A canonical access without a predecessor must match the empty actual-predecessor marker. Otherwise select
     // the predecessor record and bind its slot byte-for-byte to the proof identity used by the row loop.
@@ -22693,35 +22696,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
     this.emitKernelJournalRecordIdentitySelect(loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); // predecessor identity, header
+    this.emit(Op.OP_FROMALTSTACK, loc); // predecessor carrier, identity, header
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); // predecessor identity, header, collection, actual predecessor slot
+    this.emit(Op.OP_FROMALTSTACK, loc); // predecessor carrier, identity, header, collection, actual predecessor slot
     this.emit(Op.OP_CAT, loc); this.emit(Op.OP_ROT, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // predecessor carrier; retain header
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_FROMALTSTACK, loc); // header
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_TOALTSTACK, loc); // no predecessor carrier; retain header
     this.emit(Op.OP_ENDIF, loc);
 
     // Exactly one access authenticates each physical pre-state record. Bits 4 and 5 select the target or
     // predecessor carrier respectively; compare that carrier's complete slot|next|value body with the commitment
     // read from the actual co-spent NFT. A pending/cached path publishes neither bit and must carry no commitment.
-    this.emit(Op.OP_FROMALTSTACK, loc); // encoded records reserved above
+    this.emit(Op.OP_FROMALTSTACK, loc); // predecessor carrier
+    this.emit(Op.OP_FROMALTSTACK, loc); // target carrier
     this.emit(Op.OP_FROMALTSTACK, loc); // physical commitment
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_TOALTSTACK, loc);
-    // The low-nibble topology already determines which ordinal can own the physical proof.
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_4, loc); this.emit(Op.OP_AND, loc);
+    // A predecessor carrier exists only on the absent-target proof branch; use that validated carrier to choose
+    // the physical record without consulting an untrusted access-program bit.
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); // predecessor ordinal
+    this.emit(Op.OP_DROP, loc); // predecessor carrier
     this.emit(Op.OP_ELSE, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); // target ordinal
+    this.emit(Op.OP_NIP, loc); // target carrier
     this.emit(Op.OP_ENDIF, loc);
-    this.emitKernelJournalRecordExtract(loc);
     // A physical input may only authenticate a carrier explicitly marked as authenticated, never a synthetic
     // record with a coincidentally identical body.
     this.emit(Op.OP_DUP, loc);
@@ -22731,10 +22737,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(22n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
     this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_DROP, loc); // empty commitment, encoded records
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_2DROP, loc); // empty commitment and unused carriers
     this.emit(Op.OP_ENDIF, loc);
-    // Bind the access program's topology state to the branch which actually ran. At this point the decoded flags
-    // are the fourth item beneath the retained header, while the compiler-derived expectation is atop altstack.
+    // Bind the access program's topology state to the branch which actually ran.
     this.emit(Op.OP_FROMALTSTACK, loc);
     this.emit(encodeInt(4n), loc); this.emit(Op.OP_ROLL, loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc);

@@ -2292,6 +2292,61 @@ describe('required kernel admission', () => {
       });
   });
 
+  it('admits mixed straight-line and conditional child sites with independent exact spans', () => {
+    const artifact = compileString(`contract Compact() { int marker; }
+      contract Wide() { int first; int second; int third; }
+      contract Coordinator() {
+        function materialize(bool take) public {
+          Compact first = new Compact();
+          if (take) { Wide second = new Wide(); }
+          require(true);
+        }
+      }`, { ...KERNEL, commitmentLimit: 16, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize');
+    expect(handler).toMatchObject({
+      eligible: true,
+      childDeployments: [
+        { siteIndex: 0, occurrence: 'once', spanOffset: 0, spanWidth: 2 },
+        {
+          siteIndex: 1, occurrence: 'conditional', spanOffset: 2, spanWidth: 4,
+          activation: { kind: 'handlerInput', inputIndex: 0, resultType: 'bool' },
+        },
+      ],
+    });
+    expect(handler?.childDeployments?.[0]).not.toHaveProperty('activation');
+  });
+
+  it('admits if/else-if child sites with mutually exclusive source activation recipes', () => {
+    const artifact = compileString(`contract Left() { int marker; }
+      contract Middle() { int first; int second; }
+      contract Right() { int first; int second; int third; }
+      contract Coordinator() {
+        function materialize(int choice) public {
+          if (choice == 0) { Left child = new Left(); }
+          else if (choice == 1) { Middle child = new Middle(); }
+          else { Right child = new Right(); }
+          require(true);
+        }
+      }`, { ...KERNEL, commitmentLimit: 16, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.childDeployments?.map((site) => ({
+      siteIndex: site.siteIndex,
+      occurrence: site.occurrence,
+      spanOffset: site.spanOffset,
+      spanWidth: site.spanWidth,
+      activation: site.activation,
+    }))).toEqual([
+      expect.objectContaining({ siteIndex: 0, occurrence: 'conditional', spanOffset: 0, spanWidth: 2 }),
+      expect.objectContaining({ siteIndex: 1, occurrence: 'conditional', spanOffset: 2, spanWidth: 3 }),
+      expect.objectContaining({ siteIndex: 2, occurrence: 'conditional', spanOffset: 5, spanWidth: 4 }),
+    ]);
+    const activations = handler!.childDeployments!.map((site) => JSON.stringify(site.activation));
+    expect(new Set(activations).size).toBe(3);
+    expect(activations[1]).toContain('&&');
+    expect(activations[2]).toContain('!');
+  });
+
   it('keeps straight-line, conditional, and loop child sites as separate topology occurrences', () => {
     const artifact = compileString(`contract Unit() { int marker; }
       contract Coordinator() {

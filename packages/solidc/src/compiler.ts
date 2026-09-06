@@ -2565,7 +2565,7 @@ function synthesizeMessageBusRoute(
   const kernelDeploymentHandlers = new Set<FunctionDefinitionNode>();
   const kernelDeploymentSiteCounts = new Map<FunctionDefinitionNode, number>();
   const kernelDeploymentSiteWidths = new Map<FunctionDefinitionNode, number[]>();
-  const kernelConditionalDeploymentHandlers = new Set<FunctionDefinitionNode>();
+  const kernelConditionalDeploymentSites = new Map<FunctionDefinitionNode, boolean[]>();
   const logicalMsgSenderHandlers = new Set<FunctionDefinitionNode>();
   const localEffectFrameHandlers = new Set<FunctionDefinitionNode>();
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
@@ -3994,6 +3994,7 @@ function synthesizeMessageBusRoute(
       let deploymentStateInitializationUnsupported = false;
       let deploymentRecipeUnsupported = false;
       const deploymentSiteWidths: number[] = [];
+      const deploymentSiteConditional: boolean[] = [];
       const deployedLocalNames = new Set<string>();
       const lockingBytecode = new Set<string>(Object.values(Class));
       const statefulChildren = new Map(ast.importedContracts.filter((child) =>
@@ -4027,10 +4028,6 @@ function synthesizeMessageBusRoute(
             if (statefulChildren.has(node.identifier.name)) {
               deploySites += 1;
               const child = statefulChildren.get(node.identifier.name)!;
-              const dataNftCount = packedStateDataNftCount(
-                child, compilerOptions.commitmentLimit ?? 128,
-              );
-              deploymentSiteWidths.push(1 + dataNftCount);
               if (!analyzed?.supported) deploymentRecipeUnsupported = true;
               if (node.hasFoldedChildCall) {
                 deploymentStateInitializationUnsupported = true;
@@ -4114,9 +4111,15 @@ function synthesizeMessageBusRoute(
             deployedLocalNames.add(value.name);
           }
           if (value instanceof InstantiationNode && !lockingBytecode.has(value.identifier.name)
-            && control !== 'straight') {
-            deployUnderControlFlow = true;
-            if (statefulChildren.has(value.identifier.name)) {
+            && statefulChildren.has(value.identifier.name)) {
+            const conditional = control !== 'straight';
+            const child = statefulChildren.get(value.identifier.name)!;
+            deploymentSiteWidths.push(1 + packedStateDataNftCount(
+              child, compilerOptions.commitmentLimit ?? 128,
+            ));
+            deploymentSiteConditional.push(conditional);
+            if (conditional) {
+              deployUnderControlFlow = true;
               if (control === 'loop') deploymentInLoop = true;
               else conditionalDeploySites += 1;
               if (!activationSupported) conditionalActivationUnsupported = true;
@@ -4169,7 +4172,7 @@ function synthesizeMessageBusRoute(
         && !hasAnotherValueTransfer && valueDeployTransferIndex === 0
         && !deploymentValueRecipeUnsupported);
       const supportedConditionalDeploy = !deployUnderControlFlow
-        || (deploySites === 1 && conditionalDeploySites === 1 && !deploymentInLoop
+        || (conditionalDeploySites >= 1 && !deploymentInLoop
           && !conditionalActivationUnsupported && !deployWithValue);
       const kernelDeploySupported = deploys && deploySites >= 1 && !unsupportedInstantiation
         && supportedConditionalDeploy && supportedValueDeploy && !deploymentStateInitializationUnsupported
@@ -4178,7 +4181,7 @@ function synthesizeMessageBusRoute(
         kernelDeploymentHandlers.add(fn);
         kernelDeploymentSiteCounts.set(fn, deploySites);
         kernelDeploymentSiteWidths.set(fn, deploymentSiteWidths);
-        if (conditionalDeploySites > 0) kernelConditionalDeploymentHandlers.add(fn);
+        kernelConditionalDeploymentSites.set(fn, deploymentSiteConditional);
       }
       // Expression keys (including nested `if` / helper-inlined writes), parameter-array loops, literal
       // `new T[](N)` locals (N<=64, unrolled to scalar writes), and canonical counter-keyed `m[i]` / `m[k][i]`
@@ -4674,15 +4677,15 @@ function synthesizeMessageBusRoute(
     .filter((fn) => kernelDeploymentHandlers.has(fn))
     .map((fn) => {
       const siteCount = kernelDeploymentSiteCounts.get(fn) ?? 0;
-      const conditional = kernelConditionalDeploymentHandlers.has(fn);
       const widths = kernelDeploymentSiteWidths.get(fn) ?? [];
+      const conditionalSites = kernelConditionalDeploymentSites.get(fn) ?? [];
       let spanOffset = 0;
       const pairs = Array.from({ length: siteCount }, (_, siteIndex) => {
         const width = widths[siteIndex] ?? 0;
         const offset = spanOffset;
         spanOffset += width;
         return `activeDeploymentParents = bytes.concat(activeDeploymentParents,
-                toPaddedBytes(row, 2), toPaddedBytes(${siteIndex}, 2), bytes1(${conditional ? 1 : 0}),
+                toPaddedBytes(row, 2), toPaddedBytes(${siteIndex}, 2), bytes1(${conditionalSites[siteIndex] ? 1 : 0}),
                 toPaddedBytes(activeFixedSize - ${routeMaximumRows * kernelDeploymentFrameWidth}
                   + consumedLocalRows * ${kernelDeploymentFrameWidth} + ${offset}, 2),
                 toPaddedBytes(${width}, 2));`;

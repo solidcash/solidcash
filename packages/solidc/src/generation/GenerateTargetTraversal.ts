@@ -578,18 +578,25 @@ function countInstantiationDeploySites(body: Node | undefined): number {
 }
 
 // Survey a function's deploy sites: how many, whether any is CONDITIONAL (inside a branch/switch/loop), and the
-// set of distinct child contract names. Drives the multi-site inline-deploy decision: 2+ sites with a
-// conditional one need a FUNCTION-LEVEL runtime deploy counter, and (for the SDK to derive N children of one
-// type + a uniform counter*stride) they must all deploy the SAME contract.
+// exact source-order span geometry. Drives both multi-site inline-deploy indexing and independent kernel
+// reached-site settlement from one name-neutral survey.
 function surveyFunctionDeploys(
   body: Node | undefined,
-): { count: number; hasConditional: boolean; hasLoopValue: boolean; contractNames: Set<string> } {
-  const contractNames = new Set<string>();
+): {
+    count: number;
+    hasConditional: boolean;
+    hasLoopValue: boolean;
+    sites: Array<{ node: InstantiationNode; conditional: boolean; spanOffset: number; spanWidth: number }>;
+  } {
+  const sites: Array<{
+    node: InstantiationNode; conditional: boolean; spanOffset: number; spanWidth: number;
+  }> = [];
+  let spanOffset = 0;
   let count = 0;
   let hasConditional = false;
   let hasLoopValue = false;
   if (!body) return {
-    count, hasConditional, hasLoopValue, contractNames,
+    count, hasConditional, hasLoopValue, sites,
   };
   const seen = new WeakSet<object>();
   const walk = (n: unknown, inCond: boolean, inLoop: boolean): void => {
@@ -598,9 +605,11 @@ function surveyFunctionDeploys(
     seen.add(n);
     if (n instanceof InstantiationNode && n.referencedContract) {
       count += 1;
-      contractNames.add(n.referencedContract.name);
       if (inCond) hasConditional = true;
       if (inLoop && hasEffectiveCallValue(n.callOptions?.value)) hasLoopValue = true;
+      const spanWidth = 1 + n.deployedDataNftCount;
+      sites.push({ node: n, conditional: inCond, spanOffset, spanWidth });
+      spanOffset += spanWidth;
     }
     // for-loops desugar to while before codegen, so ForNode never appears here.
     const childCond = inCond
@@ -618,7 +627,7 @@ function surveyFunctionDeploys(
     false,
   );
   return {
-    count, hasConditional, hasLoopValue, contractNames,
+    count, hasConditional, hasLoopValue, sites,
   };
 }
 
@@ -1352,6 +1361,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // (a runtime deploy counter) are a follow-up and still hit ConditionalDeployError.
   private functionDeploySiteCount: number = 0;      // count of `new C()` deploy sites in the current function
   private inlineDeployCounterName: string = '__deploy_counter'; // runtime deploys-fired-so-far (loop deploys)
+  private inlineDeployOutputOffsetName: string = '__deploy_output_offset';
   private inlineDeployActive: boolean = false;      // a loop/function deploy counter is live on the stack
   private entryLoopCounterName: string = '(loop_entry_counter)'; // entries-written-so-far (loop mapping write)
   private entryLoopAddrName: string = '(loop_entry_addr)';       // loop-invariant entry NFT P2SH32 (precomputed)
@@ -1421,8 +1431,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private ecrecoverLoopCounterName: string = '(loop_ecrecover_counter)'; // recovery pairs read-so-far (dynamic loop)
   private ecrecoverLoopActive: boolean = false;     // a dynamic ecrecover loop counter is live on the stack
-  private functionMultiSiteDeploy: boolean = false; // 2+ same-contract sites w/ a conditional: function counter
+  private functionMultiSiteDeploy: boolean = false; // 2+ sites w/ a conditional: function counters
   private graphConditionalDeployReachActive: boolean = false;
+
+  private functionDeploySites: Array<{
+    node: InstantiationNode; conditional: boolean; spanOffset: number; spanWidth: number;
+  }> = [];
+
   // A loop `new C{value:V}()` interleaves its transfer per child; the satoshi container that sources them is
   // conserved (input <= output + counter*V) after the loop's OP_UNTIL. V must be loop-invariant (typically a
   // literal). Stashed by emitInlineDeployVerification, consumed + cleared by the loop visitor.
@@ -1798,9 +1813,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(width)), locationData);
       this.emit(Op.OP_MUL, locationData);
     }
-    const siteOffset = this.pendingDeploys.slice(0, deployIndex).reduce(
-      (offset, deploy) => offset + 1 + deploy.node.deployedDataNftCount, 0,
-    );
+    const siteOffset = this.graphConditionalDeployReachActive
+      ? (this.functionDeploySites[deployIndex]?.spanOffset ?? 0)
+      : this.pendingDeploys.slice(0, deployIndex).reduce(
+        (offset, deploy) => offset + 1 + deploy.node.deployedDataNftCount, 0,
+      );
     const inputOffset = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0) + siteOffset;
     if (inputOffset > 0) {
       this.emit(encodeInt(BigInt(inputOffset)), locationData);
@@ -1867,40 +1884,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** A selected conditional handler owns its row window whether or not source control flow executes `new`. */
   private emitConditionalGraphDeployBinding(node: FunctionDefinitionNode): void {
     const frame = node.graphEffectFrame;
-    if (!this.graphConditionalDeployReachActive || !frame || (frame.deployWidth ?? 0) === 0
-      || !this.stack.includes(GRAPH_CONDITIONAL_DEPLOY_REACHED)) return;
+    if (!this.graphConditionalDeployReachActive || !frame || (frame.deployWidth ?? 0) === 0) return;
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
-    const ownedWidth = surveyFunctionDeploys(node.body).count === 1
-      ? this.functionDeploySiteCount > 0
-        ? (() => {
-          let width = 0;
-          const seen = new WeakSet<object>();
-          const scan = (value: unknown): void => {
-            if (Array.isArray(value)) { value.forEach(scan); return; }
-            if (!(value instanceof Node) || seen.has(value)) return;
-            seen.add(value);
-            if (value instanceof InstantiationNode && value.referencedContract) {
-              width += 1 + value.deployedDataNftCount;
-            }
-            for (const [key, child] of Object.entries(value)) {
-              if (!['referencedContract', 'resolvedFunction', 'definition', 'symbolTable'].includes(key)) scan(child);
-            }
-          };
-          scan(node.body);
-          return width;
-        })() : 0
-      : 0;
-    this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_CONDITIONAL_DEPLOY_REACHED))), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_IF, locationData);
+    for (const [siteIndex, site] of this.functionDeploySites.entries()) {
+      const reachedName = `${GRAPH_CONDITIONAL_DEPLOY_REACHED}_${siteIndex}`;
+      if (!this.stack.includes(reachedName)) continue;
+      this.emit(encodeInt(BigInt(this.getStackIndex(reachedName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_NOT, locationData);
+      this.emit(Op.OP_IF, locationData);
+      for (let member = 0; member < site.spanWidth; member += 1) {
+        this.emitInactiveGraphDeployOutput(site.spanOffset + member, locationData);
+      }
+      this.emit(Op.OP_ENDIF, locationData);
+    }
+    const ownedWidth = this.functionDeploySites.reduce((width, site) => width + site.spanWidth, 0);
     for (let member = ownedWidth; member < frame.deployWidth!; member += 1) {
       this.emitInactiveGraphDeployOutput(member, locationData);
     }
-    this.emit(Op.OP_ELSE, locationData);
-    for (let member = 0; member < frame.deployWidth!; member += 1) {
-      this.emitInactiveGraphDeployOutput(member, locationData);
-    }
-    this.emit(Op.OP_ENDIF, locationData);
   }
 
   /**
@@ -5176,7 +5177,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.deployCounter = 0;
     const deploySurvey = node.hasContractInstantiation === false
       ? {
-        count: 0, hasConditional: false, hasLoopValue: false, contractNames: new Set<string>(),
+        count: 0, hasConditional: false, hasLoopValue: false, sites: [],
       }
       : surveyFunctionDeploys(node.body);
     // A loop `new C{value: V}()` has transfer metadata because it spends the satoshi container, but it has no
@@ -5185,15 +5186,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // loop visitor owns both the interleaved output checks and aggregate container conservation for this shape.
     this.transferInfos = deploySurvey.hasLoopValue ? [] : node.transferInfos ?? [];
     this.functionDeploySiteCount = deploySurvey.count;
+    this.functionDeploySites = deploySurvey.sites;
     this.graphConditionalDeployReachActive = this.isDefineSubTraversal
-      && node.graphEmissionHandler === true && deploySurvey.count === 1 && deploySurvey.hasConditional;
+      && node.graphEmissionHandler === true && deploySurvey.hasConditional;
     // Multi-site inline deploy: 2+ deploy sites with at least one conditional (a not-fired conditional shifts
-    // the trailing output layout, so fixed slots break) AND all the same child contract (uniform counter*stride
-    // + one child type for the SDK to derive). Such a function uses a FUNCTION-LEVEL runtime deploy counter -
-    // every deploy (straight-line, branch, loop) verifies inline against it. Heterogeneous multi-site falls
-    // through to the single-site guard (ConditionalDeployError, fail closed).
-    this.functionMultiSiteDeploy = deploySurvey.count > 1 && deploySurvey.hasConditional
-      && deploySurvey.contractNames.size === 1;
+    // the trailing output layout, so fixed slots break). The direct compact route tracks both fired genesis
+    // count and fired output width; a graph handler instead uses the exact surveyed span of each source site.
+    this.functionMultiSiteDeploy = deploySurvey.count > 1 && deploySurvey.hasConditional;
     this.inlineDeployActive = false;
     this.preAllocatedStateWrites = new Set();
     this.preAllocatedTransfers = new Set();
@@ -5638,6 +5637,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.functionMultiSiteDeploy) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(this.inlineDeployCounterName);
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(this.inlineDeployOutputOffsetName);
       this.inlineDeployActive = true;
     }
 
@@ -5712,8 +5713,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(GRAPH_DEPLOY_SITE);
     }
     if (this.graphConditionalDeployReachActive) {
-      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
-      this.pushToStack(GRAPH_CONDITIONAL_DEPLOY_REACHED);
+      for (const siteIndex of this.functionDeploySites.keys()) {
+        this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+        this.pushToStack(`${GRAPH_CONDITIONAL_DEPLOY_REACHED}_${siteIndex}`);
+      }
     }
     this.graphTokenSiteActive = !this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
       && (node.graphEffectFrame?.tokenTransferWidth ?? 0) > 0;
@@ -5871,11 +5874,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Drop the function-level deploy counter (roll it up from wherever it sits - the body is depth-balanced, so
     // it is on top, but roll by tracked index to be safe). Done before any covenant verification.
     if (this.functionMultiSiteDeploy && this.inlineDeployActive) {
-      const idx = this.getStackIndex(this.inlineDeployCounterName);
-      this.emit(encodeInt(BigInt(idx)), { location: node.location, positionHint: PositionHint.END });
-      this.emit(Op.OP_ROLL, { location: node.location, positionHint: PositionHint.END });
-      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
-      this.removeFromStack(idx);
+      for (const counterName of [this.inlineDeployOutputOffsetName, this.inlineDeployCounterName]) {
+        const idx = this.getStackIndex(counterName);
+        this.emit(encodeInt(BigInt(idx)), { location: node.location, positionHint: PositionHint.END });
+        this.emit(Op.OP_ROLL, { location: node.location, positionHint: PositionHint.END });
+        this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
+        this.removeFromStack(idx);
+      }
       this.inlineDeployActive = false;
     }
 
@@ -13939,8 +13944,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // ADDRESS built here must read the SAME input as the step-4 covenant verification (child k self-pins to
       // input k) - otherwise child k's computed address is pinned to the wrong category and the output check
       // fails. A straight-line deploy keeps the fixed block-layout slot.
-      if (this.scopeDepth > 0) {
-        if (!this.emitGraphDeployInputIndex(0, locationData)) {
+      if (this.graphConditionalDeployReachActive || this.scopeDepth > 0) {
+        const graphSiteIndex = this.graphConditionalDeployReachActive
+          ? this.functionDeploySites.findIndex((site) => site.node === node) : 0;
+        if (this.graphConditionalDeployReachActive && graphSiteIndex < 0) {
+          throw new Error('Conditional graph deployment has no compiler-surveyed source site');
+        }
+        if (!this.emitGraphDeployInputIndex(Math.max(0, graphSiteIndex), locationData)) {
           const slotBase = this.getBlockSlotOffset('deploy', 0);
           const inputBase = slotBase - this.countOutputOnlySlotsBefore(slotBase);
           this.emitMasterInputIndex(locationData);
@@ -14086,9 +14096,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // is live for the whole body, so EVERY deploy site - straight-line, branch, or loop - verifies inline
       // against it (deploys-fired-so-far indexes the genesis input/output). {value:} + deploy is a separate
       // follow-up and still fails closed.
-      if (this.functionMultiSiteDeploy) {
+      if (this.functionMultiSiteDeploy
+        || (this.graphConditionalDeployReachActive && this.functionDeploySiteCount > 1)) {
         if (hasEffectiveCallValue(node.callOptions?.value)) throw new ConditionalDeployError(node);
-        this.emitInlineDeployVerification(node, locationData, true);
+        // Kernel handlers reserve one exact span per finite source occurrence. Unlike the direct-route compact
+        // layout, a skipped branch does not shift later sites, so every site uses its surveyed fixed span.
+        this.emitInlineDeployVerification(node, locationData, !this.graphConditionalDeployReachActive);
         return node;
       }
 
@@ -26046,6 +26059,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loopValueTransfer = useCounter && hasEffectiveCallValue(node.callOptions?.value);
     const stride = 1 + dataNftCount + (loopValueTransfer ? 1 : 0);
     const counterName = this.inlineDeployCounterName;
+    const outputOffsetName = this.inlineDeployOutputOffsetName;
+    const variableStride = useCounter && this.functionMultiSiteDeploy
+      && this.stack.includes(outputOffsetName);
+    const graphSiteIndex = this.graphConditionalDeployReachActive
+      ? this.functionDeploySites.findIndex((site) => site.node === node) : -1;
+    if (this.graphConditionalDeployReachActive && graphSiteIndex < 0) {
+      throw new Error('Conditional graph deployment has no compiler-surveyed source site');
+    }
+    const graphSpanOffset = graphSiteIndex < 0 ? 0 : this.functionDeploySites[graphSiteIndex].spanOffset;
 
     // Child master-LBC is on top (p2sh32 lbc from steps 1-3). Name it so PICK/cleanup find it.
     const masterLbcName = `__ideploy_lbc_${this.deployCounter}`;
@@ -26063,7 +26085,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Child category = the genesis funding input's txhash (its vout must be 0). Input index = masterInputIndex
     // + inputBase [+ counter].
-    const graphInput = !useCounter && this.emitGraphDeployInputIndex(0, locationData);
+    const graphInput = !useCounter && this.emitGraphDeployInputIndex(Math.max(0, graphSiteIndex), locationData);
     if (!graphInput) {
       this.emitMasterInputIndex(locationData);
       if (inputBase > 0) {
@@ -26087,7 +26109,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Push the genesis OUTPUT index for master (extra 0) or data NFT j (extra 1+j): masterInputIndex + slotBase
     // + extra [+ counter*stride]. Pushes 1 untracked value (the caller's next emit consumes it).
     const emitOutIndex = (extra: number): void => {
-      if (!useCounter && this.emitGraphDeployOutputIndex(extra, locationData)) return;
+      if (!useCounter && this.emitGraphDeployOutputIndex(graphSpanOffset + extra, locationData)) return;
       this.emitMasterInputIndex(locationData);
       const off = slotBase + extra;
       if (off > 0) {
@@ -26095,11 +26117,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ADD, locationData);
       }
       if (useCounter) {
-        // one untracked value (the base index) is on the real stack from the add above (or from masterInputIndex
-        // when off == 0), so PICK the counter one deeper.
-        pickCounter(1);
-        this.emit(encodeInt(BigInt(stride)), locationData);
-        this.emit(Op.OP_MUL, locationData);
+        // Heterogeneous finite sites accumulate their exact fired output widths. A homogeneous loop retains
+        // the compact counter*stride geometry.
+        if (variableStride) {
+          this.emit(encodeInt(BigInt(this.getStackIndex(outputOffsetName) + 1)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+        } else {
+          // one untracked value (the base index) is on the real stack from the add above (or from
+          // masterInputIndex when off == 0), so PICK the counter one deeper.
+          pickCounter(1);
+          this.emit(encodeInt(BigInt(stride)), locationData);
+          this.emit(Op.OP_MUL, locationData);
+        }
         this.emit(Op.OP_ADD, locationData);
       }
     };
@@ -26238,13 +26267,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       this.emitReplace(this.getStackIndex(counterName), node);
       this.popFromStack();
+      if (variableStride) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(outputOffsetName))), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack('(value)');
+        this.emit(encodeInt(BigInt(stride)), locationData);
+        this.pushToStack('(value)');
+        this.emit(Op.OP_ADD, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+        this.emitReplace(this.getStackIndex(outputOffsetName), node);
+        this.popFromStack();
+      }
     }
 
-    if (this.graphConditionalDeployReachActive
-      && this.stack.includes(GRAPH_CONDITIONAL_DEPLOY_REACHED)) {
+    const graphReachedName = `${GRAPH_CONDITIONAL_DEPLOY_REACHED}_${graphSiteIndex}`;
+    if (this.graphConditionalDeployReachActive && this.stack.includes(graphReachedName)) {
       this.emit(Op.OP_1, locationData);
       this.pushToStack('(conditional_deploy_reached)');
-      this.emitReplace(this.getStackIndex(GRAPH_CONDITIONAL_DEPLOY_REACHED), node);
+      this.emitReplace(this.getStackIndex(graphReachedName), node);
       this.popFromStack();
     }
 

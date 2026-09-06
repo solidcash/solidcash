@@ -2608,6 +2608,28 @@ function synthesizeMessageBusRoute(
     return unsupported;
   };
   /**
+   * Fixed event slots represent one source occurrence. Counter-loop lowering moves a repeated event into the
+   * runtime stream and publishes its exact repeat source. Any other unbounded loop occurrence (including a
+   * compiler-owned tail-recursion loop) would otherwise reuse one fixed event output for arbitrarily many
+   * commitments. Keep it off the route until it has an exact runtime occurrence plan.
+   */
+  const hasUnplannedRuntimeEvent = (source: FunctionDefinitionNode): boolean => {
+    const closure = collectNamedFunctionClosure(source, byName);
+    let unsupported = false;
+    for (const name of closure) {
+      for (const candidate of byName.get(name) ?? []) {
+        // walkInvocationAst is synchronous; `unsupported` is the accumulator for this closure scan.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        walkInvocationAst(candidate.body, (node) => {
+          if (unsupported || !(node instanceof EmitStatementNode) || node.runtimeLoopEvent !== undefined) return;
+          const occurrence = occurrenceInfoOf(candidate, node);
+          if (occurrence.occurrence === 'loop' && occurrence.maximumOccurrences === undefined) unsupported = true;
+        });
+      }
+    }
+    return unsupported;
+  };
+  /**
    * X187. A method call whose receiver is a CONTRACT/INTERFACE-TYPED VARIABLE - `bar.log()` for `IBar bar` -
    * parses as a NAMESPACED FunctionCall (`bar.log`), never as a MethodCall: `SymbolTableTraversal` turns it into
    * an `ExternalFunctionCallNode` only in the FOLLOWING semantic pass, from the receiver's declared type. The
@@ -3694,6 +3716,10 @@ function synthesizeMessageBusRoute(
       reason = 'atomic-delegate-context-unpreservable';
     } else if (!reason && graphHasLowLevelCall && !authenticatedBoundedLowLevelConsumer) {
       reason = 'opaque-assembly-effects-callManifest-ineligible';
+    } else if (!reason && compilerOptions.messageBusKernel === true
+      && footprint.effects.includes('events')
+      && (!namedClosureShape.acyclic || hasUnplannedRuntimeEvent(fn))) {
+      reason = 'KERNEL_LAYOUT';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
     // Result-consuming effect handlers remain behind their authenticated graph OP_INVOKE frame. X29's

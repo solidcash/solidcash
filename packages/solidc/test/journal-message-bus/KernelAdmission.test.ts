@@ -454,6 +454,56 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((entry) => entry.name === 'left')?.recursiveStateHandler).toBe(true);
   });
 
+  it('refuses a tail-recursive event without an exact runtime occurrence plan', () => {
+    const artifact = compileString(`contract C() {
+      event Hit(int value);
+      function repeat(int n) public {
+        emit Hit(n);
+        if (n > 0) repeat(n - 1);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'repeat'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('refuses an event-bearing recursive closure without an exact occurrence plan', () => {
+    const artifact = compileString(`contract C() {
+      event Hit(int value);
+      function repeat(int n) public {
+        if (n > 0) repeat(n - 1);
+        emit Hit(n);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'repeat'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('refuses a general unbounded event loop without runtime occurrence metadata', () => {
+    const artifact = compileString(`contract C() {
+      event Hit(int value);
+      function repeat(int n) public {
+        while (n > 0) {
+          emit Hit(n);
+          n = n - 1;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'repeat'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('normalizes explicit value and void base-case returns in tail recursion', () => {
     const artifact = compileString(`contract C() {
       int calls;

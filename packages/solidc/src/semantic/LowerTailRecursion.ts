@@ -843,11 +843,12 @@ export default class LowerTailRecursion extends AstTraversal {
 
   /**
    * Recognize the smallest recursion domain which can reuse the authenticated counter-loop journal unchanged:
-   * one or more unconditional sorted-mapping sets/deletes, then `if (counter == 0) return base`, then the sole
-   * recursive edge with `counter - 1`. Pure local definitions may precede or separate those operations, and a
-   * block containing only one mapping operation is transparent. Other parameters must be forwarded unchanged.
-   * The source reaches exactly counter+1 distinct frames, so one shared zero-based rank is a complete physical
-   * permutation domain for every operation while retaining their source order within each frame.
+   * one or more sorted-mapping sets/deletes under replayable pre-recursion branches, then
+   * `if (counter == 0) return base`, then the sole recursive edge with `counter - 1`. Pure local definitions may
+   * precede or separate those operations. Other parameters must be forwarded unchanged. The source reaches
+   * exactly counter+1 distinct frames, so the ordinary counter-loop lowering can publish an authenticated compact
+   * occurrence stream for each branch predicate. Collections remain unique: two conditionally overlapping streams
+   * over one mapping require read-your-writes/collision planning which this rank proof intentionally does not infer.
    */
   private affineMappingRecursion(node: FunctionDefinitionNode): AffineMappingRecursion | undefined {
     if (!node.body || node.returnTypes.length !== 1 || node.customModifiers.length > 0) return undefined;
@@ -855,31 +856,45 @@ export default class LowerTailRecursion extends AstTraversal {
     if (statements.length < 3) return undefined;
     const recursiveReturn = statements.at(-1)!;
     const prefix = statements.slice(0, -1);
-    const transparentWrite = (statement: StatementNode): MappingAssignNode | MappingDeleteNode | undefined => {
-      if (statement instanceof MappingAssignNode || statement instanceof MappingDeleteNode) return statement;
-      if (!(statement instanceof BlockNode) || (statement.statements ?? []).length !== 1) return undefined;
-      const nested = statement.statements![0];
-      return nested instanceof MappingAssignNode || nested instanceof MappingDeleteNode ? nested : undefined;
+    const baseShape = (statement: StatementNode): statement is BranchNode => statement instanceof BranchNode
+      && statement.elseBlock === undefined
+      && (statement.ifBlock.statements ?? []).length === 1
+      && statement.ifBlock.statements![0] instanceof ReturnNode
+      && (statement.ifBlock.statements![0] as ReturnNode).expressions.length === 1;
+    const mappingWrites: Array<MappingAssignNode | MappingDeleteNode> = [];
+    const collectEffectTree = (statement: StatementNode): boolean => {
+      if (statement instanceof MappingAssignNode || statement instanceof MappingDeleteNode) {
+        mappingWrites.push(statement);
+        return true;
+      }
+      if (statement instanceof BlockNode) {
+        return (statement.statements ?? []).every(collectEffectTree);
+      }
+      if (statement instanceof BranchNode) {
+        // This serializer is also the SDK evaluator's accepted expression language. Proving it here prevents a
+        // lowered route from depending on state, loop-carried locals, or an opaque helper merely because the later
+        // counter-loop pass happened to find a mapping write below the branch.
+        if (!this.affineEventExpression(statement.condition, node, '', true)) return false;
+        return collectEffectTree(statement.ifBlock)
+          && (!statement.elseBlock || collectEffectTree(statement.elseBlock));
+      }
+      return false;
     };
-    const writes = prefix.map((statement, index) => ({
-      statement, write: transparentWrite(statement), index,
-    })).filter((candidate) => candidate.write !== undefined);
-    const bases = prefix.map((statement, index) => ({ statement, index })).filter((candidate) =>
-      candidate.statement instanceof BranchNode);
-    if (writes.length === 0 || bases.length !== 1
-      || !prefix.every((statement) => statement instanceof VariableDefinitionNode
-        || writes.some((candidate) => candidate.statement === statement) || statement === bases[0].statement)
-      || writes.some((candidate) => candidate.index >= bases[0].index)) return undefined;
-    const mappingWrites = writes.map((candidate) => candidate.write!);
+    const bases = prefix.map((statement, index) => ({ statement, index }))
+      .filter((candidate) => baseShape(candidate.statement));
+    if (bases.length !== 1) return undefined;
+    for (let index = 0; index < prefix.length; index += 1) {
+      const statement = prefix[index];
+      if (statement === bases[0].statement || statement instanceof VariableDefinitionNode) continue;
+      if (index >= bases[0].index || !collectEffectTree(statement)) return undefined;
+    }
+    if (mappingWrites.length === 0) return undefined;
     const base = bases[0].statement as BranchNode;
     if (mappingWrites.some((write) => !this.sortedMappingNames.has(write.name) || write.keys.length !== 1)
       || new Set(mappingWrites.map((write) => write.name)).size !== mappingWrites.length
-      || !(base instanceof BranchNode) || base.elseBlock !== undefined
       || !(recursiveReturn instanceof ReturnNode) || recursiveReturn.expressions.length !== 1
       || !this.isSelfCall(recursiveReturn.expressions[0], node.name)
-      || (base.ifBlock.statements ?? []).length !== 1
-      || !(base.ifBlock.statements![0] instanceof ReturnNode)
-      || (base.ifBlock.statements![0] as ReturnNode).expressions.length !== 1) return undefined;
+    ) return undefined;
     const call = recursiveReturn.expressions[0];
     const condition = base.condition;
     if (!(condition instanceof BinaryOpNode) || condition.operator !== BinaryOperator.EQ) return undefined;
@@ -902,8 +917,8 @@ export default class LowerTailRecursion extends AstTraversal {
       || !(next.right instanceof IntLiteralNode) || next.right.value !== 1n) return undefined;
     if (call.parameters.some((argument, index) => index !== inductionIndex
       && (!(argument instanceof IdentifierNode) || argument.name !== node.parameters[index].name))) return undefined;
-    // The restricted prefix makes the write unconditional. Reject hidden collection/effect work inside its value
-    // or the base expression; those need a frame trace rather than a rank-only permutation.
+    // The restricted prefix makes branch reachability replayable. Reject hidden collection/effect work inside its
+    // values or the base expression; those need a general authenticated frame trace rather than this rank stream.
     let unsupported = false;
     const allowedWrites = new Set<Node>(mappingWrites);
     this.walkNodes(node.body, (candidate) => {

@@ -32,11 +32,40 @@ describe('affine recursive mapping streams', () => {
     expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(3 * 64 + 3);
   });
 
+  it('publishes replayable predicates for conditional operations, including false frames', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) evenValues;
+      mapping(int => int) highValues;
+      mapping(int => int) alternateValues;
+      function apply(int cursor, int threshold) public returns (int) {
+        if (cursor % 2 == 0) this.evenValues[cursor] = cursor + 20;
+        if (cursor > threshold) {
+          delete this.highValues[cursor + 1];
+        } else {
+          this.alternateValues[cursor - 1] = threshold;
+        }
+        if (cursor == 0) return threshold;
+        return apply(cursor - 1, threshold);
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+
+    expect(handler).toMatchObject({ eligible: true });
+    expect(operationInfo).toHaveLength(3);
+    expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
+      ['evenValues', 'set'], ['highValues', 'delete'], ['alternateValues', 'set'],
+    ]);
+    expect(operationInfo?.every((info) => info.iterationCondition !== undefined)).toBe(true);
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(3 * 64 + 3);
+  });
+
   it.each([
-    ['conditional operation', 'this.left[cursor] = cursor; if (cursor > 2) delete this.right[cursor];'],
     ['non-affine key', 'this.left[cursor] = cursor; delete this.right[cursor * 2];'],
     ['two streams for one collection', 'this.left[cursor] = cursor; delete this.left[cursor + 1];'],
     ['a cross-stream mapping read', 'this.left[cursor] = this.right[cursor]; this.right[cursor + 1] = cursor;'],
+    ['a state-dependent predicate', 'this.left[cursor] = cursor; if (this.right[cursor] > 0) delete this.right[cursor + 1];'],
+    ['a local-dependent predicate', 'int selected = cursor + 1; this.left[cursor] = cursor; if (selected > 2) delete this.right[cursor];'],
   ])('keeps %s outside the affine stream', (_label, operations) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) left;

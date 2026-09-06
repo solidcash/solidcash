@@ -16107,6 +16107,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       collectionHash: Uint8Array;
       executionGroup: string;
       executionOrder: number;
+      /** Source-loop occurrences which consume each compact access. These deliberately remain in selected-frame
+       * order when the key permutation is sorted/reordered: source frame i executes the next physical key, so the
+       * occurrence pairs with the compact access position, not with the key's pre-permutation logical identity. */
+      sourceOccurrences?: number[];
       list: SortedList;
       writes: Array<{ slot: Uint8Array; operation: KernelEntryJournalTopologyOperation }>;
       publish: (encoded: Uint8Array) => void;
@@ -16209,6 +16213,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           return loopArgs[index];
         }) as FunctionArgument[];
       let valueTraceDomain: bigint[] | undefined;
+      let sourceOccurrences: number[] | undefined;
       if (info.condition || info.iterationCondition || info.iterationBreakCondition) {
         if (info.condition) {
           loopPredicateState = await this._hydrateExternalPredicateState(
@@ -16275,6 +16280,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           );
         }
         const permutation: bigint[] = [];
+        const selectedOccurrences: number[] = [];
         if (active) for (let occurrenceIndex = 0; occurrenceIndex < domain.length; occurrenceIndex += 1) {
           const selected = info.iterationCondition ? this._evaluateExternalExpression(
             info.iterationCondition,
@@ -16304,7 +16310,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (typeof breaking !== 'boolean') throw new Error(
             `Could not resolve runtime loop break predicate for '${loopAbiFunction.name}'.`,
           );
-          if (selected) permutation.push(domain[occurrenceIndex]);
+          if (selected) {
+            permutation.push(domain[occurrenceIndex]);
+            selectedOccurrences.push(occurrenceIndex);
+          }
           if (breaking) break;
         }
         permutation.sort((left, right) => {
@@ -16312,6 +16321,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const rightSlot = bytesToSlotValue(keyToSlotMulti([bigIntToVmNumber(right)]));
           return leftSlot < rightSlot ? -1 : leftSlot > rightSlot ? 1 : 0;
         });
+        // Do not sort this beside `permutation`. The generated row loop advances its physical-key cursor only on a
+        // selected source frame: selectedOccurrences[i] therefore consumes permutation[i], even when permutation[i]
+        // originated at another logical rank. Later topology reordering has the same cursor semantics.
+        sourceOccurrences = selectedOccurrences;
         replaceLoopArgument(varyingIndex, permutation);
       }
       const keyTypes = collection.keyTypes ?? [collection.keyType];
@@ -16915,6 +16928,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           executionGroup: `${upsertFrameIndex}:${Number.isSafeInteger(info.journalExecutionGroup)
             ? info.journalExecutionGroup : info.journalAccessStreamIndex}`,
           executionOrder: info.journalAccessStreamIndex,
+          ...(sourceOccurrences && { sourceOccurrences }),
           list,
           writes: keysArr.map((key) => ({ slot: slotForKey(key), operation })),
           publish: (encoded) => {
@@ -17440,24 +17454,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const groupStreams = [...groupStreamsUnsorted].sort(
         (left, right) => left.executionOrder - right.executionOrder,
       );
-      const maxLength = Math.max(0, ...groupStreams.map(
-        (stream) => plannedKernelStreamAccesses.get(stream)?.length ?? 0,
-      ));
-      for (let occurrence = 0; occurrence < maxLength; occurrence++) {
-        for (const stream of groupStreams) {
-          const access = plannedKernelStreamAccesses.get(stream)?.[occurrence];
-          if (access === undefined) continue;
-          const remapped = {
-            ...access,
-            ...(access.predecessorRecordOrdinal !== undefined && {
-              predecessorRecordOrdinal: globalRecordOrdinal(stream, access.predecessorRecordOrdinal),
-            }),
-            targetRecordOrdinal: globalRecordOrdinal(stream, access.targetRecordOrdinal),
-          };
-          const streamAccesses = remappedKernelStreamAccesses.get(stream) ?? [];
-          streamAccesses.push(remapped);
-          remappedKernelStreamAccesses.set(stream, streamAccesses);
+      const scheduled = groupStreams.flatMap((stream) => {
+        const accesses = plannedKernelStreamAccesses.get(stream) ?? [];
+        if (stream.sourceOccurrences && stream.sourceOccurrences.length !== accesses.length) {
+          throw new Error(
+            `Kernel entry journal stream '${stream.collection}' has ${accesses.length} accesses but `
+            + `${stream.sourceOccurrences.length} source occurrences.`,
+          );
         }
+        return accesses.map((access, compactIndex) => ({
+          stream,
+          access,
+          compactIndex,
+          sourceOccurrence: stream.sourceOccurrences?.[compactIndex] ?? compactIndex,
+        }));
+      }).sort((left, right) => left.sourceOccurrence - right.sourceOccurrence
+        || left.stream.executionOrder - right.stream.executionOrder
+        || left.compactIndex - right.compactIndex);
+      for (const { stream, access } of scheduled) {
+        const remapped = {
+          ...access,
+          ...(access.predecessorRecordOrdinal !== undefined && {
+            predecessorRecordOrdinal: globalRecordOrdinal(stream, access.predecessorRecordOrdinal),
+          }),
+          targetRecordOrdinal: globalRecordOrdinal(stream, access.targetRecordOrdinal),
+        };
+        const streamAccesses = remappedKernelStreamAccesses.get(stream) ?? [];
+        streamAccesses.push(remapped);
+        remappedKernelStreamAccesses.set(stream, streamAccesses);
       }
     }
     for (const [collectionIdentity, plan] of plannedKernelCollections) {

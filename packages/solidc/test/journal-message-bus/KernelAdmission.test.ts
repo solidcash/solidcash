@@ -327,30 +327,41 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it.each([
-    ['an overlapping scalar-state continuation',
-      'this.calls = this.calls + 1;', 'return left(n - 1, key) + this.calls;'],
-    ['different continuation operators',
-      '', 'return left(n - 1, key) - this.values[key];'],
-  ])('keeps a mutual recursion fold with %s behind KERNEL_LAYOUT', (_label, effect, rightReturn) => {
+  it('keeps an overlapping scalar-state continuation behind KERNEL_LAYOUT', () => {
     const artifact = compileString(`contract C() {
       int calls;
       mapping(int => int) values;
       function left(int n, int key) public returns (int) {
-        ${effect}
+        this.calls = this.calls + 1;
         if (n == 0) return this.values[key];
-        return right(n - 1, key) + ${effect ? 'this.calls' : 'this.values[key]'};
+        return right(n - 1, key) + this.calls;
       }
       function right(int n, int key) internal returns (int) {
-        ${effect}
+        this.calls = this.calls + 1;
         if (n == 0) return this.values[key];
-        ${rightReturn}
+        return left(n - 1, key) + this.calls;
       }
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('lowers distinct continuation operators in one recursion cycle', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function left(int n, int key) public returns (int) {
+        if (n == 0) return this.values[key];
+        return right(n - 1, key) + n;
+      }
+      function right(int n, int key) internal returns (int) {
+        if (n == 0) return this.values[key];
+        return left(n - 1, key) - n;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
       .toMatchObject({ eligible: true });
   });
 

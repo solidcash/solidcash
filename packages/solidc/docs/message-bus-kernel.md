@@ -600,8 +600,9 @@ before kernel admission, so symbolic replay and executable code generation obser
 Literal-bounded pure helper loops are replayed symbolically without rewriting the loop itself. Ascending and
 descending `for`, `while`, and `do-while` progressions with a nonzero literal step are supported when their
 comparison has a literal endpoint. Counter-resolved `break`, `continue`, and `return` paths are replayed directly.
-Runtime-selected `continue` paths merge at the next fixed iteration; runtime-selected `break` and `return` remain
-fenced because they shorten the future iteration domain.
+Runtime-selected `continue` paths merge at the next fixed iteration. Finite branch-selected `break` paths carry a
+cumulative stopped predicate across later iterations, including the source counter's exact exit value; a return
+using that loop-exit protocol merges its ordinary result at the post-loop join.
 Reversed comparison operands and exact `!=` endpoints use the same replay. A shared 256-iteration budget covers
 nested loops and nested helper calls; exceeding it conservatively leaves the handler `KERNEL_UNBOUNDED_KEY`.
 Direct source assignments use the same point-in-time resolver, including literal and runtime array indices.

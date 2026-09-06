@@ -5738,6 +5738,48 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(0n, 12n).send()).resolves.toBeDefined();
   }, 180_000);
 
+  it('settles a nested runtime-selected helper-loop break and preserves its exit counter', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelRuntimeHelperBreak() {
+      mapping(int => int) records;
+      function fill(int[] memory values, int base, bool outer, bool inner) internal pure {
+        int cursor = 0;
+        while (cursor < 1) {
+          if (outer) {
+            if (inner) { break; }
+          }
+          values[cursor] = base + cursor;
+          cursor = cursor + 1;
+        }
+        values[1] = base + cursor + 10;
+      }
+      function apply(int count, int base, bool outer, bool inner) public {
+        int[] memory values = new int[](count);
+        fill(values, base, outer, inner);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = cursor + 10;
+        }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.records[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'apply', args: [2n, 30n, true, true] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(0n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(40n, 11n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'apply', args: [2n, 50n, false, true] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(50n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(61n, 11n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('settles keys and a result produced before a counter-selected helper-loop return', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelFixedHelperReturn() {
@@ -5774,6 +5816,49 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(30n, 11n).send()).resolves.toBeDefined();
     await expect(contract.call.check(31n, 12n).send()).resolves.toBeDefined();
     await expect(contract.call.check(0n, 13n).send()).resolves.toBeDefined();
+  }, 180_000);
+
+  it('settles keys and a result from a runtime-selected helper-loop return', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelRuntimeHelperReturn() {
+      mapping(int => int) records;
+      function fill(int[] memory values, int base, bool stop) internal pure returns (int) {
+        for (int cursor = 0; cursor < 3; cursor = cursor + 1) {
+          values[cursor] = base + cursor;
+          switch (stop ? cursor : -1) {
+            case 1: return cursor;
+            default: break;
+          }
+        }
+        return 3;
+      }
+      function apply(int count, int base, bool stop) public {
+        int[] memory values = new int[](count);
+        int stoppedAt = fill(values, base, stop);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = stoppedAt + cursor + 10;
+        }
+        require(true);
+      }
+      function check(int key, int expected) public { require(this.records[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'apply', args: [3n, 30n, true] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(30n, 11n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(31n, 12n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(0n, 13n).send()).resolves.toBeDefined();
+    await expect(contract.batch([{ function: 'apply', args: [3n, 40n, false] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.check(40n, 13n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(41n, 14n).send()).resolves.toBeDefined();
+    await expect(contract.call.check(42n, 15n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('retains constructed keys across mutations of a value-copied helper parameter', async () => {

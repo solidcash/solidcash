@@ -1764,7 +1764,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       : this.stack.includes('__message_bus_row') ? '__message_bus_row' : GRAPH_EFFECT_SITE;
     this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
     this.emit(Op.OP_PICK, locationData);
-    const inputOffset = frame.deployInputOffset ?? 0;
+    // Atomic graph blocks remain balanced in the current wire protocol: every output-only coordinate has a
+    // neutral input, so a row-selected genesis uses the raw published deploy offset. Direct routes retain the
+    // compact projection in emitBlockSlotIndex above.
+    const inputOffset = frame.deployOffset ?? frame.deployInputOffset ?? 0;
     if (inputOffset > 0) {
       this.emit(encodeInt(BigInt(inputOffset)), locationData);
       this.emit(Op.OP_ADD, locationData);

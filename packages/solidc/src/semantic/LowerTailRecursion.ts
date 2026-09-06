@@ -3,7 +3,7 @@ import {
   BranchNode, BreakNode, ContractNode,
   DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
   ExpressionNode, NewArrayNode, Node, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
-  StateAssignNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
+  StateAccessNode, StateAssignNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -239,7 +239,8 @@ export default class LowerTailRecursion extends AstTraversal {
     if (group[0].returnTypes.length !== 1) return undefined;
     let shape: RecursiveFoldShape | undefined;
     let sawFold = false;
-    let sawScalarStateWrite = false;
+    const scalarStateWrites = new Set<string>();
+    const continuationOperands: ExpressionNode[] = [];
     let valid = true;
     const persistentEffects = new Set([
       'DeleteStateNode', 'StateArrayPushNode', 'StateArrayPopNode',
@@ -254,7 +255,7 @@ export default class LowerTailRecursion extends AstTraversal {
       this.walkNodes(fn.body!, (candidate) => {
         if (candidate instanceof StateAssignNode) {
           if (!this.fixedScalarStateNames.has(candidate.name)) valid = false;
-          else sawScalarStateWrite = true;
+          else scalarStateWrites.add(candidate.name);
         } else if (persistentEffects.has(candidate.constructor.name)) valid = false;
         if (candidate instanceof FunctionCallNode && !names.has(candidate.identifier.name)) valid = false;
         if (!(candidate instanceof ReturnNode) || candidate.expressions.length !== 1) return;
@@ -282,13 +283,19 @@ export default class LowerTailRecursion extends AstTraversal {
           valid = false;
           return;
         }
+        continuationOperands.push(leftCall ? expression.right : expression.left);
         shape = next;
         sawFold = true;
       });
     });
-    // `recur(...) OP operand` reaches operand after the deeper call in source. Capturing it before descent is
-    // equivalent only when the group is read-only. `operand OP recur(...)` already evaluates in capture order.
-    if (sawScalarStateWrite && shape?.recursiveOnLeft) valid = false;
+    // `recur(...) OP operand` reaches operand after the deeper call in source. Capturing it before descent remains
+    // equivalent unless deeper frames can mutate scalar state read by that operand.
+    if (scalarStateWrites.size > 0 && shape?.recursiveOnLeft) {
+      continuationOperands.forEach((operand) => this.walkNodes(operand, (candidate) => {
+        if ((candidate instanceof StateAccessNode || candidate instanceof IdentifierNode)
+          && scalarStateWrites.has(candidate.name)) valid = false;
+      }));
+    }
     return valid && sawFold ? shape : undefined;
   }
 

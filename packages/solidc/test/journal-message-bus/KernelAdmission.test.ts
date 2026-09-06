@@ -308,13 +308,30 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('lowers a recursive-first scalar fold with a stable continuation operand', () => {
+    const artifact = compileString(`contract C() {
+      int calls;
+      mapping(int => int) values;
+      function left(int n, int key) public returns (int) {
+        this.calls = this.calls + 1;
+        if (n == 0) return this.values[key];
+        return right(n - 1, key) + this.values[key];
+      }
+      function right(int n, int key) internal returns (int) {
+        this.calls = this.calls + 1;
+        if (n == 0) return this.values[key];
+        return left(n - 1, key) + this.values[key];
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
+      .toMatchObject({ eligible: true });
+  });
+
   it.each([
-    ['a persistent effect',
-      'this.calls = this.calls + 1;',
-      'return left(n - 1, key) + this.values[key];'],
+    ['an overlapping scalar-state continuation',
+      'this.calls = this.calls + 1;', 'return left(n - 1, key) + this.calls;'],
     ['different continuation operators',
-      '',
-      'return left(n - 1, key) - this.values[key];'],
+      '', 'return left(n - 1, key) - this.values[key];'],
   ])('keeps a mutual recursion fold with %s behind KERNEL_LAYOUT', (_label, effect, rightReturn) => {
     const artifact = compileString(`contract C() {
       int calls;
@@ -322,7 +339,7 @@ describe('required kernel admission', () => {
       function left(int n, int key) public returns (int) {
         ${effect}
         if (n == 0) return this.values[key];
-        return right(n - 1, key) + this.values[key];
+        return right(n - 1, key) + ${effect ? 'this.calls' : 'this.values[key]'};
       }
       function right(int n, int key) internal returns (int) {
         ${effect}

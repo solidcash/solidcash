@@ -1632,7 +1632,14 @@ describe('kernel loop message-bus compose', () => {
       .resolves.toBeDefined();
   }, 180_000);
 
-  it('executes a scalar-state recursion fold in source evaluation order', async () => {
+  it.each([
+    ['continuation first',
+      'remaining + right(remaining - 1, key)', 'remaining + left(remaining - 1, key)'],
+    ['recursive result first',
+      'right(remaining - 1, key) + remaining', 'left(remaining - 1, key) + remaining'],
+  ] as const)('executes a scalar-state recursion fold with the %s', async (
+    _label, leftExpression, rightExpression,
+  ) => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelScalarRecursiveFold() {
       int calls;
@@ -1641,12 +1648,12 @@ describe('kernel loop message-bus compose', () => {
       function left(int remaining, int key) internal returns (int) {
         this.calls = this.calls + 1;
         if (remaining == 0) return this.values[key];
-        return remaining + right(remaining - 1, key);
+        return ${leftExpression};
       }
       function right(int remaining, int key) internal returns (int) {
         this.calls = this.calls + 1;
         if (remaining == 0) return this.values[key];
-        return remaining + left(remaining - 1, key);
+        return ${rightExpression};
       }
       function run(int remaining, int key) public {
         this.result = left(remaining, key);

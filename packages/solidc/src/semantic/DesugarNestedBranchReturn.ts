@@ -4,6 +4,7 @@ import {
   UnaryOpNode, SourceFileNode, ContractNode, ConsoleStatementNode, SwitchNode, TryCatchNode,
   MappingAccessNode, ArrayAccessNode,
   FunctionCallNode, MethodCallNode, LowLevelCallNode, LowLevelCallStatementNode, FunctionModifier,
+  UncheckedNode,
 } from '../ast/AST.js';
 import { ArrayType, PrimitiveType } from '@solidcash/utils';
 import { UnaryOperator } from '../ast/Operator.js';
@@ -67,7 +68,7 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
       && node.parameters.some((parameter) => parameter.type instanceof ArrayType
         && parameter.modifier.includes('memory'))
       && this.countReturns(node.body) > 1
-      && !this.hasReturnInsideLoop(node.body);
+      && !this.hasReturnInsideUnsupportedControl(node.body);
     if (this.normalizePureMemoryHelpers) {
       if (!pureMemoryRewrite) return node;
     } else {
@@ -105,18 +106,22 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
     return count;
   }
 
-  private hasReturnInsideLoop(node: Node | undefined, inLoop = false): boolean {
+  private hasReturnInsideUnsupportedControl(node: Node | undefined, unsupported = false): boolean {
     if (!node) return false;
-    if (node instanceof ReturnNode) return inLoop;
-    const nestedLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
+    if (node instanceof ReturnNode) return unsupported;
+    // rewriteList intentionally leaves these constructs intact (and only rewrites a try body, not its catches).
+    // Do not append a synthetic tail return when any original return would survive inside one of them.
+    const nestedUnsupported = unsupported || node instanceof WhileNode || node instanceof DoWhileNode
+      || node instanceof SwitchNode || node instanceof UncheckedNode || node instanceof TryCatchNode;
     for (const key of Object.keys(node)) {
       if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'definition'
         || key === 'symbol' || key === 'resolvedFunction' || key === 'functionReference'
         || key === 'referencedContract' || key === 'collection' || key === 'stateVariable') continue;
       const value = (node as unknown as Record<string, unknown>)[key];
-      if (value instanceof Node && this.hasReturnInsideLoop(value, nestedLoop)) return true;
+      if (value instanceof Node
+        && this.hasReturnInsideUnsupportedControl(value, nestedUnsupported)) return true;
       if (Array.isArray(value) && value.some((item) =>
-        item instanceof Node && this.hasReturnInsideLoop(item, nestedLoop))) return true;
+        item instanceof Node && this.hasReturnInsideUnsupportedControl(item, nestedUnsupported))) return true;
     }
     return false;
   }

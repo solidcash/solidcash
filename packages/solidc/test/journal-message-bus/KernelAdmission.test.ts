@@ -1289,6 +1289,31 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('does not partially normalize memory-helper returns inside unsupported control', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) records;
+      function choose(int[] memory values, int mode) internal pure returns (int) {
+        switch (mode) {
+          case 0: values[0] = 10; return 11;
+          default: values[0] = 20; return 21;
+        }
+      }
+      function apply(int count, int mode) public {
+        int[] memory values = new int[](count);
+        int observed = choose(values, mode);
+        for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+          this.records[values[cursor]] = observed;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('replays one straight-line constructed-array push per canonical loop iteration', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

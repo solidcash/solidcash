@@ -1,5 +1,7 @@
 import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
-import { sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE } from '@solidcash/utils';
+import {
+  sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, type EntryAccessAbi,
+} from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
 import {
@@ -136,6 +138,7 @@ import {
   resolveValueChunkWriteCategory,
   selectCompilerWriterEvent,
   selectTokenBandRepairOwner,
+  isCompilerDescribedMintingBandWriter,
   StatefulTransactionBuilder,
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
@@ -2751,6 +2754,37 @@ describe('assignPhysicalReturnIndices', () => {
     expect(isMintingBandSwapFunction('approve')).toBe(false);
     expect(isMintingBandTokenWriter('publishJobEvent')).toBe(false);
     expect(isMintingBandTokenWriter(undefined)).toBe(false);
+  });
+
+  it('classifies minting-band writers by compiler effects, not ERC source names', () => {
+    const write = (collection: string): EntryAccessAbi => ({
+      collection, keyParams: ['key'], operations: ['read', 'write'],
+    });
+    const described = (name: string, writes: number) => ({
+      functionName: name,
+      compilerRoute: { abiFunction: {
+        name,
+        inputs: [],
+        outputs: [{ type: 'bool' }],
+        writesState: true,
+        entryAccesses: Array.from({ length: writes }, (_unused, index) => write(`ledger${index}`)),
+      } },
+    });
+
+    expect(isCompilerDescribedMintingBandWriter(described('moveUnits', 2))).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('moveUnits', 2), true)).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('setPermit', 1))).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('setPermit', 1), true)).toBe(false);
+    expect(isCompilerDescribedMintingBandWriter(described('transfer', 2), true)).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('transferFrom', 3), true)).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('approve', 1), true)).toBe(false);
+
+    // A familiar ERC name with an explicit effect-free descriptor cannot claim writer geometry.
+    expect(isCompilerDescribedMintingBandWriter(described('transferFrom', 0))).toBe(false);
+    expect(isCompilerDescribedMintingBandWriter(described('approve', 0))).toBe(false);
+
+    // Old artifacts without effect metadata retain their compatibility classification.
+    expect(isCompilerDescribedMintingBandWriter({ functionName: 'transferFrom' }, true)).toBe(true);
   });
 
   it('restores persisted continuations from transaction structure, independent of caller names', () => {

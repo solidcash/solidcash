@@ -313,6 +313,39 @@ export function isMintingBandSwapFunction(name: string | undefined): boolean {
   return name === 'transferFrom' || name === 'transfer';
 }
 
+type CompilerTokenWriterGroup = {
+  functionName?: string;
+  logicalFunctionName?: string;
+  compilerRoute?: { abiFunction?: AbiFunction };
+  logicalArtifact?: Artifact;
+  externalContract?: { inner?: { artifact?: Artifact } };
+};
+
+/**
+ * Classify a stateful participant from compiler-published mapping effects. Two or more written entry resources
+ * identify the wide writer shape which historically required the minting-band swap; a one-entry writer still
+ * owns occupancy but does not require that relocation. Source names are compatibility-only when no effect list
+ * was published.
+ */
+export function isCompilerDescribedMintingBandWriter(
+  group: CompilerTokenWriterGroup,
+  requireWideWriter = false,
+): boolean {
+  const artifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+  const logicalName = group.logicalFunctionName ?? group.functionName;
+  const abiFunction = group.compilerRoute?.abiFunction
+    ?? artifact?.abi.find((candidate) => candidate.name === logicalName);
+  if (abiFunction?.entryAccesses !== undefined) {
+    const writtenEntries = abiFunction.entryAccesses.filter((access) => access.operations.includes('write'));
+    return abiFunction.writesState === true
+      && writtenEntries.length >= (requireWideWriter ? 2 : 1);
+  }
+  const legacyName = group.functionName ?? group.logicalFunctionName ?? abiFunction?.name;
+  return requireWideWriter
+    ? isMintingBandSwapFunction(legacyName)
+    : isMintingBandTokenWriter(legacyName);
+}
+
 /**
  * Restore an authenticated continuation run whenever transaction geometry can
  * displace it. The decision is entirely structural: the operation's source
@@ -484,7 +517,7 @@ export function liveChunkSlotsByOwner(
 ): Map<number, number> {
   const byOwner = new Map<number, number>();
   for (const [index, group] of groups.entries()) {
-    if (isMintingBandSwapFunction(group.functionName ?? group.logicalFunctionName)) continue;
+    if (isCompilerDescribedMintingBandWriter(group, true)) continue;
     const owner = group.sharedGroupIndex ?? index;
     const nNew = group.valueChunkOutputCount ?? 0;
     byOwner.set(owner, Math.max(byOwner.get(owner) ?? 0, nNew));
@@ -5645,9 +5678,7 @@ export class StatefulTransactionBuilder {
     const persistBand = this.getPublishJobEventsBand();
     const returnWitnesses = returnWitnessOutputIndices(this.externalCallUtxoGroups);
     for (const group of this.externalCallUtxoGroups) {
-      if (!isMintingBandSwapFunction(
-        group.functionName ?? group.compilerRoute?.abiFunction.name ?? group.logicalFunctionName,
-      )) continue;
+      if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
       const master = this.findMintingInputIndex(group.categoryId);
       if (master >= 0) {
         returnWitnesses.add(tokenWriterReturnIndex(master, group.blockLayout, persistBand));
@@ -5787,8 +5818,7 @@ export class StatefulTransactionBuilder {
 
   hasMintingBandTokenWriter(): boolean {
     return this.externalCallUtxoGroups.some((group) =>
-      isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
-        ?? group.logicalFunctionName))
+      isCompilerDescribedMintingBandWriter(group, true))
       || this.mintingOutputSwap !== undefined;
   }
 
@@ -5926,9 +5956,7 @@ export class StatefulTransactionBuilder {
       for (let index = range.start; index < range.endExclusive; index++) reserved.add(index);
     }
     for (const group of this.externalCallUtxoGroups) {
-      if (!isMintingBandSwapFunction(
-        group.functionName ?? group.compilerRoute?.abiFunction.name ?? group.logicalFunctionName,
-      )) continue;
+      if (!isCompilerDescribedMintingBandWriter(group, true)) continue;
       const master = this.findMintingInputIndex(group.categoryId);
       if (master >= 0) reserved.add(tokenWriterReturnIndex(master, group.blockLayout, band));
     }
@@ -5948,8 +5976,7 @@ export class StatefulTransactionBuilder {
       // boundary when the caller derived it from an actual output layout.
       suffixStart,
       tokenWriterPresent: this.externalCallUtxoGroups.some((group) =>
-        isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
-          ?? group.logicalFunctionName)),
+        isCompilerDescribedMintingBandWriter(group, true)),
     };
   }
 
@@ -6040,8 +6067,7 @@ export class StatefulTransactionBuilder {
     const forcedStart = this.forcedJobEventsBandStart;
     const publishImpl = this._chunkableValueWriteInputIndex();
     const tokenWriter = this.externalCallUtxoGroups.find((group) =>
-      isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
-        ?? group.logicalFunctionName));
+      isCompilerDescribedMintingBandWriter(group, true));
     const tokenMaster = tokenWriter?.categoryId
       ? this.findMintingInputIndex(tokenWriter.categoryId) : -1;
     const keepAtLayout = shouldKeepPersistAtLayoutBase({
@@ -6464,8 +6490,7 @@ export class StatefulTransactionBuilder {
    */
   async ensurePersistedJobEventsInputs(): Promise<void> {
     const tokenWriterPresent = this.externalCallUtxoGroups.some((group) =>
-      isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
-        ?? group.logicalFunctionName));
+      isCompilerDescribedMintingBandWriter(group, true));
     const band = this.getPublishJobEventsBand();
     const categoryId = this._persistJobEventsTokenCategory() ?? this._jobEventsPublishCategory();
     if (!shouldRestorePersistedContinuationInputs({
@@ -7835,7 +7860,7 @@ export class StatefulTransactionBuilder {
         ? builder.outputs.length - jobsCountForPack - 1
         : Math.max(0, this.allInputs.length - 1),
       tokenWriterPresent: this.externalCallUtxoGroups.some((group) =>
-        isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name)),
+        isCompilerDescribedMintingBandWriter(group, true)),
     };
     const planned = packTailReturnPlacements(
       this.externalCallUtxoGroups,
@@ -8267,7 +8292,7 @@ export class StatefulTransactionBuilder {
     const swapCategoryId = this.mintingOutputSwap?.categoryId
       ?? this.externalCallUtxoGroups.find((group) =>
         group.sharedGroupIndex === undefined
-        && isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name))?.categoryId;
+        && isCompilerDescribedMintingBandWriter(group, true))?.categoryId;
     if (!swapCategoryId) {
       this._writeViewTailsAfterWriterOccupancy(builder, returnOutputRefs);
       this._reassertInBlockWriterReturns(builder);
@@ -12493,8 +12518,7 @@ export class StatefulTransactionBuilder {
                 },
               });
             } else if (group.compilerRoute
-              && !['transferFrom', 'transfer'].includes(group.functionName)
-              && !['transferFrom', 'transfer'].includes(group.compilerRoute.abiFunction.name)) {
+              && !isCompilerDescribedMintingBandWriter(group, true)) {
               // A message-bus route reserves the union of every handler's event slots. Slots not reached by
               // this dispatch are ordinary balanced funding slots and the route covenant binds them by
               // preservation. Mirroring the input also works as the active-slot probe: its empty commitment
@@ -14075,8 +14099,7 @@ export class StatefulTransactionBuilder {
       ))
       .filter((index) => index >= 0);
     const tokenWriterPresent = this.externalCallUtxoGroups.some((group) => {
-      const name = group.functionName ?? group.compilerRoute?.abiFunction.name;
-      if (!isMintingBandTokenWriter(name)) return false;
+      if (!isCompilerDescribedMintingBandWriter(group)) return false;
       return this.findMintingInputIndex(group.categoryId) >= 0;
     });
     // FakeToken already parks view tails after its swapped block. Do not steal

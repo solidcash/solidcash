@@ -29754,7 +29754,7 @@ export class StatefulFunctionCall {
   private entryKeyOverrides: Map<number, bigint | boolean | Uint8Array> = new Map();
   private externalEntryKeyOverrides: Map<number, bigint | boolean | Uint8Array> = new Map();
   private entryDeleteSlots: number[] = [];
-  private transfers: Array<{ lockingBytecode: Uint8Array; amount: bigint }> = [];
+  private transfers: Array<{ lockingBytecode: Uint8Array; amount: bigint; outputSlot?: number }> = [];
   private tokenContainerTransfers: Array<{
     tokenContainerCategoryId: string; lockingBytecode: Uint8Array; amount: bigint;
   }> = [];
@@ -29839,6 +29839,12 @@ export class StatefulFunctionCall {
   /** @internal Attach one compiler-published child genesis frame to this prepared route call. */
   _withChildDeployment(slotOffset: number, genesisInput: UnlockableUtxo, outputs: readonly Output[]): this {
     this.childDeployments.push({ slotOffset, genesisInput, outputs });
+    return this;
+  }
+
+  /** @internal Fill an exact compiler-reserved BCH transfer slot for atomic composition. */
+  _withCompilerTransfer(outputSlot: number, lockingBytecode: Uint8Array, amount: bigint): this {
+    this.transfers.push({ outputSlot, lockingBytecode, amount });
     return this;
   }
 
@@ -32039,8 +32045,9 @@ export class StatefulFunctionCall {
     // Apply transfers: user overrides replace auto-derived transfers
     if (this.transfers.length > 0) {
       builder.clearTransfers();
-      for (const { lockingBytecode, amount } of this.transfers) {
-        builder.addTransfer(lockingBytecode, amount);
+      for (const { lockingBytecode, amount, outputSlot } of this.transfers) {
+        if (outputSlot === undefined) builder.addTransfer(lockingBytecode, amount);
+        else builder.setTransfer(outputSlot, lockingBytecode, amount);
       }
     }
 
@@ -32501,7 +32508,10 @@ export class StatefulFunctionCall {
     }
     if (this.transfers.length > 0) {
       builder.clearTransfers();
-      for (const { lockingBytecode, amount } of this.transfers) builder.addTransfer(lockingBytecode, amount);
+      for (const { lockingBytecode, amount, outputSlot } of this.transfers) {
+        if (outputSlot === undefined) builder.addTransfer(lockingBytecode, amount);
+        else builder.setTransfer(outputSlot, lockingBytecode, amount);
+      }
     }
     if (this.tokenContainerTransfers.length > 0) {
       builder.clearTokenContainerTransfers();

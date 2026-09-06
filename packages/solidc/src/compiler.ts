@@ -35,7 +35,8 @@ import {
   MappingFieldAssignNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode, RevertNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
-  SourceFileNode, StatementNode, TransferStatementNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
+  SourceFileNode, StatementNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
+  TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
   WhileNode, DoWhileNode, UnaryOpNode, BreakNode, ContinueNode,
@@ -2126,6 +2127,12 @@ function childDeploymentSites(
         ...(value.callOptions?.salt && {
           salt: analyzed ? analyzed.salt ?? { kind: 'expression' } : saltSource(value.callOptions.salt),
         }),
+        ...(hasEffectiveCallValue(value.callOptions?.value) && {
+          value: {
+            transferIndex: value.transferIndex,
+            amount: analyzed?.value ?? { kind: 'expression' },
+          },
+        }),
         creationBytecode: binToHex(creationBytecode),
         childLayoutDigest,
         ...(genesisState && { genesisState }),
@@ -3921,6 +3928,9 @@ function synthesizeMessageBusRoute(
       let unsupportedInstantiation = false;
       let deployUnderControlFlow = false;
       let deployWithValue = false;
+      let valueDeployTransferIndex = -1;
+      let hasAnotherValueTransfer = false;
+      let deploymentValueRecipeUnsupported = false;
       let deploymentStateInitializationUnsupported = false;
       let deploymentRecipeUnsupported = false;
       const deployedLocalNames = new Set<string>();
@@ -3936,14 +3946,22 @@ function synthesizeMessageBusRoute(
         // Synchronous traversal; `deploys` is the accumulator for this immediately enclosing handler scan.
         // eslint-disable-next-line @typescript-eslint/no-loop-func
         walkInvocationAst(candidate.body, (node) => {
+          if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+            || node instanceof AddressSendExpressionNode
+            || (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value))
+            || (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value))
+            || (node instanceof ExternalFunctionCallNode && hasEffectiveCallValue(node.callOptions?.value))) {
+            hasAnotherValueTransfer = true;
+          }
           // `new LockingBytecodeP2PKH(pkh)` is an InstantiationNode but not a child deploy; it is a
           // compile-time locking-bytecode constructor and does not need a handler-owned block layout.
           if (node instanceof InstantiationNode && !lockingBytecode.has(node.identifier.name)) {
             deploys = true;
+            const analyzed = statefulChildren.has(node.identifier.name)
+              ? deploymentRecipeAnalysis.get(node) : undefined;
             if (statefulChildren.has(node.identifier.name)) {
               deploySites += 1;
               const child = statefulChildren.get(node.identifier.name)!;
-              const analyzed = deploymentRecipeAnalysis.get(node);
               if (!analyzed?.supported) deploymentRecipeUnsupported = true;
               if (node.hasFoldedChildCall) {
                 deploymentStateInitializationUnsupported = true;
@@ -3993,7 +4011,15 @@ function synthesizeMessageBusRoute(
                 deploymentRecipeUnsupported = true;
               }
             } else unsupportedInstantiation = true;
-            if (hasEffectiveCallValue(node.callOptions?.value)) deployWithValue = true;
+            if (hasEffectiveCallValue(node.callOptions?.value)) {
+              deployWithValue = true;
+              valueDeployTransferIndex = node.transferIndex;
+              if (!analyzed?.value || typeof analyzed.value.resultType !== 'string'
+                || !/^(?:bigint|u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)?)$/
+                  .test(analyzed.value.resultType)) {
+                deploymentValueRecipeUnsupported = true;
+              }
+            }
           }
           if (node instanceof ExternalFunctionCallNode && node.foldedIntoDeploy) {
             deploymentStateInitializationUnsupported = true;
@@ -4040,8 +4066,11 @@ function synthesizeMessageBusRoute(
         };
         nestedDeploy(candidate.body);
       }
+      const supportedValueDeploy = !deployWithValue || (deploySites === 1
+        && !hasAnotherValueTransfer && valueDeployTransferIndex === 0
+        && !deploymentValueRecipeUnsupported);
       const kernelDeploySupported = deploys && deploySites >= 1 && !unsupportedInstantiation
-        && !deployUnderControlFlow && !deployWithValue && !deploymentStateInitializationUnsupported
+        && !deployUnderControlFlow && supportedValueDeploy && !deploymentStateInitializationUnsupported
         && !deploymentRecipeUnsupported && closureNames.size === 1;
       if (kernelDeploySupported) {
         kernelDeploymentHandlers.add(fn);
@@ -4176,6 +4205,15 @@ function synthesizeMessageBusRoute(
     });
     return found;
   };
+  const carriesAdmittedChildDeploymentValue = (fn: FunctionDefinitionNode): boolean => {
+    if (!kernelDeploymentHandlers.has(fn)) return false;
+    let found = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof InstantiationNode
+        && hasEffectiveCallValue(node.callOptions?.value)) found = true;
+    });
+    return found;
+  };
   /**
    * The route's uniformity rules, applied to one candidate set.
    *
@@ -4235,7 +4273,8 @@ function synthesizeMessageBusRoute(
     let eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
     const resultMode = survivors.some((fn) => fn.returnTypes.length > 0);
     let valueEffectMode = survivors.some((fn) =>
-      eligibleFootprint(fn).effects.includes('value') || carriesRawValueOption(fn));
+      eligibleFootprint(fn).effects.includes('value') || carriesRawValueOption(fn)
+      || carriesAdmittedChildDeploymentValue(fn));
     // A nested collection needs one fixed vmap entry slot per row: the composite key is only resolvable against a
     // statically known row, so the dynamic `for row < rowCount` parser cannot represent it and code generation
     // fails closed with SortedMappingCodegenPendingError. Unrolling the rows keeps ERC-20 `approve` and every
@@ -4306,7 +4345,8 @@ function synthesizeMessageBusRoute(
       if (relaxResultRouteEffects) {
         eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
         valueEffectMode = survivors.some((fn) =>
-          eligibleFootprint(fn).effects.includes('value') || carriesRawValueOption(fn));
+          eligibleFootprint(fn).effects.includes('value') || carriesRawValueOption(fn)
+          || carriesAdmittedChildDeploymentValue(fn));
       }
     }
     if (eventMode) {

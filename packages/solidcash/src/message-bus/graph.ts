@@ -393,6 +393,7 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
       categorySource: site.categorySource,
       constructorArgs: site.constructorArgs,
       ...(site.salt && { salt: site.salt }),
+      ...(site.value && { value: site.value }),
       creationBytecode: site.creationBytecode.toLowerCase(),
       childLayoutDigest: site.childLayoutDigest ?? '',
       genesisState: site.genesisState ?? null,
@@ -1528,8 +1529,9 @@ export function graphInvocationCallerIdentity(
  * is why the direct block layout alone cannot tell a bound effect from a dropped one and why this compares the
  * two policies instead of flagging every value-moving function. The measured discriminator is the message-bus batch
  * handler: an option contributes nothing to `handler.transfers`, a first-party transfer contributes one entry
- * and eight route `transfer` slots. Dropped token-container operations are already refused at compile time;
- * the container arm here is the SDK-side backstop for the same class.
+ * and eight route `transfer` slots. A value-bearing child creation is the other bound form: its exact transfer
+ * index and typed amount recipe are published by the selector-exact child-deployment site. Dropped token-container
+ * operations are already refused at compile time; the container arm here is the SDK-side backstop for the same class.
  *
  * X5: this is ONE measurement with two consumers - `assertNoUnboundCallOptions`, which turns it into the single
  * named refusal, and `planCompiledGraph`, which encodes it into the committed row. Splitting the measurement
@@ -1538,10 +1540,12 @@ export function graphInvocationCallerIdentity(
 export function measureUnboundCallOptions(
   artifact: Artifact, fn: AbiFunction, name: string,
 ): { optionBits: number; detail?: string } {
-  const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
+  const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name
+    && (fn.selector === undefined || candidate.selector === fn.selector));
   const routeKinds = new Set((artifact.messageBus?.route.blockLayout?.slots ?? [])
     .map((slot) => slot.kind as string));
-  const unboundValue = (fn.transferCount ?? 0) - (handler?.transfers?.length ?? 0);
+  const deploymentValues = handler?.childDeployments?.filter((site) => site.value !== undefined).length ?? 0;
+  const unboundValue = (fn.transferCount ?? 0) - (handler?.transfers?.length ?? 0) - deploymentValues;
   const unboundContainer = (fn.tokenContainerAccesses?.length ?? 0)
     - (handler?.tokenContainerAccesses?.length ?? 0);
   // Backstop for an artifact whose per-handler policy is absent or understated: a direct-mode option slot

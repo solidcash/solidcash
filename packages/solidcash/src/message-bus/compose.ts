@@ -1367,6 +1367,11 @@ export class AtomicMessageBusComposition {
       const deploymentSlots = participant.blockLayout!.slots
         .filter((slot) => slot.kind === 'deploy')
         .sort((left, right) => left.offset - right.offset);
+      const transferSlots = participant.blockLayout!.slots
+        .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined);
+      const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
+      const transferFrameWidth = maximumRows > 0 && transferSlots.length % maximumRows === 0
+        ? transferSlots.length / maximumRows : 0;
       return participant.invocations.flatMap((invocationIndex, row) => {
         const descriptor = descriptors[invocationIndex];
         const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
@@ -1460,6 +1465,29 @@ export class AtomicMessageBusComposition {
             category: hexToBin(genesis.txid),
             ...(salt && { salt }),
           });
+          let valueTransfer: { outputSlot: number; lockingBytecode: Uint8Array; amount: bigint } | undefined;
+          if (site.value) {
+            const amount = site.value.amount.kind === 'expression' ? undefined
+              : evaluateChildDeploymentRecipe(site.value.amount, descriptor.args, inputTypes, solidityAbi);
+            if (typeof amount !== 'bigint' || amount <= 0n || amount > 0xffff_ffff_ffff_ffffn) {
+              throw new Error(
+                `messageBus: child deployment value at site ${site.siteIndex} must be a positive uint64`,
+              );
+            }
+            const outputSlot = row * transferFrameWidth + site.value.transferIndex;
+            if (transferFrameWidth < 1 || !Number.isSafeInteger(site.value.transferIndex)
+              || site.value.transferIndex < 0 || site.value.transferIndex >= transferFrameWidth
+              || !transferSlots.some((slot) => slot.slotIndex === outputSlot)) {
+              throw new Error(
+                `messageBus: child deployment site ${site.siteIndex} has no canonical transfer slot`,
+              );
+            }
+            valueTransfer = {
+              outputSlot,
+              lockingBytecode: addressToLockScript(child.address),
+              amount,
+            };
+          }
           const genesisState = Object.fromEntries((site.genesisState?.fields ?? []).map((field) => [
             field.name,
             evaluateChildDeploymentRecipe(field.value, descriptor.args, inputTypes, solidityAbi),
@@ -1493,6 +1521,7 @@ export class AtomicMessageBusComposition {
             slotOffset: offset,
             genesis,
             outputs,
+            ...(valueTransfer && { valueTransfer }),
           };
         });
       });
@@ -1685,6 +1714,13 @@ export class AtomicMessageBusComposition {
           localCall._withChildDeployment(
             deployment.slotOffset, deployment.genesis, deployment.outputs,
           );
+          if (deployment.valueTransfer) {
+            localCall._withCompilerTransfer(
+              deployment.valueTransfer.outputSlot,
+              deployment.valueTransfer.lockingBytecode,
+              deployment.valueTransfer.amount,
+            );
+          }
         }
         // A participant probe is built in isolation while its covenant addresses outputs in the final graph's
         // absolute coordinate space. Forward/literal BCH transfers are already compiler-authenticated in the
@@ -1709,7 +1745,17 @@ export class AtomicMessageBusComposition {
                 `messageBus: BCH transfer in '${invocation.function}' is not a forwarded/literal canonical effect`,
               );
             }
-            localCall.transfer(recipient, amountValue);
+            const transferSlots = participant.blockLayout!.slots
+              .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined);
+            const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
+            const frameWidth = maximumRows > 0 && transferSlots.length % maximumRows === 0
+              ? transferSlots.length / maximumRows : 0;
+            const outputSlot = invocation.localRow * frameWidth + transfer.transferIndex;
+            if (frameWidth < 1 || transfer.transferIndex < 0 || transfer.transferIndex >= frameWidth
+              || !transferSlots.some((slot) => slot.slotIndex === outputSlot)) {
+              throw new Error(`messageBus: BCH transfer in '${invocation.function}' has no canonical slot`);
+            }
+            localCall._withCompilerTransfer(outputSlot, recipient, amountValue);
           }
         }
         let local: TransactionBuilder;

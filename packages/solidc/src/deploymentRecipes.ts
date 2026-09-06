@@ -114,6 +114,7 @@ export interface ChildDeploymentRecipeAnalysis {
   aliasDefinitions: ReadonlyMap<string, object>;
   constructorArgs: readonly (ChildDeploymentValueRecipe | undefined)[];
   salt?: ChildDeploymentValueRecipe;
+  value?: ChildDeploymentValueRecipe;
   supported: boolean;
 }
 
@@ -159,18 +160,17 @@ export function analyzeChildDeploymentRecipes(
   ]));
   let aliasDefinitions = new Map<string, object>(visibleInputs.map((parameter) => [parameter.name, parameter]));
   const result = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
-  let hasReturn = false;
-  const findReturn = (value: unknown, seen = new WeakSet<object>()): void => {
-    if (Array.isArray(value)) { value.forEach((item) => findReturn(item, seen)); return; }
-    if (!(value instanceof Node) || seen.has(value)) return;
+  const containsReturn = (value: unknown, seen = new WeakSet<object>()): boolean => {
+    if (Array.isArray(value)) return value.some((item) => containsReturn(item, seen));
+    if (!(value instanceof Node) || seen.has(value)) return false;
     seen.add(value);
-    if (value instanceof ReturnNode) { hasReturn = true; return; }
+    if (value instanceof ReturnNode) return true;
     for (const [key, child] of Object.entries(value)) {
       if (['definition', 'referencedContract', 'resolvedFunction', 'symbolTable'].includes(key)) continue;
-      findReturn(child, seen);
+      if (containsReturn(child, seen)) return true;
     }
+    return false;
   };
-  findReturn(fn.body);
 
   const snapshotExpression = (value: unknown, unsafe: boolean, seen = new WeakSet<object>()): void => {
     if (Array.isArray(value)) { value.forEach((item) => snapshotExpression(item, unsafe, seen)); return; }
@@ -188,13 +188,20 @@ export function analyzeChildDeploymentRecipes(
           value.callOptions.salt, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
         )
         : undefined;
+      const callValue = value.callOptions?.value && !unsafe
+        ? childDeploymentValueRecipe(
+          value.callOptions.value, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,
+        )
+        : undefined;
       result.set(value, {
         aliases: siteAliases,
         aliasDefinitions: siteAliasDefinitions,
         constructorArgs,
         ...(salt && { salt }),
+        ...(callValue && { value: callValue }),
         supported: !unsafe && constructorArgs.every((recipe) => recipe !== undefined)
-          && (!value.callOptions?.salt || salt !== undefined),
+          && (!value.callOptions?.salt || salt !== undefined)
+          && (!value.callOptions?.value || callValue !== undefined),
       });
     }
     for (const [key, child] of Object.entries(value)) {
@@ -228,14 +235,16 @@ export function analyzeChildDeploymentRecipes(
   };
 
   const processBlock = (block: BlockNode, unsafe = false): void => {
+    let priorReturn = false;
     for (const statement of block.statements ?? []) {
+      const statementUnsafe = unsafe || priorReturn;
       if (statement instanceof VariableDefinitionNode) {
         if (statement.expression) {
-          snapshotExpression(statement.expression, unsafe);
+          snapshotExpression(statement.expression, statementUnsafe);
           invalidateAssignments(statement.expression);
         }
         const key = statement as object;
-        if (!unsafe && statement.expression) {
+        if (!statementUnsafe && statement.expression) {
           const recipe = bindRecipe(
             statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes, aliases,
             aliasDefinitions,
@@ -246,10 +255,10 @@ export function analyzeChildDeploymentRecipes(
         continue;
       }
       if (statement instanceof AssignNode) {
-        snapshotExpression(statement.expression, unsafe);
+        snapshotExpression(statement.expression, statementUnsafe);
         invalidateAssignments(statement.expression);
         const key = definitionOf(statement.identifier) ?? aliasDefinitions.get(statement.identifier.name);
-        if (key && !unsafe) {
+        if (key && !statementUnsafe) {
           const targetType = abiTypeString((key as { type?: unknown }).type as never);
           const recipe = bindRecipe(
             statement.expression, targetType, handlerInputs, handlerInputTypes, aliases, aliasDefinitions,
@@ -261,20 +270,22 @@ export function analyzeChildDeploymentRecipes(
       if (statement instanceof BlockNode && statement.scoped) {
         const outerDefinitions = aliasDefinitions;
         aliasDefinitions = new Map(aliasDefinitions);
-        processBlock(statement, unsafe);
+        processBlock(statement, statementUnsafe);
         aliasDefinitions = outerDefinitions;
+        priorReturn ||= containsReturn(statement);
         continue;
       }
       const controlFlow = statement instanceof BranchNode || statement instanceof WhileNode
         || statement instanceof DoWhileNode || statement instanceof SwitchNode || statement instanceof TryCatchNode
         || statement instanceof UncheckedNode || statement instanceof CollectionIterationNode;
-      snapshotExpression(statement, unsafe || controlFlow);
+      snapshotExpression(statement, statementUnsafe || controlFlow);
       invalidateAssignments(statement);
+      priorReturn ||= containsReturn(statement);
     }
   };
-  // Early-return lowering runs after admission and can wrap a later deployment in synthetic control flow.
-  // Until recipes are analyzed on that post-transform tree, refuse every deployment in such a function.
-  processBlock(fn.body, hasReturn);
+  // Early-return lowering can wrap later statements in synthetic control flow. Only a return-capable construct
+  // preceding a deployment makes that site unsafe; a terminal return after the site does not change its execution.
+  processBlock(fn.body);
   return result;
 }
 

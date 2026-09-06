@@ -1784,6 +1784,53 @@ describe('required kernel admission', () => {
       .not.toHaveProperty('childDeployments');
   });
 
+  it('admits one straight-line value-bearing child with a typed amount recipe', () => {
+    const artifact = compileString(`contract Unit() { int marker; }
+      contract Factory() {
+        int created;
+        function create(int base) public {
+          Unit child = new Unit{value: base + 1000}();
+          this.created = this.created + 1;
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'create');
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(handler).toMatchObject({
+      eligible: true,
+      childDeployments: [{
+        siteIndex: 0,
+        occurrence: 'once',
+        value: {
+          transferIndex: 0,
+          amount: {
+            kind: 'binary', operator: '+', resultType: 'int',
+            left: { kind: 'handlerInput', inputIndex: 0, resultType: 'int256' },
+            right: { kind: 'intLiteral', value: '1000', resultType: 'int' },
+          },
+        },
+      }],
+    });
+    expect(handler?.transfers ?? []).toHaveLength(0);
+    const direct = artifact.abi.find((candidate) => candidate.name === 'create');
+    expect(direct?.transferCount).toBe(1);
+    expect(direct?.blockLayout?.slots.filter((slot) => slot.kind === 'transfer')).toEqual([
+      expect.objectContaining({ slotIndex: 0 }),
+    ]);
+  });
+
+  it.each([
+    ['two value sites', `Unit first = new Unit{value: amount}(); Unit second = new Unit{value: amount}();`],
+    ['another BCH transfer', `Unit child = new Unit{value: amount}(); this.transfer(hex"51", 1);`],
+    ['conditional value site', `if (amount > 0) { Unit child = new Unit{value: amount}(); }`],
+  ])('keeps non-singular value-bearing deployment shape fenced: %s', (_label, body) => {
+    expect(denied(`contract Unit() { int marker; }
+      contract Factory() {
+        int created;
+        function create(int amount) public { ${body} this.created = 1; require(true); }
+      }`, 'create')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('publishes and admits a complete fixed constructor genesis recipe', () => {
     const artifact = compileString(`contract Unit(int seed) {
         int marker;
@@ -1982,6 +2029,25 @@ describe('required kernel admission', () => {
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
       .toMatchObject({ eligible: false });
+  });
+
+  it.each([
+    'require(true); return;',
+    'if (stop) { require(true); return; } require(true);',
+  ])('keeps an earlier unconditional deployment eligible before a terminal return: %s', (tail) => {
+    const artifact = compileString(`contract Unit(int marker) {
+        int stored;
+        constructor() { this.stored = marker; }
+      }
+      contract Coordinator() {
+        function materialize(bool stop, int seed) public {
+          int adjusted = seed + 1;
+          Unit unit = new Unit(adjusted);
+          ${tail}
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: true });
   });
 
   it('keeps byte concatenation aliases fenced until nonnumeric recipe arithmetic is modeled', () => {

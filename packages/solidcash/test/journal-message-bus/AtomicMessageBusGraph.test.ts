@@ -681,6 +681,38 @@ describe('atomic compiled invocation graph', () => {
         }],
       },
     } as Artifact;
+    const valueBoundArtifact = {
+      ...deploymentArtifact,
+      messageBus: {
+        ...deploymentArtifact.messageBus!,
+        handlers: [{
+          ...deploymentArtifact.messageBus!.handlers[0],
+          childDeployments: deploymentArtifact.messageBus!.handlers[0].childDeployments!.map((site) => ({
+            ...site,
+            value: {
+              transferIndex: 0,
+              amount: { kind: 'handlerInput' as const, inputIndex: 0, resultType: 'int256' },
+            },
+          })),
+        }],
+      },
+    } as Artifact;
+    const changedValueRecipe = {
+      ...valueBoundArtifact,
+      messageBus: {
+        ...valueBoundArtifact.messageBus!,
+        handlers: [{
+          ...valueBoundArtifact.messageBus!.handlers[0],
+          childDeployments: valueBoundArtifact.messageBus!.handlers[0].childDeployments!.map((site) => ({
+            ...site, value: { ...site.value!, transferIndex: 1 },
+          })),
+        }],
+      },
+    } as Artifact;
+    expect(messageBus.atomicParticipantPolicyHash(valueBoundArtifact))
+      .not.toBe(messageBus.atomicParticipantPolicyHash(deploymentArtifact));
+    expect(messageBus.atomicParticipantPolicyHash(changedValueRecipe))
+      .not.toBe(messageBus.atomicParticipantPolicyHash(valueBoundArtifact));
     const deploymentPlan: messageBus.CompiledGraphPlan = {
       ...base,
       participants: [{

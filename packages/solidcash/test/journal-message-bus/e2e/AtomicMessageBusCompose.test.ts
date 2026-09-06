@@ -707,6 +707,94 @@ describe('messageBus.compose atomic transaction', () => {
     expect(vmRejects(tampered)).toBe(true);
   }, 120_000);
 
+  it('materializes row-varying child values in their exact transfer frames', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`contract Unit() {
+        int marker;
+        function keep() public { require(true); }
+      }
+      interface IFactory { function create(int base); }
+      contract Factory() {
+        int created;
+        function create(int base) public {
+          Unit child = new Unit{value: base + 1000}();
+          this.created = this.created + 1;
+          require(true);
+        }
+      }
+      contract Driver(address factory) {
+        function run(int first, int second) public {
+          IFactory(factory).create(first);
+          IFactory(factory).create(second);
+          require(true);
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const factory = (await connect(artifacts.Factory)).registerChild(artifacts.Unit);
+    const driver = await connect(artifacts.Driver, [hexToBin(factory.inner.lockingBytecode)]);
+    await provider.addUtxo(getSatoshiContainerAddress(factory.inner, factory.categoryId), {
+      txid: 'de'.repeat(32), vout: 1, satoshis: 50_000n,
+    });
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const firstGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const secondGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const compose = (first: bigint, second: bigint) => messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [first, second] },
+        { contract: factory, functionName: 'create', args: [first] },
+        { contract: factory, functionName: 'create', args: [second] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [
+        { invocationIndex: 1, siteIndex: 0, funder: firstGenesis },
+        { invocationIndex: 2, siteIndex: 0, funder: secondGenesis },
+      ],
+    });
+
+    const canonical = await compose(3_000n, 5_000n).build();
+    expect(vmRejects(canonical)).toBe(false);
+    const transferOutputs = canonical.outputs.map((output, index) => ({ output, index }))
+      .filter(({ output }) => !output.token && (output.amount === 4_000n || output.amount === 6_000n));
+    expect(transferOutputs.map(({ output }) => output.amount)).toEqual([4_000n, 6_000n]);
+    const childLocks = [firstGenesis, secondGenesis].map((genesis) => canonical.outputs.find((output) =>
+      output.token?.category === genesis.utxo.txid && output.token.nft?.capability === 'minting')?.to);
+    expect(transferOutputs.map(({ output }) => binToHex(output.to as Uint8Array)))
+      .toEqual(childLocks.map((lockingBytecode) => binToHex(lockingBytecode as Uint8Array)));
+    const containerIndex = canonical.outputs.findIndex((output) => !output.token && output.amount === 40_000n);
+    expect(containerIndex).toBeGreaterThanOrEqual(0);
+
+    const verifierIndex = canonical.inputs.findIndex((input) =>
+      input.token?.nft?.commitment.startsWith('4c335631'));
+    const envelopeInstruction = decodeAuthenticationInstructions(
+      canonical.buildLibauthTransaction().inputs[verifierIndex].unlockingBytecode,
+    ).find((instruction) => 'data' in instruction && binToHex(instruction.data).startsWith('4c334331'));
+    if (!envelopeInstruction || !('data' in envelopeInstruction)) throw new Error('missing message envelope');
+    const valueRows = decodeAtomicMessageEnvelope(envelopeInstruction.data).rows.filter((row) => row.kind === 3);
+    expect(valueRows.map((row) => ({ parent: row.parent, subject: row.subjectHex, effect: row.effectHex })))
+      .toEqual([
+        { parent: 1, subject: binToHex(childLocks[0] as Uint8Array), effect: 'a00f000000000000' },
+        { parent: 2, subject: binToHex(childLocks[1] as Uint8Array), effect: '7017000000000000' },
+      ]);
+
+    const wrongRecipient = await compose(3_000n, 5_000n).build();
+    wrongRecipient.outputs[transferOutputs[0].index].to = Uint8Array.of(0x52);
+    expect(vmRejects(wrongRecipient)).toBe(true);
+    const wrongAmount = await compose(3_000n, 5_000n).build();
+    wrongAmount.outputs[transferOutputs[1].index].amount += 1n;
+    expect(vmRejects(wrongAmount)).toBe(true);
+    const wrongContainer = await compose(3_000n, 5_000n).build();
+    wrongContainer.outputs[containerIndex].amount += 1n;
+    expect(vmRejects(wrongContainer)).toBe(true);
+
+    await expect(compose(-1_000n, 5_000n).build()).rejects.toThrow(/positive uint64/);
+    await expect(compose(0x1_0000_0000_0000_0000n, 5_000n).build()).rejects.toThrow(/positive uint64/);
+  }, 120_000);
+
   it('forwards detached signatures in composite arrays through a typed graph edge', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`

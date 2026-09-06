@@ -9339,6 +9339,24 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /** @internal Materialize one compiler-reserved transfer ordinal without collapsing inactive row slots. */
+  setTransfer(outputSlot: number, lockingBytecode: Uint8Array, amount: bigint): this {
+    if (!Number.isSafeInteger(outputSlot) || outputSlot < 0) {
+      throw new Error('Transfer output slot must be a non-negative safe integer');
+    }
+    if (amount <= 0n || amount > 0xffff_ffff_ffff_ffffn) {
+      throw new Error('Transfer amount must be positive and fit uint64');
+    }
+    while (this.pendingTransfers.length <= outputSlot) {
+      this.pendingTransfers.push({ lockingBytecode: new Uint8Array(), amount: 0n });
+    }
+    if (this.pendingTransfers[outputSlot].lockingBytecode.length > 0) {
+      throw new Error(`Transfer output slot ${outputSlot} is already materialized`);
+    }
+    this.pendingTransfers[outputSlot] = { lockingBytecode, amount };
+    return this;
+  }
+
   /** @internal Add a compiler-derived balanced transfer slot. A Solidity `call{value: 0}` still authenticates
    * its fixed output coordinate, so VM derivation may legitimately recover zero even though the public transfer
    * API rejects non-positive user payments. */

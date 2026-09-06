@@ -294,6 +294,12 @@ export interface ChildDeploymentSiteAbi {
   constructorArgs: readonly (ChildDeploymentValueRecipe | { kind: 'expression' })[];
   salt?: { kind: 'handlerInput'; inputIndex: number } | { kind: 'literal'; value: string }
     | ChildDeploymentValueRecipe | { kind: 'expression' };
+  /** BCH sent by this creation site in its separately reserved transfer slot. The recipient is always the
+   * compiler-authenticated child locking bytecode and is therefore intentionally not caller-supplied metadata. */
+  value?: {
+    transferIndex: number;
+    amount: ChildDeploymentValueRecipe | { kind: 'expression' };
+  };
   /** Exact child body embedded by the parent's address computation, before category/salt pinning. */
   creationBytecode: string;
   /** Hash of the canonical child state geometry used to interpret `genesisState`. */

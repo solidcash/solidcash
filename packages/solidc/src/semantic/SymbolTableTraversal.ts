@@ -13213,15 +13213,17 @@ export default class SymbolTableTraversal extends AstTraversal {
    *
    * `collectTransferStatements` also records a `{value:}` CALL OPTION as a transfer. E2 admits exactly the
    * singular raw-call value option in graph mode: its authenticated external-call node publishes the recipient
-   * and amount, and the same per-site frame settles its transfer output. Typed options and every other option
-   * remain outside this count and therefore retain the fail-closed mixed-effect rule below.
+   * and amount, and the same per-site frame settles its transfer output. An admitted stateful child deployment
+   * likewise publishes its derived recipient and typed amount recipe in child-deployment metadata. Typed options
+   * and every other option remain outside this count and therefore retain the fail-closed mixed-effect rule below.
    */
   private framesSettleEveryTransfer(fn: FunctionDefinitionNode): boolean {
     const declared = fn.transferInfos?.length ?? 0;
     if (declared === 0) return true;
     let valueCalls = 0;
     walkInvocationAst(fn.body, (node) => {
-      if ((node instanceof ExternalFunctionCallNode || node instanceof MethodCallNode)
+      if ((node instanceof ExternalFunctionCallNode || node instanceof MethodCallNode
+        || (node instanceof InstantiationNode && node.isStatefulDeploy))
         && hasEffectiveCallValue(node.callOptions?.value)) valueCalls += 1;
     });
     // if/else arms are mutually exclusive: sum-of-nodes counted both `this.transfer` statements and

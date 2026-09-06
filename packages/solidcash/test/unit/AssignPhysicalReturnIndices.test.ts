@@ -200,7 +200,18 @@ describe('generic persisted value-chunk write identity', () => {
       collectionSignature: signature, keySlot: binToHex(slot), operation: 'update',
       outputBase: 4, outputCount: 3,
     });
-    expect(persistedValueChunkWriteState(renamed)?.width).toBeGreaterThan(0);
+    const exact = persistedValueChunkWriteState(renamed);
+    expect(exact?.width).toBeGreaterThan(0);
+    expect(exact?.recipe).toMatchObject({
+      collection: signature, categoryId, slot, root: sha256Sync(value),
+    });
+    expect(binToHex(persistUpdateRedeemLock(categoryId, undefined, renamed)!))
+      .toBe(binToHex(getValueChunkLockingBytecode(categoryId, signature, slot, sha256Sync(value))));
+    const otherLock = getValueChunkLockingBytecode(
+      categoryId, 'other:mapping(int => Notice[])', slot, sha256Sync(value),
+    );
+    expect(binToHex(persistUpdateRedeemLock(categoryId, otherLock, renamed)!))
+      .not.toBe(binToHex(otherLock));
 
     const [decoy] = describeValueChunkWrites(makeGroup('publishJobEvent', 'other:mapping(int => Notice[])'));
     expect(persistedValueChunkWriteState(decoy)).toBeUndefined();

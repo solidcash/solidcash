@@ -5238,24 +5238,25 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && call.parameters[index] instanceof IdentifierNode
             && active.has((call.parameters[index] as IdentifierNode).name));
         if (arrayParameters.length === 0) return replayed;
-        // Formal parameters may share a source-order summary only when the caller supplies distinct arrays.
-        // Duplicate caller names require a true may-alias model: reject them so two formal names cannot conceal
-        // one shared mutation history.
-        const callerArrayNames = arrayParameters.map(({ index }) =>
-          (call.parameters[index] as IdentifierNode).name);
-        if (new Set(callerArrayNames).size !== callerArrayNames.length) return replayed;
+        // Canonicalize formal parameters which receive the same caller array onto one plan. Every mutation then
+        // advances their shared history at its exact source point, matching memory-reference alias semantics.
         const arrayNames = new Set(target.parameters
           .filter((candidate) => candidate.type instanceof ArrayType).map((candidate) => candidate.name));
-        const callerNamesByParameter = new Map<string, string>();
+        const planNamesByParameter = new Map<string, string>();
+        const planNamesByCaller = new Map<string, string>();
+        const callerNamesByPlan = new Map<string, string>();
         const initialPlans = new Map<string, ArrayPlan>();
         for (const { parameter, index } of arrayParameters) {
           const callerArray = call.parameters[index] as IdentifierNode;
           const sourcePlan = active.get(callerArray.name)!;
           if (sourcePlan.recurrence) return new Set();
-          callerNamesByParameter.set(parameter.name, callerArray.name);
-          initialPlans.set(parameter.name, copyPlans(
-            new Map([[parameter.name, sourcePlan]]),
-          ).get(parameter.name)!);
+          const planName = planNamesByCaller.get(callerArray.name) ?? parameter.name;
+          planNamesByCaller.set(callerArray.name, planName);
+          planNamesByParameter.set(parameter.name, planName);
+          callerNamesByPlan.set(planName, callerArray.name);
+          if (!initialPlans.has(planName)) initialPlans.set(planName, copyPlans(
+            new Map([[planName, sourcePlan]]),
+          ).get(planName)!);
         }
         const initialValues = new Map<string, ExpressionNode>();
         target.parameters.forEach((candidate, index) => {
@@ -5327,17 +5328,23 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           plans: Map<string, ArrayPlan>;
           values: Map<string, ExpressionNode>;
         };
+        const planNameFor = (parameterName: string): string | undefined =>
+          planNamesByParameter.get(parameterName);
         const replayExpression = (
           expression: ExpressionNode,
           values: ReadonlyMap<string, ExpressionNode>,
           helperPlans: ReadonlyMap<string, ArrayPlan>,
         ): ExpressionNode | undefined => {
+          const planFor = (parameterName: string): ArrayPlan | undefined => {
+            const planName = planNameFor(parameterName);
+            return planName === undefined ? undefined : helperPlans.get(planName);
+          };
           const resolve = (candidate: ExpressionNode): ExpressionNode | undefined => {
             // Numeric-literal indexing parses as tuple extraction before type resolution, including for arrays.
             // Normalize that representation into the same symbolic array read used by runtime indices.
             if (candidate instanceof TupleIndexOpNode && candidate.tuple instanceof IdentifierNode
               && arrayNames.has(candidate.tuple.name)) {
-              const plan = helperPlans.get(candidate.tuple.name);
+              const plan = planFor(candidate.tuple.name);
               if (!plan) return undefined;
               const index = new IntLiteralNode(BigInt(candidate.index));
               index.location = candidate.location;
@@ -5348,7 +5355,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             }
             if (candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
               && arrayNames.has(candidate.array.name)) {
-              const plan = helperPlans.get(candidate.array.name);
+              const plan = planFor(candidate.array.name);
               if (!plan) return undefined;
               const index = resolve(candidate.index);
               if (!index) return undefined;
@@ -5359,13 +5366,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             if (candidate instanceof UnaryOpNode && candidate.operator === UnaryOperator.SIZE
               && candidate.expression instanceof IdentifierNode
               && arrayNames.has(candidate.expression.name)) {
-              const plan = helperPlans.get(candidate.expression.name);
+              const plan = planFor(candidate.expression.name);
               return plan ? cloneNode(plan.length) as ExpressionNode : undefined;
             }
             if (candidate instanceof FieldAccessNode && candidate.name === 'length'
               && candidate.expression instanceof IdentifierNode
               && arrayNames.has(candidate.expression.name)) {
-              const plan = helperPlans.get(candidate.expression.name);
+              const plan = planFor(candidate.expression.name);
               return plan ? cloneNode(plan.length) as ExpressionNode : undefined;
             }
             if (candidate instanceof IdentifierNode && arrayNames.has(candidate.name)) return undefined;
@@ -5421,7 +5428,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               continue;
             }
             if (helperStatement instanceof ArrayAssignNode && arrayNames.has(helperStatement.name)) {
-              const plan = helperPlans.get(helperStatement.name);
+              const planName = planNameFor(helperStatement.name);
+              const plan = planName === undefined ? undefined : helperPlans.get(planName);
               if (!plan) return undefined;
               const assignedIndex = replay(helperStatement.index);
               const assignedValue = replay(helperStatement.value);
@@ -5430,7 +5438,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               continue;
             }
             if (helperStatement instanceof ArrayDeleteNode && arrayNames.has(helperStatement.name)) {
-              const plan = helperPlans.get(helperStatement.name);
+              const planName = planNameFor(helperStatement.name);
+              const plan = planName === undefined ? undefined : helperPlans.get(planName);
               if (!plan) return undefined;
               const deletedIndex = replay(helperStatement.index);
               if (!deletedIndex) return undefined;
@@ -5441,7 +5450,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               continue;
             }
             if (helperStatement instanceof ArrayPushNode && arrayNames.has(helperStatement.name)) {
-              const plan = helperPlans.get(helperStatement.name);
+              const planName = planNameFor(helperStatement.name);
+              const plan = planName === undefined ? undefined : helperPlans.get(planName);
               if (!plan) return undefined;
               const pushedValue = replay(helperStatement.value);
               if (!pushedValue) return undefined;
@@ -5459,7 +5469,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               continue;
             }
             if (helperStatement instanceof ArrayPopNode && arrayNames.has(helperStatement.name)) {
-              const plan = helperPlans.get(helperStatement.name);
+              const planName = planNameFor(helperStatement.name);
+              const plan = planName === undefined ? undefined : helperPlans.get(planName);
               if (!plan) return undefined;
               const one = new IntLiteralNode(1n);
               one.location = helperStatement.location;
@@ -5543,8 +5554,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         };
         const summary = summarize(target.body, { plans: initialPlans, values: initialValues }, true);
         if (!summary) return new Set();
-        for (const [parameterName, plan] of summary.plans) {
-          const callerName = callerNamesByParameter.get(parameterName)!;
+        for (const [planName, plan] of summary.plans) {
+          const callerName = callerNamesByPlan.get(planName)!;
           active.set(callerName, plan);
           replayed.add(callerName);
         }

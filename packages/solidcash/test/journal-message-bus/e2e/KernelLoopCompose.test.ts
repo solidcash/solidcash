@@ -5469,6 +5469,12 @@ describe('kernel composite counter-key settlement', () => {
         for (int i = 0; i < n; i = i + 1) { this.leftSlots[left[i]] = i + 50; }
         require(true);
       }
+      function writeAliased(int n, int a, int b) public {
+        int[] memory keys = new int[](n);
+        mutate(keys, keys, a, b);
+        for (int i = 0; i < n; i = i + 1) { this.leftSlots[keys[i]] = i + 60; }
+        require(true);
+      }
       function checkLeft(int key, int expected) public { require(this.leftSlots[key] == expected); }
       function checkRight(int key, int expected) public { require(this.rightSlots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
@@ -5485,10 +5491,13 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.batch([{ function: 'writeLength', args: [2n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.batch([{ function: 'writeAliased', args: [2n, 1100n, 1200n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.checkLeft(1500n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1900n, 30n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(3n, 50n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(0n, 51n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(2300n, 60n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(0n, 61n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(800n, 20n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(1000n, 40n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(0n, 41n).send()).resolves.toBeDefined();

@@ -1174,7 +1174,7 @@ describe('required kernel admission', () => {
         expect.objectContaining({ collection: 'rightSlots' }),
       ]));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'aliased'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'crossRead'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'direct'))

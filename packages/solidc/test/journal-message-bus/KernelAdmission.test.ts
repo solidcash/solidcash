@@ -1108,6 +1108,54 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('replays independent constructed-key mutations through distinct memory aliases', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) leftSlots;
+      mapping(int => int) rightSlots;
+      function mutate(int[] memory left, int[] memory right, int a, int b) internal pure {
+        left[0] = a;
+        right[0] = b;
+      }
+      function copyKey(int[] memory left, int[] memory right) internal pure {
+        left[0] = right[0];
+      }
+      function write(int n, int a, int b) public {
+        int[] memory left = new int[](n);
+        int[] memory right = new int[](n);
+        mutate(left, right, a, b);
+        for (int i = 0; i < n; i = i + 1) {
+          this.leftSlots[left[i]] = i;
+          this.rightSlots[right[i]] = i;
+        }
+        require(true);
+      }
+      function aliased(int n, int a, int b) public {
+        int[] memory keys = new int[](n);
+        mutate(keys, keys, a, b);
+        for (int i = 0; i < n; i = i + 1) { this.leftSlots[keys[i]] = i; }
+        require(true);
+      }
+      function crossRead(int n) public {
+        int[] memory xs = new int[](n);
+        int[] memory ys = new int[](n);
+        copyKey(xs, ys);
+        for (int i = 0; i < n; i = i + 1) { this.leftSlots[xs[i]] = i; }
+        require(true);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'write')?.sortedUpsertLoopInfo)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ collection: 'leftSlots' }),
+        expect.objectContaining({ collection: 'rightSlots' }),
+      ]));
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'aliased'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'crossRead'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
   it('replays helper-side constructed-key resizing through the shared memory alias', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;

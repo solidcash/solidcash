@@ -578,10 +578,13 @@ known prefix on each iteration. Push values and branch selectors may use straigh
 assignments; exhaustive `if`/`else` and `switch` assignments are merged into source-order ternary recipes for later
 pushes. Passing an element value to a helper does not escape the array, and passing the whole array through a
 transitively read-only `pure` helper preserves its symbolic plan. A unique `pure` helper may also write elements
-through an explicit `memory` parameter: scalar parameters and helper locals are substituted into the caller's
-symbolic plan, and finite nested `if`/`else` and `switch` writes use the same path joins as direct source code,
-matching the compiler's pass-by-reference memory model. A helper which does not rebind that parameter may also
-push and pop through the shared alias; those operations advance the symbolic length at their exact source point.
+through explicit `memory` parameters: scalar parameters and helper locals are substituted into each caller
+array's symbolic plan, and finite nested `if`/`else` and `switch` writes use the same path joins as direct source
+code, matching the compiler's pass-by-reference memory model. Several array parameters are replayable when the
+caller supplies distinct constructed arrays and no mutation expression reads another array; caller aliasing or
+cross-array reads remain fenced until a joint alias model can preserve their shared history. A helper which does
+not rebind a replayed parameter may also push and pop through the shared alias; those operations advance the
+symbolic length at their exact source point.
 Mixed push/pop paths which restore their entry length without popping into the pre-existing prefix are replayed
 independently per logical iteration, including finite `if`/`else` and `switch` paths. Other mixed push/pop
 operations in a counter-dependent resize recurrence, a push value derived

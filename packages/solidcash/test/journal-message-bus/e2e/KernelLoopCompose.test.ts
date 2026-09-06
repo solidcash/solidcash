@@ -5428,6 +5428,43 @@ describe('kernel composite counter-key settlement', () => {
     await expect(contract.call.check(902n, 11n).send()).resolves.toBeDefined();
   }, 180_000);
 
+  it('settles independent constructed-key mutations through distinct memory aliases', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelDistinctHelperAliases() {
+      mapping(int => int) leftSlots;
+      mapping(int => int) rightSlots;
+      function mutate(int[] memory left, int[] memory right, int a, int b) internal pure {
+        left[0] = a;
+        right[0] = b;
+      }
+      function write(int n, int a, int b) public {
+        int[] memory left = new int[](n);
+        int[] memory right = new int[](n);
+        mutate(left, right, a, b);
+        for (int i = 0; i < n; i = i + 1) {
+          this.leftSlots[left[i]] = i + 10;
+          this.rightSlots[right[i]] = i + 20;
+        }
+        require(true);
+      }
+      function checkLeft(int key, int expected) public { require(this.leftSlots[key] == expected); }
+      function checkRight(int key, int expected) public { require(this.rightSlots[key] == expected); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'write', args: [2n, 700n, 800n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.call.checkLeft(700n, 10n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(0n, 11n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkRight(800n, 20n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkRight(0n, 21n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('retains constructed keys across mutations of a value-copied helper parameter', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelValueCopyArray() {

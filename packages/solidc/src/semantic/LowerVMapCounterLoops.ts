@@ -5217,82 +5217,89 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             && parameter.modifier.includes('memory')
             && call.parameters[index] instanceof IdentifierNode
             && active.has((call.parameters[index] as IdentifierNode).name));
-        // Summarize one memory alias at a time. Multiple array aliases can interact through reads or writes and
-        // need an alias-aware summary rather than independent plan updates.
-        if (arrayParameters.length !== 1) return replayed;
-        const { parameter: arrayParameter, index: arrayParameterIndex } = arrayParameters[0];
-        const callerArray = call.parameters[arrayParameterIndex] as IdentifierNode;
-        const sourcePlan = active.get(callerArray.name)!;
-        if (sourcePlan.recurrence) return replayed;
-        const initialPlan = copyPlans(new Map([[callerArray.name, sourcePlan]])).get(callerArray.name)!;
-        const initialValues = new Map<string, ExpressionNode>();
-        target.parameters.forEach((candidate, index) => {
-          if (index === arrayParameterIndex) return;
-          initialValues.set(candidate.name, replaceSnapshots(call.parameters[index], snapshots));
-        });
-        const arrayNames = new Set(target.parameters
-          .filter((candidate) => candidate.type instanceof ArrayType).map((candidate) => candidate.name));
-        const safe = (expression: ExpressionNode): boolean => !containsNamedIdentifier(expression, arrayNames);
-        const clonePlan = (plan: ArrayPlan): ArrayPlan => copyPlans(
-          new Map([[callerArray.name, plan]]),
-        ).get(callerArray.name)!;
-        const mergePlans = (
-          base: ArrayPlan,
-          arms: readonly { plan: ArrayPlan; condition?: ExpressionNode }[],
-        ): ArrayPlan => {
-          const merged = clonePlan(base);
-          for (const { plan, condition } of arms) {
-            for (const write of plan.writes.slice(base.writes.length)) {
-              merged.writes.push({
-                index: cloneNode(write.index) as ExpressionNode,
-                value: cloneNode(write.value) as ExpressionNode,
-                ...(condition && { condition: branchCondition(condition, write.condition, false) }),
-                ...(!condition && write.condition && {
-                  condition: cloneNode(write.condition) as ExpressionNode,
-                }),
-              });
+        if (arrayParameters.length === 0) return replayed;
+        // Replaying each parameter independently is sound only when the caller supplies distinct arrays and no
+        // mutation expression reads an array object. The summary below enforces the latter for every parameter;
+        // reject caller aliasing here so two formal names cannot conceal one shared mutation history.
+        const callerArrayNames = arrayParameters.map(({ index }) =>
+          (call.parameters[index] as IdentifierNode).name);
+        if (new Set(callerArrayNames).size !== callerArrayNames.length) return replayed;
+        const summarizedPlans = new Map<string, ArrayPlan>();
+        for (const { parameter: arrayParameter, index: arrayParameterIndex } of arrayParameters) {
+          const callerArray = call.parameters[arrayParameterIndex] as IdentifierNode;
+          const sourcePlan = active.get(callerArray.name)!;
+          if (sourcePlan.recurrence) return new Set();
+          const initialPlan = copyPlans(new Map([[callerArray.name, sourcePlan]])).get(callerArray.name)!;
+          const initialValues = new Map<string, ExpressionNode>();
+          target.parameters.forEach((candidate, index) => {
+            // Keep every array formal visible to `safe`: substituting another array's caller name first could
+            // hide a cross-array read whenever the caller chose a different identifier spelling.
+            if (index === arrayParameterIndex || candidate.type instanceof ArrayType) return;
+            initialValues.set(candidate.name, replaceSnapshots(call.parameters[index], snapshots));
+          });
+          const arrayNames = new Set(target.parameters
+            .filter((candidate) => candidate.type instanceof ArrayType).map((candidate) => candidate.name));
+          const safe = (expression: ExpressionNode): boolean => !containsNamedIdentifier(expression, arrayNames);
+          const clonePlan = (plan: ArrayPlan): ArrayPlan => copyPlans(
+            new Map([[callerArray.name, plan]]),
+          ).get(callerArray.name)!;
+          const mergePlans = (
+            base: ArrayPlan,
+            arms: readonly { plan: ArrayPlan; condition?: ExpressionNode }[],
+          ): ArrayPlan => {
+            const merged = clonePlan(base);
+            for (const { plan, condition } of arms) {
+              for (const write of plan.writes.slice(base.writes.length)) {
+                merged.writes.push({
+                  index: cloneNode(write.index) as ExpressionNode,
+                  value: cloneNode(write.value) as ExpressionNode,
+                  ...(condition && { condition: branchCondition(condition, write.condition, false) }),
+                  ...(!condition && write.condition && {
+                    condition: cloneNode(write.condition) as ExpressionNode,
+                  }),
+                });
+              }
             }
-          }
-          let length = cloneNode(arms[arms.length - 1].plan.length) as ExpressionNode;
-          for (let index = arms.length - 2; index >= 0; index -= 1) {
-            const selected = new TernaryOpNode(
-              cloneNode(arms[index].condition!), cloneNode(arms[index].plan.length), length,
-            );
-            selected.location = arms[index].condition!.location;
-            selected.type = arms[index].plan.length.type ?? length.type;
-            length = selected;
-          }
-          merged.length = length;
-          return merged;
-        };
-        const mergeValues = (
-          base: ReadonlyMap<string, ExpressionNode>,
-          arms: readonly { values: ReadonlyMap<string, ExpressionNode>; condition?: ExpressionNode }[],
-        ): Map<string, ExpressionNode> => {
-          const merged = new Map<string, ExpressionNode>();
-          const names = new Set([
-            ...base.keys(),
-            ...[...arms[0].values.keys()].filter((name) =>
-              arms.every((arm) => arm.values.has(name))),
-          ]);
-          for (const name of names) {
-            const fallback = arms[arms.length - 1].values.get(name) ?? base.get(name);
-            if (!fallback) continue;
-            let value = cloneNode(fallback) as ExpressionNode;
+            let length = cloneNode(arms[arms.length - 1].plan.length) as ExpressionNode;
             for (let index = arms.length - 2; index >= 0; index -= 1) {
-              const armValue = arms[index].values.get(name) ?? base.get(name);
-              if (!armValue) continue;
               const selected = new TernaryOpNode(
-                cloneNode(arms[index].condition!), cloneNode(armValue), value,
+                cloneNode(arms[index].condition!), cloneNode(arms[index].plan.length), length,
               );
               selected.location = arms[index].condition!.location;
-              selected.type = armValue.type ?? value.type;
-              value = selected;
+              selected.type = arms[index].plan.length.type ?? length.type;
+              length = selected;
             }
-            merged.set(name, value);
-          }
-          return merged;
-        };
+            merged.length = length;
+            return merged;
+          };
+          const mergeValues = (
+            base: ReadonlyMap<string, ExpressionNode>,
+            arms: readonly { values: ReadonlyMap<string, ExpressionNode>; condition?: ExpressionNode }[],
+          ): Map<string, ExpressionNode> => {
+            const merged = new Map<string, ExpressionNode>();
+            const names = new Set([
+              ...base.keys(),
+              ...[...arms[0].values.keys()].filter((name) =>
+                arms.every((arm) => arm.values.has(name))),
+            ]);
+            for (const name of names) {
+              const fallback = arms[arms.length - 1].values.get(name) ?? base.get(name);
+              if (!fallback) continue;
+              let value = cloneNode(fallback) as ExpressionNode;
+              for (let index = arms.length - 2; index >= 0; index -= 1) {
+                const armValue = arms[index].values.get(name) ?? base.get(name);
+                if (!armValue) continue;
+                const selected = new TernaryOpNode(
+                  cloneNode(arms[index].condition!), cloneNode(armValue), value,
+                );
+                selected.location = arms[index].condition!.location;
+                selected.type = armValue.type ?? value.type;
+                value = selected;
+              }
+              merged.set(name, value);
+            }
+            return merged;
+          };
         type HelperSummary = { plan: ArrayPlan; values: Map<string, ExpressionNode> };
         const summarize = (
           helperBlock: BlockNode,
@@ -5311,6 +5318,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               values.set(helperStatement.name, expression);
               continue;
             }
+            if (helperStatement instanceof AssignNode
+              && arrayNames.has(helperStatement.identifier.name)) return undefined;
             if (helperStatement instanceof AssignNode
               && helperStatement.identifier.name !== arrayParameter.name) {
               const expression = replay(helperStatement.expression);
@@ -5360,6 +5369,24 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               plan.length = length;
               continue;
             }
+            // Mutations of another distinct memory parameter are summarized by its own pass. Validate their
+            // operands here as well: an array-derived index/value would couple the two summaries and requires a
+            // joint alias model rather than independent symbolic plans.
+            if (helperStatement instanceof ArrayAssignNode && arrayNames.has(helperStatement.name)) {
+              const assignedIndex = replay(helperStatement.index);
+              const assignedValue = replay(helperStatement.value);
+              if (!safe(assignedIndex) || !safe(assignedValue)) return undefined;
+              continue;
+            }
+            if (helperStatement instanceof ArrayDeleteNode && arrayNames.has(helperStatement.name)) {
+              if (!safe(replay(helperStatement.index))) return undefined;
+              continue;
+            }
+            if (helperStatement instanceof ArrayPushNode && arrayNames.has(helperStatement.name)) {
+              if (!safe(replay(helperStatement.value))) return undefined;
+              continue;
+            }
+            if (helperStatement instanceof ArrayPopNode && arrayNames.has(helperStatement.name)) continue;
             if (helperStatement instanceof BranchNode) {
               const condition = replay(helperStatement.condition);
               if (!safe(condition)) return undefined;
@@ -5421,9 +5448,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           return { plan, values };
         };
         const summary = summarize(target.body, { plan: initialPlan, values: initialValues }, true);
-        if (!summary) return replayed;
-        active.set(callerArray.name, summary.plan);
-        replayed.add(callerArray.name);
+        if (!summary) return new Set();
+        summarizedPlans.set(callerArray.name, summary.plan);
+        }
+        for (const [name, plan] of summarizedPlans) {
+          active.set(name, plan);
+          replayed.add(name);
+        }
         return replayed;
       };
       const transformed: StatementNode[] = [];

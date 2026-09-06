@@ -14328,6 +14328,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEvmEncodeValue(type: Type, loc: SingleLocationData): void {
     if (type instanceof ArrayType && type.bound === undefined) {
       this.emitEvmArrayTail(type.elementType, loc);
+    } else if (type instanceof ArrayType && type.bound !== undefined && this.isDynamicAbiType(type)) {
+      this.emitEvmFixedArrayTailDynamic(type, loc);
     } else if (type instanceof ArrayType && type.bound !== undefined && !this.isDynamicAbiType(type)) {
       // fixed-size array of static elements (uint256[3]): inline element words, no length word - the ABI static
       // encoding. packed=true skips the length word and emits each element padded to 32, which is exactly that.
@@ -14340,6 +14342,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       this.emitEvmAbiWord(type, loc);
     }
+  }
+
+  // A fixed array with dynamic elements is an ABI tuple (offset head + element tails), without a length word.
+  // Unframe the ordinary SolidCash array value, encode each element independently, then reuse the same generic
+  // head/tail assembler used by dynamic structs.
+  private emitEvmFixedArrayTailDynamic(type: ArrayType, loc: SingleLocationData): void {
+    const count = type.bound ?? 0;
+    this.emitPushdataDecode(PrimitiveType.BIGINT, loc);
+    this.emit(Op.OP_NIP, loc); // discard the encoded count, retain the element blob
+    const swapTop = (): void => { const s = this.stack; [s[0], s[1]] = [s[1], s[0]]; };
+    for (let i = 0; i < count; i += 1) {
+      this.emitPushdataDecode(type.elementType, loc);
+      this.popFromStack(); this.pushToStack('(element-value)'); this.pushToStack('(element-rest)');
+      if (i < count - 1) {
+        this.emit(Op.OP_SWAP, loc); swapTop();
+        this.emitEvmEncodeValue(type.elementType, loc);
+        this.emit(Op.OP_SWAP, loc); swapTop();
+      } else {
+        this.emit(Op.OP_DROP, loc); this.popFromStack();
+        this.emitEvmEncodeValue(type.elementType, loc);
+      }
+    }
+    for (let i = 0; i < count; i += 1) this.stack[count - 1 - i] = `__abiblob${i}`;
+    this.emitEvmHeadTailFromBlobs(Array.from({ length: count }, () => type.elementType), loc);
   }
 
   // evmCompat: a DYNAMIC struct (has a bytes/string/dynamic-array field) encoded as its ABI tuple = head/tail over
@@ -14459,6 +14485,117 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     this.emitEvmWordToValue(type, loc);
+  }
+
+  // Runtime byte length of one ABI value beginning at the top of the stack. This consumes the value suffix and
+  // leaves its canonical span. For dynamic tuples the final dynamic member determines the end of the canonical
+  // tail; recursively following that member preserves each nested tuple's independent offset base.
+  private emitEvmValueSpan(type: Type, loc: SingleLocationData): void {
+    const savedStack = [...this.stack];
+    const finish = (): void => { this.stack = savedStack; };
+    if (!this.isDynamicAbiType(type)) {
+      this.emit(Op.OP_DROP, loc);
+      this.emit(encodeInt(BigInt(this.abiStaticSize(type))), loc);
+      finish();
+      return;
+    }
+    if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) {
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitEvmWordToValue(PrimitiveType.BIGINT, loc);
+      this.emit(encodeInt(31n), loc); this.emit(Op.OP_ADD, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_DIV, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_MUL, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_ADD, loc);
+      finish();
+      return;
+    }
+    if (type instanceof ArrayType && type.bound === undefined && !this.isDynamicAbiType(type.elementType)) {
+      const width = this.abiStaticSize(type.elementType);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitEvmWordToValue(PrimitiveType.BIGINT, loc);
+      this.emit(encodeInt(BigInt(width)), loc); this.emit(Op.OP_MUL, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_ADD, loc);
+      finish();
+      return;
+    }
+    if (type instanceof ArrayType && type.bound === undefined) {
+      // Dynamic-element array: length || offset head || tails. Offsets are relative to the byte immediately after
+      // the length word. The final element determines the canonical end; the empty array is exactly one word.
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [array, count]
+      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0NOTEQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DUP, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_MUL, loc);
+      this.emit(Op.OP_NIP, loc); // [array, absolute position of final offset word]
+      this.emit(Op.OP_DUP, loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+      this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); this.emit(Op.OP_NIP, loc); // [array, relative offset]
+      this.emit(Op.OP_DUP, loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_SWAP, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [array, offset, final element suffix]
+      this.emitEvmValueSpan(type.elementType, loc);
+      this.emit(Op.OP_ADD, loc); this.emit(encodeInt(32n), loc); this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_2DROP, loc); this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_ENDIF, loc);
+      finish();
+      return;
+    }
+    let finalDynamic: Type | undefined;
+    let finalHeadOffset = 0;
+    if (type instanceof StructType) {
+      let cursor = 0;
+      for (const field of type.fields) {
+        if (this.isDynamicAbiType(field.type)) { finalDynamic = field.type; finalHeadOffset = cursor; }
+        cursor += this.isDynamicAbiType(field.type) ? 32 : this.abiStaticSize(field.type);
+      }
+    } else if (type instanceof ArrayType && type.bound !== undefined && type.bound > 0) {
+      finalDynamic = type.elementType;
+      finalHeadOffset = (type.bound - 1) * 32;
+    }
+    if (!finalDynamic) throw new Error(`evmCompat abi.decode: cannot measure dynamic '${type.toString()}'`);
+    this.emit(Op.OP_DUP, loc);
+    if (finalHeadOffset > 0) {
+      this.emit(encodeInt(BigInt(finalHeadOffset)), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    }
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [tuple, final offset]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [tuple, offset, final suffix]
+    this.emitEvmValueSpan(finalDynamic, loc); // [tuple, offset, nested span]
+    this.emit(Op.OP_ADD, loc); this.emit(Op.OP_NIP, loc); // [total span]
+    finish();
+  }
+
+  private emitPrependEvmSingleOffset(loc: SingleLocationData): void {
+    this.emit(encodeInt(32n), loc); this.pushToStack('(offset-prefix)');
+    this.emitEvmWordFromUint(loc);
+    this.emit(Op.OP_SWAP, loc);
+    [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+    this.emit(Op.OP_CAT, loc);
+    this.popFromStack(2); this.pushToStack('(value)');
+  }
+
+  // Dynamic fixed arrays are ABI tuples with one element schema repeated `bound` times. Decode those values using
+  // the shared recursive tuple walker, then rebuild the ordinary SolidCash count-prefixed array representation.
+  private emitEvmFixedArrayDecodeDynamic(type: ArrayType, loc: SingleLocationData): void {
+    const count = type.bound ?? 0;
+    this.emitDropFirst32(loc);
+    this.emitEvmAbiDecodeDynamic(Array.from({ length: count }, () => type.elementType), loc);
+    const savedStack = [...this.stack];
+    this.emit(scriptToBytecode([encodeInt(BigInt(count))]), loc);
+    for (let i = 0; i < count; i += 1) {
+      this.emit(encodeInt(BigInt(count - i)), loc); this.emit(Op.OP_ROLL, loc);
+      if (isFixedWidthType(type.elementType)) this.emitEncodeElementPacked(type.elementType, loc);
+      else this.emitPushdataEncode(type.elementType, loc);
+      this.emit(Op.OP_CAT, loc);
+    }
+    this.stack = savedStack;
+    this.popFromStack(count); this.pushToStack('(value)');
   }
 
   // evmCompat inverse of emitEvmStructTail: a DYNAMIC struct's ABI tuple -> the framed struct blob. Strip the
@@ -14614,16 +14751,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           return true;
         }
         if (member instanceof ArrayType && member.bound === undefined) {
-          return !this.isDynamicAbiType(member.elementType) && this.isEvmAbiWordType(member.elementType);
+          return this.isEvmExternalResultArrayElementDecodable(member.elementType);
+        }
+        if (member instanceof ArrayType && member.bound !== undefined && this.isDynamicAbiType(member)) {
+          return member.bound <= MAX_MATERIALIZED_ARRAY_ELEMENTS
+            && this.isEvmExternalResultDecodable(member.elementType);
+        }
+        if (member instanceof StructType && this.isDynamicAbiType(member)) {
+          return this.isEvmExternalResultDecodable(member);
         }
         return !this.isDynamicAbiType(member) && this.isEvmExternalResultDecodable(member);
       });
     }
     if (type instanceof ArrayType) {
-      return !this.isDynamicAbiType(type.elementType)
+      if (type.bound === undefined) {
+        return this.isEvmExternalResultArrayElementDecodable(type.elementType);
+      }
+      return type.bound <= MAX_MATERIALIZED_ARRAY_ELEMENTS
         && this.isEvmExternalResultDecodable(type.elementType);
     }
     return false;
+  }
+
+  private isEvmExternalResultArrayElementDecodable(type: Type): boolean {
+    if (!this.isDynamicAbiType(type)) return this.isEvmExternalResultDecodable(type);
+    if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return true;
+    return type instanceof ArrayType && type.bound === undefined
+      && this.isEvmExternalResultArrayElementDecodable(type.elementType);
   }
 
   private isEvmExternalResultSchemaDecodable(schema: readonly Type[]): boolean {
@@ -14659,9 +14813,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const single = schema[0];
     if (schema.length === 1 && single instanceof ArrayType) {
       if (single.bound === undefined) {
-        if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
+        if (this.isDynamicAbiType(single.elementType)) {
+          this.emitEvmDynamicArrayDecode(single.elementType, loc);
+        } else if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
           this.emitEvmStaticCompositeArrayDecode(single.elementType, loc);
         } else this.emitEvmArrayDecode(single.elementType, loc);
+      } else if (this.isDynamicAbiType(single)) {
+        this.emitEvmFixedArrayDecodeDynamic(single, loc);
       } else if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
         this.emitEvmStaticArrayInlineDecode(single, loc);
         this.popFromStack(); this.pushToStack(trackedName(0));
@@ -14765,11 +14923,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitEvmStaticValueDecode(t, loc);
         continue;
       }
-      if (t instanceof StructType) {
-        // The struct's top-level head word is relative to the outer result tuple. Isolate its suffix while the
-        // authenticated outer blob remains available, then prepend the canonical single-result offset word used
-        // by emitEvmStructDecodeDynamic. Inner field offsets remain relative to the struct tuple itself, so the
-        // recursive decoder follows the correct independent base even when this struct has tuple siblings.
+      const recursivelyDecodedArray = t instanceof ArrayType && t.bound === undefined
+        && (!this.isEvmAbiWordType(t.elementType) || this.isDynamicAbiType(t.elementType));
+      if (t instanceof StructType || (t instanceof ArrayType && t.bound !== undefined)
+        || recursivelyDecodedArray) {
+        // The composite's top-level head word is relative to the outer result tuple. Isolate its exact recursive
+        // span while the authenticated outer blob remains available, then prepend the canonical single-result
+        // offset word used by the type-specific decoder. Inner offsets retain their own tuple/array base even
+        // when this value has outer tuple siblings.
         this.emitEvmWordToValue(PrimitiveType.BIGINT, loc);
         this.emit(Op.OP_DUP, loc); this.pushToStack('(struct-offset)');
         this.emit(encodeInt(BigInt(this.getStackIndex('__decblob'))), loc);
@@ -14777,14 +14938,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SWAP, loc);
         this.emit(Op.OP_SPLIT, loc);
         this.emit(Op.OP_NIP, loc); this.nipFromStack(); // [offset, struct tuple + following outer tails]
-        this.emit(Op.OP_NIP, loc); this.nipFromStack(); // [struct tuple + following outer tails]
-        this.emit(encodeInt(32n), loc); this.pushToStack('(struct-prefix)');
-        this.emitEvmWordFromUint(loc);
-        this.emit(Op.OP_SWAP, loc);
-        [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
-        this.emit(Op.OP_CAT, loc);
-        this.popFromStack(2); this.pushToStack('(value)');
-        this.emitEvmStructDecodeDynamic(t, loc);
+        this.emit(Op.OP_NIP, loc); this.nipFromStack(); // [composite tuple + following outer tails]
+        this.emit(Op.OP_DUP, loc); this.pushToStack('(composite-span-source)');
+        this.emitEvmValueSpan(t, loc); // [suffix, exact composite span]
+        this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); this.popFromStack(); // [exact composite tuple]
+        this.emitPrependEvmSingleOffset(loc);
+        if (t instanceof StructType) this.emitEvmStructDecodeDynamic(t, loc);
+        else if (t.bound !== undefined) this.emitEvmFixedArrayDecodeDynamic(t, loc);
+        else if (this.isDynamicAbiType(t.elementType)) this.emitEvmDynamicArrayDecode(t.elementType, loc);
+        else this.emitEvmStaticCompositeArrayDecode(t.elementType, loc);
         continue;
       }
       const arr = isArr(schema[i]);

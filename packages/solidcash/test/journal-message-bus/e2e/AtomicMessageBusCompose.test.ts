@@ -2129,6 +2129,94 @@ describe('messageBus.compose atomic transaction', () => {
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 
+  it('consumes nested dynamic structs and dynamic fixed arrays', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const sourceArtifact = compileString(`pragma solidity ^0.8.0;
+      struct Leaf { bytes data; }
+      struct Row { uint16 code; }
+      struct Bundle { Leaf nested; bytes[2] fixedItems; Row[] rows; bytes[] labels; }
+      contract RecursiveTupleSource {
+        function read() public pure returns (Bundle memory) {
+          bytes[2] memory values = [hex"aa", hex"bbcc"];
+          Row[] memory rows = new Row[](2);
+          rows[0] = Row(3);
+          rows[1] = Row(5);
+          bytes[] memory labels = new bytes[](2);
+          labels[0] = hex"11";
+          labels[1] = hex"2233";
+          return Bundle(Leaf(hex"cafe"), values, rows, labels);
+        }
+      }
+    `, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const sourceBase = new Contract(sourceArtifact, [], { provider });
+    const sourceSetup = await setupStatefulUtxos(
+      provider, sourceBase, sourceArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const source = StatefulContract.withCategory(
+      sourceBase.withCategory(hexToBin(sourceSetup.categoryId)), sourceSetup.categoryId,
+    );
+    const rootArtifact = compileString(`pragma solidity ^0.8.0;
+      struct Leaf { bytes data; }
+      struct Row { uint16 code; }
+      struct Bundle { Leaf nested; bytes[2] fixedItems; Row[] rows; bytes[] labels; }
+      interface IRecursiveTupleSource { function read() external returns (Bundle memory); }
+      contract RecursiveTupleRoot(address source) {
+        function run() public {
+          Bundle memory value = IRecursiveTupleSource(source).read();
+          require(value.nested.data == hex"cafe"
+            && value.fixedItems[0] == hex"aa" && value.fixedItems[1] == hex"bbcc"
+            && value.rows.length == 2 && value.rows[0].code == 3 && value.rows[1].code == 5
+            && value.labels.length == 2 && value.labels[0] == hex"11" && value.labels[1] == hex"2233");
+        }
+      }
+    `, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const rootBase = new Contract(rootArtifact, [source.inner.lockingBytecode], { provider });
+    const rootSetup = await setupStatefulUtxos(
+      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const root = StatefulContract.withCategory(
+      rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
+    );
+    const callsiteId = rootArtifact.abi.find((entry) => entry.name === 'run')!
+      .externalCalls!.find((call) => call.functionName === 'read')!.callsiteId!;
+    const result = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(
+      ['tuple(tuple(bytes),bytes[2],tuple(uint16)[],bytes[])'],
+      [[['0xcafe'], ['0xaa', '0xbbcc'], [[3n], [5n]], ['0x11', '0x2233']]],
+    ).slice(2));
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [
+        { contract: root, functionName: 'run', args: [] },
+        { contract: source, functionName: 'read', args: [], callsiteId, provisionalResultCommitment: result },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const built = await composition.build();
+    expect(vmRejects(built)).toBe(false);
+    const malformed = Uint8Array.from(result);
+    malformed[31] = 0xff;
+    await expect(messageBus.compose({
+      preparedCalls: [
+        { contract: root, functionName: 'run', args: [] },
+        {
+          contract: source, functionName: 'read', args: [], callsiteId,
+          provisionalResultCommitment: malformed,
+        },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    }).build()).rejects.toThrow(/prepared return commitment/);
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
   it('binds an emitted event row to its absolute physical output', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeEventCallee() {

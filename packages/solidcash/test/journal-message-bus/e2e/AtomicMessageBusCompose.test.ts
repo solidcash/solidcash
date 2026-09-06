@@ -637,14 +637,15 @@ describe('messageBus.compose atomic transaction', () => {
       interface IFactory { function create(int seed); }
       contract Factory() {
         function create(int seed) public {
-          Child child = new Child(seed);
+          int adjusted = seed + 1;
+          Child child = new Child(adjusted);
           require(true);
         }
       }
       contract Driver(address factory) {
         function run() public {
+          IFactory(factory).create(0);
           IFactory(factory).create(1);
-          IFactory(factory).create(2);
           require(true);
         }
       }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
@@ -659,8 +660,8 @@ describe('messageBus.compose atomic transaction', () => {
     expect(handler).toMatchObject({
       eligible: true,
       childDeployments: [{
-        constructorArgs: [{ kind: 'handlerInput', inputIndex: 0 }],
-        genesisState: { fields: [{ name: 'marker', value: { kind: 'handlerInput', inputIndex: 0 } }] },
+        constructorArgs: [{ kind: 'cast', operand: { kind: 'binary', operator: '+' } }],
+        genesisState: { fields: [{ name: 'marker', value: { kind: 'cast', operand: { kind: 'binary' } } }] },
       }],
     });
     const fee = await createBareP2pkhFeeFunder(provider, 100_000n);
@@ -669,8 +670,8 @@ describe('messageBus.compose atomic transaction', () => {
     const transaction = await messageBus.compose({
       preparedCalls: [
         { contract: driver, functionName: 'run', args: [] },
+        { contract: factory, functionName: 'create', args: [0n] },
         { contract: factory, functionName: 'create', args: [1n] },
-        { contract: factory, functionName: 'create', args: [2n] },
       ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
@@ -692,8 +693,8 @@ describe('messageBus.compose atomic transaction', () => {
     const tampered = await messageBus.compose({
       preparedCalls: [
         { contract: driver, functionName: 'run', args: [] },
+        { contract: factory, functionName: 'create', args: [0n] },
         { contract: factory, functionName: 'create', args: [1n] },
-        { contract: factory, functionName: 'create', args: [2n] },
       ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),

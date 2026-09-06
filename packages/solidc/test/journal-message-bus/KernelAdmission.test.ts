@@ -1885,6 +1885,87 @@ describe('required kernel admission', () => {
       });
   });
 
+  it('resolves straight-line constructor and salt aliases by lexical definition identity', () => {
+    const artifact = compileString(`contract Unit(int marker) { int stored; constructor() { this.stored = marker; } }
+      contract Coordinator() {
+        function materialize(int seed) public {
+          int adjusted = seed + 1;
+          int forwarded = adjusted;
+          bytes32 derivedSalt = bytes32(adjusted);
+          Unit unit = new Unit{salt: derivedSalt}(forwarded);
+          require(true);
+        }
+      }`, KERNEL);
+    const site = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize')
+      ?.childDeployments?.[0];
+    expect(site).toMatchObject({
+      constructorArgs: [{ kind: 'cast', operand: { kind: 'binary', operator: '+' } }],
+      salt: { kind: 'cast', resultType: 'bytes32', operand: { kind: 'cast', operand: { kind: 'binary' } } },
+      genesisState: { fields: [{ name: 'stored', value: { kind: 'cast', operand: { kind: 'binary' } } }] },
+    });
+  });
+
+  it('snapshots reassigned aliases independently at each deployment site', () => {
+    const artifact = compileString(`contract Unit(int marker) { int stored; constructor() { this.stored = marker; } }
+      contract Coordinator() {
+        function materialize(int seed) public {
+          int adjusted = seed + 1;
+          Unit first = new Unit(adjusted);
+          adjusted = seed + 2;
+          Unit second = new Unit(adjusted);
+          require(true);
+        }
+      }`, KERNEL);
+    const sites = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize')
+      ?.childDeployments ?? [];
+    expect(sites).toHaveLength(2);
+    expect(sites.map((site) => (site.constructorArgs[0] as any).operand?.right?.value)).toEqual(['1', '2']);
+    expect(sites.map((site) => (site.genesisState?.fields[0].value as any).operand?.right?.value))
+      .toEqual(['1', '2']);
+  });
+
+  it('keeps same-named aliases in disjoint lexical scopes distinct', () => {
+    const artifact = compileString(`contract Unit(int marker) { int stored; constructor() { this.stored = marker; } }
+      contract Coordinator() {
+        function materialize(int seed) public {
+          { int adjusted = seed + 1; Unit first = new Unit(adjusted); }
+          { int adjusted = seed + 2; Unit second = new Unit(adjusted); }
+          require(true);
+        }
+      }`, KERNEL);
+    const sites = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize')
+      ?.childDeployments ?? [];
+    expect(sites.map((site) => (site.constructorArgs[0] as any).operand?.right?.value)).toEqual(['1', '2']);
+  });
+
+  it('does not reinterpret an unsupported local shadow as the same-named handler input', () => {
+    const artifact = compileString(`contract Unit(int marker) { int stored; constructor() { this.stored = marker; } }
+      contract Coordinator() {
+        function materialize(int seed) public {
+          { int seed; Unit unit = new Unit(seed); }
+          require(true);
+        }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: false });
+  });
+
+  it.each([
+    'int adjusted; Unit unit = new Unit(adjusted);',
+    'int adjusted = tx.locktime; Unit unit = new Unit(adjusted);',
+    'unchecked { int adjusted = seed + 1; Unit unit = new Unit(adjusted); }',
+    'if (seed > 0) { int adjusted = seed + 1; Unit unit = new Unit(adjusted); }',
+    'int adjusted = seed; if (seed > 0) { adjusted = seed + 1; } Unit unit = new Unit(adjusted);',
+    'int[] values = new int[](1); Unit unit = new Unit(values[0]);',
+  ])('keeps non-SSA deployment aliases fenced: %s', (body) => {
+    const artifact = compileString(`contract Unit(int marker) { int stored; constructor() { this.stored = marker; } }
+      contract Coordinator() {
+        function materialize(int seed) public { ${body} require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: false });
+  });
+
   it('keeps fixed-point constructor arithmetic fenced until recipe scaling is modeled', () => {
     const artifact = compileString(`contract Unit() {
         fixed128x18 marker;

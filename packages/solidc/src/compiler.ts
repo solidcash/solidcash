@@ -157,7 +157,7 @@ import {
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import {
-  childDeploymentGenesisState, childDeploymentValueRecipe,
+  analyzeChildDeploymentRecipes, childDeploymentGenesisState, childDeploymentValueRecipe,
 } from './deploymentRecipes.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
@@ -2059,7 +2059,8 @@ function childDeploymentSites(
   const sites: ChildDeploymentSiteAbi[] = [];
   const visibleInputs = root.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
-  const inputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, parameter.type.toString()]));
+  const inputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
+  const recipeAnalysis = analyzeChildDeploymentRecipes(root);
   const active: Array<{ fn: FunctionDefinitionNode; siteStart: number }> = [{ fn: root, siteStart: 0 }];
 
   const source = (expression: ExpressionNode): ChildDeploymentSiteAbi['constructorArgs'][number] =>
@@ -2085,13 +2086,18 @@ function childDeploymentSites(
     seen.add(value);
 
     if (value instanceof InstantiationNode && value.referencedContract) {
+      const analyzed = recipeAnalysis.get(value);
       const child = value.referencedContract;
       const dataNftOutputCount = child.stateVariables.length === 0 ? 0
         : Math.max(...child.stateVariables.map((state) => state.nftIndex ?? 0)) + 1;
       const creationBytecode = compiledBytecodes.get(child.name);
       if (!creationBytecode) throw new Error(`Missing compiled child body for deployment topology '${child.name}'`);
       const genesisState = value.constructorStateFoldComplete === true
-        ? childDeploymentGenesisState(value.foldedStateInit, child.stateVariables, inputIndex, inputTypes)
+        && analyzed?.supported === true
+        ? childDeploymentGenesisState(
+          value.foldedStateInit, child.stateVariables, inputIndex, inputTypes, false, analyzed?.aliases,
+          analyzed?.aliasDefinitions,
+        )
         : undefined;
       const childLayoutDigest = childStateLayoutDigest({
         variables: child.stateVariables.map((state) => ({
@@ -2114,8 +2120,12 @@ function childDeploymentSites(
         dataNftOutputCount,
         totalOutputCount: 1 + dataNftOutputCount,
         categorySource: 'genesis-input-outpoint-txhash',
-        constructorArgs: value.parameters.map(source),
-        ...(value.callOptions?.salt && { salt: saltSource(value.callOptions.salt) }),
+        constructorArgs: value.parameters.map((parameter, index) => (analyzed
+          ? analyzed.constructorArgs[index] ?? { kind: 'expression' }
+          : source(parameter))),
+        ...(value.callOptions?.salt && {
+          salt: analyzed ? analyzed.salt ?? { kind: 'expression' } : saltSource(value.callOptions.salt),
+        }),
         creationBytecode: binToHex(creationBytecode),
         childLayoutDigest,
         ...(genesisState && { genesisState }),
@@ -3918,6 +3928,7 @@ function synthesizeMessageBusRoute(
       const statefulChildren = new Map(ast.importedContracts.filter((child) =>
         child.stateVariables.length > 0 || child.collections.length > 0).map((child) => [child.name, child]));
       const closureNames = collectNamedFunctionClosure(fn, byName);
+      const deploymentRecipeAnalysis = analyzeChildDeploymentRecipes(fn);
       // Physical-effect helpers have already been inlined. Inspect this exact overload's normalized body;
       // walking every function with the same source name would make an unrelated overload inherit its sibling's
       // deployment topology. A remaining named helper keeps closureNames wider than one and is fenced below.
@@ -3932,6 +3943,8 @@ function synthesizeMessageBusRoute(
             if (statefulChildren.has(node.identifier.name)) {
               deploySites += 1;
               const child = statefulChildren.get(node.identifier.name)!;
+              const analyzed = deploymentRecipeAnalysis.get(node);
+              if (!analyzed?.supported) deploymentRecipeUnsupported = true;
               if (node.hasFoldedChildCall) {
                 deploymentStateInitializationUnsupported = true;
               }
@@ -3959,8 +3972,9 @@ function synthesizeMessageBusRoute(
                 if (!node.hasFoldedChildCall) {
                   new SymbolTableTraversal(compilerOptions).tryFoldChildConstructor(admissionNode);
                 }
-                const genesisState = childDeploymentGenesisState(
+                const genesisState = analyzed && childDeploymentGenesisState(
                   admissionNode.foldedStateInit, child.stateVariables, visibleInputs, visibleInputTypes, true,
+                  analyzed.aliases, analyzed.aliasDefinitions,
                 );
                 if (admissionNode.constructorStateFoldComplete !== true || !genesisState) {
                   deploymentStateInitializationUnsupported = true;
@@ -3968,14 +3982,14 @@ function synthesizeMessageBusRoute(
               }
               const declaredConstructorParameters = child.parameters.length > 0
                 ? child.parameters : (child.constructorDef?.parameters ?? []);
-              for (const argument of node.parameters.slice(0, declaredConstructorParameters.length)) {
-                const recipe = childDeploymentValueRecipe(argument, visibleInputs, false, visibleInputTypes);
+              for (const [argumentIndex] of node.parameters.slice(0, declaredConstructorParameters.length).entries()) {
+                const recipe = analyzed?.constructorArgs[argumentIndex];
                 if (!recipe) {
                   deploymentRecipeUnsupported = true;
                 }
               }
               const salt = node.callOptions?.salt;
-              if (salt && !childDeploymentValueRecipe(salt, visibleInputs, false, visibleInputTypes)) {
+              if (salt && !analyzed?.salt) {
                 deploymentRecipeUnsupported = true;
               }
             } else unsupportedInstantiation = true;

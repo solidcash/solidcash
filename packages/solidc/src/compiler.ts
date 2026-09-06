@@ -2463,6 +2463,7 @@ function synthesizeMessageBusRoute(
   const graphRuntimeHandlers = new Set<FunctionDefinitionNode>();
   const graphBareTailHandlers = new Set<FunctionDefinitionNode>();
   const graphMsgValueHandlers = new Set<FunctionDefinitionNode>();
+  const kernelDeploymentHandlers = new Set<FunctionDefinitionNode>();
   const logicalMsgSenderHandlers = new Set<FunctionDefinitionNode>();
   const localEffectFrameHandlers = new Set<FunctionDefinitionNode>();
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
@@ -3830,10 +3831,20 @@ function synthesizeMessageBusRoute(
     } else if (!reason && graphTailCallEligible && hasUnsupportedSortedRuntimeLoopWrite(fn)) {
       reason = 'verified-mapping-runtime-loop-write-unsupported';
     }
+    let deploys = false;
     if (compilerOptions.messageBusKernel === true) {
-      let deploys = false;
+      let deploySites = 0;
+      let unsupportedInstantiation = false;
+      let deployUnderControlFlow = false;
+      let deployWithValue = false;
+      let deploymentStateInitializationUnsupported = false;
+      let deploymentRecipeUnsupported = false;
+      const deployedLocalNames = new Set<string>();
       const lockingBytecode = new Set<string>(Object.values(Class));
-      for (const name of collectNamedFunctionClosure(fn, byName)) {
+      const statefulChildren = new Map(ast.importedContracts.filter((child) =>
+        child.stateVariables.length > 0 || child.collections.length > 0).map((child) => [child.name, child]));
+      const closureNames = collectNamedFunctionClosure(fn, byName);
+      for (const name of closureNames) {
         for (const candidate of byName.get(name) ?? []) {
           // Synchronous traversal; `deploys` is the accumulator for this immediately enclosing handler scan.
           // eslint-disable-next-line @typescript-eslint/no-loop-func
@@ -3842,10 +3853,80 @@ function synthesizeMessageBusRoute(
             // compile-time locking-bytecode constructor and does not need a handler-owned block layout.
             if (node instanceof InstantiationNode && !lockingBytecode.has(node.identifier.name)) {
               deploys = true;
+              if (statefulChildren.has(node.identifier.name)) {
+                deploySites += 1;
+                const child = statefulChildren.get(node.identifier.name)!;
+                if ((child.constructorDef?.body.statements?.length ?? 0) > 0) {
+                  deploymentStateInitializationUnsupported = true;
+                }
+                if (node.hasFoldedChildCall || (node.foldedStateInit?.size ?? 0) > 0) {
+                  deploymentStateInitializationUnsupported = true;
+                }
+                const visibleInputs = new Set(fn.parameters
+                  .filter((parameter) => !parameter.name.startsWith('__internal__'))
+                  .map((parameter) => parameter.name));
+                for (const argument of node.parameters.slice(0, child.parameters.length)) {
+                  if (!(argument instanceof IdentifierNode) || !visibleInputs.has(argument.name)) {
+                    deploymentRecipeUnsupported = true;
+                  }
+                }
+                const salt = node.callOptions?.salt;
+                if (salt && !(salt instanceof HexLiteralNode)
+                  && (!(salt instanceof IdentifierNode) || !visibleInputs.has(salt.name))) {
+                  deploymentRecipeUnsupported = true;
+                }
+              } else unsupportedInstantiation = true;
+              if (hasEffectiveCallValue(node.callOptions?.value)) deployWithValue = true;
+            }
+            if (node instanceof ExternalFunctionCallNode && node.foldedIntoDeploy) {
+              deploymentStateInitializationUnsupported = true;
             }
           });
+          const nestedDeploy = (value: unknown, nested = false, seen = new WeakSet<object>()): void => {
+            if (Array.isArray(value)) { value.forEach((item) => nestedDeploy(item, nested, seen)); return; }
+            if (!(value instanceof Node) || seen.has(value)) return;
+            seen.add(value);
+            if (value instanceof VariableDefinitionNode
+              && value.expression instanceof InstantiationNode
+              && statefulChildren.has(value.expression.identifier.name)) {
+              deployedLocalNames.add(value.name);
+            }
+            if (value instanceof InstantiationNode && !lockingBytecode.has(value.identifier.name) && nested) {
+              deployUnderControlFlow = true;
+            }
+            // Folded deploy calls are deliberately omitted from the ordinary invocation walk. Inspect the
+            // normalized tree directly so their constructor-state mutation cannot be mistaken for defaults.
+            if ((value instanceof InstantiationNode
+                && (value.hasFoldedChildCall || (value.foldedStateInit?.size ?? 0) > 0))
+              || (value instanceof ExternalFunctionCallNode && value.foldedIntoDeploy)) {
+              deploymentStateInitializationUnsupported = true;
+            }
+            // Admission runs before every deploy-fold annotation is guaranteed to survive normalization.
+            // Preserve the same semantic boundary structurally: a method called on a local initialized by a
+            // stateful `new` is constructor-state initialization, not an independent typed graph edge.
+            if ((value instanceof ExternalFunctionCallNode
+                && value.addressExpression instanceof IdentifierNode
+                && deployedLocalNames.has(value.addressExpression.name))
+              || (value instanceof MethodCallNode && value.object instanceof IdentifierNode
+                && deployedLocalNames.has(value.object.name))
+              || (value instanceof FunctionCallNode && value.identifier.name.includes('.')
+                && deployedLocalNames.has(value.identifier.name.slice(0, value.identifier.name.indexOf('.'))))) {
+              deploymentStateInitializationUnsupported = true;
+            }
+            const childNested = nested || value instanceof WhileNode || value instanceof DoWhileNode
+              || value instanceof BranchNode || value instanceof SwitchNode || value instanceof TryCatchNode;
+            for (const [key, child] of Object.entries(value)) {
+              if (['referencedContract', 'resolvedFunction', 'definition', 'symbolTable'].includes(key)) continue;
+              nestedDeploy(child, childNested, seen);
+            }
+          };
+          nestedDeploy(candidate.body);
         }
       }
+      const kernelDeploySupported = deploys && deploySites === 1 && !unsupportedInstantiation
+        && !deployUnderControlFlow && !deployWithValue && !deploymentStateInitializationUnsupported
+        && !deploymentRecipeUnsupported && closureNames.size === 1;
+      if (kernelDeploySupported) kernelDeploymentHandlers.add(fn);
       // Expression keys (including nested `if` / helper-inlined writes), parameter-array loops, literal
       // `new T[](N)` locals (N<=64, unrolled to scalar writes), and canonical counter-keyed `m[i]` / `m[k][i]`
       // pre/post-test loops (hidden `__internal__vmapCounterPerm_*` on the counter key) journal as trailing
@@ -3855,7 +3936,8 @@ function synthesizeMessageBusRoute(
       // non-canonical iteration domains, and repeated fixed-slot effects still have no kernel representation.
       if (hasUnsupportedSortedRuntimeLoopWrite(fn)) {
         reason = 'KERNEL_UNBOUNDED_KEY';
-      } else if (deploys && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
+      } else if (deploys && !kernelDeploySupported
+        && (reason === undefined || kernelAdmissionReason(reason) === 'KERNEL_LAYOUT')) {
         reason = 'KERNEL_LAYOUT';
       } else if (reason !== undefined) reason = kernelAdmissionReason(reason);
     }
@@ -3874,6 +3956,7 @@ function synthesizeMessageBusRoute(
     const returningEffectHandler = fn.returnTypes.length > 0
       && footprint.effects.some((effect) => effect === 'events' || effect === 'value');
     if (!reason && (graphTailCallEligible || returningEffectHandler
+      || (compilerOptions.messageBusKernel === true && deploys)
       || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue || routeUsesTxOrigin
       || routeUsesMsgValue)) {
       graphTailHandlers.add(fn);
@@ -4280,7 +4363,6 @@ function synthesizeMessageBusRoute(
   if (eligible.length === 0) {
     return;
   }
-
   // A witness name identifies one physical collection/key position, but different handlers can source that
   // position from different ABI arguments (ERC20 approve(owner=msg.sender) beside transferFrom(owner=from)).
   // Such a value is row-local even when each handler individually has only one key spelling. Promoting the
@@ -4312,6 +4394,10 @@ function synthesizeMessageBusRoute(
       .filter((parameter) => !parameter.name.startsWith('__internal__'))
       .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
+  const kernelDeploymentSelectorCondition = eligible
+    .filter((fn) => kernelDeploymentHandlers.has(fn))
+    .map((fn) => `callManifest.slice(rowStart + 10, rowStart + 14) == hex"${selector(fn)}"`)
+    .join(' || ') || 'false';
   // The production 10KB profile keeps the compact two-row resource route. Permissive development/compatibility
   // profiles can afford the fully unrolled row band, which is required when one physical collection owner is
   // reached repeatedly through a deeper call DAG (approve -> balanceOf -> transferFrom -> balanceOf).
@@ -5835,14 +5921,20 @@ function synthesizeMessageBusRoute(
         bigint activeEventRows = 0;
         bigint activeValueRows = 0;
         bigint activeTokenRows = 0;
+        bigint activeDeploymentInvocations = 0;
+        bigint activeDeploymentRows = 0;
         bigint activeSidecarRows = 0;
         bigint activeStaticInvocationRows = 0;
         bigint previousResourceTarget = -1;
         bigint previousEventTarget = -1;
         bigint previousValueTarget = -1;
         bigint previousTokenTarget = -1;
+        bigint previousDeploymentTarget = -1;
         bigint previousSidecarTarget = -1;
         bytes activeSidecarTargets = hex"";
+        bytes activeDeploymentParents = hex"";
+        bytes settledDeploymentParents = hex"";
+        bytes activeDeploymentTargets = hex"";
         bigint eventsStarted = 0;
         bigint effectsStarted = 0;
         for (bigint row = 0; row < rowCount; row = row + 1) {
@@ -5892,8 +5984,12 @@ function synthesizeMessageBusRoute(
             rowConsumers = bytes.concat(rowConsumers, bytes1(consumer));
             rowDepths = bytes.concat(rowDepths, bytes1(depth));
             invocationRows = invocationRows + 1;
+            if (consumer == activeParticipant && (${kernelDeploymentSelectorCondition})) {
+              activeDeploymentParents = bytes.concat(activeDeploymentParents, toPaddedBytes(row, 2));
+              activeDeploymentInvocations = activeDeploymentInvocations + 1;
+            }
           } else {
-            require((kind == 1 || kind == 2 || kind == 3 || kind == 4 || kind == 6)
+            require((kind == 1 || kind == 2 || kind == 3 || kind == 4 || kind == 5 || kind == 6)
               && invocationRows > 0);
             effectsStarted = 1;
             require(__message_bus_row_owner == consumer && sourceOffset == targetOffset && targetOffset < participantSize);
@@ -5927,6 +6023,14 @@ function synthesizeMessageBusRoute(
               require(targetSlot > previousTokenTarget);
               previousTokenTarget = targetSlot;
               require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 3);
+              require(parent < invocationRows
+                && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
+              require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
+              require(subtreeEnd == parent);
+            } else if (kind == 5) {
+              require(targetSlot > previousDeploymentTarget);
+              previousDeploymentTarget = targetSlot;
+              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) == 0);
               require(parent < invocationRows
                 && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
               require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
@@ -6075,6 +6179,88 @@ function synthesizeMessageBusRoute(
             }
             if (__message_bus_row_owner == activeParticipant) { activeTokenRows = activeTokenRows + 1; }
           }` : ''}
+          if (kind == 5 && __message_bus_row_owner == activeParticipant) {
+            require(rowSubject.length == 0 && rowArguments.length == 34 && rowResult.length == 0
+              && rowArguments.slice(0, 2) == hex"0000" && rowEffect.length >= 15);
+            bigint expectedDeploymentParentMatches = 0;
+            bigint settledDeploymentParentMatches = 0;
+            for (bigint deploymentParent = 0; deploymentParent < activeDeploymentParents.length;
+              deploymentParent = deploymentParent + 2) {
+              if (int(bytes.concat(activeDeploymentParents.slice(
+                deploymentParent, deploymentParent + 2
+              ), hex"00")) == parent) {
+                expectedDeploymentParentMatches = expectedDeploymentParentMatches + 1;
+              }
+            }
+            for (bigint deploymentParent = 0; deploymentParent < settledDeploymentParents.length;
+              deploymentParent = deploymentParent + 2) {
+              if (int(bytes.concat(settledDeploymentParents.slice(
+                deploymentParent, deploymentParent + 2
+              ), hex"00")) == parent) {
+                settledDeploymentParentMatches = settledDeploymentParentMatches + 1;
+              }
+            }
+            require(expectedDeploymentParentMatches == 1 && settledDeploymentParentMatches == 0);
+            settledDeploymentParents = bytes.concat(settledDeploymentParents, toPaddedBytes(parent, 2));
+            activeDeploymentRows = activeDeploymentRows + 1;
+            bytes deploymentCategory = rowArguments.slice(2, 34);
+            require(tx.inputs[sourceSlot].tokenCategory.length == 0);
+            require(tx.inputs[sourceSlot].outpointIndex == 0);
+            require(tx.inputs[sourceSlot].outpointTransactionHash == deploymentCategory);
+            bigint deploymentOutputCount = int(bytes.concat(rowEffect.slice(0, 2), hex"00"));
+            require(deploymentOutputCount >= 1 && targetOffset + deploymentOutputCount <= participantSize);
+            activeDeploymentTargets = bytes.concat(
+              activeDeploymentTargets, toPaddedBytes(targetSlot, 2), toPaddedBytes(deploymentOutputCount, 2)
+            );
+            bigint deploymentCursor = 2;
+            for (bigint deploymentOutput = 0; deploymentOutput < deploymentOutputCount;
+              deploymentOutput = deploymentOutput + 1) {
+              require(deploymentCursor + 13 <= rowEffect.length);
+              bigint deploymentValue = int(bytes.concat(
+                rowEffect.slice(deploymentCursor, deploymentCursor + 8), hex"00"
+              ));
+              bigint deploymentCapability = int(bytes.concat(
+                rowEffect.slice(deploymentCursor + 8, deploymentCursor + 9), hex"00"
+              ));
+              require(deploymentCapability == (deploymentOutput == 0 ? 2 : 1));
+              bigint deploymentLockLength = int(bytes.concat(
+                rowEffect.slice(deploymentCursor + 9, deploymentCursor + 11), hex"00"
+              ));
+              require(deploymentLockLength > 0
+                && deploymentCursor + 13 + deploymentLockLength <= rowEffect.length);
+              bytes deploymentLock = rowEffect.slice(
+                deploymentCursor + 11, deploymentCursor + 11 + deploymentLockLength
+              );
+              bigint deploymentCommitmentLength = int(bytes.concat(rowEffect.slice(
+                deploymentCursor + 11 + deploymentLockLength,
+                deploymentCursor + 13 + deploymentLockLength
+              ), hex"00"));
+              require(deploymentCursor + 13 + deploymentLockLength + deploymentCommitmentLength
+                <= rowEffect.length);
+              bytes deploymentCommitment = rowEffect.slice(
+                deploymentCursor + 13 + deploymentLockLength,
+                deploymentCursor + 13 + deploymentLockLength + deploymentCommitmentLength
+              );
+              bigint deploymentSlot = targetSlot + deploymentOutput;
+              require(tx.outputs[deploymentSlot].value == deploymentValue
+                && tx.outputs[deploymentSlot].lockingBytecode == deploymentLock
+                && tx.outputs[deploymentSlot].tokenCategory
+                  == bytes.concat(deploymentCategory, bytes1(deploymentCapability))
+                && tx.outputs[deploymentSlot].nftCommitment == deploymentCommitment
+                && tx.outputs[deploymentSlot].tokenAmount == 0);
+              deploymentCursor = deploymentCursor + 13 + deploymentLockLength + deploymentCommitmentLength;
+            }
+            require(deploymentCursor == rowEffect.length);
+            bigint deploymentCategoryOutputs = 0;
+            for (bigint deploymentOutput = 0; deploymentOutput < tx.outputs.length;
+              deploymentOutput = deploymentOutput + 1) {
+              if (tx.outputs[deploymentOutput].tokenCategory.length >= 32
+                && tx.outputs[deploymentOutput].tokenCategory.slice(0, 32) == deploymentCategory) {
+                deploymentCategoryOutputs = deploymentCategoryOutputs + 1;
+              }
+            }
+            require(deploymentCategoryOutputs == deploymentOutputCount);
+          }
           ${sidecarVerificationMode ? `if (kind == 6 && __message_bus_row_owner == activeParticipant) {
             require(rowSubject.length > 0 && rowArguments.length >= 32 && rowResult.length == 0
               && rowEffect.length >= 8);
@@ -6172,6 +6358,19 @@ function synthesizeMessageBusRoute(
           slot < activeBase + activeBlockSize; slot = slot + 1) {
           bigint outputSlot = activeOutputBase + slot - activeBase;
           bigint isSidecarSlot = 0;
+          bigint isDeploymentSlot = 0;
+          for (bigint deployment = 0; deployment < activeDeploymentTargets.length;
+            deployment = deployment + 4) {
+            bigint deploymentStart = int(bytes.concat(
+              activeDeploymentTargets.slice(deployment, deployment + 2), hex"00"
+            ));
+            bigint deploymentCount = int(bytes.concat(
+              activeDeploymentTargets.slice(deployment + 2, deployment + 4), hex"00"
+            ));
+            if (outputSlot >= deploymentStart && outputSlot < deploymentStart + deploymentCount) {
+              isDeploymentSlot = 1;
+            }
+          }
           ${sidecarVerificationMode ? `for (bigint sidecar = 0;
             sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
             if (slot == int(bytes.concat(
@@ -6226,6 +6425,7 @@ function synthesizeMessageBusRoute(
             physicalValueOutputs = physicalValueOutputs + 1;
           }
           if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}"
+            && isDeploymentSlot == 0
             && (tx.outputs[outputSlot].tokenCategory.length == 32
               || (tx.outputs[outputSlot].tokenCategory.length == 33
                 && tx.outputs[outputSlot].tokenCategory != bytes.concat(activeCategory, hex"02")))
@@ -6260,6 +6460,8 @@ function synthesizeMessageBusRoute(
         require(activeEventRows == physicalEventOutputs);
         require(activeValueRows == physicalValueOutputs);
         require(activeTokenRows == physicalTokenOutputs);
+        require(activeDeploymentRows == activeDeploymentInvocations
+          && settledDeploymentParents.length == activeDeploymentParents.length);
         require(activeSidecarRows * 2 == activeSidecarTargets.length);
         require(cursor == callManifest.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);

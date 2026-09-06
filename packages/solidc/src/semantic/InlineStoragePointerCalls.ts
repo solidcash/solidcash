@@ -601,7 +601,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
   private hasPhysicalEffects(fn: FunctionDefinitionNode): boolean {
     return this.nodesOf(fn).some((node) => {
-      if (node instanceof EmitStatementNode || node instanceof TransferStatementNode
+      if (node instanceof InstantiationNode
+        || node instanceof EmitStatementNode || node instanceof TransferStatementNode
         || node instanceof TokenContainerMethodStatementNode
         || node instanceof AddressTransferStatementNode
         || node instanceof AddressSendExpressionNode) return true;

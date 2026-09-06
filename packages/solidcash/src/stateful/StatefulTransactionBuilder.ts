@@ -4604,6 +4604,8 @@ export class StatefulTransactionBuilder {
   private blockLayout?: FunctionBlockLayout;
   private logicalIdentityUtxo?: UnlockableUtxo;
   private externalIdentityAnchorUtxos: UnlockableUtxo[] = [];
+  private childDeploymentInputs = new Map<number, UnlockableUtxo>();
+  private childDeploymentOutputs = new Map<number, readonly Output[]>();
   funderUtxos: UnlockableUtxo[];
   private relocationFunderUtxos: UnlockableUtxo[] = [];
   private funderChangeAddress?: Uint8Array;
@@ -4908,6 +4910,19 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /** Materialize one compiler-published child genesis frame at its row/site slot. */
+  setChildDeployment(
+    slotIndex: number, genesisInput: UnlockableUtxo, outputs: readonly Output[],
+  ): this {
+    if (genesisInput.vout !== 0 || genesisInput.token) {
+      throw new Error(`Child deployment slot ${slotIndex} requires a token-free vout-0 genesis input`);
+    }
+    this.childDeploymentInputs.set(slotIndex, genesisInput);
+    this.childDeploymentOutputs.set(slotIndex, outputs.map((output) => ({ ...output })));
+    this._refreshInputs();
+    return this;
+  }
+
   /** Build allInputs following block layout when funders are available. */
   private _buildInputs(
     entryInputs: UnlockableUtxo[],
@@ -5043,9 +5058,15 @@ export class StatefulTransactionBuilder {
               }
             } else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
-          case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent':
-          case 'deploy': {
+          case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent': case 'deployDataNft': {
             const f = funderPool.shift();
+            if (f) positioned[slot.offset] = f;
+            break;
+          }
+          case 'deploy': {
+            const supplied = slot.slotIndex === undefined ? undefined : this.childDeploymentInputs.get(slot.slotIndex);
+            const reserved = funderPool.shift();
+            const f = supplied ?? reserved;
             if (f) positioned[slot.offset] = f;
             break;
           }
@@ -12915,6 +12936,23 @@ export class StatefulTransactionBuilder {
         amount: rawUtxo.satoshis,
         token: rawUtxo.token,
       });
+    }
+
+    // Child genesis frames are fixed output coordinates: master first, then each mutable data NFT. Inactive
+    // rows retain neutral placeholders so the balanced atomic participant never changes width.
+    for (const slot of this.blockLayout?.slots.filter((candidate) => candidate.kind === 'deploy') ?? []) {
+      while (builder.outputs.length < slot.offset) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+      }
+      const expected = 1 + (this.blockLayout?.slots.filter((candidate) =>
+        candidate.kind === 'deployDataNft' && candidate.slotIndex === slot.slotIndex).length ?? 0);
+      const outputs = slot.slotIndex === undefined ? undefined : this.childDeploymentOutputs.get(slot.slotIndex);
+      if (outputs && outputs.length !== expected) {
+        throw new Error(`Child deployment slot ${slot.slotIndex} provides ${outputs.length} outputs; expected ${expected}`);
+      }
+      for (const output of outputs ?? Array.from({ length: expected }, () => ({
+        to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS,
+      }))) builder.addOutput(output);
     }
 
     // Iteration entry outputs (read-only co-spent chunks / collection-iter entries) come FIRST in the trailing

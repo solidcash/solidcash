@@ -1658,7 +1658,7 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('publishes name-neutral child genesis geometry while kernel deployment execution stays fenced', () => {
+  it('admits one straight-line stateful child deployment with name-neutral genesis geometry', () => {
     const artifact = compileString(`contract Spawn(bytes32 seed) {
         bytes32 first;
         bytes32 second;
@@ -1676,8 +1676,7 @@ describe('required kernel admission', () => {
       }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize');
     expect(handler).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
       childDeployments: [{
         siteIndex: 0,
         contractName: 'Spawn',
@@ -1695,6 +1694,50 @@ describe('required kernel admission', () => {
     expect(site.creationBytecode).toMatch(/^[0-9a-f]+$/);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control'))
       .not.toHaveProperty('childDeployments');
+  });
+
+  it('keeps constructor-initialized child state fenced until its exact genesis state is published', () => {
+    const artifact = compileString(`contract Unit(int seed) {
+        int marker;
+        constructor() { this.marker = seed; }
+      }
+      contract Coordinator() {
+        function materialize(int seed) public { Unit child = new Unit(seed); require(true); }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('keeps unpublished child initialization and address recipes fenced', () => {
+    const computed = compileString(`contract Unit(bytes32 seed) { int marker; function configure(int next) public {
+        this.marker = next; require(true);
+      } }
+      contract Coordinator() {
+        function folded(bytes32 seed, int next) public {
+          Unit child = new Unit(seed); child.configure(next); require(true);
+        }
+        function computed(bytes32 seed, bytes32 salt) public {
+          Unit child = new Unit{salt: bytes32(int(salt) + 1)}(bytes32(int(seed) + 1)); require(true);
+        }
+      }`, KERNEL);
+    for (const name of ['folded', 'computed']) {
+      expect(computed.messageBus?.handlers.find((candidate) => candidate.name === name))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    }
+  });
+
+  it('inlines a straight-line helper deployment and keeps conditional deployment fenced', () => {
+    const artifact = compileString(`contract Unit() { int marker; }
+      contract Coordinator() {
+        function helper() internal { Unit child = new Unit(); }
+        function throughHelper() public { helper(); require(true); }
+        function conditional(bool take) public { if (take) { Unit child = new Unit(); } require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'throughHelper'))
+      .toMatchObject({ eligible: true, childDeployments: [{ occurrence: 'once', siteIndex: 0 }] });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'conditional'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('keeps straight-line, conditional, and loop child sites as separate topology occurrences', () => {

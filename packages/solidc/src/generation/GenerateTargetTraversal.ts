@@ -247,6 +247,9 @@ const GRAPH_TRANSFER_REACHED = '__internal__graphTransferReached';
 // site's window is settled by the handler; the epilogue binds every other reserved ordinal to an empty
 // commitment, which needs to know WHICH window to leave alone.
 const GRAPH_EVENT_SITE = '__internal__graphEventSite';
+// Route-local reached-site mask for child-deployment frames. Reached handlers authenticate their child genesis;
+// the route binds every other row window to the balanced token-free placeholder shape.
+const GRAPH_DEPLOY_SITE = '__internal__graphDeploySite';
 // SEC-16. Route-local reached-site mask for token-transfer graph frames. A reached handler binds every slot in
 // its own window (including inactive/suffix slots); the route uses this mask to bind every window no row reached.
 // The low 8 bits are the reached-site mask; higher 16-bit fields count NFT occurrences per physical container.
@@ -496,9 +499,29 @@ function findBlockhashCall(body: Node | undefined): Node | undefined {
   return found;
 }
 
+/** Whether a graph handler body directly owns a stateful child deployment. Helper-owned sites stay fenced. */
+function hasDirectChildDeployment(body: Node | undefined): boolean {
+  if (!body) return false;
+  let found = false;
+  const seen = new WeakSet<object>();
+  const walk = (value: unknown): void => {
+    if (found || value === undefined || value === null) return;
+    if (Array.isArray(value)) { value.forEach(walk); return; }
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof InstantiationNode && value.isStatefulDeploy) { found = true; return; }
+    for (const [key, child] of Object.entries(value)) {
+      if (['referencedContract', 'resolvedFunction', 'definition', 'symbolTable'].includes(key)) continue;
+      walk(child);
+    }
+  };
+  walk(body);
+  return found;
+}
+
 /** The first effect kind a graph emission handler's body carries that the graph route cannot describe. */
 function graphHandlerUnsupportedEffect(
-  body: Node | undefined, blockhashRouteContext = false,
+  body: Node | undefined, blockhashRouteContext = false, deploymentRouteContext = false,
 ): { reason: string; node: Node } | undefined {
   if (!body) return undefined;
   let found: { reason: string; node: Node } | undefined;
@@ -508,7 +531,7 @@ function graphHandlerUnsupportedEffect(
     if (Array.isArray(n)) { for (const item of n) walk(item); return; }
     if (!(n instanceof Node) || seen.has(n)) return;
     seen.add(n);
-    if (n instanceof InstantiationNode && n.referencedContract) {
+    if (n instanceof InstantiationNode && n.referencedContract && !deploymentRouteContext) {
       found = { reason: 'graph-handler-deploy-not-enabled', node: n };
       return;
     }
@@ -1451,6 +1474,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private graphTransferFlagActive: boolean = false;
   // SEC-15: the route allocated GRAPH_EVENT_SITE for this function.
   private graphEventSiteActive: boolean = false;
+  private graphDeploySiteActive: boolean = false;
   // SEC-16: the route allocated GRAPH_TOKEN_SITE and per-container NFT occurrence counters.
   private graphTokenSiteActive: boolean = false;
   // True while generating a branded delegate library: the delegate master-validation pins the co-spent proxy
@@ -1761,7 +1785,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       : this.stack.includes('__message_bus_row') ? '__message_bus_row' : GRAPH_EFFECT_SITE;
     this.emit(encodeInt(BigInt(this.getStackIndex(siteName))), locationData);
     this.emit(Op.OP_PICK, locationData);
-    const inputOffset = frame.deployInputOffset ?? 0;
+    const width = frame.deployWidth ?? 0;
+    if (width > 1) {
+      this.emit(encodeInt(BigInt(width)), locationData);
+      this.emit(Op.OP_MUL, locationData);
+    }
+    const inputOffset = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0);
     if (inputOffset > 0) {
       this.emit(encodeInt(BigInt(inputOffset)), locationData);
       this.emit(Op.OP_ADD, locationData);
@@ -1784,7 +1813,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(width)), locationData);
       this.emit(Op.OP_MUL, locationData);
     }
-    const constant = (frame.deployOffset ?? this.getBlockSlotOffset('deploy', frame.deployBase ?? 0)) + extra;
+    const constant = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0) + extra;
     if (constant > 0) {
       this.emit(encodeInt(BigInt(constant)), locationData);
       this.emit(Op.OP_ADD, locationData);
@@ -1792,6 +1821,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitMasterInputIndex(locationData, 1);
     this.emit(Op.OP_ADD, locationData);
     return true;
+  }
+
+  /** Require one unused member of the reached row's deployment frame to remain a neutral balanced slot. */
+  private emitInactiveGraphDeployOutput(extra: number, locationData: SingleLocationData): void {
+    if (!this.emitGraphDeployOutputIndex(extra, locationData)) {
+      throw new Error('Inactive graph deployment output has no row-relative frame');
+    }
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.emit(new Uint8Array([Op.OP_1]), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_OUTPUTVALUE, locationData);
+    this.emit(encodeInt(1000n), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
   }
 
   /**
@@ -1965,7 +2014,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!node.blockLayout || !node.deployTargets?.length) return;
     // Kernel graph handlers share the route's already-expanded row frame. Re-expanding that shared layout from
     // one handler's local deployTargets would erase every other row's data-NFT span.
-    if (node.graphEmissionHandler && (node.graphEffectFrame?.deployWidth ?? 0) > 0) return;
+    if ((node.graphEmissionHandler || node.messageBusRoute)
+      && (node.graphEffectFrame?.deployWidth ?? 0) > 0) return;
     const old = node.blockLayout.slots;
     const slots: BlockLayoutSlot[] = [];
     let offset = 0;
@@ -4934,7 +4984,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // effects on the direct route, and in a route-eligible handler that makes no external call, are unchanged.
     if (node.graphEmissionHandler) {
       const unsupported = graphHandlerUnsupportedEffect(node.body,
-        node.parameters.some((parameter) => parameter.name === '__internal__blockhashRowOffset'));
+        node.parameters.some((parameter) => parameter.name === '__internal__blockhashRowOffset'),
+        (node.graphEffectFrame?.deployWidth ?? 0) > 0 && node.blockLayout !== undefined);
       if (unsupported) {
         throw new GraphHandlerEffectError(
           unsupported.node, unsupported.reason, GRAPH_HANDLER_EFFECT_DETAIL[unsupported.reason],
@@ -5533,6 +5584,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GRAPH_EVENT_SITE);
     }
+    this.graphDeploySiteActive = !this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
+      && (node.graphEffectFrame?.deployWidth ?? 0) > 0;
+    if (this.graphDeploySiteActive) {
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(GRAPH_DEPLOY_SITE);
+    }
     this.graphTokenSiteActive = !this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
       && (node.graphEffectFrame?.tokenTransferWidth ?? 0) > 0;
     if (this.graphTokenSiteActive) {
@@ -5746,6 +5803,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (this.pendingTokenContainerTransfers.length > 0) {
           this.emitTokenContainerTransferCovenantVerification(node);
           this.emitTokenContainerTransferCleanup(node);
+        }
+        if (this.pendingDeploys.length > 0) {
+          this.emitDeployCovenantVerification(node);
+          const ownedDeployWidth = this.pendingDeploys.reduce(
+            (total, deploy) => total + 1 + deploy.node.deployedDataNftCount, 0,
+          );
+          for (let member = ownedDeployWidth; member < (node.graphEffectFrame.deployWidth ?? 0); member += 1) {
+            this.emitInactiveGraphDeployOutput(member, {
+              location: node.body.location, positionHint: PositionHint.END,
+            });
+          }
         }
         // Heterogeneous event frames use the route-wide maximum width. The reached handler owns exactly its
         // own prefix of that window; bind the unused suffix here, where the authenticated site ordinal is live.
@@ -5969,6 +6037,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // that one skips ordinals it handled itself, and this reads the same pendingEmits list.
       if (!this.functionHasDelegatecall && this.graphEventSiteActive) {
         this.emitGraphFrameEventSlotBinding(node);
+      }
+      if (!this.functionHasDelegatecall && this.graphDeploySiteActive) {
+        this.emitGraphFrameDeploySlotBinding(node);
       }
       // Deploy covenant verification: verify child master NFT + data NFT outputs
       if (!this.functionHasDelegatecall && hasDeploys) {
@@ -10184,6 +10255,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitReplaceCompilerRouteFrameValue(GRAPH_EVENT_SITE, node);
       this.popFromStack();
     }
+    if (this.graphDeploySiteActive && targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame
+      && hasDirectChildDeployment(targetFunc.body) && this.stack.includes(GRAPH_DEPLOY_SITE)) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_DEPLOY_SITE))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      if (node.graphEffectSiteFromRow) {
+        const rowIndex = this.getStackIndex('__message_bus_row');
+        if (rowIndex < 0) {
+          throw new Error(`Runtime deploy site missing loop variable '__message_bus_row' at a call to '${targetFunc.name}'`);
+        }
+        this.emit(Op.OP_1, locationData);
+        this.emit(encodeInt(BigInt(rowIndex + 2)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(Op.OP_LSHIFTNUM, locationData);
+      } else {
+        this.emit(encodeInt(1n << BigInt(node.graphEffectSite!)), locationData);
+      }
+      this.emit(Op.OP_ADD, locationData);
+      this.pushToStack('(graph_deploy_sites_new)');
+      this.emitReplaceCompilerRouteFrameValue(GRAPH_DEPLOY_SITE, node);
+      this.popFromStack();
+    }
     const graphTokenInvocation = this.graphTokenSiteActive && targetFunc.graphEmissionHandler
       && targetFunc.graphEffectFrame && targetTokenTransferCount > 0
       && this.stack.includes(GRAPH_TOKEN_SITE);
@@ -13676,6 +13768,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!bodyBytecode) {
       throw new Error(`Compiled bytecode for contract '${contract.name}' not available`);
     }
+    if (node.isStatefulDeploy) this.emitGraphStaticDirty(node);
 
     // Step 1: Build redeem script on stack (same pattern as visitContractReference).
     // Only CONTRACT-LEVEL parameters (solidcash-style) are redeem-script data pushes. A Solidity-style
@@ -17360,6 +17453,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(__graph_expected_emissions)');
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
+
       return 0;
     }
     if (disposition === 'defer-whole-vector') {
@@ -21336,6 +21430,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
         this.emit(Op.OP_EQUALVERIFY, locationData);
         this.popFromStack(2);
+
       } else {
         // Read-only NFT: verify commitment preservation (input == output)
         this.emitDataNftCommitmentPreservation(compactOffset, locationData);
@@ -26074,6 +26169,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
 
+      // Bind the established stateful-deployment reserve independently of the effect manifest.
+      if (!this.emitGraphDeployOutputIndex(deployOffset, locationData)) {
+        this.emitMasterInputIndex(locationData);
+        this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + deployOffset)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+      this.emit(Op.OP_OUTPUTVALUE, locationData);
+      this.emit(encodeInt(1200n), locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+
       // --- b. Data NFT outputs at block layout deploy offset + 1..dataNftCount ---
       for (let nftIdx = 0; nftIdx < dataNftCount; nftIdx++) {
         const nftOutputOffset = deployOffset + 1 + nftIdx;
@@ -26097,6 +26202,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
         this.emit(Op.OP_EQUALVERIFY, locationData);
         this.popFromStack(2);
+
+        if (!this.emitGraphDeployOutputIndex(nftOutputOffset, locationData)) {
+          this.emitMasterInputIndex(locationData);
+          this.emit(encodeInt(BigInt(this.getBlockSlotOffset('deploy', 0) + nftOutputOffset)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        }
+        this.emit(Op.OP_OUTPUTVALUE, locationData);
+        this.emit(encodeInt(1200n), locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
 
         // Verify data NFT token category == childCategoryId || 0x01 (mutable capability)
         const catIdx4 = this.getStackIndex(categoryStackName);
@@ -26180,8 +26294,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // The fixed-slot checks above authenticate every required output but do not reject extra genesis NFTs.
       // Enforce exact capability counts for this child category across all transaction outputs.
-      this.emitDeployCapabilityOutputCount(undefined, 0x02, 1, locationData, deployIndex);
-      this.emitDeployCapabilityOutputCount(undefined, 0x01, dataNftCount, locationData, deployIndex);
+      const graphCategory = this.currentFunction.graphEmissionHandler ? categoryStackName : undefined;
+      const fixedIndex = this.currentFunction.graphEmissionHandler ? undefined : deployIndex;
+      this.emitDeployCapabilityOutputCount(graphCategory, 0x02, 1, locationData, fixedIndex);
+      this.emitDeployCapabilityOutputCount(graphCategory, 0x01, dataNftCount, locationData, fixedIndex);
     }
 
     // Clean up deploy stack values
@@ -27300,6 +27416,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NOT, locationData);
       this.emit(Op.OP_IF, locationData);
       this.emitNotTakenTokenTransferSlotBinding(ordinal, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+    }
+  }
+
+  /** Bind every deployment window whose selected row did not execute a deployment handler. */
+  private emitGraphFrameDeploySlotBinding(node: FunctionDefinitionNode): void {
+    const frame = node.graphEffectFrame;
+    if (!frame || (frame.deployWidth ?? 0) === 0 || !this.stack.includes(GRAPH_DEPLOY_SITE)) return;
+    const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    const maskIndex = this.getStackIndex(GRAPH_DEPLOY_SITE);
+    const width = frame.deployWidth!;
+    const base = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0);
+    for (let site = 0; site < frame.sites; site += 1) {
+      this.emit(encodeInt(BigInt(maskIndex)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(encodeInt(1n << BigInt(site)), locationData);
+      this.emit(Op.OP_DIV, locationData);
+      this.emit(Op.OP_2, locationData);
+      this.emit(Op.OP_MOD, locationData);
+      this.emit(Op.OP_NOT, locationData);
+      this.emit(Op.OP_IF, locationData);
+      for (let member = 0; member < width; member += 1) {
+        this.emitMasterInputIndex(locationData);
+        this.emit(encodeInt(BigInt(base + site * width + member)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+        this.emit(new Uint8Array([Op.OP_1]), locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_NIP, locationData);
+        this.emit(Op.OP_0, locationData);
+        this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+        this.emit(Op.OP_OUTPUTVALUE, locationData);
+        this.emit(encodeInt(1000n), locationData);
+        this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+      }
       this.emit(Op.OP_ENDIF, locationData);
     }
   }

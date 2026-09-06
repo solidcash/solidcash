@@ -25697,7 +25697,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // The fee funder is NOT created here; STB.send() handles it via the
     // "build then fund" approach (measure covenant tx size -> create fee input).
     if (effectiveBlockLayout && builder.funderUtxos.length === 0) {
-      const outputOnlyKinds = new Set(['transfer', 'tcTransfer', 'event', 'returnEvent', 'lowLevelCall', 'deploy']);
+      const outputOnlyKinds = new Set([
+        'transfer', 'tcTransfer', 'event', 'returnEvent', 'lowLevelCall', 'deploy', 'deployDataNft',
+      ]);
       timing('funder-accounting-start');
       const entryInfos = builder.getEntryNftInfos();
       timing('funder-entry-infos');
@@ -29654,6 +29656,9 @@ export class StatefulFunctionCall {
 
   private extraOutputs: Output[] = [];
   private extraInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
+  private childDeployments: Array<{
+    slotIndex: number; genesisInput: UnlockableUtxo; outputs: readonly Output[];
+  }> = [];
   private tokenContainerDeposits: Array<{ tokenContainerCategoryId: string; amount: bigint }> = [];
   private manualEvents: Array<{ name: string; args: StateValueType[] }> = [];
   private detachedEvents: Array<{
@@ -29717,6 +29722,12 @@ export class StatefulFunctionCall {
     if (functionName === '__forward' && parentContract?._signer) {
       this.signerUtxosPromise = signerUtxoSnapshot(parentContract._signer);
     }
+  }
+
+  /** @internal Attach one compiler-published child genesis frame to this prepared route call. */
+  _withChildDeployment(slotIndex: number, genesisInput: UnlockableUtxo, outputs: readonly Output[]): this {
+    this.childDeployments.push({ slotIndex, genesisInput, outputs });
+    return this;
   }
 
   /**
@@ -32152,6 +32163,9 @@ export class StatefulFunctionCall {
     }
 
     builder._restoreMessageBusProbeMasterOutpoint();
+    for (const deployment of this.childDeployments) {
+      builder.setChildDeployment(deployment.slotIndex, deployment.genesisInput, deployment.outputs);
+    }
     return builder;
   }
 

@@ -2,7 +2,7 @@ import {
   bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions,
   encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString, compileStringMulti } from 'solidc';
 import {
   blockhashOracleLockingBytecode, buildBlockhashCommitment, buildChunkCommitment, scriptToBytecode, sha256,
   keccakComputeLockingBytecode,
@@ -10,6 +10,7 @@ import {
   hash160,
   buildValueChunkCommitment, encodeChunkableValueTail, encodePushdataValue, splitValueIntoValueChunks,
 } from '@solidcash/utils';
+import type { Artifact } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
@@ -336,6 +337,143 @@ const mutateAuthenticatedFrame = (
 };
 
 describe('messageBus.compose atomic transaction', () => {
+  it('materializes two row-selected child genesis frames and rejects hostile genesis/category/commitment', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`contract Spawn() { int marker; function keep() public { require(true); } }
+      interface ISink { function touch(int next); }
+      interface ICoordinator { function materialize(int next); }
+      contract Sink() { int marker; function touch(int next) public { this.marker = next; require(true); } }
+      contract Coordinator(address sink) {
+        int marker;
+        event Tick(int next);
+        function materialize(int next) public {
+          emit Tick(next);
+          Spawn child = new Spawn();
+          this.marker = next;
+          ISink(sink).touch(next);
+          require(true);
+        }
+      }
+      contract Driver(address coordinator) {
+        function run() public {
+          ICoordinator(coordinator).materialize(1);
+          ICoordinator(coordinator).materialize(2);
+          require(true);
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(
+        provider, base, artifact.stateLayout!, artifact.contractName === 'Sink' ? { marker: 0n } : {},
+        { saltContract: true },
+      );
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const sink = await connect(artifacts.Sink);
+    const coordinator = (await connect(artifacts.Coordinator, [hexToBin(sink.inner.lockingBytecode)]))
+      .registerChild(artifacts.Spawn);
+    const driver = await connect(artifacts.Driver, [hexToBin(coordinator.inner.lockingBytecode)]);
+    expect(artifacts.Coordinator.messageBus?.handlers.find((handler) => handler.name === 'materialize'))
+      .toMatchObject({ eligible: true, childDeployments: [{ occurrence: 'once', siteIndex: 0 }] });
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const firstGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const secondGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const build = () => messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [] },
+        { contract: coordinator, functionName: 'materialize', args: [1n] },
+        { contract: sink, functionName: 'touch', args: [1n] },
+        { contract: coordinator, functionName: 'materialize', args: [2n] },
+        { contract: sink, functionName: 'touch', args: [2n] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [
+        { invocationIndex: 1, siteIndex: 0, funder: firstGenesis },
+        { invocationIndex: 3, siteIndex: 0, funder: secondGenesis },
+      ],
+    }).build();
+    const canonical = await build();
+    expect(vmRejects(canonical)).toBe(false);
+    const childMasterIndices = [firstGenesis, secondGenesis].map((genesis) => canonical.outputs.findIndex((output) =>
+      output.token?.category === genesis.utxo.txid && output.token.nft?.capability === 'minting'));
+    const childDataIndices = [firstGenesis, secondGenesis].map((genesis) => canonical.outputs.findIndex((output) =>
+      output.token?.category === genesis.utxo.txid && output.token.nft?.capability === 'mutable'));
+    expect(childMasterIndices.every((index) => index >= 0)).toBe(true);
+    expect(childDataIndices.every((index) => index >= 0)).toBe(true);
+
+    await expect(messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [] },
+        { contract: coordinator, functionName: 'materialize', args: [1n] },
+        { contract: sink, functionName: 'touch', args: [1n] },
+        { contract: coordinator, functionName: 'materialize', args: [2n] },
+        { contract: sink, functionName: 'touch', args: [2n] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [
+        { invocationIndex: 1, siteIndex: 0, funder: { ...firstGenesis, utxo: { ...firstGenesis.utxo, vout: 1 } } },
+        { invocationIndex: 3, siteIndex: 0, funder: secondGenesis },
+      ],
+    }).build()).rejects.toThrow(/token-free vout 0/);
+
+    const wrongCategory = await build();
+    wrongCategory.outputs[childDataIndices[0]].token!.category = 'ab'.repeat(32);
+    expect(vmRejects(wrongCategory)).toBe(true);
+    const wrongCommitment = await build();
+    wrongCommitment.outputs[childDataIndices[1]].token!.nft!.commitment = '01';
+    expect(vmRejects(wrongCommitment)).toBe(true);
+    for (const index of [childMasterIndices[0], childDataIndices[0]]) {
+      const wrongLock = await build();
+      wrongLock.outputs[index].to = Uint8Array.of(0x51);
+      expect(vmRejects(wrongLock)).toBe(true);
+    }
+    const wrongValue = await build();
+    wrongValue.outputs[childDataIndices[0]].amount += 1n;
+    expect(vmRejects(wrongValue)).toBe(true);
+    const jointlyForgedValue = await build();
+    jointlyForgedValue.outputs[childMasterIndices[0]].amount = 1300n;
+    mutateEveryEnvelopeAndRebind(jointlyForgedValue, (manifest) => {
+      let changed = false;
+      return {
+        ...manifest,
+        rows: manifest.rows.map((row) => {
+          if (changed || row.kind !== 5) return row;
+          changed = true;
+          // kind-5 effect: uint16 output count, then uint64 little-endian value.
+          return { ...row, effectHex: `${row.effectHex.slice(0, 4)}1405000000000000${row.effectHex.slice(20)}` };
+        }),
+      };
+    });
+    expect(vmRejects(jointlyForgedValue)).toBe(true);
+    const wrongCapability = await build();
+    wrongCapability.outputs[childDataIndices[0]].token!.nft!.capability = 'none';
+    expect(vmRejects(wrongCapability)).toBe(true);
+    const wrongAmount = await build();
+    wrongAmount.outputs[childDataIndices[0]].token!.amount = 1n;
+    expect(vmRejects(wrongAmount)).toBe(true);
+    const extraFungible = await build();
+    extraFungible.outputs.splice(extraFungible.outputs.length - 1, 0, {
+      to: Uint8Array.of(0x51), amount: 1000n,
+      token: { category: firstGenesis.utxo.txid, amount: 1n },
+    });
+    expect(vmRejects(extraFungible)).toBe(true);
+    const extraImmutable = await build();
+    extraImmutable.outputs.splice(extraImmutable.outputs.length - 1, 0, {
+      to: Uint8Array.of(0x51), amount: 1000n,
+      token: {
+        category: firstGenesis.utxo.txid, amount: 0n,
+        nft: { capability: 'none', commitment: '01' },
+      },
+    });
+    expect(vmRejects(extraImmutable)).toBe(true);
+    const wrongGenesisHash = await build();
+    const genesisInput = wrongGenesisHash.inputs.find((input) => input.txid === firstGenesis.utxo.txid)!;
+    genesisInput.txid = 'cd'.repeat(32);
+    expect(vmRejects(wrongGenesisHash)).toBe(true);
+  }, 120_000);
+
   it('forwards detached signatures in composite arrays through a typed graph edge', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const calleeArtifact = compileString(`

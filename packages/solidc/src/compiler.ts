@@ -6247,9 +6247,19 @@ function synthesizeMessageBusRoute(
           require(__message_bus_journal_record_flags < 16);
           require(__message_bus_journal_record_flags % 2 != 1
             || __message_bus_journal_record_flags < 8);
+          require(__message_bus_journal_record_flags % 2 == 1
+            || __message_bus_journal_record_flags >= 8);
+          require(__message_bus_journal_record_flags < 8
+            || __message_bus_journal_record_flags % 8 >= 2);
           require(__message_bus_journal_record_flags < 4
             || __message_bus_journal_record_flags % 4 >= 2
             || __message_bus_journal_record_flags >= 8);
+          if (__message_bus_journal_record_flags % 8 >= 4) {
+            require(__message_bus_journal_record.length == 86);
+          }
+          if (__message_bus_journal_record_flags == 12) {
+            require(__message_bus_journal_record.slice(54, 86) == hex"${'00'.repeat(32)}");
+          }
         }
   `;
   const routeStructs = [...ast.structDefinitions, ...contract.structDefinitions]

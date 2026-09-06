@@ -486,8 +486,9 @@ The canonical entry record is
 `0x05 || flags || collectionHash20 || slot32 || nextKey32 || valueTail`, where the four low flag bits mean
 authenticated-input, dirty, tombstone, and synthetic-node. The value tail is at most 64 bytes, matching the entry
 NFT commitment limit, so a complete record is at most 150 bytes. The SDK codec rejects unknown flags, malformed
-identities, authenticated+synthetic records, and authenticated clean tombstones. A clean synthetic tombstone is
-the canonical record for an absent read target: it proves no physical input existed and requests no final delete.
+identities, records which are neither authenticated nor synthetic, authenticated+synthetic records, value-bearing
+tombstones, and non-canonical clean synthetic records. A clean synthetic tombstone with a zero successor is the
+only canonical initial record for an absent read target: it proves no physical input existed and requests no final delete.
 Each logical mutation stream has one compact access program
 `0x06 || count8 || count * (flags8 || targetRecordOrdinal16le || predecessorRecordOrdinal16le)`.
 The access flags publish presence-before, presence-after, whether the predecessor ordinal is present, and whether

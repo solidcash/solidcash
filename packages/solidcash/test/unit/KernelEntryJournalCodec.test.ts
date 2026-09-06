@@ -114,12 +114,37 @@ describe('kernel pending-entry journal codec', () => {
       ...valid, value: bytes(KERNEL_ENTRY_JOURNAL_MAX_VALUE_BYTES + 1, 4),
     })).toThrow('exceeds');
     expect(() => encodeKernelEntryJournalRecord({ ...valid, synthetic: true })).toThrow('both');
+    expect(() => encodeKernelEntryJournalRecord({ ...valid, authenticated: false }))
+      .toThrow('either authenticated or synthetic');
+    expect(() => encodeKernelEntryJournalRecord({
+      ...valid, authenticated: false, synthetic: true,
+    })).toThrow('absence tombstone');
+    expect(() => encodeKernelEntryJournalRecord({
+      ...valid, authenticated: false, synthetic: true, tombstone: true,
+      nextKey: bytes(32, 1),
+    })).toThrow('zero successor');
+    expect(() => encodeKernelEntryJournalRecord({
+      ...valid, authenticated: false, synthetic: true, tombstone: true,
+      value: Uint8Array.of(1),
+    })).toThrow('cannot carry a value');
     expect(() => encodeKernelEntryJournalRecord({ ...valid, tombstone: true })).toThrow('clean journal tombstone');
     expect(() => decodeKernelEntryJournalRecord(bytes(85, 0))).toThrow('truncated');
     const badTag = encodeKernelEntryJournalRecord(valid); badTag[0] = 0x06;
     expect(() => decodeKernelEntryJournalRecord(badTag)).toThrow('tag');
     const badFlags = encodeKernelEntryJournalRecord(valid); badFlags[1] = 0x80;
     expect(() => decodeKernelEntryJournalRecord(badFlags)).toThrow('unknown flags');
+    const unauthenticated = encodeKernelEntryJournalRecord(valid); unauthenticated[1] = 0;
+    expect(() => decodeKernelEntryJournalRecord(unauthenticated))
+      .toThrow('either authenticated or synthetic');
+    const cleanSyntheticLive = encodeKernelEntryJournalRecord(valid); cleanSyntheticLive[1] = 0x08;
+    expect(() => decodeKernelEntryJournalRecord(cleanSyntheticLive)).toThrow('absence tombstone');
+    const valueTombstone = encodeKernelEntryJournalRecord({ ...valid, value: Uint8Array.of(1) });
+    valueTombstone[1] = 0x07;
+    expect(() => decodeKernelEntryJournalRecord(valueTombstone)).toThrow('cannot carry a value');
+    const nonzeroAbsentSuccessor = encodeKernelEntryJournalRecord(valid).slice(0, 86);
+    nonzeroAbsentSuccessor[1] = 0x0c;
+    nonzeroAbsentSuccessor[54] = 1;
+    expect(() => decodeKernelEntryJournalRecord(nonzeroAbsentSuccessor)).toThrow('zero successor');
   });
 
   it('encodes a complete planner result without changing first-touch record ordinals', () => {

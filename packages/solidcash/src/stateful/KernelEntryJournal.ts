@@ -95,8 +95,20 @@ export function encodeKernelEntryJournalRecord(record: KernelEntryJournalRecord)
   if (record.authenticated && record.synthetic) {
     throw new Error('a journal node cannot be both authenticated and synthetic');
   }
+  if (!record.authenticated && !record.synthetic) {
+    throw new Error('a journal node must be either authenticated or synthetic');
+  }
+  if (record.synthetic && !record.dirty && !record.tombstone) {
+    throw new Error('a clean synthetic journal node must be an absence tombstone');
+  }
   if (record.tombstone && !record.dirty && !record.synthetic) {
     throw new Error('a clean journal tombstone must describe an unauthenticated synthetic record');
+  }
+  if (record.tombstone && record.value.length !== 0) {
+    throw new Error('a journal tombstone cannot carry a value');
+  }
+  if (record.synthetic && !record.dirty && record.nextKey.some((byte) => byte !== 0)) {
+    throw new Error('a clean synthetic journal tombstone must use the zero successor');
   }
   let flags = 0;
   if (record.authenticated) flags |= FLAG_AUTHENTICATED;
@@ -126,13 +138,26 @@ export function decodeKernelEntryJournalRecord(encoded: Uint8Array): KernelEntry
   const tombstone = (flags & FLAG_TOMBSTONE) !== 0;
   const synthetic = (flags & FLAG_SYNTHETIC) !== 0;
   if (authenticated && synthetic) throw new Error('a journal node cannot be both authenticated and synthetic');
+  if (!authenticated && !synthetic) {
+    throw new Error('a journal node must be either authenticated or synthetic');
+  }
+  if (synthetic && !dirty && !tombstone) {
+    throw new Error('a clean synthetic journal node must be an absence tombstone');
+  }
   if (tombstone && !dirty && !synthetic) {
     throw new Error('a clean journal tombstone must describe an unauthenticated synthetic record');
+  }
+  if (tombstone && encoded.length !== HEADER_BYTES) {
+    throw new Error('a journal tombstone cannot carry a value');
+  }
+  const nextKey = encoded.slice(2 + COLLECTION_HASH_BYTES + SLOT_BYTES, HEADER_BYTES);
+  if (synthetic && !dirty && nextKey.some((byte) => byte !== 0)) {
+    throw new Error('a clean synthetic journal tombstone must use the zero successor');
   }
   return {
     collectionHash: encoded.slice(2, 2 + COLLECTION_HASH_BYTES),
     slot: encoded.slice(2 + COLLECTION_HASH_BYTES, 2 + COLLECTION_HASH_BYTES + SLOT_BYTES),
-    nextKey: encoded.slice(2 + COLLECTION_HASH_BYTES + SLOT_BYTES, HEADER_BYTES),
+    nextKey,
     value: encoded.slice(HEADER_BYTES),
     authenticated,
     dirty,

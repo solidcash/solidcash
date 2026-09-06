@@ -3032,6 +3032,11 @@ describe('kernel counter-key mapping loop compose', () => {
     const wrongPredecessorSlot = hostileRecord((record) => { record[22] ^= 0x01; return record; });
     const oversizedRecord = new Uint8Array(151);
     oversizedRecord.set(journalRecords[0].slice(0, Math.min(journalRecords[0].length, 151)));
+    const valueTombstone = new Uint8Array((journalRecords[0] as Uint8Array).length + 1);
+    valueTombstone.set(journalRecords[0] as Uint8Array); valueTombstone[1] = 0x07;
+    const nonzeroAbsentSuccessor = hostileRecord((record) => {
+      record[1] = 0x0c; record[54] = 1; return record;
+    });
     for (const [label, hostileRecords] of [
       ['missing records', []],
       ['extra records', [...journalRecords, new Uint8Array(journalRecords[0] as Uint8Array)]],
@@ -3043,7 +3048,11 @@ describe('kernel counter-key mapping loop compose', () => {
       ['oversized value', hostileRecord(() => oversizedRecord)],
       ['unknown flags', hostileRecord((record) => { record[1] |= 0x80; return record; })],
       ['authenticated synthetic', hostileRecord((record) => { record[1] = 0x09; return record; })],
+      ['unauthenticated non-synthetic', hostileRecord((record) => { record[1] = 0; return record; })],
+      ['clean synthetic live', hostileRecord((record) => { record[1] = 0x08; return record; })],
       ['clean tombstone', hostileRecord((record) => { record[1] = 0x04; return record; })],
+      ['value-bearing tombstone', hostileRecord(() => valueTombstone)],
+      ['nonzero absent successor', nonzeroAbsentSuccessor],
     ] as const) {
       const hostileRouteParams = [...routeUnlocker.params];
       hostileRouteParams[routeRecordIndex] = hostileRecords;

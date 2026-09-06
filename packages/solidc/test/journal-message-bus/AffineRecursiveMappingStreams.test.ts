@@ -6,6 +6,32 @@ const KERNEL = {
 } as const;
 
 describe('affine recursive mapping streams', () => {
+  it.each([
+    ['value', `function apply(int cursor, int offset) public returns (int) {
+      if (cursor == 0) return offset;
+      int result = apply(cursor - 1, offset);
+      if (cursor % 2 == 1) emit Seen(cursor + offset);
+      return result;
+    }`],
+    ['void', `function apply(int cursor, int offset) public {
+      if (cursor == 0) return;
+      apply(cursor - 1, offset);
+      if (cursor % 2 == 1) emit Seen(cursor + offset);
+      require(cursor >= 1);
+    }`],
+  ])('lowers replayable post-recursion events for a %s result', (_kind, fn) => {
+    const artifact = compileString(`contract C() {
+      event Seen(int value);
+      ${fn}
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.runtimeLoopEvents).toEqual([
+      expect.objectContaining({ eventSignatures: ['Seen(int256)'], conditions: [expect.anything()] }),
+    ]);
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(64);
+  });
+
   it('lowers void post-recursion effects with replayable requirements', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) selected;

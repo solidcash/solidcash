@@ -13063,7 +13063,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const outputIndex = stb.getRuntimeLoopEventOutputIndex(eventIndex);
               const actual = probeBuilder2.outputs[outputIndex]?.token?.nft?.commitment ?? '';
               const commitmentMap = extractCommitmentMapFromTrace(
-                fullTrace2, { min: outputIndex, max: outputIndex + 1 }, true, false, true,
+                fullTrace2, { min: outputIndex, max: outputIndex + 1 }, true, true, true,
               );
               const commitment = commitmentMap.get(outputIndex)
                 ?? extractExpectedOutputCommitmentFromTrace(fullTrace2, outputIndex, actual);

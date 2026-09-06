@@ -9,15 +9,66 @@ import { createVirtualMachineBch2026ForProvider } from '../../../src/network/cre
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
-  getEntryNftAddress, getMessageBusVerifierAddress,
+  getEntryNftAddress, getEventNftAddress, getMessageBusVerifierAddress,
 } from '../../../src/stateful/covenant-helpers.js';
-import { createTestProvider } from '../../test-util.js';
+import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
 } as const;
 
 describe('affine recursive mapping streams', () => {
+  it('emits selected post-recursion events in unwind order and authenticates the zero-frame case', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract UnwindEvents() {
+      event Seen(int value);
+      function apply(int cursor, int offset) public returns (int) {
+        if (cursor == 0) return offset;
+        int result = apply(cursor - 1, offset);
+        if (cursor % 2 == 1) emit Seen(cursor + offset);
+        return result;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.call.apply(4n, 10n);
+    const builder = await call.build();
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === 'apply');
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+        `honest input ${inputIndex}`).toBe(true);
+    }
+    const eventLock = addressToLockScript(getEventNftAddress(
+      inner.withCategory(hexToBin(categoryId)), categoryId, 'Seen(int256)',
+    ));
+    const eventOutput = transaction.outputs.findIndex((output) => output.token?.nft
+      && binToHex(output.lockingBytecode) === binToHex(eventLock));
+    expect(eventOutput).toBeGreaterThanOrEqual(0);
+    const hostile = {
+      ...transaction,
+      outputs: transaction.outputs.map((output, index) => index !== eventOutput ? output : ({
+        ...output,
+        token: { ...output.token!, nft: { ...output.token!.nft!, commitment: '00' } },
+      })),
+    };
+    expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInputIndex, sourceOutputs, transaction: hostile })))
+      .not.toBe(true);
+    await expect(call.send()).resolves.toMatchObject({
+      events: [{ args: { value: 11n } }, { args: { value: 13n } }],
+    });
+    await expect(contract.call.apply(0n, 10n).send()).resolves.toMatchObject({ events: [] });
+  }, 60_000);
+
   it('settles void post-recursion effects from the innermost retained frame outward', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract VoidUnwindStreams() {

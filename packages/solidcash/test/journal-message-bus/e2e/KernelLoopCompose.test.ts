@@ -1551,6 +1551,9 @@ describe('kernel loop message-bus compose', () => {
       'remaining - right(remaining - 1, key)', 'remaining - left(remaining - 1, key)', 2n],
     ['distinct continuation operators',
       'right(remaining - 1, key) + remaining', 'left(remaining - 1, key) - remaining', 2n],
+    ['nested continuation spine',
+      '(right(remaining - 1, key) * 2) + remaining',
+      '(left(remaining - 1, key) - remaining) * 3', -3n],
   ] as const)('executes a read-only mutual recursion fold with the %s', async (
     _label, leftExpression, rightExpression, expected,
   ) => {

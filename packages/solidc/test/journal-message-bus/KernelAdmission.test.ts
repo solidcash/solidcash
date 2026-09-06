@@ -349,16 +349,16 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('lowers distinct continuation operators in one recursion cycle', () => {
+  it('lowers a nested continuation spine with distinct operators', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       function left(int n, int key) public returns (int) {
         if (n == 0) return this.values[key];
-        return right(n - 1, key) + n;
+        return (right(n - 1, key) * 2) + n;
       }
       function right(int n, int key) internal returns (int) {
         if (n == 0) return this.values[key];
-        return left(n - 1, key) - n;
+        return (left(n - 1, key) - n) * 3;
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))

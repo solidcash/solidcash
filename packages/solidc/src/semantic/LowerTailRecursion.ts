@@ -14,6 +14,12 @@ interface RecursiveFoldShape {
   variants: { operator: BinaryOperator; recursiveOnLeft: boolean }[];
 }
 
+interface RecursiveFoldStep {
+  operator: BinaryOperator;
+  recursiveOnLeft: boolean;
+  operand: ExpressionNode;
+}
+
 /**
  * Lower conservative self- or mutually tail-recursive helpers to ordinary loops before helper inlining:
  *
@@ -234,10 +240,10 @@ export default class LowerTailRecursion extends AstTraversal {
   }
 
   /**
-   * Recognize a linear recursion fold. Each recursive result may be returned directly or combined with
-   * one continuation operand using the same binary operator and side throughout the SCC. Operands are captured
-   * before advancing the state machine, then applied in reverse order after the base case, exactly reproducing
-   * the source call stack without placing journal values in recursive OP_INVOKE frames.
+   * Recognize a linear recursion fold. Each recursive result may be nested within an effect-free binary spine.
+   * Its sibling operands are captured from outside to inside before advancing the state machine, then applied in
+   * reverse order after the base case, exactly reproducing the source call stack without placing journal values
+   * in recursive OP_INVOKE frames.
    */
   private recursiveFoldShape(
     group: readonly FunctionDefinitionNode[], names: ReadonlySet<string>,
@@ -246,7 +252,7 @@ export default class LowerTailRecursion extends AstTraversal {
     const variants: RecursiveFoldShape['variants'] = [];
     let sawFold = false;
     const scalarStateWrites = new Set<string>();
-    const continuationOperands: ExpressionNode[] = [];
+    const continuationSteps: RecursiveFoldStep[] = [];
     let valid = true;
     const persistentEffects = new Set([
       'DeleteStateNode', 'StateArrayPushNode', 'StateArrayPopNode',
@@ -268,54 +274,74 @@ export default class LowerTailRecursion extends AstTraversal {
         const expression = candidate.expressions[0];
         const callCount = this.countGroupCalls(expression, names);
         if (callCount === 0 || this.isGroupCall(expression, names)) return;
-        if (!(expression instanceof BinaryOpNode) || callCount !== 1) {
+        if (callCount !== 1) {
           valid = false;
           return;
         }
-        // Short-circuit operators do not necessarily evaluate their recursive operand. Turning them into an
-        // unconditional state-machine step would change termination as well as evaluation order.
-        if (expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR) {
+        const extracted = this.extractRecursiveFold(expression, names);
+        if (!extracted || extracted.steps.length === 0) {
           valid = false;
           return;
         }
-        const leftCall = this.isGroupCall(expression.left, names);
-        const rightCall = this.isGroupCall(expression.right, names);
-        if (leftCall === rightCall) {
-          valid = false;
-          return;
+        for (const step of extracted.steps) {
+          if (!variants.some((variant) => variant.operator === step.operator
+            && variant.recursiveOnLeft === step.recursiveOnLeft)) variants.push({
+            operator: step.operator, recursiveOnLeft: step.recursiveOnLeft,
+          });
+          continuationSteps.push(step);
         }
-        const next = { operator: expression.operator, recursiveOnLeft: leftCall };
-        if (!variants.some((variant) => variant.operator === next.operator
-          && variant.recursiveOnLeft === next.recursiveOnLeft)) variants.push(next);
-        continuationOperands.push(leftCall ? expression.right : expression.left);
         sawFold = true;
       });
     });
     // `recur(...) OP operand` reaches operand after the deeper call in source. Capturing it before descent remains
     // equivalent unless deeper frames can mutate scalar state read by that operand.
-    if (scalarStateWrites.size > 0 && variants.some((variant) => variant.recursiveOnLeft)) {
-      continuationOperands.forEach((operand) => this.walkNodes(operand, (candidate) => {
-        if ((candidate instanceof StateAccessNode || candidate instanceof IdentifierNode)
-          && scalarStateWrites.has(candidate.name)) valid = false;
-      }));
+    if (scalarStateWrites.size > 0) {
+      continuationSteps.filter((step) => step.recursiveOnLeft).forEach((step) =>
+        this.walkNodes(step.operand, (candidate) => {
+          if ((candidate instanceof StateAccessNode || candidate instanceof IdentifierNode)
+            && scalarStateWrites.has(candidate.name)) valid = false;
+        }));
     }
     return valid && sawFold ? { variants } : undefined;
   }
 
   private foldedRecursiveReturn(
     expression: Node | undefined, names: ReadonlySet<string>, fold?: RecursiveFoldShape,
-  ): { call: FunctionCallNode; operand: ExpressionNode; variantIndex: number } | undefined {
-    if (!fold || !(expression instanceof BinaryOpNode)) return undefined;
-    const variantIndex = fold.variants.findIndex((variant) => {
-      const recursive = variant.recursiveOnLeft ? expression.left : expression.right;
-      return variant.operator === expression.operator && this.isGroupCall(recursive, names);
-    });
-    if (variantIndex < 0) return undefined;
-    const variant = fold.variants[variantIndex];
-    const recursive = variant.recursiveOnLeft ? expression.left : expression.right;
-    const operand = variant.recursiveOnLeft ? expression.right : expression.left;
-    if (!this.isGroupCall(recursive, names) || this.countGroupCalls(operand, names) !== 0) return undefined;
-    return { call: recursive, operand, variantIndex };
+  ): { call: FunctionCallNode; steps: (RecursiveFoldStep & { variantIndex: number })[] } | undefined {
+    if (!fold || !expression) return undefined;
+    const extracted = this.extractRecursiveFold(expression, names);
+    if (!extracted || extracted.steps.length === 0) return undefined;
+    const steps = extracted.steps.map((step) => ({
+      ...step,
+      variantIndex: fold.variants.findIndex((variant) => variant.operator === step.operator
+        && variant.recursiveOnLeft === step.recursiveOnLeft),
+    }));
+    if (steps.some((step) => step.variantIndex < 0)) return undefined;
+    return { call: extracted.call, steps };
+  }
+
+  private extractRecursiveFold(
+    expression: ExpressionNode, names: ReadonlySet<string>,
+  ): { call: FunctionCallNode; steps: RecursiveFoldStep[] } | undefined {
+    if (this.isGroupCall(expression, names)) return { call: expression, steps: [] };
+    if (!(expression instanceof BinaryOpNode)
+      || expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR) return undefined;
+    const leftCalls = this.countGroupCalls(expression.left, names);
+    const rightCalls = this.countGroupCalls(expression.right, names);
+    if ((leftCalls === 1) === (rightCalls === 1) || leftCalls + rightCalls !== 1) return undefined;
+    const recursiveOnLeft = leftCalls === 1;
+    const nested = this.extractRecursiveFold(
+      recursiveOnLeft ? expression.left : expression.right, names,
+    );
+    if (!nested) return undefined;
+    return {
+      call: nested.call,
+      steps: [{
+        operator: expression.operator,
+        recursiveOnLeft,
+        operand: recursiveOnLeft ? expression.right : expression.left,
+      }, ...nested.steps],
+    };
   }
 
   private foldUnwind(
@@ -518,13 +544,13 @@ export default class LowerTailRecursion extends AstTraversal {
       if (statement instanceof ReturnNode) {
         const folded = this.foldedRecursiveReturn(statement.expressions[0], new Set(members.keys()), fold);
         if (folded && continuationName && continuationTagName) {
-          const push = this.stamp(new ArrayPushNode(
-            continuationName, folded.operand,
-          ), statement.location);
-          const pushTag = this.stamp(new ArrayPushNode(
-            continuationTagName, this.stamp(new IntLiteralNode(BigInt(folded.variantIndex)), statement.location),
-          ), statement.location);
-          return [push, pushTag, ...this.mutualRecur(
+          const pushes = folded.steps.flatMap((step) => [
+            this.stamp(new ArrayPushNode(continuationName, step.operand), statement.location),
+            this.stamp(new ArrayPushNode(
+              continuationTagName, this.stamp(new IntLiteralNode(BigInt(step.variantIndex)), statement.location),
+            ), statement.location),
+          ]);
+          return [...pushes, ...this.mutualRecur(
             folded.call, root, members, modeName, repeatName, statement.location,
           )];
         }
@@ -783,11 +809,15 @@ export default class LowerTailRecursion extends AstTraversal {
     if (statement instanceof ReturnNode) {
       const folded = this.foldedRecursiveReturn(statement.expressions[0], new Set([fn.name]), fold);
       if (folded && continuationName && continuationTagName) {
-        const push = this.stamp(new ArrayPushNode(continuationName, folded.operand), statement.location);
-        const pushTag = this.stamp(new ArrayPushNode(
-          continuationTagName, this.stamp(new IntLiteralNode(BigInt(folded.variantIndex)), statement.location),
-        ), statement.location);
-        return [push, pushTag, ...this.recur(folded.call, fn, iterationName, repeatName, statement.location)];
+        const pushes = folded.steps.flatMap((step) => [
+          this.stamp(new ArrayPushNode(continuationName, step.operand), statement.location),
+          this.stamp(new ArrayPushNode(
+            continuationTagName, this.stamp(new IntLiteralNode(BigInt(step.variantIndex)), statement.location),
+          ), statement.location),
+        ]);
+        return [...pushes, ...this.recur(
+          folded.call, fn, iterationName, repeatName, statement.location,
+        )];
       }
       if (statement.expressions.length === 1 && this.isSelfCall(statement.expressions[0], fn.name)) {
         return this.recur(statement.expressions[0], fn, iterationName, repeatName, statement.location);

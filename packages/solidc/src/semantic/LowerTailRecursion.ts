@@ -10,15 +10,15 @@ import { cloneNode } from '../ast/clone.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { ArrayType, BytesType, PrimitiveType, StructType } from '@solidcash/utils';
 
-interface RecursiveFoldShape {
-  variants: { operator: BinaryOperator; recursiveOnLeft: boolean }[];
-}
+type RecursiveFoldVariant =
+  | { kind: 'binary'; operator: BinaryOperator; recursiveOnLeft: boolean }
+  | { kind: 'unary'; operator: UnaryOperator };
 
-interface RecursiveFoldStep {
-  operator: BinaryOperator;
-  recursiveOnLeft: boolean;
-  operand: ExpressionNode;
-}
+type RecursiveFoldStep =
+  | (Extract<RecursiveFoldVariant, { kind: 'binary' }> & { operand: ExpressionNode })
+  | Extract<RecursiveFoldVariant, { kind: 'unary' }>;
+
+interface RecursiveFoldShape { variants: RecursiveFoldVariant[]; }
 
 /**
  * Lower conservative self- or mutually tail-recursive helpers to ordinary loops before helper inlining:
@@ -284,10 +284,13 @@ export default class LowerTailRecursion extends AstTraversal {
           return;
         }
         for (const step of extracted.steps) {
-          if (!variants.some((variant) => variant.operator === step.operator
-            && variant.recursiveOnLeft === step.recursiveOnLeft)) variants.push({
-            operator: step.operator, recursiveOnLeft: step.recursiveOnLeft,
-          });
+          if (!variants.some((variant) => variant.kind === step.kind && variant.operator === step.operator
+            && (variant.kind === 'unary' || (step.kind === 'binary'
+              && variant.recursiveOnLeft === step.recursiveOnLeft)))) {
+            variants.push(step.kind === 'binary'
+              ? { kind: 'binary', operator: step.operator, recursiveOnLeft: step.recursiveOnLeft }
+              : { kind: 'unary', operator: step.operator });
+          }
           continuationSteps.push(step);
         }
         sawFold = true;
@@ -296,7 +299,8 @@ export default class LowerTailRecursion extends AstTraversal {
     // `recur(...) OP operand` reaches operand after the deeper call in source. Capturing it before descent remains
     // equivalent unless deeper frames can mutate scalar state read by that operand.
     if (scalarStateWrites.size > 0) {
-      continuationSteps.filter((step) => step.recursiveOnLeft).forEach((step) =>
+      continuationSteps.filter((step): step is Extract<RecursiveFoldStep, { kind: 'binary' }> =>
+        step.kind === 'binary' && step.recursiveOnLeft).forEach((step) =>
         this.walkNodes(step.operand, (candidate) => {
           if ((candidate instanceof StateAccessNode || candidate instanceof IdentifierNode)
             && scalarStateWrites.has(candidate.name)) valid = false;
@@ -313,8 +317,9 @@ export default class LowerTailRecursion extends AstTraversal {
     if (!extracted || extracted.steps.length === 0) return undefined;
     const steps = extracted.steps.map((step) => ({
       ...step,
-      variantIndex: fold.variants.findIndex((variant) => variant.operator === step.operator
-        && variant.recursiveOnLeft === step.recursiveOnLeft),
+      variantIndex: fold.variants.findIndex((variant) => variant.kind === step.kind
+        && variant.operator === step.operator && (variant.kind === 'unary'
+          || (step.kind === 'binary' && variant.recursiveOnLeft === step.recursiveOnLeft))),
     }));
     if (steps.some((step) => step.variantIndex < 0)) return undefined;
     return { call: extracted.call, steps };
@@ -324,6 +329,16 @@ export default class LowerTailRecursion extends AstTraversal {
     expression: ExpressionNode, names: ReadonlySet<string>,
   ): { call: FunctionCallNode; steps: RecursiveFoldStep[] } | undefined {
     if (this.isGroupCall(expression, names)) return { call: expression, steps: [] };
+    if (expression instanceof UnaryOpNode && [
+      UnaryOperator.NOT, UnaryOperator.NEGATE, UnaryOperator.INVERT,
+    ].includes(expression.operator)) {
+      const nested = this.extractRecursiveFold(expression.expression, names);
+      if (!nested) return undefined;
+      return {
+        call: nested.call,
+        steps: [{ kind: 'unary', operator: expression.operator }, ...nested.steps],
+      };
+    }
     if (!(expression instanceof BinaryOpNode)
       || expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR) return undefined;
     const leftCalls = this.countGroupCalls(expression.left, names);
@@ -337,6 +352,7 @@ export default class LowerTailRecursion extends AstTraversal {
     return {
       call: nested.call,
       steps: [{
+        kind: 'binary',
         operator: expression.operator,
         recursiveOnLeft,
         operand: recursiveOnLeft ? expression.right : expression.left,
@@ -364,11 +380,13 @@ export default class LowerTailRecursion extends AstTraversal {
     let dispatch: BranchNode | undefined;
     for (let variantIndex = fold.variants.length - 1; variantIndex >= 0; variantIndex -= 1) {
       const variant = fold.variants[variantIndex];
-      const combined = this.stamp(new BinaryOpNode(
-        variant.recursiveOnLeft ? result() : cloneNode(operand) as ExpressionNode,
-        variant.operator,
-        variant.recursiveOnLeft ? cloneNode(operand) as ExpressionNode : result(),
-      ), root.location);
+      const combined = variant.kind === 'unary'
+        ? this.stamp(new UnaryOpNode(variant.operator, result()), root.location)
+        : this.stamp(new BinaryOpNode(
+          variant.recursiveOnLeft ? result() : cloneNode(operand) as ExpressionNode,
+          variant.operator,
+          variant.recursiveOnLeft ? cloneNode(operand) as ExpressionNode : result(),
+        ), root.location);
       const assign = this.stamp(new AssignNode(result(), combined), root.location);
       dispatch = this.stamp(new BranchNode(
         this.stamp(new BinaryOpNode(
@@ -545,7 +563,10 @@ export default class LowerTailRecursion extends AstTraversal {
         const folded = this.foldedRecursiveReturn(statement.expressions[0], new Set(members.keys()), fold);
         if (folded && continuationName && continuationTagName) {
           const pushes = folded.steps.flatMap((step) => [
-            this.stamp(new ArrayPushNode(continuationName, step.operand), statement.location),
+            this.stamp(new ArrayPushNode(
+              continuationName, step.kind === 'binary' ? step.operand
+                : this.stamp(new IdentifierNode(resultNames[0]), statement.location),
+            ), statement.location),
             this.stamp(new ArrayPushNode(
               continuationTagName, this.stamp(new IntLiteralNode(BigInt(step.variantIndex)), statement.location),
             ), statement.location),
@@ -810,7 +831,10 @@ export default class LowerTailRecursion extends AstTraversal {
       const folded = this.foldedRecursiveReturn(statement.expressions[0], new Set([fn.name]), fold);
       if (folded && continuationName && continuationTagName) {
         const pushes = folded.steps.flatMap((step) => [
-          this.stamp(new ArrayPushNode(continuationName, step.operand), statement.location),
+          this.stamp(new ArrayPushNode(
+            continuationName, step.kind === 'binary' ? step.operand
+              : this.stamp(new IdentifierNode(returnNames[0]), statement.location),
+          ), statement.location),
           this.stamp(new ArrayPushNode(
             continuationTagName, this.stamp(new IntLiteralNode(BigInt(step.variantIndex)), statement.location),
           ), statement.location),

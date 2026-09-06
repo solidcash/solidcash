@@ -349,20 +349,33 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('lowers a nested continuation spine with distinct operators', () => {
+  it('lowers a nested unary/binary continuation spine with distinct operators', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       function left(int n, int key) public returns (int) {
         if (n == 0) return this.values[key];
-        return (right(n - 1, key) * 2) + n;
+        return -((right(n - 1, key) * 2) + n);
       }
       function right(int n, int key) internal returns (int) {
         if (n == 0) return this.values[key];
-        return (left(n - 1, key) - n) * 3;
+        return -((left(n - 1, key) - n) * 3);
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
       .toMatchObject({ eligible: true });
+  });
+
+  it('lowers logical negation around a recursive boolean result', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => bool) values;
+      function toggle(int n, int key) public returns (bool) {
+        if (n == 0) return this.values[key];
+        return !toggle(n - 1, key);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'toggle'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'toggle')?.recursiveStateHandler).toBeUndefined();
   });
 
   it('keeps a dynamic-state recursion fold behind KERNEL_LAYOUT', () => {

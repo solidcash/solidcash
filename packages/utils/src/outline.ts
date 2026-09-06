@@ -1,4 +1,5 @@
 import { binToHex } from '@bitauth/libauth';
+import { decodeInt } from './data.js';
 import { Op, Script } from './script.js';
 import { FullLocationData } from './types.js';
 
@@ -17,9 +18,10 @@ import { FullLocationData } from './types.js';
  *    the interpreter's control stack unbalanced across the invoke boundary.
  * 2. It defines nothing: OP_DEFINE inside a shared body would run again on the second invoke and fail with
  *    "function identifier previously defined".
- * 3. It does not cross another invocation boundary. Relocating an existing OP_INVOKE into a second outlined
- *    helper adds a nested continuation frame, and BCH-2026 control-flow state is scoped to those frames. Keep
- *    each invocation in the body where it was originally emitted.
+ * 3. By default, it does not cross another invocation boundary. Relocating an existing OP_INVOKE into a second
+ *    outlined helper adds a nested continuation frame, and BCH-2026 control-flow state is scoped to those
+ *    frames. A compiler may opt in only its own proven nesting-safe helper ids; their encoded-id/OP_INVOKE pairs
+ *    remain atomic and every other invocation stays in the body where it was originally emitted.
  * 4. It reads no bytecode-relative context. OP_ACTIVEBYTECODE returns the *function body* once invoked, not the
  *    enclosing script; OP_CODESEPARATOR moves the signing checkpoint; and OP_CHECKSIG and friends sign the
  *    active bytecode, so moving one would change both the sighash preimage and the body the SDK reports as
@@ -136,6 +138,24 @@ export interface OutlineResult {
 // times. Keyed on identity, so two distinct arrays holding equal bytes still compute (and agree on) one key.
 const dataKeys = new WeakMap<Uint8Array, string>();
 const opcodeKeys = Array.from({ length: 256 }, (_unused, opcode) => `o${opcode}`);
+const nestedInvokePolicyIdentities = new WeakMap<object, number>();
+let nextNestedInvokePolicyIdentity = 1;
+
+/** Cache namespace for the opt-in nested-invoke policy, including both object identity and current contents. */
+const nestedInvokeCacheKey = (allowedIds: ReadonlySet<number> | undefined): string => {
+  if (allowedIds === undefined) return 'invoke-barrier';
+  let identity = nestedInvokePolicyIdentities.get(allowedIds);
+  if (identity === undefined) {
+    identity = nextNestedInvokePolicyIdentity;
+    nextNestedInvokePolicyIdentity += 1;
+    nestedInvokePolicyIdentities.set(allowedIds, identity);
+  }
+  const contents = [...allowedIds]
+    .sort((left, right) => left - right)
+    .map((id) => Object.is(id, -0) ? '-0' : String(id))
+    .join(',');
+  return `nested-invoke:${identity}:${contents}`;
+};
 
 const elementKey = (element: Script[number]): string => {
   if (typeof element === 'number') return opcodeKeys[element];
@@ -163,8 +183,30 @@ const controlDelta = (element: Script[number]): number => {
   return CONTROL_DELTAS[element];
 };
 
-const isBarrier = (element: Script[number]): boolean =>
-  typeof element === 'number' && BARRIER_FLAGS[element] !== 0;
+const isAllowedNestedInvoke = (
+  elements: Script, index: number, allowedNestedInvokeIds: ReadonlySet<number> | undefined,
+): boolean => {
+  if (allowedNestedInvokeIds === undefined || elements[index] !== Op.OP_INVOKE || index === 0) return false;
+  const operand = elements[index - 1];
+  if (!(operand instanceof Uint8Array)) return false;
+  try {
+    const id = decodeInt(operand);
+    return id >= BigInt(Number.MIN_SAFE_INTEGER)
+      && id <= BigInt(Number.MAX_SAFE_INTEGER)
+      && allowedNestedInvokeIds.has(Number(id));
+  } catch {
+    return false;
+  }
+};
+
+const isBarrier = (
+  elements: Script, index: number, allowedNestedInvokeIds: ReadonlySet<number> | undefined,
+): boolean => {
+  const element = elements[index];
+  return typeof element === 'number'
+    && BARRIER_FLAGS[element] !== 0
+    && !isAllowedNestedInvoke(elements, index, allowedNestedInvokeIds);
+};
 
 interface BalanceScratch {
   // Candidate regions are scanned sequentially. Reusing these dense tables avoids constructing a Map (or fresh
@@ -193,6 +235,7 @@ interface BalanceScratch {
 function longestBalancedSpan(
   elements: Script, anchoredIndices: Uint8Array | undefined,
   regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
+  allowedNestedInvokeIds: ReadonlySet<number> | undefined,
 ): BalanceScratch {
   let bestStart = 0;
   let bestEnd = 0;
@@ -204,7 +247,8 @@ function longestBalancedSpan(
   firstIndexAtDepth[0] = 0;
   for (let i = 0; i < regionLength; i += 1) {
     const element = elements[regionStart + i];
-    if (isBarrier(element) || (anchoredIndices !== undefined && anchoredIndices[i] !== 0)) {
+    if (isBarrier(elements, regionStart + i, allowedNestedInvokeIds)
+      || (anchoredIndices !== undefined && anchoredIndices[i] !== 0)) {
       depth = 0;
       generation = ++scratch.generation;
       depthGeneration[0] = generation;
@@ -1034,6 +1078,7 @@ function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[]
 function findCandidates(
   bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
   candidateGroupsPerRound: number, prepared: CandidateCorpus = prepareCandidateCorpus(bodies),
+  allowedNestedInvokeIds?: ReadonlySet<number>,
 ): Candidate[] {
   const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, maximumBodyLength } = prepared;
   const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
@@ -1277,6 +1322,7 @@ function findCandidates(
     }
     const balanced = longestBalancedSpan(
       headScript, anchoredIndices, firstStart, length, bodyBytePrefixes[firstBody], balanceScratch,
+      allowedNestedInvokeIds,
     );
     if (balanced.bestBytes === 0) continue;
 
@@ -1354,6 +1400,12 @@ export function outlineSharedSpans(
    * budget.
    */
   maximumRounds: number = MAXIMUM_ROUNDS,
+  /**
+   * Existing compiler-helper function ids that are proven safe to invoke from another outlined helper. The
+   * default remains the hard OP_INVOKE barrier. Only an immediately preceding encoded id in this set relaxes
+   * that barrier, and the id/OP_INVOKE pair is never split across an outlined-body boundary.
+   */
+  allowedNestedInvokeIds?: ReadonlySet<number>,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
@@ -1368,6 +1420,10 @@ export function outlineSharedSpans(
   }));
   const functions: OutlinedFunction[] = [];
   const claimed: Uint8Array[] = [];
+  const nestedInvokePolicy = allowedNestedInvokeIds === undefined
+    ? undefined
+    : new Set(allowedNestedInvokeIds);
+  const nestedInvokePolicyKey = nestedInvokeCacheKey(allowedNestedInvokeIds);
   const intern: OutlineIntern = (initialCandidateCache?.get('intern') as OutlineIntern | undefined) ?? {
     keyIds: new Map(),
     bodyByScript: new WeakMap(),
@@ -1391,7 +1447,7 @@ export function outlineSharedSpans(
     // claim sites in, so the caller may legitimately quote a width wider than its next allocation to hold
     // marginal candidates back.
     const idPushBytes = peekIdPushBytes?.() ?? PROBE_IDENTIFIER_PUSH_BYTES;
-    const initialCacheKey = `${idPushBytes}:${minimumWindowElements}:${candidateGroupsPerRound}`;
+    const initialCacheKey = `${nestedInvokePolicyKey}:${idPushBytes}:${minimumWindowElements}:${candidateGroupsPerRound}`;
     let cached = round === 0
       ? initialCandidateCache?.get(initialCacheKey) as Candidate[] | undefined
       : undefined;
@@ -1400,19 +1456,22 @@ export function outlineSharedSpans(
     if (round === 0 && cached === undefined && initialCandidateCache !== undefined) {
       for (let width = 1; width < idPushBytes && cached === undefined; width += 1) {
         cached = initialCandidateCache.get(
-          `superset:${width}:${minimumWindowElements}:${candidateGroupsPerRound}`,
+          `superset:${nestedInvokePolicyKey}:${width}:${minimumWindowElements}:${candidateGroupsPerRound}`,
         ) as Candidate[] | undefined;
       }
     }
     let prepared = round === 0
-      ? initialCandidateCache?.get('prepared-corpus') as CandidateCorpus | undefined
+      ? initialCandidateCache?.get(`prepared-corpus:${nestedInvokePolicyKey}`) as CandidateCorpus | undefined
       : undefined;
     if (cached === undefined && prepared === undefined) {
       prepared = prepareCandidateCorpus(corpus, intern);
-      if (round === 0) initialCandidateCache?.set('prepared-corpus', prepared);
+      if (round === 0) initialCandidateCache?.set(`prepared-corpus:${nestedInvokePolicyKey}`, prepared);
     }
     const candidates = cached === undefined
-      ? findCandidates(corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound, prepared)
+      ? findCandidates(
+        corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound, prepared,
+        nestedInvokePolicy,
+      )
       : costCandidates(cached, idPushBytes, ranking);
     if (round === 0 && cached === undefined) {
       initialCandidateCache?.set(initialCacheKey, [...candidates]);

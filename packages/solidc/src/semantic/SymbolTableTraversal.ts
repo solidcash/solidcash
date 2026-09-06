@@ -13715,8 +13715,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       });
     const runtimeCounterOutputCapacity = node.name === '__message_bus1'
       ? Math.max(0, ...contract.functions.map((fn) => (
-        fn.graphEmissionHandler ? fn.runtimeCounterLoopOutputCapacity ?? 0 : 0
+        fn.graphEmissionHandler || fn.messageBusEligible === true
+          ? fn.runtimeCounterLoopOutputCapacity ?? 0 : 0
       ))) : 0;
+    // Source handlers retain the exact stream census above, including several collections in one loop and
+    // sequential loops over one collection. The fallback exists only for a counter loop synthesized after that
+    // census (currently the strict one-write affine-recursion normalization). Its route parameters identify the
+    // remaining loop and collection dimensions. Their product is conservative if a future late lowering emits
+    // sparse pairs; ordinary source loops continue to use the exact count and are not over-reserved.
+    const fallbackPermutationCount = node.parameters.filter((parameter) =>
+      parameter.name.startsWith('__internal__vmapCounterPerm_')).length;
+    const fallbackCollectionCount = node.parameters.filter((parameter) =>
+      parameter.name.startsWith('__internal__vmapRuntimeInputCount_')).length;
+    const fallbackCounterStreamCapacity = runtimeCounterOutputCapacity === 0
+      ? fallbackPermutationCount * fallbackCollectionCount * (BALANCED_TRAILING_CAPACITY + 1) : 0;
     const needsNonCounterWideTrailingRegion = touchesDynamicState
       || writesChunkableCollection
       || (node.dynamicReads?.length ?? 0) > 0
@@ -13740,7 +13752,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // bounded trailing band and the builder refuses a concrete transaction that exceeds it.
     const trailingCapacity = runtimeCounterOutputCapacity > 0
       ? runtimeCounterOutputCapacity
-      : needsWideTrailingRegion ? BALANCED_TRAILING_CAPACITY : collectionRouteCapacity;
+      : needsWideTrailingRegion
+        ? Math.max(BALANCED_TRAILING_CAPACITY, fallbackCounterStreamCapacity) : collectionRouteCapacity;
     for (let i = 0; i < trailingCapacity; i++) {
       slots.push({ kind: 'trailing', offset: offset++, slotIndex: i, conditional: true });
     }

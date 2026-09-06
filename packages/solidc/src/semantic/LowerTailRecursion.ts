@@ -3,13 +3,13 @@ import {
   BranchNode, BreakNode, ContractNode,
   DeleteStateNode, DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
   ExpressionNode, FieldAccessNode, LiteralNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
-  NewArrayNode, Node, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
+  NewArrayNode, Node, RequireNode, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
   StateAccessNode, StateAssignNode, TernaryOpNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
-import { ArrayType, PrimitiveType } from '@solidcash/utils';
+import { ArrayType, IntType, MappingType, PrimitiveType } from '@solidcash/utils';
 
 type RecursiveFoldVariant =
   | {
@@ -28,6 +28,11 @@ type RecursiveFoldStep =
 interface RecursiveFoldShape {
   variants: RecursiveFoldVariant[];
   deferredOperandKeys: ReadonlySet<string>;
+}
+
+interface AffineMappingRecursion {
+  inductionIndex: number;
+  baseIndex: number;
 }
 
 /**
@@ -56,6 +61,7 @@ export default class LowerTailRecursion extends AstTraversal {
   private counter = 0;
   private scalarStateNames = new Set<string>();
   private structConstructorNames = new Set<string>();
+  private sortedMappingNames = new Set<string>();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.lowerMutualGroups(node.freeFunctions);
@@ -68,10 +74,13 @@ export default class LowerTailRecursion extends AstTraversal {
   visitContract(node: ContractNode): Node {
     const parentStateNames = this.scalarStateNames;
     const parentStructConstructorNames = this.structConstructorNames;
+    const parentSortedMappingNames = this.sortedMappingNames;
     this.scalarStateNames = new Set(node.stateVariables.filter((state) =>
       !(state.type instanceof ArrayType))
       .map((state) => state.name));
     this.structConstructorNames = new Set(node.structDefinitions.map((definition) => definition.name));
+    this.sortedMappingNames = new Set(node.collections.filter((collection) =>
+      collection.sorted && collection.type instanceof MappingType).map((collection) => collection.name));
     this.lowerMutualGroups(node.functions);
     node.functions = node.functions.map((fn) => this.visit(fn) as FunctionDefinitionNode);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
@@ -79,6 +88,7 @@ export default class LowerTailRecursion extends AstTraversal {
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
     this.scalarStateNames = parentStateNames;
     this.structConstructorNames = parentStructConstructorNames;
+    this.sortedMappingNames = parentSortedMappingNames;
     return node;
   }
 
@@ -822,6 +832,185 @@ export default class LowerTailRecursion extends AstTraversal {
     return [...changed.map(({ temp }) => temp), ...changed.map(({ assignment }) => assignment), select, repeat];
   }
 
+  /**
+   * Recognize the smallest recursion domain which can reuse the authenticated counter-loop journal unchanged:
+   * one unconditional sorted-mapping set/delete, then `if (counter == 0) return base`, then the sole recursive
+   * edge with `counter - 1`. Pure local definitions may precede those operations, and a block containing only the
+   * mapping operation is transparent. Other parameters must be forwarded unchanged. The source reaches exactly
+   * counter+1 distinct frames, so a zero-based rank is a complete physical permutation domain.
+   */
+  private affineMappingRecursion(node: FunctionDefinitionNode): AffineMappingRecursion | undefined {
+    if (!node.body || node.returnTypes.length !== 1 || node.customModifiers.length > 0) return undefined;
+    const statements = node.body.statements ?? [];
+    if (statements.length < 3) return undefined;
+    const recursiveReturn = statements.at(-1)!;
+    const prefix = statements.slice(0, -1);
+    const transparentWrite = (statement: StatementNode): MappingAssignNode | MappingDeleteNode | undefined => {
+      if (statement instanceof MappingAssignNode || statement instanceof MappingDeleteNode) return statement;
+      if (!(statement instanceof BlockNode) || (statement.statements ?? []).length !== 1) return undefined;
+      const nested = statement.statements![0];
+      return nested instanceof MappingAssignNode || nested instanceof MappingDeleteNode ? nested : undefined;
+    };
+    const writes = prefix.map((statement, index) => ({
+      statement, write: transparentWrite(statement), index,
+    })).filter((candidate) => candidate.write !== undefined);
+    const bases = prefix.map((statement, index) => ({ statement, index })).filter((candidate) =>
+      candidate.statement instanceof BranchNode);
+    if (writes.length !== 1 || bases.length !== 1
+      || !prefix.every((statement) => statement instanceof VariableDefinitionNode
+        || statement === writes[0].statement || statement === bases[0].statement)
+      || writes[0].index >= bases[0].index) return undefined;
+    const write = writes[0].write!;
+    const base = bases[0].statement as BranchNode;
+    if (!(write instanceof MappingAssignNode || write instanceof MappingDeleteNode)
+      || !this.sortedMappingNames.has(write.name) || write.keys.length !== 1
+      || !(base instanceof BranchNode) || base.elseBlock !== undefined
+      || !(recursiveReturn instanceof ReturnNode) || recursiveReturn.expressions.length !== 1
+      || !this.isSelfCall(recursiveReturn.expressions[0], node.name)
+      || (base.ifBlock.statements ?? []).length !== 1
+      || !(base.ifBlock.statements![0] instanceof ReturnNode)
+      || (base.ifBlock.statements![0] as ReturnNode).expressions.length !== 1) return undefined;
+    const call = recursiveReturn.expressions[0];
+    const condition = base.condition;
+    if (!(condition instanceof BinaryOpNode) || condition.operator !== BinaryOperator.EQ) return undefined;
+    const zeroSide = condition.left instanceof IntLiteralNode && condition.left.value === 0n
+      ? condition.right : condition.right instanceof IntLiteralNode && condition.right.value === 0n
+        ? condition.left : undefined;
+    if (!(zeroSide instanceof IdentifierNode)) return undefined;
+    const inductionIndex = node.parameters.findIndex((parameter) =>
+      parameter.name === zeroSide.name && parameter.type instanceof IntType);
+    if (inductionIndex < 0 || !(write.keys[0] instanceof IdentifierNode)
+      || write.keys[0].name !== zeroSide.name) return undefined;
+    const next = call.parameters[inductionIndex];
+    if (!(next instanceof BinaryOpNode) || next.operator !== BinaryOperator.MINUS
+      || !(next.left instanceof IdentifierNode) || next.left.name !== zeroSide.name
+      || !(next.right instanceof IntLiteralNode) || next.right.value !== 1n) return undefined;
+    if (call.parameters.some((argument, index) => index !== inductionIndex
+      && (!(argument instanceof IdentifierNode) || argument.name !== node.parameters[index].name))) return undefined;
+    // The restricted prefix makes the write unconditional. Reject hidden collection/effect work inside its value
+    // or the base expression; those need a frame trace rather than a rank-only permutation.
+    let unsupported = false;
+    this.walkNodes(node.body, (candidate) => {
+      if (candidate === write || candidate === call) return;
+      if (candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode
+        || candidate instanceof MappingFieldAssignNode || candidate instanceof StateAssignNode
+        || candidate instanceof DeleteStateNode || candidate instanceof WhileNode
+        || candidate instanceof DoWhileNode || candidate instanceof FunctionCallNode) unsupported = true;
+    });
+    return unsupported ? undefined : { inductionIndex, baseIndex: bases[0].index };
+  }
+
+  private hasVaryingRecursiveMappingWrite(node: FunctionDefinitionNode): boolean {
+    if (!node.body) return false;
+    const varying = new Set<string>();
+    this.walkNodes(node.body, (candidate) => {
+      if (!this.isSelfCall(candidate, node.name)) return;
+      node.parameters.forEach((parameter, index) => {
+        const argument = candidate.parameters[index];
+        if (!(argument instanceof IdentifierNode) || argument.name !== parameter.name) varying.add(parameter.name);
+      });
+    });
+    const usesVaryingParameter = (key: ExpressionNode): boolean => {
+      let result = false;
+      this.walkNodes(key, (part) => {
+        if (part instanceof IdentifierNode && varying.has(part.name)) result = true;
+      });
+      return result;
+    };
+    let found = false;
+    this.walkNodes(node.body, (candidate) => {
+      if (!(candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode
+        || candidate instanceof MappingFieldAssignNode)) return;
+      if (candidate.keys.some(usesVaryingParameter)) found = true;
+    });
+    return found;
+  }
+
+  private replaceAffineInduction(
+    node: Node, inductionName: string, rankName: string,
+  ): Node {
+    if (node instanceof IdentifierNode && node.name === inductionName) {
+      return this.stamp(new BinaryOpNode(
+        this.stamp(new IdentifierNode(inductionName), node.location), BinaryOperator.MINUS,
+        this.stamp(new IdentifierNode(rankName), node.location),
+      ), node.location);
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (['resolvedFunction', 'definition', 'symbolTable', 'location', 'type'].includes(key)
+        || (node instanceof FunctionCallNode && key === 'identifier')) continue;
+      if (child instanceof Node) {
+        (node as unknown as Record<string, unknown>)[key] = this.replaceAffineInduction(
+          child, inductionName, rankName,
+        );
+      } else if (Array.isArray(child)) {
+        (node as unknown as Record<string, unknown>)[key] = child.map((item) => item instanceof Node
+          ? this.replaceAffineInduction(item, inductionName, rankName) : item);
+      }
+    }
+    return node;
+  }
+
+  private lowerAffineMappingRecursion(
+    node: FunctionDefinitionNode, plan: AffineMappingRecursion, returnNames: readonly string[], frame: number,
+  ): void {
+    const induction = node.parameters[plan.inductionIndex];
+    const rankName = `__tail_rank_${frame}`;
+    const transformed = this.replaceAffineInduction(
+      cloneNode(node.body!) as BlockNode, induction.name, rankName,
+    ) as BlockNode;
+    const recursiveReturn = transformed.statements!.pop() as ReturnNode;
+    if (!this.isSelfCall(recursiveReturn.expressions[0], node.name)) return;
+    const base = transformed.statements![plan.baseIndex] as BranchNode;
+    const baseReturn = base.ifBlock.statements![0] as ReturnNode;
+    base.ifBlock.statements = [
+      ...returnNames.map((name, index) => this.stamp(new AssignNode(
+        this.stamp(new IdentifierNode(name), baseReturn.location), baseReturn.expressions[index],
+      ), baseReturn.location)),
+      this.stamp(new BreakNode(), baseReturn.location),
+    ];
+    const increment = this.stamp(new AssignNode(
+      this.stamp(new IdentifierNode(rankName), node.location),
+      this.stamp(new BinaryOpNode(
+        this.stamp(new IdentifierNode(rankName), node.location), BinaryOperator.PLUS,
+        this.stamp(new IntLiteralNode(1n), node.location),
+      ), node.location),
+    ), node.location);
+    transformed.statements!.push(increment);
+    const bound = this.stamp(new BinaryOpNode(
+      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.PLUS,
+      this.stamp(new IntLiteralNode(1n), node.location),
+    ), node.location);
+    const loop = this.stamp(new WhileNode(
+      this.stamp(new BinaryOpNode(
+        this.stamp(new IdentifierNode(rankName), node.location), BinaryOperator.LT, bound,
+      ), node.location), transformed,
+    ), node.location);
+    loop.forLoopUpdateCount = 1;
+    const rank = this.stamp(new VariableDefinitionNode(
+      induction.type, [], rankName, this.stamp(new IntLiteralNode(0n), node.location),
+    ), node.location);
+    rank.isLoopVariable = true;
+    rank.loopInitialValue = 0n;
+    rank.loopStepValue = 1n;
+    const nonNegative = this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
+      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.GE,
+      this.stamp(new IntLiteralNode(0n), node.location),
+    ), node.location), 'recursive mapping frame count must be between 1 and 64'), node.location);
+    const bounded = this.stamp(new RequireNode(this.stamp(new BinaryOpNode(
+      this.stamp(new IdentifierNode(induction.name), node.location), BinaryOperator.LE,
+      this.stamp(new IntLiteralNode(63n), node.location),
+    ), node.location), 'recursive mapping frame count must be between 1 and 64'), node.location);
+    const unnamedResults = node.returnNames.length === 0;
+    const results = unnamedResults ? returnNames.map((name, index) => this.stamp(
+      new VariableDefinitionNode(node.returnTypes[index], [], name), node.location,
+    )) : [];
+    const finalReturn = unnamedResults ? this.stamp(new ReturnNode(returnNames.map((name) =>
+      this.stamp(new IdentifierNode(name), node.location))), node.location) : undefined;
+    node.body = this.stamp(new BlockNode([
+      ...results, nonNegative, bounded, rank, loop, ...(finalReturn ? [finalReturn] : []),
+    ]), node.location);
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const voidFunction = node.returnTypes.length === 0;
     const namedResults = node.returnTypes.length > 0 && node.returnNames.length === node.returnTypes.length;
@@ -838,6 +1027,15 @@ export default class LowerTailRecursion extends AstTraversal {
     const sourceSelfCalls = this.countSelfCalls(node.body, node.name);
     if (sourceSelfCalls > 0) this.normalizeRightShortCircuitReturns(node.body, selfNames);
     const selfCalls = this.countSelfCalls(node.body, node.name);
+    const affineMapping = selfCalls === 1 ? this.affineMappingRecursion(node) : undefined;
+    if (affineMapping) {
+      this.counter += 1;
+      this.lowerAffineMappingRecursion(node, affineMapping, returnNames, frame);
+      return node;
+    }
+    // A varying entry cannot use the invariant-entry cache, and the ordinary repeat loop publishes no key stream.
+    // Leave every shape outside the exact rank proof above recursive so kernel admission fails closed.
+    if (this.hasVaryingRecursiveMappingWrite(node)) return node;
     const fold = selfCalls > 0 ? this.recursiveFoldShape([node], selfNames) : undefined;
     if (selfCalls === 0 || !this.selfCallsHaveArity(node.body, node.name, node.parameters.length)
       || !this.baseReturnsHaveArity(node.body, node.name, node.returnTypes.length, namedResults)

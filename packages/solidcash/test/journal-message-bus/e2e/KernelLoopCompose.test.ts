@@ -1557,6 +1557,69 @@ describe('kernel loop message-bus compose', () => {
     await expect(contract.getState()).resolves.toMatchObject({ calls: 2n, result: expected });
   }, 180_000);
 
+  it('settles affine varying-key recursive sets and deletes through rank streams', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelAffineRecursiveEntries() {
+      mapping(int => int) values;
+      function fill(int remaining) public returns (int) {
+        this.values[remaining] = remaining + 10;
+        if (remaining == 0) return 0;
+        return fill(remaining - 1);
+      }
+      function clear(int remaining) public returns (int) {
+        delete this.values[remaining];
+        if (remaining == 0) return 0;
+        return clear(remaining - 1);
+      }
+      function check(int key, int expected) public { require(this.values[key] == expected); }
+    }`, KERNEL);
+    for (const name of ['fill', 'clear']) {
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === name))
+        .toMatchObject({ eligible: true });
+      expect(artifact.abi.find((entry) => entry.name === name)?.recursiveStateHandler).toBeUndefined();
+    }
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const execute = async (functionName: 'fill' | 'clear'): Promise<void> => {
+      const call = contract.batch([{ function: functionName, args: [3n] }]);
+      const builder = await call.build();
+      const vm = createVirtualMachineBch2026ForProvider(provider);
+      const transaction = builder.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+          .toBe(true);
+      }
+      await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    };
+    await execute('fill');
+    for (const [key, expected] of [[0n, 10n], [1n, 11n], [2n, 12n], [3n, 13n]] as const) {
+      await expect(contract.call.check(key, expected).send()).resolves.toBeDefined();
+    }
+    await execute('clear');
+    for (const key of [0n, 1n, 2n, 3n]) {
+      await expect(contract.call.check(key, 0n).send()).resolves.toBeDefined();
+    }
+    const kernelAccepts = async (remaining: bigint): Promise<boolean> => {
+      try {
+        const builder = await contract.batch([{ function: 'fill', args: [remaining] }]).build();
+        const vm = createVirtualMachineBch2026ForProvider(provider);
+        const transaction = builder.buildLibauthTransaction();
+        const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+        return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+          vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+        ));
+      } catch {
+        return false;
+      }
+    };
+    await expect(kernelAccepts(63n)).resolves.toBe(true);
+    await expect(kernelAccepts(64n)).resolves.toBe(false);
+  }, 180_000);
+
   it('executes resource-free non-tail recursion through one row', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelPureRecursion() {

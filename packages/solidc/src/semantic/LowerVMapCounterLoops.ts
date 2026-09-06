@@ -3662,11 +3662,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
         node.transferInfos = undefined;
       }
       // The balanced route reserves the worst-case output width of every admitted runtime counter loop. One
-      // iteration produces one mapping entry per distinct collection plus one record per unconditional event
-      // site. Summing here handles sequential loops and multi-collection loops without recognizing a contract
-      // schema later in layout planning.
+      // iteration produces one mapping entry per distinct stream plus one record per unconditional event site.
+      // Each mapping stream may also displace one predecessor while linking its complete insertion batch, so
+      // reserve that single endpoint independently of the 64 operation slots. Summing here handles sequential
+      // loops and multiple streams without recognizing a contract schema later in layout planning.
       node.runtimeCounterLoopOutputCapacity = (node.runtimeCounterLoopOutputCapacity ?? 0)
-        + MAX_COUNTER_ITERATIONS * (keyedByStream.size + runtimeEmits.length + runtimeTransfers.length);
+        + MAX_COUNTER_ITERATIONS * (keyedByStream.size + runtimeEmits.length + runtimeTransfers.length)
+        + keyedByStream.size;
       const whenLoopActive = (expression: ExpressionNode): ExpressionNode => pathCondition
         ? at(new TernaryOpNode(activePath(), expression, at(new BoolLiteralNode(true))))
         : expression;

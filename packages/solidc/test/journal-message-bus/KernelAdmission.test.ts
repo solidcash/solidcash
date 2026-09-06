@@ -482,18 +482,23 @@ describe('required kernel admission', () => {
       }));
   });
 
-  it('keeps a varying-key mapping delete out of recursion-fold lowering', () => {
+  it('lowers an affine varying-key mapping delete to an authenticated rank stream', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       function sum(int n) public returns (int) {
         delete this.values[n];
         if (n == 0) return 0;
-        return n + sum(n - 1);
+        return sum(n - 1);
       }
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
+    const sum = artifact.abi.find((entry) => entry.name === 'sum');
+    expect(sum?.recursiveStateHandler).toBeUndefined();
+    expect(sum).toMatchObject({
+      sortedUpsertLoopInfo: [expect.objectContaining({ collection: 'values', op: 'delete' })],
+    });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
@@ -552,18 +557,81 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBeUndefined();
   });
 
-  it('keeps a varying-key mapping write out of recursion-fold lowering', () => {
+  it('lowers an affine varying-key mapping write to an authenticated rank stream', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       function sum(int n) public returns (int) {
         this.values[n] = n;
         if (n == 0) return 0;
-        return n + sum(n - 1);
+        return sum(n - 1);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    const sum = artifact.abi.find((entry) => entry.name === 'sum');
+    expect(sum?.recursiveStateHandler).toBeUndefined();
+    expect(sum).toMatchObject({
+      sortedUpsertLoopInfo: [expect.objectContaining({ collection: 'values', op: 'set' })],
+    });
+    const requireMessages = [
+      ...(artifact.debug?.requires ?? []),
+      ...Object.values(artifact.debug?.functionDebug ?? {}).flatMap((debug) => debug.requires),
+      ...Object.values(artifact.debug?.invokeDebug ?? {}).flatMap((debug) => debug.requires),
+    ].map((entry) => entry.message);
+    expect(requireMessages).toContain('recursive mapping frame count must be between 1 and 64');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('replays pure local aliases in an affine recursive mapping value', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function fill(int remaining) public returns (int) {
+        int value = remaining + 10;
+        this.values[remaining] = value;
+        if (remaining == 0) return 0;
+        return fill(remaining - 1);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'fill')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ collection: 'values', op: 'set' })]);
+  });
+
+  it('recognizes an unconditional affine recursive write inside a transparent block', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function fill(int remaining) public returns (int) {
+        { this.values[remaining] = remaining + 10; }
+        if (remaining == 0) return 0;
+        return fill(remaining - 1);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'fill')?.sortedUpsertLoopInfo)
+      .toEqual([expect.objectContaining({ collection: 'values', op: 'set' })]);
+  });
+
+  it.each([
+    ['a non-unit recursive step', 'this.values[n] = n;', 'return sum(n - 2);'],
+    ['a recursive result continuation', 'this.values[n] = n;', 'return n + sum(n - 1);'],
+    ['a conditional recursive write', 'if (n > 1) { this.values[n] = n; }', 'return sum(n - 1);'],
+  ])('keeps %s outside affine recursive mapping streams', (_label, write, recursiveReturn) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function sum(int n) public returns (int) {
+        ${write}
+        if (n == 0) return 0;
+        ${recursiveReturn}
       }
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
       .toMatchObject({ eligible: true });
   });
@@ -938,7 +1006,7 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('admits a counter-keyed mapping loop via a hidden permutation witness', () => {
+  it('reserves a predecessor beside all 64 counter-keyed mapping operations', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) slots;
       function fill(int n) public {
@@ -958,6 +1026,29 @@ describe('required kernel admission', () => {
       name: permutation.name,
       type: 'int256[][]',
     }));
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(65);
+  });
+
+  it.each([
+    ['two collections in one loop', `
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function fill(int count) public {
+        for (int i = 0; i < count; i = i + 1) { left[i] = i; right[i] = i; }
+        require(true);
+      }`],
+    ['two loops over one collection', `
+      mapping(int => int) values;
+      function fill(int first, int second) public {
+        for (int i = 0; i < first; i = i + 1) { values[i] = i; }
+        for (int j = 0; j < second; j = j + 1) { values[j + 100] = j; }
+        require(true);
+      }`],
+  ])('reserves two independent mapping-only streams for %s', (_label, body) => {
+    const artifact = compileString(`contract C() { ${body} }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'fill'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(2 * 65);
   });
 
   it('permutes counter uses inside pure helper and builtin mapping values', () => {
@@ -4675,7 +4766,7 @@ describe('required kernel admission', () => {
       },
       { repeatCount: 1, eventSignatures: ['After(int256)'] },
     ]);
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(130);
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(131);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control')?.eligible).toBe(true);
   });
 
@@ -4737,8 +4828,8 @@ describe('required kernel admission', () => {
       },
     ]);
     // (one mapping + two events) + (one mapping + one event), each independently bounded to 64 iterations,
-    // plus the exact one-record segment between them.
-    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(5 * 64 + 1);
+    // plus one predecessor per mapping stream and the exact one-record segment between them.
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(5 * 64 + 3);
   });
 
   it('keeps loop events on direct calls while the legacy bus refuses the runtime row shape', () => {

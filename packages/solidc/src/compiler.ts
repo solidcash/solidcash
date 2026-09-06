@@ -6393,44 +6393,48 @@ function synthesizeMessageBusRoute(
         ${kernelJournalValidation}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${MAX_MESSAGE_BUS_BLOB_BYTES});
-        bytes __message_bus_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
-        require(__message_bus_unlock.length >= 7);
-        require(__message_bus_unlock.slice(0, 5) == hex"0453434231");
-        ${routeBatchPushOffset}
-        bigint __message_bus_pushOpcode = int(bytes.concat(
-          __message_bus_unlock.slice(__message_bus_push_at, __message_bus_push_at + 1), hex"00"
-        ));
-        if (batchBlob.length <= 75) {
-          require(__message_bus_pushOpcode == batchBlob.length);
-          require(__message_bus_unlock.slice(
-            __message_bus_push_at + 1, __message_bus_push_at + 1 + batchBlob.length
-          ) == batchBlob);
-        } else if (batchBlob.length <= 255) {
-          require(__message_bus_pushOpcode == 76);
-          // The VM's push parser already defines batchBlob's byte count from this PUSHDATA1 length byte, and
-          // minimal-data rules require this opcode for the 76..255-byte range. Do not reinterpret bytes >= 0x80
-          // through Script-number casts: their sign-bit encoding is not the unsigned push length.
-          require(__message_bus_unlock.slice(
-            __message_bus_push_at + 2, __message_bus_push_at + 2 + batchBlob.length
-          ) == batchBlob);
-        } else if (batchBlob.length <= 65535) {
-          require(__message_bus_pushOpcode == 77);
-          bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
-            __message_bus_push_at + 1, __message_bus_push_at + 3
-          ), hex"00"));
-          require(__message_bus_pushLength == batchBlob.length);
-          require(__message_bus_unlock.slice(
-            __message_bus_push_at + 3, __message_bus_push_at + 3 + batchBlob.length
-          ) == batchBlob);
-        } else {
-          require(__message_bus_pushOpcode == 78);
-          bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
-            __message_bus_push_at + 1, __message_bus_push_at + 5
-          ), hex"00"));
-          require(__message_bus_pushLength == batchBlob.length);
-          require(__message_bus_unlock.slice(
-            __message_bus_push_at + 5, __message_bus_push_at + 5 + batchBlob.length
-          ) == batchBlob);
+        // This carrier can approach the transaction-size ceiling. A control-flow scope makes its lifetime
+        // explicit so generic row-frame updates never rotate dead unlocking bytecode through the main stack.
+        if (true) {
+          bytes __message_bus_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
+          require(__message_bus_unlock.length >= 7);
+          require(__message_bus_unlock.slice(0, 5) == hex"0453434231");
+          ${routeBatchPushOffset}
+          bigint __message_bus_pushOpcode = int(bytes.concat(
+            __message_bus_unlock.slice(__message_bus_push_at, __message_bus_push_at + 1), hex"00"
+          ));
+          if (batchBlob.length <= 75) {
+            require(__message_bus_pushOpcode == batchBlob.length);
+            require(__message_bus_unlock.slice(
+              __message_bus_push_at + 1, __message_bus_push_at + 1 + batchBlob.length
+            ) == batchBlob);
+          } else if (batchBlob.length <= 255) {
+            require(__message_bus_pushOpcode == 76);
+            // The VM's push parser already defines batchBlob's byte count from this PUSHDATA1 length byte, and
+            // minimal-data rules require this opcode for the 76..255-byte range. Do not reinterpret bytes >= 0x80
+            // through Script-number casts: their sign-bit encoding is not the unsigned push length.
+            require(__message_bus_unlock.slice(
+              __message_bus_push_at + 2, __message_bus_push_at + 2 + batchBlob.length
+            ) == batchBlob);
+          } else if (batchBlob.length <= 65535) {
+            require(__message_bus_pushOpcode == 77);
+            bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
+              __message_bus_push_at + 1, __message_bus_push_at + 3
+            ), hex"00"));
+            require(__message_bus_pushLength == batchBlob.length);
+            require(__message_bus_unlock.slice(
+              __message_bus_push_at + 3, __message_bus_push_at + 3 + batchBlob.length
+            ) == batchBlob);
+          } else {
+            require(__message_bus_pushOpcode == 78);
+            bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
+              __message_bus_push_at + 1, __message_bus_push_at + 5
+            ), hex"00"));
+            require(__message_bus_pushLength == batchBlob.length);
+            require(__message_bus_unlock.slice(
+              __message_bus_push_at + 5, __message_bus_push_at + 5 + batchBlob.length
+            ) == batchBlob);
+          }
         }
         require(batchBlob.slice(0, 4) == hex"53434231");
         bigint __message_bus_version = int(bytes.concat(batchBlob.slice(4, 5), hex"00"));

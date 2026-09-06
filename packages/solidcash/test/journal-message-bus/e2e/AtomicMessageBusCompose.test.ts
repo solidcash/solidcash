@@ -525,6 +525,107 @@ describe('messageBus.compose atomic transaction', () => {
     expect(vmRejects(wrongGenesisHash)).toBe(true);
   }, 120_000);
 
+  it('keeps computed CREATE2 recipes site-local across repeated heterogeneous deployment rows', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`contract CompactChild(int seed) {
+        int marker;
+        function keep() public { require(true); }
+      }
+      contract SaltedWideChild(int seed) {
+        bytes32 a;
+        bytes32 b;
+        bytes32 c;
+        bytes32 d;
+        bytes32 e;
+        function keep() public { require(true); }
+      }
+      interface IFactory { function create(int seed); }
+      contract Factory() {
+        function create(int seed) public {
+          CompactChild compact = new CompactChild(seed);
+          SaltedWideChild wide = new SaltedWideChild{salt: bytes32(seed + 100)}(seed);
+          require(true);
+        }
+      }
+      contract Driver(address factory) {
+        function run() public {
+          IFactory(factory).create(1);
+          IFactory(factory).create(2);
+          require(true);
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000 });
+    const connect = async (artifact: Artifact, args: readonly unknown[] = []): Promise<StatefulContract> => {
+      const base = new Contract(artifact, args as never[], { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const factory = (await connect(artifacts.Factory))
+      .registerChild(artifacts.CompactChild).registerChild(artifacts.SaltedWideChild);
+    const driver = await connect(artifacts.Driver, [hexToBin(factory.inner.lockingBytecode)]);
+    const handler = artifacts.Factory.messageBus?.handlers.find((candidate) => candidate.name === 'create');
+    expect(handler).toMatchObject({
+      eligible: true,
+      childDeployments: [
+        {
+          siteIndex: 0, contractName: 'CompactChild', occurrence: 'once',
+          constructorArgs: [{ kind: 'handlerInput', inputIndex: 0 }],
+        },
+        {
+          siteIndex: 1, contractName: 'SaltedWideChild', occurrence: 'once',
+          constructorArgs: [{ kind: 'handlerInput', inputIndex: 0 }],
+          salt: {
+            kind: 'cast', resultType: 'bytes32',
+            operand: { kind: 'binary', operator: '+' },
+          },
+        },
+      ],
+    });
+    const [compactSite, wideSite] = handler!.childDeployments!;
+    expect(wideSite.totalOutputCount).toBeGreaterThan(compactSite.totalOutputCount);
+
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const firstCompact = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const firstWide = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const secondCompact = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const secondWide = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const transaction = await messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [] },
+        { contract: factory, functionName: 'create', args: [1n] },
+        { contract: factory, functionName: 'create', args: [2n] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [
+        { invocationIndex: 1, siteIndex: 0, funder: firstCompact },
+        { invocationIndex: 1, siteIndex: 1, funder: firstWide },
+        { invocationIndex: 2, siteIndex: 0, funder: secondCompact },
+        { invocationIndex: 2, siteIndex: 1, funder: secondWide },
+      ],
+    }).build();
+    expect(vmRejects(transaction)).toBe(false);
+
+    const deployments = [firstCompact, firstWide, secondCompact, secondWide].map((genesis) => {
+      const outputs = transaction.outputs
+        .map((output, index) => ({ output, index }))
+        .filter(({ output }) => output.token?.category === genesis.utxo.txid);
+      expect(outputs).toHaveLength(
+        genesis === firstCompact || genesis === secondCompact
+          ? compactSite.totalOutputCount : wideSite.totalOutputCount,
+      );
+      expect(outputs.map(({ index }) => index)).toEqual(
+        Array.from({ length: outputs.length }, (_, index) => outputs[0].index + index),
+      );
+      expect(outputs[0].output.token?.nft?.capability).toBe('minting');
+      expect(outputs.slice(1).every(({ output }) => output.token?.nft?.capability === 'mutable')).toBe(true);
+      return outputs;
+    });
+    expect(deployments[1][0].index).toBe(deployments[0][0].index + compactSite.totalOutputCount);
+    expect(deployments[3][0].index).toBe(deployments[2][0].index + compactSite.totalOutputCount);
+    expect(deployments[0][0].index).toBeLessThan(deployments[2][0].index);
+    expect(new Set(deployments.map((outputs) => binToHex(outputs[0].output.to)))).toHaveLength(4);
+  }, 120_000);
+
   it('materializes row-varying constructor and CREATE2 recipes for one deployment site', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`contract Child(int seed) {

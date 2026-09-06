@@ -117,6 +117,15 @@ const persistedJobEventsRecipes = new Map<string, {
   collection: string;
   categoryId: string;
 }>();
+const persistedValueChunkWrites = new Map<string, {
+  lockingBytecode: Uint8Array; width: number;
+}>();
+const invalidatePersistedValueChunkWrites = (categoryId: string): void => {
+  const prefix = `${categoryId.toLowerCase()}:`;
+  for (const key of persistedValueChunkWrites.keys()) {
+    if (key.startsWith(prefix)) persistedValueChunkWrites.delete(key);
+  }
+};
 const stagedJobEventsValues = new Map<string, Uint8Array>();
 const createdDigestLocks = new Set<string>();
 const persistedCreatedValues = new Map<string, Uint8Array>();
@@ -946,6 +955,7 @@ export function stageJobEventsValue(categoryId: string, value: Uint8Array): void
 /** Full last committed jobEvents blob (not a Created probe). Latest commit wins. */
 export function rememberJobEventsValue(categoryId: string, value: Uint8Array): void {
   if (value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return;
+  invalidatePersistedValueChunkWrites(categoryId);
   // Planning knows the value this transaction intends to authenticate. Later
   // VM probes can still encounter a consumed predecessor, so their temporal
   // order does not make them more authoritative than the staged write.
@@ -975,6 +985,7 @@ export function rememberJobEventsLock(categoryId: string, lock: Uint8Array): voi
   // Created digest (first publishJobPost persist) is the UPDATE dest-18 pin.
   // Later persist-v rematerialize must not replace it.
   if (createdDigestLocks.has(categoryId)) return;
+  invalidatePersistedValueChunkWrites(categoryId);
   persistedJobEventsLocks.set(categoryId, lock);
   const value = persistedJobEventsValues.get(categoryId)
     ?? latestPersisted(persistedJobEventsValues, categoryId);
@@ -987,6 +998,47 @@ export function rememberJobEventsLock(categoryId: string, lock: Uint8Array): voi
 
 export function persistedJobEventsLock(categoryId: string): Uint8Array | undefined {
   return persistedJobEventsLocks.get(categoryId);
+}
+
+export interface ValueChunkWriteDescriptor {
+  categoryId: string;
+  collection: string;
+  collectionSignature: string;
+  collectionHash: string;
+  keySlot: string;
+  entryAccessSlot: number;
+  routeSlot: number;
+  operation: 'insert' | 'update';
+  outputBase: number;
+  outputCount: number;
+}
+
+const valueChunkWriteIdentity = (write: ValueChunkWriteDescriptor): string => [
+  write.categoryId.toLowerCase(), write.collectionHash.toLowerCase(), write.keySlot.toLowerCase(),
+].join(':');
+
+/** Authenticate a legacy observed continuation against an exact compiler/planner write identity. */
+export function persistedValueChunkWriteState(
+  write: ValueChunkWriteDescriptor,
+): { lockingBytecode: Uint8Array; width: number } | undefined {
+  const identity = valueChunkWriteIdentity(write);
+  const cached = persistedValueChunkWrites.get(identity);
+  if (cached) return cached;
+  const value = persistedJobEventsValues.get(write.categoryId);
+  const lockingBytecode = persistedJobEventsLocks.get(write.categoryId);
+  if (!value || !lockingBytecode || !/^[0-9a-f]{64}$/i.test(write.categoryId)
+    || !/^[0-9a-f]{64}$/i.test(write.keySlot)) return undefined;
+  try {
+    const expected = getValueChunkLockingBytecode(
+      write.categoryId, write.collectionSignature, hexToBin(write.keySlot), sha256Sync(value),
+    );
+    if (binToHex(expected) !== binToHex(lockingBytecode)) return undefined;
+    const state = { lockingBytecode, width: persistedJobEventsWidth(write.categoryId) };
+    persistedValueChunkWrites.set(identity, state);
+    return state;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -4027,6 +4079,8 @@ export interface ExternalCallUtxoGroup {
   valueChunkOutputCount?: number;
   /** Absolute first continuation output selected for this composed write. */
   valueChunkOutputBase?: number;
+  /** Exact computed value-chunk writes owned by this physical call. */
+  valueChunkWrites?: ValueChunkWriteDescriptor[];
   /** Entry covenant bytecode for fixed sorted-batch target slots. Absent targets use balanced funder inputs,
    * whose locking bytecode must not be mirrored when the active route mints the target node. */
   batchEntryLockingBytecodes?: Map<number, Uint8Array>;
@@ -5152,6 +5206,9 @@ export class StatefulTransactionBuilder {
       persistedJobEventsLocks.delete(categoryId);
       persistedJobEventsSpends.delete(categoryId);
       persistedJobEventsRecipes.delete(categoryId);
+      for (const key of persistedValueChunkWrites.keys()) {
+        if (key.startsWith(`${categoryId.toLowerCase()}:`)) persistedValueChunkWrites.delete(key);
+      }
       stagedJobEventsValues.delete(categoryId);
       createdDigestLocks.delete(categoryId);
       persistedCreatedValues.delete(categoryId);
@@ -5165,6 +5222,7 @@ export class StatefulTransactionBuilder {
       persistedJobEventsLocks.clear();
       persistedJobEventsSpends.clear();
       persistedJobEventsRecipes.clear();
+      persistedValueChunkWrites.clear();
       stagedJobEventsValues.clear();
       createdDigestLocks.clear();
       persistedCreatedValues.clear();

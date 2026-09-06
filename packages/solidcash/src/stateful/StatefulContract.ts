@@ -171,6 +171,8 @@ import {
   valueChunkIndexFromCommitment,
   selectValueChunkOutputBase,
   selectExternalEventProbeInput,
+  persistedValueChunkWriteState,
+  type ValueChunkWriteDescriptor,
 } from './StatefulTransactionBuilder.js';
 import {
   OnChainState, StateReader, type ParsedEvent, type EventFilter,
@@ -1603,6 +1605,57 @@ function writesChunkableArrayValue(
   abiFunction: AbiFunction,
 ): boolean {
   return chunkableArrayWriteCollections(group, abiFunction).length > 0;
+}
+
+/** Build exact continuation identities from compiler entry metadata and the planner's authenticated entry input. */
+export function describeValueChunkWrites(group: ExternalCallUtxoGroup): ValueChunkWriteDescriptor[] {
+  const artifact = group.externalContract?.inner?.artifact as Artifact | undefined;
+  const abiFunction = group.compilerRoute?.abiFunction
+    ?? artifact?.abi.find((candidate) => candidate.name === group.functionName);
+  if (!abiFunction) return [];
+  const layout = abiFunction.blockLayout ?? group.blockLayout;
+  if (!layout) return [];
+  const activeFunctions = group.compilerRoute?.abiFunction === abiFunction
+    && (group.compilerRoute.rowArguments?.length ?? 0) > 0
+    ? group.compilerRoute.rowArguments!.map((row) => row.handler)
+    : [abiFunction];
+  const activeWriteCollections = (abiFunction as MessageBusRuntimeAbiFunction)
+    .messageBusActiveWriteCollections;
+  const writes: ValueChunkWriteDescriptor[] = [];
+  for (const activeFunction of activeFunctions) {
+    for (const [entryAccessSlot, access] of (activeFunction.entryAccesses ?? []).entries()) {
+      if (!access.operations.includes('write')) continue;
+      const collection = group.stateLayout.collections?.find((candidate) =>
+        candidate.name === access.collection || candidate.signature === access.collection);
+      if (!collection?.chunkableValue || !collection.valueType.endsWith('[]')) continue;
+      if (activeWriteCollections !== undefined && !activeWriteCollections.some((candidate) =>
+        candidate === access.collection || candidate === collection.name
+        || candidate === collection.signature)) continue;
+      const routeSlot = access.slotIndex ?? entryAccessSlot;
+      const blockSlot = layout.slots.find((slot) =>
+        slot.kind === 'entry' && slot.slotIndex === routeSlot)?.offset;
+      if (blockSlot === undefined) continue;
+      const insert = group.plannedEntryInserts?.find((planned) => planned.blockSlot === blockSlot);
+      const commitment = insert?.newCommitment
+        ?? group.blockInputs?.[blockSlot]?.token?.nft?.commitment;
+      if (!commitment) continue;
+      const bytes = typeof commitment === 'string' ? hexToBin(commitment) : commitment;
+      if (bytes.length < 32) continue;
+      writes.push({
+        categoryId: group.categoryId,
+        collection: collection.name,
+        collectionSignature: collection.signature,
+        collectionHash: binToHex(computeCollectionHash(collection.signature)),
+        keySlot: binToHex(decodeEntryCommitment(bytes).slot),
+        entryAccessSlot,
+        routeSlot,
+        operation: insert ? 'insert' : 'update',
+        outputBase: group.valueChunkOutputBase ?? -1,
+        outputCount: group.valueChunkOutputCount ?? 0,
+      });
+    }
+  }
+  return writes;
 }
 
 function chunkableArrayWriteCollections(
@@ -10377,15 +10430,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }>;
   }> {
     const stateLayout = this.inner.stateLayout!;
-    const publishCategory = stb.getExternalCallUtxoGroups().find((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent')?.categoryId
-      ?? stb.getLowLevelCallUtxoGroups().find((group) => group.functionName === 'publishJobEvent')?.categoryId;
-    const persistWidthAtEntry = publishCategory && isPersistedJobEventsReady()
-      && persistedJobEventsLock(publishCategory)
-      && !stb.getLowLevelCallUtxoGroups().some((group) => group.functionName === 'publishJobPost')
-      && !stb.getExternalCallUtxoGroups().some((group) =>
-        (group.functionName ?? group.logicalFunctionName) === 'publishJobPost')
-      ? persistedJobEventsWidth(publishCategory) : 0;
+    const valueChunkWrites = [
+      ...stb.getExternalCallUtxoGroups(), ...stb.getLowLevelCallUtxoGroups(),
+    ].flatMap((group) => {
+      group.valueChunkWrites = describeValueChunkWrites(group);
+      return group.valueChunkWrites;
+    });
+    const persistedChunkWrite = isPersistedJobEventsReady()
+      ? valueChunkWrites.find((write) =>
+        write.operation === 'update' && persistedValueChunkWriteState(write) !== undefined)
+      : undefined;
+    const persistWidthAtEntry = persistedChunkWrite
+      ? persistedValueChunkWriteState(persistedChunkWrite)!.width : 0;
 
     // Atomic participant extraction evaluates a compiler-routed delegate in a transaction-local coordinate
     // system before embedding that participant in the final graph. The graph route intentionally retains final

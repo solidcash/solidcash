@@ -125,7 +125,9 @@ import {
   shouldRematerializePersistUpdate,
   shouldStampPersistUpdateDigestLock,
   rememberJobEventsLock,
+  rememberJobEventsValue,
   persistedJobEventsLock,
+  persistedValueChunkWriteState,
   StatefulTransactionBuilder,
   groupChunkableArrayWriteCollection,
   groupWritesSingleChunkableArrayCollection,
@@ -138,6 +140,8 @@ import {
   isDataNftIndexCommitment,
   type PhysicalReturnGroup,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
+import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
+import { describeValueChunkWrites } from '../../src/stateful/StatefulContract.js';
 
 describe('external event probe input', () => {
   it('uses delegate geometry across alpha-renaming and ignores a decoy legacy name', () => {
@@ -146,6 +150,94 @@ describe('external event probe input', () => {
 
     expect(selectExternalEventProbeInput(renamedDelegate, 17, 9)).toBe(17);
     expect(selectExternalEventProbeInput(legacyNamedOrdinary, -1, 9)).toBe(9);
+  });
+});
+
+describe('generic persisted value-chunk write identity', () => {
+  const categoryId = 'ab'.repeat(32);
+  const slot = new Uint8Array(32).fill(7);
+  const signature = 'notices:mapping(int => Notice[])';
+  const makeGroup = (name: string, collectionSignature = signature, insert = false) => {
+    const collection = {
+      name: 'notices', signature: collectionSignature, kind: 'mapping' as const,
+      keyType: 'int', valueType: 'Notice[]', chunkableValue: true,
+    };
+    const fn = {
+      name, inputs: [], outputs: [], entryAccesses: [{
+        slotIndex: 0, collection: 'notices', keyParams: ['id'], operations: ['write'],
+      }],
+      blockLayout: {
+        blockSize: 2,
+        slots: [{ kind: 'master' as const, offset: 0 }, { kind: 'entry' as const, offset: 1, slotIndex: 0 }],
+      },
+    };
+    const commitment = encodeEntryCommitment(slot, new Uint8Array(32));
+    return {
+      categoryId,
+      stateLayout: { variables: [], collections: [collection] },
+      masterUtxo: {}, dataNftUtxos: [], requiredDataNftIndices: [],
+      functionName: name, functionArgs: [],
+      externalContract: { inner: { artifact: { abi: [fn] } } },
+      blockInputs: [{}, { token: { nft: { commitment } } }],
+      blockLayout: fn.blockLayout,
+      valueChunkOutputBase: 4,
+      valueChunkOutputCount: 3,
+      ...(insert && { plannedEntryInserts: [{
+        blockSlot: 1, outputBlockSlot: 2, newCommitment: binToHex(commitment),
+      }] }),
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+  };
+
+  it('authenticates an alpha-renamed update and rejects a same-category decoy collection', () => {
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+    const value = new Uint8Array(100).fill(9);
+    rememberJobEventsValue(categoryId, value);
+    rememberJobEventsLock(categoryId, getValueChunkLockingBytecode(
+      categoryId, signature, slot, sha256Sync(value),
+    ));
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    expect(renamed).toMatchObject({
+      collectionSignature: signature, keySlot: binToHex(slot), operation: 'update',
+      outputBase: 4, outputCount: 3,
+    });
+    expect(persistedValueChunkWriteState(renamed)?.width).toBeGreaterThan(0);
+
+    const [decoy] = describeValueChunkWrites(makeGroup('publishJobEvent', 'other:mapping(int => Notice[])'));
+    expect(persistedValueChunkWriteState(decoy)).toBeUndefined();
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+  });
+
+  it('publishes insert identity separately from an update', () => {
+    expect(describeValueChunkWrites(makeGroup('createNotice', signature, true))[0])
+      .toMatchObject({ operation: 'insert', entryAccessSlot: 0, routeSlot: 0 });
+  });
+
+  it('ties insert mode to the matching route slot in a multi-collection writer', () => {
+    const primary = makeGroup('writeBoth');
+    const otherSlot = new Uint8Array(32).fill(8);
+    const otherSignature = 'audit:mapping(int => Notice[])';
+    const otherCommitment = encodeEntryCommitment(otherSlot, new Uint8Array(32));
+    primary.stateLayout.collections!.push({
+      name: 'audit', signature: otherSignature, kind: 'mapping', keyType: 'int',
+      valueType: 'Notice[]', chunkableValue: true,
+    });
+    const fn = primary.externalContract.inner.artifact.abi[0];
+    fn.entryAccesses.push({
+      slotIndex: 1, collection: 'audit', keyParams: ['id'], operations: ['write'],
+    });
+    fn.blockLayout.blockSize = 3;
+    fn.blockLayout.slots.push({ kind: 'entry', offset: 2, slotIndex: 1 });
+    primary.blockInputs!.push({ token: { nft: { commitment: otherCommitment } } } as never);
+    primary.plannedEntryInserts = [{
+      blockSlot: 2, outputBlockSlot: 3, newCommitment: binToHex(otherCommitment),
+    }];
+
+    expect(describeValueChunkWrites(primary).map((write) => ({
+      collection: write.collection, keySlot: write.keySlot, operation: write.operation,
+    }))).toEqual([
+      { collection: 'notices', keySlot: binToHex(slot), operation: 'update' },
+      { collection: 'audit', keySlot: binToHex(otherSlot), operation: 'insert' },
+    ]);
   });
 });
 

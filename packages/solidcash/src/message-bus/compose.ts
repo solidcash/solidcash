@@ -1007,10 +1007,24 @@ export class AtomicMessageBusComposition {
         this.resultPropagationDepth + 1,
       )._build();
     }
-    const eventSlots = plan.participants.flatMap((participant) =>
+    const fixedEventSlots = plan.participants.flatMap((participant) =>
       participant.blockLayout!.slots.filter((slot) => slot.kind === 'event').map((slot) => ({
         participant: participant.participant, offset: slot.offset,
       })));
+    const runtimeEventSlots = new Map<number, Array<{
+      participant: number; offset: number; runtimeRow: number; eventSignature: string;
+    }>>();
+    const eventSlots = () => [
+      ...fixedEventSlots,
+      ...[...runtimeEventSlots.values()].flat(),
+    ];
+    const hasRuntimeLoopEvents = plan.participants.some((participant) => participant.invocations.some(
+      (invocationIndex) => {
+        const invocation = plan.invocations[invocationIndex];
+        return participant.artifact.messageBus?.handlers.some((handler) =>
+          handler.name === invocation.function && (handler.runtimeLoopEvents?.length ?? 0) > 0);
+      },
+    ));
     const resourceSlots = plan.participants.flatMap((participant) =>
       participant.blockLayout!.slots
         .filter((slot) => [
@@ -1092,13 +1106,17 @@ export class AtomicMessageBusComposition {
         const invocation = plan.invocations[invocationIndex];
         const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
           candidate.name === invocation.function);
-        return (handler?.emits ?? []).flatMap((emitted) => {
+        const signatures = [
+          ...(handler?.emits ?? []).map((emitted) => emitted.eventSignature),
+          ...(handler?.runtimeLoopEvents ?? []).flatMap((loop) => loop.eventSignatures),
+        ];
+        return [...new Set(signatures)].flatMap((eventSignature) => {
           const event = participant.artifact.events?.find((candidate) =>
-            candidate.signature === emitted.eventSignature);
+            candidate.signature === eventSignature);
           if (!event) return [];
           const script = event?.anonymous
             ? buildAnonymousEventNftCovenantScript(category)
-            : buildEventNftCovenantScript(category, computeEventNameHash(emitted.eventSignature));
+            : buildEventNftCovenantScript(category, computeEventNameHash(eventSignature));
           return [{ event, lockingBytecode: binToHex(scriptToLockingBytecode(script, contract.inner.addressType)) }];
         });
       });
@@ -1223,12 +1241,31 @@ export class AtomicMessageBusComposition {
             { cause: error },
           );
         }
+        // Runtime event occurrences occupy compiler-owned trailing slots, so they cannot appear as fixed
+        // `blockLayout.kind === event` coordinates. Preserve the exact row, schema, and physical offset published
+        // by the participant builder; later graph passes turn only these observed occurrences into kind-2 rows.
+        // This is resource geometry, independent of contract/function/event names.
+        const runtimeEvents = (local as TransactionBuilder & {
+          __messageBusRuntimeLoopEvents?: readonly {
+            eventSignature: string; rowIndex: number; offset: number;
+          }[];
+        }).__messageBusRuntimeLoopEvents ?? [];
+        runtimeEventSlots.set(participant.participant,
+          runtimeEvents.map((event) => ({
+            participant: participant.participant,
+            offset: event.offset,
+            runtimeRow: event.rowIndex,
+            eventSignature: event.eventSignature,
+          })));
         // Event effects are fixed-point claims just like return values and mutable resources. Once a prior pass
         // has authenticated an event commitment, feed it back into the exact compiler-published participant slot;
         // otherwise every assembly pass recreates the empty probe placeholder and convergence can never advance
         // past the handler's OUTPUTTOKENCOMMITMENT equality.
+        const fixedEventOffsets = participant.blockLayout!.slots
+          .filter((slot) => slot.kind === 'event').map((slot) => slot.offset);
         const eventClaims = graph.callManifest.rows.filter((row) =>
-          row.kind === 2 && row.owner === participant.participant && row.mode === 1);
+          row.kind === 2 && row.owner === participant.participant && row.mode === 1
+          && fixedEventOffsets.includes(row.targetOffset));
         if (eventClaims.length > 0) {
           const eventOffsets = participant.blockLayout!.slots
             .filter((slot) => slot.kind === 'event').map((slot) => slot.offset);
@@ -1870,7 +1907,8 @@ export class AtomicMessageBusComposition {
       return derivedResults;
     };
 
-    if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0 || hasComputedValueChunks
+    if (returning.length > 0 || fixedEventSlots.length > 0 || hasRuntimeLoopEvents
+      || resourceSlots.length > 0 || hasComputedValueChunks
       || valueSlots.length > 0 || tokenSlots.length > 0 || sidecarSlots.length > 0) {
       let claimedResults: Readonly<Record<number, string>> = provisionalResults;
       let claimedEventEffects: readonly AtomicEventSlotEffect[] = provisionalEventEffects;
@@ -1884,7 +1922,8 @@ export class AtomicMessageBusComposition {
       // allowance even though another pass reached a valid fixed point. Allow one discovery pass per mutable
       // claim, one pass per returning invocation (results can propagate along the call graph), and one final
       // confirmation pass. Repeated complete states are rejected immediately as cycles.
-      const mutableClaimCount = returning.length + eventSlots.length + resourceSlots.length
+      const mutableClaimCount = returning.length + fixedEventSlots.length + resourceSlots.length
+        + (hasRuntimeLoopEvents ? 1 : 0)
         + valueSlots.length + tokenSlots.length + sidecarSlots.length + (hasComputedValueChunks ? 1 : 0);
       const maximumPasses = mutableClaimCount + 2;
       const seenClaimStates = new Set<string>();
@@ -2261,7 +2300,7 @@ export class AtomicMessageBusComposition {
         const eventProgram = provisional.buildLibauthProgram();
         const discoveredEvents = new Map<number, { commitment: string; lockingBytecode?: string }>();
         for (const participant of plan.participants) {
-          const ownedSlots = eventSlots.filter((slot) => slot.participant === participant.participant);
+          const ownedSlots = eventSlots().filter((slot) => slot.participant === participant.participant);
           const participantBase = finalized.layout.participantInputs[participant.participant];
           const eventIndices = ownedSlots.map((slot) => participantBase + slot.offset);
           if (eventIndices.length === 0) continue;
@@ -2280,7 +2319,7 @@ export class AtomicMessageBusComposition {
         for (const participant of plan.participants) {
           const participantBase = finalized.layout.participantInputs[participant.participant];
           const selectedEventOffsets = selectedGraphEventOffsets(plan, participant);
-          const indices = eventSlots.filter((slot) => slot.participant === participant.participant)
+          const indices = eventSlots().filter((slot) => slot.participant === participant.participant)
             .map((slot) => participantBase + slot.offset);
           if (indices.length === 0) continue;
           const eventLocks = eventLockingBytecodes(participant);
@@ -2337,7 +2376,7 @@ export class AtomicMessageBusComposition {
           });
           rebalanceFeeTail(provisional, 'relocated compiler-authenticated event outputs');
         }
-        for (const slot of eventSlots) {
+        for (const slot of eventSlots()) {
           const outputIndex = finalized.layout.participantInputs[slot.participant] + slot.offset;
           const output = provisional.outputs[outputIndex];
           if (!output) throw new Error(`messageBus: event slot ${slot.participant}:${slot.offset} has no output`);

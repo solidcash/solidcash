@@ -269,6 +269,10 @@ export interface AtomicEventSlotEffect {
   active: boolean;
   lockingBytecodeHex: string;
   commitmentHex: string;
+  /** Exact local invocation row for a runtime-sized event occurrence in the participant trailing band. */
+  runtimeRow?: number;
+  /** Compiler-published schema used to bind a runtime occurrence to that row. */
+  eventSignature?: string;
 }
 
 export interface AtomicResourceSlotEffect {
@@ -548,8 +552,8 @@ export function finalizeAtomicInvocationGraph(
     .map((effect) => {
       const participant = plan.participants[effect.participant];
       if (!participant) throw new Error(`messageBus: event effect names participant ${effect.participant}`);
-      const slot = participant.blockLayout!.slots.find((candidate) =>
-        candidate.kind === 'event' && candidate.offset === effect.offset);
+      const slot = participant.blockLayout!.slots.find((candidate) => candidate.offset === effect.offset
+        && (candidate.kind === 'event' || (effect.runtimeRow !== undefined && candidate.kind === 'trailing')));
       if (!slot) {
         throw new Error(`messageBus: participant ${effect.participant} has no event slot ${effect.offset}`);
       }
@@ -564,7 +568,7 @@ export function finalizeAtomicInvocationGraph(
           candidate.name === invocation.function);
         return Array.from({ length: handler?.emits?.length ?? 0 }, () => invocationIndex);
       });
-      if (maximumRows < 1 || slot.slotIndex === undefined
+      if (maximumRows < 1 || (effect.runtimeRow === undefined && slot.slotIndex === undefined)
         || (emittingInvocations.length === 0 && eventSlotCount % maximumRows !== 0)) {
         throw new Error(`messageBus: participant ${effect.participant} has a non-canonical event frame`);
       }
@@ -576,11 +580,22 @@ export function finalizeAtomicInvocationGraph(
       // Older/minimal artifacts do not publish handler-level emit metadata. Keep their canonical physical-frame
       // binding as a compatibility fallback; full artifacts use the reached emitting invocation sequence above.
       const graphFrame = participant.artifact.messageBus?.route?.graphEffectFrame;
+      const fixedSlotIndex = slot.slotIndex;
       let parent: number | undefined;
-      if (graphFrame && graphFrame.eventWidth > 0
-        && slot.slotIndex >= graphFrame.eventBase
-        && slot.slotIndex < graphFrame.eventBase + graphFrame.sites * graphFrame.eventWidth) {
-        const relative = slot.slotIndex - graphFrame.eventBase;
+      if (effect.runtimeRow !== undefined) {
+        const candidate = participant.invocations.find((invocationIndex) =>
+          plan.invocations[invocationIndex].localRow === effect.runtimeRow);
+        const invocation = candidate === undefined ? undefined : plan.invocations[candidate];
+        const handler = invocation === undefined ? undefined : participant.artifact.messageBus?.handlers
+          .find((entry) => entry.name === invocation.function);
+        const publishedSignatures = new Set((handler?.runtimeLoopEvents ?? [])
+          .flatMap((loop) => loop.eventSignatures));
+        if (candidate !== undefined && effect.eventSignature !== undefined
+          && publishedSignatures.has(effect.eventSignature)) parent = candidate;
+      } else if (graphFrame && graphFrame.eventWidth > 0 && fixedSlotIndex !== undefined
+        && fixedSlotIndex >= graphFrame.eventBase
+        && fixedSlotIndex < graphFrame.eventBase + graphFrame.sites * graphFrame.eventWidth) {
+        const relative = fixedSlotIndex - graphFrame.eventBase;
         const localRow = Math.floor(relative / graphFrame.eventWidth);
         const emitIndex = relative % graphFrame.eventWidth;
         const candidate = participant.invocations[localRow];
@@ -590,7 +605,8 @@ export function finalizeAtomicInvocationGraph(
         if (handler?.emits?.some((emitted) => emitted.emitIndex === emitIndex)) parent = candidate;
       } else {
         parent = emittingInvocations[eventOrdinal]
-          ?? (frameWidth > 0 ? participant.invocations[Math.floor(slot.slotIndex / frameWidth)] : undefined);
+          ?? (frameWidth > 0 && fixedSlotIndex !== undefined
+            ? participant.invocations[Math.floor(fixedSlotIndex / frameWidth)] : undefined);
       }
       if (!/^(?:[0-9a-fA-F]{2})*$/.test(effect.lockingBytecodeHex)
         || !/^(?:[0-9a-fA-F]{2})*$/.test(effect.commitmentHex)) {

@@ -24858,6 +24858,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       (row.handler.runtimeLoopEvents?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
     const runtimeLoopEventOutputs: Array<{
       eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
+      /** Zero-based selected route row which produced this occurrence; -1 for a direct non-route call. */
+      rowIndex: number;
     }> = [];
     const runtimeLoopEventSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
     const runtimeLoopEffectOccurrences: Array<{
@@ -25058,7 +25060,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             const outputIndex = runtimeLoopEventOutputs.length;
             runtimeLoopEventOutputs.push({
-              eventSignature, lockingBytecode, ...(commitment !== undefined && { commitment }),
+              eventSignature, lockingBytecode, rowIndex, ...(commitment !== undefined && { commitment }),
             });
             if (loop.effectSequence !== undefined && loop.effectOrder?.[siteIndex] !== undefined) {
               runtimeLoopEffectOccurrences.push({
@@ -30227,6 +30229,18 @@ export class StatefulFunctionCall {
     const buildFinalized = (): TransactionBuilder => {
       const built = stb.build();
       stb.bindMaterializedValueChunkWitnesses(built, this.compilerRoute?.blockBase ?? 0);
+      const runtimeEvents = stb.getRuntimeLoopEventOutputs();
+      if (runtimeEvents.length > 0) {
+        Object.defineProperty(built, '__messageBusRuntimeLoopEvents', {
+          configurable: false,
+          enumerable: false,
+          value: Object.freeze(runtimeEvents.map((event, eventIndex) => Object.freeze({
+            eventSignature: event.eventSignature,
+            rowIndex: event.rowIndex,
+            offset: stb.getRuntimeLoopEventOutputIndex(eventIndex),
+          }))),
+        });
+      }
       return built;
     };
     const builder = buildFinalized();

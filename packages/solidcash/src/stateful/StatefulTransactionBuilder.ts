@@ -4213,6 +4213,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
    * before and after it. These live after runtime mapping entries and before dynamic-storage chunks. */
   runtimeLoopEventOutputs?: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment?: string;
+    /** Zero-based selected route row which produced this occurrence; -1 for a direct non-route call. */
+    rowIndex: number;
   }>;
   /** Plain-BCH outputs produced by lowered runtime counter loops. Recipient and amount begin as probe
    * placeholders and are replaced from the covenant trace before the transaction is returned. */
@@ -4473,6 +4475,7 @@ export class StatefulTransactionBuilder {
 
   private runtimeLoopEventOutputs: Array<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
+    rowIndex: number;
   }> = [];
   private runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
   private runtimeLoopTrailingSegments: NonNullable<StatefulTransactionOptions['runtimeLoopTrailingSegments']> = [];
@@ -10414,6 +10417,7 @@ export class StatefulTransactionBuilder {
 
   getRuntimeLoopEventOutputs(): ReadonlyArray<{
     eventSignature: string; lockingBytecode: Uint8Array; categoryId?: string; commitment: string;
+    rowIndex: number;
   }> {
     return this.runtimeLoopEventOutputs;
   }

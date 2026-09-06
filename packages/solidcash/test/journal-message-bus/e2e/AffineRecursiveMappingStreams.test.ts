@@ -3,7 +3,7 @@ import { messageBusVerifierCommitment } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
-  bytesToSlotValue, Contract, encodeEntryCommitment, slotValueToBytes, StatefulContract,
+  bytesToSlotValue, Contract, encodeEntryCommitment, messageBus, slotValueToBytes, StatefulContract,
 } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
@@ -11,7 +11,8 @@ import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   getEntryNftAddress, getEventNftAddress, getMessageBusVerifierAddress,
 } from '../../../src/stateful/covenant-helpers.js';
-import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
@@ -19,7 +20,7 @@ const KERNEL = {
 
 describe('affine recursive mapping streams', () => {
   it('emits selected post-recursion events in unwind order and authenticates the zero-frame case', async () => {
-    const provider = createTestProvider();
+    const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(`contract UnwindEvents() {
       event Seen(int value);
       function apply(int cursor, int offset) public returns (int) {
@@ -36,10 +37,32 @@ describe('affine recursive mapping streams', () => {
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
     );
     const contract = StatefulContract.withCategory(inner, categoryId);
-    const call = contract.call.apply(4n, 10n);
+    const callerArtifact = compileString(`
+      interface IEffectTarget { function apply(int cursor, int offset) returns (int); }
+      contract EffectCaller(address target) {
+        event Requested(int offset);
+        function initiate(int cursor, int offset) public {
+          emit Requested(offset);
+          int result = IEffectTarget(target).apply(cursor, offset);
+          require(result == offset);
+        }
+      }
+    `, KERNEL);
+    const callerInner = new Contract(callerArtifact, [contract.inner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerInner, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(callerInner, callerSetup.categoryId);
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const call = messageBus.compose({
+      calls: [caller.call.initiate(4n, 10n), contract.call.apply(4n, 10n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
     const builder = await call.build();
     const routeInputIndex = builder.inputs.findIndex((input) =>
-      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === 'apply');
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name
+      && input.token?.category === categoryId);
     expect(routeInputIndex).toBeGreaterThanOrEqual(0);
     const vm = createVirtualMachineBch2026ForProvider(provider);
     const transaction = builder.buildLibauthTransaction();
@@ -54,6 +77,15 @@ describe('affine recursive mapping streams', () => {
     const eventOutput = transaction.outputs.findIndex((output) => output.token?.nft
       && binToHex(output.lockingBytecode) === binToHex(eventLock));
     expect(eventOutput).toBeGreaterThanOrEqual(0);
+    expect(transaction.outputs.filter((output) => output.token?.nft
+      && binToHex(output.lockingBytecode) === binToHex(eventLock))
+      .map((output) => binToHex(output.token!.nft!.commitment))).toEqual(['5b', '5d']);
+    const callerEventLock = addressToLockScript(getEventNftAddress(
+      callerInner.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId, 'Requested(int256)',
+    ));
+    expect(transaction.outputs.filter((output) => output.token?.nft
+      && binToHex(output.lockingBytecode) === binToHex(callerEventLock))
+      .map((output) => binToHex(output.token!.nft!.commitment))).toEqual(['5a']);
     const hostile = {
       ...transaction,
       outputs: transaction.outputs.map((output, index) => index !== eventOutput ? output : ({
@@ -63,9 +95,7 @@ describe('affine recursive mapping streams', () => {
     };
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: routeInputIndex, sourceOutputs, transaction: hostile })))
       .not.toBe(true);
-    await expect(call.send()).resolves.toMatchObject({
-      events: [{ args: { value: 11n } }, { args: { value: 13n } }],
-    });
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.apply(0n, 10n).send()).resolves.toMatchObject({ events: [] });
   }, 60_000);
 

@@ -3031,6 +3031,7 @@ describe('kernel counter-key mapping loop compose', () => {
     oversizedRecord.set(journalRecords[0].slice(0, Math.min(journalRecords[0].length, 151)));
     for (const [label, hostileRecords] of [
       ['missing records', []],
+      ['extra records', [...journalRecords, new Uint8Array(journalRecords[0] as Uint8Array)]],
       ['wrong tag', hostileRecord((record) => { record[0] = 0x04; return record; })],
       ['wrong collection', hostileRecord((record) => { record[2] ^= 0x01; return record; })],
       ['wrong target slot', wrongTargetSlot],
@@ -3050,6 +3051,24 @@ describe('kernel counter-key mapping loop compose', () => {
         inputIndex: routeInputIndex, sourceOutputs, transaction,
       })), `hostile journal record: ${label}`).not.toBe(true);
     }
+    const reorderedRecords = journalRecords.map((record) => new Uint8Array(record as Uint8Array));
+    [reorderedRecords[1], reorderedRecords[2]] = [reorderedRecords[2], reorderedRecords[1]];
+    const reorderedStream = new Uint8Array(originalAccessStream);
+    // Rewrite every affected reference so record identities, slots, and topology remain coherent. Only the
+    // carrier first-touch order is hostile: a verifier which merely trusts self-consistent ordinals accepts it.
+    [reorderedStream[23], reorderedStream[24]] = [2, 0];
+    [reorderedStream[28], reorderedStream[29]] = [1, 0];
+    [reorderedStream[30], reorderedStream[31]] = [2, 0];
+    [reorderedStream[35], reorderedStream[36]] = [1, 0];
+    const reorderedParams = [...routeUnlocker.params];
+    reorderedParams[routeJournalIndex] = [[reorderedStream]];
+    reorderedParams[routeRecordIndex] = reorderedRecords;
+    hostileBuilder.inputs[routeInputIndex].unlocker = recreateRouteUnlocker(...reorderedParams);
+    const reorderedTransaction = hostileBuilder.buildLibauthTransaction();
+    const reorderedSources = generateLibauthSourceOutputs(hostileBuilder.inputs);
+    expect(hostileVm.stateSuccess(hostileVm.evaluate({
+      inputIndex: routeInputIndex, sourceOutputs: reorderedSources, transaction: reorderedTransaction,
+    })), 'hostile journal execution order').not.toBe(true);
     hostileBuilder.inputs[routeInputIndex].unlocker = originalRouteUnlocker;
 
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });

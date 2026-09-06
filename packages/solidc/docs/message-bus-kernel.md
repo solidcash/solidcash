@@ -498,8 +498,9 @@ by the selected row, so the total contract surface is not constrained to one 520
 Every `sortedUpsertLoopInfo` entry publishes its stable `journalAccessStreamIndex`; the SDK and covenant therefore
 address the selected row's stream vector without reconstructing compiler traversal order from collection names.
 It also publishes an opaque `journalExecutionGroup` shared by streams emitted from the same source loop. This is
-the structural control-flow identity needed by the pending shared record loader to interleave streams once per
-physical iteration, even when independently sorted mapping expressions address different collections.
+the structural control-flow identity the SDK uses to interleave streams once per physical iteration, even when
+independently sorted mapping expressions address different collections. Groups are scoped by their selected row;
+neither scheduling nor record assignment depends on contract, function, or collection names.
 The source handler carries that vector as the compiler-owned `bytes[] __internal__kernelJournalAccessStreams`
 context. The kernel route adds only its outer row dimension (`bytes[][]`) and selects `[row]` in the physical
 dispatcher, instead of adding one dynamic ABI band for every stream. The SDK initializes every handler vector as
@@ -527,10 +528,12 @@ synthetic tombstones, never as caller-asserted final values. The active transact
 into the covenant. Each row selects its target and optional predecessor ordinal, binds both records to the row's
 compile-owned collection and the exact slots used by its physical, pending, fixed-entry, or cached-read proof path,
 binds the access program's before/after presence flags to the transition branch which actually executed, and
-consumes the stream with exact tag/count/framing checks. The remaining journal phase is to use the execution-group
-metadata to authenticate one shared record prefix, then execute the pending record
-value transitions and final flush directly from this shared vector; until then, record overlap cannot be relaxed
-beyond the row loop's existing physical transition rules.
+consumes the stream with exact tag/count/framing checks. The SDK assigns carrier ordinals in execution-group order;
+the covenant advances one shared dense first-touch prefix through every row invocation and finally requires that
+prefix to cover the complete record vector. Coherent carrier reordering, skipped ordinals, and unused record
+suffixes therefore fail even when every rewritten reference still names the expected slot. The remaining journal
+phase is to execute the pending record value transitions and final flush directly from this authenticated vector;
+until then, record overlap cannot be relaxed beyond the row loop's existing physical transition rules.
 Different key expressions over the same selected domain receive independent row-owned permutations. Separate
 disjoint loops use separate permutations and separate accumulated physical segments. Counter-keyed mapping-array
 element writes, pushes, and pops authenticate the complete old array through a typed row witness, perform the

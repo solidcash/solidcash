@@ -16040,6 +16040,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const runtimeKernelJournalStreams: Array<{
       collection: string;
       collectionHash: Uint8Array;
+      executionGroup: string;
+      executionOrder: number;
       list: SortedList;
       writes: Array<{ slot: Uint8Array; operation: KernelEntryJournalTopologyOperation }>;
       publish: (encoded: Uint8Array) => void;
@@ -16078,7 +16080,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         outputs: prior.outputs + outputs,
       });
     };
-    for (const upsertFrame of upsertPlanningFrames) {
+    for (const [upsertFrameIndex, upsertFrame] of upsertPlanningFrames.entries()) {
       const loopAbiFunction = upsertFrame.abiFunction;
       const loopArgs = upsertFrame.args;
       const replaceLoopArgument = (index: number, value: FunctionArgument): void => {
@@ -16845,6 +16847,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         runtimeKernelJournalStreams.push({
           collection: info.collection,
           collectionHash: computeCollectionHash(collection.signature),
+          executionGroup: `${upsertFrameIndex}:${Number.isSafeInteger(info.journalExecutionGroup)
+            ? info.journalExecutionGroup : info.journalAccessStreamIndex}`,
+          executionOrder: info.journalAccessStreamIndex,
           list,
           writes: keysArr.map((key) => ({ slot: slotForKey(key), operation })),
           publish: (encoded) => {
@@ -17310,32 +17315,98 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const kernelStreamsByCollection = new Map<string, typeof runtimeKernelJournalStreams>();
     for (const stream of runtimeKernelJournalStreams) {
-      const collectionStreams = kernelStreamsByCollection.get(stream.collection) ?? [];
+      const collectionIdentity = binToHex(stream.collectionHash);
+      const collectionStreams = kernelStreamsByCollection.get(collectionIdentity) ?? [];
       collectionStreams.push(stream);
-      kernelStreamsByCollection.set(stream.collection, collectionStreams);
+      kernelStreamsByCollection.set(collectionIdentity, collectionStreams);
     }
-    const kernelJournalRecords: Uint8Array[] = [];
-    for (const collectionStreams of kernelStreamsByCollection.values()) {
+    type PlannedKernelCollection = {
+      records: Uint8Array[];
+      globalOrdinals: Map<number, number>;
+    };
+    const plannedKernelCollections = new Map<string, PlannedKernelCollection>();
+    const plannedKernelStreamAccesses = new Map<
+    (typeof runtimeKernelJournalStreams)[number], ReturnType<typeof decodeKernelEntryJournalAccesses>
+    >();
+    for (const [collectionIdentity, collectionStreams] of kernelStreamsByCollection) {
       const plan = planKernelEntryJournalAccessTopology(
         collectionStreams[0].list,
         collectionStreams[0].collectionHash,
         collectionStreams.map((stream) => stream.writes),
       );
-      const recordOffset = kernelJournalRecords.length;
-      if (recordOffset + plan.recordCount > 0xffff) {
+      const accesses = plan.encodedAccessStreams.map(decodeKernelEntryJournalAccesses);
+      collectionStreams.forEach((stream, index) => plannedKernelStreamAccesses.set(stream, accesses[index]));
+      plannedKernelCollections.set(collectionIdentity, {
+        records: plan.encodedRecords,
+        globalOrdinals: new Map(),
+      });
+    }
+
+    // Materialize record carriers in source execution order. Streams in one compiler-published execution group
+    // are operations from the same row loop, so iteration N of each stream executes before iteration N+1. The
+    // group and stream ordinals are opaque structural metadata; no contract, collection, or function names
+    // participate in this schedule.
+    const kernelStreamsByExecutionGroup = new Map<string, typeof runtimeKernelJournalStreams>();
+    for (const stream of runtimeKernelJournalStreams) {
+      const groupStreams = kernelStreamsByExecutionGroup.get(stream.executionGroup) ?? [];
+      groupStreams.push(stream);
+      kernelStreamsByExecutionGroup.set(stream.executionGroup, groupStreams);
+    }
+    const kernelJournalRecords: Uint8Array[] = [];
+    const remappedKernelStreamAccesses = new Map<
+    (typeof runtimeKernelJournalStreams)[number], ReturnType<typeof decodeKernelEntryJournalAccesses>
+    >();
+    const globalRecordOrdinal = (stream: (typeof runtimeKernelJournalStreams)[number], local: number): number => {
+      const collectionIdentity = binToHex(stream.collectionHash);
+      const collectionPlan = plannedKernelCollections.get(collectionIdentity)!;
+      const prior = collectionPlan.globalOrdinals.get(local);
+      if (prior !== undefined) return prior;
+      if (kernelJournalRecords.length >= 0xffff) {
         throw new Error('Kernel entry journal exceeds the unsigned 16-bit record ordinal space.');
       }
-      collectionStreams.forEach((stream, index) => {
-        const shifted = decodeKernelEntryJournalAccesses(plan.encodedAccessStreams[index]).map((access) => ({
-          ...access,
-          targetRecordOrdinal: access.targetRecordOrdinal + recordOffset,
-          ...(access.predecessorRecordOrdinal !== undefined && {
-            predecessorRecordOrdinal: access.predecessorRecordOrdinal + recordOffset,
-          }),
-        }));
-        stream.publish(encodeKernelEntryJournalAccesses(stream.collectionHash, shifted));
-      });
-      kernelJournalRecords.push(...plan.encodedRecords);
+      const ordinal = kernelJournalRecords.length;
+      const record = collectionPlan.records[local];
+      if (record === undefined) throw new Error('Kernel entry journal references an unknown local record ordinal.');
+      collectionPlan.globalOrdinals.set(local, ordinal);
+      kernelJournalRecords.push(record);
+      return ordinal;
+    };
+    for (const groupStreamsUnsorted of kernelStreamsByExecutionGroup.values()) {
+      const groupStreams = [...groupStreamsUnsorted].sort(
+        (left, right) => left.executionOrder - right.executionOrder,
+      );
+      const maxLength = Math.max(0, ...groupStreams.map(
+        (stream) => plannedKernelStreamAccesses.get(stream)?.length ?? 0,
+      ));
+      for (let occurrence = 0; occurrence < maxLength; occurrence++) {
+        for (const stream of groupStreams) {
+          const access = plannedKernelStreamAccesses.get(stream)?.[occurrence];
+          if (access === undefined) continue;
+          const remapped = {
+            ...access,
+            ...(access.predecessorRecordOrdinal !== undefined && {
+              predecessorRecordOrdinal: globalRecordOrdinal(stream, access.predecessorRecordOrdinal),
+            }),
+            targetRecordOrdinal: globalRecordOrdinal(stream, access.targetRecordOrdinal),
+          };
+          const streamAccesses = remappedKernelStreamAccesses.get(stream) ?? [];
+          streamAccesses.push(remapped);
+          remappedKernelStreamAccesses.set(stream, streamAccesses);
+        }
+      }
+    }
+    for (const [collectionIdentity, plan] of plannedKernelCollections) {
+      if (plan.globalOrdinals.size !== plan.records.length) {
+        throw new Error(
+          `Kernel entry journal for collection ${collectionIdentity} contains an unreachable record carrier.`,
+        );
+      }
+    }
+    for (const stream of runtimeKernelJournalStreams) {
+      stream.publish(encodeKernelEntryJournalAccesses(
+        stream.collectionHash,
+        remappedKernelStreamAccesses.get(stream) ?? [],
+      ));
     }
     const journalRecordsIndex = entryAbiFunction?.inputs.findIndex(
       (input) => input.name === KERNEL_JOURNAL_RECORDS,

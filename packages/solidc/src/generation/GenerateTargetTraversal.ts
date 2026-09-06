@@ -901,6 +901,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly SORTED_ABSENCE_SUBROUTINE_ID = -11n;
   private static readonly KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID = -12n;
   private static readonly KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID = -13n;
+  private static readonly KERNEL_JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID = -14n;
+  private static readonly KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID = -15n;
   /**
    * Captured subroutines that keep being extracted even when outlining could reach them - which is all of
    * them. DO NOT DEFER THESE TO OUTLINING; the experiment has been run, per subroutine, and it does not hold.
@@ -920,7 +922,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * A structural helper is a different case and IS deferred: see `capturedSubroutineIsProfitable`.
    */
   private static readonly EXTRACT_EVEN_IF_OUTLINABLE: readonly bigint[] = [
-    -1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n, -12n, -13n,
+    -1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n, -12n, -13n, -14n, -15n,
   ];
 
   private static readonly ALL_SUBROUTINE_IDS = [
@@ -937,6 +939,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     GenerateTargetTraversalWithLocation.SORTED_ABSENCE_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CURSOR_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID,
   ];
 
   private allocateCompactHelperId(): bigint {
@@ -2613,6 +2617,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Journal selection helpers are kept distinct from the general array access machinery: their fixed wire
     // frames are authenticated here, while generic source arrays retain their ordinary decoding semantics.
+    const KERNEL_SELECT = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID;
+    const emitKernelSelect = (t: GenerateTargetTraversalWithLocation): void => {
+      t.emitKernelJournalRecordSelectInline(loc);
+    };
+    if (this.capturedSubroutineIsProfitable(KERNEL_SELECT, count(KERNEL_SELECT), emitKernelSelect)) {
+      spans.push({
+        id: KERNEL_SELECT,
+        span: this.defineCapturedSubroutine(KERNEL_SELECT, emitKernelSelect, loc),
+      });
+    }
+    const KERNEL_ORDINAL = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID;
+    const emitKernelOrdinal = (t: GenerateTargetTraversalWithLocation): void => {
+      t.emitKernelJournalOrdinalAdvanceInline(loc);
+    };
+    if (this.capturedSubroutineIsProfitable(KERNEL_ORDINAL, count(KERNEL_ORDINAL), emitKernelOrdinal)) {
+      spans.push({
+        id: KERNEL_ORDINAL,
+        span: this.defineCapturedSubroutine(KERNEL_ORDINAL, emitKernelOrdinal, loc),
+      });
+    }
     const KERNEL_TARGET = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_TARGET_SLOT_SUBROUTINE_ID;
     const emitKernelTarget = (t: GenerateTargetTraversalWithLocation): void => {
       t.emitKernelJournalTargetSlotHelperInline(loc);
@@ -4477,14 +4501,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Exhaustive strategy probing dominated large-contract compile time: each attempt reaches the same fixed
       // point independently, and compiling an import graph repeats the matrix for every emitted contract. Corpus
       // measurements show that density ranking, the 512-group cap, body reordering, and the intermediate/legacy
-      // windows are strictly dominated by savings-ranked 12 or 10. Production keeps that split: message-bus
-      // bodies stay at the trace-stable window of 12 (EntryWriteBehavior oscillated at 7/10/11), ordinary
-      // contracts compete 12 vs 10. Speed-hinted large-contract compiles measured window 8 as strictly
-      // dominating 12/10/9/7 on savedBytes, so they run 8 only.
+      // windows are strictly dominated by savings-ranked 12 or 10. Legacy message-bus bodies stay at the
+      // trace-stable window of 12 (EntryWriteBehavior oscillated at 7/10/11). Kernel routes retry at 10 only when
+      // the best result is near the consensus size boundary, where the shorter shared journal-verifier spans can
+      // change deployability. Ordinary contracts retain the same 12-vs-10 competition. Speed-hinted large-contract
+      // compiles measured window 8 as strictly dominating 12/10/9/7 on savedBytes, so they run 8 only.
       const minimumWindows = speedHintOutline
         ? [8]
         : this.currentContractHasMessageBus
-          ? [12]
+          ? this.compilerOptions.messageBusKernel === true ? [12, 10] : [12]
           : [12, 10];
       const candidateGroupsPerRound = speedHintOutline ? 12288 : 1024;
       const originalOrder = bodies.map((_body, index) => index);
@@ -4495,6 +4520,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ? shortestOrder.map((index) => bodies[index])
         : bodies;
       for (const minimumWindowElements of minimumWindows) {
+        if (minimumWindowElements === 10
+          && this.currentContractHasMessageBus
+          && this.compilerOptions.messageBusKernel === true) {
+          const estimatedPostOutlineBytes = scriptToBytecode(this.output).length - (result?.savedBytes ?? 0);
+          const sizePressureMargin = 512;
+          if (estimatedPostOutlineBytes < MAX_INPUT_BYTESIZE - sizePressureMargin
+            || estimatedPostOutlineBytes > MAX_INPUT_BYTESIZE + sizePressureMargin) continue;
+        }
         this.restoreCompactHelperIds(entryPool);
         const timingStart = Date.now();
         // Speed hint: window-8 round 0 saved 81755 bytes in ~1.1s; round 1 saved 2350 bytes
@@ -5585,6 +5618,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NIP, loc);
       this.emit(Op.OP_0, loc);
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    }
+    if (!this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
+      && this.runtimeLoopEntryJournalCountActive && this.stack.includes(KERNEL_JOURNAL_RECORDS)) {
+      const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
+      // Per-access checks admit only a dense first-touch prefix. Bind that prefix to the complete carrier vector,
+      // so a caller cannot append an otherwise-valid unused record after the last executed row.
+      this.emit(encodeInt(BigInt(this.getStackIndex(KERNEL_JOURNAL_RECORDS))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emitPushdataDecode(PrimitiveType.BIGINT, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(
+        GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
+      ) + 1)), loc);
+      this.emit(Op.OP_PICK, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
 
     // Drop the function-level deploy counter (roll it up from wherever it sits - the body is depth-balanced, so
@@ -22536,11 +22583,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   /**
    * Consume and verify [count || collection || access tuple cursor, encoded records, expected target slot,
-   * actual predecessor slot, expected access flags], returning [count || collection || cursor tail]. The
+   * actual predecessor slot, expected access flags, loaded record count], returning
+   * [count || collection || cursor tail, updated loaded record count]. The
    * predecessor is empty for a present target and otherwise names the exact record used by the physical-input,
    * pending-node, fixed-entry, or cached-read path selected by this iteration.
    */
+  /** Advance a dense first-touch prefix: [count, ordinal] -> [count']. */
+  private emitKernelJournalOrdinalAdvanceInline(loc: SingleLocationData): void {
+    this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc); this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_MAX, loc);
+  }
+
+  private emitKernelJournalOrdinalAdvance(loc: SingleLocationData): void {
+    const id = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID;
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), loc); this.emit(Op.OP_INVOKE, loc);
+      return;
+    }
+    this.emitKernelJournalOrdinalAdvanceInline(loc);
+  }
+
+  private emitKernelJournalRecordSelectInline(loc: SingleLocationData): void {
+    this.emitVariableArrayElementExtractInline(new BytesType(), loc);
+    // A record identity is its authenticated collection hash and slot: skip tag/flags, retain bytes [2, 54).
+    this.emit(encodeInt(54n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+  }
+
+  private emitKernelJournalRecordSelect(loc: SingleLocationData): void {
+    const id = GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID;
+    this.bumpSubroutineUse(id);
+    if (this.subroutineDefined.get(id)) {
+      this.emit(encodeInt(id), loc); this.emit(Op.OP_INVOKE, loc);
+      return;
+    }
+    this.emitKernelJournalRecordSelectInline(loc);
+  }
+
   private emitKernelJournalTargetSlotHelperInline(loc: SingleLocationData): void {
+    this.emit(Op.OP_TOALTSTACK, loc); // loaded record count
     this.emit(Op.OP_TOALTSTACK, loc); // expected access flags
     this.emit(Op.OP_TOALTSTACK, loc); // actual predecessor slot
     this.emit(Op.OP_ROT, loc); // encoded records, expected target slot, header || cursor
@@ -22564,6 +22646,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
     this.emit(new Uint8Array([0xff, 0xff]), loc); this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    // Record carriers cannot approach Script Number's two-byte sign boundary under the consensus stack/transaction
+    // limits. Decode the ordinals once and retain them through identity selection; the 0xffff no-predecessor marker
+    // intentionally normalizes to a negative number, which is an already-loaded no-op in the dense-prefix check.
+    this.emit(Op.OP_BIN2NUM, loc); // predecessor ordinal
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc); // target ordinal
     this.emit(Op.OP_FROMALTSTACK, loc); // cursor tail, flags, target, predecessor, encoded records
     // The route-wide validator authenticates the array framing and cardinality. Skip its encoded count here: an
     // out-of-range record ordinal still fails closed in the variable-element scan.
@@ -22571,13 +22658,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Select target: [..., target, predecessor, elements] -> [..., elements, target].
     // Keep a second copy of the encoded record vector for the predecessor selection below.
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_PICK, loc);
     // The variable-element scan fails closed if the untrusted record ordinal is out of range.
-    this.emitVariableArrayElementExtractInline(new BytesType(), loc);
-    // A record identity is its authenticated collection hash and slot: skip tag/flags, retain bytes [2, 54).
-    this.emit(encodeInt(54n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emitKernelJournalRecordSelect(loc);
     this.emit(Op.OP_FROMALTSTACK, loc); // target identity, encoded records
     this.emit(Op.OP_FROMALTSTACK, loc); // target identity, encoded records, target slot
     this.emit(Op.OP_FROMALTSTACK, loc); // target identity, encoded records, target slot, header
@@ -22594,11 +22677,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(4n), loc); this.emit(Op.OP_AND, loc); this.emit(Op.OP_BIN2NUM, loc);
     this.emit(Op.OP_0NOTEQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(new Uint8Array([0]), loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_BIN2NUM, loc);
-    this.emitVariableArrayElementExtractInline(new BytesType(), loc);
-    this.emit(encodeInt(54n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
-    this.emit(encodeInt(2n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emitKernelJournalRecordSelect(loc);
     this.emit(Op.OP_FROMALTSTACK, loc); // predecessor identity, header
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
@@ -22612,10 +22692,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Bind the access program's topology state to the branch which actually ran. At this point the decoded flags
     // are the fourth item beneath the retained header, while the compiler-derived expectation is atop altstack.
     this.emit(Op.OP_FROMALTSTACK, loc);
-    this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.emit(Op.OP_TOALTSTACK, loc);
-    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);
+    this.emit(encodeInt(4n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc); // cursor tail, predecessor, target, header, count
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_TOALTSTACK, loc); // retain header
+    this.emit(Op.OP_ROT, loc);
+    this.emitKernelJournalOrdinalAdvance(loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emitKernelJournalOrdinalAdvance(loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_ROT, loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_SWAP, loc);
   }
 
   private emitKernelJournalTargetSlotHelper(loc: SingleLocationData): void {
@@ -22633,7 +22718,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitKernelJournalTargetSlotCheck(node: Node, loc: SingleLocationData): void {
     if (this.sortedUpsertLoopJournalAccessStreamIndex === undefined
       || this.getStackIndex(KERNEL_JOURNAL_RECORDS, true) < 0
-      || this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) < 0) {
+      || this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) < 0
+      || this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT, true) < 0) {
       this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
       return;
     }
@@ -22657,7 +22743,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ELSE, loc);
     this.emit(encodeInt(3n), loc);
     this.emit(Op.OP_ENDIF, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(
+      GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
+    ) + 4)), loc);
+    this.emit(Op.OP_PICK, loc);
     this.emitKernelJournalTargetSlotHelper(loc);
+    this.pushToStack('(kernel_journal_loaded_count)');
+    this.emitReplace(this.getStackIndex(
+      GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT,
+    ), node);
+    this.popFromStack();
     this.emitReplace(this.getStackIndex(this.sortedUpsertLoopJournalCursorName), node);
     this.popFromStack();
   }

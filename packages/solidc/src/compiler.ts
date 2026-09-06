@@ -3926,7 +3926,7 @@ function synthesizeMessageBusRoute(
                 .map((parameter) => [parameter.name, parameter.type.toString()] as const));
               for (const argument of node.parameters.slice(0, child.parameters.length)) {
                 const recipe = childDeploymentValueRecipe(argument, visibleInputs, false, visibleInputTypes);
-                if (!recipe || !['handlerInput', 'intLiteral', 'boolLiteral', 'bytesLiteral'].includes(recipe.kind)) {
+                if (!recipe) {
                   deploymentRecipeUnsupported = true;
                 }
               }

@@ -13806,12 +13806,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Encode first arg (top of stack) as pushdata
-    this.emitPushdataEncode(node.constructorArgs[0].type!, locationData);
+    this.emitPushdataEncode(node.referencedContract.parameters[0].type, locationData);
 
     // For each subsequent arg: swap to top, encode, CAT
     for (let i = 1; i < node.constructorArgs.length; i++) {
       this.emit(Op.OP_SWAP, locationData);
-      this.emitPushdataEncode(node.constructorArgs[i].type!, locationData);
+      this.emitPushdataEncode(node.referencedContract.parameters[i].type, locationData);
       this.emit(Op.OP_CAT, locationData);
     }
 
@@ -13849,11 +13849,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.visit(arg);
       }
       // Encode first arg as pushdata
-      this.emitPushdataEncode(node.parameters[0].type!, locationData);
+      this.emitPushdataEncode(contract.parameters[0].type, locationData);
       // Encode and CAT subsequent args
       for (let i = 1; i < node.parameters.length; i++) {
         this.emit(Op.OP_SWAP, locationData);
-        this.emitPushdataEncode(node.parameters[i].type!, locationData);
+        this.emitPushdataEncode(contract.parameters[i].type, locationData);
         this.emit(Op.OP_CAT, locationData);
       }
       // CAT with body bytecode

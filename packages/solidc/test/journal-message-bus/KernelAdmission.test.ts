@@ -1871,7 +1871,7 @@ describe('required kernel admission', () => {
     expect(overloads.every((candidate) => candidate.childDeployments?.length === 1)).toBe(true);
   });
 
-  it('admits typed row-local CREATE2 recipes while keeping computed constructor state fenced', () => {
+  it('admits typed row-local constructor and CREATE2 recipes while keeping folded constructor state fenced', () => {
     const computed = compileString(`contract Unit(bytes32 seed) { int marker; function configure(int next) public {
         this.marker = next; require(true);
       } }
@@ -1889,7 +1889,10 @@ describe('required kernel admission', () => {
     expect(computed.messageBus?.handlers.find((candidate) => candidate.name === 'folded'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(computed.messageBus?.handlers.find((candidate) => candidate.name === 'computed'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{ constructorArgs: [{ kind: 'cast', resultType: 'bytes32' }] }],
+      });
     expect(computed.messageBus?.handlers.find((candidate) => candidate.name === 'computedSalt'))
       .toMatchObject({
         eligible: true,
@@ -1926,8 +1929,7 @@ describe('required kernel admission', () => {
     expect(overloads).toHaveLength(2);
     const byInput = new Map(overloads.map((handler) => [handler.inputs[0].type, handler]));
     expect(byInput.get('bytes32')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
+      eligible: true,
       childDeployments: [{ constructorArgs: [{ kind: 'cast', resultType: 'bytes32' }] }],
     });
     expect(byInput.get('bytes')).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });

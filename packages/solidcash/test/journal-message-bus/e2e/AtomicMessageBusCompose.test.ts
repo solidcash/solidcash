@@ -635,7 +635,7 @@ describe('messageBus.compose atomic transaction', () => {
       interface IFactory { function create(int seed); }
       contract Factory() {
         function create(int seed) public {
-          Child child = new Child{salt: bytes32(seed + 100)}(seed);
+          Child child = new Child{salt: bytes32(seed + 100)}(seed + 10);
           require(true);
         }
       }
@@ -657,7 +657,7 @@ describe('messageBus.compose atomic transaction', () => {
     expect(handler).toMatchObject({
       eligible: true,
       childDeployments: [{
-        constructorArgs: [{ kind: 'handlerInput', inputIndex: 0 }],
+        constructorArgs: [{ kind: 'binary', operator: '+', resultType: 'int' }],
         salt: { kind: 'cast', resultType: 'bytes32' },
       }],
     });

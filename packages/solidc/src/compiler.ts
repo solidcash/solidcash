@@ -1998,8 +1998,8 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
     + 'the footprint is known',
   'initial-v1-route-requires-public-visibility': 'declare the handler public or external',
   'external-token-container-handler-requires-public-visibility':
-    'a handler that moves a token container is invoked as itself so the token covenant binds the consumed '
-    + 'container to its own parameter, which an external name cannot be: declare this handler public',
+    'the legacy route cannot preserve the source parameter frame for an external token-container handler: '
+    + 'declare this handler public or enable the kernel row route',
   'external-handler-route-generation-unsupported':
     'this external handler is admissible, but the route generated for it could not be compiled, so the '
     + 'public-only route was kept: the shape is a route-generation gap rather than a visibility rule',
@@ -3500,10 +3500,10 @@ function synthesizeMessageBusRoute(
     // internal call to an external function; an admitted external handler is invoked through an internal clone
     // instead (see the clone loop below), so the source rule stays enforced for user code.
     //
-    // A token-container handler is the one shape that cannot be cloned: the token covenant binds the consumed
-    // container to the SOURCE parameter's stack identity, and a synthetic clone emits a second, context-free
-    // covenant (the same reason `tokenCategoryInputByHandler` keeps that handler on its own name). Refuse it by
-    // name rather than route it through a clone that would authenticate the wrong container.
+    // Token-container handlers also require one canonical category witness per source parameter. The route checks
+    // the decoded row value against that witness and passes the witness itself to either the source function or
+    // its internal visibility clone, so both spellings retain an ordinary parameter stack identity for the token
+    // covenant. The source function's direct entry point remains separate and unchanged.
     // A plain message bus route is optional: when its current physical layout cannot
     // settle a handler, exclude that handler and keep the source entry point.
     // Previously these two shapes were cloned first and rejected only after
@@ -3668,7 +3668,7 @@ function synthesizeMessageBusRoute(
         ? 'initial-v1-route-requires-public-visibility'
         : fn.visibility !== 'external'
           ? undefined
-          : externalTokenContainer
+          : externalTokenContainer && compilerOptions.messageBusKernel !== true
             ? 'external-token-container-handler-requires-public-visibility'
           // X100. The refusal is per HANDLER, not per contract: `admitExternalHandlers` false is the shipped
           // whole-route give-up, and the `refused` set is the attributed form the fallback reaches first.
@@ -4885,9 +4885,10 @@ function synthesizeMessageBusRoute(
   }
   // Token-container categories must remain function parameters: the token covenant uses the parameter's stack
   // identity to bind the consumed container. Decode the row argument and compare it to one canonical route
-  // witness, then invoke the ordinary handler with that witness in the category position. This keeps both the
-  // direct handler and the inlined batch body on the normal token-covenant path; a synthetic internal clone
-  // would incorrectly try to emit a second, context-free token covenant.
+  // witness, then invoke the selected source handler or visibility clone with that witness in the category
+  // position. SymbolTableTraversal imports the selected handler's access plan into the route under the forwarded
+  // witness, so an `external` visibility clone owns the same authenticated physical container slot rather than a
+  // second context-free one. The direct source entry point remains on its independent ordinary covenant path.
   for (const sourceHandler of eligible) {
     const footprint = analyseFunctionFootprint(sourceHandler, byName, footprintCache);
     const touchesTokenContainer = [...footprint.reads, ...footprint.writes]

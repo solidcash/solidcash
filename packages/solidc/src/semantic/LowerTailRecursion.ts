@@ -10,7 +10,7 @@ import { cloneNode } from '../ast/clone.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { ArrayType, PrimitiveType } from '@solidcash/utils';
 
-interface MutualFoldShape {
+interface RecursiveFoldShape {
   operator: BinaryOperator;
   recursiveOnLeft: boolean;
 }
@@ -128,7 +128,7 @@ export default class LowerTailRecursion extends AstTraversal {
         && fn.returnModifiers.every((modifier, index) =>
           modifier.join('\0') === (first.returnModifiers[index] ?? []).join('\0'))
         && (fn.returnNames.length === 0 || fn.returnNames.length === fn.returnTypes.length));
-      const fold = sameFrame ? this.mutualFoldShape(group, names) : undefined;
+      const fold = sameFrame ? this.recursiveFoldShape(group, names) : undefined;
       if (!sameFrame || group.some((fn) => !fn.body
         || !this.groupCallsHaveArity(fn.body, names, first.parameters.length)
         || !this.groupBaseReturnsHaveArity(
@@ -154,7 +154,7 @@ export default class LowerTailRecursion extends AstTraversal {
     rootIndex: number,
     group: readonly FunctionDefinitionNode[],
     sourceBodies: ReadonlyMap<FunctionDefinitionNode, BlockNode>,
-    fold?: MutualFoldShape,
+    fold?: RecursiveFoldShape,
   ): void {
     const frame = this.counter++;
     const modeName = `__tail_mode_${frame}`;
@@ -207,7 +207,7 @@ export default class LowerTailRecursion extends AstTraversal {
         root.returnTypes[0], this.stamp(new IntLiteralNode(0n), root.location),
       ), root.location),
     ), root.location) : undefined;
-    const unwind = fold ? this.mutualFoldUnwind(
+    const unwind = fold ? this.foldUnwind(
       root, resultNames[0], continuationName!, fold,
     ) : undefined;
     const finalReturn = unnamedResults ? this.stamp(new ReturnNode(resultNames.map((name) =>
@@ -224,11 +224,11 @@ export default class LowerTailRecursion extends AstTraversal {
    * before advancing the state machine, then applied in reverse order after the base case, exactly reproducing
    * the source call stack without placing journal values in recursive OP_INVOKE frames.
    */
-  private mutualFoldShape(
+  private recursiveFoldShape(
     group: readonly FunctionDefinitionNode[], names: ReadonlySet<string>,
-  ): MutualFoldShape | undefined {
+  ): RecursiveFoldShape | undefined {
     if (group[0].returnTypes.length !== 1) return undefined;
-    let shape: MutualFoldShape | undefined;
+    let shape: RecursiveFoldShape | undefined;
     let sawFold = false;
     let valid = true;
     const persistentEffects = new Set([
@@ -276,8 +276,8 @@ export default class LowerTailRecursion extends AstTraversal {
     return valid && sawFold ? shape : undefined;
   }
 
-  private foldedGroupReturn(
-    expression: Node | undefined, names: ReadonlySet<string>, fold?: MutualFoldShape,
+  private foldedRecursiveReturn(
+    expression: Node | undefined, names: ReadonlySet<string>, fold?: RecursiveFoldShape,
   ): { call: FunctionCallNode; operand: ExpressionNode } | undefined {
     if (!fold || !(expression instanceof BinaryOpNode) || expression.operator !== fold.operator) return undefined;
     const recursive = fold.recursiveOnLeft ? expression.left : expression.right;
@@ -286,8 +286,8 @@ export default class LowerTailRecursion extends AstTraversal {
     return { call: recursive, operand };
   }
 
-  private mutualFoldUnwind(
-    root: FunctionDefinitionNode, resultName: string, continuationName: string, fold: MutualFoldShape,
+  private foldUnwind(
+    root: FunctionDefinitionNode, resultName: string, continuationName: string, fold: RecursiveFoldShape,
   ): WhileNode {
     const length = (): UnaryOpNode => this.stamp(new UnaryOpNode(
       UnaryOperator.SIZE, this.stamp(new IdentifierNode(continuationName), root.location),
@@ -407,7 +407,7 @@ export default class LowerTailRecursion extends AstTraversal {
 
   private validGroupTailBlock(
     block: BlockNode, names: ReadonlySet<string>, returnNames: readonly string[], hasResults: boolean,
-    fold?: MutualFoldShape,
+    fold?: RecursiveFoldShape,
   ): boolean {
     const statements = block.statements ?? [];
     for (let index = 0; index < statements.length; index += 1) {
@@ -422,7 +422,7 @@ export default class LowerTailRecursion extends AstTraversal {
 
   private validGroupTailStatement(
     statement: StatementNode, names: ReadonlySet<string>, returnNames: readonly string[], hasResults: boolean,
-    fold?: MutualFoldShape,
+    fold?: RecursiveFoldShape,
   ): boolean {
     if (statement instanceof AssignNode) {
       return returnNames.length === 1 && statement.identifier.name === returnNames[0]
@@ -431,7 +431,7 @@ export default class LowerTailRecursion extends AstTraversal {
     if (statement instanceof ReturnNode) {
       return hasResults && statement.expressions.length === 1
         && (this.isGroupCall(statement.expressions[0], names)
-          || this.foldedGroupReturn(statement.expressions[0], names, fold) !== undefined);
+          || this.foldedRecursiveReturn(statement.expressions[0], names, fold) !== undefined);
     }
     if (statement instanceof FunctionCallStatementNode) {
       return !hasResults && this.isGroupCall(statement.call, names);
@@ -455,7 +455,7 @@ export default class LowerTailRecursion extends AstTraversal {
     resultNames: readonly string[],
     modeName: string,
     repeatName: string,
-    fold?: MutualFoldShape,
+    fold?: RecursiveFoldShape,
     continuationName?: string,
   ): BlockNode {
     block.statements = (block.statements ?? []).flatMap((statement) => {
@@ -466,7 +466,7 @@ export default class LowerTailRecursion extends AstTraversal {
         return this.mutualRecur(statement.expression, root, members, modeName, repeatName, statement.location);
       }
       if (statement instanceof ReturnNode) {
-        const folded = this.foldedGroupReturn(statement.expressions[0], new Set(members.keys()), fold);
+        const folded = this.foldedRecursiveReturn(statement.expressions[0], new Set(members.keys()), fold);
         if (folded && continuationName) {
           const push = this.stamp(new ArrayPushNode(
             continuationName, folded.operand,
@@ -551,15 +551,20 @@ export default class LowerTailRecursion extends AstTraversal {
       ? node.returnTypes.map((_type, index) => `__tail_result_${frame}_${index}`)
       : node.returnNames;
     const selfCalls = this.countSelfCalls(node.body, node.name);
+    const selfNames = new Set([node.name]);
+    const fold = selfCalls > 0 ? this.recursiveFoldShape([node], selfNames) : undefined;
     if (selfCalls === 0 || !this.selfCallsHaveArity(node.body, node.name, node.parameters.length)
       || !this.baseReturnsHaveArity(node.body, node.name, node.returnTypes.length, namedResults)
       || this.hasBaseReturnInSourceLoop(node.body, node.name)
-      || !this.validTailBlock(node.body, node.name, returnNames)) return node;
+      || !this.validTailBlock(node.body, node.name, returnNames, fold)) return node;
     this.counter += 1;
 
     const iterationName = `__tail_iteration_${frame}`;
     const repeatName = `__tail_repeat_${frame}`;
-    const transformed = this.transformBlock(node.body, node, returnNames, iterationName, repeatName);
+    const continuationName = fold ? `__tail_continuations_${frame}` : undefined;
+    const transformed = this.transformBlock(
+      node.body, node, returnNames, iterationName, repeatName, fold, continuationName,
+    );
     const clearRepeat = this.stamp(new AssignNode(
       this.stamp(new IdentifierNode(repeatName), node.location),
       this.stamp(new BoolLiteralNode(false), node.location),
@@ -579,12 +584,19 @@ export default class LowerTailRecursion extends AstTraversal {
         new VariableDefinitionNode(node.returnTypes[index], [], name), node.location,
       ))
       : [];
+    const continuation = fold ? this.stamp(new VariableDefinitionNode(
+      new ArrayType(node.returnTypes[0]), [], continuationName!, this.stamp(new NewArrayNode(
+        node.returnTypes[0], this.stamp(new IntLiteralNode(0n), node.location),
+      ), node.location),
+    ), node.location) : undefined;
+    const unwind = fold ? this.foldUnwind(node, returnNames[0], continuationName!, fold) : undefined;
     const finalReturn = unnamedResults
       ? this.stamp(new ReturnNode(returnNames.map((name) =>
         this.stamp(new IdentifierNode(name), node.location))), node.location)
       : undefined;
     node.body = this.stamp(new BlockNode([
-      ...results, iteration, repeat, loop, ...(finalReturn ? [finalReturn] : []),
+      ...results, ...(continuation ? [continuation] : []), iteration, repeat, loop,
+      ...(unwind ? [unwind] : []), ...(finalReturn ? [finalReturn] : []),
     ]), node.location);
     return node;
   }
@@ -643,35 +655,41 @@ export default class LowerTailRecursion extends AstTraversal {
     });
   }
 
-  private validTailBlock(block: BlockNode, name: string, returnNames: readonly string[]): boolean {
+  private validTailBlock(
+    block: BlockNode, name: string, returnNames: readonly string[], fold?: RecursiveFoldShape,
+  ): boolean {
     const statements = block.statements ?? [];
     for (let index = 0; index < statements.length; index += 1) {
       const statement = statements[index];
       const calls = this.countSelfCalls(statement, name);
       if (calls === 0) continue;
-      if (index !== statements.length - 1 || !this.validTailStatement(statement, name, returnNames)) return false;
+      if (index !== statements.length - 1
+        || !this.validTailStatement(statement, name, returnNames, fold)) return false;
     }
     return true;
   }
 
-  private validTailStatement(statement: StatementNode, name: string, returnNames: readonly string[]): boolean {
+  private validTailStatement(
+    statement: StatementNode, name: string, returnNames: readonly string[], fold?: RecursiveFoldShape,
+  ): boolean {
     if (statement instanceof AssignNode) {
       return returnNames.length === 1 && statement.identifier.name === returnNames[0]
         && this.isSelfCall(statement.expression, name);
     }
     if (statement instanceof ReturnNode) {
       return returnNames.length > 0 && statement.expressions.length === 1
-        && this.isSelfCall(statement.expressions[0], name);
+        && (this.isSelfCall(statement.expressions[0], name)
+          || this.foldedRecursiveReturn(statement.expressions[0], new Set([name]), fold) !== undefined);
     }
     if (statement instanceof FunctionCallStatementNode) {
       return returnNames.length === 0 && this.isSelfCall(statement.call, name);
     }
     if (statement instanceof BranchNode) {
       if (this.countSelfCalls(statement.condition, name) > 0) return false;
-      return this.validTailBlock(statement.ifBlock, name, returnNames)
-        && (!statement.elseBlock || this.validTailBlock(statement.elseBlock, name, returnNames));
+      return this.validTailBlock(statement.ifBlock, name, returnNames, fold)
+        && (!statement.elseBlock || this.validTailBlock(statement.elseBlock, name, returnNames, fold));
     }
-    if (statement instanceof BlockNode) return this.validTailBlock(statement, name, returnNames);
+    if (statement instanceof BlockNode) return this.validTailBlock(statement, name, returnNames, fold);
     // A recursive call nested in an existing loop has different break/continue ownership and is not lowered.
     if (statement instanceof WhileNode || statement instanceof DoWhileNode) return false;
     return false;
@@ -679,22 +697,29 @@ export default class LowerTailRecursion extends AstTraversal {
 
   private transformBlock(
     block: BlockNode, fn: FunctionDefinitionNode, returnNames: readonly string[],
-    iterationName: string, repeatName: string,
+    iterationName: string, repeatName: string, fold?: RecursiveFoldShape, continuationName?: string,
   ): BlockNode {
     block.statements = (block.statements ?? []).flatMap((statement) =>
-      this.transformStatement(statement, fn, returnNames, iterationName, repeatName));
+      this.transformStatement(
+        statement, fn, returnNames, iterationName, repeatName, fold, continuationName,
+      ));
     return block;
   }
 
   private transformStatement(
     statement: StatementNode, fn: FunctionDefinitionNode, returnNames: readonly string[],
-    iterationName: string, repeatName: string,
+    iterationName: string, repeatName: string, fold?: RecursiveFoldShape, continuationName?: string,
   ): StatementNode[] {
     if (returnNames.length === 1 && statement instanceof AssignNode && statement.identifier.name === returnNames[0]
       && this.isSelfCall(statement.expression, fn.name)) {
       return this.recur(statement.expression, fn, iterationName, repeatName, statement.location);
     }
     if (statement instanceof ReturnNode) {
+      const folded = this.foldedRecursiveReturn(statement.expressions[0], new Set([fn.name]), fold);
+      if (folded && continuationName) {
+        const push = this.stamp(new ArrayPushNode(continuationName, folded.operand), statement.location);
+        return [push, ...this.recur(folded.call, fn, iterationName, repeatName, statement.location)];
+      }
       if (statement.expressions.length === 1 && this.isSelfCall(statement.expressions[0], fn.name)) {
         return this.recur(statement.expressions[0], fn, iterationName, repeatName, statement.location);
       }
@@ -710,14 +735,18 @@ export default class LowerTailRecursion extends AstTraversal {
       return this.recur(statement.call, fn, iterationName, repeatName, statement.location);
     }
     if (statement instanceof BranchNode) {
-      statement.ifBlock = this.transformBlock(statement.ifBlock, fn, returnNames, iterationName, repeatName);
+      statement.ifBlock = this.transformBlock(
+        statement.ifBlock, fn, returnNames, iterationName, repeatName, fold, continuationName,
+      );
       if (statement.elseBlock) {
         statement.elseBlock = this.transformBlock(
-          statement.elseBlock, fn, returnNames, iterationName, repeatName,
+          statement.elseBlock, fn, returnNames, iterationName, repeatName, fold, continuationName,
         );
       }
     } else if (statement instanceof BlockNode) {
-      return [this.transformBlock(statement, fn, returnNames, iterationName, repeatName)];
+      return [this.transformBlock(
+        statement, fn, returnNames, iterationName, repeatName, fold, continuationName,
+      )];
     }
     return [statement];
   }

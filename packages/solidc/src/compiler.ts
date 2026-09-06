@@ -352,6 +352,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let needsVMapCounter = false;
   let needsAlphaRename = false;
   const definedFunctionNames = new Set<string>();
+  const calledFunctionNames = new Set<string>();
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
@@ -409,9 +410,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     )) {
       needsPostfixIncDec = true;
     }
-    if (node instanceof FunctionCallNode && definedFunctionNames.has(node.identifier.name)) {
-      needsTailRecursion = true;
-    }
+    if (node instanceof FunctionCallNode) calledFunctionNames.add(node.identifier.name);
     if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
       || node instanceof LowLevelCallStatementNode || node instanceof MethodCallNode
       || node instanceof MethodCallStatementNode || node.constructor.name.startsWith('External')
@@ -449,6 +448,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
       }
     }
   }
+  needsTailRecursion = [...calledFunctionNames].some((name) => definedFunctionNames.has(name));
   return {
     hasFunctionPointers,
     needsBlockOracle,

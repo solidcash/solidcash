@@ -276,6 +276,19 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('lowers a read-only journal-bearing self-recursion fold before kernel admission', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function sum(int n, int key) public returns (int) {
+        if (n == 0) return this.values[key];
+        return sum(n - 1, key) + n;
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
+  });
+
   it.each([
     ['a persistent effect',
       'this.calls = this.calls + 1;',

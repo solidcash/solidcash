@@ -6,6 +6,27 @@ const KERNEL = {
 } as const;
 
 describe('affine recursive mapping streams', () => {
+  it('lowers void post-recursion effects with replayable requirements', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) selected;
+      mapping(int => int) removed;
+      function apply(int cursor, int threshold) public {
+        if (cursor == 0) return;
+        apply(cursor - 1, threshold);
+        if (cursor > threshold) this.selected[cursor] = cursor + 30;
+        else delete this.removed[cursor + 1];
+        require(cursor >= 1);
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+    expect(handler).toMatchObject({ eligible: true });
+    expect(operationInfo?.map((info) => [info.collection, info.op])).toEqual([
+      ['selected', 'set'], ['removed', 'delete'],
+    ]);
+    expect(operationInfo?.every((info) => info.iterationCondition !== undefined)).toBe(true);
+  });
+
   it('lowers post-recursion sets and deletes in call-stack unwind order', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) selected;

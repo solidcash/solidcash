@@ -18,6 +18,51 @@ const KERNEL = {
 } as const;
 
 describe('affine recursive mapping streams', () => {
+  it('settles void post-recursion effects from the innermost retained frame outward', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract VoidUnwindStreams() {
+      mapping(int => int) selected;
+      function apply(int cursor, int threshold) public {
+        if (cursor == 0) return;
+        apply(cursor - 1, threshold);
+        if (cursor > threshold) this.selected[cursor] = cursor + 40;
+        require(cursor >= 1);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const zero = slotValueToBytes(0n);
+    const { categoryId } = await provider.addTokenUtxosDynamic((category) => {
+      const pinned = inner.withCategory(hexToBin(category));
+      return [
+        { address: pinned.tokenAddress, satoshis: 10_000n,
+          token: { amount: 0n, nft: { capability: 'minting' as const, commitment: '' } } },
+        { address: getEntryNftAddress(pinned, category, 'selected'), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(encodeEntryCommitment(zero, zero)) } } },
+        { address: getMessageBusVerifierAddress(pinned, category), satoshis: 1_200n,
+          token: { amount: 0n, nft: { capability: 'mutable' as const,
+            commitment: binToHex(messageBusVerifierCommitment(0)) } } },
+      ];
+    });
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'apply', args: [4n, 2n] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
+        `honest input ${inputIndex}`).toBe(true);
+    }
+    await call.send();
+    const selected = await contract.getEntries('selected');
+    const valueAt = (key: bigint): unknown => selected.find((entry) =>
+      binToHex(entry.slot) === binToHex(keyToSlotMulti([bigIntToVmNumber(key)])))?.value;
+    expect([1n, 2n, 3n, 4n].map(valueAt)).toEqual([undefined, undefined, 43n, 44n]);
+  }, 60_000);
+
   it('authenticates false predicates and outputs in post-recursion unwind order', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract UnwindStreams() {

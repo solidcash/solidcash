@@ -1143,6 +1143,17 @@ describe('required kernel admission', () => {
         for (int i = 0; i < n; i = i + 1) { this.leftSlots[xs[i]] = i; }
         require(true);
       }
+      function direct(int n, int a, int b) public {
+        int[] memory left = new int[](n);
+        int[] memory right = new int[](n);
+        right[0] = b;
+        left[0] = right[0] + a;
+        for (int i = 0; i < n; i = i + 1) {
+          this.leftSlots[left[i]] = i;
+          this.rightSlots[right[i]] = i;
+        }
+        require(true);
+      }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
@@ -1154,6 +1165,8 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'aliased'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'crossRead'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'direct'))
       .toMatchObject({ eligible: true });
   });
 

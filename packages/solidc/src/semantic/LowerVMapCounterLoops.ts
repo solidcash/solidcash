@@ -4574,6 +4574,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
       active: Map<string, ArrayPlan>,
       checks: RequireNode[],
     ): ExpressionNode => {
+      if (expression instanceof TupleIndexOpNode && expression.tuple instanceof IdentifierNode) {
+        const plan = active.get(expression.tuple.name);
+        if (plan) {
+          const index = new IntLiteralNode(BigInt(expression.index));
+          index.location = expression.location;
+          const access = new ArrayAccessNode(cloneNode(expression.tuple), index);
+          access.location = expression.location;
+          access.type = expression.type;
+          const replacement = symbolicRead(access, plan);
+          if (!replacement) return cloneNode(expression) as ExpressionNode;
+          const equality = new BinaryOpNode(
+            cloneNode(expression), BinaryOperator.EQ, cloneNode(replacement),
+          );
+          equality.location = expression.location;
+          const check = new RequireNode(equality, 'deterministic local array key mismatch');
+          check.location = expression.location;
+          checks.push(check);
+          return replacement;
+        }
+      }
       if (expression instanceof ArrayAccessNode && expression.array instanceof IdentifierNode) {
         const plan = active.get(expression.array.name);
         if (plan) {
@@ -5870,9 +5890,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             return definition;
           })() : undefined;
         const replayedArrayValue = statement instanceof ArrayAssignNode || statement instanceof ArrayPushNode
-          ? replaceSnapshots(statement.value, snapshots) : undefined;
+          ? replaceArrayReads(replaceSnapshots(statement.value, snapshots), active, []) : undefined;
         const replayedArrayIndex = statement instanceof ArrayAssignNode
-          ? replaceSnapshots(statement.index, snapshots) : undefined;
+          ? replaceArrayReads(replaceSnapshots(statement.index, snapshots), active, []) : undefined;
         const keySnapshot = (statement instanceof ArrayAssignNode || statement instanceof ArrayPushNode)
           && active.has(statement.name)
           && replayedArrayValue !== undefined && containsFutureReassignedName(replayedArrayValue)

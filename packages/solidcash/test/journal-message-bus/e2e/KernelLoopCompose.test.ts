@@ -5447,6 +5447,17 @@ describe('kernel composite counter-key settlement', () => {
         }
         require(true);
       }
+      function writeDirect(int n, int a, int b) public {
+        int[] memory left = new int[](n);
+        int[] memory right = new int[](n);
+        right[0] = b;
+        left[0] = right[0] + a;
+        for (int i = 0; i < n; i = i + 1) {
+          this.leftSlots[left[i]] = i + 30;
+          this.rightSlots[right[i]] = i + 40;
+        }
+        require(true);
+      }
       function checkLeft(int key, int expected) public { require(this.leftSlots[key] == expected); }
       function checkRight(int key, int expected) public { require(this.rightSlots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
@@ -5459,10 +5470,14 @@ describe('kernel composite counter-key settlement', () => {
     const contract = StatefulContract.withCategory(inner, categoryId);
     await expect(contract.batch([{ function: 'write', args: [2n, 700n, 800n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.batch([{ function: 'writeDirect', args: [2n, 900n, 1000n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.checkLeft(1500n, 10n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(0n, 11n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(1900n, 30n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(0n, 31n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(800n, 20n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkRight(0n, 21n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkRight(1000n, 40n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkRight(0n, 41n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('retains constructed keys across mutations of a value-copied helper parameter', async () => {

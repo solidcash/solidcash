@@ -585,6 +585,7 @@ caller supplies distinct constructed arrays; element reads across those paramete
 joint source-order history. Caller aliasing remains fenced because two formal names can then mutate the same
 storage without an explicit may-alias relation. A helper which does not rebind a replayed parameter may also push
 and pop through the shared alias; those operations advance the symbolic length at their exact source point.
+Direct source assignments use the same point-in-time resolver, including literal and runtime array indices.
 Mixed push/pop paths which restore their entry length without popping into the pre-existing prefix are replayed
 independently per logical iteration, including finite `if`/`else` and `switch` paths. Other mixed push/pop
 operations in a counter-dependent resize recurrence, a push value derived

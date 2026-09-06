@@ -167,6 +167,94 @@ describe('required kernel admission', () => {
     });
   });
 
+  it('admits same-layout upgrades with compiler-authored lifecycle authority', () => {
+    const artifact = compileString(`contract C() {
+      int count;
+      function migrate() upgrade { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const upgrade = artifact.messageBus?.handlers.find((handler) =>
+      handler.name === 'migrate');
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(upgrade).toMatchObject({
+      eligible: true, lifecycle: { kind: 'upgrade', layout: 'same' },
+    });
+    expect(artifact.messageBus?.route.inputs).toContainEqual({
+      name: '__internal__upgradeBytecode', type: 'bytes',
+    });
+    expect(artifact.messageBus?.atomicMessageBus?.protocolVersions).toEqual([1, 2]);
+  });
+
+  it('refuses overloaded upgrades until graph invocations carry a selector', () => {
+    const artifact = compileString(`contract C() {
+      function migrate() upgrade { require(true); }
+      function migrate(int ignored) public { require(ignored == ignored); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    const handlers = artifact.messageBus?.handlers.filter((handler) => handler.name === 'migrate') ?? [];
+    expect(handlers).toHaveLength(2);
+    expect(handlers.find((handler) => handler.lifecycle?.kind === 'upgrade')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_LIFECYCLE',
+      lifecycle: { kind: 'upgrade', layout: 'same' },
+    });
+    expect(handlers.find((handler) => handler.lifecycle === undefined)).toMatchObject({ eligible: true });
+  });
+
+  it('refuses upgrades on a delegate-owned route until proxy replacement semantics are explicit', () => {
+    expect(denied(`contract C() {
+      int count;
+      function update(int next) public delegate { this.count = next; require(true); }
+      function replace() upgrade { require(true); }
+    }`, 'replace')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_FOREIGN_DELEGATE',
+      lifecycle: { kind: 'upgrade', layout: 'same' },
+    });
+  });
+
+  it('refuses upgrades reaching a transaction-signature check through an internal bytes cast', () => {
+    expect(denied(`contract C(pubkey admin) {
+      function authorize(bytes proof) internal { require(checkSig(sig(proof), admin)); }
+      function migrate(bytes proof) upgrade { authorize(proof); require(true); }
+      function control() public { require(true); }
+    }`, 'migrate')).toMatchObject({
+      eligible: false, rejectionReason: 'KERNEL_TX_SIGNATURE',
+      lifecycle: { kind: 'upgrade', layout: 'same' },
+    });
+  });
+
+  it('publishes reachable transaction-signature checks for ordinary graph ancestors', () => {
+    const artifact = compileString(`contract C() {
+      function execute(bytes proof, pubkey key) public { require(checkSig(sig(proof), key)); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'execute')).toMatchObject({
+      eligible: true, usesTransactionSignature: true,
+    });
+
+    const legacy = compileString(`contract C() {
+      function execute(bytes proof, pubkey key) public { require(checkSig(sig(proof), key)); }
+    }`, { forceStateful: true, messageBus: true, messageBusKernel: false, maximumInputBytes: 1_000_000 });
+    expect(legacy.messageBus?.atomicMessageBus?.protocolVersions).toEqual([1]);
+    expect(legacy.bytecode).not.toContain('4c33425553320000');
+
+    const free = compileString(`
+      function authenticate(bytes proof, pubkey key) { require(checkSig(sig(proof), key)); }
+      contract C() {
+        function execute(bytes proof, pubkey key) public { authenticate(proof, key); require(true); }
+      }
+    `, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(free.messageBus?.handlers.find((handler) => handler.name === 'execute'))
+      .toMatchObject({ eligible: true, usesTransactionSignature: true });
+
+    const library = compileString(`
+      library Auth {
+        function authenticate(bytes proof, pubkey key) internal { require(checkSig(sig(proof), key)); }
+      }
+      contract C() {
+        function execute(bytes proof, pubkey key) public { Auth.authenticate(proof, key); require(true); }
+      }
+    `, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(library.messageBus?.handlers.find((handler) => handler.name === 'execute'))
+      .toMatchObject({ eligible: true, usesTransactionSignature: true });
+  });
+
   it('binds a scalar transaction signature as a row-aligned route witness', () => {
     const artifact = compileString(`contract C(pubkey owner) {
       function signed(sig s) public { require(checkSig(s, owner)); }

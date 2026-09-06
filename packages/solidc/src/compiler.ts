@@ -2429,6 +2429,12 @@ function synthesizeMessageBusRoute(
     group.push(fn);
     byName.set(fn.name, group);
   }
+  const signatureClosureByName = new Map([...byName].map(([name, definitions]) => [name, [...definitions]]));
+  for (const fn of ast.freeFunctions) {
+    const group = signatureClosureByName.get(fn.name) ?? [];
+    group.push(fn);
+    signatureClosureByName.set(fn.name, group);
+  }
   const footprintCache = createFootprintAnalysisCache();
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.isPacked
@@ -2456,6 +2462,9 @@ function synthesizeMessageBusRoute(
   if (compilerOptions.autoDelegate || inferredSolidityImplementation) {
     disallowedModifiers.delete(FunctionModifier.DELEGATE);
   }
+  // Kernel upgrades retain the participant's fixed state block and authenticate one replacement master identity.
+  // Legacy unroll has no transaction-wide target channel, so its lifecycle fence remains unchanged.
+  if (compilerOptions.messageBusKernel === true) disallowedModifiers.delete(FunctionModifier.UPGRADE);
   let eligible: FunctionDefinitionNode[] = [];
   const graphTailHandlers = new Set<FunctionDefinitionNode>();
   const graphRuntimeHandlers = new Set<FunctionDefinitionNode>();
@@ -2776,11 +2785,57 @@ function synthesizeMessageBusRoute(
       }
     });
   }
+  const reachesTransactionSignatureCheck = (root: FunctionDefinitionNode): boolean => {
+    let found = false;
+    for (const name of collectNamedFunctionClosure(root, signatureClosureByName)) {
+      for (const candidate of signatureClosureByName.get(name) ?? []) {
+        walkInvocationAst(candidate.body, (node) => {
+          if (node instanceof FunctionCallNode && [
+            GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG,
+          ].includes(node.identifier.name as GlobalFunction)) found = true;
+        });
+      }
+    }
+    return found;
+  };
   for (const fn of functions) {
+    fn.messageBusUsesTransactionSignature = reachesTransactionSignatureCheck(fn);
     if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
         ? 'KERNEL_LIFECYCLE' : 'lifecycle-or-unsafe-handler';
+      continue;
+    }
+    // Public graph invocations currently identify handlers by name. Until that surface carries a selector,
+    // admitting one lifecycle overload would let composition either reject the call as ambiguous or select the
+    // wrong sibling. Publish lifecycle metadata for the exact selector below, but do not advertise it as callable.
+    if (compilerOptions.messageBusKernel === true
+      && fn.modifiers.includes(FunctionModifier.UPGRADE)
+      && (byName.get(fn.name)?.filter((candidate) => candidate.isEntryPoint).length ?? 0) > 1) {
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_LIFECYCLE';
+      continue;
+    }
+    // A delegate route covenants the proxy master while its implementation executes from an interior slot.
+    // Replacing either identity needs an explicit two-owner lifecycle protocol; treating it as the direct
+    // same-layout case would make the delegate preservation branch and the upgrade branch disagree.
+    if (compilerOptions.messageBusKernel === true
+      && fn.modifiers.includes(FunctionModifier.UPGRADE)
+      && (compilerOptions.autoDelegate === true || inferredSolidityImplementation
+        || entryFunctions.some((candidate) => candidate.isEntryPoint
+          && candidate.modifiers.includes(FunctionModifier.DELEGATE)))) {
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_FOREIGN_DELEGATE';
+      continue;
+    }
+    // Until the route covenants the transaction-signature hash type, SIGHASH_NONE/ANYONECANPAY could replay
+    // an otherwise valid upgrade authorization against a different manifest and replacement output. The hidden
+    // bytecode witness prevents output-only tampering, but cannot make a detached signature commit to that witness.
+    if (compilerOptions.messageBusKernel === true
+      && fn.modifiers.includes(FunctionModifier.UPGRADE)
+      && fn.messageBusUsesTransactionSignature === true) {
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_TX_SIGNATURE';
       continue;
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
@@ -4462,6 +4517,14 @@ function synthesizeMessageBusRoute(
     && (!signatureMode || kernelSignatureMode)
     && eligible.every((fn) =>
       (fn.messageBusKeyWitnesses ?? []).every((binding) => kernelRepresentablePerRow(binding)));
+  const kernelUpgradeMode = kernelLoopDispatch
+    && eligible.some((fn) => fn.modifiers.includes(FunctionModifier.UPGRADE));
+  // A V2 manifest changes at least one participant covenant identity. Until transaction signatures are required
+  // to use ALL, every selected signature-checking row must be rejected in such a graph: NONE can replace all
+  // outputs and SINGLE can preserve the signer's corresponding output while replacing another participant's —
+  // including an ordinary ancestor row whose authenticated call authorizes another participant's upgrade.
+  const kernelV2SignatureFence = kernelLoopDispatch
+    && eligible.some((fn) => fn.messageBusUsesTransactionSignature === true);
   if (compilerOptions.messageBusKernel === true && !kernelLoopDispatch) {
     // Kernel admission is per handler: an unsupported shape must have been refused before route synthesis. Never
     // turn the default convention into an implicit legacy clone/unroll fallback, because that makes the artifact
@@ -5315,7 +5378,13 @@ function synthesizeMessageBusRoute(
   ): string =>
     eligible.map((fn, handlerIndex) => {
       const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
+      const upgradeAuthorization = kernelUpgradeMode && fn.modifiers.includes(FunctionModifier.UPGRADE)
+        ? `__message_bus_upgrade_count = __message_bus_upgrade_count + 1;
+          __message_bus_upgrade_position = ${rowExpression};` : '';
       const parameterSignatureLeaves = signatureLeavesByHandler.get(fn)!;
+      const signatureAuthorization = kernelV2SignatureFence
+        && fn.messageBusUsesTransactionSignature === true
+        ? '__message_bus_signature_count = __message_bus_signature_count + 1;' : '';
       const invokeName = fn === resourceShapedHandler
         ? resourceHandlerInvokeName!
         : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
@@ -5395,7 +5464,7 @@ function synthesizeMessageBusRoute(
         const senderChecks = (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source === 'msgSender')
           .map((binding) => `require(${witnessName(binding)} == ${logicalCaller});`).join(' ');
-        return `${condition} { require(rowArgs.length == 0); ${senderChecks} ${invoke(entryOnly.join(', '))}
+        return `${condition} { ${upgradeAuthorization} ${signatureAuthorization} require(rowArgs.length == 0); ${senderChecks} ${invoke(entryOnly.join(', '))}
           require(rowArgs == rowArgs); }`;
       }
       const decodedParameters = fn.parameters
@@ -5611,7 +5680,7 @@ function synthesizeMessageBusRoute(
       const wrappedDispatch = markDispatch
         ? `require(${MB_DISPATCH_SENTINEL}); ${dispatch} require(${MB_DISPATCH_SENTINEL});`
         : dispatch;
-      return `${condition} { ${decode} ${keyChecks} ${outStateBoundaryChecks} ${wrappedDispatch}
+      return `${condition} { ${upgradeAuthorization} ${signatureAuthorization} ${decode} ${keyChecks} ${outStateBoundaryChecks} ${wrappedDispatch}
         require(rowArgs == rowArgs); }`;
     }).join(' ');
   const declaredWitnessNames = new Set<string>();
@@ -5674,7 +5743,10 @@ function synthesizeMessageBusRoute(
         || parameter.name === KERNEL_JOURNAL_ACCESS_STREAMS) && kernelLoopDispatch
         ? `${type}[] ${parameter.name}` : `${type} ${parameter.name}`;
     }));
-  const resourceVerificationMode = eligible.some((fn) => {
+  // A same-layout upgrade authenticates the complete fixed state block even when its source body does not read
+  // or write a field. Its manifest therefore carries preservation rows which the specialized verifier must
+  // parse and count just like rows inferred from an ordinary handler footprint.
+  const resourceVerificationMode = kernelUpgradeMode || eligible.some((fn) => {
     const footprint = eligibleFootprint(fn);
     return footprint.reads.length > 0 || footprint.writes.length > 0;
   }) || valueEffectMode || tokenContainerMode;
@@ -5710,6 +5782,7 @@ function synthesizeMessageBusRoute(
     ? ['bigint __internal__activeVerifierIndex'] : [];
   const routeParameters = [
     'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
+    ...(kernelUpgradeMode ? ['bytes __internal__upgradeBytecode'] : []),
     ...localCallerRouteParameters,
     ...routeSignatureParameters, ...routeKeyParameters, ...routeCounterPermParameters,
   ].join(', ');
@@ -5793,7 +5866,8 @@ function synthesizeMessageBusRoute(
   const compactAtomicBinder = `
         bigint activeMasterOutput = -1;
         for (bigint masterOutput = 0; masterOutput < tx.outputs.length; masterOutput = masterOutput + 1) {
-          if (tx.outputs[masterOutput].lockingBytecode == tx.inputs[activeInputIndex].lockingBytecode
+          if (tx.outputs[masterOutput].lockingBytecode == ${kernelUpgradeMode
+    ? '__internal__upgradeBytecode' : 'tx.inputs[activeInputIndex].lockingBytecode'}
             && tx.outputs[masterOutput].tokenCategory == tx.inputs[activeInputIndex].tokenCategory) {
             activeMasterOutput = masterOutput;
           }
@@ -5827,8 +5901,13 @@ function synthesizeMessageBusRoute(
           toPaddedBytes(suppliedFixedSize, 2), toPaddedBytes(suppliedBlockSize, 2), sha256(suppliedEmissions),
           sha256(suppliedCallers), toPaddedBytes(suppliedSettlementBoundary, 2),
           sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
+  const atomicManifestV2Expression = compilerOptions.messageBusKernel === true
+    ? 'callManifest.slice(0, 8) == hex"4c33425553320000"' : 'false';
   const inlinedAtomicVerifierBody = `
-        require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");
+        ${compilerOptions.messageBusKernel === true
+    ? `require(callManifest.length >= 15 && (callManifest.slice(0, 8) == hex"4c33425553310000"
+          || callManifest.slice(0, 8) == hex"4c33425553320000"));`
+    : 'require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");'}
         require(int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length);
         bigint participantCount = int(bytes.concat(callManifest.slice(12, 13), hex"00"));
         require(participantCount >= 2 && participantCount <= 8);
@@ -5845,6 +5924,7 @@ function synthesizeMessageBusRoute(
         bytes participantBases = hex"";
         bytes participantSizes = hex"";
         bytes participantLbcs = hex"";
+        bigint replacementIdentityCount = 0;
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
           require(cursor + 45 <= callManifest.length);
           bigint base = expectedBase;
@@ -5860,6 +5940,18 @@ function synthesizeMessageBusRoute(
           bytes participantLbc = callManifest.slice(cursor, cursor + lbcLength);
           cursor = cursor + lbcLength;
           participantLbcs = bytes.concat(participantLbcs, toPaddedBytes(lbcLength, 2), participantLbc);
+          bytes participantOutputLbc = participantLbc;
+          if (${atomicManifestV2Expression}) {
+            require(cursor + 2 <= callManifest.length);
+            bigint outputLbcLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
+            cursor = cursor + 2;
+            require(outputLbcLength > 0 && cursor + outputLbcLength + 38 <= callManifest.length);
+            participantOutputLbc = callManifest.slice(cursor, cursor + outputLbcLength);
+            cursor = cursor + outputLbcLength;
+            if (participantOutputLbc != participantLbc) {
+              replacementIdentityCount = replacementIdentityCount + 1;
+            }
+          }
           bytes category = callManifest.slice(cursor, cursor + 32);
           bigint maximumSize = int(bytes.concat(callManifest.slice(cursor + 32, cursor + 34), hex"00"));
           bigint trailingUsed = int(bytes.concat(callManifest.slice(cursor + 34, cursor + 36), hex"00"));
@@ -5871,11 +5963,20 @@ function synthesizeMessageBusRoute(
             && tx.inputs[base].tokenCategory.slice(0, 32) == category
             && tx.inputs[base].tokenCategory.slice(32, 33) == hex"02");
           bigint participantOutputBase = -1;
-          for (bigint participantOutput = 0; participantOutput < tx.outputs.length;
-            participantOutput = participantOutput + 1) {
-            if (tx.outputs[participantOutput].lockingBytecode == participantLbc
-              && tx.outputs[participantOutput].tokenCategory == tx.inputs[base].tokenCategory) {
-              participantOutputBase = participantOutput;
+          if (${atomicManifestV2Expression}) {
+            participantOutputBase = base;
+            require(tx.outputs[participantOutputBase].lockingBytecode == participantOutputLbc
+              && tx.outputs[participantOutputBase].tokenCategory == tx.inputs[base].tokenCategory
+              && tx.outputs[participantOutputBase].nftCommitment == tx.inputs[base].nftCommitment
+              && tx.outputs[participantOutputBase].tokenAmount == tx.inputs[base].tokenAmount
+              && tx.outputs[participantOutputBase].value == tx.inputs[base].value);
+          } else {
+            for (bigint participantOutput = 0; participantOutput < tx.outputs.length;
+              participantOutput = participantOutput + 1) {
+              if (tx.outputs[participantOutput].lockingBytecode == participantOutputLbc
+                && tx.outputs[participantOutput].tokenCategory == tx.inputs[base].tokenCategory) {
+                participantOutputBase = participantOutput;
+              }
             }
           }
           require(participantOutputBase >= 0);
@@ -5893,10 +5994,13 @@ function synthesizeMessageBusRoute(
             activeMaximumSize = maximumSize;
             activeReturnOutput = returnOutput;
             activeCategory = category;
+            ${kernelUpgradeMode
+    ? 'require(__internal__upgradeBytecode == participantOutputLbc);' : ''}
           }
         }
         // Participant prefix || one artifact-specialized verifier per participant || one fee input.
         require(activeMembership == 1 && expectedBase + participantCount + 1 == tx.inputs.length);
+        require(!(${atomicManifestV2Expression}) || replacementIdentityCount > 0);
         bytes bindingDigest = sha256(bytes.concat(
           sha256(callManifest), toPaddedBytes(activeBase, 2),
           toPaddedBytes(expectedLocalRows, 2), sha256(localBatch)
@@ -6160,8 +6264,11 @@ function synthesizeMessageBusRoute(
                 require(tx.inputs[sourceSlot].value == tx.outputs[targetSlot].value);
               }
               if (__message_bus_row_owner == activeParticipant) {
-                activeResourceEndpoints = activeResourceEndpoints
-                  + (resourceMode == 0 || resourceMode == 5 ? 2 : 1);
+                if (resourceMode == 0 || resourceMode == 5) {
+                  activeResourceEndpoints = activeResourceEndpoints + 2;
+                } else {
+                  activeResourceEndpoints = activeResourceEndpoints + 1;
+                }
               }
             }
           }` : ''}
@@ -6385,9 +6492,11 @@ function synthesizeMessageBusRoute(
         // the participant block, so scan from the canonical base selected from the manifest rather than from
         // the executing slot.
         bigint activeOutputBase = activeBase;
-        for (bigint outputIndex = 0; outputIndex < tx.outputs.length; outputIndex = outputIndex + 1) {
-          if (tx.outputs[outputIndex].lockingBytecode == tx.inputs[activeBase].lockingBytecode) {
-            activeOutputBase = outputIndex;
+        if (!(${atomicManifestV2Expression})) {
+          for (bigint outputIndex = 0; outputIndex < tx.outputs.length; outputIndex = outputIndex + 1) {
+            if (tx.outputs[outputIndex].lockingBytecode == tx.inputs[activeBase].lockingBytecode) {
+              activeOutputBase = outputIndex;
+            }
           }
         }
         for (bigint slot = activeBase;
@@ -6546,6 +6655,7 @@ function synthesizeMessageBusRoute(
   const atomicCallManifestLoader = `
       function __message_bus_verify_atomic(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
+        ${!kernelUpgradeMode ? '' : ', bytes __internal__upgradeBytecode'}
         ${!useBoundRoute ? '' : ', bigint __internal__activeVerifierIndex'}
         ${!graphExecutionContext ? '' : `,
         bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
@@ -6580,6 +6690,7 @@ function synthesizeMessageBusRoute(
           tx.inputs[${atomicParticipantInput}].outpointIndex != 4294967295) {
           bytes __internal__atomicBindingDigest = __message_bus_verify_atomic(
             ${atomicParticipantInput}, rowCount, batchBlob
+            ${!kernelUpgradeMode ? '' : ', __internal__upgradeBytecode'}
             ${!useBoundRoute ? '' : ', __internal__activeVerifierIndex'}
             ${!graphExecutionContext ? '' : `,
             __internal__graphFixedSize, __internal__graphBlockSize,
@@ -6752,6 +6863,9 @@ function synthesizeMessageBusRoute(
     }`;
   const routeSource = `${preamble}    contract __MessageBusHost() {
       function __message_bus1(${routeParameters}) external${returnDeclaration} {
+        ${kernelUpgradeMode ? 'bigint __message_bus_upgrade_count = 0;' : ''}
+        ${kernelUpgradeMode ? 'bigint __message_bus_upgrade_position = -1;' : ''}
+        ${kernelV2SignatureFence ? 'bigint __message_bus_signature_count = 0;' : ''}
         ${fixedIterationEntryPins}
         ${kernelJournalValidation}
         require(batchBlob.length >= 7);
@@ -6816,6 +6930,26 @@ function synthesizeMessageBusRoute(
         ${resultDeclarations}
         require(__MB_ROWS__);
         require(cursor == batchBlob.length);
+        ${kernelUpgradeMode
+    ? `require(__message_bus_upgrade_count <= 1);
+        if (__message_bus_upgrade_count == 0) {
+          require(__internal__upgradeBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+        } else {
+          require(__message_bus_upgrade_position == rowCount - 1);
+          require(__internal__upgradeBytecode != tx.inputs[this.activeInputIndex].lockingBytecode);
+          bytes __message_bus_upgrade_envelope = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
+          require(__message_bus_upgrade_envelope.length >= 19
+            && __message_bus_upgrade_envelope.slice(11, 19) == hex"4c33425553320000");
+        }`
+    : ''}
+        ${kernelV2SignatureFence
+    ? `if (__message_bus_signature_count > 0
+          && tx.inputs[this.activeInputIndex].outpointIndex != 4294967295) {
+          bytes __message_bus_signature_envelope = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
+          require(__message_bus_signature_envelope.length < 19
+            || __message_bus_signature_envelope.slice(11, 19) != hex"4c33425553320000");
+        }`
+    : ''}
         ${!graphExecutionContext ? ''
     : 'require(__internal__graphCompletionPositions.length == rowCount * 2);'}
         ${!graphExecutionContext
@@ -6924,6 +7058,7 @@ function synthesizeMessageBusRoute(
     );
   }
   route.messageBusRoute = true;
+  route.messageBusUpgradeRoute = kernelUpgradeMode;
   route.messageBusDispatch = kernelLoopDispatch ? 'kernel-row-loop' : 'legacy-unroll';
   // Late route synthesis runs after the final automatic delegate-marking pass. Propagate the admitted surface's
   // execution context here so SymbolTableTraversal injects the proxy-master witness used by the route prologue
@@ -6958,6 +7093,7 @@ function synthesizeMessageBusRoute(
     const verifierHost = `${preamble}    contract __MessageBusVerifierHost() {
       function ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
+        ${!kernelUpgradeMode ? '' : ', bytes __internal__upgradeBytecode'}
         ${!graphExecutionContext ? '' : `,
         bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
         bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
@@ -6976,6 +7112,7 @@ function synthesizeMessageBusRoute(
       function __invoke_message_bus_verifier_program() public {
         bytes got = ${MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM}(
           0, 0, hex""
+          ${!kernelUpgradeMode ? '' : ', hex"51"'}
           ${!graphExecutionContext ? '' : ', 0, 0, hex"", hex"", 0, hex"", hex""'}
         );
         require(got.length != 0x7fffffffffffffff);
@@ -8957,6 +9094,7 @@ function compileResolvedAst(
       maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
       atomicMessageBus: {
         domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
+        protocolVersions: mergedCompilerOptions.messageBusKernel === true ? [1, 2] : [1],
         messageEnvelope: {
           region: 'participant-verifiers',
           canonicalInput: 'final-participant-verifier',
@@ -8995,6 +9133,10 @@ function compileResolvedAst(
           })),
         }),
         ...(fn.usesMsgValue && { usesMsgValue: true }),
+        ...(fn.modifiers.includes(FunctionModifier.UPGRADE) && {
+          lifecycle: { kind: 'upgrade' as const, layout: 'same' as const },
+        }),
+        ...(fn.messageBusUsesTransactionSignature === true && { usesTransactionSignature: true }),
         ...(() => {
           const deployments = childDeploymentsBySignature.get(deploymentTopologyKey(fn)) ?? [];
           return deployments.length > 0 ? { childDeployments: deployments } : {};
@@ -9134,6 +9276,7 @@ function compileResolvedAst(
         maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
         atomicMessageBus: {
           domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
+          protocolVersions: mergedCompilerOptions.messageBusKernel === true ? [1, 2] : [1],
           messageEnvelope: {
             region: 'participant-verifiers',
             canonicalInput: 'final-participant-verifier',
@@ -9166,6 +9309,10 @@ function compileResolvedAst(
                 type: parameter.type.toString().replace(/address payable/g, 'address'),
               })),
             eligible: false,
+            ...(fn.modifiers.includes(FunctionModifier.UPGRADE) && {
+              lifecycle: { kind: 'upgrade' as const, layout: 'same' as const },
+            }),
+            ...(fn.messageBusUsesTransactionSignature === true && { usesTransactionSignature: true }),
             rejectionReason: kernelReason,
             rejectionCode: classifyMessageBusRejection(kernelReason),
             ...(deployments.length > 0 && { childDeployments: deployments }),

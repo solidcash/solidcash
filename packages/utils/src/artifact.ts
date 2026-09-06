@@ -1055,6 +1055,8 @@ export interface Artifact {
     /** Compiler-published admission and message-envelope contract for atomic composition. */
     atomicMessageBus?: {
       domain: typeof ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
+      /** Atomic callManifest wire versions accepted by this artifact's verifier program. */
+      protocolVersions?: readonly (1 | 2)[];
       /** The final verifier input carries the canonical frame authenticated by every participant binder. */
       messageEnvelope: {
         region: 'participant-verifiers';
@@ -1099,6 +1101,10 @@ export interface Artifact {
       }[];
       /** Typed child-creation sites in source execution order. Presence is topology only, not admission. */
       childDeployments?: readonly ChildDeploymentSiteAbi[];
+      /** Compiler-authored lifecycle authority. `same` forbids participant state-block growth. */
+      lifecycle?: { kind: 'upgrade'; layout: 'same' };
+      /** The selected handler's compiler-resolved call closure can execute CHECKSIG/CHECKMULTISIG. */
+      usesTransactionSignature?: boolean;
       eligible: boolean;
       rejectionReason?: string;
       rejectionCode?:

@@ -59,14 +59,20 @@ describe('atomic single-transaction codec', () => {
     expect(() => messageBus.encodeAtomicMessageBusCallManifest({
       ...upgraded, version: 1,
     })).toThrow(/V1 cannot authenticate a distinct participant output/);
+    expect(() => messageBus.encodeAtomicMessageBusCallManifest({
+      ...ordinary, version: 2,
+      participants: ordinary.participants.map((participant) => ({
+        ...participant, outputLockingBytecode: participant.lockingBytecode,
+      })),
+    })).toThrow(/V2 requires at least one distinct participant output/);
   });
 
   it('rejects malformed or truncated V2 output identities', () => {
     const value: messageBus.AtomicMessageBusCallManifest = {
       ...sample(),
       version: 2,
-      participants: sample().participants.map((participant) => ({
-        ...participant, outputLockingBytecode: participant.lockingBytecode,
+      participants: sample().participants.map((participant, index) => ({
+        ...participant, outputLockingBytecode: index === 0 ? '53'.repeat(64) : participant.lockingBytecode,
       })),
     };
     expect(() => messageBus.encodeAtomicMessageBusCallManifest({
@@ -80,6 +86,10 @@ describe('atomic single-transaction codec', () => {
     malformed[outputLengthOffset] = 0xff;
     malformed[outputLengthOffset + 1] = 0xff;
     expect(() => messageBus.decodeAtomicMessageBusCallManifest(malformed)).toThrow(/truncated/);
+    const nonCanonical = encoded.slice();
+    nonCanonical.fill(0x51, outputLengthOffset + 2, outputLengthOffset + 2 + 64);
+    expect(() => messageBus.decodeAtomicMessageBusCallManifest(nonCanonical))
+      .toThrow(/V2 requires at least one distinct participant output/);
   });
 
   it('places complete blocks contiguously before the fee tail', () => {

@@ -5,6 +5,7 @@ import { messageBus } from '../../src/index.js';
 const artifact = (selector: string, inputType = 'int'): Artifact => ({
   messageBus: {
     maximumRows: 1,
+    atomicMessageBus: { protocolVersions: [1, 2] },
     handlers: [{
       name: 'run', selector, inputs: [{ name: 'n', type: inputType }], outputs: [], eligible: true,
     }],
@@ -418,6 +419,23 @@ describe('atomic compiled invocation graph', () => {
     expect(messageBus.finalizeAtomicInvocationGraph(
       changedTarget, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     ).bytes).not.toEqual(finalized.bytes);
+
+    const legacyPeer = plan();
+    legacyPeer.participants[0] = {
+      ...legacyPeer.participants[0], outputLockingBytecode: '54'.repeat(64),
+    };
+    legacyPeer.participants[1] = {
+      ...legacyPeer.participants[1],
+      artifact: {
+        ...legacyPeer.participants[1].artifact,
+        messageBus: {
+          ...legacyPeer.participants[1].artifact.messageBus!, atomicMessageBus: undefined,
+        },
+      },
+    };
+    expect(() => messageBus.finalizeAtomicInvocationGraph(
+      legacyPeer, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    )).toThrow(/participant 1 verifier does not advertise.*protocol 2/);
   });
 
   it('admits canonical event, value, token-container, and token-settlement rows', () => {

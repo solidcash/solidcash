@@ -333,6 +333,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Compiler-owned message-bus handler mapping from its function-local entry
    * slot ordinals to the enclosing route's physical participant slots. */
   messageBusPhysicalEntrySlots?: number[];
+  /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
+  messageBusUpgradeRoute?: boolean;
+  /** The exact named-call closure can execute CHECKSIG/CHECKMULTISIG (excluding data signatures). */
+  messageBusUsesTransactionSignature?: boolean;
   /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
   messageBusHandlerManagedEntrySlots?: number[];
   tokenContainerAccesses?: TokenContainerAccessInfo[];

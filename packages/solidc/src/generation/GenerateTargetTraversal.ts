@@ -5177,7 +5177,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || node.modifiers.includes(FunctionModifier.MERGE);
     const isConstructor = node.name === '__construct';
     const isUnsafeTier0 = node.modifiers.includes(FunctionModifier.UNSAFE) && (node.unsafeTier ?? 0) === 0;
-    const hasFullStateModifier = node.modifiers.some((m) => m === FunctionModifier.UPGRADE
+    const hasFullStateModifier = node.messageBusUpgradeRoute === true
+      || node.modifiers.some((m) => m === FunctionModifier.UPGRADE
       || m === FunctionModifier.SELFDESTRUCT
       || m === FunctionModifier.DELEGATE) || isUnsafeTier0;
     // Functions with delegatecall low-level calls need all data NFTs because the delegate
@@ -5979,7 +5980,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || (this.compilerOptions.forceStateful ?? false);
     const isUnsafe = node.modifiers.includes(FunctionModifier.UNSAFE);
     const unsafeTier = isUnsafe ? (node.unsafeTier ?? 0) : null;
-    const isUpgrade = node.modifiers.includes(FunctionModifier.UPGRADE);
+    const isUpgrade = node.messageBusUpgradeRoute === true
+      || node.modifiers.includes(FunctionModifier.UPGRADE);
     const isSelfdestruct = node.modifiers.includes(FunctionModifier.SELFDESTRUCT);
     const isSplit = node.modifiers.includes(FunctionModifier.SPLIT);
     const isMerge = node.modifiers.includes(FunctionModifier.MERGE);
@@ -6130,6 +6132,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
+          this.emitOwnCategoryMutableNftConservation(node);
         } else {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -6154,6 +6157,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
+          this.emitOwnCategoryMutableNftConservation(node);
         } else {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);

@@ -126,6 +126,9 @@ export function encodeAtomicMessageBusCallManifest(callManifest: AtomicMessageBu
   if (version === 1 && requiresV2) {
     throw new Error('messageBus: atomic V1 cannot authenticate a distinct participant output locking bytecode');
   }
+  if (version === 2 && !requiresV2) {
+    throw new Error('messageBus: atomic V2 requires at least one distinct participant output locking bytecode');
+  }
   if (participants.length < 2 || participants.length > ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS) {
     throw new Error(`messageBus: participant count must be in [2, ${ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS}]`);
   }
@@ -245,6 +248,10 @@ export function decodeAtomicMessageBusCallManifest(bytes: Uint8Array): AtomicMes
       trailingUsed, returnOffset,
       ...(version === 2 && { outputLockingBytecode }),
     });
+  }
+  if (version === 2 && !participants.some((participant) =>
+    participant.outputLockingBytecode!.toLowerCase() !== participant.lockingBytecode.toLowerCase())) {
+    throw new Error('messageBus: atomic V2 requires at least one distinct participant output locking bytecode');
   }
   const rowCount = reader.uint(2, 'row count');
   if (rowCount > ATOMIC_MESSAGE_BUS_MAX_ROWS) throw new Error('messageBus: atomic row count is out of range');

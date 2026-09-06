@@ -432,6 +432,15 @@ export function finalizeAtomicInvocationGraph(
   const outputIdentityV2 = plan.participants.some((participant) =>
     participant.outputLockingBytecode !== undefined
     && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
+  if (outputIdentityV2) {
+    const legacy = plan.participants.findIndex((participant) =>
+      !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(2));
+    if (legacy >= 0) {
+      throw new Error(
+        `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 2`,
+      );
+    }
+  }
   const unsupported = plan.participants.find((participant) => {
     const slots = participant.blockLayout!.slots;
     return slots.some((slot) => ![

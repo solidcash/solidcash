@@ -13257,7 +13257,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       );
     const deployWidth = (fn: FunctionDefinitionNode): number => {
       const sites = this.listDeploySiteDataNftCounts(fn.body);
-      return sites.length === 1 ? 1 + sites[0] : 0;
+      return sites.reduce((width, dataNfts) => width + 1 + dataNfts, 0);
     };
     const handlers = contract.functions.filter((fn) => fn.graphEmissionHandler
       && ((fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0
@@ -13811,9 +13811,43 @@ export default class SymbolTableTraversal extends AstTraversal {
       seen.add(n);
       if (n instanceof InstantiationNode && n.referencedContract) {
         const vars = n.referencedContract.stateVariables ?? [];
-        const fromLive = vars.length > 0
-          ? Math.max(...vars.map((sv) => sv.nftIndex ?? 0)) + 1
-          : 0;
+        const commitmentLimit = this.compilerOptions.commitmentLimit ?? 128;
+        let nftIndex = 0;
+        let currentNftUsed = 0;
+        for (const state of vars) {
+          let maxSize = getMaxPushdataEncodedSizeForType(state.type);
+          if (state.isDynamic || isDynamicStorageType(state.type)) {
+            maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
+          }
+          const isolated = state.isolatedNft || state.visibility === StateVariableVisibility.EXTERNAL
+            || (state.isPacked && state.type instanceof ArrayType && state.type.bound === undefined);
+          if (isolated) {
+            if (currentNftUsed > 0) nftIndex += 1;
+            nftIndex += 1;
+            currentNftUsed = 0;
+          } else if (state.type instanceof StructType) {
+            if (currentNftUsed > 0 && currentNftUsed + maxSize > commitmentLimit) nftIndex += 1;
+            // A struct may finish the current NFT when it fits, but it is always the last field in that NFT.
+            nftIndex += 1;
+            currentNftUsed = 0;
+          } else {
+            if (currentNftUsed > 0 && currentNftUsed + maxSize > commitmentLimit) {
+              nftIndex += 1;
+              currentNftUsed = 0;
+            }
+            currentNftUsed += maxSize;
+            if (state.isPacked && state.type instanceof ArrayType) {
+              nftIndex += 1;
+              currentNftUsed = 0;
+            }
+          }
+        }
+        const predicted = vars.length === 0 ? 0 : nftIndex + (currentNftUsed > 0 ? 1 : 0);
+        const published = vars.length > 0 && vars.every((state) => state.nftIndex !== undefined)
+          ? Math.max(...vars.map((state) => state.nftIndex!)) + 1 : 0;
+        // Imported child nodes can carry a preliminary all-zero layout from an earlier partial pass. The
+        // deterministic pack is authoritative until that pass has assigned the wider final geometry.
+        const fromLive = Math.max(published, predicted);
         const dataNfts = Math.max(fromLive, n.deployedDataNftCount ?? 0);
         // Keep Instantiation metadata in sync so ABI deployTargets and layout agree.
         if (dataNfts > 0 && n.isStatefulDeploy) {

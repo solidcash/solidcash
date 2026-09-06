@@ -1072,98 +1072,102 @@ export class AtomicMessageBusComposition {
           candidate.selector === plan.invocations[invocationIndex].selectorHex);
         const sites = handler?.childDeployments ?? [];
         if (sites.length === 0) return [];
-        if (sites.length !== 1 || sites[0].occurrence !== 'once') {
-          throw new Error(`messageBus: invocation ${invocationIndex} has no straight-line single-site deployment form`);
+        if (sites.some((site, index) => site.occurrence !== 'once' || site.siteIndex !== index)) {
+          throw new Error(`messageBus: invocation ${invocationIndex} has no canonical straight-line deployment sequence`);
         }
-        const site = sites[0];
         const deploymentSlot = deploymentSlots[row];
         if (deploymentSlot?.slotIndex === undefined) {
           throw new Error(`messageBus: compiler layout has no deployment slot for selected row ${row}`);
         }
-        const suppliedIndex = suppliedDeployments.findIndex((candidate) =>
-          candidate.invocationIndex === invocationIndex && candidate.siteIndex === site.siteIndex);
-        if (suppliedIndex < 0) {
-          throw new Error(`messageBus: missing child genesis for invocation ${invocationIndex}, site ${site.siteIndex}`);
-        }
-        if (usedDeployments.has(suppliedIndex)) {
-          throw new Error(`messageBus: duplicate child genesis for invocation ${invocationIndex}, site ${site.siteIndex}`);
-        }
-        usedDeployments.add(suppliedIndex);
-        const genesis = funderUtxo(suppliedDeployments[suppliedIndex].funder);
-        if (genesis.vout !== 0 || genesis.token) {
-          throw new Error(
-            `messageBus: child genesis for invocation ${invocationIndex}, site ${site.siteIndex} must be token-free vout 0`,
-          );
-        }
-        const childArtifact = owner._getChild(site.contractName);
-        if (!childArtifact?.stateLayout) {
-          throw new Error(`messageBus: registered stateful child artifact '${site.contractName}' is required`);
-        }
-        if (childArtifact.stateLayout.dataNftCount !== site.dataNftOutputCount) {
-          throw new Error(
-            `messageBus: registered child artifact '${site.contractName}' has deployment state geometry ${childArtifact.stateLayout.dataNftCount}, expected ${site.dataNftOutputCount}`,
-          );
-        }
-        const constructorArgs = site.constructorArgs.map((source) => {
-          if (source.kind !== 'handlerInput') {
-            throw new Error(`messageBus: child constructor expression at site ${site.siteIndex} is not materializable`);
+        let siteOffset = 0;
+        return sites.map((site) => {
+          const offset = deploymentSlot.offset + siteOffset;
+          siteOffset += 1 + site.dataNftOutputCount;
+          const suppliedIndex = suppliedDeployments.findIndex((candidate) =>
+            candidate.invocationIndex === invocationIndex && candidate.siteIndex === site.siteIndex);
+          if (suppliedIndex < 0) {
+            throw new Error(`messageBus: missing child genesis for invocation ${invocationIndex}, site ${site.siteIndex}`);
           }
-          return descriptor.args[source.inputIndex];
-        });
-        let salt: Uint8Array | undefined;
-        if (site.salt?.kind === 'handlerInput') {
-          const value = descriptor.args[site.salt.inputIndex];
-          salt = value instanceof Uint8Array ? value
-            : typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(value)
-              ? hexToBin(value.replace(/^0x/i, '')) : undefined;
-        } else if (site.salt?.kind === 'literal') salt = hexToBin(site.salt.value);
-        else if (site.salt) {
-          throw new Error(`messageBus: child salt expression at site ${site.siteIndex} is not materializable`);
-        }
-        if (site.salt && !salt) throw new Error(`messageBus: invalid child salt at site ${site.siteIndex}`);
-        const effectiveArtifact = {
-          ...childArtifact,
-          bytecode: scriptToAsm(bytecodeToScript(hexToBin(site.creationBytecode))),
-        } as Artifact;
-        // Only contract-level parameters are baked into the locking bytecode. Solidity constructor parameters
-        // live in stateLayout.constructorInputs; admission already requires an empty constructor body, so they
-        // cannot alter the default genesis commitment or the child's address.
-        const bakedConstructorArgs = constructorArgs.slice(0, childArtifact.constructorInputs.length);
-        const child = new Contract(effectiveArtifact, bakedConstructorArgs as never[], {
-          provider,
-          addressType: owner.inner.addressType,
-          category: hexToBin(genesis.txid),
-          ...(salt && { salt }),
-        });
-        const commitments = buildInitialStateCommitments(
-          childArtifact.stateLayout, {}, provider.consensusLimits?.maximumNftCommitmentBytes,
-        );
-        if (commitments.length !== site.dataNftOutputCount) {
-          throw new Error(`messageBus: child deployment site ${site.siteIndex} produced incomplete default state`);
-        }
-        const outputs: Output[] = [{
-          to: addressToLockScript(child.address), amount: 1200n,
-          token: { category: genesis.txid, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-        }];
-        const dataAddress = getDataNftAddress(child, genesis.txid);
-        for (let nftIndex = 0; nftIndex < site.dataNftOutputCount; nftIndex++) {
-          outputs.push({
-            to: dataAddress, amount: 1200n,
-            token: {
-              category: genesis.txid, amount: 0n,
-              nft: { capability: 'mutable', commitment: commitments[nftIndex] },
-            },
+          if (usedDeployments.has(suppliedIndex)) {
+            throw new Error(`messageBus: duplicate child genesis for invocation ${invocationIndex}, site ${site.siteIndex}`);
+          }
+          usedDeployments.add(suppliedIndex);
+          const genesis = funderUtxo(suppliedDeployments[suppliedIndex].funder);
+          if (genesis.vout !== 0 || genesis.token) {
+            throw new Error(
+              `messageBus: child genesis for invocation ${invocationIndex}, site ${site.siteIndex} must be token-free vout 0`,
+            );
+          }
+          const childArtifact = owner._getChild(site.contractName);
+          if (!childArtifact?.stateLayout) {
+            throw new Error(`messageBus: registered stateful child artifact '${site.contractName}' is required`);
+          }
+          if (childArtifact.stateLayout.dataNftCount !== site.dataNftOutputCount) {
+            throw new Error(
+              `messageBus: registered child artifact '${site.contractName}' has deployment state geometry ${childArtifact.stateLayout.dataNftCount}, expected ${site.dataNftOutputCount}`,
+            );
+          }
+          const constructorArgs = site.constructorArgs.map((source) => {
+            if (source.kind !== 'handlerInput') {
+              throw new Error(`messageBus: child constructor expression at site ${site.siteIndex} is not materializable`);
+            }
+            return descriptor.args[source.inputIndex];
           });
-        }
-        return [{
-          participant: participant.participant,
-          invocation: invocationIndex,
-          siteIndex: site.siteIndex,
-          offset: deploymentSlot.offset,
-          slotIndex: deploymentSlot.slotIndex,
-          genesis,
-          outputs,
-        }];
+          let salt: Uint8Array | undefined;
+          if (site.salt?.kind === 'handlerInput') {
+            const value = descriptor.args[site.salt.inputIndex];
+            salt = value instanceof Uint8Array ? value
+              : typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(value)
+                ? hexToBin(value.replace(/^0x/i, '')) : undefined;
+          } else if (site.salt?.kind === 'literal') salt = hexToBin(site.salt.value);
+          else if (site.salt) {
+            throw new Error(`messageBus: child salt expression at site ${site.siteIndex} is not materializable`);
+          }
+          if (site.salt && !salt) throw new Error(`messageBus: invalid child salt at site ${site.siteIndex}`);
+          const effectiveArtifact = {
+            ...childArtifact,
+            bytecode: scriptToAsm(bytecodeToScript(hexToBin(site.creationBytecode))),
+          } as Artifact;
+          // Only contract-level parameters are baked into the locking bytecode. Solidity constructor parameters
+          // live in stateLayout.constructorInputs; admission already requires an empty constructor body, so they
+          // cannot alter the default genesis commitment or the child's address.
+          const bakedConstructorArgs = constructorArgs.slice(0, childArtifact.constructorInputs.length);
+          const child = new Contract(effectiveArtifact, bakedConstructorArgs as never[], {
+            provider,
+            addressType: owner.inner.addressType,
+            category: hexToBin(genesis.txid),
+            ...(salt && { salt }),
+          });
+          const commitments = buildInitialStateCommitments(
+            childArtifact.stateLayout, {}, provider.consensusLimits?.maximumNftCommitmentBytes,
+          );
+          if (commitments.length !== site.dataNftOutputCount) {
+            throw new Error(`messageBus: child deployment site ${site.siteIndex} produced incomplete default state`);
+          }
+          const outputs: Output[] = [{
+            to: addressToLockScript(child.address), amount: 1200n,
+            token: { category: genesis.txid, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+          }];
+          const dataAddress = getDataNftAddress(child, genesis.txid);
+          for (let nftIndex = 0; nftIndex < site.dataNftOutputCount; nftIndex++) {
+            outputs.push({
+              to: dataAddress, amount: 1200n,
+              token: {
+                category: genesis.txid, amount: 0n,
+                nft: { capability: 'mutable', commitment: commitments[nftIndex] },
+              },
+            });
+          }
+          return {
+            participant: participant.participant,
+            invocation: invocationIndex,
+            siteIndex: site.siteIndex,
+            offset,
+            slotOffset: offset,
+            genesis,
+            outputs,
+          };
+        });
       });
     });
     if (usedDeployments.size !== suppliedDeployments.length) {
@@ -1352,7 +1356,7 @@ export class AtomicMessageBusComposition {
         for (const deployment of materializedDeployments.filter((candidate) =>
           candidate.participant === participant.participant)) {
           localCall._withChildDeployment(
-            deployment.slotIndex, deployment.genesis, deployment.outputs,
+            deployment.slotOffset, deployment.genesis, deployment.outputs,
           );
         }
         // A participant probe is built in isolation while its covenant addresses outputs in the final graph's

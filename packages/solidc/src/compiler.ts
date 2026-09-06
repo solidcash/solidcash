@@ -2464,6 +2464,7 @@ function synthesizeMessageBusRoute(
   const graphBareTailHandlers = new Set<FunctionDefinitionNode>();
   const graphMsgValueHandlers = new Set<FunctionDefinitionNode>();
   const kernelDeploymentHandlers = new Set<FunctionDefinitionNode>();
+  const kernelDeploymentSiteCounts = new Map<FunctionDefinitionNode, number>();
   const logicalMsgSenderHandlers = new Set<FunctionDefinitionNode>();
   const localEffectFrameHandlers = new Set<FunctionDefinitionNode>();
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
@@ -3882,6 +3883,8 @@ function synthesizeMessageBusRoute(
               deploymentStateInitializationUnsupported = true;
             }
           });
+          // The closure mutates only the admission accumulators for this synchronous candidate scan.
+          // eslint-disable-next-line @typescript-eslint/no-loop-func
           const nestedDeploy = (value: unknown, nested = false, seen = new WeakSet<object>()): void => {
             if (Array.isArray(value)) { value.forEach((item) => nestedDeploy(item, nested, seen)); return; }
             if (!(value instanceof Node) || seen.has(value)) return;
@@ -3923,10 +3926,13 @@ function synthesizeMessageBusRoute(
           nestedDeploy(candidate.body);
         }
       }
-      const kernelDeploySupported = deploys && deploySites === 1 && !unsupportedInstantiation
+      const kernelDeploySupported = deploys && deploySites >= 1 && !unsupportedInstantiation
         && !deployUnderControlFlow && !deployWithValue && !deploymentStateInitializationUnsupported
         && !deploymentRecipeUnsupported && closureNames.size === 1;
-      if (kernelDeploySupported) kernelDeploymentHandlers.add(fn);
+      if (kernelDeploySupported) {
+        kernelDeploymentHandlers.add(fn);
+        kernelDeploymentSiteCounts.set(fn, deploySites);
+      }
       // Expression keys (including nested `if` / helper-inlined writes), parameter-array loops, literal
       // `new T[](N)` locals (N<=64, unrolled to scalar writes), and canonical counter-keyed `m[i]` / `m[k][i]`
       // pre/post-test loops (hidden `__internal__vmapCounterPerm_*` on the counter key) journal as trailing
@@ -4394,10 +4400,18 @@ function synthesizeMessageBusRoute(
       .filter((parameter) => !parameter.name.startsWith('__internal__'))
       .map((parameter) => parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
-  const kernelDeploymentSelectorCondition = eligible
+  const kernelDeploymentSelectorRegistration = eligible
     .filter((fn) => kernelDeploymentHandlers.has(fn))
-    .map((fn) => `callManifest.slice(rowStart + 10, rowStart + 14) == hex"${selector(fn)}"`)
-    .join(' || ') || 'false';
+    .map((fn) => {
+      const siteCount = kernelDeploymentSiteCounts.get(fn) ?? 0;
+      const pairs = Array.from({ length: siteCount }, (_, siteIndex) =>
+        `activeDeploymentParents = bytes.concat(activeDeploymentParents, toPaddedBytes(row, 2), toPaddedBytes(${siteIndex}, 2));`)
+        .join('\n              ');
+      return `if (callManifest.slice(rowStart + 10, rowStart + 14) == hex"${selector(fn)}") {
+              ${pairs}
+              activeDeploymentInvocations = activeDeploymentInvocations + ${siteCount};
+            }`;
+    }).join('\n            ');
   // The production 10KB profile keeps the compact two-row resource route. Permissive development/compatibility
   // profiles can afford the fully unrolled row band, which is required when one physical collection owner is
   // reached repeatedly through a deeper call DAG (approve -> balanceOf -> transferFrom -> balanceOf).
@@ -5984,9 +5998,8 @@ function synthesizeMessageBusRoute(
             rowConsumers = bytes.concat(rowConsumers, bytes1(consumer));
             rowDepths = bytes.concat(rowDepths, bytes1(depth));
             invocationRows = invocationRows + 1;
-            if (consumer == activeParticipant && (${kernelDeploymentSelectorCondition})) {
-              activeDeploymentParents = bytes.concat(activeDeploymentParents, toPaddedBytes(row, 2));
-              activeDeploymentInvocations = activeDeploymentInvocations + 1;
+            if (consumer == activeParticipant) {
+              ${kernelDeploymentSelectorRegistration}
             }
           } else {
             require((kind == 1 || kind == 2 || kind == 3 || kind == 4 || kind == 5 || kind == 6)
@@ -6181,27 +6194,34 @@ function synthesizeMessageBusRoute(
           }` : ''}
           if (kind == 5 && __message_bus_row_owner == activeParticipant) {
             require(rowSubject.length == 0 && rowArguments.length == 34 && rowResult.length == 0
-              && rowArguments.slice(0, 2) == hex"0000" && rowEffect.length >= 15);
+              && rowEffect.length >= 15);
+            bigint deploymentSite = int(bytes.concat(rowArguments.slice(0, 2), hex"00"));
             bigint expectedDeploymentParentMatches = 0;
             bigint settledDeploymentParentMatches = 0;
             for (bigint deploymentParent = 0; deploymentParent < activeDeploymentParents.length;
-              deploymentParent = deploymentParent + 2) {
+              deploymentParent = deploymentParent + 4) {
               if (int(bytes.concat(activeDeploymentParents.slice(
                 deploymentParent, deploymentParent + 2
-              ), hex"00")) == parent) {
+              ), hex"00")) == parent && int(bytes.concat(activeDeploymentParents.slice(
+                deploymentParent + 2, deploymentParent + 4
+              ), hex"00")) == deploymentSite) {
                 expectedDeploymentParentMatches = expectedDeploymentParentMatches + 1;
               }
             }
             for (bigint deploymentParent = 0; deploymentParent < settledDeploymentParents.length;
-              deploymentParent = deploymentParent + 2) {
+              deploymentParent = deploymentParent + 4) {
               if (int(bytes.concat(settledDeploymentParents.slice(
                 deploymentParent, deploymentParent + 2
-              ), hex"00")) == parent) {
+              ), hex"00")) == parent && int(bytes.concat(settledDeploymentParents.slice(
+                deploymentParent + 2, deploymentParent + 4
+              ), hex"00")) == deploymentSite) {
                 settledDeploymentParentMatches = settledDeploymentParentMatches + 1;
               }
             }
             require(expectedDeploymentParentMatches == 1 && settledDeploymentParentMatches == 0);
-            settledDeploymentParents = bytes.concat(settledDeploymentParents, toPaddedBytes(parent, 2));
+            settledDeploymentParents = bytes.concat(
+              settledDeploymentParents, toPaddedBytes(parent, 2), toPaddedBytes(deploymentSite, 2)
+            );
             activeDeploymentRows = activeDeploymentRows + 1;
             bytes deploymentCategory = rowArguments.slice(2, 34);
             require(tx.inputs[sourceSlot].tokenCategory.length == 0);

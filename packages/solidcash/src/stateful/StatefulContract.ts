@@ -29657,7 +29657,7 @@ export class StatefulFunctionCall {
   private extraOutputs: Output[] = [];
   private extraInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
   private childDeployments: Array<{
-    slotIndex: number; genesisInput: UnlockableUtxo; outputs: readonly Output[];
+    slotOffset: number; genesisInput: UnlockableUtxo; outputs: readonly Output[];
   }> = [];
   private tokenContainerDeposits: Array<{ tokenContainerCategoryId: string; amount: bigint }> = [];
   private manualEvents: Array<{ name: string; args: StateValueType[] }> = [];
@@ -29725,8 +29725,8 @@ export class StatefulFunctionCall {
   }
 
   /** @internal Attach one compiler-published child genesis frame to this prepared route call. */
-  _withChildDeployment(slotIndex: number, genesisInput: UnlockableUtxo, outputs: readonly Output[]): this {
-    this.childDeployments.push({ slotIndex, genesisInput, outputs });
+  _withChildDeployment(slotOffset: number, genesisInput: UnlockableUtxo, outputs: readonly Output[]): this {
+    this.childDeployments.push({ slotOffset, genesisInput, outputs });
     return this;
   }
 
@@ -32164,7 +32164,7 @@ export class StatefulFunctionCall {
 
     builder._restoreMessageBusProbeMasterOutpoint();
     for (const deployment of this.childDeployments) {
-      builder.setChildDeployment(deployment.slotIndex, deployment.genesisInput, deployment.outputs);
+      builder.setChildDeployment(deployment.slotOffset, deployment.genesisInput, deployment.outputs);
     }
     return builder;
   }

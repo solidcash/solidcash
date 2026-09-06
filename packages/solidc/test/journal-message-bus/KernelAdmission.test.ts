@@ -1709,6 +1709,38 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
+  it('publishes every unconditional child site in source order with heterogeneous row geometry', () => {
+    const artifact = compileString(`struct Pair { bool left; bool right; }
+      contract Compact() { bool marker; }
+      contract Wide() { int first; int second; int third; }
+      contract Mixed() { bool lead; Pair tail; }
+      contract Coordinator() {
+        function materialize() public {
+          Compact compact = new Compact();
+          Wide wide = new Wide();
+          Mixed mixed = new Mixed();
+          require(true);
+        }
+      }`, { ...KERNEL, commitmentLimit: 16 });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize');
+    expect(handler).toMatchObject({ eligible: true });
+    expect(handler?.childDeployments).toHaveLength(3);
+    expect(handler?.childDeployments?.map((site) => ({
+      siteIndex: site.siteIndex, contractName: site.contractName, occurrence: site.occurrence,
+    }))).toEqual([
+      { siteIndex: 0, contractName: 'Compact', occurrence: 'once' },
+      { siteIndex: 1, contractName: 'Wide', occurrence: 'once' },
+      { siteIndex: 2, contractName: 'Mixed', occurrence: 'once' },
+    ]);
+    expect(handler!.childDeployments![1].totalOutputCount)
+      .toBeGreaterThan(handler!.childDeployments![0].totalOutputCount);
+    const firstRowDeploymentWidth = artifact.messageBus?.route?.blockLayout?.slots.filter((slot) =>
+      slot.slotIndex === 0 && (slot.kind === 'deploy' || slot.kind === 'deployDataNft')).length;
+    expect(firstRowDeploymentWidth).toBe(handler!.childDeployments!.reduce(
+      (width, site) => width + site.totalOutputCount, 0,
+    ));
+  });
+
   it('keeps unpublished child initialization and address recipes fenced', () => {
     const computed = compileString(`contract Unit(bytes32 seed) { int marker; function configure(int next) public {
         this.marker = next; require(true);

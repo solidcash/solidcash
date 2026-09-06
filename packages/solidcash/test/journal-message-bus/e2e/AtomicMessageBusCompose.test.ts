@@ -337,9 +337,10 @@ const mutateAuthenticatedFrame = (
 };
 
 describe('messageBus.compose atomic transaction', () => {
-  it('materializes two row-selected child genesis frames and rejects hostile genesis/category/commitment', async () => {
+  it('materializes multiple heterogeneous child sites across two rows and rejects hostile genesis data', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`contract Spawn() { int marker; function keep() public { require(true); } }
+      contract WideSpawn() { bytes32 a; bytes32 b; bytes32 c; bytes32 d; bytes32 e; }
       interface ISink { function touch(int next); }
       interface ICoordinator { function materialize(int next); }
       contract Sink() { int marker; function touch(int next) public { this.marker = next; require(true); } }
@@ -349,6 +350,7 @@ describe('messageBus.compose atomic transaction', () => {
         function materialize(int next) public {
           emit Tick(next);
           Spawn child = new Spawn();
+          WideSpawn wideChild = new WideSpawn();
           this.marker = next;
           ISink(sink).touch(next);
           require(true);
@@ -371,13 +373,23 @@ describe('messageBus.compose atomic transaction', () => {
     };
     const sink = await connect(artifacts.Sink);
     const coordinator = (await connect(artifacts.Coordinator, [hexToBin(sink.inner.lockingBytecode)]))
-      .registerChild(artifacts.Spawn);
+      .registerChild(artifacts.Spawn).registerChild(artifacts.WideSpawn);
     const driver = await connect(artifacts.Driver, [hexToBin(coordinator.inner.lockingBytecode)]);
-    expect(artifacts.Coordinator.messageBus?.handlers.find((handler) => handler.name === 'materialize'))
-      .toMatchObject({ eligible: true, childDeployments: [{ occurrence: 'once', siteIndex: 0 }] });
+    const deploymentHandler = artifacts.Coordinator.messageBus?.handlers.find(
+      (handler) => handler.name === 'materialize',
+    );
+    expect(deploymentHandler).toMatchObject({ eligible: true });
+    expect(deploymentHandler?.childDeployments?.map((site) => ({
+      siteIndex: site.siteIndex, occurrence: site.occurrence, contractName: site.contractName,
+    }))).toEqual([
+      { siteIndex: 0, occurrence: 'once', contractName: 'Spawn' },
+      { siteIndex: 1, occurrence: 'once', contractName: 'WideSpawn' },
+    ]);
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const firstGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
     const secondGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const firstWideGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
+    const secondWideGenesis = await createBareP2pkhFeeFunder(provider, 20_000n);
     const build = () => messageBus.compose({
       preparedCalls: [
         { contract: driver, functionName: 'run', args: [] },
@@ -390,7 +402,9 @@ describe('messageBus.compose atomic transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
       childDeployments: [
         { invocationIndex: 1, siteIndex: 0, funder: firstGenesis },
+        { invocationIndex: 1, siteIndex: 1, funder: firstWideGenesis },
         { invocationIndex: 3, siteIndex: 0, funder: secondGenesis },
+        { invocationIndex: 3, siteIndex: 1, funder: secondWideGenesis },
       ],
     }).build();
     const canonical = await build();
@@ -414,9 +428,46 @@ describe('messageBus.compose atomic transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
       childDeployments: [
         { invocationIndex: 1, siteIndex: 0, funder: { ...firstGenesis, utxo: { ...firstGenesis.utxo, vout: 1 } } },
+        { invocationIndex: 1, siteIndex: 1, funder: firstWideGenesis },
         { invocationIndex: 3, siteIndex: 0, funder: secondGenesis },
+        { invocationIndex: 3, siteIndex: 1, funder: secondWideGenesis },
       ],
     }).build()).rejects.toThrow(/token-free vout 0/);
+
+    await expect(messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [] },
+        { contract: coordinator, functionName: 'materialize', args: [1n] },
+        { contract: sink, functionName: 'touch', args: [1n] },
+        { contract: coordinator, functionName: 'materialize', args: [2n] },
+        { contract: sink, functionName: 'touch', args: [2n] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [
+        { invocationIndex: 1, siteIndex: 0, funder: firstGenesis },
+        { invocationIndex: 3, siteIndex: 0, funder: secondGenesis },
+        { invocationIndex: 3, siteIndex: 1, funder: secondWideGenesis },
+      ],
+    }).build()).rejects.toThrow(/missing child genesis.*site 1/);
+
+    await expect(messageBus.compose({
+      preparedCalls: [
+        { contract: driver, functionName: 'run', args: [] },
+        { contract: coordinator, functionName: 'materialize', args: [1n] },
+        { contract: sink, functionName: 'touch', args: [1n] },
+        { contract: coordinator, functionName: 'materialize', args: [2n] },
+        { contract: sink, functionName: 'touch', args: [2n] },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+      childDeployments: [
+        { invocationIndex: 1, siteIndex: 0, funder: firstGenesis },
+        { invocationIndex: 1, siteIndex: 1, funder: firstGenesis },
+        { invocationIndex: 3, siteIndex: 0, funder: secondGenesis },
+        { invocationIndex: 3, siteIndex: 1, funder: secondWideGenesis },
+      ],
+    }).build()).rejects.toThrow(/genesis outpoints must be unique/);
 
     const wrongCategory = await build();
     wrongCategory.outputs[childDataIndices[0]].token!.category = 'ab'.repeat(32);

@@ -1743,7 +1743,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X29. An effect-carrying graph emission handler runs as ONE OP_INVOKE subroutine shared by every dispatch
     // site, so its event / transfer output index is not a compile-time constant: the route reserved one frame
     // per site and pushes the site ordinal as hidden context. Resolve against that frame instead.
-    if (kind === 'deploy' && this.emitGraphDeployInputIndex(locationData)) return;
+    if (kind === 'deploy' && this.emitGraphDeployInputIndex(slotIndex ?? 0, locationData)) return;
     if (this.emitGraphEffectSlotIndex(kind, slotIndex, locationData)) return;
     let offset = this.getBlockSlotOffset(kind, slotIndex);
     // The 'deploy' slot is read as an INPUT index (the child genesis funding input). Output-only slots
@@ -1778,7 +1778,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Push the vout-0 genesis input owned by the current kernel row. */
-  private emitGraphDeployInputIndex(locationData: SingleLocationData): boolean {
+  private emitGraphDeployInputIndex(deployIndex: number, locationData: SingleLocationData): boolean {
     const frame = this.currentFunction.graphEffectFrame;
     if (!frame || !this.currentFunction.graphEmissionHandler || (frame.deployWidth ?? 0) === 0) return false;
     const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE
@@ -1790,7 +1790,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(width)), locationData);
       this.emit(Op.OP_MUL, locationData);
     }
-    const inputOffset = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0);
+    const siteOffset = this.pendingDeploys.slice(0, deployIndex).reduce(
+      (offset, deploy) => offset + 1 + deploy.node.deployedDataNftCount, 0,
+    );
+    const inputOffset = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0) + siteOffset;
     if (inputOffset > 0) {
       this.emit(encodeInt(BigInt(inputOffset)), locationData);
       this.emit(Op.OP_ADD, locationData);

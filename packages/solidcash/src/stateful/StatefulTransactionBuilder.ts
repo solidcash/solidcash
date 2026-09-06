@@ -4912,13 +4912,13 @@ export class StatefulTransactionBuilder {
 
   /** Materialize one compiler-published child genesis frame at its row/site slot. */
   setChildDeployment(
-    slotIndex: number, genesisInput: UnlockableUtxo, outputs: readonly Output[],
+    slotOffset: number, genesisInput: UnlockableUtxo, outputs: readonly Output[],
   ): this {
     if (genesisInput.vout !== 0 || genesisInput.token) {
-      throw new Error(`Child deployment slot ${slotIndex} requires a token-free vout-0 genesis input`);
+      throw new Error(`Child deployment slot ${slotOffset} requires a token-free vout-0 genesis input`);
     }
-    this.childDeploymentInputs.set(slotIndex, genesisInput);
-    this.childDeploymentOutputs.set(slotIndex, outputs.map((output) => ({ ...output })));
+    this.childDeploymentInputs.set(slotOffset, genesisInput);
+    this.childDeploymentOutputs.set(slotOffset, outputs.map((output) => ({ ...output })));
     this._refreshInputs();
     return this;
   }
@@ -5058,13 +5058,13 @@ export class StatefulTransactionBuilder {
               }
             } else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
-          case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent': case 'deployDataNft': {
+          case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent': {
             const f = funderPool.shift();
             if (f) positioned[slot.offset] = f;
             break;
           }
-          case 'deploy': {
-            const supplied = slot.slotIndex === undefined ? undefined : this.childDeploymentInputs.get(slot.slotIndex);
+          case 'deploy': case 'deployDataNft': {
+            const supplied = this.childDeploymentInputs.get(slot.offset);
             const reserved = funderPool.shift();
             const f = supplied ?? reserved;
             if (f) positioned[slot.offset] = f;
@@ -12944,15 +12944,19 @@ export class StatefulTransactionBuilder {
       while (builder.outputs.length < slot.offset) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
       }
-      const expected = 1 + (this.blockLayout?.slots.filter((candidate) =>
+      const frameWidth = 1 + (this.blockLayout?.slots.filter((candidate) =>
         candidate.kind === 'deployDataNft' && candidate.slotIndex === slot.slotIndex).length ?? 0);
-      const outputs = slot.slotIndex === undefined ? undefined : this.childDeploymentOutputs.get(slot.slotIndex);
-      if (outputs && outputs.length !== expected) {
-        throw new Error(`Child deployment slot ${slot.slotIndex} provides ${outputs.length} outputs; expected ${expected}`);
+      const frameEnd = slot.offset + frameWidth;
+      for (let offset = slot.offset; offset < frameEnd;) {
+        const outputs = this.childDeploymentOutputs.get(offset);
+        if (outputs && offset + outputs.length > frameEnd) {
+          throw new Error(`Child deployment slot ${offset} exceeds its compiler-owned row frame`);
+        }
+        for (const output of outputs ?? [{
+          to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS,
+        }]) builder.addOutput(output);
+        offset += outputs?.length ?? 1;
       }
-      for (const output of outputs ?? Array.from({ length: expected }, () => ({
-        to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS,
-      }))) builder.addOutput(output);
     }
 
     // Iteration entry outputs (read-only co-spent chunks / collection-iter entries) come FIRST in the trailing

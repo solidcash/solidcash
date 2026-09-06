@@ -3675,7 +3675,11 @@ function synthesizeMessageBusRoute(
             : admitExternalHandlers
               ? undefined : 'external-handler-route-generation-unsupported';
     if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
-    else if (!reason && foreignOutStatePrecedesSharedCall(fn))
+    // A kernel graph binds every participant's physical input and final settlement boundary in the atomic
+    // manifest. An outState read therefore names the same authenticated final output whether its source
+    // expression appears before or after the typed call sharing that participant. Legacy routes lack that
+    // graph-wide settlement table and retain the ordering fence.
+    else if (!reason && compilerOptions.messageBusKernel !== true && foreignOutStatePrecedesSharedCall(fn))
       reason = 'foreign-outstate-read-precedes-shared-call-settlement';
     // A transaction-signature *parameter* cannot be placed inside the message-bus envelope: it commits the
     // transaction containing that envelope, while the envelope would in turn commit the signature. The kernel

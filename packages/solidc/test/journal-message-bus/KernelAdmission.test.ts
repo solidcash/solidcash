@@ -14,6 +14,46 @@ ReturnType<typeof compileString>['messageBus']
 };
 
 describe('required kernel admission', () => {
+  it('admits a pre-call outState projection from the graph-authenticated final settlement', () => {
+    const artifact = compileString(`
+      interface IRegister {
+        public int value;
+        function store(int next);
+      }
+      contract Coordinator() {
+        function compareThenStore(address target, int next) public {
+          int projected = IRegister(target).outState.value;
+          require(projected == next);
+          IRegister(target).store(next);
+          require(true);
+        }
+        function control() public { require(true); }
+      }
+    `, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'compareThenStore'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'compareThenStore')?.externalOutStateReads)
+      .toEqual([expect.objectContaining({ interfaceName: 'IRegister', addressParam: 'target' })]);
+
+    const legacy = compileString(`
+      interface IRegister { public int value; function store(int next); }
+      contract Coordinator() {
+        function compareThenStore(address target, int next) public {
+          int projected = IRegister(target).outState.value;
+          require(projected == next);
+          IRegister(target).store(next);
+          require(true);
+        }
+        function control() public { require(true); }
+      }
+    `, { forceStateful: true, messageBus: true, messageBusKernel: false });
+    expect(legacy.messageBus?.handlers.find((handler) => handler.name === 'compareThenStore'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'foreign-outstate-read-precedes-shared-call-settlement',
+      });
+  });
+
   it('keeps source ABI selectors stable after injecting sorted-map witnesses', () => {
     const artifact = compileString(`contract C() {
       mapping(bigint => bigint) values;
@@ -618,7 +658,8 @@ describe('required kernel admission', () => {
   it.each([
     ['a non-unit recursive step', 'this.values[n] = n;', 'return sum(n - 2);'],
     ['a recursive result continuation', 'this.values[n] = n;', 'return n + sum(n - 1);'],
-    ['a conditional recursive write', 'if (n > 1) { this.values[n] = n; }', 'return sum(n - 1);'],
+    ['a state-dependent conditional recursive write',
+      'if (this.values[n] > 1) { this.values[n] = n; }', 'return sum(n - 1);'],
   ])('keeps %s outside affine recursive mapping streams', (_label, write, recursiveReturn) => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;

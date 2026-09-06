@@ -2385,6 +2385,13 @@ describe('kernel loop message-bus compose', () => {
       expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })),
         `input ${inputIndex}`).toBe(true);
     }
+    const routeInputIndex = builder.inputs.findIndex((input) =>
+      'abiFunction' in input.unlocker && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+    expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+    const hostileTransaction = { ...transaction, version: 1 };
+    expect(vm.stateSuccess(vm.evaluate({
+      inputIndex: routeInputIndex, sourceOutputs, transaction: hostileTransaction,
+    }))).not.toBe(true);
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);
 

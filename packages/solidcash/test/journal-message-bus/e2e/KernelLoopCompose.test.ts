@@ -5437,6 +5437,9 @@ describe('kernel composite counter-key settlement', () => {
         right[0] = b;
         left[0] = right[0] + a;
       }
+      function copyLength(int[] memory left, int[] memory right) internal pure {
+        left[0] = right.length;
+      }
       function write(int n, int a, int b) public {
         int[] memory left = new int[](n);
         int[] memory right = new int[](n);
@@ -5458,6 +5461,13 @@ describe('kernel composite counter-key settlement', () => {
         }
         require(true);
       }
+      function writeLength(int n) public {
+        int[] memory left = new int[](n);
+        int[] memory right = new int[](n);
+        copyLength(left, right);
+        for (int i = 0; i < n; i = i + 1) { this.leftSlots[left[i]] = i + 50; }
+        require(true);
+      }
       function checkLeft(int key, int expected) public { require(this.leftSlots[key] == expected); }
       function checkRight(int key, int expected) public { require(this.rightSlots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
@@ -5472,9 +5482,12 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.batch([{ function: 'writeDirect', args: [2n, 900n, 1000n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.batch([{ function: 'writeLength', args: [2n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.checkLeft(1500n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1900n, 30n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(0n, 31n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(2n, 50n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(0n, 51n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(800n, 20n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(1000n, 40n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(0n, 41n).send()).resolves.toBeDefined();

@@ -1120,6 +1120,9 @@ describe('required kernel admission', () => {
         right[0] = 9;
         left[0] = right[0];
       }
+      function copyLength(int[] memory left, int[] memory right) internal pure {
+        left[0] = right.length;
+      }
       function write(int n, int a, int b) public {
         int[] memory left = new int[](n);
         int[] memory right = new int[](n);
@@ -1154,6 +1157,13 @@ describe('required kernel admission', () => {
         }
         require(true);
       }
+      function lengthRead(int n) public {
+        int[] memory left = new int[](n);
+        int[] memory right = new int[](n);
+        copyLength(left, right);
+        for (int i = 0; i < n; i = i + 1) { this.leftSlots[left[i]] = i; }
+        require(true);
+      }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
@@ -1167,6 +1177,8 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'crossRead'))
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'direct'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'lengthRead'))
       .toMatchObject({ eligible: true });
   });
 

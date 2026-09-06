@@ -5356,6 +5356,12 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               access.index = index;
               return symbolicRead(access, plan);
             }
+            if (candidate instanceof UnaryOpNode && candidate.operator === UnaryOperator.SIZE
+              && candidate.expression instanceof IdentifierNode
+              && arrayNames.has(candidate.expression.name)) {
+              const plan = helperPlans.get(candidate.expression.name);
+              return plan ? cloneNode(plan.length) as ExpressionNode : undefined;
+            }
             if (candidate instanceof FieldAccessNode && candidate.name === 'length'
               && candidate.expression instanceof IdentifierNode
               && arrayNames.has(candidate.expression.name)) {

@@ -2,7 +2,7 @@ import {
   ArrayAccessNode, ArrayPopNode, ArrayPushNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode,
   BranchNode, BreakNode, ContractNode,
   DeleteStateNode, DoWhileNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IdentifierNode,
-  ExpressionNode, MappingAssignNode, MappingFieldAssignNode,
+  ExpressionNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
   NewArrayNode, Node, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
   StateAccessNode, StateAssignNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
@@ -133,6 +133,11 @@ export default class LowerTailRecursion extends AstTraversal {
     for (const unordered of groups) {
       const group = functions.filter((fn) => unordered.includes(fn));
       const names = new Set(group.map((fn) => fn.name));
+      // A recursive call in the conditional RHS is still tail-positioned, but only on the path which reaches it.
+      // Spell that source short circuit as ordinary control flow before fold recognition so the row loop never
+      // turns a skipped recursive operand into an unconditional iteration. The recursive-LHS form needs a deferred
+      // continuation environment and deliberately remains outside this normalization.
+      for (const fn of group) this.normalizeRightShortCircuitReturns(fn.body!, names);
       const first = group[0];
       const sameFrame = group.every((fn) => fn.body
         && fn.customModifiers.length === 0
@@ -282,7 +287,6 @@ export default class LowerTailRecursion extends AstTraversal {
     };
     const persistentEffects = new Set([
       'StateArrayPushNode', 'StateArrayPopNode', 'StateArrayAssignNode', 'StateArrayDeleteNode',
-      'MappingDeleteNode',
       'EmitStatementNode', 'ExternalFunctionCallNode', 'LowLevelCallNode',
       'LowLevelCallStatementNode', 'TransferStatementNode', 'AddressTransferStatementNode',
       'AddressSendExpressionNode', 'TokenContainerMethodStatementNode', 'SelfdestructStatementNode',
@@ -294,7 +298,8 @@ export default class LowerTailRecursion extends AstTraversal {
         if (candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode) {
           if (!this.scalarStateNames.has(candidate.name)) valid = false;
           else scalarStateWrites.add(candidate.name);
-        } else if (candidate instanceof MappingAssignNode || candidate instanceof MappingFieldAssignNode) {
+        } else if (candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode
+          || candidate instanceof MappingFieldAssignNode) {
           writesMapping = true;
           if (!candidate.keys.every((key) => stableMappingKey(key, invariantParameters.get(fn)!))) valid = false;
         } else if (persistentEffects.has(candidate.constructor.name)) valid = false;
@@ -480,6 +485,49 @@ export default class LowerTailRecursion extends AstTraversal {
       }
     }
     return count;
+  }
+
+  /**
+   * Normalize `return guard && recur(...)` / `return guard || recur(...)` to branches. The right side may itself
+   * contain another right-recursive short-circuit spine, so normalize the selected return recursively. This is
+   * source-equivalent for arbitrary guards: the guard is evaluated exactly once and the recursive expression is
+   * reached only on the same path as Solidity's short-circuit evaluation.
+   */
+  private normalizeRightShortCircuitReturns(block: BlockNode, names: ReadonlySet<string>): void {
+    block.statements = (block.statements ?? []).map((statement) => {
+      if (statement instanceof ReturnNode && statement.expressions.length === 1) {
+        return this.normalizeRightShortCircuitReturn(statement, names);
+      }
+      if (statement instanceof BranchNode) {
+        this.normalizeRightShortCircuitReturns(statement.ifBlock, names);
+        if (statement.elseBlock) this.normalizeRightShortCircuitReturns(statement.elseBlock, names);
+      } else if (statement instanceof BlockNode) {
+        this.normalizeRightShortCircuitReturns(statement, names);
+      }
+      return statement;
+    });
+  }
+
+  private normalizeRightShortCircuitReturn(
+    statement: ReturnNode, names: ReadonlySet<string>,
+  ): StatementNode {
+    const expression = statement.expressions[0];
+    if (!(expression instanceof BinaryOpNode)
+      || (expression.operator !== BinaryOperator.AND && expression.operator !== BinaryOperator.OR)
+      || this.countGroupCalls(expression.left, names) !== 0
+      || this.countGroupCalls(expression.right, names) !== 1) return statement;
+
+    const rightReturn = this.stamp(new ReturnNode([expression.right]), statement.location);
+    const normalizedRight = this.normalizeRightShortCircuitReturn(rightReturn, names);
+    const constant = this.stamp(new BoolLiteralNode(expression.operator === BinaryOperator.OR), statement.location);
+    const constantReturn = this.stamp(new ReturnNode([constant]), statement.location);
+    const ifStatement = expression.operator === BinaryOperator.AND ? normalizedRight : constantReturn;
+    const elseStatement = expression.operator === BinaryOperator.AND ? constantReturn : normalizedRight;
+    return this.stamp(new BranchNode(
+      expression.left,
+      this.stamp(new BlockNode([ifStatement]), statement.location),
+      this.stamp(new BlockNode([elseStatement]), statement.location),
+    ), statement.location);
   }
 
   private groupCallsHaveArity(node: Node, names: ReadonlySet<string>, arity: number): boolean {
@@ -694,8 +742,10 @@ export default class LowerTailRecursion extends AstTraversal {
     const returnNames = unnamedResults
       ? node.returnTypes.map((_type, index) => `__tail_result_${frame}_${index}`)
       : node.returnNames;
-    const selfCalls = this.countSelfCalls(node.body, node.name);
     const selfNames = new Set([node.name]);
+    const sourceSelfCalls = this.countSelfCalls(node.body, node.name);
+    if (sourceSelfCalls > 0) this.normalizeRightShortCircuitReturns(node.body, selfNames);
+    const selfCalls = this.countSelfCalls(node.body, node.name);
     const fold = selfCalls > 0 ? this.recursiveFoldShape([node], selfNames) : undefined;
     if (selfCalls === 0 || !this.selfCallsHaveArity(node.body, node.name, node.parameters.length)
       || !this.baseReturnsHaveArity(node.body, node.name, node.returnTypes.length, namedResults)

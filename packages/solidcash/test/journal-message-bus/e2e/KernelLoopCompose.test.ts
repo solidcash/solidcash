@@ -13,7 +13,7 @@ import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/
 import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';
 import {
-  getEntryNftAddress, getSatoshiContainerAddress, getTokenContainerAddress,
+  getEntryNftAddress, getSatoshiContainerAddress, getTokenContainerAddress, getValueChunkAddress,
 } from '../../../src/stateful/covenant-helpers.js';
 import {
   createBareP2pkhFeeFunder, createTestProvider, genesisFtContainer, setupStatefulUtxos,
@@ -1515,6 +1515,48 @@ describe('kernel loop message-bus compose', () => {
     await expect(StatefulContract.withCategory(inner, categoryId).getState()).resolves.toMatchObject({ calls: 5n });
   }, 180_000);
 
+  it.each([
+    ['AND', 'guard && step(remaining - 1, false)', true, false],
+    ['OR', 'guard || step(remaining - 1, true)', false, true],
+    ['nested AND/OR', 'guard && (remaining == 1 || step(remaining - 1, false))', true, false],
+  ] as const)('preserves skipped recursive frames behind a right-side %s guard', async (
+    _label, recursiveExpression, initialGuard, expected,
+  ) => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelGuardedTailRecursion() {
+      int calls;
+      bool result;
+      function step(int remaining, bool guard) internal returns (bool) {
+        this.calls = this.calls + 1;
+        if (remaining == 0) return !guard;
+        return ${recursiveExpression};
+      }
+      function run(int remaining, bool guard) public {
+        this.result = step(remaining, guard);
+        require(true);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBeUndefined();
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { calls: 0n, result: false }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const call = contract.batch([{ function: 'run', args: [3n, initialGuard] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.getState()).resolves.toMatchObject({ calls: 2n, result: expected });
+  }, 180_000);
+
   it('executes resource-free non-tail recursion through one row', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`contract KernelPureRecursion() {
@@ -1822,6 +1864,162 @@ describe('kernel loop message-bus compose', () => {
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(StatefulContract.withCategory(inner, categoryId).call.check(7n, 4n, 10n).send())
       .resolves.toBeDefined();
+  }, 180_000);
+
+  it('executes and conditionally skips an invariant-key mapping delete in a recursion fold', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelInvariantEntryRecursiveDelete() {
+      mapping(int => int) values;
+      int result;
+      function seed(int key, int value) public {
+        this.values[key] = value;
+        require(true);
+      }
+      function clear(int remaining, int key, bool enabled) internal returns (int) {
+        if (enabled) delete this.values[key];
+        if (remaining == 0) return this.values[key];
+        return remaining + clear(remaining - 1, key, enabled);
+      }
+      function run(int remaining, int key, bool enabled) public {
+        this.result = clear(remaining, key, enabled);
+        require(true);
+      }
+      function check(int key, int expectedEntry, int expectedResult) public {
+        require(this.values[key] == expectedEntry && this.result == expectedResult);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const run = artifact.abi.find((entry) => entry.name === 'run');
+    expect(run?.entryAccesses).toContainEqual(expect.objectContaining({
+      collection: 'values', operations: ['read', 'write'],
+    }));
+    expect(run?.sortedUpsertLoopInfo).toBeUndefined();
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { result: 0n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.call.seed(7n, 9n).send()).resolves.toBeDefined();
+
+    await expect(contract.batch([{ function: 'run', args: [3n, 7n, false] }]).send())
+      .resolves.toBeDefined();
+    await expect(StatefulContract.withCategory(inner, categoryId).call.check(7n, 9n, 15n).send())
+      .resolves.toBeDefined();
+
+    const call = StatefulContract.withCategory(inner, categoryId)
+      .batch([{ function: 'run', args: [3n, 7n, true] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.check(7n, 0n, 6n).send())
+      .resolves.toBeDefined();
+  }, 180_000);
+
+  it('writes a typed struct default for an invariant-key mapping delete in a recursion fold', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelInvariantStructEntryRecursiveDelete() {
+      struct Record { int value; bool active; }
+      mapping(int => Record) records;
+      int result;
+      function seed(int key, int value, bool active) public {
+        this.records[key] = Record(value, active);
+        require(true);
+      }
+      function clear(int remaining, int key) internal returns (int) {
+        delete this.records[key];
+        if (remaining == 0) return this.records[key].value;
+        return remaining + clear(remaining - 1, key);
+      }
+      function run(int remaining, int key) public {
+        this.result = clear(remaining, key);
+        require(true);
+      }
+      function check(int key, int expectedResult) public {
+        require(this.records[key].value == 0 && !this.records[key].active
+          && this.result == expectedResult);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { result: 0n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.call.seed(11n, 27n, true).send()).resolves.toBeDefined();
+
+    const call = contract.batch([{ function: 'run', args: [3n, 11n] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.check(11n, 6n).send())
+      .resolves.toBeDefined();
+  }, 180_000);
+
+  it('cleans up multi-chunk bytes for an invariant-key mapping delete in a recursion fold', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(`contract KernelInvariantBytesEntryRecursiveDelete() {
+      mapping(int => bytes) payloads;
+      int result;
+      function seed(int key, bytes value) public {
+        this.payloads[key] = value;
+        require(true);
+      }
+      function clear(int remaining, int key) internal returns (int) {
+        delete this.payloads[key];
+        if (remaining == 0) return this.payloads[key].length;
+        return remaining + clear(remaining - 1, key);
+      }
+      function run(int remaining, int key) public {
+        this.result = clear(remaining, key);
+        require(true);
+      }
+      function check(int key, int expectedResult) public {
+        require(this.payloads[key].length == 0 && this.result == expectedResult);
+      }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, { result: 0n }, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    const key = 13n;
+    const value = hexToBin('a7'.repeat(300));
+    await expect(contract.call.seed(key, value).send()).resolves.toBeDefined();
+
+    const slot = keyToSlotMulti([bigIntToVmNumber(key)]);
+    const oldChunkAddress = getValueChunkAddress(inner, categoryId, 'payloads', slot, sha256.hash(value));
+    const oldChunks = await provider.getUtxos(oldChunkAddress);
+    expect(oldChunks.length).toBeGreaterThan(1);
+
+    const call = contract.batch([{ function: 'run', args: [3n, key] }]);
+    const builder = await call.build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
+        .toBe(true);
+    }
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(StatefulContract.withCategory(inner, categoryId).call.check(key, 6n).send())
+      .resolves.toBeDefined();
+    expect(await provider.getUtxos(oldChunkAddress)).toHaveLength(0);
   }, 180_000);
 
   it('executes an invariant mapping-field update in a recursion fold', async () => {

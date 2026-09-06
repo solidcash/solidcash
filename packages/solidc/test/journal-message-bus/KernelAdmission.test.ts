@@ -441,13 +441,53 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((entry) => entry.name === 'sum')?.recursiveStateHandler).toBeUndefined();
   });
 
-  it('keeps an invariant-key mapping delete out of recursion-fold lowering', () => {
+  it('lowers an invariant-key mapping delete in a recursion fold', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       function sum(int n, int key) public returns (int) {
         delete this.values[key];
         if (n == 0) return 0;
         return n + sum(n - 1, key);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    const sum = artifact.abi.find((entry) => entry.name === 'sum');
+    expect(sum?.recursiveStateHandler).toBeUndefined();
+    expect(sum?.entryAccesses).toContainEqual(expect.objectContaining({
+      collection: 'values', operations: ['read', 'write'],
+    }));
+    expect(sum?.entryAccesses?.find((entry) => entry.collection === 'values')?.inLoop).not.toBe(true);
+    expect(sum?.sortedUpsertLoopInfo).toBeUndefined();
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('lowers an invariant nested-mapping delete in a recursion fold', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) values;
+      function sum(int n, int group, int key) public returns (int) {
+        delete this.values[group][key];
+        if (n == 0) return this.values[group][key];
+        return n + sum(n - 1, group, key);
+      }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'sum')?.entryAccesses)
+      .toContainEqual(expect.objectContaining({
+        collection: 'values', operations: ['read', 'write'],
+      }));
+  });
+
+  it('keeps a varying-key mapping delete out of recursion-fold lowering', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      function sum(int n) public returns (int) {
+        delete this.values[n];
+        if (n == 0) return 0;
+        return n + sum(n - 1);
       }
       function control() public { require(true); }
     }`, KERNEL);
@@ -576,6 +616,57 @@ describe('required kernel admission', () => {
       function right(int n) internal pure returns (bool) {
         if (n == 0) return true;
         return false && left(n - 1);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'left')?.recursiveStateHandler).toBeUndefined();
+  });
+
+  it('lowers a true OR guard without executing its recursive right operand', () => {
+    const artifact = compileString(`contract C() {
+      function left(int n) public pure returns (bool) {
+        if (n == 0) return false;
+        return true || right(n - 1);
+      }
+      function right(int n) internal pure returns (bool) {
+        if (n == 0) return false;
+        return true || left(n - 1);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'left')?.recursiveStateHandler).toBeUndefined();
+  });
+
+  it('lowers a nested right-recursive short-circuit spine', () => {
+    const artifact = compileString(`contract C() {
+      function left(int n) public pure returns (bool) {
+        if (n == 0) return false;
+        return n > 1 && (n == 2 || right(n - 1));
+      }
+      function right(int n) internal pure returns (bool) {
+        if (n == 0) return false;
+        return n > 1 && (n == 2 || left(n - 1));
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'left'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((entry) => entry.name === 'left')?.recursiveStateHandler).toBeUndefined();
+  });
+
+  it('keeps a recursive-left short-circuit continuation on the recursive-state path', () => {
+    const artifact = compileString(`contract C() {
+      function left(int n) public pure returns (bool) {
+        if (n == 0) return true;
+        return right(n - 1) && false;
+      }
+      function right(int n) internal pure returns (bool) {
+        if (n == 0) return true;
+        return left(n - 1) && false;
       }
       function control() public { require(true); }
     }`, KERNEL);

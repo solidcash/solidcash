@@ -40,6 +40,7 @@ import { NullaryOperator } from '../ast/Operator.js';
 import { MappingType, ArrayType, StructType, Type, PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { createDefaultValueExpression } from '../ast/defaults.js';
 
 const PREFIX = '__vmapcache_';
 /** Compiler-owned immutable locals which preserve a mapping key's value at a source-order boundary. */
@@ -229,7 +230,7 @@ type ScalarMappingInfo = { valueType: Type; depth: number };
  * Runs pre-semantic so the redirected accesses resolve as a local array (after DesugarReturnInLoop, so in-loop
  * returns are already flag+break). Restricted to be SOUND: single-key array-valued mapping, key `k` a simple
  * identifier NOT reassigned in the function (else the entry differs - the per-iteration sorted-insert case, left to
- * fail closed), and no whole-entry assign / delete of that entry (only element / push / pop writes + reads).
+ * fail closed), and no whole-entry assignment of that entry (only delete / element / push / pop writes + reads).
  */
 export default class CacheMappingEntryInLoop extends AstTraversal {
   private arrayMappings: Map<string, Type> = new Map(); // single-key array-valued mapping name -> array value type
@@ -384,12 +385,19 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       }
       if (n instanceof MappingDeleteNode && this.arrayMappings.has(n.name)) {
         const elementType = (this.arrayMappings.get(n.name) as ArrayType).elementType;
-        const e = get(n.name, n.keys[0], !(elementType instanceof StructType)); if (e) e.bad = true;
+        const e = n.keys.length === 1
+          ? get(n.name, n.keys[0], !(elementType instanceof StructType)) : null;
+        if (e) {
+          e.fromModifier ??= n.fromModifier;
+          e.count += 1;
+          e.written = true;
+          if (inLoop) e.inLoop = true;
+        }
       }
       // Scalar vmap mapping: a WHOLE-entry write `m[k] = expr` (an RMW `m[k] -= v` desugars to this) to an INVARIANT
-      // key (identifier or msg.sender/tx.origin) is the cacheable form (read once -> mutate local -> one upsert). A
-      // delete marks it bad (needs nullify, not a plain reassign). Any array-op on a scalar mapping should not occur;
-      // if it does, mark bad (be safe).
+      // key (identifier or msg.sender/tx.origin) is the cacheable form (read once -> mutate local -> one upsert).
+      // A delete is an assignment of the type default and uses the same cache-local mutation + one-upsert flush.
+      // Any array-op on a scalar mapping should not occur; if it does, mark bad (be safe).
       if (n instanceof MappingAssignNode && this.scalarMappings.has(n.name)) {
         const mapping = this.scalarMappings.get(n.name)!;
         const e = n.keys.length === mapping.depth ? get(n.name, n.keys, true) : null;
@@ -407,10 +415,24 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       if (n instanceof MappingDeleteNode && this.scalarMappings.has(n.name)) {
         const mapping = this.scalarMappings.get(n.name)!;
         const e = n.keys.length === mapping.depth ? get(n.name, n.keys, true) : null;
-        if (e) e.bad = true;
+        if (e) {
+          e.fromModifier ??= n.fromModifier;
+          e.count += 1;
+          e.written = true;
+          if (inLoop) e.inLoop = true;
+        }
       }
       if (n instanceof MappingFieldAssignNode && this.structMappings.has(n.name)) {
         const e = get(n.name, n.keys[0]);
+        if (e) {
+          e.fromModifier ??= n.fromModifier;
+          e.count += 1;
+          e.written = true;
+          if (inLoop) e.inLoop = true;
+        }
+      }
+      if (n instanceof MappingDeleteNode && this.structMappings.has(n.name)) {
+        const e = n.keys.length === 1 ? get(n.name, n.keys[0]) : null;
         if (e) {
           e.fromModifier ??= n.fromModifier;
           e.count += 1;
@@ -653,6 +675,20 @@ class EntryRedirect extends AstTraversal {
       return this.withDirty(asgn, visited.location);
     }
     return visited;
+  }
+
+  visitMappingDelete(node: MappingDeleteNode): Node {
+    const visited = super.visitMappingDelete(node) as MappingDeleteNode;
+    if (!(visited instanceof MappingDeleteNode)
+      || visited.keys.length !== this.keys.length
+      || !this.matches(visited.name, visited.keys)) return visited;
+    const local = new IdentifierNode(this.local);
+    local.location = visited.location;
+    const write = new AssignNode(
+      local, createDefaultValueExpression(this.valueType, visited.location),
+    );
+    write.location = visited.location;
+    return this.withDirty(write, visited.location);
   }
 
   visitMappingFieldAssign(node: MappingFieldAssignNode): Node {

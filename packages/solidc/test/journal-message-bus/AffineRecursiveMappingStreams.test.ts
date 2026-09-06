@@ -1,0 +1,57 @@
+import { describe, expect, it } from 'vitest';
+import { compileString } from '../../src/compiler.js';
+
+const KERNEL = {
+  forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
+} as const;
+
+describe('affine recursive mapping streams', () => {
+  it('lowers source-ordered sets and deletes across independent collections', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) left;
+      mapping(int => int) right;
+      mapping(int => int) finalValues;
+      function apply(int cursor) public returns (int) {
+        this.left[cursor] = cursor;
+        delete this.right[cursor + 2];
+        this.finalValues[cursor - 1] = cursor + 10;
+        if (cursor == 0) return 0;
+        return apply(cursor - 1);
+      }
+    }`, KERNEL);
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply');
+    const operationInfo = artifact.abi.find((candidate) => candidate.name === 'apply')?.sortedUpsertLoopInfo;
+
+    expect(handler).toMatchObject({ eligible: true });
+    expect(operationInfo).toEqual([
+      expect.objectContaining({ collection: 'left', op: 'set' }),
+      expect.objectContaining({ collection: 'right', op: 'delete' }),
+      expect.objectContaining({ collection: 'finalValues', op: 'set' }),
+    ]);
+    // Each independently keyed stream reserves 64 operations plus its own authenticated predecessor.
+    expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBe(3 * 64 + 3);
+  });
+
+  it.each([
+    ['conditional operation', 'this.left[cursor] = cursor; if (cursor > 2) delete this.right[cursor];'],
+    ['non-affine key', 'this.left[cursor] = cursor; delete this.right[cursor * 2];'],
+    ['two streams for one collection', 'this.left[cursor] = cursor; delete this.left[cursor + 1];'],
+    ['a cross-stream mapping read', 'this.left[cursor] = this.right[cursor]; this.right[cursor + 1] = cursor;'],
+  ])('keeps %s outside the affine stream', (_label, operations) => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function apply(int cursor) public returns (int) {
+        ${operations}
+        if (cursor == 0) return 0;
+        return apply(cursor - 1);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control'))
+      .toMatchObject({ eligible: true });
+  });
+});

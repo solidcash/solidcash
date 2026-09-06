@@ -3,8 +3,8 @@ import {
   BranchNode, BreakNode, ContractNode,
   DeleteStateNode, DoWhileNode, EmitStatementNode, FunctionCallNode, FunctionCallStatementNode,
   FunctionDefinitionNode, IdentifierNode,
-  ExpressionNode, ExternalCallExpression, FieldAccessNode, LiteralNode, MappingAssignNode, MappingDeleteNode,
-  MappingFieldAssignNode,
+  ExpressionNode, ExternalCallExpression, FieldAccessNode, LiteralNode, MappingAccessNode, MappingAssignNode,
+  MappingDeleteNode, MappingFieldAssignNode,
   NewArrayNode, Node, RequireNode, ReturnNode, SourceFileNode, StatementNode, UnaryOpNode,
   StateAccessNode, StateAssignNode, TernaryOpNode, VariableDefinitionNode, WhileNode, IntLiteralNode,
 } from '../ast/AST.js';
@@ -843,10 +843,11 @@ export default class LowerTailRecursion extends AstTraversal {
 
   /**
    * Recognize the smallest recursion domain which can reuse the authenticated counter-loop journal unchanged:
-   * one unconditional sorted-mapping set/delete, then `if (counter == 0) return base`, then the sole recursive
-   * edge with `counter - 1`. Pure local definitions may precede those operations, and a block containing only the
-   * mapping operation is transparent. Other parameters must be forwarded unchanged. The source reaches exactly
-   * counter+1 distinct frames, so a zero-based rank is a complete physical permutation domain.
+   * one or more unconditional sorted-mapping sets/deletes, then `if (counter == 0) return base`, then the sole
+   * recursive edge with `counter - 1`. Pure local definitions may precede or separate those operations, and a
+   * block containing only one mapping operation is transparent. Other parameters must be forwarded unchanged.
+   * The source reaches exactly counter+1 distinct frames, so one shared zero-based rank is a complete physical
+   * permutation domain for every operation while retaining their source order within each frame.
    */
   private affineMappingRecursion(node: FunctionDefinitionNode): AffineMappingRecursion | undefined {
     if (!node.body || node.returnTypes.length !== 1 || node.customModifiers.length > 0) return undefined;
@@ -865,14 +866,14 @@ export default class LowerTailRecursion extends AstTraversal {
     })).filter((candidate) => candidate.write !== undefined);
     const bases = prefix.map((statement, index) => ({ statement, index })).filter((candidate) =>
       candidate.statement instanceof BranchNode);
-    if (writes.length !== 1 || bases.length !== 1
+    if (writes.length === 0 || bases.length !== 1
       || !prefix.every((statement) => statement instanceof VariableDefinitionNode
-        || statement === writes[0].statement || statement === bases[0].statement)
-      || writes[0].index >= bases[0].index) return undefined;
-    const write = writes[0].write!;
+        || writes.some((candidate) => candidate.statement === statement) || statement === bases[0].statement)
+      || writes.some((candidate) => candidate.index >= bases[0].index)) return undefined;
+    const mappingWrites = writes.map((candidate) => candidate.write!);
     const base = bases[0].statement as BranchNode;
-    if (!(write instanceof MappingAssignNode || write instanceof MappingDeleteNode)
-      || !this.sortedMappingNames.has(write.name) || write.keys.length !== 1
+    if (mappingWrites.some((write) => !this.sortedMappingNames.has(write.name) || write.keys.length !== 1)
+      || new Set(mappingWrites.map((write) => write.name)).size !== mappingWrites.length
       || !(base instanceof BranchNode) || base.elseBlock !== undefined
       || !(recursiveReturn instanceof ReturnNode) || recursiveReturn.expressions.length !== 1
       || !this.isSelfCall(recursiveReturn.expressions[0], node.name)
@@ -888,8 +889,13 @@ export default class LowerTailRecursion extends AstTraversal {
     if (!(zeroSide instanceof IdentifierNode)) return undefined;
     const inductionIndex = node.parameters.findIndex((parameter) =>
       parameter.name === zeroSide.name && parameter.type instanceof IntType);
-    if (inductionIndex < 0 || !(write.keys[0] instanceof IdentifierNode)
-      || write.keys[0].name !== zeroSide.name) return undefined;
+    const affineKey = (key: ExpressionNode): boolean => {
+      if (key instanceof IdentifierNode) return key.name === zeroSide.name;
+      if (!(key instanceof BinaryOpNode) || !(key.right instanceof IntLiteralNode)) return false;
+      if (key.operator !== BinaryOperator.PLUS && key.operator !== BinaryOperator.MINUS) return false;
+      return key.left instanceof IdentifierNode && key.left.name === zeroSide.name;
+    };
+    if (inductionIndex < 0 || mappingWrites.some((write) => !affineKey(write.keys[0]))) return undefined;
     const next = call.parameters[inductionIndex];
     if (!(next instanceof BinaryOpNode) || next.operator !== BinaryOperator.MINUS
       || !(next.left instanceof IdentifierNode) || next.left.name !== zeroSide.name
@@ -899,10 +905,12 @@ export default class LowerTailRecursion extends AstTraversal {
     // The restricted prefix makes the write unconditional. Reject hidden collection/effect work inside its value
     // or the base expression; those need a frame trace rather than a rank-only permutation.
     let unsupported = false;
+    const allowedWrites = new Set<Node>(mappingWrites);
     this.walkNodes(node.body, (candidate) => {
-      if (candidate === write || candidate === call) return;
+      if (allowedWrites.has(candidate) || candidate === call) return;
       if (candidate instanceof MappingAssignNode || candidate instanceof MappingDeleteNode
-        || candidate instanceof MappingFieldAssignNode || candidate instanceof StateAssignNode
+        || candidate instanceof MappingFieldAssignNode || candidate instanceof MappingAccessNode
+        || candidate instanceof ArrayAccessNode || candidate instanceof StateAssignNode
         || candidate instanceof DeleteStateNode || candidate instanceof WhileNode
         || candidate instanceof DoWhileNode || candidate instanceof FunctionCallNode) unsupported = true;
     });

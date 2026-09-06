@@ -677,6 +677,44 @@ describe('atomic compiled invocation graph', () => {
     expect(messageBus.decodeAtomicMessageBusCallManifest(finalized.bytes).rows[2])
       .toEqual(finalized.callManifest.rows[2]);
 
+    const narrowArtifact = {
+      ...deploymentArtifact,
+      messageBus: {
+        ...deploymentArtifact.messageBus!,
+        handlers: [{
+          ...deploymentArtifact.messageBus!.handlers[0],
+          childDeployments: [{
+            ...deploymentArtifact.messageBus!.handlers[0].childDeployments![0],
+            dataNftOutputCount: 0, totalOutputCount: 1,
+          }],
+        }],
+      },
+    } as Artifact;
+    const narrowPlan: messageBus.CompiledGraphPlan = {
+      ...deploymentPlan,
+      participants: [{ ...deploymentPlan.participants[0], artifact: narrowArtifact }, base.participants[1]],
+    };
+    // A route reserves its widest child frame for every row. The narrower reached site owns the canonical
+    // prefix only; the compiler-authenticated suffix remains a neutral balanced slot, not a forged child NFT.
+    expect(finalize([{ ...effect, outputs: effect.outputs.slice(0, 1) }], narrowPlan).callManifest.rows[2])
+      .toMatchObject({ kind: 5, effectHex: `0100b004000000000000020100510000` });
+
+    const overloadedArtifact = {
+      ...deploymentArtifact,
+      messageBus: {
+        ...deploymentArtifact.messageBus!,
+        handlers: [
+          { ...deploymentArtifact.messageBus!.handlers[0], selector: 'aaaaaaaa', childDeployments: undefined },
+          deploymentArtifact.messageBus!.handlers[0],
+        ],
+      },
+    } as Artifact;
+    const overloadedPlan: messageBus.CompiledGraphPlan = {
+      ...deploymentPlan,
+      participants: [{ ...deploymentPlan.participants[0], artifact: overloadedArtifact }, base.participants[1]],
+    };
+    expect(finalize([effect], overloadedPlan).callManifest.rows[2]).toMatchObject({ kind: 5, parent: 0 });
+
     expect(() => finalize([])).toThrow(/exactly cover reached deployment invocations/);
     expect(() => finalize([{ ...effect, invocation: 1 }])).toThrow(/exactly cover reached deployment invocations/);
     expect(() => finalize([{ ...effect, genesisOutputIndex: 1 }])).toThrow(/vout-0/);

@@ -173,7 +173,8 @@ export function selectedGraphEventOffsets(
     if (localRow >= frame.sites) return;
     const invocation = plan.invocations[invocationIndex];
     const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-      candidate.name === invocation.function);
+      candidate.name === invocation.function
+      && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
     for (const emitted of handler?.emits ?? []) {
       if (emitted.emitIndex < 0 || emitted.emitIndex >= frame.eventWidth) continue;
       const offset = offsetBySlot.get(frame.eventBase + localRow * frame.eventWidth + emitted.emitIndex);
@@ -743,7 +744,8 @@ export function finalizeAtomicInvocationGraph(
   for (const invocation of plan.invocations) {
     const participant = plan.participants[invocation.callee];
     const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-      candidate.name === invocation.function);
+      candidate.name === invocation.function
+      && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
     const sites = handler?.childDeployments ?? [];
     if (sites.length === 0) continue;
     if (sites.length !== 1 || sites[0].siteIndex !== 0 || sites[0].occurrence !== 'once') {
@@ -771,7 +773,8 @@ export function finalizeAtomicInvocationGraph(
         );
       }
       const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-        candidate.name === invocation.function);
+        candidate.name === invocation.function
+        && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
       const sites = handler?.childDeployments ?? [];
       const site = sites[0];
       if (sites.length !== 1 || !site || site.siteIndex !== 0
@@ -786,7 +789,7 @@ export function finalizeAtomicInvocationGraph(
       const dataSlots = participant.blockLayout!.slots.filter((candidate) =>
         candidate.kind === 'deployDataNft' && candidate.slotIndex === invocation.localRow)
         .sort((left, right) => left.offset - right.offset);
-      if (!masterSlot || dataSlots.length !== site.dataNftOutputCount
+      if (!masterSlot || dataSlots.length < site.dataNftOutputCount
         || dataSlots.some((slot, index) => slot.offset !== effect.offset + index + 1 || slot.nftIndex !== index)) {
         throw new Error(
           `messageBus: participant ${effect.participant} deployment site ${effect.siteIndex} has a non-canonical output span`,

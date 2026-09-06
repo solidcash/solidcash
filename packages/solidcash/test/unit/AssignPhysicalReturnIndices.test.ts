@@ -56,6 +56,7 @@ import {
   shouldRetainMintingOutputSwap,
   isMintingBandTokenWriter,
   isMintingBandSwapFunction,
+  shouldRestorePersistedContinuationInputs,
   tokenWriterReturnIndex,
   canonicalWriterReturnCommitment,
   shouldReplaceReturnEventCommitment,
@@ -2316,6 +2317,32 @@ describe('assignPhysicalReturnIndices', () => {
     expect(isMintingBandSwapFunction('approve')).toBe(false);
     expect(isMintingBandTokenWriter('publishJobEvent')).toBe(false);
     expect(isMintingBandTokenWriter(undefined)).toBe(false);
+  });
+
+  it('restores persisted continuations from transaction structure, independent of caller names', () => {
+    const liveCollision = {
+      initialWrite: false,
+      mintingBandWriter: true,
+      persisted: true,
+      hasBand: true,
+      hasCategory: true,
+    };
+    expect(shouldRestorePersistedContinuationInputs(liveCollision)).toBe(true);
+    expect(shouldRestorePersistedContinuationInputs({
+      ...liveCollision, initialWrite: true,
+    })).toBe(false);
+    expect(shouldRestorePersistedContinuationInputs({
+      ...liveCollision, mintingBandWriter: false,
+    })).toBe(false);
+    expect(shouldRestorePersistedContinuationInputs({
+      ...liveCollision, persisted: false,
+    })).toBe(false);
+    expect(shouldRestorePersistedContinuationInputs({
+      ...liveCollision, hasBand: false,
+    })).toBe(false);
+    expect(shouldRestorePersistedContinuationInputs({
+      ...liveCollision, hasCategory: false,
+    })).toBe(false);
   });
 
   it('retains minting relocation after the master moves past from+width', () => {

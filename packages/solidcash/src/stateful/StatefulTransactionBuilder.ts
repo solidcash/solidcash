@@ -309,6 +309,25 @@ export function isMintingBandSwapFunction(name: string | undefined): boolean {
   return name === 'transferFrom' || name === 'transfer';
 }
 
+/**
+ * Restore an authenticated continuation run whenever transaction geometry can
+ * displace it. The decision is entirely structural: the operation's source
+ * name does not affect mutable-NFT conservation.
+ */
+export function shouldRestorePersistedContinuationInputs(parts: {
+  initialWrite: boolean;
+  mintingBandWriter: boolean;
+  persisted: boolean;
+  hasBand: boolean;
+  hasCategory: boolean;
+}): boolean {
+  return !parts.initialWrite
+    && parts.mintingBandWriter
+    && parts.persisted
+    && parts.hasBand
+    && parts.hasCategory;
+}
+
 /** In-block extraTransfer return after the minting master (post-rotate). */
 /**
  * Canonicalize a scalar writer return for the encoding its callee covenant
@@ -5901,19 +5920,20 @@ export class StatefulTransactionBuilder {
    * Fetch the last successful jobEvents spends and pin them on the live band.
    */
   async ensurePersistedJobEventsInputs(): Promise<void> {
-    if (this._rootIsPublishJobPost()) return;
     const tokenWriterPresent = this.externalCallUtxoGroups.some((group) =>
       isMintingBandSwapFunction(group.functionName ?? group.compilerRoute?.abiFunction.name
         ?? group.logicalFunctionName));
-    if (!tokenWriterPresent) return;
-    const writerNames = new Set([
-      ...this.lowLevelCallUtxoGroups.map((group) => group.functionName),
-      ...this.externalCallUtxoGroups.map((group) => group.logicalFunctionName ?? group.functionName),
-    ]);
-    if (!writerNames.has('withdrawCollateral') && !writerNames.has('updateJobPost')) return;
     const band = this.getPublishJobEventsBand();
     const categoryId = this._persistJobEventsTokenCategory() ?? this._jobEventsPublishCategory();
-    if (!band || !categoryId || !isPersistedJobEventsReady()) return;
+    if (!shouldRestorePersistedContinuationInputs({
+      initialWrite: this._rootIsPublishJobPost(),
+      mintingBandWriter: tokenWriterPresent,
+      persisted: isPersistedJobEventsReady(),
+      hasBand: band !== undefined,
+      hasCategory: categoryId !== undefined,
+    })) return;
+    // Keep the concrete values narrowed for the resource-loading code below.
+    if (!band || !categoryId) return;
     const persistLock = persistedJobEventsLocks.get(categoryId)
       ?? latestPersisted(persistedJobEventsLocks, categoryId);
     const persistValue = persistedJobEventsValues.get(categoryId)

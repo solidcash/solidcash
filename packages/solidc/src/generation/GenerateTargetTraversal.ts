@@ -14156,6 +14156,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  // Decode a dynamic array whose elements are static ABI composites (structs/fixed arrays). Solidity places
+  // those elements inline after the length word, using each element's complete recursive static width rather
+  // than one word. Rebuild the ordinary SolidCash array blob without assuming a source-level type or field name.
+  private emitEvmStaticCompositeArrayDecode(elemType: Type, loc: SingleLocationData): void {
+    const elementSize = this.abiStaticSize(elemType);
+    this.emitDropFirst32(loc); // top-level array offset
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [lengthWord, elements]
+    this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(PrimitiveType.BIGINT, loc); // [elements, count]
+    this.emit(Op.OP_DUP, loc); this.emitPushdataEncode(PrimitiveType.BIGINT, loc); // [elements, count, acc]
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_SWAP, loc); // [count, elements, acc]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_0NOTEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc); // [count, acc, elements]
+    this.emit(encodeInt(BigInt(elementSize)), loc); this.emit(Op.OP_SPLIT, loc); // [count, acc, element, rest]
+    this.emit(Op.OP_SWAP, loc); // [count, acc, rest, element]
+    if (elemType instanceof StructType) this.emitEvmStructDecode(elemType, loc);
+    else if (elemType instanceof ArrayType && elemType.bound !== undefined) {
+      this.emitEvmStaticArrayInlineDecode(elemType, loc);
+    } else {
+      throw new Error(`evmCompat abi.decode: '${elemType.toString()}' is not a static composite`);
+    }
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // [count, rest, element, acc]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // [count, rest, acc']
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // [rest, acc', count]
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // [count-1, rest, acc']
+    this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc); // [rest, acc]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_SIZE, loc); this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc); this.emit(Op.OP_DROP, loc); // [acc]
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
   // Decode one ABI element from the top of a blob, consuming its bytes: [.., tail] -> [.., next, element] where
   // element is the SolidCash-encoded value. Recursive: a bytes/string element is lengthWord ++ data ++ pad; an
   // inner value-element array (uint[][]) is lengthWord ++ M 32-byte words rebuilt into a SolidCash array blob.
@@ -14365,8 +14405,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEvmStructDecode(type: StructType, loc: SingleLocationData): void {
     this.emit(new Uint8Array(0), loc); this.emit(Op.OP_SWAP, loc); // [acc="", blob]
     type.fields.forEach((f) => {
-      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [acc, word, rest]
-      this.emit(Op.OP_SWAP, loc); this.emitEvmWordToValue(f.type, loc); // [acc, rest, value]
+      this.emit(encodeInt(BigInt(this.abiStaticSize(f.type))), loc);
+      this.emit(Op.OP_SPLIT, loc); // [acc, field ABI, rest]
+      this.emit(Op.OP_SWAP, loc); // [acc, rest, field ABI]
+      if (f.type instanceof StructType) this.emitEvmStructDecode(f.type, loc);
+      else if (f.type instanceof ArrayType && f.type.bound !== undefined) {
+        this.emitEvmStaticArrayInlineDecode(f.type, loc);
+      } else this.emitEvmWordToValue(f.type, loc);
       this.emitPushdataEncode(f.type, loc); // [acc, rest, pushdata]
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc); // acc to top: [rest, pushdata, acc]
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); // acc ++ pushdata: [rest, acc']
@@ -14375,6 +14420,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc); // drop the emptied blob -> [acc = struct blob]
     this.popFromStack();
     this.pushToStack('(value)');
+  }
+
+  // Decode an inline fixed array whose element type is ABI-static. The caller has already isolated exactly the
+  // array's recursive static bytes; unlike a top-level dynamic array there is no offset or length word.
+  private emitEvmStaticArrayInlineDecode(type: ArrayType, loc: SingleLocationData): void {
+    const count = type.bound ?? 0;
+    const element = type.elementType;
+    const width = this.abiStaticSize(element);
+    this.emit(scriptToBytecode([encodeInt(BigInt(count))]), loc);
+    this.emit(Op.OP_SWAP, loc); // [acc=count prefix, ABI elements]
+    for (let i = 0; i < count; i += 1) {
+      this.emit(encodeInt(BigInt(width)), loc); this.emit(Op.OP_SPLIT, loc); // [acc, element ABI, rest]
+      this.emit(Op.OP_SWAP, loc); // [acc, rest, element ABI]
+      if (element instanceof StructType) this.emitEvmStructDecode(element, loc);
+      else if (element instanceof ArrayType && element.bound !== undefined) {
+        this.emitEvmStaticArrayInlineDecode(element, loc);
+      } else {
+        this.emitEvmWordToValue(element, loc);
+        this.emitEncodeElementPacked(element, loc);
+      }
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_SWAP, loc);
+    }
+    this.emit(Op.OP_DROP, loc);
   }
 
   // evmCompat inverse of emitEvmStructTail: a DYNAMIC struct's ABI tuple -> the framed struct blob. Strip the
@@ -14510,6 +14579,70 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  // External result channels need one representation decision shared by ordinary calls and kernel graph rows.
+  // This subset is recursive and type-directed: arbitrary static composites and dynamic arrays of static
+  // composites are supported, while a dynamic composite element remains fenced until its tail-span decoder can
+  // preserve the following element without trusting offsets from an unauthenticated producer.
+  private isEvmExternalResultDecodable(type: Type): boolean {
+    if (this.isEvmAbiWordType(type)) return true;
+    if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return true;
+    if (type instanceof StructType) {
+      return !this.isDynamicAbiType(type)
+        && type.fields.every((field) => this.isEvmExternalResultDecodable(field.type));
+    }
+    if (type instanceof ArrayType) {
+      return !this.isDynamicAbiType(type.elementType)
+        && this.isEvmExternalResultDecodable(type.elementType);
+    }
+    return false;
+  }
+
+  private isEvmExternalResultSchemaDecodable(schema: readonly Type[]): boolean {
+    if (schema.length === 1) return this.isEvmExternalResultDecodable(schema[0]);
+    // The existing tuple decoder follows dynamic bytes/string offsets and decodes scalar words. Composite tuple
+    // members require a recursive tuple-head walker because a static struct can occupy more than one ABI word.
+    return schema.every((type) => this.isEvmAbiWordType(type)
+      || type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined));
+  }
+
+  /** Decode one complete Solidity ABI result tuple into the source runtime representation. */
+  private emitEvmExternalResultDecode(
+    schema: readonly Type[], loc: SingleLocationData, trackedPrefix = '(value)',
+  ): void {
+    const trackedName = (index: number): string => trackedPrefix === '(value)'
+      ? '(value)' : `${trackedPrefix}${index}`;
+    const single = schema[0];
+    if (schema.length === 1 && single instanceof ArrayType) {
+      if (single.bound === undefined) {
+        if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
+          this.emitEvmStaticCompositeArrayDecode(single.elementType, loc);
+        } else this.emitEvmArrayDecode(single.elementType, loc);
+      } else if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
+        this.emitEvmStaticArrayInlineDecode(single, loc);
+        this.popFromStack(); this.pushToStack(trackedName(0));
+      } else {
+        this.emitEvmWordsToArray(single.elementType, loc);
+      }
+      if (trackedPrefix !== '(value)') this.stack[0] = trackedName(0);
+      return;
+    }
+    if (schema.length === 1 && single instanceof StructType) {
+      this.emitEvmStructDecode(single, loc);
+      if (trackedPrefix !== '(value)') this.stack[0] = trackedName(0);
+      return;
+    }
+    if (schema.some((type) => this.isDynamicAbiType(type))) {
+      this.emitEvmAbiDecodeDynamic(schema, loc);
+      if (trackedPrefix !== '(value)') {
+        for (let i = 0; i < schema.length; i += 1) this.stack[schema.length - 1 - i] = trackedName(i);
+      }
+      return;
+    }
+    this.popFromStack();
+    this.emitEvmAbiDecode(schema, loc);
+    for (let i = 0; i < schema.length; i++) this.pushToStack(trackedName(i));
+  }
+
   // Decode one 32-byte big-endian EVM word (on top) into a SolidCash value. Inverse of emitEvmAbiWord.
   private emitEvmWordToValue(type: Type, loc: SingleLocationData): void {
     if (type === PrimitiveType.BOOL) {
@@ -14529,7 +14662,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       return;
     }
-    if (type instanceof IntType || type instanceof FixedType || type === PrimitiveType.BIGINT) {
+    if (type instanceof IntType || type instanceof FixedType || type instanceof EnumType
+      || type === PrimitiveType.BIGINT) {
       // reverse to little-endian, force positive with a 0x00 sign byte, minimise -> unsigned value U
       this.emit(Op.OP_REVERSEBYTES, loc);
       this.emit(new Uint8Array([0]), loc);
@@ -16517,9 +16651,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         // Decode return values from blob
         if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
-          && returnTypes.every((type) => this.isEvmAbiWordType(type))) {
-          this.emitEvmAbiDecode(returnTypes, locationData);
-          for (let i = 0; i < returnTypes.length; i++) this.pushToStack('(value)');
+          && this.isEvmExternalResultSchemaDecodable(returnTypes)) {
+          this.pushToStack('(__external_result_blob)');
+          this.emitEvmExternalResultDecode(returnTypes, locationData);
         } else {
           for (let i = 0; i < returnTypes.length; i++) {
             const isLast = i === returnTypes.length - 1;
@@ -17024,21 +17158,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return 1;
     }
     const evmGraphReturn = (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
-      && returnTypes.every((type) => this.isEvmAbiWordType(type)
-        || type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined));
+      && this.isEvmExternalResultSchemaDecodable(returnTypes);
     if (evmGraphReturn) {
       // The call manifest carries the producer's exact return-event bytes. Solidity-compatible producers publish
       // results as ABI tuples. Decoding that vector as SolidCash pushdata sees the first offset/zero-padding byte
       // as OP_0 (turning dynamic values into empty bytes and notably turning ERC20 `true` into false).
-      if (returnTypes.some((type) => this.isDynamicAbiType(type))) {
-        this.emitEvmAbiDecodeDynamic(returnTypes, locationData);
-      } else {
-        this.popFromStack();
-        this.emitEvmAbiDecode(returnTypes, locationData);
-        for (let i = 0; i < returnTypes.length; i++) {
-          this.pushToStack(`(__graph_result_value_${i})`);
-        }
-      }
+      this.emitEvmExternalResultDecode(returnTypes, locationData, '__graph_result_value_');
       return returnTypes.length;
     }
     // Decode the complete producer-authenticated ABI vector. This mirrors ordinary external-return decoding:

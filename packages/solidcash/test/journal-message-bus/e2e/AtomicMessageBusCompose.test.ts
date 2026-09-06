@@ -1941,9 +1941,15 @@ describe('messageBus.compose atomic transaction', () => {
   it('composes a kernel row returning a dynamic array of structs', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifact = compileString(`pragma solidity ^0.8.0;
-      struct Rec { uint256 value; uint8 status; }
+      struct Detail { uint16 code; uint8 status; }
+      struct Rec { uint256 value; Detail detail; }
       contract RecursiveResultSource {
         Rec[] records;
+        function seed() public {
+          records.push(Rec(7, Detail(70, 1)));
+          records.push(Rec(9, Detail(90, 0)));
+          require(records.length == 2);
+        }
         function all() public view returns (Rec[] memory) { return records; }
       }
     `, {
@@ -1954,19 +1960,25 @@ describe('messageBus.compose atomic transaction', () => {
     const base = new Contract(artifact, [], { provider });
     const setup = await setupStatefulUtxos(
       provider, base, artifact.stateLayout!,
-      { records: [{ value: 7n, status: 1n }, { value: 9n, status: 0n }] },
+      { records: [] },
       { saltContract: true },
     );
     const contract = StatefulContract.withCategory(
       base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
     );
+    await contract.call.seed().send();
+    expect((await contract.getState()).records).toEqual([
+      { value: 7n, detail: { code: 70n, status: 1n } },
+      { value: 9n, detail: { code: 90n, status: 0n } },
+    ]);
     const rootArtifact = compileString(`pragma solidity ^0.8.0;
-      struct Rec { uint256 value; uint8 status; }
+      struct Detail { uint16 code; uint8 status; }
+      struct Rec { uint256 value; Detail detail; }
       interface IRecursiveResultSource { function all() external returns (Rec[] memory); }
       contract RecursiveResultRoot(address source) {
         function run() public {
-          IRecursiveResultSource(source).all();
-          require(true);
+          Rec[] memory values = IRecursiveResultSource(source).all();
+          require(values.length == 2 && values[0].detail.code == 70 && values[1].detail.status == 0);
         }
       }
     `, {
@@ -1980,9 +1992,20 @@ describe('messageBus.compose atomic transaction', () => {
     const root = StatefulContract.withCategory(
       rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
     );
+    const callsiteId = rootArtifact.abi.find((fn) => fn.name === 'run')!
+      .externalCalls!.find((call) => call.functionName === 'all')!.callsiteId!;
+    const recursiveResult = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(
+      ['tuple(uint256,tuple(uint16,uint8))[]'], [[[7n, [70, 1]], [9n, [90, 0]]]],
+    ).slice(2));
     const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({
-      calls: [root.call.run(), contract.call.all()],
+      preparedCalls: [
+        { contract: root, functionName: 'run', args: [] },
+        {
+          contract, functionName: 'all', args: [], callsiteId,
+          provisionalResultCommitment: recursiveResult,
+        },
+      ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
@@ -1997,6 +2020,20 @@ describe('messageBus.compose atomic transaction', () => {
     commitment[commitment.length - 1] ^= 1;
     returnOutput.token.nft.commitment = binToHex(commitment);
     expect(vmRejects(hostile)).toBe(true);
+    const malformedOffset = Uint8Array.from(recursiveResult);
+    malformedOffset[31] = 0x40;
+    const malformedComposition = messageBus.compose({
+      preparedCalls: [
+        { contract: root, functionName: 'run', args: [] },
+        {
+          contract, functionName: 'all', args: [], callsiteId,
+          provisionalResultCommitment: malformedOffset,
+        },
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    await expect(malformedComposition.build()).rejects.toThrow(/prepared return commitment/);
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 

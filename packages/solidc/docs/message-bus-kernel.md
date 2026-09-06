@@ -77,9 +77,14 @@ per-row cloned bodies.
 
 Selector `53434231` (`SCB1`). Inputs remain `batchBlob` plus the existing compact-binder /
 graph / msg.sender-category parameters. Kernel routes **omit** compile-time `_r${row}` key and signature
-bands. Each finite source signature shape contributes an aligned route witness with one additional outer array
-dimension (`sig` becomes `sig[]`, `sig[]` becomes `sig[][]`, and so on). Transaction signatures stay outside the
-committed row blob and the runtime loop selects element `row`.
+bands. Each transaction-signature leaf in a finite source shape contributes an aligned route witness with one
+additional outer array dimension (`sig` becomes `sig[]`, `sig[]` becomes `sig[][]`, and a signature field nested
+through struct/ABI-tuple and array layers preserves those array dimensions). The row retains an ABI-valid copy of
+the composite with empty signature leaves; the route restores each detached leaf before invocation. Transaction
+signatures stay outside the committed row blob and the runtime loop selects element `row`.
+SolidCash has no source-level anonymous tuple parameter type: Solidity ABI tuple parameters are represented by
+their struct type, and the SDK accepts either named-field objects or positional arrays for that same ABI value.
+Both forms use the identical compiler-derived leaf paths and detached witnesses.
 
 Execution order:
 
@@ -113,8 +118,8 @@ A contract with a message-bus route uses the kernel calling convention by defaul
 kernel-shaped handlers are dispatched by the row loop and
 unsupported siblings remain published with a `KERNEL_*` refusal:
 
-- every finite `sig` array shape is an aligned positional route witness and is finalized recursively against the
-  selected handler body;
+- every finite `sig` input shape, including leaves nested through struct/ABI-tuple and array fields, is an aligned
+  positional route witness and is finalized recursively against the selected handler body;
 - no dedicated resource-shaped handler that owns a fixed per-row physical frame as route ABI
   (param-keyed `from`/`to` alternatives journal as two slots of the same row);
 - no `_r${row}` witnesses required for soundness (`msg.sender` is a shared published identity;
@@ -145,7 +150,7 @@ every kernel toy.
 | Code | Means | Not this |
 | --- | --- | --- |
 | `KERNEL_LIFECYCLE` | `deploy`, `upgrade`, `selfdestruct`, or `unsafe` as a **bus row** | Implementation functions that run in this participant's delegate/proxy frame |
-| `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob, or a returned transaction signature which would circularly change its own signed output preimage | Any finite input `sig` array parameter (one aligned outer row dimension); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
+| `KERNEL_TX_SIGNATURE` | A transaction-signature check with no signature parameter that can be finalized and bound outside the committed message blob, or any returned transaction-signature leaf (including one inside an array, struct/ABI tuple, or multi-result tuple) which would circularly change its own signed output preimage | Any finite input `sig` shape (one aligned outer row dimension per detached leaf, preserving nested array dimensions and the non-signature fields of struct/ABI tuples); `ecrecover` / ECDSA over **data** (existing compute sidecar) |
 | `KERNEL_UNBOUNDED_KEY` | A locally constructed key array whose length is not derivable within the bounded replay model; a counter-keyed mapping loop whose exact iteration domain is not one of the canonical forms; mutation of its counter or a bound mutation which cannot be reduced to a finite source expression; nested-loop control flow or a predicate with unsupported/mutated provenance | Parameter-keyed, `msg.sender`-keyed, expression-keyed (`m[records.length-1]`), parameter-array loop (`m[k][xs[i]]`), bounded locally constructed arrays with replayable dominating writes, canonical ascending `for (int i = S; i < n; i = i + D)` / `i = D + i` / `i <= n` and descending `for (int i = S; i > n; i = i - D)` / `i >= n` domains for positive constant or replayable runtime `D`, plus `i != n` when the signed step reaches the endpoint exactly (also through replayable straight-line or finite conditional bound assignments, and with either comparison operand orientation), or equivalent canonical source `while` and `do-while` forms over `m[i]` / nested `m[k][i]`, multiple sequential loops whose runtime keys are disjoint (including loops over one physical collection), same- or cross-collection counter-derived reads carried by independent authenticated streams, a stable depth-one scalar entry keyed by a public parameter/literal/`msg.sender`/`tx.origin` or a pure expression over public arguments beside those counter writes, or those rewrites beneath serializable outer and inner `if`/`else`/`switch`/`continue`/`break`/`return` paths and the reachable body of `try`/`catch`; loop predicates may consume scalar state updated by replayable straight-line, finite `if`/`else`, or finite `switch` assignments before the loop; typed calls and path-predicated event, BCH-transfer, fungible-token-transfer, and NFT-transfer sites remain in source order |
 | `KERNEL_FOREIGN_DELEGATE` | `delegatecall` to a foreign executor treated as this participant's owner | `delegate` on this contract's own implementation |
 | `KERNEL_OPAQUE_EFFECT` | Native assembly which is not statically isolated and stack-neutral (including active-bytecode/signature context), unsupported Yul which cannot be lowered, or a low-level call the journal cannot summarize as a call/effect row | Isolated pure/read-only BCH assembly, including transaction inspection whose operands are block-local, balanced `OP_IF`/`OP_NOTIF` arms whose main and alt stacks converge, and `OP_BEGIN`/`OP_UNTIL` loops which restore both loop-entry stack heights after consuming their block-local condition; Yul translated to ordinary typed operations before admission; after Solidity-compat lowering to `call` plus returndata |

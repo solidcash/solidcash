@@ -5741,6 +5741,7 @@ export class StatefulTransactionBuilder {
   private _chunkableValueWriteAbi(): AbiFunction | undefined {
     const structural = this._chunkableValueWriteExecution();
     if (structural) return structural.abiFunction;
+    if (this._hasChunkableValueWriteMetadata()) return undefined;
     // Compatibility only for artifacts predating chunkable collection/write metadata.
     for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
       const abi = (group.externalContract?.inner?.artifact?.abi ?? []) as AbiFunction[];
@@ -5810,6 +5811,7 @@ export class StatefulTransactionBuilder {
   private _chunkableValueWriteInputIndex(): number {
     const structural = this._chunkableValueWriteExecution();
     if (structural) return structural.inputIndex;
+    if (this._hasChunkableValueWriteMetadata()) return -1;
     // Dest is INPUTINDEX+4 of the earliest executing publishJobEvent. Occupied
     // dests are displaced; do not relocate dest because persist sits at +4. Compatibility only: old artifacts
     // without chunkable-write metadata still identify this executor by their historical ABI function name.
@@ -5956,18 +5958,19 @@ export class StatefulTransactionBuilder {
    * Occupancy, view tails, and FakeToken rotation all share this range.
    */
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined {
+    const structural = this._chunkableValueWriteExecution();
     const selected = this._chunkableValueWriteGroups();
     const publishLlcIndex = selected.lowLevelIndex;
     const publishExternalIndex = selected.externalIndex;
     const publishExternal = selected.external;
     if (publishLlcIndex < 0 && !publishExternal) return undefined;
-    const publishFn = publishLlcIndex >= 0
+    const publishFn = structural?.abiFunction ?? (publishLlcIndex >= 0
       ? (this.lowLevelCallUtxoGroups[publishLlcIndex].compilerRoute?.abiFunction
         ?? this.lowLevelCallUtxoGroups[publishLlcIndex].externalContract?.inner.artifact.abi
           .find((fn: { name: string }) => fn.name === 'publishJobEvent'))
       : publishExternal?.compilerRoute?.abiFunction
         ?? publishExternal?.blockLayout
-        ?? undefined;
+        ?? undefined);
     const publishBlockSize = (publishFn as AbiFunction | undefined)?.blockLayout?.blockSize
       ?? publishExternal?.blockLayout?.blockSize
       ?? 5;
@@ -6001,7 +6004,7 @@ export class StatefulTransactionBuilder {
         ? [this.lowLevelCallUtxoGroups[publishLlcIndex].valueChunkOutputCount ?? 0]
         : []),
     );
-    const activeCollection = groupChunkableArrayWriteCollection(
+    const activeCollection = structural?.collection ?? groupChunkableArrayWriteCollection(
       publishLlcIndex >= 0
         ? this.lowLevelCallUtxoGroups[publishLlcIndex]
         : publishExternal as ExternalCallUtxoGroup,
@@ -6092,11 +6095,15 @@ export class StatefulTransactionBuilder {
         && groupChunkableValueWriteIdentity(group) === structural.collection
       )),
     ];
-    const groups = structuralGroups.length > 0 ? structuralGroups : [
-      ...this.externalCallUtxoGroups.filter((group) =>
-        (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'),
-      ...this.lowLevelCallUtxoGroups.filter((group) => group.functionName === 'publishJobEvent'),
-    ];
+    const groups = structuralGroups.length > 0
+      ? structuralGroups
+      : this._hasChunkableValueWriteMetadata()
+        ? []
+        : [
+          ...this.externalCallUtxoGroups.filter((group) =>
+            (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'),
+          ...this.lowLevelCallUtxoGroups.filter((group) => group.functionName === 'publishJobEvent'),
+        ];
     for (const group of groups) {
       const next = Math.max(group.valueChunkOutputCount ?? 0, nNew);
       if (next !== group.valueChunkOutputCount) {
@@ -6358,9 +6365,15 @@ export class StatefulTransactionBuilder {
     for (const extra of extras) consider(extra, true);
     for (const input of this.allInputs) consider(input);
     if (persistUpdate) {
+      const describedCollection = this._chunkableValueWriteExecution()?.collection;
       for (const info of this.entryNfts) {
         if (!info.exists || !info.utxo) continue;
-        if (!/jobEvents/i.test(info.collection ?? '')) continue;
+        if (describedCollection !== undefined) {
+          if (info.collection !== describedCollection) continue;
+        } else if (this._hasChunkableValueWriteMetadata() || !/jobEvents/i.test(info.collection ?? '')) {
+          // Metadata ambiguity is a refusal. The source-name match is compatibility-only for old plans.
+          continue;
+        }
         consider(info.utxo);
       }
     }

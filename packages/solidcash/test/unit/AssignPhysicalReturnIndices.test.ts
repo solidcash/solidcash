@@ -212,6 +212,44 @@ describe('generic persisted value-chunk write identity', () => {
     });
   });
 
+  it('uses the routed writer layout and collection even when its artifact contains a legacy-named decoy', () => {
+    const renamed = makeGroup('appendNotice');
+    const routeHandler = {
+      ...renamed.externalContract.inner.artifact.abi[0],
+      name: 'routeAppendNotice',
+      blockLayout: {
+        blockSize: 7,
+        slots: [
+          { kind: 'master' as const, offset: 0 },
+          { kind: 'entry' as const, offset: 1, slotIndex: 0 },
+          { kind: 'event' as const, offset: 6, slotIndex: 0 },
+        ],
+      },
+    };
+    const namedDecoy = {
+      ...renamed.externalContract.inner.artifact.abi[0],
+      name: 'publishJobEvent',
+      entryAccesses: [],
+      blockLayout: { blockSize: 2, slots: [{ kind: 'master' as const, offset: 0 }] },
+    };
+    const routed = {
+      ...renamed,
+      compilerRoute: { abiFunction: routeHandler },
+      externalContract: { inner: { artifact: {
+        ...renamed.externalContract.inner.artifact,
+        abi: [namedDecoy, renamed.externalContract.inner.artifact.abi[0]],
+      } } },
+    };
+
+    expect(selectChunkableValueWriteExecution([
+      { group: routed, inputIndex: 17 },
+    ])).toMatchObject({
+      inputIndex: 17,
+      collection: 'notices',
+      abiFunction: { name: 'routeAppendNotice', blockLayout: { blockSize: 7 } },
+    });
+  });
+
   it('selects publish ownership by renamed resource identity and collapses duplicate route views', () => {
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
     expect(selectValueChunkWriteCategory([renamed])).toEqual({

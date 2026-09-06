@@ -585,7 +585,9 @@ caller supplies distinct constructed arrays; element and length reads across tho
 joint source-order history, including prior push/pop mutations. When several formals receive the same caller
 array, they share one canonical history so writes and reads retain ordinary memory-reference alias semantics. A
 helper which does not rebind a replayed parameter may also push and pop through the shared alias; those operations
-advance the symbolic length at their exact source point.
+advance the symbolic length at their exact source point. This replay composes through uniquely resolved `pure`
+helpers which forward explicit `memory` parameters: each callee receives the caller's canonical plans, scalar
+arguments are resolved at the call site, and recursive or ambiguous call graphs remain fenced.
 Direct source assignments use the same point-in-time resolver, including literal and runtime array indices.
 Mixed push/pop paths which restore their entry length without popping into the pre-existing prefix are replayed
 independently per logical iteration, including finite `if`/`else` and `switch` paths. Other mixed push/pop

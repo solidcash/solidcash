@@ -1124,6 +1124,15 @@ describe('required kernel admission', () => {
         right.push(7);
         left[0] = right.length;
       }
+      function inner(int[] memory left, int[] memory right, int next) internal pure {
+        right[0] = next;
+        left[0] = right[0] + 1;
+      }
+      function outer(int[] memory first, int[] memory second, int next) internal pure {
+        inner(first, second, next);
+        second.push(next + 2);
+        first[1] = second.length;
+      }
       function write(int n, int a, int b) public {
         int[] memory left = new int[](n);
         int[] memory right = new int[](n);
@@ -1165,6 +1174,16 @@ describe('required kernel admission', () => {
         for (int i = 0; i < n; i = i + 1) { this.leftSlots[left[i]] = i; }
         require(true);
       }
+      function transitive(int n, int next) public {
+        int[] memory left = new int[](n);
+        int[] memory right = new int[](n);
+        outer(left, right, next);
+        for (int i = 0; i < n; i = i + 1) {
+          this.leftSlots[left[i]] = i;
+          this.rightSlots[right[i]] = i;
+        }
+        require(true);
+      }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'write'))
       .toMatchObject({ eligible: true });
@@ -1181,6 +1200,13 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'lengthRead'))
       .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'transitive'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.abi.find((handler) => handler.name === 'transitive')?.sortedUpsertLoopInfo)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ collection: 'leftSlots' }),
+        expect.objectContaining({ collection: 'rightSlots' }),
+      ]));
   });
 
   it('replays helper-side constructed-key resizing through the shared memory alias', () => {

@@ -5441,6 +5441,15 @@ describe('kernel composite counter-key settlement', () => {
         right.push(7);
         left[0] = right.length;
       }
+      function inner(int[] memory left, int[] memory right, int next) internal pure {
+        right[0] = next;
+        left[0] = right[0] + 1;
+      }
+      function outer(int[] memory first, int[] memory second, int next) internal pure {
+        inner(first, second, next);
+        second.push(next + 2);
+        first[1] = second.length;
+      }
       function write(int n, int a, int b) public {
         int[] memory left = new int[](n);
         int[] memory right = new int[](n);
@@ -5475,6 +5484,16 @@ describe('kernel composite counter-key settlement', () => {
         for (int i = 0; i < n; i = i + 1) { this.leftSlots[keys[i]] = i + 60; }
         require(true);
       }
+      function writeTransitive(int n, int next) public {
+        int[] memory left = new int[](n);
+        int[] memory right = new int[](n);
+        outer(left, right, next);
+        for (int i = 0; i < n; i = i + 1) {
+          this.leftSlots[left[i]] = i + 70;
+          this.rightSlots[right[i]] = i + 80;
+        }
+        require(true);
+      }
       function checkLeft(int key, int expected) public { require(this.leftSlots[key] == expected); }
       function checkRight(int key, int expected) public { require(this.rightSlots[key] == expected); }
     }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
@@ -5493,14 +5512,18 @@ describe('kernel composite counter-key settlement', () => {
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.batch([{ function: 'writeAliased', args: [2n, 1100n, 1200n] }]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(contract.batch([{ function: 'writeTransitive', args: [2n, 1300n] }]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(contract.call.checkLeft(1500n, 10n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(1900n, 30n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkLeft(3n, 50n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(2300n, 60n).send()).resolves.toBeDefined();
     await expect(contract.call.checkLeft(0n, 61n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(1301n, 70n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkLeft(3n, 71n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(800n, 20n).send()).resolves.toBeDefined();
     await expect(contract.call.checkRight(1000n, 40n).send()).resolves.toBeDefined();
-    await expect(contract.call.checkRight(0n, 41n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkRight(1300n, 80n).send()).resolves.toBeDefined();
+    await expect(contract.call.checkRight(0n, 81n).send()).resolves.toBeDefined();
   }, 180_000);
 
   it('retains constructed keys across mutations of a value-copied helper parameter', async () => {

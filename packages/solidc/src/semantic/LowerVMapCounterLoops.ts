@@ -5328,22 +5328,26 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           plans: Map<string, ArrayPlan>;
           values: Map<string, ExpressionNode>;
         };
-        const planNameFor = (parameterName: string): string | undefined =>
-          planNamesByParameter.get(parameterName);
+        type HelperScope = {
+          arrayNames: ReadonlySet<string>;
+          planNamesByParameter: ReadonlyMap<string, string>;
+        };
+        const initialScope: HelperScope = { arrayNames, planNamesByParameter };
         const replayExpression = (
           expression: ExpressionNode,
           values: ReadonlyMap<string, ExpressionNode>,
           helperPlans: ReadonlyMap<string, ArrayPlan>,
+          scope: HelperScope,
         ): ExpressionNode | undefined => {
           const planFor = (parameterName: string): ArrayPlan | undefined => {
-            const planName = planNameFor(parameterName);
+            const planName = scope.planNamesByParameter.get(parameterName);
             return planName === undefined ? undefined : helperPlans.get(planName);
           };
           const resolve = (candidate: ExpressionNode): ExpressionNode | undefined => {
             // Numeric-literal indexing parses as tuple extraction before type resolution, including for arrays.
             // Normalize that representation into the same symbolic array read used by runtime indices.
             if (candidate instanceof TupleIndexOpNode && candidate.tuple instanceof IdentifierNode
-              && arrayNames.has(candidate.tuple.name)) {
+              && scope.arrayNames.has(candidate.tuple.name)) {
               const plan = planFor(candidate.tuple.name);
               if (!plan) return undefined;
               const index = new IntLiteralNode(BigInt(candidate.index));
@@ -5354,7 +5358,7 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               return symbolicRead(access, plan);
             }
             if (candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
-              && arrayNames.has(candidate.array.name)) {
+              && scope.arrayNames.has(candidate.array.name)) {
               const plan = planFor(candidate.array.name);
               if (!plan) return undefined;
               const index = resolve(candidate.index);
@@ -5365,17 +5369,17 @@ export default class LowerVMapCounterLoops extends AstTraversal {
             }
             if (candidate instanceof UnaryOpNode && candidate.operator === UnaryOperator.SIZE
               && candidate.expression instanceof IdentifierNode
-              && arrayNames.has(candidate.expression.name)) {
+              && scope.arrayNames.has(candidate.expression.name)) {
               const plan = planFor(candidate.expression.name);
               return plan ? cloneNode(plan.length) as ExpressionNode : undefined;
             }
             if (candidate instanceof FieldAccessNode && candidate.name === 'length'
               && candidate.expression instanceof IdentifierNode
-              && arrayNames.has(candidate.expression.name)) {
+              && scope.arrayNames.has(candidate.expression.name)) {
               const plan = planFor(candidate.expression.name);
               return plan ? cloneNode(plan.length) as ExpressionNode : undefined;
             }
-            if (candidate instanceof IdentifierNode && arrayNames.has(candidate.name)) return undefined;
+            if (candidate instanceof IdentifierNode && scope.arrayNames.has(candidate.name)) return undefined;
             const replaced = cloneNode(candidate) as ExpressionNode;
             for (const key of Object.keys(replaced)) {
               if (key === 'location' || key === 'definition' || key === 'symbol' || key === 'type'
@@ -5405,11 +5409,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           helperBlock: BlockNode,
           source: HelperSummary,
           allowTerminalReturn: boolean,
+          scope: HelperScope,
+          visiting: ReadonlySet<FunctionDefinitionNode>,
         ): HelperSummary | undefined => {
           let helperPlans = copyPlans(source.plans);
           let values = new Map(source.values);
           const replay = (expression: ExpressionNode): ExpressionNode | undefined =>
-            replayExpression(expression, values, helperPlans);
+            replayExpression(expression, values, helperPlans, scope);
           const body = helperBlock.statements ?? [];
           for (let index = 0; index < body.length; index += 1) {
             const helperStatement = body[index];
@@ -5420,15 +5426,15 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               continue;
             }
             if (helperStatement instanceof AssignNode
-              && arrayNames.has(helperStatement.identifier.name)) return undefined;
+              && scope.arrayNames.has(helperStatement.identifier.name)) return undefined;
             if (helperStatement instanceof AssignNode) {
               const expression = replay(helperStatement.expression);
               if (!expression) return undefined;
               values.set(helperStatement.identifier.name, expression);
               continue;
             }
-            if (helperStatement instanceof ArrayAssignNode && arrayNames.has(helperStatement.name)) {
-              const planName = planNameFor(helperStatement.name);
+            if (helperStatement instanceof ArrayAssignNode && scope.arrayNames.has(helperStatement.name)) {
+              const planName = scope.planNamesByParameter.get(helperStatement.name);
               const plan = planName === undefined ? undefined : helperPlans.get(planName);
               if (!plan) return undefined;
               const assignedIndex = replay(helperStatement.index);
@@ -5437,8 +5443,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               plan.writes.push({ index: assignedIndex, value: assignedValue });
               continue;
             }
-            if (helperStatement instanceof ArrayDeleteNode && arrayNames.has(helperStatement.name)) {
-              const planName = planNameFor(helperStatement.name);
+            if (helperStatement instanceof ArrayDeleteNode && scope.arrayNames.has(helperStatement.name)) {
+              const planName = scope.planNamesByParameter.get(helperStatement.name);
               const plan = planName === undefined ? undefined : helperPlans.get(planName);
               if (!plan) return undefined;
               const deletedIndex = replay(helperStatement.index);
@@ -5449,8 +5455,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               });
               continue;
             }
-            if (helperStatement instanceof ArrayPushNode && arrayNames.has(helperStatement.name)) {
-              const planName = planNameFor(helperStatement.name);
+            if (helperStatement instanceof ArrayPushNode && scope.arrayNames.has(helperStatement.name)) {
+              const planName = scope.planNamesByParameter.get(helperStatement.name);
               const plan = planName === undefined ? undefined : helperPlans.get(planName);
               if (!plan) return undefined;
               const pushedValue = replay(helperStatement.value);
@@ -5468,8 +5474,8 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               plan.length = length;
               continue;
             }
-            if (helperStatement instanceof ArrayPopNode && arrayNames.has(helperStatement.name)) {
-              const planName = planNameFor(helperStatement.name);
+            if (helperStatement instanceof ArrayPopNode && scope.arrayNames.has(helperStatement.name)) {
+              const planName = scope.planNamesByParameter.get(helperStatement.name);
               const plan = planName === undefined ? undefined : helperPlans.get(planName);
               if (!plan) return undefined;
               const one = new IntLiteralNode(1n);
@@ -5485,9 +5491,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const condition = replay(helperStatement.condition);
               if (!condition) return undefined;
               const base = { plans: copyPlans(helperPlans), values: new Map(values) };
-              const ifSummary = summarize(helperStatement.ifBlock, base, false);
+              const ifSummary = summarize(helperStatement.ifBlock, base, false, scope, visiting);
               const elseSummary = helperStatement.elseBlock
-                ? summarize(helperStatement.elseBlock, base, false) : base;
+                ? summarize(helperStatement.elseBlock, base, false, scope, visiting) : base;
               if (!ifSummary || !elseSummary) return undefined;
               const otherwise = new UnaryOpNode(UnaryOperator.NOT, cloneNode(condition));
               otherwise.location = condition.location;
@@ -5527,9 +5533,9 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               const fallbackCondition = new UnaryOpNode(UnaryOperator.NOT, anyCase!);
               fallbackCondition.location = helperStatement.location;
               const summaries = helperStatement.cases.map((candidate) =>
-                summarize(candidate.body, base, false));
+                summarize(candidate.body, base, false, scope, visiting));
               const fallback = helperStatement.defaultCase
-                ? summarize(helperStatement.defaultCase, base, false) : base;
+                ? summarize(helperStatement.defaultCase, base, false, scope, visiting) : base;
               if (!fallback || summaries.some((candidate) => !candidate)) return undefined;
               const arms = [
                 ...summaries.map((summary, armIndex) => ({
@@ -5545,6 +5551,49 @@ export default class LowerVMapCounterLoops extends AstTraversal {
               values = mergeValues(base.values, arms);
               continue;
             }
+            if (helperStatement instanceof FunctionCallStatementNode) {
+              const nestedCall = helperStatement.call;
+              const nestedTargets = (this.functionsByName.get(nestedCall.identifier.name) ?? [])
+                .filter((candidate) => candidate.parameters.length === nestedCall.parameters.length);
+              if (nestedTargets.length !== 1) return undefined;
+              const nestedTarget = nestedTargets[0];
+              if (!nestedTarget.body || !nestedTarget.modifiers.includes(FunctionModifier.PURE)
+                || visiting.has(nestedTarget)) return undefined;
+              const nestedArrayNames = new Set(nestedTarget.parameters
+                .filter((candidate) => candidate.type instanceof ArrayType)
+                .map((candidate) => candidate.name));
+              const nestedPlanNames = new Map<string, string>();
+              const nestedValues = new Map<string, ExpressionNode>();
+              for (let parameterIndex = 0;
+                parameterIndex < nestedTarget.parameters.length; parameterIndex += 1) {
+                const parameter = nestedTarget.parameters[parameterIndex];
+                const argument = nestedCall.parameters[parameterIndex];
+                if (parameter.type instanceof ArrayType) {
+                  if (!parameter.modifier.includes('memory') || !(argument instanceof IdentifierNode)) {
+                    return undefined;
+                  }
+                  const planName = scope.planNamesByParameter.get(argument.name);
+                  if (planName === undefined || !helperPlans.has(planName)) return undefined;
+                  nestedPlanNames.set(parameter.name, planName);
+                  continue;
+                }
+                const nestedValue = replay(argument);
+                if (!nestedValue) return undefined;
+                nestedValues.set(parameter.name, nestedValue);
+              }
+              // Nested formals reuse the caller's canonical plan names. Forwarding the same array more than once
+              // therefore preserves reference aliasing and advances one source-ordered mutation history.
+              const nestedSummary = summarize(
+                nestedTarget.body,
+                { plans: helperPlans, values: nestedValues },
+                true,
+                { arrayNames: nestedArrayNames, planNamesByParameter: nestedPlanNames },
+                new Set(visiting).add(nestedTarget),
+              );
+              if (!nestedSummary) return undefined;
+              helperPlans = nestedSummary.plans;
+              continue;
+            }
             if (helperStatement instanceof RequireNode) continue;
             if (helperStatement instanceof BreakNode && index === body.length - 1) continue;
             if (helperStatement instanceof ReturnNode && allowTerminalReturn && index === body.length - 1) continue;
@@ -5552,7 +5601,13 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           }
           return { plans: helperPlans, values };
         };
-        const summary = summarize(target.body, { plans: initialPlans, values: initialValues }, true);
+        const summary = summarize(
+          target.body,
+          { plans: initialPlans, values: initialValues },
+          true,
+          initialScope,
+          new Set([target]),
+        );
         if (!summary) return new Set();
         for (const [planName, plan] of summary.plans) {
           const callerName = callerNamesByPlan.get(planName)!;

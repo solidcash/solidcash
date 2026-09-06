@@ -4655,6 +4655,11 @@ function synthesizeMessageBusRoute(
   // published handler instead would agree just as well, but it lets a handler route synthesis REFUSED size the
   // route that was admitted, and buys no admission - `buildDecodeAndCall` maps over `eligible` only.
   const logicalValueMode = eligible.some((fn) => graphMsgValueHandlers.has(fn));
+  // A graph route receives one authenticated logical caller per row. Any handler which reads msg.sender must
+  // therefore execute through an internal clone whose source-level read can be replaced by that address. A
+  // direct source handler instead expects the ordinary transaction-level category witness, which graph routes
+  // intentionally do not declare.
+  const graphExecutionContext = graphTailHandlers.size > 0 || !!compilerOptions.messageBusGraphContext;
   // The lazy proxy implementation pass marks source handlers as delegate after route synthesis. Its compile mode
   // is therefore part of the ownership proof here: waiting for the modifier alone makes the generated atomic
   // binder hash the executor input while the verifier NFT and settlement transcript bind the proxy/state owner.
@@ -5392,6 +5397,27 @@ function synthesizeMessageBusRoute(
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
+  // Fixed-state handlers otherwise need no clone. In graph mode that optimization is invalid for msg.sender:
+  // calling the public entry point would require `__internal__msgSenderCategory`, while the authenticated row
+  // carries the already-resolved caller address. Give every such handler the same name-neutral clone used by
+  // effect and visibility shapes, then bind its caller below.
+  if (graphExecutionContext) {
+    for (const sourceHandler of eligible) {
+      if (!logicalMsgSenderHandlers.has(sourceHandler) || sourceHandler === resourceShapedHandler
+        || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
+        || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
+      const handler = cloneMessageBusHandler(sourceHandler, cheapAdmission);
+      nameMessageBusClone(handler, 'handler', sourceHandler);
+      handler.modifiers = [FunctionModifier.INTERNAL];
+      handler.functionId = undefined;
+      handler.functionSelector = undefined;
+      handler.messageBusEligible = undefined;
+      handler.messageBusRejectionReason = undefined;
+      handler.messageBusKeyWitnesses = undefined;
+      siblingHandlerInvokeNames.set(sourceHandler, handler.name);
+      contract.functions.push(handler);
+    }
+  }
   // A compiler-owned clone is internal, so the later msg.sender pre-scan deliberately does not append the
   // transaction-level category witness that public entry points receive. Make its logical caller explicit before
   // a value-threaded journal inlines the clone into the route: owner-local routes pass their resolved msg.sender,
@@ -5458,7 +5484,6 @@ function synthesizeMessageBusRoute(
   // Outgoing graph edges imply graph execution, but a composed leaf can also receive rows from multiple logical
   // parents. In that case the caller stream is the only sound source of msg.sender for each row. Keep this
   // explicit so standalone graph-free batching retains its smaller single-caller route.
-  const graphExecutionContext = graphTailHandlers.size > 0 || !!compilerOptions.messageBusGraphContext;
   const routeOwnedCloneNames = new Set(contract.functions
     .filter((candidate) => MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix)))
     .map((candidate) => candidate.name));

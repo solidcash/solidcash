@@ -87,6 +87,31 @@ describe('message-bus compilation selection', () => {
       }));
   });
 
+  it('binds msg.sender for a fixed-state handler from the authenticated graph caller', () => {
+    const artifact = compileString(`contract CallerBoundState {
+      address controller;
+      bool initialized;
+      function configure(int nonce) public {
+        require(!initialized);
+        require(nonce >= 0);
+        controller = msg.sender;
+        initialized = true;
+      }
+    }`, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+    });
+    expect(artifact.messageBus).toMatchObject({ convention: 'kernel-row-loop', available: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'configure'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.route.inputs.map((input) => input.name))
+      .not.toContain('__internal__msgSenderCategory');
+  });
+
   it('journals pooled collection getters through the same canonical route entries as sibling writes', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract PooledReturns {

@@ -173,6 +173,8 @@ import {
   selectExternalEventProbeInput,
   persistedValueChunkWriteState,
   selectPersistedValueChunkWrite,
+  selectValueChunkWriteCategory,
+  rememberValueChunkUnlockRecipe,
   type ValueChunkWriteDescriptor,
 } from './StatefulTransactionBuilder.js';
 import {
@@ -1420,7 +1422,20 @@ function extractAllRouteValueChunks(
     : valueChunkWrites === undefined
       ? (categoryId ? persistedJobEventsLock(categoryId) : undefined)
       : persistedWrite ? persistedValueChunkWriteState(persistedWrite)?.lockingBytecode : undefined;
-  if (categoryId && redeemLock) rememberJobEventsLock(categoryId, redeemLock);
+  if (valueChunkWrites !== undefined && redeemLock) {
+    const selection = selectValueChunkWriteCategory(valueChunkWrites.filter((write) => (
+      categoryId === undefined || write.categoryId.toLowerCase() === categoryId.toLowerCase()
+    )));
+    if (selection.status === 'exact') {
+      rememberValueChunkUnlockRecipe(selection.write, selected.value, redeemLock);
+    } else if (selection.status === 'absent' && categoryId) {
+      // Compatibility only for descriptor-free artifacts.
+      rememberJobEventsLock(categoryId, redeemLock);
+    }
+  } else if (categoryId && redeemLock) {
+    // Compatibility only for descriptor-free artifacts.
+    rememberJobEventsLock(categoryId, redeemLock);
+  }
   const lock = redeemLock ?? selected.lockingBytecode;
   return applyRedeemLockToChunks(
     chunksFromJobEventsValue(selected.value, lock, categoryId),
@@ -1485,7 +1500,13 @@ function deriveRouteValueChunks(
     }
   }
   if (usesSharedBand && group.categoryId && lastExtractedComputedValue) {
-    rememberJobEventsValue(group.categoryId, lastExtractedComputedValue);
+    const selection = selectValueChunkWriteCategory(
+      group.valueChunkWrites ?? describeValueChunkWrites(group),
+    );
+    if (selection.status === 'absent') {
+      // Compatibility only for descriptor-free artifacts.
+      rememberJobEventsValue(group.categoryId, lastExtractedComputedValue);
+    }
     stb.rememberJobEventsChunks(group.categoryId, allChunks.map((chunk) => ({
       ...chunk,
       categoryId: group.categoryId,
@@ -12335,14 +12356,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               })));
               if (stb.bumpPublishJobEventsWidth(allChunks.length)) stb._refreshInputs();
               if (lastExtractedComputedValue) {
-                rememberJobEventsValue(chunkCategory, lastExtractedComputedValue);
+                const selection = selectValueChunkWriteCategory([
+                  ...(llc.valueChunkWrites ?? describeValueChunkWrites(llc)),
+                  ...(proxyGroup?.valueChunkWrites ?? (proxyGroup ? describeValueChunkWrites(proxyGroup) : [])),
+                ].filter((write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase()));
+                if (selection.status === 'absent') {
+                  // Compatibility only for descriptor-free artifacts.
+                  rememberJobEventsValue(chunkCategory, lastExtractedComputedValue);
+                }
               }
             }
             const redeemLock = pin?.lockingBytecode && isP2sh32LockingBytecode(pin.lockingBytecode)
               ? pin.lockingBytecode
               : (chunkCategory ? persistedJobEventsLock(chunkCategory) : undefined);
             if (chunkCategory && redeemLock) {
-              rememberJobEventsLock(chunkCategory, redeemLock);
+              const selection = selectValueChunkWriteCategory([
+                ...(llc.valueChunkWrites ?? describeValueChunkWrites(llc)),
+                ...(proxyGroup?.valueChunkWrites ?? (proxyGroup ? describeValueChunkWrites(proxyGroup) : [])),
+              ].filter((write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase()));
+              if (selection.status === 'absent') {
+                // Compatibility only for descriptor-free artifacts.
+                rememberJobEventsLock(chunkCategory, redeemLock);
+              }
               stb.setJobEventsRedeemLock(redeemLock);
             }
             for (const chunk of allChunks) {

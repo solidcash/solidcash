@@ -121,12 +121,6 @@ const persistedValueChunkWrites = new Map<string, {
   value: Uint8Array; lockingBytecode: Uint8Array; width: number;
   recipe: { slot: Uint8Array; root: Uint8Array; collection: string; categoryId: string };
 }>();
-const invalidatePersistedValueChunkWrites = (categoryId: string): void => {
-  const prefix = `${categoryId.toLowerCase()}:`;
-  for (const key of persistedValueChunkWrites.keys()) {
-    if (key.startsWith(prefix)) persistedValueChunkWrites.delete(key);
-  }
-};
 const stagedJobEventsValues = new Map<string, Uint8Array>();
 const createdDigestLocks = new Set<string>();
 const persistedCreatedValues = new Map<string, Uint8Array>();
@@ -999,7 +993,6 @@ export function stageJobEventsValue(categoryId: string, value: Uint8Array): void
 /** Full last committed jobEvents blob (not a Created probe). Latest commit wins. */
 export function rememberJobEventsValue(categoryId: string, value: Uint8Array): void {
   if (value.length <= 60 || value.length > MAX_PERSISTED_JOB_EVENTS_BYTES) return;
-  invalidatePersistedValueChunkWrites(categoryId);
   // Planning knows the value this transaction intends to authenticate. Later
   // VM probes can still encounter a consumed predecessor, so their temporal
   // order does not make them more authoritative than the staged write.
@@ -1029,7 +1022,6 @@ export function rememberJobEventsLock(categoryId: string, lock: Uint8Array): voi
   // Created digest (first publishJobPost persist) is the UPDATE dest-18 pin.
   // Later persist-v rematerialize must not replace it.
   if (createdDigestLocks.has(categoryId)) return;
-  invalidatePersistedValueChunkWrites(categoryId);
   persistedJobEventsLocks.set(categoryId, lock);
   const value = persistedJobEventsValues.get(categoryId)
     ?? latestPersisted(persistedJobEventsValues, categoryId);
@@ -10047,18 +10039,27 @@ export class StatefulTransactionBuilder {
     }
     if (chunks.length === 0) return;
     this.rememberJobEventsChunks(categoryId, chunks);
-    if (redeemLock) rememberJobEventsLock(categoryId, redeemLock);
-    else if (chunks[0]) rememberJobEventsLock(categoryId, chunks[0].lockingBytecode);
     if (spends.length > 0) persistedJobEventsSpends.set(categoryId, spends);
     const staged = stagedJobEventsValues.get(categoryId)
       ?? latestPersisted(stagedJobEventsValues, categoryId);
-    if (staged) {
-      rememberJobEventsValue(categoryId, staged);
-      for (const otherId of stagedJobEventsValues.keys()) rememberJobEventsValue(otherId, staged);
-    }
-    rememberJobEventsUnlockRecipe(categoryId);
-    if (persistedJobEventsValues.size > 0) {
-      for (const otherId of persistedJobEventsValues.keys()) rememberJobEventsUnlockRecipe(otherId);
+    const selection = this._valueChunkWriteCategorySelection();
+    if (selection.status === 'exact') {
+      const authenticatedLock = redeemLock ?? chunks[0]?.lockingBytecode;
+      if (staged && authenticatedLock) {
+        rememberValueChunkUnlockRecipe(selection.write, staged, authenticatedLock);
+      }
+    } else if (selection.status === 'absent') {
+      // Compatibility only for descriptor-free artifacts.
+      if (redeemLock) rememberJobEventsLock(categoryId, redeemLock);
+      else if (chunks[0]) rememberJobEventsLock(categoryId, chunks[0].lockingBytecode);
+      if (staged) {
+        rememberJobEventsValue(categoryId, staged);
+        for (const otherId of stagedJobEventsValues.keys()) rememberJobEventsValue(otherId, staged);
+      }
+      rememberJobEventsUnlockRecipe(categoryId);
+      if (persistedJobEventsValues.size > 0) {
+        for (const otherId of persistedJobEventsValues.keys()) rememberJobEventsUnlockRecipe(otherId);
+      }
     }
     stagedJobEventsValues.delete(categoryId);
     persistedJobEventsSendReady = true;

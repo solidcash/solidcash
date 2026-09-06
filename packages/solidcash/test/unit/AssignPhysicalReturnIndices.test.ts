@@ -398,6 +398,37 @@ describe('generic persisted value-chunk write identity', () => {
     StatefulTransactionBuilder.clearPersistedJobEvents();
   });
 
+  it('keeps persisted resources separate by collection hash and key slot within one category', () => {
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+    const [first] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const alternateSignature = 'audit:mapping(int => Notice[])';
+    const [secondBase] = describeValueChunkWrites(makeGroup('appendAudit', alternateSignature));
+    const second = { ...secondBase, keySlot: '09'.repeat(32) };
+    const firstValue = new Uint8Array(100).fill(0x31);
+    const secondValue = new Uint8Array(120).fill(0x52);
+    const firstLock = getValueChunkLockingBytecode(
+      categoryId, first.collectionSignature, hexToBin(first.keySlot), sha256Sync(firstValue),
+    );
+    const secondLock = getValueChunkLockingBytecode(
+      categoryId, second.collectionSignature, hexToBin(second.keySlot), sha256Sync(secondValue),
+    );
+
+    rememberJobEventsValue(categoryId, firstValue);
+    rememberJobEventsLock(categoryId, firstLock);
+    expect(persistedValueChunkWriteState(first)?.value).toEqual(firstValue);
+
+    // A later observation for another resource in the same token category must not evict the first identity.
+    rememberJobEventsValue(categoryId, secondValue);
+    rememberJobEventsLock(categoryId, secondLock);
+    expect(persistedValueChunkWriteState(second)?.value).toEqual(secondValue);
+    expect(persistedValueChunkWriteState(first)?.value).toEqual(firstValue);
+
+    // Nor may a name-shaped decoy borrow either exact cache entry.
+    const decoy = { ...second, keySlot: '0a'.repeat(32) };
+    expect(persistedValueChunkWriteState(decoy)).toBeUndefined();
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+  });
+
   it('publishes insert identity separately from an update', () => {
     expect(describeValueChunkWrites(makeGroup('createNotice', signature, true))[0])
       .toMatchObject({ operation: 'insert', entryAccessSlot: 0, routeSlot: 0 });

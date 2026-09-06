@@ -1667,12 +1667,13 @@ describe('required kernel admission', () => {
         bytes32 fifth;
       }
       contract Coordinator() {
+        int marker;
         function materialize(bytes32 seed, bytes32 salt) public {
           Spawn child = new Spawn{salt: salt}(seed);
           require(true);
         }
-        function control() public { require(true); }
-      }`, KERNEL);
+        function control(int next) public { this.marker = next; require(true); }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
     const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize');
     expect(handler).toMatchObject({
       eligible: false,
@@ -1694,6 +1695,28 @@ describe('required kernel admission', () => {
     expect(site.creationBytecode).toMatch(/^[0-9a-f]+$/);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'control'))
       .not.toHaveProperty('childDeployments');
+  });
+
+  it('keeps straight-line, conditional, and loop child sites as separate topology occurrences', () => {
+    const artifact = compileString(`contract Unit() { int marker; }
+      contract Coordinator() {
+        function materialize(int n) public {
+          Unit first = new Unit();
+          if (n > 0) { Unit second = new Unit(); }
+          for (int i = 0; i < n; i = i + 1) { Unit repeated = new Unit(); }
+          require(true);
+        }
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
+        childDeployments: [
+          { siteIndex: 0, occurrence: 'once', totalOutputCount: 2 },
+          { siteIndex: 1, occurrence: 'conditional', totalOutputCount: 2 },
+          { siteIndex: 2, occurrence: 'loop', totalOutputCount: 2 },
+        ],
+      });
   });
 
   it('admits a LockingBytecode constructor which is not a child deploy', () => {

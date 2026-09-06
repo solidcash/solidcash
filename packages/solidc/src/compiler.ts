@@ -2055,7 +2055,7 @@ function childDeploymentSites(
   const sites: ChildDeploymentSiteAbi[] = [];
   const visibleInputs = root.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
-  const active: FunctionDefinitionNode[] = [root];
+  const active: Array<{ fn: FunctionDefinitionNode; siteStart: number }> = [{ fn: root, siteStart: 0 }];
 
   const source = (expression: ExpressionNode): ChildDeploymentSiteAbi['constructorArgs'][number] => {
     if (expression instanceof IdentifierNode && inputIndex.has(expression.name)) {
@@ -2083,7 +2083,7 @@ function childDeploymentSites(
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
 
-    if (value instanceof InstantiationNode && value.isStatefulDeploy && value.referencedContract) {
+    if (value instanceof InstantiationNode && value.referencedContract) {
       const child = value.referencedContract;
       const dataNftOutputCount = child.stateVariables.length === 0 ? 0
         : Math.max(...child.stateVariables.map((state) => state.nftIndex ?? 0)) + 1;
@@ -2104,6 +2104,7 @@ function childDeploymentSites(
       });
     }
 
+    // Source `for` loops are represented by WhileNode with a non-zero forLoopUpdateCount.
     const nestedOccurrence = value instanceof WhileNode || value instanceof DoWhileNode
       ? 'loop'
       : value instanceof BranchNode || value instanceof SwitchNode || value instanceof TryCatchNode
@@ -2118,12 +2119,15 @@ function childDeploymentSites(
     if (value instanceof FunctionCallNode && value.resolvedFunction
       && !value.resolvedFunction.isEntryPoint) {
       const target = value.resolvedFunction;
-      if (active.includes(target)) {
+      const cycleAt = active.findIndex((frame) => frame.fn === target);
+      if (cycleAt >= 0) {
         // This preparatory metadata must not turn a recursive deployment into a finite row claim.
-        for (const site of sites) site.occurrence = 'recursive';
+        for (let index = active[cycleAt].siteStart; index < sites.length; index++) {
+          sites[index].occurrence = 'recursive';
+        }
         return;
       }
-      active.push(target);
+      active.push({ fn: target, siteStart: sites.length });
       // A helper called twice represents two physical sites, so each expansion receives a fresh seen-set.
       walk(target.body, nestedOccurrence, new WeakSet<object>());
       active.pop();
@@ -8435,6 +8439,16 @@ function compileResolvedAst(
   const compiledBytecodes = ast.importedContracts.length === 0
     ? new Map<string, Uint8Array>()
     : compileReferencedContracts(ast, mergedCompilerOptions);
+  // Code generation lowers selected handlers in place. Snapshot deployment provenance at the last semantic
+  // boundary so publication does not depend on which representation the backend chose for a handler body.
+  const deploymentTopologyKey = (fn: FunctionDefinitionNode): string => `${fn.name}(${fn.parameters
+    .filter((parameter) => !parameter.name.startsWith('__internal__'))
+    .map((parameter) => parameter.type.toString()).join(',')})`;
+  const childDeploymentsBySignature = new Map<string, ChildDeploymentSiteAbi[]>();
+  for (const fn of ast.contract.functions) {
+    const deployments = childDeploymentSites(fn, compiledBytecodes);
+    if (deployments.length > 0) childDeploymentsBySignature.set(deploymentTopologyKey(fn), deployments);
+  }
   profileLog('resolved:referenced', referencedStarted, {
     contract: contractName, imported: ast.importedContracts.length, compiled: compiledBytecodes.size,
   });
@@ -8740,7 +8754,7 @@ function compileResolvedAst(
         }),
         ...(fn.usesMsgValue && { usesMsgValue: true }),
         ...(() => {
-          const deployments = childDeploymentSites(fn, traversal.compiledBytecodes);
+          const deployments = childDeploymentsBySignature.get(deploymentTopologyKey(fn)) ?? [];
           return deployments.length > 0 ? { childDeployments: deployments } : {};
         })(),
         ...(() => {
@@ -8900,6 +8914,7 @@ function compileResolvedAst(
         ].filter((fn) => !fn.messageBusRoute && fn.isEntryPoint).map((fn) => {
           const reason = fn.messageBusRejectionReason ?? 'not-examined-by-route-synthesis';
           const kernelReason = reason.startsWith('KERNEL_') ? reason : kernelAdmissionReason(reason);
+          const deployments = childDeploymentsBySignature.get(deploymentTopologyKey(fn)) ?? [];
           return {
             name: fn.name,
             selector: fn.functionSelector ? binToHex(fn.functionSelector) : '',
@@ -8911,6 +8926,7 @@ function compileResolvedAst(
             eligible: false,
             rejectionReason: kernelReason,
             rejectionCode: classifyMessageBusRejection(kernelReason),
+            ...(deployments.length > 0 && { childDeployments: deployments }),
           };
         }),
       };
